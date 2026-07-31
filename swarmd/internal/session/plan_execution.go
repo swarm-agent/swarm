@@ -1328,6 +1328,47 @@ func ApplyPlanCheckpointReviewAcceptance(doc *pebblestore.SessionPlanDocument, o
 	return SummarizePlanExecution(doc), nil
 }
 
+// RebindInProgressPlanForUserMessage transfers an already-resumed checkpoint
+// to a later parent turn after its prior owning run has ended. Same-checkpoint
+// refinements preserve checkpoint and attempt identity, so a plain subsequent
+// user continuation must refresh only the active run ownership.
+func RebindInProgressPlanForUserMessage(doc *pebblestore.SessionPlanDocument, runID, runSessionID, parentSessionID string, updatedAt int64) (PlanExecutionSummary, bool, error) {
+	if doc == nil || doc.ExecutionState == nil || normalizePlanExecutionStateStatus(doc.ExecutionState.Status) != PlanExecutionStateInProgress {
+		return SummarizePlanExecution(doc), false, nil
+	}
+	checkpointID := strings.TrimSpace(doc.ActiveCheckpointID)
+	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
+	if checkpointID == "" || idx < 0 {
+		return PlanExecutionSummary{}, false, errors.New("in-progress plan has no active checkpoint to rebind")
+	}
+	checkpoint := &doc.Checkpoints[idx]
+	if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusInProgress {
+		return PlanExecutionSummary{}, false, fmt.Errorf("in-progress plan active checkpoint %q is %q", checkpointID, checkpoint.Status)
+	}
+	runID = strings.TrimSpace(runID)
+	runSessionID = strings.TrimSpace(runSessionID)
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if runID == "" || runSessionID == "" || parentSessionID == "" || strings.TrimSpace(checkpoint.AttemptID) == "" {
+		return PlanExecutionSummary{}, false, errors.New("in-progress plan rebind requires complete run and attempt ownership")
+	}
+	if strings.TrimSpace(checkpoint.RunID) == runID && strings.TrimSpace(checkpoint.SessionID) == runSessionID && strings.TrimSpace(doc.ExecutionState.CurrentRunID) == runID && strings.TrimSpace(doc.ExecutionState.CurrentSessionID) == runSessionID && strings.TrimSpace(doc.ExecutionState.ParentSessionID) == parentSessionID {
+		return SummarizePlanExecution(doc), false, nil
+	}
+	checkpoint.RunID = runID
+	checkpoint.SessionID = runSessionID
+	doc.ExecutionState.ActiveAttemptID = strings.TrimSpace(checkpoint.AttemptID)
+	doc.ExecutionState.CurrentRunID = runID
+	doc.ExecutionState.CurrentSessionID = runSessionID
+	doc.ExecutionState.ParentSessionID = parentSessionID
+	if updatedAt > 0 {
+		doc.ExecutionState.UpdatedAt = updatedAt
+	}
+	if err := ValidatePlanDocument(doc); err != nil {
+		return PlanExecutionSummary{}, false, err
+	}
+	return SummarizePlanExecution(doc), true, nil
+}
+
 // ReactivatePausedPlanForUserMessage makes a paused checkpoint processable by
 // the new parent turn and assigns that turn a new attempt while preserving the
 // paused attempt in history. The provider that receives the message owns the

@@ -1274,6 +1274,32 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	var reactivatedPlanSave *sessionruntime.PreparedPlanSave
 	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
 		return sessionruntime.SessionMutationResult{}, nil, planErr
+	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateInProgress) && strings.TrimSpace(plan.Document.ExecutionState.CurrentRunID) != "" && strings.TrimSpace(plan.Document.ExecutionState.CurrentRunID) != runIntent.RunID {
+		priorRun, priorRunOK, priorRunErr := s.sessions.GetV3SessionRunIntent(sessionID, strings.TrimSpace(plan.Document.ExecutionState.CurrentRunID))
+		if priorRunErr != nil {
+			return sessionruntime.SessionMutationResult{}, nil, priorRunErr
+		}
+		if priorRunOK && priorRun.Status != sessionruntime.RunIntentPendingExecutor && priorRun.Status != sessionruntime.RunIntentRunning {
+			doc, cloneErr := cloneSessionsV3PlanDocument(plan.Document)
+			if cloneErr != nil {
+				return sessionruntime.SessionMutationResult{}, nil, cloneErr
+			}
+			if _, changed, rebindErr := sessionruntime.RebindInProgressPlanForUserMessage(doc, runIntent.RunID, sessionID, sessionID, now); rebindErr != nil {
+				return sessionruntime.SessionMutationResult{}, nil, rebindErr
+			} else if changed {
+				prepared, prepareErr := s.sessions.PreparePlanSaveWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "Transferred in-progress checkpoint to user message run", UpdateScope: strings.TrimSpace(doc.ActiveCheckpointID), UpdateKind: "rebind_in_progress_user_message", RevisionKind: sessionruntime.PlanRevisionKindExecution, Checkpoint: true, Document: doc})
+				if prepareErr != nil {
+					return sessionruntime.SessionMutationResult{}, nil, prepareErr
+				}
+				reactivatedPlanSave = &prepared
+				runIntent.PlanID = strings.TrimSpace(plan.ID)
+				runIntent.CheckpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+				runIntent.AttemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
+				runIntent.RunSessionID = sessionID
+				runIntent.ParentSessionID = sessionID
+				runIntent.ResumeContext = true
+			}
+		}
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStatePaused) {
 		doc, cloneErr := cloneSessionsV3PlanDocument(plan.Document)
 		if cloneErr != nil {

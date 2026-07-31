@@ -6291,6 +6291,64 @@ func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t
 	}
 }
 
+func TestSessionsV3UserMessageRebindsRefinedCheckpointFromCompletedRun(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "refined-message-rebind-create", "refined message rebind")
+	const oldRunID = "refined-old-run"
+	const attemptID = "cp-1:attempt-1"
+	now := time.Now().UnixMilli()
+	pending := pebblestore.V3SessionRunIntent{RunID: oldRunID, Status: sessionruntime.RunIntentPendingExecutor}
+	pendingHash, err := sessionV3ExecutorPayloadHash(created.ID, oldRunID, pending.Status, "", "session.assistant.queued", "")
+	if err != nil {
+		t.Fatalf("pending hash: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "refined-old-pending", IdempotencyKey: "refined-old-pending", PayloadHash: pendingHash, RequestHash: pendingHash, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pending, NowUnixMs: now}); err != nil {
+		t.Fatalf("record old pending run: %v", err)
+	}
+	running := pending
+	running.Status = sessionruntime.RunIntentRunning
+	runningHash, err := sessionV3ExecutorPayloadHash(created.ID, oldRunID, running.Status, "", "session.assistant.started", "")
+	if err != nil {
+		t.Fatalf("running hash: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "refined-old-running", IdempotencyKey: "refined-old-running", PayloadHash: runningHash, RequestHash: runningHash, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.started", RunIntent: &running, NowUnixMs: now + 1}); err != nil {
+		t.Fatalf("record old running run: %v", err)
+	}
+	completed := running
+	completed.Status = sessionruntime.RunIntentCompleted
+	completedHash, err := sessionV3ExecutorPayloadHash(created.ID, oldRunID, completed.Status, "", "session.assistant.completed", "")
+	if err != nil {
+		t.Fatalf("completed hash: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: "refined-old-completed", IdempotencyKey: "refined-old-completed", PayloadHash: completedHash, RequestHash: completedHash, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.completed", RunIntent: &completed, NowUnixMs: now + 2}); err != nil {
+		t.Fatalf("record old completed run: %v", err)
+	}
+	_, _, err = sessionSvc.SavePlanWithMetadata(created.ID, "plan-refined-message", "Plan: refined message", "## Plan: refined message", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ID: "plan-refined-message", Title: "Plan: refined message", Info: pebblestore.SessionPlanInfo{Goal: "Finish a localized refinement"}, ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: attemptID, CurrentRunID: oldRunID, CurrentSessionID: created.ID, ParentSessionID: created.ID}, ActiveCheckpointID: "cp-1",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Refined checkpoint", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: attemptID, RunID: oldRunID, SessionID: created.ID, Subtasks: []pebblestore.SessionPlanSubtask{{ID: "task-1", Title: "Original", Status: "completed"}, {ID: "task-2", Title: "Localized addition", Status: "in_progress"}}, ActiveSubtaskID: "task-2", Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: attemptID, CheckpointID: "cp-1", Status: sessionruntime.PlanCheckpointStatusCompleted, Outcome: sessionruntime.PlanCheckpointStatusCompleted, RunID: oldRunID, SessionID: created.ID, ParentSessionID: created.ID}}}},
+	}})
+	if err != nil {
+		t.Fatalf("save refined plan: %v", err)
+	}
+
+	result, enqueueJob, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, sessionsV3MessageRequest{ClientRequestID: "refined-message-continue", IdempotencyKey: "refined-message-continue", Role: "user", Content: "continue"})
+	if err != nil || enqueueJob == nil || result.RunIntent == nil {
+		t.Fatalf("accept refined continuation: job=%#v result=%#v err=%v", enqueueJob, result, err)
+	}
+	if enqueueJob.PlanID != "plan-refined-message" || enqueueJob.CheckpointID != "cp-1" || enqueueJob.AttemptID != attemptID || enqueueJob.RunID == oldRunID || !enqueueJob.ResumeContext {
+		t.Fatalf("refined continuation executor job = %#v", enqueueJob)
+	}
+	active, ok, err := sessionSvc.GetActivePlan(created.ID)
+	if err != nil || !ok || active.Document == nil || active.Document.ExecutionState == nil {
+		t.Fatalf("get rebound refined plan: ok=%t err=%v plan=%#v", ok, err, active)
+	}
+	checkpoint := active.Document.Checkpoints[0]
+	if checkpoint.RunID != enqueueJob.RunID || checkpoint.AttemptID != attemptID || active.Document.ExecutionState.CurrentRunID != enqueueJob.RunID || active.Document.ExecutionState.ActiveAttemptID != attemptID || len(checkpoint.Attempts) != 1 {
+		t.Fatalf("rebound refined ownership = %#v state=%#v", checkpoint, active.Document.ExecutionState)
+	}
+}
+
 func TestSessionsV3UserMessageReactivatesPausedCheckpointForAgentDecision(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "paused-message-reactivate-create", "paused message reactivate")

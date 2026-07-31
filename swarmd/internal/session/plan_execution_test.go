@@ -305,6 +305,31 @@ func TestValidatePlanDocumentRejectsUnresolvedCheckpointsBeforeActive(t *testing
 	}
 }
 
+func TestRebindInProgressPlanForUserMessageTransfersRunWithoutResettingAttempt(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ID: "plan-1", Title: "Plan", ActiveCheckpointID: "cp-1",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "old-run", CurrentSessionID: "session-1", ParentSessionID: "session-1"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID: "cp-1", Title: "Current", Status: PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "old-run", SessionID: "session-1",
+			Subtasks: []pebblestore.SessionPlanSubtask{{ID: "task-1", Title: "Continue work", Status: PlanSubtaskStatusInProgress}}, ActiveSubtaskID: "task-1",
+			Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusCompleted, Outcome: PlanCheckpointStatusCompleted, RunID: "old-run", SessionID: "session-1", ParentSessionID: "session-1"}},
+		}},
+	}
+
+	summary, changed, err := RebindInProgressPlanForUserMessage(doc, "message-run", "session-1", "session-1", 42)
+	if err != nil || !changed {
+		t.Fatalf("rebind in-progress plan: changed=%t err=%v", changed, err)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.AttemptID != "cp-1:attempt-1" || checkpoint.RunID != "message-run" || checkpoint.SessionID != "session-1" || len(checkpoint.Attempts) != 1 {
+		t.Fatalf("checkpoint ownership/history = %#v", checkpoint)
+	}
+	if doc.ExecutionState.CurrentRunID != "message-run" || doc.ExecutionState.ActiveAttemptID != "cp-1:attempt-1" || !summary.AutoAdvanceAllowed {
+		t.Fatalf("execution state/summary = %#v %#v", doc.ExecutionState, summary)
+	}
+}
+
 func TestReactivatePausedPlanForUserMessagePreservesAttemptHistory(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		ID: "plan-paused-message", Title: "Paused message", ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},

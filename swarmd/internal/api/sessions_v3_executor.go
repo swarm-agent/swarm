@@ -296,6 +296,15 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	}
 	if ok {
 		job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
+		if job.PlanID == "" || job.CheckpointID == "" || job.AttemptID == "" {
+			checkpointJob, checkpointOwned, ownershipErr := e.server.sessionsV3ActiveCheckpointMessageRunJob(job.Principal, job.SessionID, job.RunID, intent.EpochID)
+			if ownershipErr != nil {
+				return sessionruntime.SessionMutationResult{}, tracked, ownershipErr
+			}
+			if checkpointOwned {
+				job = checkpointJob
+			}
+		}
 		switch intent.Status {
 		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
 			result, err := e.recordCancelledRunAndReconcilePlan(job, reason)
