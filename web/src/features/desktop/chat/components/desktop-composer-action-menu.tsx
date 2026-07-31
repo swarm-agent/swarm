@@ -42,6 +42,7 @@ export function DesktopComposerActionMenu({
   const [view, setView] = useState<ComposerActionMenuView>('root')
   const menuId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const [actions, setActions] = useState<WorkspaceAction[]>([])
   const [actionsLoading, setActionsLoading] = useState(false)
   const [actionsError, setActionsError] = useState('')
@@ -50,10 +51,12 @@ export function DesktopComposerActionMenu({
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState('')
   const [skillsRequest, setSkillsRequest] = useState(0)
+  const [submenuMinHeight, setSubmenuMinHeight] = useState(0)
 
   const closeMenu = useCallback(() => {
     setOpen(false)
     setView('root')
+    setSubmenuMinHeight(0)
   }, [])
 
   useEffect(() => {
@@ -116,7 +119,18 @@ export function DesktopComposerActionMenu({
       return
     }
     setView('root')
+    setSubmenuMinHeight(0)
     setOpen(true)
+  }
+
+  const showView = (nextView: Exclude<ComposerActionMenuView, 'root'>) => {
+    setSubmenuMinHeight(nextView === 'skills' || nextView === 'actions' ? (menuRef.current?.getBoundingClientRect().height ?? 0) : 0)
+    setView(nextView)
+  }
+
+  const showRootView = () => {
+    setView('root')
+    setSubmenuMinHeight(0)
   }
 
   const primeTask = (mode: DesktopComposerTaskMode) => {
@@ -153,10 +167,12 @@ export function DesktopComposerActionMenu({
 
       {open ? (
         <div
+          ref={menuRef}
           id={menuId}
           role="menu"
           aria-label={view === 'task' ? 'Task type' : view === 'actions' ? 'Workspace Actions' : view === 'skills' ? 'Workspace Skills' : 'Composer actions'}
           className="absolute bottom-full left-0 z-40 mb-2 w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 shadow-[var(--shadow-panel)]"
+          style={submenuMinHeight > 0 ? { minHeight: submenuMinHeight } : undefined}
           data-testid="desktop-composer-actions-menu"
         >
           {view === 'root' ? (
@@ -166,7 +182,7 @@ export function DesktopComposerActionMenu({
                   type="button"
                   role="menuitem"
                   aria-haspopup="menu"
-                  onClick={() => setView('actions')}
+                  onClick={() => showView('actions')}
                   className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
                   data-testid="desktop-composer-actions-menu-item"
                 >
@@ -186,7 +202,7 @@ export function DesktopComposerActionMenu({
                   type="button"
                   role="menuitem"
                   aria-haspopup="menu"
-                  onClick={() => setView('skills')}
+                  onClick={() => showView('skills')}
                   className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
                   data-testid="desktop-composer-skills-menu-item"
                 >
@@ -205,7 +221,7 @@ export function DesktopComposerActionMenu({
                 type="button"
                 role="menuitem"
                 aria-haspopup="menu"
-                onClick={() => setView('task')}
+                onClick={() => showView('task')}
                 className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
                 data-testid="desktop-composer-task-menu-item"
               >
@@ -263,7 +279,7 @@ export function DesktopComposerActionMenu({
             <div data-testid="desktop-composer-task-submenu">
               <button
                 type="button"
-                onClick={() => setView('root')}
+                onClick={showRootView}
                 className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]"
                 aria-label="Back to composer actions"
               >
@@ -298,9 +314,11 @@ export function DesktopComposerActionMenu({
             </div>
           ) : view === 'skills' ? (
             <div data-testid="desktop-composer-skills-submenu">
-              <button type="button" onClick={() => setView('root')} className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]" aria-label="Back to composer actions">
+              <button type="button" onClick={showRootView} className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]" aria-label="Back to composer actions">
                 <ChevronLeft size={15} aria-hidden="true" />
-                <span>Skills</span>
+                <span>Back</span>
+                <span className="text-[var(--app-text-subtle)]" aria-hidden="true">·</span>
+                <span className="text-[var(--app-text)]">Skills</span>
               </button>
               {skillsLoading ? (
                 <div className="flex items-center gap-2 px-2.5 py-4 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={15} className="animate-spin" />Loading Skills…</div>
@@ -312,17 +330,18 @@ export function DesktopComposerActionMenu({
               ) : skills.length === 0 ? (
                 <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Skills are available for this workspace.</p>
               ) : skills.map((skill) => (
-                <button key={skill.canonicalName} type="button" role="menuitem" onClick={() => { closeMenu(); onSkillSelect?.(skill) }} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]"><Sparkles size={15} aria-hidden="true" /></span>
-                  <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{skill.name}</span>{skill.description ? <span className="block truncate text-[11px] text-[var(--app-text-subtle)]">{skill.description}</span> : null}</span>
+                <button key={skill.canonicalName} type="button" role="menuitem" onClick={() => { closeMenu(); onSkillSelect?.(skill) }} className="flex w-full items-center rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
+                  <span className="min-w-0 flex-1 truncate font-semibold">{skill.name}</span>
                 </button>
               ))}
             </div>
           ) : (
             <div data-testid="desktop-composer-actions-submenu">
-              <button type="button" onClick={() => setView('root')} className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]" aria-label="Back to composer actions">
+              <button type="button" onClick={showRootView} className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]" aria-label="Back to composer actions">
                 <ChevronLeft size={15} aria-hidden="true" />
-                <span>Actions</span>
+                <span>Back</span>
+                <span className="text-[var(--app-text-subtle)]" aria-hidden="true">·</span>
+                <span className="text-[var(--app-text)]">Actions</span>
               </button>
               {actionsLoading ? (
                 <div className="flex items-center gap-2 px-2.5 py-4 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={15} className="animate-spin" />Loading Actions…</div>
@@ -334,9 +353,8 @@ export function DesktopComposerActionMenu({
               ) : actions.length === 0 ? (
                 <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Actions are saved for this workspace.</p>
               ) : actions.map((action) => (
-                <button key={action.id} type="button" role="menuitem" onClick={() => { closeMenu(); onActionSelect?.(action) }} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]"><Zap size={15} aria-hidden="true" /></span>
-                  <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{action.name}</span>{action.description ? <span className="block truncate text-[11px] text-[var(--app-text-subtle)]">{action.description}</span> : null}</span>
+                <button key={action.id} type="button" role="menuitem" onClick={() => { closeMenu(); onActionSelect?.(action) }} className="flex w-full items-center rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
+                  <span className="min-w-0 flex-1 truncate font-semibold">{action.name}</span>
                 </button>
               ))}
             </div>
