@@ -366,6 +366,7 @@ func TestAnthropicMediaDeclarationIsImageInputOnly(t *testing.T) {
 
 func TestBuildAnthropicMessagesMaterializesNativeImageInOriginalOrder(t *testing.T) {
 	payload := anthropicTestImagePayload("image/png", []byte("image-bytes"))
+	payload.FileType = "png"
 	messages, err := buildAnthropicMessages([]map[string]any{{
 		"role": "user",
 		"content": []map[string]any{

@@ -686,9 +686,11 @@ func validateAnthropicImagePayload(contract provideriface.SessionMediaContract, 
 	if strings.TrimSpace(contract.Hash) == "" || !strings.EqualFold(strings.TrimSpace(contract.ProviderID), "anthropic") || contract.ProviderSurface != anthropicMediaProviderSurface || contract.CredentialSurface != anthropicMediaCredentialSurface || contract.AdapterID != anthropicMediaAdapterID {
 		return provideriface.MediaContractCapability{}, errors.New("media contract does not match the active Anthropic API-key Messages surface")
 	}
-	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") || strings.TrimSpace(payload.FileType) != "" {
+	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") {
 		return provideriface.MediaContractCapability{}, errors.New("anthropic media payload is not a native image input")
 	}
+	// FileType is durable upload metadata (for example, "png"), not a distinct
+	// Anthropic file input. MIME type remains the authority for native images.
 	mimeType := strings.ToLower(strings.TrimSpace(payload.MIMEType))
 	if !containsFold([]string{"image/gif", "image/jpeg", "image/png", "image/webp"}, mimeType) {
 		return provideriface.MediaContractCapability{}, errors.New("anthropic image MIME type is unsupported")
