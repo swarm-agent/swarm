@@ -306,6 +306,53 @@ test('session deploy Always allow uses the explicit account-wide deployment poli
   })
 })
 
+test('skill update permission uses a polished revealable definition view with persistent approval', () => {
+  const markup = renderPermission(planLifecyclePermission('skill_change', {
+    action: 'update',
+    summary: 'proposed update for skill demo',
+    skill: { canonical_name: 'demo', path: '.agents/skills/demo/SKILL.md' },
+    change: {
+      operation: 'update',
+      path: '.agents/skills/demo/SKILL.md',
+      before: 'PRIVATE OLD SKILL CONTENT',
+      after: 'PRIVATE NEW SKILL CONTENT',
+      expected_revision: 'revision-token',
+    },
+    approved_arguments: {
+      action: 'update',
+      skill: 'demo',
+      content: 'PRIVATE NEW SKILL CONTENT',
+      confirm: true,
+      expected_revision: 'revision-token',
+    },
+  }, 'manage-skill'))
+
+  assert.match(markup, /Update skill\?/)
+  assert.match(markup, /demo/)
+  assert.match(markup, /Reveal the actual content before deciding/)
+  assert.match(markup, /Apply update/)
+  assert.match(markup, /Always allow skill changes/)
+  assert.match(markup, /expected skill revision/)
+  assert.doesNotMatch(markup, /PRIVATE OLD SKILL CONTENT/)
+  assert.doesNotMatch(markup, /PRIVATE NEW SKILL CONTENT/)
+  assert.doesNotMatch(markup, /revision-token|approved_arguments/)
+  assert.doesNotMatch(markup, /\{&quot;action&quot;/)
+})
+
+test('skill delete permission clearly names the destructive operation and offers definition reveal', () => {
+  const markup = renderPermission(planLifecyclePermission('skill_change', {
+    action: 'delete',
+    skill: { canonical_name: 'demo', path: '.agents/skills/demo/SKILL.md' },
+    change: { operation: 'delete', path: '.agents/skills/demo/SKILL.md', before: 'PRIVATE SKILL CONTENT', after: '' },
+  }, 'manage_skill'))
+
+  assert.match(markup, /Delete skill\?/)
+  assert.match(markup, /Delete skill/)
+  assert.match(markup, /Reveal the actual content before deciding/)
+  assert.match(markup, /Always allow skill changes/)
+  assert.doesNotMatch(markup, /PRIVATE SKILL CONTENT/)
+})
+
 test('session commit permission renders exact commits and persistent choices', () => {
   const markup = renderPermission(planLifecyclePermission('session_commit', {
     action: 'commit', manifest: { commits: [{ message: 'Ship exact files', repository: '/workspace', files: [{ path: 'web/src/app.tsx', fingerprint: 'secret' }] }] }, approved_arguments: { action: 'commit', manifest: { version: 1 } },

@@ -5,6 +5,7 @@ import {
   parseSessionArchivePermission,
   parseSessionCommitPermission,
   parseSessionDeployPermission,
+  parseSkillChangePermission,
   parseExitPlanPermission,
   parsePlanUpdatePermission,
   buildPlanUpdateDiffPreview,
@@ -626,6 +627,54 @@ function testManageSessionsArchiveShowsHydratedFactsOnly() {
   assert(!body.includes('Expected Updated At By Id'), 'expected concurrency map to stay hidden from the prompt')
 }
 
+function testSkillChangePermissionParsesReadableDefinition(): void {
+  const update = makePermission({
+    toolName: 'manage-skill',
+    requirement: 'skill_change',
+    toolArguments: JSON.stringify({
+      action: 'update',
+      summary: 'proposed update for skill demo',
+      skill: { canonical_name: 'demo', path: '.agents/skills/demo/SKILL.md' },
+      change: {
+        operation: 'update',
+        path: '.agents/skills/demo/SKILL.md',
+        before: 'PRIVATE OLD SKILL CONTENT',
+        after: 'PRIVATE NEW SKILL CONTENT',
+        expected_revision: 'revision-token',
+      },
+      approved_arguments: {
+        action: 'update',
+        skill: 'demo',
+        content: 'PRIVATE NEW SKILL CONTENT',
+        confirm: true,
+        expected_revision: 'revision-token',
+      },
+    }),
+  })
+  const updatePayload = parseSkillChangePermission(update)
+  assert(permissionKind(update) === 'skill-change', 'expected specialized skill-change permission kind')
+  assert(updatePayload.action === 'update', 'expected update operation')
+  assert(updatePayload.canonicalName === 'demo', 'expected canonical skill name')
+  assert(updatePayload.path === '.agents/skills/demo/SKILL.md', 'expected target path')
+  assert(updatePayload.before === 'PRIVATE OLD SKILL CONTENT', 'expected exact current definition')
+  assert(updatePayload.after === 'PRIVATE NEW SKILL CONTENT', 'expected exact proposed definition')
+  assert(updatePayload.approvedArguments.expected_revision === 'revision-token', 'expected canonical revision to remain in approved execution arguments')
+
+  const deletion = makePermission({
+    toolName: 'manage_skill',
+    requirement: 'skill_change',
+    toolArguments: JSON.stringify({
+      action: 'delete',
+      skill: { canonical_name: 'demo' },
+      change: { operation: 'delete', before: 'PRIVATE SKILL CONTENT', after: '' },
+    }),
+  })
+  const deletePayload = parseSkillChangePermission(deletion)
+  assert(deletePayload.action === 'delete', 'expected delete operation')
+  assert(deletePayload.before === 'PRIVATE SKILL CONTENT', 'expected deleted definition to be available to specialized renderer')
+  assert(deletePayload.after === '', 'expected no replacement definition for delete')
+}
+
 function testManageTodosBatchParsing(): void {
   const permission = makePermission({
     toolName: 'manage_todos',
@@ -674,6 +723,7 @@ function main(): void {
   testManageSessionsMutationPayloads()
   testManageSessionsArchiveShowsHydratedFactsOnly()
   testSessionDeployPermissionPayload()
+  testSkillChangePermissionParsesReadableDefinition()
   testManageTodosBatchParsing()
   console.log('permission-payload tests passed')
 }

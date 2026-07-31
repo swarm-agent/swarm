@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
-import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, Folder, GitCommit, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
+import { Copy, Check, AlertCircle, Archive, CalendarClock, ChevronDown, FilePenLine, Folder, GitCommit, Rocket, LockKeyhole, Server, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -32,6 +32,7 @@ import {
   parseSessionArchivePermission,
   parseSessionCommitPermission,
   parseSessionDeployPermission,
+  parseSkillChangePermission,
   type SessionDeployProposal,
   parsePlanUpdatePermission,
   type PlanUpdatePayload,
@@ -350,6 +351,120 @@ function PermissionActionBar({
       </div>
       {shortcutHint ? <div className="mt-2 text-center text-[11px] text-[var(--app-text-subtle)] sm:text-right">{shortcutHint}</div> : null}
     </div>
+  )
+}
+
+function SkillChangePermissionModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [loading, setLoading] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [activeDefinition, setActiveDefinition] = useState<'before' | 'after'>('after')
+
+  useEffect(() => {
+    if (open) {
+      setLoading(false)
+      setDetailsOpen(false)
+      setActiveDefinition('after')
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+
+  const payload = parseSkillChangePermission(permission)
+  const isDelete = payload.action === 'delete'
+  const isCreate = payload.action === 'create'
+  const proposedDefinition = isDelete ? payload.before : payload.after
+  const currentDefinition = payload.before
+  const hasCurrentDefinition = Boolean(currentDefinition)
+  const hasProposedDefinition = Boolean(proposedDefinition)
+  const displayDefinition = activeDefinition === 'before' ? currentDefinition : proposedDefinition
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
+    setLoading(true)
+    try {
+      await onResolve(action, '', action === 'deny' ? undefined : payload.approvedArguments)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={`${isDelete ? 'Delete' : isCreate ? 'Create' : 'Update'} skill?`}
+      subtitle="Review this workspace skill change before it is applied"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(100%,calc(100vw-12px))] sm:w-[min(980px,calc(100vw-48px))]"
+      bodyClassName="px-3 py-4 sm:px-5 sm:py-5"
+      headerExtra={
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5">
+          <HeaderChip icon={FilePenLine}>skill change</HeaderChip>
+          <HeaderChip icon={LockKeyhole}>workspace definition</HeaderChip>
+        </div>
+      }
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          onAlwaysAllow={() => void resolve('approve_always')}
+          alwaysAllowLabel="Always allow skill changes"
+          showPersistentActions
+          approveLabel={isDelete ? 'Delete skill' : isCreate ? 'Create skill' : 'Apply update'}
+          shortcutHint="Enter approves once · Esc denies"
+        />
+      }
+      showSessionMeta={false}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <div className="grid min-w-0 gap-4">
+        <section className="overflow-hidden rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] shadow-sm">
+          <div className="flex items-start gap-3 border-b border-[var(--app-border)] px-4 py-4">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]"><FilePenLine className="size-4" aria-hidden="true" /></span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2"><span className="text-base font-semibold text-[var(--app-text)]">{payload.displayName || payload.canonicalName}</span><span className="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{payload.action}</span></div>
+              {payload.description ? <p className="mt-1 text-sm leading-5 text-[var(--app-text-muted)]">{payload.description}</p> : null}
+              {payload.path ? <div className="mt-2 break-all font-mono text-xs text-[var(--app-text-subtle)]">{payload.path}</div> : null}
+            </div>
+          </div>
+          <div className="grid gap-3 px-4 py-4">
+            <p className="text-sm leading-6 text-[var(--app-text)]">{payload.summary || (isDelete ? 'This removes the skill definition from the workspace.' : isCreate ? 'This adds a new skill definition to the workspace.' : 'This replaces the current workspace skill definition.')}</p>
+            <div className="rounded-xl border border-[color-mix(in_oklab,var(--app-primary)_24%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_7%,var(--app-bg-alt))] px-3 py-2.5 text-xs leading-5 text-[var(--app-text-muted)]">Approving once applies only this prepared change. The daemon still verifies the expected skill revision before writing, so a stale proposal cannot overwrite a newer definition.</div>
+          </div>
+        </section>
+
+        <section className="overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)]">
+          <button type="button" className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-[var(--app-surface-subtle)]" onClick={() => setDetailsOpen((value) => !value)} aria-expanded={detailsOpen}>
+            <span><span className="block text-sm font-medium text-[var(--app-text)]">Skill definition</span><span className="mt-0.5 block text-xs text-[var(--app-text-muted)]">{detailsOpen ? 'Hide the definition content' : 'Reveal the actual content before deciding'}</span></span>
+            <ChevronDown className={cn('size-4 shrink-0 text-[var(--app-text-subtle)] transition-transform', detailsOpen && 'rotate-180')} aria-hidden="true" />
+          </button>
+          {detailsOpen ? (
+            <div className="border-t border-[var(--app-border)]">
+              {!isCreate && hasCurrentDefinition && !isDelete ? (
+                <div className="flex gap-1 border-b border-[var(--app-border)] px-3 py-2">
+                  <Button type="button" size="sm" variant={activeDefinition === 'after' ? 'secondary' : 'ghost'} onClick={() => setActiveDefinition('after')}>Proposed update</Button>
+                  <Button type="button" size="sm" variant={activeDefinition === 'before' ? 'secondary' : 'ghost'} onClick={() => setActiveDefinition('before')}>Current definition</Button>
+                </div>
+              ) : null}
+              <div className="max-h-[min(52dvh,36rem)] overflow-auto bg-[color-mix(in_oklab,var(--app-bg-inset)_90%,black)] p-4">
+                {displayDefinition ? <pre className="min-w-0 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]"><code>{displayDefinition}</code></pre> : <div className="text-sm text-[var(--app-text-muted)]">{hasProposedDefinition || hasCurrentDefinition ? 'Choose a definition to view.' : 'Definition content is unavailable.'}</div>}
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2.5 text-xs leading-5 text-[var(--app-text-muted)]"><span className="font-medium text-[var(--app-text)]">Always allow skill changes</span> saves the canonical account-wide <span className="font-mono">skill_change</span> rule. Future create, update, and delete requests can run automatically, but each mutation still uses its own validated arguments and revision check.</div>
+      </div>
+    </ModalShell>
   )
 }
 
@@ -3196,6 +3311,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'session-deploy') {
     return <SessionDeployModal {...props} />
+  }
+  if (kind === 'skill-change') {
+    return <SkillChangePermissionModal {...props} />
   }
   if (kind === 'ask-user') {
     return <AskUserModal {...props} />
