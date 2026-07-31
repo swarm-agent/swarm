@@ -537,6 +537,7 @@ function testSearchToolPreservesContentMatchText(): void {
   })
 
   assert(Boolean(message), 'expected structured search tool message')
+  assert(message?.searchData?.queries[0] === 'SearchToolView', `unexpected search query: ${message?.searchData?.queries[0]}`)
   const match = message?.searchData?.files[0]?.queryGroups[0]?.matches[0]
   assert(match?.line === 307, `unexpected search match line: ${match?.line}`)
   assert(match?.column === 12, `unexpected search match column: ${match?.column}`)
@@ -573,6 +574,7 @@ function testSearchToolParsesCompactGroupedResults(): void {
 
   assert(Boolean(message), 'expected compact grouped search tool message')
   assert(message?.searchData?.queryCount === 2, `unexpected compact search query count: ${message?.searchData?.queryCount}`)
+  assert(message?.searchData?.queries.join(' | ') === 'SearchToolView | ManageSessionsCard', `unexpected compact search queries: ${message?.searchData?.queries.join(' | ')}`)
   assert(message?.searchData?.files.length === 1, `unexpected compact search file count: ${message?.searchData?.files.length}`)
   assert(message?.searchData?.files[0]?.matchCount === 2, `unexpected compact search match count: ${message?.searchData?.files[0]?.matchCount}`)
   assert(message?.searchData?.files[0]?.queryGroups[1]?.matches[0]?.line === 1077, 'expected grouped line metadata')

@@ -1050,7 +1050,15 @@ function extractSearchToolData(
 
   const mode = jsonStr(effective, "search_mode").toLowerCase();
   const path = jsonStr(effective, "path");
+  const queries = [
+    ...jsonStrArray(argumentsJson, "queries"),
+    jsonStr(argumentsJson, "query"),
+    ...jsonStrArray(outputJson, "queries"),
+    jsonStr(outputJson, "query"),
+    ...jsonObjectSlice(effective, "query_results").map((result) => jsonStr(result, "query")),
+  ].filter((query, index, all) => query && all.indexOf(query) === index);
   const queryCount = Math.max(
+    queries.length,
     jsonNum(effective, "query_count"),
     jsonObjectSlice(effective, "query_results").length,
   );
@@ -1068,6 +1076,7 @@ function extractSearchToolData(
   return {
     mode,
     path,
+    queries,
     queryCount,
     count,
     totalMatched,

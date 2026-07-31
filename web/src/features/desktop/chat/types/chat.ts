@@ -73,6 +73,7 @@ export interface SearchToolFileGroup {
 export interface SearchToolData {
   mode: string;
   path: string;
+  queries: string[];
   queryCount: number;
   count: number;
   totalMatched: number;

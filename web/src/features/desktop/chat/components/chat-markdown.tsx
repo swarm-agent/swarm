@@ -5,8 +5,6 @@ import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
   StructuredToolMessage,
-  SearchToolFileGroup,
-  SearchToolLineGroup,
   WebFetchToolData,
   WebResourceData,
   WebSearchToolData,
@@ -1141,23 +1139,20 @@ function SearchSummaryLine({
   const data = toolMessage.searchData;
   if (!data) return null;
 
-  const parts: string[] = [];
-  if (data.queryCount > 1) parts.push(`${data.queryCount} queries`);
-  if (data.count > 0) {
-    parts.push(
-      `${data.count} ${data.mode === "files" ? (data.count === 1 ? "file" : "files") : data.count === 1 ? "match" : "matches"}`,
-    );
-  }
-  if (data.totalMatched > data.count) parts.push(`${data.totalMatched} total`);
-  if (data.timedOut) parts.push("timed out");
-  else if (data.truncated) parts.push("partial results");
-
-  const summary = parts.length > 0 ? parts.join(" · ") : "no matches";
+  const searched = data.queries.length === 1
+    ? `“${data.queries[0]}”`
+    : `${data.queryCount || data.queries.length} ${(data.queryCount || data.queries.length) === 1 ? "query" : "queries"}`;
+  const foundCount = Math.max(data.count, data.totalMatched);
+  const foundUnit = data.mode === "files"
+    ? foundCount === 1 ? "file" : "files"
+    : foundCount === 1 ? "match" : "matches";
+  const status = data.timedOut ? " · Timed out" : data.truncated ? " · Partial results" : "";
 
   return (
-    <div className="mt-1 flex min-w-0 items-baseline gap-1 text-[11px] leading-5 text-[var(--app-text-subtle)]">
-      <span className="shrink-0">{summary}</span>
-      {data.path ? <span className="min-w-0 truncate" title={data.path}> · {data.path}</span> : null}
+    <div className="min-w-0 text-[12px] leading-5 text-[var(--app-text-muted)]">
+      <span>Searched {searched}</span>
+      <span> · Found {foundCount} {foundUnit}</span>
+      {status ? <span className="text-[var(--app-text-subtle)]">{status}</span> : null}
     </div>
   );
 }
@@ -1165,72 +1160,6 @@ function SearchSummaryLine({
 function compactSearchPreview(value: string, maxLength = 240): string {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
-}
-
-function SearchLineList({ group }: { group: SearchToolLineGroup }) {
-  const displayMatches = group.matches.length > 0;
-  const items = displayMatches ? group.matches : group.lines.map((line) => ({ line, column: 0, text: "" }));
-
-  return (
-    <div className="min-w-0 text-[11px] leading-4 text-[var(--app-text-muted)]">
-      {group.query ? (
-        <div className="mb-1 truncate font-sans text-[10px] font-medium text-[var(--app-text-subtle)]" title={group.query}>
-          {group.query}
-        </div>
-      ) : null}
-      {items.length > 0 ? (
-        <div className="divide-y divide-[var(--app-border)] overflow-hidden rounded-md border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)]">
-          {items.map((item, index) => {
-            const location = item.line > 0 ? `${item.line}${item.column > 0 ? `:${item.column}` : ""}` : "";
-            const preview = compactSearchPreview(item.text || (item.line > 0 ? "line match" : "file match"));
-            return (
-              <div key={`${item.line}:${item.column}:${index}`} className="grid min-w-0 grid-cols-[3.75rem_minmax(0,1fr)] gap-2 px-2 py-1">
-                <span className="select-none text-right font-mono text-[10px] tabular-nums text-[var(--app-text-subtle)]">
-                  {location}
-                </span>
-                <span className="line-clamp-2 min-w-0 break-all font-mono text-[var(--app-text-muted)]" title={preview}>
-                  <ToolSyntaxLine text={preview} language={inferToolSyntaxLanguage(group.query)} />
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="font-mono text-[var(--app-text-subtle)]">file match</div>
-      )}
-    </div>
-  );
-}
-
-function SearchFileSection({
-  file,
-  mode,
-}: {
-  file: SearchToolFileGroup;
-  mode: string;
-}) {
-  return (
-    <section className="min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_62%,transparent)]">
-      <div className="flex min-w-0 items-baseline gap-2 border-b border-[var(--app-border)] px-2.5 py-1.5 text-[11px]">
-        <span className="min-w-0 flex-1 truncate font-mono font-medium text-[var(--app-text)]" title={file.path}>
-          {file.path}
-        </span>
-        <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">
-          {mode === "files"
-            ? `${file.matchCount} ${file.matchCount === 1 ? "hit" : "hits"}`
-            : `${file.matchCount} ${file.matchCount === 1 ? "match" : "matches"}`}
-        </span>
-      </div>
-      <div className="grid gap-1.5 p-1.5">
-        {file.queryGroups.map((group, index) => (
-          <SearchLineList
-            key={`${file.path}:${group.query}:${index}`}
-            group={group}
-          />
-        ))}
-      </div>
-    </section>
-  );
 }
 
 function toolJsonString(record: Record<string, unknown> | null | undefined, key: string): string {
@@ -1971,24 +1900,7 @@ function SearchToolView({
   const data = toolMessage.searchData;
   if (!data) return null;
 
-  const sections = useMemo(() => data.files, [data.files]);
-
-  return (
-    <div className="min-w-0">
-      <SearchSummaryLine toolMessage={toolMessage} />
-      {sections.length > 0 ? (
-        <div className={cn(TOOL_RESULT_BODY_CLASS, "mt-2 grid gap-2 font-mono pr-1")}>
-          {sections.map((file, index) => (
-            <SearchFileSection
-              key={`${file.path}:${index}`}
-              file={file}
-              mode={data.mode}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
+  return <SearchSummaryLine toolMessage={toolMessage} />;
 }
 
 export function ToolMessageView({
@@ -2065,10 +1977,13 @@ export function ToolMessageView({
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
   const isExitPlanMode = ["exit-plan-mode", "exit_plan_mode"].includes(normalizedTool);
+  const isSearch = normalizedTool === "search";
   const isFileAction = ["read", "list", "search", "edit"].includes(normalizedTool);
-  const fileSummary = isFileAction && toolMessage.target
-    ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
-    : summary;
+  const fileSummary = isSearch
+    ? ""
+    : isFileAction && toolMessage.target
+      ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
+      : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
@@ -2115,7 +2030,7 @@ export function ToolMessageView({
                   {fileSummary}
                 </div>
               ) : null}
-              {isFileAction && toolMessage.target ? (
+              {isFileAction && !isSearch && toolMessage.target ? (
                 <div className="mt-2 min-w-0 break-words border-t border-[var(--app-border)] pt-2 font-mono text-[11px] leading-4 text-[var(--app-text)] [overflow-wrap:anywhere]">
                   {toolMessage.target}
                 </div>
@@ -2158,12 +2073,12 @@ export function ToolMessageView({
           <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} />
         ) : null}
         {!toolMessage.editDiff &&
-        toolMessage.tool === "search" &&
+        isSearch &&
         toolMessage.searchData ? (
           <SearchToolView toolMessage={toolMessage} />
         ) : null}
         {!toolMessage.editDiff &&
-        toolMessage.tool !== "search" &&
+        !isSearch &&
         !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
         showPreview &&
         !isManageSessions &&

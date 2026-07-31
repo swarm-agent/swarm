@@ -456,37 +456,43 @@ function testManageSessionsReviewWorktreesHydratesCandidates(): void {
   assert(!markup.includes("Session details"), "review_worktrees must not fall back to the generic empty card");
 }
 
-function testSearchToolRendersCompactGroupedList(): void {
-  const longPath = `web/src/features/desktop/${"nested/".repeat(12)}chat-markdown.tsx`;
-  const longMatch = `const compactSearchResult = ${"largeMatchText".repeat(40)}`;
+function testSearchToolRendersSimpleSummary(): void {
   const message = buildStructuredToolMessage({
     tool: "search",
-    callId: "call_compact_search_render",
+    callId: "call_simple_search_render",
+    argumentsText: JSON.stringify({ query: "compactSearchResult", path: "web/src" }),
     outputText: JSON.stringify({
       tool: "search",
       search_mode: "content",
       path: "web/src",
       count: 2,
       total_matched: 8,
+      truncated: true,
       query_results: [{ query: "compactSearchResult" }],
       results: [{
-        path: longPath,
+        path: "web/src/features/desktop/chat-markdown.tsx",
         items: [
-          { line: 88, column: 4, text: longMatch },
+          { line: 88, column: 4, text: "const compactSearchResult = true" },
           { line: 93, column: 7, text: "return compactSearchResult" },
         ],
       }],
     }),
   });
-  assert(Boolean(message), "expected compact search tool message");
+  assert(Boolean(message), "expected simple search tool message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("2 matches · 8 total"), "expected useful search counts");
-  assert(markup.includes("88:4") && markup.includes("93:7"), "expected line and column locations");
-  assert(markup.includes("2 matches") && markup.includes("truncate font-mono"), "expected grouped file header with truncated path");
-  assert(markup.includes("line-clamp-2") && markup.includes("max-h-[50vh]"), "expected clamped previews in a bounded scroll body");
-  assert(markup.includes("overflow-y-auto") && markup.includes("overflow-x-hidden"), "expected internal vertical scrolling without horizontal overflow");
-  assert(!markup.includes(longMatch), "large raw match text should be compacted before rendering");
+  assert(markup.includes("Searched “compactSearchResult” · Found 8 matches · Partial results"), "expected a plain-language searched/found summary");
+  assert(!markup.includes("88:4") && !markup.includes("93:7"), "line-level results should stay out of the Desktop card");
+  assert(!markup.includes("chat-markdown.tsx") && !markup.includes("return compactSearchResult"), "file and match details should not render");
+
+  const empty = buildStructuredToolMessage({
+    tool: "search",
+    argumentsText: JSON.stringify({ queries: ["first query", "second query"] }),
+    outputText: JSON.stringify({ search_mode: "files", query_count: 2, count: 0, timed_out: true, path: "web/src" }),
+  });
+  assert(Boolean(empty), "expected zero-result search tool message");
+  const emptyMarkup = renderToolMarkup(empty!);
+  assert(emptyMarkup.includes("Searched 2 queries · Found 0 files · Timed out"), "expected understandable multi-query, zero-result, and timeout copy");
 }
 
 function testManageSessionsDurableLogRendersTechnicalEvents(): void {
@@ -731,7 +737,7 @@ function main(): void {
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsReviewWorktreesHydratesCandidates();
-  testSearchToolRendersCompactGroupedList();
+  testSearchToolRendersSimpleSummary();
   testManageSessionsListRendersCardsWithoutRawJson();
   testManageSessionsDurableLogRendersTechnicalEvents();
   testWebSearchUsesDedicatedResponsiveCard();
