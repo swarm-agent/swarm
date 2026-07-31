@@ -225,7 +225,7 @@ func assertGoogleRequiredSchemasHaveProperties(t *testing.T, value any, path str
 func TestBuildGoogleRequestEncodesImmutableImageInlineData(t *testing.T) {
 	body := []byte("image-bytes")
 	digest := sha256.Sum256(body)
-	payload := provideriface.SessionMediaPayload{AssetID: "asset-1", Modality: "image", MIMEType: "image/png", DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body}
+	payload := provideriface.SessionMediaPayload{AssetID: "asset-1", Modality: "image", MIMEType: "image/png", FileType: "png", DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body}
 	contract := provideriface.SessionMediaContract{
 		ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent,
 		CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential", AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, Hash: "contract",
@@ -269,9 +269,6 @@ func TestBuildGoogleRequestRejectsForgedAndUnsupportedMedia(t *testing.T) {
 		}},
 		{"unsupported MIME", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) {
 			payload.MIMEType = "image/svg+xml"
-		}},
-		{"file semantics", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) {
-			payload.FileType = "png"
 		}},
 		{"audio modality", func(payload *provideriface.SessionMediaPayload, _ *provideriface.SessionMediaContract) {
 			payload.Modality = "audio"

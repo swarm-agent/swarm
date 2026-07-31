@@ -822,7 +822,7 @@ func validateGoogleMediaPayload(req provideriface.Request, payload provideriface
 		if !strings.EqualFold(capability.Semantics, pebblestore.ModelCatalogMediaSemanticsNative) ||
 			!googleStringAllowed(capability.ContentTypes, "inline_data") ||
 			!googleStringAllowed(capability.MIMETypes, payload.MIMEType) ||
-			strings.TrimSpace(payload.FileType) != "" || capability.MaxBytes <= 0 || capability.MaxBytes > maxInlineImageBytes || payload.Size > capability.MaxBytes ||
+			capability.MaxBytes <= 0 || capability.MaxBytes > maxInlineImageBytes || payload.Size > capability.MaxBytes ||
 			capability.MaxCount <= 0 || capability.MaxCount > pebblestore.SessionMediaDefaultMaxCount {
 			break
 		}
