@@ -1,4 +1,4 @@
-import { Key, FolderOpen, Shield, GitBranch, CircleHelp, Bot, Palette, Cpu, GitCommitHorizontal, Keyboard, ListChecks, Plus, Shrink, type LucideIcon } from 'lucide-react'
+import { Key, FolderOpen, Shield, GitBranch, CircleHelp, Bot, Palette, Cpu, GitCommitHorizontal, Keyboard, ListChecks, Lightbulb, Plus, Shrink, type LucideIcon } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import type { DesktopSlashCommand, DesktopSlashPaletteState } from '../services/slash-commands'
 
@@ -25,6 +25,8 @@ function commandIcon(command: DesktopSlashCommand): LucideIcon {
       return Bot
     case 'models':
       return Cpu
+    case 'thinking':
+      return Lightbulb
     case 'commit':
       return GitCommitHorizontal
     case 'plan':

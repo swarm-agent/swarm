@@ -38,8 +38,8 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
 		Artifacts:       []pebblestore.SessionPlanArtifactReference{{Path: "docs/plan-brief.md", Role: "input", Description: "plan context"}},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/uncited-prior.json", Role: "deliverable"}, {Path: "out/shared-result.json", Role: "deliverable"}}},
-			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/shared-result.json", Role: "input", Description: "consume the cited prior checkpoint result", MediaType: "application/json"}, {Path: "out/user-summary.md", Role: "deliverable", Description: "user-visible deliverable", MediaType: "text/markdown"}}},
+			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1, Handoff: &pebblestore.SessionPlanCheckpointHandoff{Overview: "Prior handoff details must stay canonical"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/uncited-prior.json", Role: "deliverable"}, {Path: "out/shared-result.json", Role: "deliverable"}}},
+			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Order: 2, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/shared-result.json", Role: "input", Description: "consume the cited prior checkpoint result", MediaType: "application/json"}, {Path: "out/user-summary.md", Role: "deliverable", Description: "user-visible deliverable", MediaType: "text/markdown"}}},
 		},
 		ActiveCheckpointID: "cp-2",
 	}}); err != nil {
@@ -71,6 +71,34 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	}
 	if !strings.Contains(text, `"objective": "Use plan context only"`) {
 		t.Fatalf("prompt missing selected checkpoint objective: %s", text)
+	}
+	for _, want := range []string{
+		`"checkpoint_index": [`,
+		`"id": "cp-1"`,
+		`"title": "Done"`,
+		`"status": "completed"`,
+		`"order": 1`,
+		`"has_handoff": true`,
+		`"id": "cp-2"`,
+		"lightweight orientation list",
+		"It is not the full plan, scope, context, checkpoint details, or handoff content",
+		"must not assume omitted context was supplied",
+		"Treat compact checkpoint context as orientation, not proof of plan or checkpoint facts",
+		"Before answering any user question whose answer depends on plan or checkpoint state or content",
+		"status, blocked/failed/review state, details, prior results, or handoffs",
+		"retrieve the canonical active plan with plan_manage get-active and base the answer on that tool result",
+		"even when the compact payload appears sufficient",
+		"Never guess or present an inference from compact context as verified fact",
+		"If canonical retrieval is unavailable or fails, state that the answer could not be verified",
+		"report the specific limitation or error instead of assuming",
+		"do not introduce or use a duplicate plan or handoff retrieval path",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt missing checkpoint orientation contract %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Prior handoff details must stay canonical") {
+		t.Fatalf("prompt embedded prior checkpoint handoff content instead of the orientation index: %s", text)
 	}
 	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "Create every role=deliverable artifact in the workspace", "reference its path from the terminal structured handoff", "Do not emit a separate assistant completion report"} {
 		if !strings.Contains(text, want) {

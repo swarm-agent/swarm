@@ -22,12 +22,21 @@ type checkpointRunPromptPayload struct {
 	RunKind          string                                     `json:"run_kind"`
 	ContextPolicy    string                                     `json:"context_policy"`
 	ExecutionSummary sessionruntime.PlanExecutionSummary        `json:"execution_summary"`
+	CheckpointIndex  []checkpointRunOrientation                 `json:"checkpoint_index"`
 	FinalCheckpoint  bool                                       `json:"final_checkpoint,omitempty"`
 	Checkpoint       pebblestore.SessionPlanCheckpoint          `json:"checkpoint"`
 	AttemptID        string                                     `json:"attempt_id,omitempty"`
 	RunID            string                                     `json:"run_id,omitempty"`
 	RunSessionID     string                                     `json:"run_session_id,omitempty"`
 	ParentSessionID  string                                     `json:"parent_session_id,omitempty"`
+}
+
+type checkpointRunOrientation struct {
+	ID         string `json:"id"`
+	Title      string `json:"title,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Order      int    `json:"order,omitempty"`
+	HasHandoff bool   `json:"has_handoff,omitempty"`
 }
 
 func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options RunOptions) ([]map[string]any, bool, error) {
@@ -101,6 +110,7 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		RunKind:          runKindFreshCheckpoint,
 		ContextPolicy:    contextPolicyFresh,
 		ExecutionSummary: sessionruntime.SummarizePlanExecution(doc),
+		CheckpointIndex:  checkpointRunOrientationIndex(doc.Checkpoints),
 		FinalCheckpoint:  isFinalPlanCheckpointRun(doc, checkpointID),
 		Checkpoint:       checkpoint,
 		AttemptID:        attemptID,
@@ -134,6 +144,7 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		"[checkpoint-run] Deterministic checkpoint execution context.",
 		"Conversation history has been intentionally cleared for this run. Use only this payload plus the system/developer instructions and tool results from this run.",
 		"Execute exactly one checkpoint: " + checkpointID + ". Its checkpoint.objective is the sole current objective for this run; plan metadata and completed checkpoints are context only. Do not revive an earlier plan goal or checkpoint objective, and do not begin later checkpoints in this run.",
+		"The checkpoint_index is only a lightweight orientation list of checkpoint IDs, titles, statuses, order, and whether a handoff exists. It is not the full plan, scope, context, checkpoint details, or handoff content, and you must not assume omitted context was supplied. Treat compact checkpoint context as orientation, not proof of plan or checkpoint facts. Before answering any user question whose answer depends on plan or checkpoint state or content—including status, blocked/failed/review state, details, prior results, or handoffs—retrieve the canonical active plan with plan_manage get-active and base the answer on that tool result, even when the compact payload appears sufficient. Never guess or present an inference from compact context as verified fact. If canonical retrieval is unavailable or fails, state that the answer could not be verified and report the specific limitation or error instead of assuming. Use the same canonical retrieval when another checkpoint's details or handoff are materially needed to execute the current objective; do not introduce or use a duplicate plan or handoff retrieval path.",
 		"Use plan_manage as the only checkpoint lifecycle surface for this run. Do not use manage_todos for agent self-tracking, checkpoint progress, or terminal outcomes; manage_todos is reserved for user-owned workspace todos.",
 		"Do not call plan_manage update_checkpoint or structured document patches merely to record routine progress or summarize completed work. Keep typed subtask state durable while a multi-task checkpoint is underway: at a genuine boundary call complete_subtask for one task, or pass subtask_ids to atomically record every task completed since the last progress call. If work continues, that transition advances the next task and makes live client state visible. Do not call complete_subtask for discovery-only activity or for a single-step checkpoint. If new user feedback reaches this current run, route it by contract impact: inquiry/guidance only requires no plan mutation; a bounded same-deliverable refinement whose existing checklist remains valid uses add_subtask and continues here without changing checkpoint identity or attempt history; same-contract feedback that supersedes the checklist uses replace_subtasks with the complete authoritative list; feedback that invalidates the objective or acceptance criteria requires parent-owned restart_checkpoint; independently shippable work or a separate review/failure boundary requires a later parent-owned request_followup_checkpoint. Prefer the least disruptive valid route and do not classify by imperative wording alone. Never use add_subtask to clear blocked or failed state.",
 	}
@@ -156,6 +167,24 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		string(raw),
 	)
 	return strings.TrimSpace(strings.Join(parts, "\n\n")), nil
+}
+
+func checkpointRunOrientationIndex(checkpoints []pebblestore.SessionPlanCheckpoint) []checkpointRunOrientation {
+	out := make([]checkpointRunOrientation, 0, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		id := strings.TrimSpace(checkpoint.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, checkpointRunOrientation{
+			ID:         id,
+			Title:      truncateRunes(strings.TrimSpace(checkpoint.Title), 120),
+			Status:     strings.TrimSpace(checkpoint.Status),
+			Order:      checkpoint.Order,
+			HasHandoff: checkpoint.Handoff != nil,
+		})
+	}
+	return out
 }
 
 func isFinalPlanCheckpointRun(doc *pebblestore.SessionPlanDocument, checkpointID string) bool {

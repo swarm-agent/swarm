@@ -640,6 +640,13 @@ export function DesktopV3AgenticComposer({
         })
       return
     }
+    if (command.action.kind === 'toggle-thinking') {
+      if (thinkingTagsEnabled !== undefined && onThinkingTagsToggle && !thinkingTagsBusy) {
+        onThinkingTagsToggle(!thinkingTagsEnabled)
+      }
+      onDraftChange('')
+      return
+    }
     void onSlashCommand?.(command, draft)
     if (command.action.kind === 'open-model-picker') {
       openAgentSetup(currentAgent)
@@ -652,7 +659,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, onCompact, onDraftChange, onSlashCommand, openAgentSetup, slashPalette.hasArguments])
+  }, [currentAgent, draft, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
@@ -1074,9 +1081,6 @@ export function DesktopV3AgenticComposer({
         selectedServiceTier={selectedServiceTier}
         selectedThinking={selectedThinking}
         modelOptions={modelOptions}
-        thinkingTagsEnabled={thinkingTagsEnabled}
-        onThinkingTagsToggle={onThinkingTagsToggle}
-        thinkingTagsBusy={thinkingTagsBusy}
         modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}
@@ -1085,6 +1089,7 @@ export function DesktopV3AgenticComposer({
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
         onSetDefaultModelProfile={onModelProfileSetDefault}
+        onDeleteModelProfile={onModelProfileDelete}
         onReorderModelProfiles={onModelProfileReorder}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}

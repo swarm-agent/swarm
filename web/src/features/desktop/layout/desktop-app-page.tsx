@@ -3909,6 +3909,7 @@ export function DesktopAppPage() {
         setDesktopToast({ message: 'Slash commands: use ↑/↓ to choose, Enter to run, Tab to insert.', tone: 'info' })
         return
       case 'open-model-picker':
+      case 'toggle-thinking':
       case 'compact-session':
         return
       default: {

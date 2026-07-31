@@ -8,6 +8,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
+  | { kind: 'toggle-thinking' }
   | { kind: 'open-codex-usage' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
@@ -133,6 +134,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['Generic MCP management is coming later', 'Exa web access requires an active Exa API key', 'Add one in Settings → Providers'],
     state: 'coming-soon',
     action: { kind: 'show-help' },
+  },
+  {
+    id: 'thinking',
+    command: '/thinking',
+    aliases: [],
+    hint: 'Turn off to hide thinking summary',
+    actionLabel: 'Toggle Thinking Summary',
+    tips: ['/thinking', 'Turn off to hide thinking summary', 'Toggle thinking summaries without opening Agent Setup'],
+    state: 'ready',
+    action: { kind: 'toggle-thinking' },
   },
   {
     id: 'models',

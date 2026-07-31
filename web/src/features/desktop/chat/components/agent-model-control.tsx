@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronUp, GitBranch, GripVertical, Lightbulb, Lock, Plus, Settings2, Star, Zap, ZapOff } from 'lucide-react'
+import { ChevronDown, ChevronUp, GitBranch, GripVertical, Lightbulb, Lock, Plus, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
@@ -56,6 +56,7 @@ interface AgentModelControlProps {
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   onSetDefaultModelProfile?: (profileId: string) => void | Promise<void>
+  onDeleteModelProfile?: (profileId: string) => void | Promise<void>
   onReorderModelProfiles?: (profileIds: string[]) => void | Promise<void>
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
@@ -64,9 +65,6 @@ interface AgentModelControlProps {
   busy?: boolean
   showTrigger?: boolean
   initialAgentName?: string
-  thinkingTagsEnabled?: boolean
-  onThinkingTagsToggle?: (enabled: boolean) => void
-  thinkingTagsBusy?: boolean
 }
 
 type DraftMode = 'single' | 'split'
@@ -302,6 +300,7 @@ export function AgentModelControl({
   onOpenAgentSettings,
   onConfirmAgentSettings,
   onSetDefaultModelProfile,
+  onDeleteModelProfile,
   onReorderModelProfiles,
   modelProfiles = [],
   activeModelProfile,
@@ -310,9 +309,6 @@ export function AgentModelControl({
   busy = false,
   showTrigger = true,
   initialAgentName = '',
-  thinkingTagsEnabled,
-  onThinkingTagsToggle,
-  thinkingTagsBusy = false,
 }: AgentModelControlProps) {
   const queryClient = useQueryClient()
   const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
@@ -504,6 +500,21 @@ export function AgentModelControl({
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setDefaultingProfileId('')
+    }
+  }
+
+  async function removeModelProfile(profile: ModelProfileRecord) {
+    if (saving || busy || !onDeleteModelProfile) return
+    if (!window.confirm(`Delete profile “${profile.name}”?`)) return
+    setSaving(true)
+    setError(null)
+    try {
+      await onDeleteModelProfile(profile.profileId)
+      setOpen(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -732,24 +743,26 @@ export function AgentModelControl({
           </section>
 
           <section aria-label="Selected profile settings" className="min-h-0 p-4 min-[900px]:overflow-y-auto min-[900px]:p-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Profile settings</div>
-                <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{displayedModelProfile?.name || draftProfileName || 'New profile'}</div>
-              </div>
-              {displayedModelProfile && (!draftProfile || !isSystemUtility(draftProfile.name)) ? <button type="button" disabled={busy || saving || defaultingProfileId === displayedModelProfile.profileId || displayedModelProfile.isDefault || !onSetDefaultModelProfile} onClick={() => { void makeModelProfileDefault(displayedModelProfile) }} aria-label={displayedModelProfile.isDefault ? `${displayedModelProfile.name} is the account default` : `Make ${displayedModelProfile.name} the account default`} aria-pressed={displayedModelProfile.isDefault} title={displayedModelProfile.isDefault ? 'Account default' : 'Make account default'} className={`shrink-0 rounded-md p-1.5 transition disabled:cursor-default ${displayedModelProfile.isDefault ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] disabled:opacity-50'}`}><Star size={14} fill={displayedModelProfile.isDefault ? 'currentColor' : 'none'} /></button> : null}
-            </div>
-
-            {!draftProfile || !isSystemUtility(draftProfile.name) ? (
-              <div className="mb-4 grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4">
-                <label className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-                  Profile name
-                  <input ref={profileNameInputRef} value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Name this model setup" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-normal normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+            <div className="mb-3 flex flex-col gap-2 border-b border-[var(--app-border)] pb-3 sm:flex-row sm:items-end">
+              <div className="min-w-0 flex-1">
+                <label className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
+                  Profile settings
+                  {!draftProfile || !isSystemUtility(draftProfile.name) ? (
+                    <input ref={profileNameInputRef} aria-label="Profile name" value={draftProfileName} onChange={(event) => setDraftProfileName(event.target.value)} placeholder="Profile name" className="mt-1 block w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1.5 text-sm font-semibold normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" />
+                  ) : (
+                    <span className="mt-1 block truncate text-sm font-semibold normal-case tracking-normal text-[var(--app-text)]">{displayedModelProfile?.name || draftProfileName || 'New profile'}</span>
+                  )}
                 </label>
-                {editingModelProfile ? <div className="text-[11px] text-[var(--app-text-muted)]">{editingModelProfile.isDefault ? 'Editing your account default profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.' : 'Editing a saved profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.'}</div> : null}
-                {customized ? <div className="text-[11px] font-semibold text-[var(--app-warning)]">Unsaved changes — choose whether to update the saved profile or use this draft only in the current chat.</div> : null}
               </div>
-            ) : null}
+              {displayedModelProfile && (!draftProfile || !isSystemUtility(draftProfile.name)) ? (
+                <div className="flex shrink-0 items-center gap-1 self-end">
+                  <button type="button" disabled={busy || saving || defaultingProfileId === displayedModelProfile.profileId || displayedModelProfile.isDefault || !onSetDefaultModelProfile} onClick={() => { void makeModelProfileDefault(displayedModelProfile) }} aria-label={displayedModelProfile.isDefault ? `${displayedModelProfile.name} is the account default` : `Make ${displayedModelProfile.name} the account default`} aria-pressed={displayedModelProfile.isDefault} title={displayedModelProfile.isDefault ? 'Account default' : 'Make account default'} className={`shrink-0 rounded-md p-1.5 transition disabled:cursor-default ${displayedModelProfile.isDefault ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] disabled:opacity-50'}`}><Star size={14} fill={displayedModelProfile.isDefault ? 'currentColor' : 'none'} /></button>
+                  {onDeleteModelProfile ? <button type="button" disabled={busy || saving} onClick={() => { void removeModelProfile(displayedModelProfile) }} aria-label={`Delete ${displayedModelProfile.name}`} title="Delete profile" className="shrink-0 rounded-md p-1.5 text-[var(--app-text-subtle)] transition hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-50"><Trash2 size={14} /></button> : null}
+                </div>
+              ) : null}
+            </div>
+            {editingModelProfile ? <div className="mb-3 text-[11px] text-[var(--app-text-muted)]">{editingModelProfile.isDefault ? 'Editing your account default profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.' : 'Editing a saved profile. Saving updates it everywhere; continuing for this chat only leaves it unchanged.'}</div> : null}
+            {customized ? <div className="mb-3 text-[11px] font-semibold text-[var(--app-warning)]">Unsaved changes — choose whether to update the saved profile or use this draft only in the current chat.</div> : null}
             {draftProfile && isSystemUtility(draftProfile.name) ? (
               <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-sm text-[var(--app-text-muted)]">
                 <div className="font-semibold text-[var(--app-text)]">Compiled system agent</div>
@@ -794,16 +807,11 @@ export function AgentModelControl({
             {effectiveDraftMode === 'single' ? (
               <ModelDraftEditor className="mt-4" title={draftProfile && isSystemUtility(draftProfile.name) ? `${displayAgentName(draftProfile.name)} model` : 'Single model'} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('single', provider)} onModelChange={(model) => selectModel('single', model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
             ) : (
-              <div aria-label="Plan and action model cards" className="mt-4 grid gap-3 min-[1100px]:grid-cols-2">
+              <div aria-label="Plan and action model cards" className="mt-4 grid grid-cols-1 gap-3">
                 <ModelDraftEditor compact title="Plan agent model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('plan', provider)} onModelChange={(model) => selectModel('plan', model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
                 <ModelDraftEditor compact title="Action agent model" draft={autoDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => selectProvider('auto', provider)} onModelChange={(model) => selectModel('auto', model)} onThinkingChange={(thinking) => setAutoDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setAutoDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </div>
             )}
-            {thinkingTagsEnabled !== undefined && onThinkingTagsToggle ? (
-              <div className="mt-4 border-t border-[var(--app-border)] pt-4">
-                <PreferenceSwitch label="Show thinking responses" checked={thinkingTagsEnabled} busy={thinkingTagsBusy} onToggle={onThinkingTagsToggle} />
-              </div>
-            ) : null}
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
           </section>
         </div>
@@ -847,25 +855,6 @@ export function AgentModelControl({
         </button>
       ) : null}
       {modal}
-    </div>
-  )
-}
-
-function PreferenceSwitch({ label, checked, busy, onToggle }: { label: string; checked: boolean; busy: boolean; onToggle: (enabled: boolean) => void }) {
-  return (
-    <div className="flex min-h-14 items-center justify-between gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">
-      <span className="min-w-0 font-medium">{label}</span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        disabled={busy}
-        onClick={() => onToggle(!checked)}
-        className={`relative h-6 w-11 shrink-0 rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${checked ? 'border-[var(--app-primary)] bg-[var(--app-primary)]' : 'border-[var(--app-border-strong)] bg-[var(--app-surface)]'}`}
-      >
-        <span className={`absolute left-1 top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${checked ? 'translate-x-5 bg-[var(--app-primary-text)]' : 'translate-x-0 bg-[var(--app-text-muted)]'}`} />
-      </button>
     </div>
   )
 }
