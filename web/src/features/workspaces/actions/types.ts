@@ -147,6 +147,14 @@ export async function fetchWorkspaceActions(workspacePath: string, signal?: Abor
   return Array.isArray(response.actions) ? response.actions.map(mapWorkspaceAction) : []
 }
 
+export async function deleteWorkspaceAction(workspacePath: string, actionId: string): Promise<void> {
+  await requestJson('/v1/workspace/actions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'delete', workspace_path: workspacePath, id: actionId }),
+  })
+}
+
 export async function startWorkspaceAction(workspacePath: string, actionId: string, inputs: Record<string, string>): Promise<WorkspaceActionRun> {
   const response = await requestJson<WorkspaceActionRunResponseWire>('/v1/workspace/actions/run', {
     method: 'POST',

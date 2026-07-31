@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus, Sparkles, Zap } from 'lucide-react'
-import { fetchWorkspaceActions, type WorkspaceAction } from '../../../workspaces/actions/types'
-import { fetchWorkspaceSkills, type WorkspaceSkill } from '../services/workspace-skills'
+import { AlertTriangle, ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus, Sparkles, Trash2, Zap } from 'lucide-react'
+import { deleteWorkspaceAction, fetchWorkspaceActions, type WorkspaceAction } from '../../../workspaces/actions/types'
+import { deleteWorkspaceSkill, fetchWorkspaceSkills, type WorkspaceSkill } from '../services/workspace-skills'
 
 export type DesktopComposerTaskMode = 'action' | 'plan'
 
@@ -21,6 +21,9 @@ interface DesktopComposerActionMenuProps {
 }
 
 type ComposerActionMenuView = 'root' | 'task' | 'actions' | 'skills'
+type PendingDeletion =
+  | { kind: 'skill'; item: WorkspaceSkill }
+  | { kind: 'action'; item: WorkspaceAction }
 
 const TASK_EXPLANATION = 'Send your next message to a background agent in a managed worktree.'
 
@@ -43,6 +46,7 @@ export function DesktopComposerActionMenu({
   const menuId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const deletionPendingRef = useRef(false)
   const [actions, setActions] = useState<WorkspaceAction[]>([])
   const [actionsLoading, setActionsLoading] = useState(false)
   const [actionsError, setActionsError] = useState('')
@@ -51,11 +55,16 @@ export function DesktopComposerActionMenu({
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState('')
   const [skillsRequest, setSkillsRequest] = useState(0)
+  const [deletingItem, setDeletingItem] = useState('')
+  const [deleteError, setDeleteError] = useState('')
+  const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion | null>(null)
   const [submenuMinHeight, setSubmenuMinHeight] = useState(0)
 
   const closeMenu = useCallback(() => {
     setOpen(false)
     setView('root')
+    setDeleteError('')
+    setPendingDeletion(null)
     setSubmenuMinHeight(0)
   }, [])
 
@@ -66,7 +75,13 @@ export function DesktopComposerActionMenu({
       if (!rootRef.current?.contains(event.target as Node)) closeMenu()
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeMenu()
+      if (event.key !== 'Escape') return
+      if (pendingDeletion) {
+        setPendingDeletion(null)
+        setDeleteError('')
+        return
+      }
+      closeMenu()
     }
 
     document.addEventListener('pointerdown', handlePointerDown)
@@ -75,7 +90,7 @@ export function DesktopComposerActionMenu({
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [closeMenu, open])
+  }, [closeMenu, open, pendingDeletion])
 
   useEffect(() => {
     if (disabled) closeMenu()
@@ -119,17 +134,22 @@ export function DesktopComposerActionMenu({
       return
     }
     setView('root')
+    setDeleteError('')
     setSubmenuMinHeight(0)
     setOpen(true)
   }
 
   const showView = (nextView: Exclude<ComposerActionMenuView, 'root'>) => {
     setSubmenuMinHeight(nextView === 'skills' || nextView === 'actions' ? (menuRef.current?.getBoundingClientRect().height ?? 0) : 0)
+    setDeleteError('')
+    setPendingDeletion(null)
     setView(nextView)
   }
 
   const showRootView = () => {
     setView('root')
+    setDeleteError('')
+    setPendingDeletion(null)
     setSubmenuMinHeight(0)
   }
 
@@ -146,6 +166,59 @@ export function DesktopComposerActionMenu({
   const compact = () => {
     closeMenu()
     onCompact?.()
+  }
+
+  const deleteSkill = async (skill: WorkspaceSkill) => {
+    if (deletionPendingRef.current) return false
+    deletionPendingRef.current = true
+    const pendingKey = `skill:${skill.canonicalName}`
+    setDeletingItem(pendingKey)
+    setDeleteError('')
+    try {
+      await deleteWorkspaceSkill(workspacePath, skill.canonicalName)
+      setSkills((current) => current.filter((candidate) => candidate.canonicalName !== skill.canonicalName))
+      return true
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'Could not delete Skill.')
+      return false
+    } finally {
+      deletionPendingRef.current = false
+      setDeletingItem('')
+    }
+  }
+
+  const deleteAction = async (action: WorkspaceAction) => {
+    if (deletionPendingRef.current) return false
+    deletionPendingRef.current = true
+    const pendingKey = `action:${action.id}`
+    setDeletingItem(pendingKey)
+    setDeleteError('')
+    try {
+      await deleteWorkspaceAction(workspacePath, action.id)
+      setActions((current) => current.filter((candidate) => candidate.id !== action.id))
+      return true
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'Could not delete Action.')
+      return false
+    } finally {
+      deletionPendingRef.current = false
+      setDeletingItem('')
+    }
+  }
+
+  const requestDelete = (deletion: PendingDeletion) => {
+    if (deletionPendingRef.current) return
+    setDeleteError('')
+    setPendingDeletion(deletion)
+  }
+
+  const confirmDelete = async () => {
+    const deletion = pendingDeletion
+    if (!deletion || deletionPendingRef.current) return
+    const deleted = deletion.kind === 'skill'
+      ? await deleteSkill(deletion.item)
+      : await deleteAction(deletion.item)
+    if (deleted) setPendingDeletion(null)
   }
 
   const showCompactAction = Boolean(contextLabel || contextTooltip || onCompact)
@@ -329,11 +402,41 @@ export function DesktopComposerActionMenu({
                 </div>
               ) : skills.length === 0 ? (
                 <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Skills are available for this workspace.</p>
-              ) : skills.map((skill) => (
-                <button key={skill.canonicalName} type="button" role="menuitem" onClick={() => { closeMenu(); onSkillSelect?.(skill) }} className="flex w-full items-center rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
-                  <span className="min-w-0 flex-1 truncate font-semibold">{skill.name}</span>
-                </button>
-              ))}
+              ) : skills.map((skill) => {
+                const pendingKey = `skill:${skill.canonicalName}`
+                const deleting = deletingItem === pendingKey
+                const confirming = pendingDeletion?.kind === 'skill' && pendingDeletion.item.canonicalName === skill.canonicalName
+                return (
+                  <div key={skill.canonicalName}>
+                    <div className="group relative flex items-center rounded-lg hover:bg-[var(--app-surface-hover)] focus-within:bg-[var(--app-surface-hover)]">
+                      <button type="button" role="menuitem" onClick={() => { closeMenu(); onSkillSelect?.(skill) }} disabled={Boolean(deletingItem)} className="flex min-w-0 flex-1 items-center rounded-lg py-2.5 pl-2.5 pr-10 text-left text-sm text-[var(--app-text)] outline-none disabled:cursor-not-allowed disabled:opacity-60">
+                        <span className="min-w-0 flex-1 truncate font-semibold">{skill.name}</span>
+                      </button>
+                      <button type="button" aria-label={`Delete Skill ${skill.name}`} title="Delete Skill" disabled={Boolean(deletingItem)} onClick={() => requestDelete({ kind: 'skill', item: skill })} className="absolute right-1.5 grid h-7 w-7 place-items-center rounded-md text-[var(--app-text-subtle)] opacity-0 transition-opacity hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50">
+                        {deleting ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
+                      </button>
+                    </div>
+                    {confirming ? (
+                      <div className="mx-1 mb-1 rounded-lg border border-[var(--app-danger)]/40 bg-[var(--app-danger-bg)] px-2.5 py-2" role="alertdialog" aria-label={`Confirm deletion of Skill ${skill.name}`}>
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--app-danger)]" aria-hidden="true" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-[var(--app-text)]">Delete Skill “{skill.name}”?</p>
+                            <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">This deletes the Skill itself from the workspace.</p>
+                            {deleteError ? <p className="mt-1 text-[11px] leading-4 text-[var(--app-danger)]" role="alert">{deleteError}</p> : null}
+                            <div className="mt-2 flex justify-end gap-1.5">
+                              <button type="button" disabled={deleting} onClick={() => { setPendingDeletion(null); setDeleteError('') }} className="rounded-md px-2 py-1 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">No</button>
+                              <button type="button" disabled={deleting} onClick={() => { void confirmDelete() }} className="inline-flex min-w-10 items-center justify-center gap-1 rounded-md bg-[var(--app-danger)] px-2 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">
+                                {deleting ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : null} Yes
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <div data-testid="desktop-composer-actions-submenu">
@@ -352,15 +455,46 @@ export function DesktopComposerActionMenu({
                 </div>
               ) : actions.length === 0 ? (
                 <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Actions are saved for this workspace.</p>
-              ) : actions.map((action) => (
-                <button key={action.id} type="button" role="menuitem" onClick={() => { closeMenu(); onActionSelect?.(action) }} className="flex w-full items-center rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
-                  <span className="min-w-0 flex-1 truncate font-semibold">{action.name}</span>
-                </button>
-              ))}
+              ) : actions.map((action) => {
+                const pendingKey = `action:${action.id}`
+                const deleting = deletingItem === pendingKey
+                const confirming = pendingDeletion?.kind === 'action' && pendingDeletion.item.id === action.id
+                return (
+                  <div key={action.id}>
+                    <div className="group relative flex items-center rounded-lg hover:bg-[var(--app-surface-hover)] focus-within:bg-[var(--app-surface-hover)]">
+                      <button type="button" role="menuitem" onClick={() => { closeMenu(); onActionSelect?.(action) }} disabled={Boolean(deletingItem)} className="flex min-w-0 flex-1 items-center rounded-lg py-2.5 pl-2.5 pr-10 text-left text-sm text-[var(--app-text)] outline-none disabled:cursor-not-allowed disabled:opacity-60">
+                        <span className="min-w-0 flex-1 truncate font-semibold">{action.name}</span>
+                      </button>
+                      <button type="button" aria-label={`Delete Action ${action.name}`} title="Delete Action" disabled={Boolean(deletingItem)} onClick={() => requestDelete({ kind: 'action', item: action })} className="absolute right-1.5 grid h-7 w-7 place-items-center rounded-md text-[var(--app-text-subtle)] opacity-0 transition-opacity hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50">
+                        {deleting ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
+                      </button>
+                    </div>
+                    {confirming ? (
+                      <div className="mx-1 mb-1 rounded-lg border border-[var(--app-danger)]/40 bg-[var(--app-danger-bg)] px-2.5 py-2" role="alertdialog" aria-label={`Confirm deletion of Action ${action.name}`}>
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--app-danger)]" aria-hidden="true" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-[var(--app-text)]">Delete Action “{action.name}”?</p>
+                            <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">This removes the Action from Swarm. It does not delete the script.</p>
+                            {deleteError ? <p className="mt-1 text-[11px] leading-4 text-[var(--app-danger)]" role="alert">{deleteError}</p> : null}
+                            <div className="mt-2 flex justify-end gap-1.5">
+                              <button type="button" disabled={deleting} onClick={() => { setPendingDeletion(null); setDeleteError('') }} className="rounded-md px-2 py-1 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50">No</button>
+                              <button type="button" disabled={deleting} onClick={() => { void confirmDelete() }} className="inline-flex min-w-10 items-center justify-center gap-1 rounded-md bg-[var(--app-danger)] px-2 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">
+                                {deleting ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : null} Yes
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
             </div>
           )}
         </div>
       ) : null}
+
     </div>
   )
 }

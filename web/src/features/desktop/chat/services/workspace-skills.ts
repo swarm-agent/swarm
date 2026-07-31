@@ -42,3 +42,11 @@ export async function fetchWorkspaceSkills(workspacePath: string, signal?: Abort
     .filter((skill): skill is WorkspaceSkill => skill !== null)
     .sort((left, right) => left.name.localeCompare(right.name))
 }
+
+export async function deleteWorkspaceSkill(workspacePath: string, canonicalName: string): Promise<void> {
+  await requestJson('/v1/workspace/skills/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_path: workspacePath, canonical_name: canonicalName }),
+  })
+}

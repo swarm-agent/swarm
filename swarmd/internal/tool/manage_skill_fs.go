@@ -228,6 +228,21 @@ func (s *manageSkillStore) write(canonical string, content []byte, mustExist boo
 	return file.Close()
 }
 
+// DeleteWorkspaceSkill applies the canonical manage-skill deletion semantics to
+// a workspace-local .agents/skills definition after verifying its revision.
+func DeleteWorkspaceSkill(scope WorkspaceScope, canonical, expectedRevision string) error {
+	canonical = strings.TrimSpace(canonical)
+	if canonical == "" || discovery.NormalizeSkillName(canonical) != canonical {
+		return errors.New("manage-skill delete requires a canonical skill name")
+	}
+	store, err := openManageSkillStore(scope, false)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.delete(canonical, expectedRevision)
+}
+
 func (s *manageSkillStore) delete(canonical, expectedRevision string) error {
 	current, _, err := s.revision(canonical)
 	if err != nil {
