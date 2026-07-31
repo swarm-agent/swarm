@@ -44,7 +44,10 @@ interface WorkspaceEditorModalProps {
   onSelectWorkspace?: (path: string) => void
   onMoveWorkspaceToIndex?: (path: string, index: number) => void
   onDeleteWorkspace?: (path: string) => void
+  deleteConfirmationPath?: string | null
   deletingWorkspacePath?: string | null
+  onCancelDeleteWorkspace?: () => void
+  onConfirmDeleteWorkspace?: () => void
   onAddLinkedDirectory: (path: string) => void
   onAddLinkedDirectories?: (paths: string[]) => void
   onRemoveLinkedDirectory: (path: string) => void
@@ -137,7 +140,10 @@ export function WorkspaceEditorModal({
   onSelectWorkspace,
   onMoveWorkspaceToIndex,
   onDeleteWorkspace,
+  deleteConfirmationPath = null,
   deletingWorkspacePath = null,
+  onCancelDeleteWorkspace,
+  onConfirmDeleteWorkspace,
   onAddLinkedDirectory,
   onAddLinkedDirectories,
   onRemoveLinkedDirectory,
@@ -636,18 +642,41 @@ export function WorkspaceEditorModal({
               </section>
 
               {mode === 'edit' && onDeleteWorkspace ? (
-                <div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => onDeleteWorkspace(workspacePath)}
-                    disabled={deletingWorkspacePath === workspacePath}
-                    className="border-[var(--app-danger-border)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]"
-                  >
-                    {deletingWorkspacePath === workspacePath ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                    {deletingWorkspacePath === workspacePath ? 'Deleting…' : 'Delete workspace'}
-                  </Button>
-                </div>
+                deleteConfirmationPath === workspacePath ? (
+                  <section className="grid gap-4 rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-4" aria-labelledby="remove-workspace-confirmation-title">
+                    <div className="grid gap-2">
+                      <h3 id="remove-workspace-confirmation-title" className="text-base font-semibold text-[var(--app-text)]">Remove workspace from Swarm?</h3>
+                      <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                        This only removes Swarm’s saved workspace metadata. It does not delete the folder or any files on disk.
+                      </p>
+                    </div>
+                    <div className="break-all rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text)]">
+                      {deleteConfirmationPath}
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-3">
+                      <Button type="button" onClick={onCancelDeleteWorkspace} disabled={deletingWorkspacePath === workspacePath}>
+                        Cancel
+                      </Button>
+                      <Button type="button" onClick={onConfirmDeleteWorkspace} disabled={deletingWorkspacePath === workspacePath}>
+                        {deletingWorkspacePath === workspacePath ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        {deletingWorkspacePath === workspacePath ? 'Removing…' : 'Remove from Swarm'}
+                      </Button>
+                    </div>
+                  </section>
+                ) : (
+                  <div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => onDeleteWorkspace(workspacePath)}
+                      disabled={deletingWorkspacePath === workspacePath}
+                      className="border-[var(--app-danger-border)] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)]"
+                    >
+                      {deletingWorkspacePath === workspacePath ? <RefreshCw size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                      {deletingWorkspacePath === workspacePath ? 'Deleting…' : 'Delete workspace'}
+                    </Button>
+                  </div>
+                )
               ) : null}
 
             </div>
