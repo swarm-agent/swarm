@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	toolruntime "swarm/packages/swarmd/internal/tool"
 )
 
 func TestGoogleExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
@@ -44,6 +46,178 @@ func TestGoogleExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 	for _, forbidden := range []string{"previous_response_id", "conversation", "predecessor"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("payload contains stateful continuation field %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestBuildGoogleRequestNormalizesPlanCheckpointAnyOfRequiredBranches(t *testing.T) {
+	definitions := toolruntime.NewRuntime(1).Definitions()
+	planTools := make([]provideriface.ToolDefinition, 0, 2)
+	canonicalParameters := make(map[string][]byte, 2)
+	for _, definition := range definitions {
+		if definition.Name != "exit_plan_mode" && definition.Name != "plan_manage" {
+			continue
+		}
+		encoded, err := json.Marshal(definition.Parameters)
+		if err != nil {
+			t.Fatalf("marshal canonical %s parameters: %v", definition.Name, err)
+		}
+		canonicalParameters[definition.Name] = encoded
+		if !hasRequiredBranchWithoutObjectProperties(definition.Parameters) {
+			t.Fatalf("canonical %s schema no longer reproduces a required-only anyOf branch", definition.Name)
+		}
+		planTools = append(planTools, provideriface.ToolDefinition{
+			Type: definition.Type, Name: definition.Name, Description: definition.Description, Parameters: definition.Parameters,
+		})
+	}
+	if len(planTools) != 2 {
+		t.Fatalf("found %d plan tools, want exit_plan_mode and plan_manage", len(planTools))
+	}
+
+	request, err := buildGoogleRequest(provideriface.Request{
+		Input: []map[string]any{{"role": "user", "content": "plan the change"}},
+		Tools: planTools,
+	})
+	if err != nil {
+		t.Fatalf("build Google request with plan tools: %v", err)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal Google request: %v", err)
+	}
+	var serialized map[string]any
+	if err := json.Unmarshal(encoded, &serialized); err != nil {
+		t.Fatalf("decode serialized Google request: %v", err)
+	}
+	assertGoogleRequiredSchemasHaveProperties(t, serialized, "$", false)
+	for _, declaration := range request.Tools[0].FunctionDeclarations {
+		if !hasGoogleRequiredAlternatives(declaration.Parameters, "objective", "tasks") {
+			t.Fatalf("serialized %s parameters lost the checkpoint objective-or-tasks requirement", declaration.Name)
+		}
+	}
+
+	for _, definition := range planTools {
+		after, err := json.Marshal(definition.Parameters)
+		if err != nil {
+			t.Fatalf("marshal canonical %s parameters after request: %v", definition.Name, err)
+		}
+		if !reflect.DeepEqual(after, canonicalParameters[definition.Name]) {
+			t.Fatalf("Google serialization mutated canonical %s parameters", definition.Name)
+		}
+	}
+}
+
+func hasRequiredBranchWithoutObjectProperties(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if required, ok := typed["required"]; ok && required != nil {
+			if _, hasProperties := typed["properties"]; !hasProperties {
+				return true
+			}
+		}
+		for _, child := range typed {
+			if hasRequiredBranchWithoutObjectProperties(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasRequiredBranchWithoutObjectProperties(child) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, child := range typed {
+			if hasRequiredBranchWithoutObjectProperties(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasGoogleRequiredAlternatives(value any, requiredNames ...string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if alternatives, ok := typed["anyOf"].([]any); ok {
+			matched := make(map[string]bool, len(requiredNames))
+			for _, alternative := range alternatives {
+				schema, ok := alternative.(map[string]any)
+				if !ok || schema["type"] != "object" {
+					continue
+				}
+				properties, _ := schema["properties"].(map[string]any)
+				for _, name := range googleToolSchemaRequiredNames(schema["required"]) {
+					if _, ok := properties[name]; ok {
+						matched[name] = true
+					}
+				}
+			}
+			allMatched := true
+			for _, name := range requiredNames {
+				allMatched = allMatched && matched[name]
+			}
+			if allMatched {
+				return true
+			}
+		}
+		for _, child := range typed {
+			if hasGoogleRequiredAlternatives(child, requiredNames...) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasGoogleRequiredAlternatives(child, requiredNames...) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func assertGoogleRequiredSchemasHaveProperties(t *testing.T, value any, path string, inParameters bool) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		if _, ok := typed["functionDeclarations"]; ok {
+			inParameters = false
+		}
+		if parameters, ok := typed["parameters"]; ok {
+			assertGoogleRequiredSchemasHaveProperties(t, parameters, path+".parameters", true)
+			for key, child := range typed {
+				if key != "parameters" {
+					assertGoogleRequiredSchemasHaveProperties(t, child, path+"."+key, false)
+				}
+			}
+			return
+		}
+		if inParameters {
+			if required, ok := typed["required"].([]any); ok && len(required) > 0 {
+				if typed["type"] != "object" {
+					t.Fatalf("%s required schema type = %#v, want object", path, typed["type"])
+				}
+				properties, ok := typed["properties"].(map[string]any)
+				if !ok {
+					t.Fatalf("%s required schema properties = %T, want object", path, typed["properties"])
+				}
+				for _, item := range required {
+					name, ok := item.(string)
+					if !ok {
+						t.Fatalf("%s required item = %#v, want string", path, item)
+					}
+					if _, ok := properties[name]; !ok {
+						t.Fatalf("%s requires %q without defining it in properties", path, name)
+					}
+				}
+			}
+		}
+		for key, child := range typed {
+			assertGoogleRequiredSchemasHaveProperties(t, child, path+"."+key, inParameters)
+		}
+	case []any:
+		for index, child := range typed {
+			assertGoogleRequiredSchemasHaveProperties(t, child, fmt.Sprintf("%s[%d]", path, index), inParameters)
 		}
 	}
 }

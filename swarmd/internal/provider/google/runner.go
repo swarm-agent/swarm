@@ -526,14 +526,7 @@ func sanitizeGoogleToolParameters(parameters map[string]any) map[string]any {
 func sanitizeGoogleToolSchemaValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			if key == "additionalProperties" {
-				continue
-			}
-			out[key] = sanitizeGoogleToolSchemaValue(item)
-		}
-		return out
+		return sanitizeGoogleToolSchemaMap(typed, nil)
 	case []any:
 		out := make([]any, 0, len(typed))
 		for _, item := range typed {
@@ -543,15 +536,96 @@ func sanitizeGoogleToolSchemaValue(value any) any {
 	case []map[string]any:
 		out := make([]map[string]any, 0, len(typed))
 		for _, item := range typed {
-			cleaned, ok := sanitizeGoogleToolSchemaValue(item).(map[string]any)
-			if !ok {
-				continue
-			}
-			out = append(out, cleaned)
+			out = append(out, sanitizeGoogleToolSchemaMap(item, nil))
 		}
 		return out
 	default:
 		return value
+	}
+}
+
+func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[string]any) map[string]any {
+	out := make(map[string]any, len(schema)+2)
+	properties, _ := sanitizeGoogleToolSchemaValue(schema["properties"]).(map[string]any)
+	if properties != nil {
+		out["properties"] = properties
+	}
+	for key, item := range schema {
+		switch key {
+		case "additionalProperties", "properties":
+			continue
+		case "anyOf":
+			out[key] = sanitizeGoogleToolSchemaAlternatives(item, properties)
+		default:
+			out[key] = sanitizeGoogleToolSchemaValue(item)
+		}
+	}
+
+	required := googleToolSchemaRequiredNames(out["required"])
+	if len(required) == 0 {
+		return out
+	}
+	if properties == nil {
+		properties = make(map[string]any, len(required))
+	}
+	validRequired := make([]string, 0, len(required))
+	for _, name := range required {
+		if _, ok := properties[name]; !ok {
+			if inherited, ok := inheritedProperties[name]; ok {
+				properties[name] = sanitizeGoogleToolSchemaValue(inherited)
+			}
+		}
+		if _, ok := properties[name]; ok {
+			validRequired = append(validRequired, name)
+		}
+	}
+	if len(validRequired) == 0 {
+		delete(out, "required")
+		return out
+	}
+	out["type"] = "object"
+	out["required"] = validRequired
+	out["properties"] = properties
+	return out
+}
+
+func googleToolSchemaRequiredNames(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, value := range typed {
+			if name, ok := value.(string); ok {
+				out = append(out, name)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func sanitizeGoogleToolSchemaAlternatives(value any, inheritedProperties map[string]any) any {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if schema, ok := item.(map[string]any); ok {
+				out = append(out, sanitizeGoogleToolSchemaMap(schema, inheritedProperties))
+				continue
+			}
+			out = append(out, sanitizeGoogleToolSchemaValue(item))
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, schema := range typed {
+			out = append(out, sanitizeGoogleToolSchemaMap(schema, inheritedProperties))
+		}
+		return out
+	default:
+		return sanitizeGoogleToolSchemaValue(value)
 	}
 }
 
