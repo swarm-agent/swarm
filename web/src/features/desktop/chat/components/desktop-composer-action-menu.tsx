@@ -26,6 +26,7 @@ type PendingDeletion =
   | { kind: 'action'; item: WorkspaceAction }
 
 const TASK_EXPLANATION = 'Send your next message to a background agent in a managed worktree.'
+const ACTIONS_EXPLANATION = 'Actions run workspace scripts and can include custom options you fill in when you launch them.'
 
 export function DesktopComposerActionMenu({
   disabled = false,
@@ -401,7 +402,9 @@ export function DesktopComposerActionMenu({
                   <button type="button" onClick={() => setSkillsRequest((value) => value + 1)} className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Try again</button>
                 </div>
               ) : skills.length === 0 ? (
-                <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Skills are available for this workspace.</p>
+                <div className="mx-2.5 my-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-6 text-center">
+                  <p className="text-xs font-medium leading-5 text-[var(--app-text-muted)]">Ask Swarm to help you manage your skills.</p>
+                </div>
               ) : skills.map((skill) => {
                 const pendingKey = `skill:${skill.canonicalName}`
                 const deleting = deletingItem === pendingKey
@@ -446,6 +449,10 @@ export function DesktopComposerActionMenu({
                 <span className="text-[var(--app-text-subtle)]" aria-hidden="true">·</span>
                 <span className="text-[var(--app-text)]">Actions</span>
               </button>
+              <div className="mx-2.5 mb-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-3 text-center">
+                <p className="text-xs leading-5 text-[var(--app-text-muted)]">{ACTIONS_EXPLANATION}</p>
+                <p className="mt-1 text-xs font-medium leading-5 text-[var(--app-text)]">Ask Swarm to help you create or manage Actions.</p>
+              </div>
               {actionsLoading ? (
                 <div className="flex items-center gap-2 px-2.5 py-4 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={15} className="animate-spin" />Loading Actions…</div>
               ) : actionsError ? (
@@ -454,7 +461,7 @@ export function DesktopComposerActionMenu({
                   <button type="button" onClick={() => setActionsRequest((value) => value + 1)} className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Try again</button>
                 </div>
               ) : actions.length === 0 ? (
-                <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Actions are saved for this workspace.</p>
+                <p className="px-2.5 py-3 text-center text-xs text-[var(--app-text-subtle)]">No Actions are saved for this workspace.</p>
               ) : actions.map((action) => {
                 const pendingKey = `action:${action.id}`
                 const deleting = deletingItem === pendingKey
