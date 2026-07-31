@@ -50,6 +50,56 @@ func TestGoogleExecutionEpochRequestContainsOnlyExplicitInput(t *testing.T) {
 	}
 }
 
+func TestBuildGoogleRequestAppliesCatalogBackedPriorityServiceTier(t *testing.T) {
+	payload, err := buildGoogleRequest(provideriface.Request{
+		Input:       []map[string]any{{"role": "user", "content": "urgent request"}},
+		ServiceTier: "fast",
+		ModelCatalog: pebblestore.ModelCatalogRecord{ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{{
+			Tier: "priority", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "priority",
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("build priority request: %v", err)
+	}
+	if payload.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want priority", payload.ServiceTier)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal priority request: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"service_tier":"priority"`) {
+		t.Fatalf("serialized priority request missing service_tier: %s", encoded)
+	}
+
+	for _, tier := range []string{"batch", "flex"} {
+		payload, err = buildGoogleRequest(provideriface.Request{
+			Input:       []map[string]any{{"role": "user", "content": "unsupported tier request"}},
+			ServiceTier: tier,
+			ModelCatalog: pebblestore.ModelCatalogRecord{ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{{
+				Tier: tier, SwarmSetting: tier, ProviderParameter: "service_tier", ProviderValue: tier,
+			}}},
+		})
+		if err != nil {
+			t.Fatalf("build %s request: %v", tier, err)
+		}
+		if payload.ServiceTier != "" {
+			t.Fatalf("Google %s service tier = %q, want omitted", tier, payload.ServiceTier)
+		}
+	}
+
+	payload, err = buildGoogleRequest(provideriface.Request{
+		Input:       []map[string]any{{"role": "user", "content": "ordinary request"}},
+		ServiceTier: "priority",
+	})
+	if err != nil {
+		t.Fatalf("build request without catalog mapping: %v", err)
+	}
+	if payload.ServiceTier != "" {
+		t.Fatalf("unmapped service tier = %q, want omitted", payload.ServiceTier)
+	}
+}
+
 func TestBuildGoogleRequestNormalizesPlanCheckpointAnyOfRequiredBranches(t *testing.T) {
 	definitions := toolruntime.NewRuntime(1).Definitions()
 	planTools := make([]provideriface.ToolDefinition, 0, 2)

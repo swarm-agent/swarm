@@ -230,6 +230,11 @@ func normalizeServiceTierForProvider(providerID, serviceTier string) string {
 			return ""
 		}
 		return serviceTier
+	case "google":
+		if serviceTier == "fast" || serviceTier == "priority" {
+			return serviceTier
+		}
+		return ""
 	case "codex", "fireworks", "openai", "openrouter":
 		return serviceTier
 	default:

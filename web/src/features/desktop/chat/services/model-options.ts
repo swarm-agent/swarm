@@ -99,6 +99,7 @@ function normalizedServiceTiers(provider: string, serviceTiers: string[] = []): 
     const normalized = tier.trim().toLowerCase()
     if (!normalized || normalized === 'standard' || normalized === 'off' || seen.has(normalized)) continue
     if ((normalizedProvider === 'anthropic' || normalizedProvider === 'openai') && normalized === 'batch') continue
+    if (normalizedProvider === 'google' && normalized !== 'fast' && normalized !== 'priority') continue
     seen.add(normalized)
     out.push(normalized)
   }
@@ -122,6 +123,7 @@ export function normalizeModelServiceTier(provider: string, serviceTier: string)
   const normalizedProvider = normalizeProviderID(provider)
   const normalizedTier = serviceTier.trim().toLowerCase()
   if (normalizedTier === '' || normalizedTier === 'standard' || normalizedTier === 'off') return ''
+  if (normalizedProvider === 'google') return normalizedTier === 'fast' || normalizedTier === 'priority' ? normalizedTier : ''
   if (normalizedProvider === 'codex' || normalizedProvider === 'fireworks' || normalizedProvider === 'openai') return normalizedTier === 'batch' ? '' : normalizedTier
   if (normalizedProvider === 'anthropic') return normalizedTier === 'batch' ? '' : normalizedTier
   return ''
@@ -133,7 +135,7 @@ export function supportsModelServiceTier(provider: string, _model: string, servi
   const normalizedRequested = normalizeModelServiceTier(provider, requestedTier)
   if (normalizedRequested) return tiers.includes(normalizedRequested)
   if (requestedRaw && requestedRaw !== 'standard' && requestedRaw !== 'off') return false
-  return ['codex', 'fireworks', 'anthropic', 'openai'].includes(normalizeProviderID(provider)) ? tiers.length > 0 : false
+  return ['codex', 'fireworks', 'google', 'anthropic', 'openai'].includes(normalizeProviderID(provider)) ? tiers.length > 0 : false
 }
 
 export function modelServiceTierOptions(provider: string, _model: string, serviceTiers: string[] | Pick<ModelOptionRecord, 'serviceTiers' | 'serviceTierMappings'> = []): ModelServiceTierOption[] {

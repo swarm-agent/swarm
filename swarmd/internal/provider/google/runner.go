@@ -114,6 +114,7 @@ type googleRequest struct {
 	Tools             []googleTool            `json:"tools,omitempty"`
 	ToolConfig        *googleToolConfig       `json:"toolConfig,omitempty"`
 	GenerationConfig  *googleGenerationConfig `json:"generationConfig,omitempty"`
+	ServiceTier       string                  `json:"service_tier,omitempty"`
 }
 
 type googleResponse struct {
@@ -344,7 +345,7 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 	if err != nil {
 		return googleRequest{}, err
 	}
-	out := googleRequest{Contents: contents}
+	out := googleRequest{Contents: contents, ServiceTier: googleServiceTierForRequest(req)}
 	if strings.TrimSpace(req.Instructions) != "" {
 		out.SystemInstruction = &googleContent{
 			Parts: []googlePart{{Text: strings.TrimSpace(req.Instructions)}},
@@ -381,6 +382,33 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 		return googleRequest{}, errors.New("google inline request exceeds the 20 MB request limit")
 	}
 	return out, nil
+}
+
+func googleServiceTierForRequest(req provideriface.Request) string {
+	requested := strings.ToLower(strings.TrimSpace(req.ServiceTier))
+	if requested == "" || requested == "standard" || requested == "off" {
+		return ""
+	}
+	record, ok := req.ModelCatalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		return ""
+	}
+	for _, mapping := range record.ServiceTierMappings {
+		tier := strings.ToLower(strings.TrimSpace(mapping.Tier))
+		swarmSetting := strings.ToLower(strings.TrimSpace(mapping.SwarmSetting))
+		if requested != tier && requested != swarmSetting {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(mapping.ProviderParameter), "service_tier") {
+			return ""
+		}
+		providerValue := strings.ToLower(strings.TrimSpace(mapping.ProviderValue))
+		if providerValue == "priority" {
+			return providerValue
+		}
+		return ""
+	}
+	return ""
 }
 
 func googleThinkingConfigForRequest(req provideriface.Request) *googleThinkingConfig {

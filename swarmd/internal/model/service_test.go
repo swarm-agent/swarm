@@ -53,6 +53,45 @@ func TestSetPreferenceForAccountPreservesCatalogBackedCodexServiceTier(t *testin
 	}
 }
 
+func TestResolvePreferenceLimitsGoogleServiceTiersToFastAndPriority(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tier string
+		want string
+	}{
+		{name: "priority", tier: "priority", want: "priority"},
+		{name: "fast", tier: "fast", want: "fast"},
+		{name: "batch", tier: "batch", want: ""},
+		{name: "flex", tier: "flex", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, store := newTestModelService(t)
+			defer store.Close()
+
+			if err := service.catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+				Provider:     "google",
+				Model:        "gemini-3.1-pro-preview",
+				ServiceTiers: []string{"standard", "priority", "fast", "batch", "flex"},
+			}); err != nil {
+				t.Fatalf("set catalog record: %v", err)
+			}
+
+			resolved, err := service.ResolvePreference(pebblestore.ModelPreference{
+				Provider:    "google",
+				Model:       "gemini-3.1-pro-preview",
+				Thinking:    "high",
+				ServiceTier: tc.tier,
+			})
+			if err != nil {
+				t.Fatalf("ResolvePreference returned error: %v", err)
+			}
+			if resolved.Preference.ServiceTier != tc.want {
+				t.Fatalf("resolved Google service tier = %q, want %q", resolved.Preference.ServiceTier, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolvePreferenceClearsUnsupportedCatalogServiceTier(t *testing.T) {
 	service, store := newTestModelService(t)
 	defer store.Close()

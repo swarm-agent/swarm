@@ -56,6 +56,28 @@ test('Codex service tier options come from catalog tiers and keep priority disti
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', [], 'fast'), false)
 })
 
+test('Google service tier options preserve catalog-backed priority selection', () => {
+  assert.deepEqual(modelServiceTierOptions('google', 'gemini-3.1-pro-preview', {
+    serviceTiers: ['standard', 'priority', 'fast', 'batch', 'flex'],
+    serviceTierMappings: [
+      { tier: 'standard', swarm_setting: 'off', provider_parameter: 'service_tier', provider_value: '' },
+      { tier: 'priority', swarm_setting: 'fast', provider_parameter: 'service_tier', provider_value: 'priority' },
+    ],
+  }), [
+    { label: 'Off / standard', value: '' },
+    { label: 'Priority', value: 'priority' },
+    { label: 'Fast', value: 'fast' },
+  ])
+  assert.equal(normalizeModelServiceTier('google', 'priority'), 'priority')
+  assert.equal(normalizeModelServiceTier('google', 'fast'), 'fast')
+  assert.equal(normalizeModelServiceTier('google', 'batch'), '')
+  assert.equal(normalizeModelServiceTier('google', 'flex'), '')
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'priority'], 'priority'), true)
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'fast'], 'fast'), true)
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'priority', 'fast', 'batch', 'flex'], 'batch'), false)
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'priority', 'fast', 'batch', 'flex'], 'flex'), false)
+})
+
 test('OpenAI API provider stays distinct from Codex and exposes catalog models', () => {
   assert.equal(normalizeProviderID('openai'), 'openai')
   assert.equal(normalizeModelID('openai', 'gpt-5.5'), 'gpt-5.5')
