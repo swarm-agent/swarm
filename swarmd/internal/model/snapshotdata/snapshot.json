@@ -2,8 +2,8 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-57b231136573b5df",
-  "snapshot_version": "57b231136573b5df",
+  "snapshot_id": "swarm-models-v1-fcb6c4aecd93e1fc",
+  "snapshot_version": "fcb6c4aecd93e1fc",
   "generated_at": "2026-07-31T08:46:23.974Z",
   "model_count": 587,
   "provider_count": 7,
@@ -11601,7 +11601,7 @@
         "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
-        "context_window_tokens": 272000,
+        "context_window_tokens": 372000,
         "max_input_tokens": null,
         "max_output_tokens": null,
         "max_reasoning_tokens": null
@@ -11639,7 +11639,7 @@
         "upstream_provider_ids": [
           "openai"
         ],
-        "top_provider_context_window_tokens": 272000,
+        "top_provider_context_window_tokens": 372000,
         "top_provider_max_output_tokens": null,
         "top_provider_is_moderated": null,
         "per_request_limits": null
@@ -11820,8 +11820,8 @@
             "mode": "tokens",
             "limit": 10000
           },
-          "context_window": 272000,
-          "max_context_window": 272000,
+          "context_window": 372000,
+          "max_context_window": 372000,
           "auto_compact_token_limit": null,
           "effective_context_window_percent": null,
           "supports_image_detail_original": true,
@@ -12762,7 +12762,7 @@
         "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
-        "context_window_tokens": 272000,
+        "context_window_tokens": 372000,
         "max_input_tokens": null,
         "max_output_tokens": null,
         "max_reasoning_tokens": null
@@ -12800,7 +12800,7 @@
         "upstream_provider_ids": [
           "openai"
         ],
-        "top_provider_context_window_tokens": 272000,
+        "top_provider_context_window_tokens": 372000,
         "top_provider_max_output_tokens": null,
         "top_provider_is_moderated": null,
         "per_request_limits": null
@@ -12985,8 +12985,8 @@
             "mode": "tokens",
             "limit": 10000
           },
-          "context_window": 272000,
-          "max_context_window": 272000,
+          "context_window": 372000,
+          "max_context_window": 372000,
           "auto_compact_token_limit": null,
           "effective_context_window_percent": null,
           "supports_image_detail_original": true,
