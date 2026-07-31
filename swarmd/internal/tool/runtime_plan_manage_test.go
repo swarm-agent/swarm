@@ -116,9 +116,18 @@ func TestPlanManageDefinitionRequiresRequirementAwareRestartSelection(t *testing
 	if !containsAll(changeRequestDescription, "restart_checkpoint", "invalidates the current checkpoint objective or acceptance criteria", "atomically replaces the checkpoint definition", "localized additive refinements use add_subtask") {
 		t.Fatalf("plan_manage change_request description does not require replacement on redirect: %q", changeRequestDescription)
 	}
-	subtaskDescription, _ := params["subtask"].(map[string]any)["description"].(string)
-	if !containsAll(subtaskDescription, "add_subtask", "existing checklist remains valid", "keeps the checkpoint boundary and attempt history", "must not clear blocked or failed state") {
-		t.Fatalf("plan_manage subtask description does not define localized feedback routing: %q", subtaskDescription)
+	subtaskSchema, _ := params["subtask"].(map[string]any)
+	if subtaskSchema["type"] != "object" {
+		t.Fatalf("plan_manage subtask schema must require an object, got: %#v", subtaskSchema)
+	}
+	subtaskProperties, _ := subtaskSchema["properties"].(map[string]any)
+	titleSchema, _ := subtaskProperties["title"].(map[string]any)
+	if titleSchema["type"] != "string" || titleSchema["minLength"] != 1 {
+		t.Fatalf("plan_manage subtask.title schema must require a non-empty string, got: %#v", titleSchema)
+	}
+	subtaskDescription, _ := subtaskSchema["description"].(string)
+	if !containsAll(subtaskDescription, "add_subtask", `"action":"add_subtask","checkpoint_id":"cp-1","subtask":{"title":"Measure Swarm hosting capacity"}`, "same call", "Do not put title at the top level", "bare text", "incomplete format-probing call", "existing checklist remains valid", "keeps the checkpoint boundary and attempt history", "must not clear blocked or failed state") {
+		t.Fatalf("plan_manage subtask description does not define the exact localized-feedback payload: %q", subtaskDescription)
 	}
 	subtasksDescription, _ := params["subtasks"].(map[string]any)["description"].(string)
 	if !containsAll(subtasksDescription, "Complete authoritative subtask list", "replace_subtasks", "Omitted stale subtasks are removed atomically", "checkpoint contract and attempt history are preserved") {
