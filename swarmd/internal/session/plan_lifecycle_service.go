@@ -952,27 +952,17 @@ func (s *PlanLifecycleService) ReconcileCancelledRun(input PlanLifecycleExecutio
 	if doc == nil {
 		return PlanLifecycleResult{}, false, nil
 	}
-	checkpointID := strings.TrimSpace(input.CheckpointID)
-	attemptID := strings.TrimSpace(input.AttemptID)
-	runSessionID := strings.TrimSpace(input.RunSessionID)
-	parentSessionID := strings.TrimSpace(input.ParentSessionID)
-	if strings.TrimSpace(input.RunID) != "" && doc.ExecutionState != nil && strings.TrimSpace(doc.ExecutionState.CurrentRunID) == strings.TrimSpace(input.RunID) {
-		checkpointID = firstNonBlank(checkpointID, doc.ActiveCheckpointID)
-		attemptID = firstNonBlank(attemptID, doc.ExecutionState.ActiveAttemptID)
-		runSessionID = firstNonBlank(runSessionID, doc.ExecutionState.CurrentSessionID)
-		parentSessionID = firstNonBlank(parentSessionID, doc.ExecutionState.ParentSessionID)
-	}
 	cancelledAt := input.ReviewedAt
 	if cancelledAt <= 0 {
 		cancelledAt = time.Now().UnixMilli()
 	}
 	decision, err := ApplyPlanCheckpointCancellation(doc, PlanCheckpointCancellationOptions{
 		PlanID:          plan.ID,
-		CheckpointID:    checkpointID,
-		AttemptID:       attemptID,
+		CheckpointID:    input.CheckpointID,
+		AttemptID:       input.AttemptID,
 		RunID:           input.RunID,
-		SessionID:       runSessionID,
-		ParentSessionID: parentSessionID,
+		SessionID:       input.RunSessionID,
+		ParentSessionID: input.ParentSessionID,
 		Reason:          input.Notes,
 		CancelledAt:     cancelledAt,
 	})
@@ -1004,7 +994,7 @@ func (s *PlanLifecycleService) StartCheckpoint(input PlanLifecycleExecutionInput
 }
 
 func (s *PlanLifecycleService) ContinueCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
-	return s.continueCheckpoint(input)
+	return s.startCheckpoint(input, "continue_checkpoint")
 }
 
 func (s *PlanLifecycleService) AcceptCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
@@ -1266,121 +1256,6 @@ func (s *PlanLifecycleService) resetAndStartCheckpoint(input PlanLifecycleExecut
 		summary = "Replaced checkpoint requirements and prepared fresh-context checkpoint restart"
 	}
 	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, summary, state.plan.Status, state.plan.ApprovalState)
-}
-
-func (s *PlanLifecycleService) continueCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
-	if err := s.requireConfigured(); err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	unlock := s.sessions.lockPlanLifecycleSession(input.SessionID)
-	defer unlock()
-	state, err := s.loadApprovedPlan(input.SessionID, input.PlanID, "continue_checkpoint")
-	if err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	checkpointID := strings.TrimSpace(firstNonBlank(input.CheckpointID, state.doc.ActiveCheckpointID))
-	if checkpointID == "" {
-		summary := SummarizePlanExecution(state.doc)
-		checkpointID = strings.TrimSpace(summary.NextCheckpointID)
-	}
-	if err := s.prepareStoppedCheckpointContinuation(state.doc, checkpointID); err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	if err := ValidateExecutablePlanDocument(state.doc); err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	if err := requireCheckpointRunnable(state.doc, checkpointID); err != nil {
-		return PlanLifecycleResult{}, err
-	}
-	return s.applyCheckpointStartAndSave(state, input, checkpointID, "continue_checkpoint", "Continued checkpoint with fresh run ownership", state.plan.Status, state.plan.ApprovalState)
-}
-
-func (s *PlanLifecycleService) prepareStoppedCheckpointContinuation(doc *pebblestore.SessionPlanDocument, checkpointID string) error {
-	idx := findPlanCheckpointIndex(doc.Checkpoints, checkpointID)
-	if idx < 0 {
-		return fmt.Errorf("plan document checkpoint %q was not found", checkpointID)
-	}
-	checkpoint := &doc.Checkpoints[idx]
-	status := normalizePlanCheckpointStatusForSave(checkpoint.Status)
-	if status != PlanCheckpointStatusInProgress && status != PlanCheckpointStatusPaused {
-		return nil
-	}
-	oldRunID := strings.TrimSpace(checkpoint.RunID)
-	if oldRunID == "" {
-		return fmt.Errorf("checkpoint %q stopped-run recovery requires persisted run ownership", checkpointID)
-	}
-	ownerSessionID := strings.TrimSpace(checkpoint.SessionID)
-	if ownerSessionID == "" && doc.ExecutionState != nil {
-		ownerSessionID = strings.TrimSpace(doc.ExecutionState.CurrentSessionID)
-	}
-	intent, ok, err := s.sessions.GetSessionRunIntent(ownerSessionID, oldRunID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("checkpoint %q owner run %q was not found", checkpointID, oldRunID)
-	}
-	switch strings.TrimSpace(intent.Status) {
-	case RunIntentCancelled, RunIntentInterrupted:
-	default:
-		return fmt.Errorf("checkpoint %q owner run %q is not stopped", checkpointID, oldRunID)
-	}
-	if status == PlanCheckpointStatusInProgress {
-		state := doc.ExecutionState
-		if state == nil {
-			return fmt.Errorf("checkpoint %q stopped-run recovery requires execution state", checkpointID)
-		}
-		decision, err := ApplyPlanCheckpointCancellation(doc, PlanCheckpointCancellationOptions{
-			PlanID:          doc.ID,
-			CheckpointID:    checkpointID,
-			AttemptID:       state.ActiveAttemptID,
-			RunID:           oldRunID,
-			SessionID:       state.CurrentSessionID,
-			ParentSessionID: state.ParentSessionID,
-			Reason:          firstNonBlank(strings.TrimSpace(intent.BlockedReason), "Previous run stopped before checkpoint completion."),
-			CancelledAt:     intent.UpdatedAt,
-		})
-		if err != nil {
-			return err
-		}
-		if !decision.Changed {
-			return fmt.Errorf("checkpoint %q stopped-run ownership could not be reconciled", checkpointID)
-		}
-		checkpoint = &doc.Checkpoints[idx]
-	}
-	if normalizePlanCheckpointStatusForSave(checkpoint.Status) != PlanCheckpointStatusPaused || strings.TrimSpace(checkpoint.Result) != "run_paused" {
-		return fmt.Errorf("checkpoint %q is not a resumable stopped run", checkpointID)
-	}
-	checkpoint.Status = PlanCheckpointStatusPending
-	checkpoint.Report = ""
-	checkpoint.Result = ""
-	checkpoint.ChangedFiles = nil
-	checkpoint.Validation = nil
-	checkpoint.Recommendation = nil
-	checkpoint.Handoff = nil
-	checkpoint.AttemptID = ""
-	checkpoint.RunID = ""
-	checkpoint.SessionID = ""
-	checkpoint.StartedAt = 0
-	checkpoint.CompletedAt = 0
-	checkpoint.Review = nil
-	checkpoint.ActiveSubtaskID = ""
-	for i := range checkpoint.Subtasks {
-		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusInProgress {
-			checkpoint.Subtasks[i].Status = PlanSubtaskStatusPending
-			checkpoint.Subtasks[i].StartedAt = 0
-			checkpoint.Subtasks[i].CompletedAt = 0
-		}
-	}
-	if doc.ExecutionState == nil {
-		doc.ExecutionState = &pebblestore.SessionPlanExecutionState{}
-	}
-	doc.ExecutionState.Status = PlanExecutionStateIdle
-	doc.ExecutionState.ActiveAttemptID = ""
-	doc.ExecutionState.CurrentRunID = ""
-	doc.ExecutionState.CurrentSessionID = ""
-	doc.ActiveCheckpointID = checkpointID
-	return ValidatePlanDocument(doc)
 }
 
 func (s *PlanLifecycleService) startCheckpoint(input PlanLifecycleExecutionInput, action string) (PlanLifecycleResult, error) {

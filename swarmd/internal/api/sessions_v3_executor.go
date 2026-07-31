@@ -353,7 +353,7 @@ func (e *sessionV3Executor) recordCancelledRunAndReconcilePlan(job sessionV3Exec
 }
 
 func (e *sessionV3Executor) reconcileCancelledPlanRun(job sessionV3ExecutorJob, reason string, cancelledAt int64) error {
-	if strings.TrimSpace(job.RunID) == "" {
+	if strings.TrimSpace(job.PlanID) == "" || strings.TrimSpace(job.CheckpointID) == "" || strings.TrimSpace(job.AttemptID) == "" {
 		return nil
 	}
 	if e == nil || e.server == nil || e.server.planLifecycle == nil {
@@ -445,16 +445,8 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 }
 
 func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3ExecutorJob) error {
-	const reason = "executor interrupted during daemon restart"
-	result, err := e.recordRunStatus(job, sessionruntime.RunIntentInterrupted, reason, "session.run.interrupted")
-	if err != nil {
-		return err
-	}
-	interruptedAt := time.Now().UnixMilli()
-	if result.RunIntent != nil && result.RunIntent.UpdatedAt > 0 {
-		interruptedAt = result.RunIntent.UpdatedAt
-	}
-	return e.reconcileCancelledPlanRun(job, reason, interruptedAt)
+	_, err := e.recordRunStatus(job, sessionruntime.RunIntentInterrupted, "executor interrupted during daemon restart", "session.run.interrupted")
+	return err
 }
 
 func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
