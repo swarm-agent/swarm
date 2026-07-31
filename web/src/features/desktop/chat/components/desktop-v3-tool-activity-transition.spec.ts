@@ -34,6 +34,37 @@ test('live activity keeps one stable call key through provider-ready and runtime
   assert.equal(desktopV3RenderItemKey(runtime), 'live-tool:call-edit')
 })
 
+test('consecutive search and read results form one group while unrelated tools create boundaries', () => {
+  const makeToolMessage = (id: string, seq: number, tool: string, path: string): MessageSnapshot => {
+    const toolMessage = buildStructuredToolMessage({
+      tool,
+      callId: `call-${id}`,
+      argumentsText: JSON.stringify({ path, query: 'needle' }),
+      outputText: tool === 'search'
+        ? JSON.stringify({ search_mode: 'content', count: 1, total_matched: 1, results: [{ path, items: [{ line: 1, column: 1, text: 'needle' }] }] })
+        : JSON.stringify({ path, count: 10 }),
+    })
+    assert.ok(toolMessage)
+    if (!toolMessage) throw new Error('expected tool message')
+    return { id, session_id: 'session-1', global_seq: seq, role: 'tool', content: '', created_at: seq, metadata: { call_id: `call-${id}` }, toolMessage }
+  }
+  const rendered: RenderedSessionMessages = {
+    committed: [
+      makeToolMessage('search-1', 1, 'search', 'web/src/one.ts'),
+      makeToolMessage('read-1', 2, 'read', 'web/src/one.ts'),
+      makeToolMessage('edit-1', 3, 'edit', 'web/src/one.ts'),
+      makeToolMessage('read-2', 4, 'read', 'web/src/two.ts'),
+      makeToolMessage('search-2', 5, 'search', 'web/src/two.ts'),
+    ],
+    pendingUser: [], liveRuns: [], runIntents: [], currentRunIntent: undefined, latestRunIntent: undefined,
+  }
+  const items = buildDesktopV3ConversationRenderItems(rendered)
+  assert.deepEqual(items.map((item) => item.type), ['search-read-group', 'message', 'search-read-group'])
+  const groups = items.filter((item) => item.type === 'search-read-group')
+  assert.equal(groups.length, 2)
+  assert.ok(groups.every((group) => group.toolMessages.length === 2))
+})
+
 test('committed result suppresses matching live activity instead of rendering a duplicate card', () => {
   const toolMessage = buildStructuredToolMessage({
     tool: 'edit', callId: 'call-edit', toolInstanceId: 'step-1:call-edit',

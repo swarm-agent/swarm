@@ -20,6 +20,7 @@ import { getToolTheme, type ToolState } from "../services/tool-theme";
 import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "../services/tool-syntax";
 import { displayAgentName } from "../services/agent-display";
 import { toolActivityStartSummary } from "../services/tool-activity";
+import { describeToolActivity } from "../services/tool-message";
 import { ToolActivityShell } from "./tool-activity-shell";
 
 interface ChatMarkdownProps {
@@ -1131,6 +1132,74 @@ function TaskRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskCh
   return <TaskAgentRowsView rows={rows} actions={actions} />;
 }
 
+const SEARCH_READ_PATH_PREVIEW_LIMIT = 12;
+
+interface SearchReadPathSummary {
+  path: string;
+  readCount: number;
+  matchCount: number;
+  searchCount: number;
+}
+
+function searchReadPathSummaries(toolMessages: StructuredToolMessage[]): SearchReadPathSummary[] {
+  const paths = new Map<string, SearchReadPathSummary>();
+  const ensurePath = (path: string) => {
+    const normalized = path.trim();
+    if (!normalized) return null;
+    const existing = paths.get(normalized);
+    if (existing) return existing;
+    const created = { path: normalized, readCount: 0, matchCount: 0, searchCount: 0 };
+    paths.set(normalized, created);
+    return created;
+  };
+
+  for (const message of toolMessages) {
+    const toolName = message.tool.trim().toLowerCase();
+    if (toolName === "read") {
+      const entry = ensurePath(message.target || toolJsonString(message.argumentsJson, "path"));
+      if (entry) entry.readCount += 1;
+      continue;
+    }
+    if (toolName !== "search") continue;
+    for (const file of message.searchData?.files ?? []) {
+      const entry = ensurePath(file.path);
+      if (!entry) continue;
+      entry.searchCount += 1;
+      entry.matchCount += file.matchCount;
+    }
+  }
+  return Array.from(paths.values());
+}
+
+function SearchReadPathRows({ paths }: { paths: SearchReadPathSummary[] }) {
+  if (paths.length === 0) return null;
+  const visible = paths.slice(0, SEARCH_READ_PATH_PREVIEW_LIMIT);
+  const remaining = paths.slice(SEARCH_READ_PATH_PREVIEW_LIMIT);
+  const rows = (items: SearchReadPathSummary[]) => items.map((item) => {
+    const details = [
+      item.readCount > 0 ? `${item.readCount} ${item.readCount === 1 ? "read" : "reads"}` : "",
+      item.matchCount > 0 ? `${item.matchCount} ${item.matchCount === 1 ? "match" : "matches"}` : item.searchCount > 0 ? `${item.searchCount} ${item.searchCount === 1 ? "search" : "searches"}` : "",
+    ].filter(Boolean).join(" · ");
+    return (
+      <div key={item.path} className="flex min-w-0 items-start gap-3 border-t border-[var(--app-border)] px-3 py-2 first:border-t-0">
+        <span className="min-w-0 flex-1 break-words font-mono text-[11px] leading-4 text-[var(--app-text)] [overflow-wrap:anywhere]" title={item.path}>{item.path}</span>
+        {details ? <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{details}</span> : null}
+      </div>
+    );
+  });
+  return (
+    <div className="mt-2 min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]" data-search-read-paths>
+      {rows(visible)}
+      {remaining.length > 0 ? (
+        <details className="border-t border-[var(--app-border)]">
+          <summary className="cursor-pointer px-3 py-2 text-[10px] font-semibold text-[var(--app-primary)]">Show {remaining.length} more {remaining.length === 1 ? "file" : "files"}</summary>
+          <div className="border-t border-[var(--app-border)]">{rows(remaining)}</div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
 function SearchSummaryLine({
   toolMessage,
 }: {
@@ -1900,7 +1969,50 @@ function SearchToolView({
   const data = toolMessage.searchData;
   if (!data) return null;
 
-  return <SearchSummaryLine toolMessage={toolMessage} />;
+  return (
+    <>
+      <SearchSummaryLine toolMessage={toolMessage} />
+      <SearchReadPathRows paths={searchReadPathSummaries([toolMessage])} />
+    </>
+  );
+}
+
+export function SearchReadToolGroupView({ toolMessages }: { toolMessages: StructuredToolMessage[] }) {
+  const paths = searchReadPathSummaries(toolMessages);
+  const searchCount = toolMessages.filter((message) => message.tool.trim().toLowerCase() === "search").length;
+  const readCount = toolMessages.length - searchCount;
+  const runningCount = toolMessages.filter((message) => message.state === "running").length;
+  const errorCount = toolMessages.filter((message) => message.state === "error").length;
+  const totalMatches = toolMessages.reduce((sum, message) => sum + (message.searchData?.files.reduce((fileSum, file) => fileSum + file.matchCount, 0) ?? 0), 0);
+  const summary = [
+    searchCount > 0 ? `${searchCount} ${searchCount === 1 ? "search" : "searches"}` : "",
+    readCount > 0 ? `${readCount} ${readCount === 1 ? "read" : "reads"}` : "",
+    `${paths.length} ${paths.length === 1 ? "file" : "files"}`,
+    totalMatches > 0 ? `${totalMatches} ${totalMatches === 1 ? "match" : "matches"}` : "",
+  ].filter(Boolean).join(" · ");
+  const StateIcon = errorCount > 0 ? XCircle : runningCount > 0 ? LoaderCircle : CheckCircle2;
+
+  return (
+    <div className="flex justify-start" data-search-read-group>
+      <section className="w-full min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]">
+        <header className="flex min-w-0 items-start gap-2 px-3 py-2.5">
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]"><Search size={13} /></span>
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold leading-4 text-[var(--app-text)]">{runningCount > 0 ? "Investigating…" : "Investigation"}</div>
+            <div className="mt-0.5 min-w-0 break-words text-[11px] leading-4 text-[var(--app-text-muted)]">{summary}</div>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
+            <StateIcon size={11} className={runningCount > 0 && errorCount === 0 ? "animate-spin text-[var(--app-primary)]" : errorCount > 0 ? "text-[var(--app-danger)]" : ""} />
+            {errorCount > 0 ? `${errorCount} failed` : runningCount > 0 ? `${runningCount} active` : "done"}
+          </span>
+        </header>
+        <div className="border-t border-[var(--app-border)] px-3 pb-3 pt-1">
+          <SearchReadPathRows paths={paths} />
+          {paths.length === 0 ? <div className="py-2 text-[11px] text-[var(--app-text-subtle)]">Waiting for file details…</div> : null}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 export function ToolMessageView({
@@ -1962,7 +2074,10 @@ export function ToolMessageView({
         ? LoaderCircle
         : CheckCircle2;
   const normalizedTool = toolMessage.tool.trim().toLowerCase();
-  const label = toolTheme.label || toolMessage.tool || "tool";
+  const activityDescriptor = describeToolActivity(toolMessage.tool);
+  const label = activityDescriptor.kind === "investigation"
+    ? state === "running" ? `${activityDescriptor.activeLabel}…` : activityDescriptor.label
+    : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
   const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
   const isTaskSwarm = hasTaskRows && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;

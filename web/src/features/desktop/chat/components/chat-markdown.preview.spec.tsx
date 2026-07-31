@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText, indexBashOutput, taskActivityLabel, taskSwarmLayout } from "./chat-markdown";
+import { TASK_ELAPSED_TICK_MS, SearchReadToolGroupView, ToolMessageView, bashCopyText, indexBashOutput, taskActivityLabel, taskSwarmLayout } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
 function assert(condition: boolean, message: string): void {
@@ -482,8 +482,9 @@ function testSearchToolRendersSimpleSummary(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Searched “compactSearchResult” · Found 8 matches · Partial results"), "expected a plain-language searched/found summary");
+  assert(markup.includes("web/src/features/desktop/chat-markdown.tsx") && markup.includes("2 matches"), "search cards should expose matched files and counts");
   assert(!markup.includes("88:4") && !markup.includes("93:7"), "line-level results should stay out of the Desktop card");
-  assert(!markup.includes("chat-markdown.tsx") && !markup.includes("return compactSearchResult"), "file and match details should not render");
+  assert(!markup.includes("return compactSearchResult"), "match snippets should remain omitted from the compact card");
 
   const empty = buildStructuredToolMessage({
     tool: "search",
@@ -493,6 +494,37 @@ function testSearchToolRendersSimpleSummary(): void {
   assert(Boolean(empty), "expected zero-result search tool message");
   const emptyMarkup = renderToolMarkup(empty!);
   assert(emptyMarkup.includes("Searched 2 queries · Found 0 files · Timed out"), "expected understandable multi-query, zero-result, and timeout copy");
+}
+
+function testSearchActivityKeepsInvestigationLabelAcrossSingleAndGroupedCalls(): void {
+  const search = buildStructuredToolMessage({
+    tool: "search",
+    callId: "call-single-search",
+    argumentsText: JSON.stringify({ query: "needle", path: "web/src" }),
+    outputText: JSON.stringify({ search_mode: "content", count: 1, total_matched: 1, results: [{ path: "web/src/file.tsx", items: [{ line: 10, column: 2, text: "needle" }] }] }),
+  });
+  assert(Boolean(search), "expected single search message");
+  if (!search) return;
+  const markup = renderToolMarkup(search);
+  assert(markup.includes("Investigation") && !markup.includes(">Search<"), "single search should use the stable investigation label");
+}
+
+function testSearchReadGroupRendersCompactFileAggregation(): void {
+  const tools = Array.from({ length: 16 }, (_, index) => buildStructuredToolMessage({
+    tool: index % 3 === 0 ? "search" : "read",
+    callId: `call-group-${index}`,
+    argumentsText: JSON.stringify({ path: `web/src/file-${index}.tsx`, query: "needle" }),
+    outputText: index % 3 === 0 ? JSON.stringify({
+      search_mode: "content",
+      count: 1,
+      total_matched: 2,
+      results: [{ path: `web/src/file-${index}.tsx`, items: [{ line: 10, column: 2, text: "needle" }, { line: 20, column: 1, text: "needle again" }] }],
+    }) : JSON.stringify({ path: `web/src/file-${index}.tsx`, count: 10 }),
+  })).filter((message): message is NonNullable<ReturnType<typeof buildStructuredToolMessage>> => Boolean(message));
+  const markup = renderToStaticMarkup(<SearchReadToolGroupView toolMessages={tools} />);
+  assert(markup.includes('data-search-read-group="true"') && markup.includes("Investigation") && markup.includes("6 searches · 10 reads · 16 files · 12 matches"), "group should keep the investigation label while summarizing consecutive search/read calls");
+  assert(markup.includes("web/src/file-0.tsx") && markup.includes("2 matches") && markup.includes("web/src/file-1.tsx") && markup.includes("1 read"), "group should preserve search files and read paths");
+  assert(markup.includes("Show 4 more files"), "large groups should cap the initial file list but preserve expandable detail");
 }
 
 function testManageSessionsDurableLogRendersTechnicalEvents(): void {
@@ -738,6 +770,8 @@ function main(): void {
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsReviewWorktreesHydratesCandidates();
   testSearchToolRendersSimpleSummary();
+  testSearchActivityKeepsInvestigationLabelAcrossSingleAndGroupedCalls();
+  testSearchReadGroupRendersCompactFileAggregation();
   testManageSessionsListRendersCardsWithoutRawJson();
   testManageSessionsDurableLogRendersTechnicalEvents();
   testWebSearchUsesDedicatedResponsiveCard();

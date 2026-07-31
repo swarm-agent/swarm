@@ -749,7 +749,7 @@ export interface PendingUserMessage {
 }
 
 export type DesktopToolActivityPhase = 'constructing' | 'ready' | 'running' | 'completed' | 'failed' | 'cancelled'
-export type DesktopToolActivitySemanticKind = 'edit' | 'plan' | 'task' | 'generic'
+export type DesktopToolActivitySemanticKind = 'edit' | 'plan' | 'task' | 'investigation' | 'generic'
 
 export interface DesktopToolActivityProvenance {
   providerConstruction: boolean

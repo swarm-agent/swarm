@@ -49,7 +49,7 @@ interface StructuredToolMessageInput {
 const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
 const MAX_PREVIEW_LINES = 12;
 
-export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "generic";
+export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "generic";
 
 export interface ToolActivityDescriptor {
   kind: ToolActivitySemanticKind;
@@ -67,6 +67,9 @@ export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   }
   if (normalized === "task" || normalized === "subagent" || normalized === "launch_subagent") {
     return { kind: "task", label: "Subagents", activeLabel: "Launching subagents" };
+  }
+  if (normalized === "search" || normalized === "read") {
+    return { kind: "investigation", label: "Investigation", activeLabel: "Investigating" };
   }
   const label = normalized
     ? normalized.split("_").filter(Boolean).map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ")

@@ -58,6 +58,7 @@ export function AccountSettingsPage() {
   })
   const identity = query.data
   const [username, setUsername] = useState('')
+  const [editingUsername, setEditingUsername] = useState(false)
   const [savedUsername, setSavedUsername] = useState<string | null>(null)
   const bootstrapped = Boolean(identity?.bootstrapped && identity.userID.trim() !== '')
   const hasTeam = Boolean(identity?.teamID.trim())
@@ -84,6 +85,7 @@ export function AccountSettingsPage() {
       queryClient.setQueryData<AccountIdentity>(['desktop-account-context'], (current) => current ? { ...current, username: updated.username } : current)
       updateDesktopSessionUsername(updated.username)
       setUsername(updated.username)
+      setEditingUsername(false)
       setSavedUsername(updated.username)
     },
   })
@@ -125,42 +127,66 @@ export function AccountSettingsPage() {
       {bootstrapped && identity ? (
         <>
           <Card className="grid gap-4 border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-5">
-            <form className="grid gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3" onSubmit={submitUsername}>
-              <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="account-username">
-                Username
-              </label>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  id="account-username"
-                  name="username"
-                  autoComplete="username"
-                  value={username}
-                  onChange={(event) => {
-                    setUsername(event.target.value)
-                    setSavedUsername(null)
-                  }}
-                  disabled={renameMutation.isPending}
-                  aria-describedby="account-username-help"
-                />
+            {editingUsername ? (
+              <form className="grid gap-2" onSubmit={submitUsername}>
+                <label className="sr-only" htmlFor="account-username">Username</label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    id="account-username"
+                    name="username"
+                    autoComplete="username"
+                    value={username}
+                    onChange={(event) => {
+                      setUsername(event.target.value)
+                      setSavedUsername(null)
+                    }}
+                    disabled={renameMutation.isPending}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      disabled={renameMutation.isPending || !username.trim() || username.trim() === identity.username}
+                    >
+                      {renameMutation.isPending ? 'Saving…' : 'Save'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={renameMutation.isPending}
+                      onClick={() => {
+                        setUsername(identity.username)
+                        setEditingUsername(false)
+                        setSavedUsername(null)
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+                {renameMutation.error ? (
+                  <p className="text-sm text-[var(--app-warning)]" role="alert">
+                    {renameMutation.error instanceof Error ? renameMutation.error.message : 'Failed to update username'}
+                  </p>
+                ) : null}
+              </form>
+            ) : (
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0 truncate text-base font-semibold text-[var(--app-text)]">{identity.username}</div>
                 <Button
-                  type="submit"
-                  variant="primary"
-                  disabled={renameMutation.isPending || !username.trim() || username.trim() === identity.username}
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => {
+                    setUsername(identity.username)
+                    setSavedUsername(null)
+                    setEditingUsername(true)
+                  }}
                 >
-                  {renameMutation.isPending ? 'Saving…' : 'Save username'}
+                  Edit
                 </Button>
               </div>
-              <p id="account-username-help" className="text-xs leading-5 text-[var(--app-text-muted)]">
-                Renaming updates this user in place. Your user ID remains {identity.userID}.
-              </p>
-              {renameMutation.error ? (
-                <p className="text-sm text-[var(--app-warning)]" role="alert">
-                  {renameMutation.error instanceof Error ? renameMutation.error.message : 'Failed to update username'}
-                </p>
-              ) : null}
-              {savedUsername ? <p className="text-sm text-[var(--app-success)]">Username changed to {savedUsername}.</p> : null}
-            </form>
-            <ReadonlyAccountRow label="Account mode" value={hasTeam ? 'Team shared' : 'User private'} />
+            )}
+            {savedUsername ? <p className="text-sm text-[var(--app-success)]">Username changed to {savedUsername}.</p> : null}
             {hasTeam ? (
               <>
                 <ReadonlyAccountRow label="Team name" value={identity.teamDisplayName || '—'} />

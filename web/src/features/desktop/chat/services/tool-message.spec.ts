@@ -1099,6 +1099,10 @@ function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('plan').activeLabel === 'Planning', 'plan should expose planning label');
   assert(describeToolActivity('task').kind === 'task', 'task should use subagent semantics');
   assert(describeToolActivity('task').activeLabel === 'Launching subagents', 'task should expose launch label');
+  assert(describeToolActivity('search').kind === 'investigation', 'search should use investigation semantics');
+  assert(describeToolActivity('search').activeLabel === 'Investigating', 'search should expose a stable investigation label');
+  assert(describeToolActivity('read').kind === 'investigation', 'read should use investigation semantics');
+  assert(describeToolActivity('read').label === 'Investigation', 'read should keep the same label as grouped investigation activity');
   assert(describeToolActivity('custom_tool').kind === 'generic', 'unknown tool should stay generic');
   assert(describeToolActivity('custom_tool').activeLabel === 'Running Custom Tool', 'generic label should be presentation ready');
 }

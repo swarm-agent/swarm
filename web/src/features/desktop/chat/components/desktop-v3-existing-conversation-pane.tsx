@@ -25,7 +25,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
-import { ChatMarkdown } from "./chat-markdown";
+import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
 } from "../services/tool-message";
@@ -581,6 +581,12 @@ export type DesktopV3RenderItem =
       tool: LiveRunOverlay["toolCallsByCallId"][string];
       timelineSeq?: number;
     }
+  | {
+      type: "search-read-group";
+      id: string;
+      toolMessages: StructuredToolMessage[];
+      timelineSeq?: number;
+    }
   | { type: "live-working"; id: string; timelineSeq?: number };
 
 type DesktopV3ScrollBehavior = "auto" | "smooth";
@@ -876,6 +882,8 @@ export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
       return item.message.id;
     case "message":
       return item.renderKey || item.message.id;
+    case "search-read-group":
+      return item.id;
     case "pending-user":
       return item.message.messageId;
     default:
@@ -903,6 +911,50 @@ export function orderDesktopV3LiveRenderItems(
       return left.index - right.index;
     })
     .map((entry) => entry.item);
+}
+
+function structuredSearchReadMessage(item: DesktopV3RenderItem): StructuredToolMessage | null {
+  const toolMessage = item.type === "message"
+    ? item.message.toolMessage ?? null
+    : item.type === "live-tool"
+      ? structuredLiveToolMessage(item.tool)
+      : null;
+  const toolName = toolMessage?.tool.trim().toLowerCase();
+  return toolName === "search" || toolName === "read" ? toolMessage : null;
+}
+
+export function groupDesktopV3SearchReadActivity(
+  orderedItems: DesktopV3RenderItem[],
+): DesktopV3RenderItem[] {
+  const grouped: DesktopV3RenderItem[] = [];
+  let pending: Array<{ item: DesktopV3RenderItem; toolMessage: StructuredToolMessage }> = [];
+
+  const flush = () => {
+    if (pending.length === 1) {
+      grouped.push(pending[0].item);
+    } else if (pending.length > 1) {
+      const first = pending[0].item;
+      grouped.push({
+        type: "search-read-group",
+        id: `search-read-group:${desktopV3RenderItemKey(first)}`,
+        toolMessages: pending.map((entry) => entry.toolMessage),
+        timelineSeq: renderItemTimelineSeq(first),
+      });
+    }
+    pending = [];
+  };
+
+  for (const item of orderedItems) {
+    const toolMessage = structuredSearchReadMessage(item);
+    if (toolMessage) {
+      pending.push({ item, toolMessage });
+      continue;
+    }
+    flush();
+    grouped.push(item);
+  }
+  flush();
+  return grouped;
 }
 
 function reasoningElapsedLabel(
@@ -1347,7 +1399,7 @@ export function buildDesktopV3ConversationRenderItems(
       }),
     );
   }
-  return orderDesktopV3LiveRenderItems(items);
+  return groupDesktopV3SearchReadActivity(orderDesktopV3LiveRenderItems(items));
 }
 
 export function resolveDesktopV3StopRunRequest(input: {
@@ -3018,6 +3070,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
       );
     case "live-tool":
       return <DesktopV3LiveToolCall tool={item.tool} taskChildActions={taskChildActions} />;
+    case "search-read-group":
+      return <SearchReadToolGroupView toolMessages={item.toolMessages} />;
     case "live-working":
       return null;
     default:
@@ -3823,13 +3877,9 @@ function DesktopV3ReasoningMessage({
   );
 }
 
-function DesktopV3LiveToolCall({
-  tool,
-  taskChildActions,
-}: {
-  tool: LiveRunOverlay["toolCallsByCallId"][string];
-  taskChildActions?: TaskChildCardActions;
-}) {
+function structuredLiveToolMessage(
+  tool: LiveRunOverlay["toolCallsByCallId"][string],
+): StructuredToolMessage | null {
   const providerReady = Boolean(
     tool.toolInstanceId?.startsWith("provider-tool:")
       && !tool.outputText?.trim()
@@ -3847,14 +3897,13 @@ function DesktopV3LiveToolCall({
           ? "done"
           : "running";
   const output = tool.outputText ?? "";
-  const args = tool.argumentsText ?? "";
   const error = tool.errorText?.trim() || (state === "error" ? output : "");
   const parsed = buildStructuredToolMessage({
     pathId: "run.v3.provider-tool-result.v1",
     tool: tool.toolName || "tool",
     callId: tool.callId,
     toolInstanceId: tool.toolInstanceId,
-    argumentsText: args,
+    argumentsText: tool.argumentsText ?? "",
     outputText: output,
     error,
     durationMs: tool.durationMs,
@@ -3863,7 +3912,17 @@ function DesktopV3LiveToolCall({
     taskStream: tool.taskStream,
   });
   if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq;
-  return <DesktopV3ToolMessage content="" toolMessage={parsed} taskChildActions={taskChildActions} />;
+  return parsed;
+}
+
+function DesktopV3LiveToolCall({
+  tool,
+  taskChildActions,
+}: {
+  tool: LiveRunOverlay["toolCallsByCallId"][string];
+  taskChildActions?: TaskChildCardActions;
+}) {
+  return <DesktopV3ToolMessage content="" toolMessage={structuredLiveToolMessage(tool)} taskChildActions={taskChildActions} />;
 }
 
 export function chatMessageToMessageSnapshot(
