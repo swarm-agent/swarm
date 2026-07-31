@@ -7,6 +7,9 @@ import (
 
 func TestUISettingsStoreDefaultsEnableThinkingTags(t *testing.T) {
 	defaults := DefaultUISettingsRecord()
+	if defaults.Theme.ActiveID != "tide" {
+		t.Fatalf("default theme = %q, want tide", defaults.Theme.ActiveID)
+	}
 	if !defaults.Chat.ThinkingTags {
 		t.Fatal("default thinking tags = false, want true")
 	}
@@ -61,6 +64,13 @@ func TestUISettingsStoreUpdateFromEmptyStorePreservesTrueDefaults(t *testing.T) 
 	}
 	if !stored.Chat.ThinkingTags {
 		t.Fatal("stored thinking tags = false, want true")
+	}
+}
+
+func TestUISettingsStoreNormalizesMissingThemeToTide(t *testing.T) {
+	record := NormalizeUISettingsRecordForExternal(UISettingsRecord{})
+	if record.Theme.ActiveID != "tide" {
+		t.Fatalf("normalized missing theme = %q, want tide", record.Theme.ActiveID)
 	}
 }
 

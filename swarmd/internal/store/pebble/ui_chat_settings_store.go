@@ -3,6 +3,8 @@ package pebblestore
 import (
 	"strings"
 	"time"
+
+	sharedtheme "swarm-refactor/swarmtui/theme"
 )
 
 type UIThemePaletteRecord struct {
@@ -211,7 +213,7 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 func DefaultUISettingsRecord() UISettingsRecord {
 	return normalizeUISettingsRecord(UISettingsRecord{
 		Theme: UIThemeSettingsRecord{
-			ActiveID: "crimson",
+			ActiveID: sharedtheme.DefaultThemeID(),
 		},
 		Chat: UIChatSettingsRecord{
 			ShowHeader:                      true,
@@ -254,7 +256,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Chat.UpdatedAt = 0
 	}
 	if record.Theme.ActiveID == "" {
-		record.Theme.ActiveID = "crimson"
+		record.Theme.ActiveID = sharedtheme.DefaultThemeID()
 	}
 	if record.Chat.DefaultNewSessionMode == "" {
 		record.Chat.DefaultNewSessionMode = "auto"
