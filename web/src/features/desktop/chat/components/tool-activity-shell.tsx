@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CheckCircle2, CircleStop, LoaderCircle, XCircle } from 'lucide-react'
+import { CheckCircle2, CircleStop, XCircle } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { getToolTheme } from '../services/tool-theme'
 import { toolActivityPresentation } from '../services/tool-activity'
@@ -40,14 +40,14 @@ export function ToolActivityShell({
   const theme = getToolTheme(toolMessage.tool)
   const ToolIcon = theme.icon
   const activity = toolActivityPresentation(toolMessage.tool, toolMessage.state, lifecycleStatus)
+  const active = activity.state === 'running'
   const StateIcon = activity.state === 'error'
     ? XCircle
     : activity.state === 'cancelled'
       ? CircleStop
-      : activity.state === 'running'
-        ? LoaderCircle
+      : active
+        ? null
         : CheckCircle2
-  const active = activity.state === 'running'
   const stateColor = activity.state === 'error'
     ? 'text-[var(--app-danger)]'
     : activity.state === 'cancelled'
@@ -91,7 +91,7 @@ export function ToolActivityShell({
           ) : null}
         </div>
         <span className={cn('inline-flex shrink-0 items-center gap-1 text-[10px] font-medium', stateColor)}>
-          <StateIcon size={12} className={cn(active && 'motion-safe:animate-spin motion-reduce:animate-none')} aria-hidden="true" />
+          {StateIcon ? <StateIcon size={12} aria-hidden="true" /> : null}
           <span className="hidden min-[360px]:inline">{activity.statusLabel}</span>
         </span>
       </header>

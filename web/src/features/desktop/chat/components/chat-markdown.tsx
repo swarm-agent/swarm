@@ -189,7 +189,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   const toolTheme = getToolTheme(toolMessage.tool);
   const ToolIcon = toolTheme.icon;
   const state = resolveToolState(toolMessage);
-  const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
+  const StateIcon = state === "error" ? XCircle : state === "running" ? null : CheckCircle2;
   const command = toolMessage.bashData?.command || toolMessage.commandText;
   const output = useMemo(() => bashOutputText(toolMessage), [toolMessage]);
   const outputIndex = useMemo(() => indexBashOutput(output), [output]);
@@ -255,7 +255,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
             bash
           </span>
           <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)]">
-            <StateIcon size={12} className={cn(state === "running" ? "animate-spin text-[var(--app-primary)]" : state === "error" ? "text-[var(--app-danger)]" : "text-[var(--app-text-subtle)]")} />
+            {StateIcon ? <StateIcon size={12} className={state === "error" ? "text-[var(--app-danger)]" : "text-[var(--app-text-subtle)]"} /> : null}
             {statusText}
           </span>
           {typeof exitCode === "number" ? <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">exit {exitCode}</span> : null}
@@ -1867,7 +1867,7 @@ function WebToolCardHeader({
   const toolTheme = getToolTheme(toolMessage.tool);
   const ToolIcon = toolTheme.icon;
   const state = resolveToolState(toolMessage);
-  const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
+  const StateIcon = state === "error" ? XCircle : state === "running" ? null : CheckCircle2;
   return (
     <header className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[var(--app-border)] px-3 py-2.5 text-xs">
       <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg" style={{ color: toolTheme.color, backgroundColor: toolAccentWash(toolTheme.color, 14) }}>
@@ -1883,7 +1883,7 @@ function WebToolCardHeader({
         "inline-flex shrink-0 items-center gap-1 text-[10px] font-medium",
         state === "error" ? "text-[var(--app-danger)]" : state === "running" ? "text-[var(--app-primary)]" : "text-[var(--app-text-muted)]",
       )}>
-        <StateIcon size={12} className={cn(state === "running" && "animate-spin")} />
+        {StateIcon ? <StateIcon size={12} /> : null}
         {webStateLabel(state)}
       </span>
     </header>
@@ -1990,7 +1990,7 @@ export function SearchReadToolGroupView({ toolMessages }: { toolMessages: Struct
     `${paths.length} ${paths.length === 1 ? "file" : "files"}`,
     totalMatches > 0 ? `${totalMatches} ${totalMatches === 1 ? "match" : "matches"}` : "",
   ].filter(Boolean).join(" · ");
-  const StateIcon = errorCount > 0 ? XCircle : runningCount > 0 ? LoaderCircle : CheckCircle2;
+  const StateIcon = errorCount > 0 ? XCircle : runningCount > 0 ? null : CheckCircle2;
 
   return (
     <div className="flex justify-start" data-search-read-group>
@@ -2002,7 +2002,7 @@ export function SearchReadToolGroupView({ toolMessages }: { toolMessages: Struct
             <div className="mt-0.5 min-w-0 break-words text-[11px] leading-4 text-[var(--app-text-muted)]">{summary}</div>
           </div>
           <span className="inline-flex shrink-0 items-center gap-1 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
-            <StateIcon size={11} className={runningCount > 0 && errorCount === 0 ? "animate-spin text-[var(--app-primary)]" : errorCount > 0 ? "text-[var(--app-danger)]" : ""} />
+            {StateIcon ? <StateIcon size={11} className={errorCount > 0 ? "text-[var(--app-danger)]" : ""} /> : null}
             {errorCount > 0 ? `${errorCount} failed` : runningCount > 0 ? `${runningCount} active` : "done"}
           </span>
         </header>
@@ -2071,7 +2071,7 @@ export function ToolMessageView({
     state === "error"
       ? XCircle
       : state === "running"
-        ? LoaderCircle
+        ? null
         : CheckCircle2;
   const normalizedTool = toolMessage.tool.trim().toLowerCase();
   const activityDescriptor = describeToolActivity(toolMessage.tool);
@@ -2153,16 +2153,14 @@ export function ToolMessageView({
             </div>
             <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
               {toolMessage.durationMs > 0 ? <span>{formatDuration(toolMessage.durationMs)}</span> : null}
-              {!isTask ? (
+              {!isTask && StateIcon ? (
                 <StateIcon
                   size={12}
                   className={cn(
                     "shrink-0",
-                    state === "running"
-                      ? "animate-spin text-[var(--app-primary)]"
-                      : state === "error"
-                        ? "text-[var(--app-danger)]"
-                        : "text-[var(--app-text-subtle)]",
+                    state === "error"
+                      ? "text-[var(--app-danger)]"
+                      : "text-[var(--app-text-subtle)]",
                   )}
                 />
               ) : null}

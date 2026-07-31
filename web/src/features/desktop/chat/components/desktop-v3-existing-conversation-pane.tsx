@@ -973,21 +973,6 @@ function reasoningElapsedLabel(
   return `${(elapsed / 60_000).toFixed(1)}m`;
 }
 
-function reasoningHeadline(
-  state: NonNullable<LiveRunOverlay["reasoning"]>["state"],
-  startedAt: number | null,
-  completedAt: number | null | undefined,
-  now: number,
-): string {
-  const label = state === "error" ? "Thinking failed" : "Thinking";
-  const elapsed = reasoningElapsedLabel(
-    startedAt,
-    state === "running" ? null : completedAt,
-    now,
-  );
-  return elapsed ? `${label} · ${elapsed}` : label;
-}
-
 function reasoningBody(
   text: string,
   summary: string,
@@ -3844,33 +3829,36 @@ function DesktopV3ReasoningMessage({
     return () => window.clearInterval(timer);
   }, [item.state]);
   const body = reasoningBody(item.text, item.summary, thinkingTagsEnabled);
-  const label = reasoningHeadline(
-    item.state,
+  const label = item.state === "error" ? "Thinking failed" : "Thinking";
+  const elapsed = reasoningElapsedLabel(
     item.startedAt,
-    item.completedAt ?? null,
+    item.state === "running" ? null : item.completedAt,
     timerNow,
   );
-  const StateIcon =
-    item.state === "running"
-      ? LoaderCircle
-      : item.state === "error"
-        ? XCircle
-        : CheckCircle2;
+  const StateIcon = item.state === "error" ? XCircle : CheckCircle2;
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)] opacity-80">
         <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-          <StateIcon
-            size={12}
-            className={
-              item.state === "running"
-                ? "animate-spin text-[var(--app-primary)]"
-                : item.state === "error"
+          {item.state === "running" ? null : (
+            <StateIcon
+              size={12}
+              className={
+                item.state === "error"
                   ? "text-[var(--app-danger)]"
                   : "text-[var(--app-text-subtle)]"
-            }
-          />
-          {label}
+              }
+            />
+          )}
+          <span
+            className={cn(
+              item.state === "running"
+                && "motion-safe:animate-[pulse_3s_ease-in-out_infinite] motion-reduce:animate-none",
+            )}
+          >
+            {label}
+          </span>
+          {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
         </div>
         {body ? <ChatMarkdown content={body} /> : null}
       </div>
