@@ -26,6 +26,8 @@ import { ComposerPlanModelControl } from './composer-plan-model-control'
 import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
 import { DesktopComposerActionMenu, type DesktopComposerTaskMode } from './desktop-composer-action-menu'
+import { DesktopWorkspaceActionPanel } from './desktop-workspace-action-panel'
+import type { WorkspaceAction } from '../../../workspaces/actions/types'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -179,6 +181,7 @@ export interface DesktopV3AgenticComposerProps {
   onMentionSelect?: (agent: string) => void
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
   focusSignal?: number
+  workspacePath?: string
 }
 
 export const DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME = "mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5";
@@ -268,6 +271,7 @@ export function DesktopV3AgenticComposer({
   onMentionSelect,
   onDropTodo,
   focusSignal = 0,
+  workspacePath = '',
 }: DesktopV3AgenticComposerProps) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const composerRootRef = useRef<HTMLDivElement | null>(null)
@@ -304,6 +308,7 @@ export function DesktopV3AgenticComposer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [fileDropZone, setFileDropZone] = useState<HTMLElement | null>(null)
   const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
+  const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
 
   const effectiveMediaCapability = mediaCapability?.status === 'available' && mediaCapability.capabilities.length > 0
     ? mediaCapability
@@ -915,6 +920,9 @@ export function DesktopV3AgenticComposer({
         fileDropZone,
       ) : null}
       <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
+        {selectedWorkspaceAction && workspacePath.trim() ? (
+          <DesktopWorkspaceActionPanel key={selectedWorkspaceAction.id} workspacePath={workspacePath} action={selectedWorkspaceAction} onClose={() => setSelectedWorkspaceAction(null)} />
+        ) : null}
         {visibleComposerError ? (
           <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-danger)]" role="alert">
             <span className="min-w-0 flex-1">{visibleComposerError}</span>
@@ -1026,6 +1034,8 @@ export function DesktopV3AgenticComposer({
               contextTooltip={contextTooltip}
               onCompact={onCompact ? () => { void onCompact(draft) } : undefined}
               compactDisabled={compactDisabled || !onCompact}
+              workspacePath={workspacePath}
+              onActionSelect={setSelectedWorkspaceAction}
             />
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">

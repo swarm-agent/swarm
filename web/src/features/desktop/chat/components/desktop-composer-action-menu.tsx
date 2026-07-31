@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus, Zap } from 'lucide-react'
+import { fetchWorkspaceActions, type WorkspaceAction } from '../../../workspaces/actions/types'
 
 export type DesktopComposerTaskMode = 'action' | 'plan'
 
@@ -13,9 +14,11 @@ interface DesktopComposerActionMenuProps {
   contextTooltip?: string
   onCompact?: () => void
   compactDisabled?: boolean
+  workspacePath?: string
+  onActionSelect?: (action: WorkspaceAction) => void
 }
 
-type ComposerActionMenuView = 'root' | 'task'
+type ComposerActionMenuView = 'root' | 'task' | 'actions'
 
 const TASK_EXPLANATION = 'Send your next message to a background agent in a managed worktree.'
 
@@ -29,11 +32,17 @@ export function DesktopComposerActionMenu({
   contextTooltip = '',
   onCompact,
   compactDisabled = false,
+  workspacePath = '',
+  onActionSelect,
 }: DesktopComposerActionMenuProps) {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<ComposerActionMenuView>('root')
   const menuId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
+  const [actions, setActions] = useState<WorkspaceAction[]>([])
+  const [actionsLoading, setActionsLoading] = useState(false)
+  const [actionsError, setActionsError] = useState('')
+  const [actionsRequest, setActionsRequest] = useState(0)
 
   const closeMenu = useCallback(() => {
     setOpen(false)
@@ -61,6 +70,22 @@ export function DesktopComposerActionMenu({
   useEffect(() => {
     if (disabled) closeMenu()
   }, [closeMenu, disabled])
+
+  useEffect(() => {
+    if (!open || view !== 'actions' || !workspacePath.trim()) return
+    const controller = new AbortController()
+    setActionsLoading(true)
+    setActionsError('')
+    void fetchWorkspaceActions(workspacePath, controller.signal)
+      .then(setActions)
+      .catch((error) => {
+        if (!controller.signal.aborted) setActionsError(error instanceof Error ? error.message : 'Could not load Actions.')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setActionsLoading(false)
+      })
+    return () => controller.abort()
+  }, [actionsRequest, open, view, workspacePath])
 
   const toggleMenu = () => {
     if (open) {
@@ -107,12 +132,32 @@ export function DesktopComposerActionMenu({
         <div
           id={menuId}
           role="menu"
-          aria-label={view === 'task' ? 'Task type' : 'Composer actions'}
+          aria-label={view === 'task' ? 'Task type' : view === 'actions' ? 'Workspace Actions' : 'Composer actions'}
           className="absolute bottom-full left-0 z-40 mb-2 w-[min(18rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 shadow-[var(--shadow-panel)]"
           data-testid="desktop-composer-actions-menu"
         >
           {view === 'root' ? (
             <>
+              {workspacePath.trim() && onActionSelect ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  onClick={() => setView('actions')}
+                  className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]"
+                  data-testid="desktop-composer-actions-menu-item"
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
+                    <Zap size={16} aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold">Actions</span>
+                    <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Run a saved workspace script</span>
+                  </span>
+                  <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
+                </button>
+              ) : null}
+
               <button
                 type="button"
                 role="menuitem"
@@ -171,7 +216,7 @@ export function DesktopComposerActionMenu({
                 </button>
               ) : null}
             </>
-          ) : (
+          ) : view === 'task' ? (
             <div data-testid="desktop-composer-task-submenu">
               <button
                 type="button"
@@ -207,6 +252,28 @@ export function DesktopComposerActionMenu({
                   <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Start the work right away</span>
                 </span>
               </button>
+            </div>
+          ) : (
+            <div data-testid="desktop-composer-actions-submenu">
+              <button type="button" onClick={() => setView('root')} className="mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:bg-[var(--app-surface-hover)]" aria-label="Back to composer actions">
+                <ChevronLeft size={15} aria-hidden="true" />
+                <span>Actions</span>
+              </button>
+              {actionsLoading ? (
+                <div className="flex items-center gap-2 px-2.5 py-4 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={15} className="animate-spin" />Loading Actions…</div>
+              ) : actionsError ? (
+                <div className="px-2.5 py-3" role="alert">
+                  <p className="text-xs text-[var(--app-danger)]">{actionsError}</p>
+                  <button type="button" onClick={() => setActionsRequest((value) => value + 1)} className="mt-2 text-xs font-semibold text-[var(--app-primary)]">Try again</button>
+                </div>
+              ) : actions.length === 0 ? (
+                <p className="px-2.5 py-4 text-xs text-[var(--app-text-muted)]">No Actions are saved for this workspace.</p>
+              ) : actions.map((action) => (
+                <button key={action.id} type="button" role="menuitem" onClick={() => { closeMenu(); onActionSelect?.(action) }} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)]">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]"><Zap size={15} aria-hidden="true" /></span>
+                  <span className="min-w-0 flex-1"><span className="block truncate font-semibold">{action.name}</span>{action.description ? <span className="block truncate text-[11px] text-[var(--app-text-subtle)]">{action.description}</span> : null}</span>
+                </button>
+              ))}
             </div>
           )}
         </div>

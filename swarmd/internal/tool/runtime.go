@@ -25,6 +25,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/discovery"
@@ -155,6 +156,7 @@ type Runtime struct {
 	agents               manageAgentService
 	orchestration        manageOrchestrationPolicyService
 	todos                manageTodoService
+	actions              manageActionService
 	uiSettings           manageThemeUISettingsService
 	themeWorkspace       manageThemeWorkspaceService
 	searchCoordinator    *SearchCoordinator
@@ -241,6 +243,15 @@ type manageAgentService interface {
 	SetActiveSubagentForAccount(accountScopeID, purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagent(purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagentForAccount(accountScopeID, purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
+}
+
+type manageActionService interface {
+	List(actionruntime.Scope) ([]pebblestore.WorkspaceAction, error)
+	Get(actionruntime.Scope, string) (pebblestore.WorkspaceAction, bool, error)
+	Create(actionruntime.CreateInput) (pebblestore.WorkspaceAction, error)
+	Update(actionruntime.UpdateInput) (pebblestore.WorkspaceAction, error)
+	Delete(actionruntime.Scope, string) (bool, error)
+	Reorder(actionruntime.Scope, []string) ([]pebblestore.WorkspaceAction, error)
 }
 
 type manageTodoService interface {
@@ -456,6 +467,12 @@ func (r *Runtime) SetManageAgentService(agents manageAgentService) {
 func (r *Runtime) SetManageOrchestrationPolicyService(service manageOrchestrationPolicyService) {
 	if r != nil {
 		r.orchestration = service
+	}
+}
+
+func (r *Runtime) SetManageActionService(actions manageActionService) {
+	if r != nil {
+		r.actions = actions
 	}
 }
 
@@ -1056,6 +1073,7 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+		manageActionsDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage_todos",
@@ -1523,6 +1541,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageSessions(ctx, scope, args)
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
+	case "manage-actions", "manage_actions":
+		return r.executeManageActions(scope, args)
 	case "manage-todos", "manage_todos":
 		return r.executeManageTodos(scope, args)
 	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":
@@ -8336,6 +8356,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-actions", "manage_actions":
+		return "manage_actions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
@@ -8915,6 +8937,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_agent"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-actions", "manage_actions":
+		return "manage_actions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	case "skill-use", "skill_use":
@@ -9356,6 +9380,8 @@ func toolPathID(name string) string {
 		return "tool.manage-agent.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
+	case "manage-actions", "manage_actions":
+		return "tool.manage-actions.v1"
 	case "manage-todos", "manage_todos":
 		return "tool.manage-todos.v1"
 	case "skill-use", "skill_use":

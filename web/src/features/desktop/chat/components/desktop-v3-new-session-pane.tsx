@@ -591,6 +591,7 @@ export function DesktopV3NewSessionPane({
         </div>
       </div>
       <DesktopV3AgenticComposer
+        workspacePath={workspace.path}
         draft={draft}
         focusSignal={composerFocusSignal}
         onDraftChange={setDraft}

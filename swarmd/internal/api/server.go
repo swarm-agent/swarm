@@ -20,6 +20,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 
+	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
@@ -110,6 +111,8 @@ type Server struct {
 	voice                       *voice.Service
 	uiSettings                  *uisettings.Service
 	todos                       *todo.Service
+	actions                     *actionruntime.Service
+	actionRuns                  *actionruntime.Runner
 	aiTasks                     aiTaskEnqueuer
 	swarm                       swarmService
 	update                      *update.Service
@@ -447,6 +450,14 @@ func (s *Server) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 	}
 }
 
+func (s *Server) SetActionService(actionSvc *actionruntime.Service) {
+	if s == nil {
+		return
+	}
+	s.actions = actionSvc
+	s.actionRuns = actionruntime.NewRunner(s.runCtx, actionSvc)
+}
+
 func (s *Server) SetTodoService(todoSvc *todo.Service) {
 	if s == nil {
 		return
@@ -523,6 +534,9 @@ func (s *Server) BeginShutdown() {
 	s.activeRunMu.Lock()
 	s.shuttingDown.Store(true)
 	s.activeRunMu.Unlock()
+	if s.actionRuns != nil {
+		s.actionRuns.CancelAll()
+	}
 }
 
 func (s *Server) CancelInFlightRuns() {
@@ -532,6 +546,9 @@ func (s *Server) CancelInFlightRuns() {
 	s.shuttingDown.Store(true)
 	if s.runCancel != nil {
 		s.runCancel()
+	}
+	if s.actionRuns != nil {
+		s.actionRuns.CancelAll()
 	}
 	if s.gitRealtime != nil {
 		s.gitRealtime.stopAll()
@@ -547,8 +564,12 @@ func (s *Server) WaitForInFlightRuns(timeout time.Duration) bool {
 	s.activeRunMu.Unlock()
 	if timeout <= 0 {
 		s.runWG.Wait()
+		if s.actionRuns != nil {
+			s.actionRuns.Wait(0)
+		}
 		return true
 	}
+	deadline := time.Now().Add(timeout)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -556,8 +577,15 @@ func (s *Server) WaitForInFlightRuns(timeout time.Duration) bool {
 	}()
 	select {
 	case <-done:
-		return true
-	case <-time.After(timeout):
+		if s.actionRuns == nil {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		return s.actionRuns.Wait(remaining)
+	case <-time.After(time.Until(deadline)):
 		return false
 	}
 }

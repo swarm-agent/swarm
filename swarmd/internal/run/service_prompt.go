@@ -79,6 +79,8 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- Do not use repository directories as scratch unless the repository contract explicitly permits a specific ignored path, and never treat repository scratch as a durable deliverable.",
 		"- Before starting recursive or highly parallel workloads, bound process fan-out and aggregate output size. Account for descendants and generated files, not only the top-level command.",
 		"- Avoid commands that recursively emit unbounded stdout/stderr or files; narrow the scope, cap concurrency/output, and preserve only the requested workspace artifacts.",
+		"- manage_actions is definition management only: list/get/create/update/delete/reorder workspace Actions, and never use it to run one. Action execution requires a direct user gesture through the dedicated workspace API/UI.",
+		"- Store Action entrypoints as workspace-relative paths and fixed options as structured argument arrays; never persist a shell command string and never create default/example Actions.",
 		"- For multiple independent user-owned manage_todos operations, prefer a single atomic `batch` action with an `operations` array when they should succeed or fail together.",
 		"- Use reorder only when relative list order matters; otherwise prefer independent create/update/delete/focus calls so parallel execution remains available.",
 		"- For read, it is safe to request up to 2000 lines per call; read as many lines/chunks as needed to gain full context.",

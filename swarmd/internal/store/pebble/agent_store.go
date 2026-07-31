@@ -377,6 +377,7 @@ func agentToolContractEnablesMutatingTools(contract *AgentToolContract) bool {
 		"ask_user":        {},
 		"exit_plan_mode":  {},
 		"list":            {},
+		"manage_actions":  {},
 		"manage_agent":    {},
 		"manage_skill":    {},
 		"manage_theme":    {},
@@ -519,6 +520,8 @@ func normalizeAgentToolScopeKey(value string) string {
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-actions", "manage_actions":
+		return "manage_actions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:

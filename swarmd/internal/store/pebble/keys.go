@@ -56,6 +56,7 @@ const (
 	KeyWorkspaceEntryByIDAccountPrefix             = "workspace/entry_by_id_by_account/"
 	KeyWorkspaceTodoItemPrefix                     = "workspace_todo/item/" // legacy unscoped records; recovery must terminalize active AI tasks.
 	KeyWorkspaceTodoItemAccountPrefix              = "workspace_todo/item_by_account/"
+	KeyWorkspaceActionAccountPrefix                = "workspace_action/item_by_account/"
 	KeyAITaskIdempotencyAccountPrefix              = "ai_task/idempotency_by_account/"
 	KeyAITaskAuditAccountPrefix                    = "ai_task/audit_by_account/"
 	KeyAITaskV2QueuePrefix                         = "ai_task/v2_queue/"
@@ -662,6 +663,14 @@ func KeyWorktreeConfigForAccount(accountScopeID, workspacePath string) string {
 
 func WorkspaceEntryPrefix() string {
 	return KeyWorkspaceEntryPrefix
+}
+
+func KeyWorkspaceActionForAccount(accountScopeID, workspaceID, actionID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyWorkspaceActionAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(actionID))
+}
+
+func WorkspaceActionPrefixForAccount(accountScopeID, workspaceID string) string {
+	return fmt.Sprintf("%s%s/%s/", KeyWorkspaceActionAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID))
 }
 
 func KeyWorkspaceTodoItem(workspacePath, itemID string) string {

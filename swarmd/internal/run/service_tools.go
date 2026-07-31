@@ -1011,6 +1011,8 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageWorktreeTool(ctx, sessionID, call, approvedArguments)
 		result.Output = output
 		return true, result, err
+	case "manage_actions":
+		return false, tool.Result{}, nil
 	case "manage_todos":
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
 		result.Output = output
@@ -4221,6 +4223,8 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"exit-plan-mode": true,
 		"plan_manage":    true,
 		"plan-manage":    true,
+		"manage_actions": true,
+		"manage-actions": true,
 		"manage_todos":   true,
 		"manage-todos":   true,
 		"manage_agent":   true,
@@ -4305,10 +4309,25 @@ func canonicalToolName(name string) string {
 		return "manage_sessions"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-actions", "manage_actions":
+		return "manage_actions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
+	}
+}
+
+func isManageActionsMutation(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(firstNonEmptyString(strings.TrimSpace(arguments), "{}")), &args); err != nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(mapString(args, "action"))) {
+	case "", "list", "get":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -4348,6 +4367,11 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return requirement, true
 		}
 		return toolName, false
+	case "manage_actions":
+		if isManageActionsMutation(arguments) {
+			return "action_change", true
+		}
+		return "manage_actions", false
 	case "manage_skill":
 		if !permission.ShouldApproveManageSkillMutation(arguments) {
 			return "manage_skill", false

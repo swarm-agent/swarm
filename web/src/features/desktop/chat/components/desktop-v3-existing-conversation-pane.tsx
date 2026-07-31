@@ -2860,6 +2860,7 @@ export function DesktopV3ExistingConversationPane({
 
           <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
+            workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             initialDraft={storedOperation?.request.content ?? ""}
             focusSignal={composerFocusSignal}
             hasStoredOperation={hasStoredOperation}

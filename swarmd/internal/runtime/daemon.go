@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/auth"
@@ -282,6 +283,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	})
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
+	actionSvc := actionruntime.NewService(pebblestore.NewWorkspaceActionStore(store))
 	integrationSvc := integrationruntime.NewService(pebblestore.NewIntegrationStore(store))
 	startupCfg, startupCfgErr := startupconfig.Load(cfg.ConfigPath)
 	if startupCfgErr != nil {
@@ -315,6 +317,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageAgentService(agentSvc)
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
+	toolRuntime.SetManageActionService(actionSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
 		cfg := tool.ExaRuntimeConfig{
@@ -450,6 +453,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)
+	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetSwarmStore(swarmStore)
