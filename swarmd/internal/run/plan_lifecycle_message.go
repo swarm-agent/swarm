@@ -461,23 +461,34 @@ func BuildBlockedPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleM
 	}
 	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
 	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
-	lines := []string{
-		"Blocked checkpoint handoff",
-		"",
-		"Status: BLOCKED",
+	blockedHandoff, err := planLifecycleFinalHandoff(doc, checkpointID)
+	if err != nil {
+		return PlanExecutionLifecycleMessage{}, false
 	}
-	if planLabel := planLifecyclePlanLabel(input.Plan, doc); planLabel != "" {
-		lines = append(lines, "Plan: "+planLabel)
+	if blockedHandoff == nil {
+		title := "Checkpoint blocked"
+		if checkpointTitle != "" {
+			title = checkpointTitle + " is blocked"
+		}
+		blockedHandoff = &pebblestore.PlanFinalHandoff{
+			SchemaVersion: sessionruntime.PlanFinalHandoffSchemaVersion,
+			Title:         title,
+			Overview:      "An external dependency, required input, or unavailable permission is preventing this checkpoint from continuing.",
+			ImpactBullets: []string{"Resolve the blocker described in the details, then ask Swarm to resume this checkpoint."},
+			Details: pebblestore.PlanFinalHandoffDetails{
+				Report:       stringFromPlanPayload(input.Payload, "report"),
+				Result:       stringFromPlanPayload(input.Payload, "result"),
+				ChangedFiles: stringsFromPlanPayload(input.Payload, "changed_files"),
+				Validation:   stringsFromPlanPayload(input.Payload, "validation"),
+			},
+		}
 	}
-	if checkpointID != "" {
-		lines = append(lines, "Checkpoint: "+planLifecycleCheckpointLabel(checkpointID, checkpointTitle))
-	}
-	lines = append(lines, "Resolution required: resolve the named external dependency, input, or permission in the report. Once confirmed, Swarm resumes this same checkpoint in fresh context; the checkpoint remains incomplete until the resumed agent records a normal outcome.")
-	if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, detailLines...)
+	lines := []string{blockedHandoff.Title, "", blockedHandoff.Overview}
+	for _, impact := range blockedHandoff.ImpactBullets {
+		lines = append(lines, "- "+impact)
 	}
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionBlockedHandoffMessageSource, "plan_blocked_checkpoint_handoff")
+	metadata["blocked_handoff"] = blockedHandoff
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
 }
 

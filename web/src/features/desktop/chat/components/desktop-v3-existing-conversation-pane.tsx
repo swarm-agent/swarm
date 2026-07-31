@@ -1201,7 +1201,9 @@ function buildDesktopV3PlanHandoffItem(
   const rawBody = bodyLines.join("\n").trim() || message.content.trim();
   const finalHandoff = type === "plan-final-handoff"
     ? normalizeDesktopPlanFinalHandoff(message.metadata?.final_handoff)
-    : null;
+    : type === "plan-blocked-handoff"
+      ? normalizeDesktopPlanFinalHandoff(message.metadata?.blocked_handoff)
+      : null;
   const parsed = finalHandoff
     ? { body: "", summary: "" }
     : parseDesktopV3HandoffSummary(rawBody);
@@ -2992,7 +2994,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
     case "plan-final-handoff":
       return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "plan-blocked-handoff":
-      return <DesktopV3PlanBlockedHandoff item={item} />;
+      return <DesktopV3PlanBlockedHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "message":
       return (
         <DesktopV3CommittedMessage
@@ -3436,10 +3438,15 @@ function DesktopV3StructuredFinalHandoff({
 
 function DesktopV3PlanBlockedHandoff({
   item,
+  onSuggestedPrompt,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-blocked-handoff" }>;
+  onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
 }) {
   const title = handoffTitleDetail(item.headline, ["Checkpoint blocked", "Blocked checkpoint"]);
+  const handoff = item.finalHandoff;
+  const details = handoff?.details;
+  const hasDetails = Boolean(details?.report || details?.result || details?.changedFiles.length || details?.validation.length);
   return (
     <div
       className="flex w-full min-w-0 justify-start py-1"
@@ -3458,8 +3465,57 @@ function DesktopV3PlanBlockedHandoff({
             <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-warning)]">
               Blocked checkpoint
             </div>
-            {title ? <h3 className="mt-1 break-words font-semibold text-[var(--app-text)]">{title}</h3> : null}
-            <DesktopV3PlanHandoffContent item={item} />
+            {title ? <h3 className="mt-1 break-words text-base font-semibold text-[var(--app-text)]">{title}</h3> : null}
+            {handoff ? (
+              <>
+                <div className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]" data-blocked-handoff-overview>
+                  <ChatMarkdown content={handoff.overview} />
+                </div>
+                {handoff.impactBullets.length > 0 ? (
+                  <ul className="mt-2 grid gap-1.5 text-sm leading-5 text-[var(--app-text-muted)]" data-blocked-handoff-impact>
+                    {handoff.impactBullets.map((impact, index) => (
+                      <li key={`${item.message.id}:blocked-impact:${index}`} className="flex min-w-0 items-start gap-2">
+                        <span aria-hidden="true" className="mt-2 size-1 shrink-0 rounded-full bg-[var(--app-warning)]" />
+                        <span className="min-w-0 break-words">{impact}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {handoff.suggestedPrompts.length > 0 ? (
+                  <div className="mt-3" data-blocked-handoff-suggestions>
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next steps</div>
+                    <div className="mt-1.5 flex flex-wrap gap-2">
+                      {handoff.suggestedPrompts.map((suggestion, index) => (
+                        <button
+                          key={`${item.message.id}:blocked-prompt:${index}`}
+                          type="button"
+                          className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-left text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-warning)] disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={!onSuggestedPrompt}
+                          title={suggestion.prompt}
+                          onClick={() => selectDesktopV3SuggestedPrompt(suggestion.prompt, onSuggestedPrompt)}
+                          data-blocked-handoff-prompt={suggestion.prompt}
+                        >
+                          {suggestion.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {hasDetails ? (
+                  <details className="mt-3 border-t border-[var(--app-border)] pt-2" data-blocked-handoff-evidence>
+                    <summary className="cursor-pointer py-1 text-xs font-medium text-[var(--app-text-muted)]">Details</summary>
+                    <div className="mt-1 border-l border-[var(--app-border)] pl-3 text-xs text-[var(--app-text-muted)]">
+                      {details?.report ? <ChatMarkdown content={details.report} /> : null}
+                      {details?.result ? <div className="mt-2"><div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Result</div><ChatMarkdown content={details.result} /></div> : null}
+                      {details?.changedFiles.length ? <div className="mt-2">Files: {details.changedFiles.join(", ")}</div> : null}
+                      {details?.validation.length ? <div className="mt-2"><div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Validation</div><ul className="grid gap-1">{details.validation.map((entry, index) => <li key={`${item.message.id}:blocked-validation:${index}`}>{entry}</li>)}</ul></div> : null}
+                    </div>
+                  </details>
+                ) : null}
+              </>
+            ) : (
+              <DesktopV3PlanHandoffContent item={item} />
+            )}
           </div>
         </div>
       </section>

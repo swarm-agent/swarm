@@ -849,11 +849,17 @@ func TestExecutePlanManageBlockedCheckpointHandoffIsStandalone(t *testing.T) {
 
 	var appliedMutations []sessionruntime.SessionMutationInput
 	applyMutation := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		if input.UserID == "" {
+			input.UserID = "user-test"
+		}
+		if input.AccountScopeID == "" {
+			input.AccountScopeID = "account-test"
+		}
 		appliedMutations = append(appliedMutations, input)
 		return sessionSvc.ApplySessionMutation(input)
 	}
 
-	raw, err := runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"mark_blocked","checkpoint_id":"cp-a","attempt_id":"attempt-blocked","run_id":"run-blocked","run_session_id":"child-session","parent_session_id":"parent-session","report":"## Blocker\n- dependency missing","result":"blocked","validation":["- not run; blocked by dependency"]}`, "", applyMutation)
+	raw, err := runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"mark_blocked","checkpoint_id":"cp-a","attempt_id":"attempt-blocked","run_id":"run-blocked","run_session_id":"child-session","parent_session_id":"parent-session","handoff_title":"Dependency required","handoff_overview":"The checkpoint cannot continue until the deployment dependency is available.","impact_bullets":["Resolution: make the dependency available, then resume this checkpoint.","No deployment state changed."],"suggested_prompts":[{"label":"Resume checkpoint","prompt":"The dependency is available now. Resume this checkpoint."}],"report":"## Blocker\n- dependency missing","result":"blocked","validation":["- not run; blocked by dependency"]}`, "", applyMutation)
 	if err != nil {
 		t.Fatalf("mark blocked: %v output=%s", err, raw)
 	}
@@ -872,10 +878,21 @@ func TestExecutePlanManageBlockedCheckpointHandoffIsStandalone(t *testing.T) {
 	if handoff.Role != "system" || handoff.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource || handoff.Metadata["kind"] != "plan_blocked_checkpoint_handoff" || handoff.Metadata["action"] != "mark_blocked" || handoff.Metadata["next_action"] != "stopped" {
 		t.Fatalf("blocked handoff metadata = %#v", handoff.Metadata)
 	}
-	for _, want := range []string{"Blocked checkpoint handoff", "Status: BLOCKED", "Plan: Blocked Handoff", "Checkpoint: Checkpoint a — Blocked", "Resolution required: resolve the named external dependency, input, or permission", "Report:\n## Blocker\n- dependency missing", "\n\nResult: blocked", "\n\nValidation:\n- not run; blocked by dependency"} {
+	for _, want := range []string{"Dependency required", "The checkpoint cannot continue until the deployment dependency is available.", "- Resolution: make the dependency available, then resume this checkpoint.", "- No deployment state changed."} {
 		if !strings.Contains(handoff.Content, want) {
 			t.Fatalf("blocked handoff content missing %q: %q", want, handoff.Content)
 		}
+	}
+	for _, unwanted := range []string{"Status: BLOCKED", "Plan: Blocked Handoff", "Report:", "Validation:"} {
+		if strings.Contains(handoff.Content, unwanted) {
+			t.Fatalf("blocked handoff content should keep %q out of the compact message: %q", unwanted, handoff.Content)
+		}
+	}
+	blockedProjection, ok := handoff.Metadata["blocked_handoff"].(map[string]any)
+	blockedDetails, detailsOK := blockedProjection["details"].(map[string]any)
+	blockedPrompts, promptsOK := blockedProjection["suggested_prompts"].([]any)
+	if !ok || !detailsOK || !promptsOK || blockedProjection["title"] != "Dependency required" || blockedDetails["report"] != "## Blocker\n- dependency missing" || len(blockedPrompts) != 1 {
+		t.Fatalf("blocked handoff projection = %#v", handoff.Metadata["blocked_handoff"])
 	}
 	if len(appliedMutations) != 2 || appliedMutations[1].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[1].Message == nil || appliedMutations[1].Message.Metadata["source"] != PlanExecutionBlockedHandoffMessageSource {
 		t.Fatalf("blocked handoff mutation ordering = %#v", appliedMutations)

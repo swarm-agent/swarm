@@ -142,6 +142,11 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"a missing interface or API, scope growth, uncertainty, or an incomplete/failed first approach is implementation work",
 		"Use mark_needs_review only when user or audit judgment is inherently required",
 		"Use mark_blocked only for a named external dependency, required input, or unavailable permission",
+		"Blocked checkpoint handoff required when using mark_blocked",
+		"handoff_overview that identifies the external dependency/input/permission",
+		"impact_bullets led by the exact resolution required",
+		"suggested_prompts as ordinary user messages for likely next steps",
+		"client presents that evidence collapsed beneath the compact blocked handoff",
 		"Use mark_failed only for a nonrecoverable execution error after reasonable recovery attempts",
 		"backend durable plan state decides continuation",
 	} {

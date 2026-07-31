@@ -514,14 +514,31 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
 })
 
 
-test('Desktop V3 blocked checkpoint handoff renders as one standalone handoff', () => {
+test('Desktop V3 blocked checkpoint handoff renders a compact summary with collapsed evidence', () => {
+  const resumePrompt = 'PR #28 is merged. Resume the deployment checkpoint.'
   const handoff = {
     id: 'plan-handoff-blocked',
     session_id: 'session-a',
     global_seq: 10,
     role: 'system',
-    content: 'Blocked checkpoint handoff\n\nStatus: BLOCKED\nPlan: Demo plan\nCheckpoint: Checkpoint 1 — API\nResolution required: resolve the named external dependency, input, or permission in the report before continuing checkpoint execution.\n\nReport:\n## Blocker\n- waiting on dependency\nResult: blocked\nValidation:\n- not run; blocked by dependency',
-    metadata: { source: 'plan_execution_blocked_handoff', kind: 'plan_blocked_checkpoint_handoff' },
+    content: 'PR #28 must be merged\n\nProduction deployment cannot continue because the reviewed commit is not in canonical main.\n- Resolution: merge PR #28, then resume this checkpoint.\n- No production state changed.',
+    metadata: {
+      source: 'plan_execution_blocked_handoff',
+      kind: 'plan_blocked_checkpoint_handoff',
+      blocked_handoff: {
+        schema_version: 1,
+        title: 'PR #28 must be merged',
+        overview: 'Production deployment cannot continue because the reviewed commit is not in canonical main.',
+        impact_bullets: ['Resolution: merge PR #28, then resume this checkpoint.', 'No production state changed.'],
+        suggested_prompts: [{ label: 'Resume deployment', prompt: resumePrompt }],
+        details: {
+          report: 'Full source-gate report',
+          result: 'Blocked on source promotion',
+          changed_files: [],
+          validation: ['origin/main does not contain the reviewed commit'],
+        },
+      },
+    },
     created_at: 10,
   }
 
@@ -531,19 +548,22 @@ test('Desktop V3 blocked checkpoint handoff renders as one standalone handoff', 
   const items = buildDesktopV3ConversationRenderItems({ committed: [handoff], pendingUser: [], liveRuns: [], runIntents: [] })
   assert.deepEqual(items.map((item) => item.type), ['plan-blocked-handoff'])
   if (items[0]?.type === 'plan-blocked-handoff') {
-    assert.equal(items[0].headline, 'Blocked checkpoint handoff')
-    assert.equal(items[0].summary, '')
-    assert.match(items[0].body, /Status: BLOCKED/)
-    assert.match(items[0].body, /Plan: Demo plan/)
-    assert.match(items[0].body, /Checkpoint: Checkpoint 1 — API/)
-    assert.match(items[0].body, /Resolution required:/)
-    assert.match(items[0].body, /Report:\n## Blocker\n- waiting on dependency/)
-    assert.match(items[0].body, /Result: blocked/)
-    assert.match(items[0].body, /Validation:\n- not run; blocked by dependency/)
+    assert.equal(items[0].headline, 'PR #28 must be merged')
+    assert.equal(items[0].body, '')
+    assert.equal(items[0].finalHandoff?.overview, 'Production deployment cannot continue because the reviewed commit is not in canonical main.')
     const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
       item: items[0], thinkingTagsEnabled: true, timerNow: 0, index: 0,
+      onSuggestedPrompt: () => undefined,
     }))
     assert.match(markup, /data-testid="desktop-v3-plan-blocked-handoff"/)
+    assert.match(markup, /PR #28 must be merged/)
+    assert.match(markup, /Resolution: merge PR #28/)
+    assert.match(markup, /Next steps/)
+    assert.match(markup, /Resume deployment/)
+    assert.match(markup, /<summary[^>]*>Details<\/summary>/)
+    assert.match(markup, /Full source-gate report/)
+    assert.match(markup, /origin\/main does not contain the reviewed commit/)
+    assert.doesNotMatch(markup, /<details open/)
     assert.doesNotMatch(markup, /At a glance/)
   }
 })
