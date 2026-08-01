@@ -137,7 +137,12 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 			activePlan = &plan
 		}
 	}
+	identity, err := sessionsV3SessionIdentityFromSnapshot(session)
+	if err != nil {
+		return sessionsV3SessionView{}, err
+	}
 	return sessionsV3SessionView{
+		Identity: &identity,
 		AgenticSettings: sessionsV3AgenticSettings{
 			Mode:                strings.TrimSpace(session.Mode),
 			AgentName:           sessionsV3MetadataString(session.Metadata, "agent_name"),

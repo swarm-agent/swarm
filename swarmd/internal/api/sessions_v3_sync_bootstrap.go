@@ -553,6 +553,7 @@ type sessionsV3ExecutionEpochView struct {
 }
 
 type sessionsV3SessionView struct {
+	Identity              *sessionsV3SessionIdentity       `json:"identity,omitempty"`
 	AgenticSettings       sessionsV3AgenticSettings        `json:"agentic_settings"`
 	MediaCapability       sessionsV3MediaCapability        `json:"media_capability"`
 	CurrentExecutionEpoch *sessionsV3ExecutionEpochView    `json:"current_execution_epoch,omitempty"`
