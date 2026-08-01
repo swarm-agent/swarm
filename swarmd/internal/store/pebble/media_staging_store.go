@@ -363,7 +363,9 @@ func (s *MediaStagingStore) Read(accountScopeID, stagingID string, nowUnixMs int
 
 // Bind atomically consumes all listed staging blobs after the caller has
 // materialized the corresponding authoritative SessionMediaAsset records.
-// Exact repeats are idempotent; partial or conflicting repeats fail closed.
+// Routed creation uses the same preflight/batch helpers to include this
+// transition in the canonical V3 mutation commit. Exact repeats are idempotent;
+// partial or conflicting repeats fail closed.
 func (s *MediaStagingStore) Bind(input BindMediaStagingInput) ([]MediaStagingRecord, bool, error) {
 	if s == nil || s.store == nil || s.mu == nil {
 		return nil, false, errors.New("media staging store is not configured")
@@ -385,6 +387,51 @@ func (s *MediaStagingStore) Bind(input BindMediaStagingInput) ([]MediaStagingRec
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.bindLocked(BindMediaStagingInput{
+		AccountScopeID: input.AccountScopeID,
+		SessionID:      input.SessionID,
+		Bindings:       normalizeMediaStagingBindings(input.Bindings),
+		NowUnixMs:      now,
+	}, now)
+}
+
+func (s *MediaStagingStore) prepareBindLocked(input BindMediaStagingInput) ([]MediaStagingRecord, bool, error) {
+	input.AccountScopeID = strings.TrimSpace(input.AccountScopeID)
+	input.SessionID = strings.TrimSpace(input.SessionID)
+	input.Bindings = normalizeMediaStagingBindings(input.Bindings)
+	if input.AccountScopeID == "" || input.SessionID == "" || len(input.Bindings) == 0 {
+		return nil, false, errors.New("media staging account, session, and bindings are required")
+	}
+	if len(input.AccountScopeID) > 512 || len(input.SessionID) > 512 {
+		return nil, false, errors.New("media staging binding scope exceeds bounds")
+	}
+	if len(input.Bindings) > MediaStagingDefaultMaxCount {
+		return nil, false, errors.New("media staging binding count exceeds bounds")
+	}
+	now := input.NowUnixMs
+	if now == 0 {
+		now = time.Now().UnixMilli()
+	}
+	return s.preflightBindLocked(input, now)
+}
+
+func (s *MediaStagingStore) bindLocked(input BindMediaStagingInput, now int64) ([]MediaStagingRecord, bool, error) {
+	records, replayed, err := s.preflightBindLocked(input, now)
+	if err != nil || replayed {
+		return records, replayed, err
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := setMediaStagingBindingsInBatch(batch, records, input.Bindings, input.SessionID, now); err != nil {
+		return nil, false, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return nil, false, err
+	}
+	return boundMediaStagingRecords(records, input.Bindings, input.SessionID, now), false, nil
+}
+
+func (s *MediaStagingStore) preflightBindLocked(input BindMediaStagingInput, now int64) ([]MediaStagingRecord, bool, error) {
 	seen := make(map[string]struct{}, len(input.Bindings))
 	records := make([]MediaStagingRecord, len(input.Bindings))
 	allReplayed := true
@@ -435,32 +482,50 @@ func (s *MediaStagingStore) Bind(input BindMediaStagingInput) ([]MediaStagingRec
 			return nil, false, ErrMediaStagingConflict
 		}
 	}
-	batch := s.store.NewBatch()
-	defer batch.Close()
-	for index, record := range records {
-		record.State = MediaStagingStateBound
-		record.BoundAt = now
-		record.BoundSessionID = input.SessionID
-		record.AuthorityAssetID = strings.TrimSpace(input.Bindings[index].AuthorityAssetID)
+	return records, false, nil
+}
+
+func setMediaStagingBindingsInBatch(batch *pebble.Batch, records []MediaStagingRecord, bindings []MediaStagingBinding, sessionID string, now int64) error {
+	if batch == nil || len(records) == 0 || len(records) != len(bindings) {
+		return errors.New("complete media staging batch bindings are required")
+	}
+	for _, record := range boundMediaStagingRecords(records, bindings, sessionID, now) {
 		payload, err := json.Marshal(record)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
 		if err := batch.Set([]byte(KeyMediaStagingRecord(record.AccountScopeID, record.ID)), payload, nil); err != nil {
-			return nil, false, err
+			return err
 		}
 		if err := batch.Delete([]byte(KeyMediaStagingBlob(record.AccountScopeID, record.ID)), nil); err != nil {
-			return nil, false, err
+			return err
 		}
 		if err := batch.Delete([]byte(keyMediaStagingExpiry(record.ExpiresAt, record.ID)), nil); err != nil {
-			return nil, false, err
+			return err
 		}
-		records[index] = record
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return nil, false, err
+	return nil
+}
+
+func normalizeMediaStagingBindings(bindings []MediaStagingBinding) []MediaStagingBinding {
+	normalized := append([]MediaStagingBinding(nil), bindings...)
+	for index := range normalized {
+		normalized[index].StagingID = strings.TrimSpace(normalized[index].StagingID)
+		normalized[index].AuthorityAssetID = strings.TrimSpace(normalized[index].AuthorityAssetID)
+		normalized[index].DigestSHA256 = strings.ToLower(strings.TrimSpace(normalized[index].DigestSHA256))
 	}
-	return records, false, nil
+	return normalized
+}
+
+func boundMediaStagingRecords(records []MediaStagingRecord, bindings []MediaStagingBinding, sessionID string, now int64) []MediaStagingRecord {
+	bound := append([]MediaStagingRecord(nil), records...)
+	for index := range bound {
+		bound[index].State = MediaStagingStateBound
+		bound[index].BoundAt = now
+		bound[index].BoundSessionID = strings.TrimSpace(sessionID)
+		bound[index].AuthorityAssetID = strings.TrimSpace(bindings[index].AuthorityAssetID)
+	}
+	return bound
 }
 
 func (s *MediaStagingStore) Delete(accountScopeID, stagingID string, nowUnixMs int64) (MediaStagingRecord, bool, error) {

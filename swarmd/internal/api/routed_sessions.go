@@ -511,18 +511,10 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeRoutedSessionError(w, err)
 		return
 	}
-	mutation, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: createHash, RequestHash: createHash, Kind: sessionruntime.SessionMutationCreateSession, Session: &candidate, Message: &message, RunIntent: runIntent, NowUnixMs: now})
+	mutation, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: createHash, RequestHash: createHash, Kind: sessionruntime.SessionMutationCreateSession, Session: &candidate, Message: &message, RunIntent: runIntent, MediaStagingBindings: stagingBindings, NowUnixMs: now})
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return
-	}
-	if len(stagingBindings) > 0 {
-		if _, _, err = s.mediaStaging.Bind(pebblestore.BindMediaStagingInput{AccountScopeID: principal.AccountScopeID, SessionID: sessionID, Bindings: stagingBindings, NowUnixMs: now}); err != nil {
-			// The durable create/message mutation already committed. Return its
-			// canonical success instead of misreporting a failed routed start;
-			// staging reconciliation remains safely replayable by session/asset ID.
-			log.Printf("routed session staging bind reconciliation required session_id=%q err=%v", sessionID, err)
-		}
 	}
 	cleanup = false
 	mediaCommitted = true

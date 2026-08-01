@@ -79,6 +79,7 @@ type V3SessionMutationInput struct {
 	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
 	PlanAcceptance       *V3PlanAcceptanceMutation `json:"plan_acceptance,omitempty"`
 	PlanSave             *V3PlanSaveMutation       `json:"plan_save,omitempty"`
+	MediaStagingBindings []MediaStagingBinding     `json:"media_staging_bindings,omitempty"`
 	EpochID              string                    `json:"epoch_id,omitempty"`
 	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
@@ -552,6 +553,12 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
 	defer unlockSession()
 
+	if len(input.MediaStagingBindings) > 0 {
+		mediaStaging := NewMediaStagingStore(s.store)
+		mediaStaging.mu.Lock()
+		defer mediaStaging.mu.Unlock()
+	}
+
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
 
 	if existing, ok, err := s.getV3SessionIdempotencyRecordByKey(idempotencyKey); err != nil {
@@ -699,6 +706,21 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	mediaAssets, err := s.prepareV3MessageMediaAssets(input, message, messageProvided)
 	if err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	var mediaStagingRecords []MediaStagingRecord
+	if len(input.MediaStagingBindings) > 0 {
+		mediaStagingRecords, replayed, bindErr := NewMediaStagingStore(s.store).prepareBindLocked(BindMediaStagingInput{
+			AccountScopeID: input.AccountScopeID,
+			SessionID:      input.SessionID,
+			Bindings:       input.MediaStagingBindings,
+			NowUnixMs:      now,
+		})
+		if bindErr != nil {
+			return V3SessionMutationResult{}, bindErr
+		}
+		if replayed {
+			return V3SessionMutationResult{}, errors.New("media staging bindings already committed without routed mutation authority")
+		}
 	}
 	turnUsage, usageSummary, usageProvided, err := s.prepareV3UsageForMutation(input, now)
 	if err != nil {
@@ -884,6 +906,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if len(mediaStagingRecords) > 0 {
+		if err := setMediaStagingBindingsInBatch(batch, mediaStagingRecords, input.MediaStagingBindings, input.SessionID, now); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if messageProvided {
 		messagePayload, err := json.Marshal(message)
 		if err != nil {
@@ -967,6 +994,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if err := batch.Set([]byte(idempotencyStoreKey), idempotencyPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if len(mediaStagingRecords) > 0 {
+		if hook := s.store.sessionMutations.beforeMediaStagingBindCommit; hook != nil {
+			if err := hook(input.SessionID); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
 	}
 	if hook := s.store.sessionMutations.beforeDurableCommit; hook != nil {
 		hook(input.SessionID)
@@ -2578,6 +2612,18 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
+	if len(input.MediaStagingBindings) > 0 {
+		if input.Kind != V3SessionMutationCreateSession || input.Message == nil || len(input.Message.Media) != len(input.MediaStagingBindings) {
+			return errors.New("media staging bindings require a create-session mutation with matching message media")
+		}
+		bindings := normalizeMediaStagingBindings(input.MediaStagingBindings)
+		for index, binding := range bindings {
+			reference := input.Message.Media[index]
+			if binding.AuthorityAssetID != strings.TrimSpace(reference.AssetID) || binding.DigestSHA256 != strings.ToLower(strings.TrimSpace(reference.DigestSHA256)) {
+				return fmt.Errorf("media staging binding %d does not match message authority", index)
+			}
+		}
+	}
 	if err := validateCanonicalSessionID(input.SessionID); err != nil {
 		return err
 	}
