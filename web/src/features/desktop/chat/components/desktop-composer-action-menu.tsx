@@ -449,10 +449,12 @@ export function DesktopComposerActionMenu({
                 <span className="text-[var(--app-text-subtle)]" aria-hidden="true">·</span>
                 <span className="text-[var(--app-text)]">Actions</span>
               </button>
-              <div className="mx-2.5 mb-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-3 text-center">
-                <p className="text-xs leading-5 text-[var(--app-text-muted)]">{ACTIONS_EXPLANATION}</p>
-                <p className="mt-1 text-xs font-medium leading-5 text-[var(--app-text)]">Ask Swarm to help you create or manage Actions.</p>
-              </div>
+              {!actionsLoading && !actionsError && actions.length === 0 ? (
+                <div className="mx-2.5 mb-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-3 text-center">
+                  <p className="text-xs leading-5 text-[var(--app-text-muted)]">{ACTIONS_EXPLANATION}</p>
+                  <p className="mt-1 text-xs font-medium leading-5 text-[var(--app-text)]">Ask Swarm to help you create or manage Actions.</p>
+                </div>
+              ) : null}
               {actionsLoading ? (
                 <div className="flex items-center gap-2 px-2.5 py-4 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={15} className="animate-spin" />Loading Actions…</div>
               ) : actionsError ? (
