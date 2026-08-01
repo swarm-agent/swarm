@@ -35,6 +35,7 @@ const (
 	interruptChatAsync         = "chat-async"
 	interruptReloadReady       = "reload-ready"
 	interruptAuthReady         = "auth-ready"
+	interruptOnboardingReady   = "onboarding-ready"
 	interruptVoiceReady        = "voice-ready"
 	interruptStreamReady       = "stream-ready"
 	interruptGitStatusReady    = "git-status-ready"
@@ -109,6 +110,12 @@ func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
 	})
 	return items
+}
+
+type onboardingWorkspaceResult struct {
+	model model.HomeModel
+	path  string
+	err   error
 }
 
 type homeReloadResult struct {
@@ -247,6 +254,7 @@ type App struct {
 	homeWorkspaceBootstrapped atomic.Bool
 	authLoginCh               chan authLoginResult
 	authLogging               atomic.Bool
+	onboardingWorkspaceCh     chan onboardingWorkspaceResult
 	codexPending              *codexCodeLoginState
 
 	voiceCaptureSeq        int64
@@ -353,34 +361,35 @@ func New() (*App, error) {
 	cfg, cfgErr := loadAppConfig(api)
 
 	app := &App{
-		screen:              s,
-		home:                ui.NewHomePage(initial),
-		route:               "home",
-		api:                 api,
-		startupCWD:          cwd,
-		activePath:          cwd,
-		workspacePath:       "",
-		selectedChatRouteID: "",
-		homeModel:           initial,
-		config:              cfg,
-		settingsLabel:       settingsBackendLabel,
-		keybinds:            ui.NewDefaultKeyBindings(),
-		lastReloadAt:        time.Now(),
-		reloadCh:            make(chan homeReloadResult, 1),
-		authLoginCh:         make(chan authLoginResult, 1),
-		voiceCaptureCh:      make(chan voiceCaptureEvent, 4),
-		streamEvents:        make(chan client.StreamEventEnvelope, 256),
-		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
-		gitWatcherReady:     make(chan gitWatcherStartResult, 1),
-		notificationCountCh: make(chan notificationCountResult, 1),
-		pendingChatRender:   make(chan struct{}, 1),
-		pendingV3ChatRender: make(chan struct{}, 1),
-		pendingStreamReady:  make(chan struct{}, 1),
-		tuiSessionStore:     newTUISessionStore(),
-		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 256),
-		tuiRealtimeStatuses: make(chan tuiRealtimeStatus, 32),
-		tuiRealtimeClientID: fmt.Sprintf("tui:%d", time.Now().UnixNano()),
-		workspaceCandidates: make([]workspaceCandidate, 0, 128),
+		screen:                s,
+		home:                  ui.NewHomePage(initial),
+		route:                 "home",
+		api:                   api,
+		startupCWD:            cwd,
+		activePath:            cwd,
+		workspacePath:         "",
+		selectedChatRouteID:   "",
+		homeModel:             initial,
+		config:                cfg,
+		settingsLabel:         settingsBackendLabel,
+		keybinds:              ui.NewDefaultKeyBindings(),
+		lastReloadAt:          time.Now(),
+		reloadCh:              make(chan homeReloadResult, 1),
+		authLoginCh:           make(chan authLoginResult, 1),
+		onboardingWorkspaceCh: make(chan onboardingWorkspaceResult, 1),
+		voiceCaptureCh:        make(chan voiceCaptureEvent, 4),
+		streamEvents:          make(chan client.StreamEventEnvelope, 256),
+		gitStatusCh:           make(chan gitStatusRefreshResult, 8),
+		gitWatcherReady:       make(chan gitWatcherStartResult, 1),
+		notificationCountCh:   make(chan notificationCountResult, 1),
+		pendingChatRender:     make(chan struct{}, 1),
+		pendingV3ChatRender:   make(chan struct{}, 1),
+		pendingStreamReady:    make(chan struct{}, 1),
+		tuiSessionStore:       newTUISessionStore(),
+		tuiRealtimeFrames:     make(chan client.V3RealtimeFrame, 256),
+		tuiRealtimeStatuses:   make(chan tuiRealtimeStatus, 32),
+		tuiRealtimeClientID:   fmt.Sprintf("tui:%d", time.Now().UnixNano()),
+		workspaceCandidates:   make([]workspaceCandidate, 0, 128),
 	}
 	app.keybinds.ApplyOverrides(cfg.Input.Keybinds)
 	app.home.SetKeyBindings(app.keybinds)
@@ -485,6 +494,9 @@ func (a *App) Run() error {
 				dirty = true
 			case interruptAuthReady:
 				a.consumeAuthLoginResult()
+				dirty = true
+			case interruptOnboardingReady:
+				a.consumeOnboardingWorkspaceResult()
 				dirty = true
 			case interruptVoiceReady:
 				a.consumeVoiceCaptureEvents()
@@ -5333,6 +5345,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.openAuthModal()
 	case ui.HomeActionSaveOnboarding:
 		a.saveOnboarding(action.Username, action.SwarmName)
+	case ui.HomeActionCreateOnboardingWorkspace:
+		a.createOnboardingWorkspace(action.WorkspacePath)
 	}
 }
 
@@ -5374,7 +5388,7 @@ func (a *App) consumeBackgroundSessionsModalSelection() bool {
 }
 
 func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
-	if !a.home.AuthModalVisible() {
+	if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
 		return
 	}
 	switch action.Kind {
@@ -5453,6 +5467,9 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 			return
 		}
 		a.refreshAuthModalData("")
+		if a.home.OnboardingProviderActive() {
+			a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+		}
 		if record.Connection != nil {
 			method := strings.TrimSpace(record.Connection.Method)
 			if method == "" {
@@ -6179,7 +6196,7 @@ func (a *App) consumeAuthLoginResult() {
 		if result.clearCodexPending {
 			a.codexPending = nil
 		}
-		if !a.home.AuthModalVisible() {
+		if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
 			if result.err == nil {
 				if strings.TrimSpace(result.toast) != "" {
 					a.showToast(result.toastLevel, result.toast)
@@ -6200,6 +6217,9 @@ func (a *App) consumeAuthLoginResult() {
 		}
 		if result.hideAuthModal {
 			a.home.HideAuthModal()
+			if a.home.OnboardingProviderActive() {
+				a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+			}
 		} else {
 			a.home.SetAuthModalLoading(false)
 			a.home.SetAuthModalStatus(status)
@@ -6685,25 +6705,83 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	username = strings.TrimSpace(username)
 	swarmName = strings.TrimSpace(swarmName)
 	if username == "" || swarmName == "" {
-		a.home.SetOnboardingError("Username and swarm name are required.")
+		a.home.SetOnboardingError("Your name and Swarm name are required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	status, err := a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{Username: username, SwarmName: swarmName})
 	if err != nil {
-		a.home.SetOnboardingError(fmt.Sprintf("onboarding save failed: %v", err))
+		a.home.SetOnboardingError(fmt.Sprintf("identity save failed: %v", err))
 		return
 	}
 	if session, err := a.api.IssueLocalProductSession(ctx); err == nil && strings.TrimSpace(session.Token) != "" {
 		a.api.SetToken(session.Token)
 	}
 	a.home.SetOnboardingRequired(false, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
-	a.home.ShowOnboardingLocked("Identity setup saved. Press Enter to add provider auth, or Esc/s to skip for now.")
-	a.home.SetStatus("Identity setup saved. Provider auth can be added in /auth; Needs auth remains until credentials are added.")
-	a.queueReload(false)
-	if !a.home.AuthModalVisible() {
-		a.openAuthModal()
+	a.home.SetOnboardingWorkspacePath(a.startupCWD)
+	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
+	a.refreshAuthModalData("Loading providers...")
+}
+
+func (a *App) createOnboardingWorkspace(path string) {
+	path = normalizePath(strings.TrimSpace(path))
+	if path == "" {
+		a.home.SetOnboardingError("The launch directory is unavailable; restart Swarm from the workspace you want to use.")
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		resolution, err := a.api.AddWorkspace(ctx, path, "", "", true)
+		if err == nil {
+			a.homeWorkspaceBootstrapped.Store(true)
+		}
+		var next model.HomeModel
+		if err == nil {
+			next, err = a.refreshHomeV3Model(ctx)
+		}
+		readyPath := firstNonEmpty(normalizePath(resolution.WorkspacePath), normalizePath(resolution.ResolvedPath), path)
+		if err == nil && !homeModelHasReadyWorkspace(next, readyPath) {
+			err = fmt.Errorf("workspace API completed but refreshed state does not include %s", displayPath(readyPath))
+		}
+		result := onboardingWorkspaceResult{model: next, path: readyPath, err: err}
+		select {
+		case a.onboardingWorkspaceCh <- result:
+		default:
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptOnboardingReady))
+		}
+	}()
+}
+
+func homeModelHasReadyWorkspace(home model.HomeModel, path string) bool {
+	path = normalizePath(path)
+	if path == "" {
+		return false
+	}
+	for _, workspace := range home.Workspaces {
+		if workspace.Active && pathsEqual(normalizePath(workspace.Path), path) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) consumeOnboardingWorkspaceResult() {
+	select {
+	case result := <-a.onboardingWorkspaceCh:
+		if result.err != nil {
+			a.home.SetOnboardingError(fmt.Sprintf("workspace setup failed: %v", result.err))
+			return
+		}
+		a.syncActiveContextFromHomeModel(result.model)
+		a.applyHomeModel(result.model)
+		a.syncVaultUI()
+		a.home.CompleteOnboardingWorkspace()
+		a.home.SetStatus(fmt.Sprintf("workspace ready: %s", displayPath(result.path)))
+	default:
 	}
 }
 
@@ -6812,7 +6890,7 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 }
 
 func (a *App) refreshAuthModalData(statusHint string) {
-	if !a.home.AuthModalVisible() {
+	if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
 		return
 	}
 	a.home.ClearAuthModalSnapshot()

@@ -248,7 +248,7 @@ func (p *HomePage) HandleTick() bool {
 }
 
 func (p *HomePage) HandleKey(ev *tcell.EventKey) {
-	if p.onboarding.Visible && !p.authModal.Visible {
+	if p.onboarding.Visible {
 		p.handleOnboardingKey(ev)
 		return
 	}
@@ -456,7 +456,7 @@ func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 	if p == nil {
 		return false
 	}
-	if p.onboarding.Visible && !p.authModal.Visible {
+	if p.onboarding.Visible {
 		p.handleOnboardingKey(ev)
 		return true
 	}
@@ -539,8 +539,6 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	}
 	if p.onboarding.Visible {
 		p.drawOnboarding(s)
-		p.drawAuthModal(s)
-		p.drawAuthDefaultsInfoModal(s)
 		return
 	}
 	if w < 16 || h < 4 {

@@ -10,21 +10,22 @@ import (
 type HomeActionKind string
 
 const (
-	HomeActionOpenSession           HomeActionKind = "open-session"
-	HomeActionOpenAgentsModal       HomeActionKind = "open-agents-modal"
-	HomeActionOpenProfilesModal     HomeActionKind = "open-profiles-modal"
-	HomeActionSelectModelProfile    HomeActionKind = "select-model-profile"
-	HomeActionRefreshCodexUsage     HomeActionKind = "refresh-codex-usage"
-	HomeActionConsumeCodexReset     HomeActionKind = "consume-codex-reset"
-	HomeActionCycleThinking         HomeActionKind = "cycle-thinking"
-	HomeActionCycleRoute            HomeActionKind = "cycle-route"
-	HomeActionOpenWorkspaceSelector HomeActionKind = "open-workspace-selector"
-	HomeActionSelectWorkspace       HomeActionKind = "select-workspace"
-	HomeActionSetDefaultSessionMode HomeActionKind = "set-default-session-mode"
-	HomeActionOpenAlertSession      HomeActionKind = "open-alert-session"
-	HomeActionClearAlerts           HomeActionKind = "clear-alerts"
-	HomeActionOpenAuthModal         HomeActionKind = "open-auth-modal"
-	HomeActionSaveOnboarding        HomeActionKind = "save-onboarding"
+	HomeActionOpenSession               HomeActionKind = "open-session"
+	HomeActionOpenAgentsModal           HomeActionKind = "open-agents-modal"
+	HomeActionOpenProfilesModal         HomeActionKind = "open-profiles-modal"
+	HomeActionSelectModelProfile        HomeActionKind = "select-model-profile"
+	HomeActionRefreshCodexUsage         HomeActionKind = "refresh-codex-usage"
+	HomeActionConsumeCodexReset         HomeActionKind = "consume-codex-reset"
+	HomeActionCycleThinking             HomeActionKind = "cycle-thinking"
+	HomeActionCycleRoute                HomeActionKind = "cycle-route"
+	HomeActionOpenWorkspaceSelector     HomeActionKind = "open-workspace-selector"
+	HomeActionSelectWorkspace           HomeActionKind = "select-workspace"
+	HomeActionSetDefaultSessionMode     HomeActionKind = "set-default-session-mode"
+	HomeActionOpenAlertSession          HomeActionKind = "open-alert-session"
+	HomeActionClearAlerts               HomeActionKind = "clear-alerts"
+	HomeActionOpenAuthModal             HomeActionKind = "open-auth-modal"
+	HomeActionSaveOnboarding            HomeActionKind = "save-onboarding"
+	HomeActionCreateOnboardingWorkspace HomeActionKind = "create-onboarding-workspace"
 )
 
 type HomeAction struct {

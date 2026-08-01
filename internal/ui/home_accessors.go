@@ -67,9 +67,7 @@ func (p *HomePage) SetModel(next model.HomeModel) {
 	p.sessionMode = normalizeHomeSessionMode(p.sessionMode)
 	p.applySessionModeModel()
 	if next.OnboardingRequired {
-		p.ShowOnboardingLocked("Complete required identity setup before using Swarm.")
-	} else if p.onboarding.Visible && !p.identityOnboardingComplete() {
-		p.onboarding = onboardingState{}
+		p.ShowOnboardingLocked("Complete required setup before using Swarm.")
 	}
 }
 
