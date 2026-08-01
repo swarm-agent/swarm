@@ -13,31 +13,19 @@ import (
 var ErrModelProfileNameConflict = errors.New("model profile name already exists")
 var ErrModelProfileNotFound = errors.New("model profile not found")
 
-const (
-	ModelProfileModeSingle = "single"
-	ModelProfileModeSplit  = "split"
-)
-
-type ModelProfileSelection struct {
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	Thinking    string `json:"thinking"`
-	ServiceTier string `json:"service_tier"`
-	ContextMode string `json:"context_mode"`
-}
-
 type ModelProfileRecord struct {
-	ProfileID      string                 `json:"profile_id"`
-	AccountScopeID string                 `json:"account_scope_id"`
-	Name           string                 `json:"name"`
-	ModelMode      string                 `json:"model_mode"`
-	Single         *ModelProfileSelection `json:"single,omitempty"`
-	Plan           *ModelProfileSelection `json:"plan,omitempty"`
-	Auto           *ModelProfileSelection `json:"auto,omitempty"`
-	CreatedAt      int64                  `json:"created_at"`
-	UpdatedAt      int64                  `json:"updated_at"`
-	SortOrder      int                    `json:"sort_order,omitempty"`
-	IsDefault      bool                   `json:"-"`
+	ProfileID      string `json:"profile_id"`
+	AccountScopeID string `json:"account_scope_id"`
+	Name           string `json:"name"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	Thinking       string `json:"thinking"`
+	ServiceTier    string `json:"service_tier"`
+	ContextMode    string `json:"context_mode"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
+	SortOrder      int    `json:"sort_order"`
+	IsDefault      bool   `json:"-"`
 }
 
 type ModelProfileListState struct {
@@ -292,14 +280,19 @@ func (s *ModelProfileStore) ReorderForAccount(accountScopeID string, profileIDs 
 		profile.SortOrder = index
 		ordered = append(ordered, profile)
 	}
+	defaultID, _, err := s.defaultIDUnlocked(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	for _, profile := range ordered {
-		payload, err := json.Marshal(profile)
+	for i := range ordered {
+		ordered[i].IsDefault = ordered[i].ProfileID == defaultID
+		payload, err := json.Marshal(ordered[i])
 		if err != nil {
 			return nil, fmt.Errorf("marshal model profile: %w", err)
 		}
-		if err := batch.Set([]byte(KeyModelProfileForAccount(accountScopeID, profile.ProfileID)), payload, nil); err != nil {
+		if err := batch.Set([]byte(KeyModelProfileForAccount(accountScopeID, ordered[i].ProfileID)), payload, nil); err != nil {
 			return nil, err
 		}
 	}
