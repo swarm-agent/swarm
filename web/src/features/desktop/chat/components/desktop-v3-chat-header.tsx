@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, Clipboard, Download, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
+import { Archive, Clipboard, Download, ListChecks, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
 import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 
 export interface DesktopV3ChatHeaderSessionActions {
@@ -18,6 +18,8 @@ export interface DesktopV3ChatHeaderProps {
   workspaceName: string
   branchName?: string
   mode?: string
+  modelLabel?: string
+  favoriteName?: string
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
@@ -34,10 +36,6 @@ function normalizeWorkspaceName(value: string): string {
   return value.trim() || 'Workspace'
 }
 
-function normalizeMode(value: string | undefined): string {
-  return value?.trim().toLowerCase() === 'plan' ? 'plan' : 'auto'
-}
-
 function normalizeBranchName(value: string | undefined): string {
   return value?.trim() ?? ''
 }
@@ -47,6 +45,8 @@ export function DesktopV3ChatHeader({
   workspaceName,
   branchName,
   mode,
+  modelLabel,
+  favoriteName,
   runStatus = null,
   runStatusNow: controlledRunStatusNow,
   sessionActions = null,
@@ -57,7 +57,12 @@ export function DesktopV3ChatHeader({
   const displayTitle = normalizeTitle(title)
   const displayWorkspace = normalizeWorkspaceName(workspaceName)
   const displayBranch = normalizeBranchName(branchName)
-  const displayMode = normalizeMode(mode)
+  const isPlanMode = mode?.trim().toLowerCase() === 'plan'
+  const displayModelLabel = modelLabel?.trim() ?? ''
+  const displayFavoriteName = favoriteName?.trim() ?? ''
+  const resolvedModelLabel = [displayFavoriteName, displayModelLabel]
+    .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index)
+    .join(' · ')
   const [liveRunStatusNow, setLiveRunStatusNow] = useState(() => Date.now())
   const runStatusNow = controlledRunStatusNow ?? liveRunStatusNow
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
@@ -154,7 +159,9 @@ export function DesktopV3ChatHeader({
                 {editableTitle}
               </h1>
               <div className="relative mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
-                <span className="min-w-0 truncate text-left">{displayWorkspace}</span>
+                <span className="min-w-0 truncate text-left" title={[displayWorkspace, resolvedModelLabel].filter(Boolean).join(' · ')}>
+                  {displayWorkspace}{resolvedModelLabel ? ` · ${resolvedModelLabel}` : ''}
+                </span>
                 {displayBranch ? (
                   <span className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-[var(--app-text-muted)]" title={displayBranch}>
                     {displayBranch}
@@ -175,11 +182,27 @@ export function DesktopV3ChatHeader({
               <span className="shrink-0 font-normal text-[var(--app-text-subtle)]">/</span>
               <span className="truncate font-normal text-[var(--app-text-muted)]" title={displayWorkspace}>{displayWorkspace}</span>
             </h1>
-            <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]">
-              <span>{displayMode}</span>
-            </div>
+            {resolvedModelLabel ? (
+              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]">
+                <span className="truncate" data-testid="desktop-v3-resolved-model" title={resolvedModelLabel}>
+                  {resolvedModelLabel}
+                </span>
+              </div>
+            ) : null}
           </div>
         </div>
+
+        {isPlanMode ? (
+          <span
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-muted)]"
+            data-testid="desktop-v3-plan-mode-badge"
+            aria-label="Plan mode"
+            title="Plan mode"
+          >
+            <ListChecks size={12} aria-hidden="true" />
+            <span>Plan</span>
+          </span>
+        ) : null}
 
         <div className="hidden sm:block">
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />

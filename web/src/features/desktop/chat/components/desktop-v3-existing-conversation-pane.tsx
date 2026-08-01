@@ -88,6 +88,7 @@ import {
 } from "../services/model-options";
 import {
   activeModelProfileFromMetadata,
+  modelProfileFromMetadata,
   preferenceFromModelProfile,
   preferenceFromModelProfileMetadata,
 } from "../services/model-profiles";
@@ -112,10 +113,8 @@ import {
 import type { DesktopSlashCommand } from "../services/slash-commands";
 import {
   sessionV3AgentSettingsMutationResponse,
-  sessionV3ModeSettingsMutationResponse,
   sessionV3ModelProfileSettingsMutationResponse,
   updateSessionV3Agent,
-  updateSessionV3Mode,
   updateSessionV3ModelProfile,
   stopSessionV3Run,
 } from "../../session-v3/api";
@@ -1403,6 +1402,7 @@ export function resolveDesktopV3StopRunRequest(input: {
 }
 
 export interface DesktopV3ExistingConversationPaneProps {
+  /** Compatibility-only command seam; resolved routed mode is read-only here. */
   modeCommand?: "toggle-plan-auto" | null;
   onModeCommandHandled?: () => void;
   onModeChange?: (mode: DesktopSessionMode) => void;
@@ -1496,7 +1496,6 @@ export function DesktopV3ExistingConversationComposer({
 export function DesktopV3ExistingConversationPane({
   modeCommand = null,
   onModeCommandHandled,
-  onModeChange,
   sessionId,
   initialHydrateStatus,
   renderedMessages,
@@ -1698,6 +1697,10 @@ export function DesktopV3ExistingConversationPane({
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
   const activeModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const resolvedModelProfile = useMemo(
+    () => modelProfileFromMetadata(sessionMetadata, mode),
+    [mode, sessionMetadata],
+  );
   const sessionProfilePreference = useMemo(
     () => preferenceFromModelProfileMetadata(sessionMetadata, mode),
     [mode, sessionMetadata],
@@ -1711,6 +1714,21 @@ export function DesktopV3ExistingConversationPane({
   const displayedPreference = cachedPolicyMatchesSelectedMode
     ? (lockedPolicyPreference ?? preference)
     : (sessionProfilePreference ?? sessionAgentPreference ?? preference);
+  // Header identity is presentation-only and must come from the hydrated session
+  // snapshot/view. Local profile-picker state must never appear before resolution.
+  const canonicalHeaderPreference = sessionProfilePreference ?? cachedPreference;
+  const canonicalHeaderModelKey = modelOptionKey(
+    canonicalHeaderPreference.provider,
+    canonicalHeaderPreference.model,
+    canonicalHeaderPreference.contextMode,
+  );
+  const canonicalHeaderModelOption = modelOptions.find(
+    (option) => option.key === canonicalHeaderModelKey,
+  ) ?? null;
+  const canonicalHeaderModelLabel = canonicalHeaderPreference.provider.trim()
+    && canonicalHeaderPreference.model.trim()
+      ? canonicalHeaderModelOption?.label || canonicalHeaderPreference.model
+      : "";
   const selectedModelKey = modelOptionKey(
     displayedPreference.provider,
     displayedPreference.model,
@@ -2090,11 +2108,8 @@ export function DesktopV3ExistingConversationPane({
   ]);
 
   useEffect(() => {
-    if (modeCommand !== "toggle-plan-auto") return;
-    const nextMode = mode === "plan" ? "auto" : "plan";
-    handleModeSelect(nextMode);
-    onModeCommandHandled?.();
-  }, [mode, modeCommand, onModeCommandHandled]);
+    if (modeCommand === "toggle-plan-auto") onModeCommandHandled?.();
+  }, [modeCommand, onModeCommandHandled]);
 
   function handleOpenAuthSettings() {
     if (routeWorkspaceSlug) {
@@ -2129,33 +2144,6 @@ export function DesktopV3ExistingConversationPane({
       if (mountedRef.current) setSendError(error instanceof Error ? error.message : "Failed to switch agent");
       throw error;
     }
-  }
-
-  function handleModeSelect(nextMode: DesktopSessionMode) {
-    if (!normalizedSessionId || nextMode === mode) return;
-    localSettingsDirtyRef.current.mode = true;
-    setMode(nextMode);
-    onModeChange?.(nextMode);
-    const nextProfilePreference = preferenceFromModelProfileMetadata(
-      sessionMetadata,
-      nextMode,
-    );
-    if (nextProfilePreference) {
-      setPreference(nextProfilePreference);
-      return;
-    }
-    const nextLock = resolveDesktopV3SessionAgentModelLock(
-      sessionMetadata,
-      nextMode,
-    ) ?? resolveDesktopV3AgentModelLock(
-      agentState.profiles,
-      selectedAgent,
-      nextMode,
-    );
-    if (!nextLock.locked) return;
-    setPreference((current) =>
-      preferenceFromAgentModelLock(nextLock, current, modelOptions),
-    );
   }
 
   async function handleConfirmAgentSettings(
@@ -2240,21 +2228,6 @@ export function DesktopV3ExistingConversationPane({
           normalizedSessionId,
         ),
       });
-    }
-    if (mode !== settingsBaseline.mode) {
-      const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode);
-      const settingsResponse = sessionV3ModeSettingsMutationResponse(
-        modeResponse,
-        normalizedSessionId,
-        mode,
-      );
-      dispatchDesktopV3Cache({
-        type: "mutation.sessionSettingsResult",
-        raw: settingsResponse,
-      });
-      if (settingsResponse.preference) {
-        setPreference(normalizePreference(settingsResponse.preference));
-      }
     }
   }
 
@@ -2674,6 +2647,8 @@ export function DesktopV3ExistingConversationPane({
         }
         branchName={headerBranchLabel}
         mode={mode}
+        modelLabel={canonicalHeaderModelLabel}
+        favoriteName={canonicalHeaderModelLabel ? resolvedModelProfile?.name : undefined}
         runStatus={runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
@@ -2873,7 +2848,7 @@ export function DesktopV3ExistingConversationPane({
             onStop={handleStop}
             onCompact={handleCompact}
             mode={mode}
-            onModeSelect={handleModeSelect}
+            showModePicker={false}
             resolvedSessionControls
             currentAgent={selectedAgent || "Agent"}
             selectedPrimaryAgent={selectedAgent || ""}
