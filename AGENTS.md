@@ -124,8 +124,10 @@ Use these instead of one-off scripts when the user asks for the matching task:
 ./scripts/ssh-fast-test.sh <ssh-alias>
 ./scripts/local-session-db-inspect.sh --session-url <provider-url>
 ./scripts/ssh-session-db-inspect.sh <ssh-alias> --latest 5
+./scripts/update-model-snapshot.sh [--check]
 ```
 
+- `update-model-snapshot.sh` is the canonical workflow when asked to get, refresh, or set the Swarm models snapshot. It fetches both public snapshot endpoints, verifies matching identity/count metadata and full provider hydration, requires the `router` agent default plus a resolvable router recommendation for every hydrated provider, and only then installs both files under `swarmd/internal/model/snapshotdata/`. Use `--check` for verification without installation; do not manually curl/copy a partial snapshot.
 - `ssh-fast-test.sh` rsyncs the working tree to a discovered remote checkout, rebuilds with `./rebuild s`, and restarts the configured service. Use `--remote-dir` or `--service` for explicit non-default targets; do not hardcode host paths.
 - `local-session-db-inspect.sh` copies the configured local Pebble DB, dumps the requested session to a temp JSON file, and deletes only the copied DB.
 - `ssh-session-db-inspect.sh` inspects remote session data through an SSH alias, handles service stop/restart by default, and supports latest/session/query modes plus JSON output.
