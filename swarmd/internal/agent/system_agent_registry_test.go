@@ -211,8 +211,18 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if workspaceDefinition.Name != WorkspaceDefinitionAgentID || workspaceDefinition.Provider != "codex" || workspaceDefinition.Model != "router-model" || workspaceDefinition.Thinking != "high" || workspaceDefinition.AutoServiceTier != "priority" {
 		t.Fatalf("Workspace Definition model snapshot mismatch: %+v", workspaceDefinition)
 	}
-	if workspaceDefinition.Prompt != WorkspaceDefinitionAgentPrompt() || workspaceDefinition.RuntimeMode != pebblestore.AgentRuntimeModeRead || workspaceDefinition.ToolContract == nil || workspaceDefinition.ToolContract.Preset != "custom" || len(workspaceDefinition.ToolContract.Tools) != 0 {
+	if workspaceDefinition.Prompt != WorkspaceDefinitionAgentPrompt() || workspaceDefinition.RuntimeMode != pebblestore.AgentRuntimeModeRead || workspaceDefinition.ToolContract == nil || workspaceDefinition.ToolContract.Preset != "custom" || len(workspaceDefinition.ToolContract.Tools) != 3 {
 		t.Fatalf("Workspace Definition immutable contract was not restored: %+v", workspaceDefinition)
+	}
+	for _, allowed := range []string{"read", "search", "list"} {
+		if cfg := workspaceDefinition.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Workspace Definition tool %q unavailable: %+v", allowed, workspaceDefinition.ToolContract)
+		}
+	}
+	for _, instruction := range []string{"First decide whether", "answer directly in one shot without calling tools", "If and only if they are insufficient"} {
+		if !strings.Contains(workspaceDefinition.Prompt, instruction) {
+			t.Fatalf("Workspace Definition prompt missing decision instruction %q: %s", instruction, workspaceDefinition.Prompt)
+		}
 	}
 
 	compact, err := registry.Materialize(CompactAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "utility-model", Thinking: "medium"})
