@@ -949,10 +949,16 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 		}
 		policy.Locked = true
 		policy.Reason = "Session model profile controls the model; clear or replace the session profile to change it."
-		policy.ProfileID = session.ModelProfile.SavedProfileID
-		policy.ProfileName = session.ModelProfile.Name
+		if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
+			policy.ProfileID = strings.TrimSpace(session.ModelProfile.PlanFavoriteID)
+			policy.ProfileName = strings.TrimSpace(session.ModelProfile.PlanFavoriteName)
+			policy.ProfileMode = sessionruntime.ModePlan
+		} else {
+			policy.ProfileID = strings.TrimSpace(session.ModelProfile.ActionFavoriteID)
+			policy.ProfileName = strings.TrimSpace(session.ModelProfile.ActionFavoriteName)
+			policy.ProfileMode = sessionruntime.ModeAuto
+		}
 		policy.ProfileSource = session.ModelProfile.Source
-		policy.ProfileMode = session.ModelProfile.ModelMode
 		policy.Preference = normalizeSessionsV3ModelPreference(profilePreference)
 		policy.ContextWindow, policy.MaxOutputTokens = 0, 0
 		if resolvePreference != nil {

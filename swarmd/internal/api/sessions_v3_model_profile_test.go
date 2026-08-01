@@ -21,13 +21,22 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 		t.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
-	service := modelprofile.NewService(pebblestore.NewModelProfileStore(store))
-	server := &Server{modelProfiles: service}
+	favorites := pebblestore.NewModelProfileStore(store)
+	service := modelprofile.NewService(favorites)
+	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), favorites)
+	server := &Server{modelProfiles: service, swarmProfiles: swarmProfiles}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
 	created, err := service.Create(ctx, modelprofile.Input{Name: "Saved", Provider: "openai", Model: "saved-model", Thinking: "high", ServiceTier: "priority", ContextMode: "full"})
 	if err != nil {
-		t.Fatalf("create profile: %v", err)
+		t.Fatalf("create action profile: %v", err)
+	}
+	planFavorite, err := service.Create(ctx, modelprofile.Input{Name: "Plan", Provider: "codex", Model: "plan-model", Thinking: "xhigh", ContextMode: "compact"})
+	if err != nil {
+		t.Fatalf("create plan profile: %v", err)
+	}
+	if _, err := swarmProfiles.Put(ctx, modelprofile.SwarmSettingsInput{ActionFavoriteID: created.ProfileID, PlanEnabled: true, PlanFavoriteID: planFavorite.ProfileID}); err != nil {
+		t.Fatalf("configure account defaults: %v", err)
 	}
 
 	omitted, err := server.resolveSessionsV3ModelProfileChoice(ctx, nil, 10)
@@ -38,14 +47,14 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("resolve explicit default: %v", err)
 	}
-	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.SavedProfileID != created.ProfileID || !saved.UseAccountDefault || saved.ModelMode != pebblestore.ModelProfileModeSingle || saved.Single == nil || saved.Single.Model != "saved-model" || saved.Single.ServiceTier != "priority" || saved.Single.ContextMode != "full" || saved.Plan != nil || saved.Auto != nil || saved.AppliedAt != 10 {
+	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.ActionFavoriteID != created.ProfileID || saved.ActionFavoriteName != "Saved" || !saved.UseAccountDefault || saved.Action.Model != "saved-model" || saved.Action.ServiceTier != "priority" || saved.Action.ContextMode != "full" || saved.PlanFavoriteID != planFavorite.ProfileID || saved.PlanFavoriteName != "Plan" || saved.Plan == nil || saved.Plan.Model != "plan-model" || saved.Plan.Thinking != "xhigh" || saved.AppliedAt != 10 {
 		t.Fatalf("saved default snapshot = %+v", saved)
 	}
 	savedByID, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{SavedProfileID: created.ProfileID}, 11)
 	if err != nil {
 		t.Fatalf("resolve saved profile: %v", err)
 	}
-	if savedByID == nil || savedByID.SavedProfileID != created.ProfileID || savedByID.UseAccountDefault || savedByID.ModelMode != pebblestore.ModelProfileModeSingle || savedByID.Single == nil || savedByID.Single.Model != "saved-model" || savedByID.AppliedAt != 11 {
+	if savedByID == nil || savedByID.ActionFavoriteID != created.ProfileID || savedByID.ActionFavoriteName != "Saved" || savedByID.UseAccountDefault || savedByID.Action.Model != "saved-model" || savedByID.Plan != nil || savedByID.AppliedAt != 11 {
 		t.Fatalf("saved profile snapshot = %+v", savedByID)
 	}
 	if _, err := service.Update(ctx, created.ProfileID, modelprofile.Input{Name: "Renamed", Provider: "openai", Model: "updated-model", Thinking: "medium", ContextMode: "compact"}); err != nil {
@@ -54,7 +63,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if deleted, err := service.Delete(ctx, created.ProfileID); err != nil || !deleted {
 		t.Fatalf("delete saved profile: deleted=%t err=%v", deleted, err)
 	}
-	if saved.Name != "Saved" || saved.Single.Model != "saved-model" || saved.Single.ContextMode != "full" {
+	if saved.ActionFavoriteName != "Saved" || saved.Action.Model != "saved-model" || saved.Action.ContextMode != "full" || saved.PlanFavoriteName != "Plan" || saved.Plan.Model != "plan-model" {
 		t.Fatalf("session snapshot changed after saved profile update/delete: %+v", saved)
 	}
 
@@ -62,12 +71,12 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("resolve temporary: %v", err)
 	}
-	if temporary == nil || temporary.Source != pebblestore.SessionModelProfileSourceTemporary || temporary.SavedProfileID != "" || temporary.UseAccountDefault || temporary.ModelMode != pebblestore.ModelProfileModeSingle || temporary.Single == nil || temporary.Single.Provider != "openai" || temporary.Single.Model != "temporary-model" || temporary.Single.Thinking != "high" || temporary.Single.ServiceTier != "fast" || temporary.Single.ContextMode != "compact" || temporary.Plan != nil || temporary.Auto != nil || temporary.AppliedAt != 20 {
+	if temporary == nil || temporary.Source != pebblestore.SessionModelProfileSourceTemporary || temporary.ActionFavoriteID != "" || temporary.ActionFavoriteName != "" || temporary.UseAccountDefault || temporary.Action.Provider != "openai" || temporary.Action.Model != "temporary-model" || temporary.Action.Thinking != "high" || temporary.Action.ServiceTier != "fast" || temporary.Action.ContextMode != "compact" || temporary.Plan != nil || temporary.AppliedAt != 20 {
 		t.Fatalf("temporary snapshot = %+v", temporary)
 	}
 	state, err := service.ListState(ctx)
-	if err != nil || len(state.Profiles) != 0 {
-		t.Fatalf("temporary profile was saved: profiles=%d err=%v", len(state.Profiles), err)
+	if err != nil || len(state.Profiles) != 1 {
+		t.Fatalf("temporary profile was saved or account favorites changed unexpectedly: profiles=%d err=%v", len(state.Profiles), err)
 	}
 }
 
@@ -86,20 +95,19 @@ func TestSessionsV3ModelProfileChoiceRejectsRemovedBundleFields(t *testing.T) {
 
 func TestSessionsV3ModelProfileMetadataPersistsExactSavedProfileIdentity(t *testing.T) {
 	profile := &pebblestore.SessionModelProfileSnapshot{
-		Source:         pebblestore.SessionModelProfileSourceSaved,
-		SavedProfileID: "mp_exact",
-		Name:           "Exact",
-		ModelMode:      pebblestore.ModelProfileModeSingle,
-		Single:         &pebblestore.ModelProfileSelection{Provider: "openai", Model: "same-model"},
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "mp_exact",
+		ActionFavoriteName: "Exact",
+		Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "same-model"},
 	}
 	metadata := sessionsV3ModelProfileMetadata(map[string]any{"agent_name": "swarm"}, profile)
 	stored, ok := metadata["model_profile"].(pebblestore.SessionModelProfileSnapshot)
-	if !ok || stored.SavedProfileID != "mp_exact" || stored.Name != "Exact" {
+	if !ok || stored.ActionFavoriteID != "mp_exact" || stored.ActionFavoriteName != "Exact" {
 		t.Fatalf("model profile metadata = %#v", metadata["model_profile"])
 	}
-	profile.SavedProfileID = "mutated"
-	profile.Single.Model = "mutated"
-	if stored.SavedProfileID != "mp_exact" || stored.Single.Model != "same-model" {
+	profile.ActionFavoriteID = "mutated"
+	profile.Action.Model = "mutated"
+	if stored.ActionFavoriteID != "mp_exact" || stored.Action.Model != "same-model" {
 		t.Fatalf("metadata did not snapshot profile identity: %+v", stored)
 	}
 	cleared := sessionsV3ModelProfileMetadata(metadata, nil)
@@ -134,7 +142,7 @@ func TestSessionsV3ExplicitModelProfilePreferenceMatchesDurableSessionPreference
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if response.Session.ModelProfile == nil || response.Session.ModelProfile.SavedProfileID != profile.ProfileID || response.Session.Preference.Provider != "test-provider" || response.Session.Preference.Model != "profile-model" || response.Session.Preference.Thinking != "high" {
+	if response.Session.ModelProfile == nil || response.Session.ModelProfile.ActionFavoriteID != profile.ProfileID || response.Session.ModelProfile.ActionFavoriteName != "Explicit" || response.Session.Preference.Provider != "test-provider" || response.Session.Preference.Model != "profile-model" || response.Session.Preference.Thinking != "high" {
 		t.Fatalf("created session authorities diverged: %+v", response.Session)
 	}
 }
@@ -142,8 +150,8 @@ func TestSessionsV3ExplicitModelProfilePreferenceMatchesDurableSessionPreference
 func TestSessionsV3PlanSidechatPreferencePassesThroughParentModelSetup(t *testing.T) {
 	parentPreference := pebblestore.ModelPreference{Provider: "codex", Model: "parent-model", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "full", UpdatedAt: 42}
 	withoutProfile := pebblestore.SessionSnapshot{Preference: parentPreference}
-	if got := sessionsV3PlanSidechatPreference(withoutProfile); got != parentPreference {
-		t.Fatalf("explicit parent preference changed: got %+v want %+v", got, parentPreference)
+	if got := sessionsV3PlanSidechatPreference(withoutProfile); got != (pebblestore.ModelPreference{}) {
+		t.Fatalf("sidechat inherited non-snapshotted parent preference: got %+v", got)
 	}
 
 	profilePreference := pebblestore.ModelPreference{Provider: "openrouter", Model: "profile-parent-model", Thinking: "high", ServiceTier: "fast", ContextMode: "session", UpdatedAt: 77}
@@ -151,12 +159,11 @@ func TestSessionsV3PlanSidechatPreferencePassesThroughParentModelSetup(t *testin
 		Mode:       sessionruntime.ModePlan,
 		Preference: profilePreference,
 		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
-			ModelMode: pebblestore.ModelProfileModeSplit,
 			AppliedAt: 77,
+			Action:    pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model", Thinking: "medium"},
 			Plan: &pebblestore.ModelProfileSelection{
 				Provider: "openrouter", Model: "profile-parent-model", Thinking: "high", ServiceTier: "fast", ContextMode: "session",
 			},
-			Auto: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "auto-model", Thinking: "medium"},
 		},
 	}
 	if got := sessionsV3PlanSidechatPreference(parent); got != profilePreference {
@@ -165,7 +172,7 @@ func TestSessionsV3PlanSidechatPreferencePassesThroughParentModelSetup(t *testin
 }
 
 func TestSessionsV3ProfilePreferenceUsesCurrentMode(t *testing.T) {
-	session := pebblestore.SessionSnapshot{Mode: "plan", ModelProfile: &pebblestore.SessionModelProfileSnapshot{ModelMode: pebblestore.ModelProfileModeSplit, AppliedAt: 7, Plan: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan", Thinking: "high", ContextMode: "full"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "action", Thinking: "medium", ServiceTier: "fast"}}}
+	session := pebblestore.SessionSnapshot{Mode: "plan", ModelProfile: &pebblestore.SessionModelProfileSnapshot{AppliedAt: 7, Plan: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan", Thinking: "high", ContextMode: "full"}, Action: pebblestore.ModelProfileSelection{Provider: "openai", Model: "action", Thinking: "medium", ServiceTier: "fast"}}}
 	plan, ok := sessionsV3ProfilePreference(session)
 	if !ok || plan.Model != "plan" || plan.ContextMode != "full" {
 		t.Fatalf("plan preference = %+v ok=%t", plan, ok)

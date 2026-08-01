@@ -185,15 +185,41 @@ func TestSessionsV3SyncShellMetadataPreservesModelProfileIdentity(t *testing.T) 
 	metadata := sessionsV3SyncShellMetadata(map[string]any{
 		"agent_name": "swarm",
 		"model_profile": pebblestore.SessionModelProfileSnapshot{
-			Source:         pebblestore.SessionModelProfileSourceSaved,
-			SavedProfileID: "mp_exact",
-			Name:           "Exact",
-			ModelMode:      pebblestore.ModelProfileModeSingle,
+			Source:             pebblestore.SessionModelProfileSourceSaved,
+			ActionFavoriteID:   "mp_exact",
+			ActionFavoriteName: "Exact",
+			Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "same-model"},
 		},
 	})
 	profile, ok := metadata["model_profile"].(pebblestore.SessionModelProfileSnapshot)
-	if !ok || profile.SavedProfileID != "mp_exact" || profile.Name != "Exact" {
+	if !ok || profile.ActionFavoriteID != "mp_exact" || profile.ActionFavoriteName != "Exact" || profile.Action.Model != "same-model" {
 		t.Fatalf("sync shell model profile metadata = %#v", metadata["model_profile"])
+	}
+}
+
+func TestSessionsV3AgentModelPolicyAttributesCurrentSnapshotFavorite(t *testing.T) {
+	server := &Server{}
+	session := pebblestore.SessionSnapshot{
+		Mode: sessionruntime.ModePlan,
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Source:             pebblestore.SessionModelProfileSourceSaved,
+			ActionFavoriteID:   "favorite-action",
+			ActionFavoriteName: "Action Favorite",
+			Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model"},
+			PlanFavoriteID:     "favorite-plan",
+			PlanFavoriteName:   "Plan Favorite",
+			Plan:               &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model"},
+		},
+	}
+	policy := server.sessionsV3AgentModelPolicyWithResolver(session, pebblestore.ModelPreference{}, 0, 0, nil)
+	if policy.ProfileID != "favorite-plan" || policy.ProfileName != "Plan Favorite" || policy.ProfileMode != sessionruntime.ModePlan {
+		t.Fatalf("plan profile attribution = %+v", policy)
+	}
+
+	session.Mode = sessionruntime.ModeAuto
+	policy = server.sessionsV3AgentModelPolicyWithResolver(session, pebblestore.ModelPreference{}, 0, 0, nil)
+	if policy.ProfileID != "favorite-action" || policy.ProfileName != "Action Favorite" || policy.ProfileMode != sessionruntime.ModeAuto {
+		t.Fatalf("action profile attribution = %+v", policy)
 	}
 }
 

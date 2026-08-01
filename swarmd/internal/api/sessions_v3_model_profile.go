@@ -52,14 +52,7 @@ func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice
 		return nil, modelprofile.ErrNotConfigured
 	}
 	if useDefault {
-		profile, ok, err := s.modelProfiles.GetDefault(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, errors.New("account has no default model profile")
-		}
-		return sessionModelProfileSnapshotFromSavedDefault(profile, appliedAt), nil
+		return s.sessionModelProfileSnapshotFromAccountDefault(ctx, appliedAt)
 	}
 	if profileID := strings.TrimSpace(choice.SavedProfileID); profileID != "" {
 		profile, err := s.modelProfiles.Get(ctx, profileID)
@@ -82,32 +75,50 @@ func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice
 	}
 	return &pebblestore.SessionModelProfileSnapshot{
 		Source:    pebblestore.SessionModelProfileSourceTemporary,
-		Name:      validated.Name,
-		ModelMode: pebblestore.ModelProfileModeSingle,
-		Single:    sessionModelSelectionFromFlatProfile(validated.Provider, validated.Model, validated.Thinking, validated.ServiceTier, validated.ContextMode),
+		Action:    sessionModelSelectionFromFlatProfile(validated.Provider, validated.Model, validated.Thinking, validated.ServiceTier, validated.ContextMode),
 		AppliedAt: appliedAt,
 	}, nil
 }
 
-func sessionModelProfileSnapshotFromSavedDefault(profile modelprofile.Profile, appliedAt int64) *pebblestore.SessionModelProfileSnapshot {
-	snapshot := sessionModelProfileSnapshotFromSaved(profile, appliedAt)
+func (s *Server) sessionModelProfileSnapshotFromAccountDefault(ctx context.Context, appliedAt int64) (*pebblestore.SessionModelProfileSnapshot, error) {
+	if s.swarmProfiles == nil {
+		return nil, modelprofile.ErrNotConfigured
+	}
+	settings, err := s.swarmProfiles.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	action, err := s.modelProfiles.Get(ctx, settings.ActionFavoriteID)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := sessionModelProfileSnapshotFromSaved(action, appliedAt)
 	snapshot.UseAccountDefault = true
-	return snapshot
+	if settings.PlanEnabled {
+		plan, err := s.modelProfiles.Get(ctx, settings.PlanFavoriteID)
+		if err != nil {
+			return nil, err
+		}
+		snapshot.PlanFavoriteID = plan.ProfileID
+		snapshot.PlanFavoriteName = plan.Name
+		selection := sessionModelSelectionFromFlatProfile(plan.Provider, plan.Model, plan.Thinking, plan.ServiceTier, plan.ContextMode)
+		snapshot.Plan = pebblestore.CloneModelProfileSelection(&selection)
+	}
+	return pebblestore.CloneSessionModelProfileSnapshot(snapshot), nil
 }
 
 func sessionModelProfileSnapshotFromSaved(profile modelprofile.Profile, appliedAt int64) *pebblestore.SessionModelProfileSnapshot {
 	return &pebblestore.SessionModelProfileSnapshot{
-		Source:         pebblestore.SessionModelProfileSourceSaved,
-		SavedProfileID: profile.ProfileID,
-		Name:           profile.Name,
-		ModelMode:      pebblestore.ModelProfileModeSingle,
-		Single:         sessionModelSelectionFromFlatProfile(profile.Provider, profile.Model, profile.Thinking, profile.ServiceTier, profile.ContextMode),
-		AppliedAt:      appliedAt,
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   profile.ProfileID,
+		ActionFavoriteName: profile.Name,
+		Action:             sessionModelSelectionFromFlatProfile(profile.Provider, profile.Model, profile.Thinking, profile.ServiceTier, profile.ContextMode),
+		AppliedAt:          appliedAt,
 	}
 }
 
-func sessionModelSelectionFromFlatProfile(provider, model, thinking, serviceTier, contextMode string) *pebblestore.ModelProfileSelection {
-	return &pebblestore.ModelProfileSelection{
+func sessionModelSelectionFromFlatProfile(provider, model, thinking, serviceTier, contextMode string) pebblestore.ModelProfileSelection {
+	return pebblestore.ModelProfileSelection{
 		Provider:    provider,
 		Model:       model,
 		Thinking:    thinking,
@@ -129,18 +140,7 @@ func sessionsV3ModelProfileMetadata(metadata map[string]any, profile *pebblestor
 }
 
 func cloneSessionsV3ModelProfileSnapshot(profile pebblestore.SessionModelProfileSnapshot) pebblestore.SessionModelProfileSnapshot {
-	profile.Single = cloneSessionModelSelection(profile.Single)
-	profile.Plan = cloneSessionModelSelection(profile.Plan)
-	profile.Auto = cloneSessionModelSelection(profile.Auto)
-	return profile
-}
-
-func cloneSessionModelSelection(selection *pebblestore.ModelProfileSelection) *pebblestore.ModelProfileSelection {
-	if selection == nil {
-		return nil
-	}
-	copy := *selection
-	return &copy
+	return *pebblestore.CloneSessionModelProfileSnapshot(&profile)
 }
 
 func sessionsV3ProfilePreference(session pebblestore.SessionSnapshot) (pebblestore.ModelPreference, bool) {
@@ -148,13 +148,9 @@ func sessionsV3ProfilePreference(session pebblestore.SessionSnapshot) (pebblesto
 	if profile == nil {
 		return pebblestore.ModelPreference{}, false
 	}
-	selection := profile.Single
-	if profile.ModelMode == pebblestore.ModelProfileModeSplit {
-		if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
-			selection = profile.Plan
-		} else {
-			selection = profile.Auto
-		}
+	selection := &profile.Action
+	if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
+		selection = profile.Plan
 	}
 	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
 		return pebblestore.ModelPreference{}, false
