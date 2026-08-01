@@ -18,20 +18,56 @@ func TestCreateAITaskPersistsDigestBoundModelProfileSnapshot(t *testing.T) {
 	svc := NewService(store, nil, nil, nil)
 	workspace := t.TempDir()
 	profile := &pebblestore.SessionModelProfileSnapshot{
-		Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "saved-profile", Name: "standard", ModelMode: pebblestore.ModelProfileModeSplit, AppliedAt: 42,
-		Plan: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "high"},
-		Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "auto-model", Thinking: "medium"},
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		UseAccountDefault:  true,
+		ActionFavoriteID:   "action-favorite",
+		ActionFavoriteName: "Action Favorite",
+		Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium"},
+		PlanFavoriteID:     "plan-favorite",
+		PlanFavoriteName:   "Plan Favorite",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "high"},
+		AppliedAt:          42,
 	}
 	item, _, _, err := svc.CreateAITask(CreateAITaskInput{AccountScopeID: "account-profile", UserID: "user-profile", WorkspaceID: "workspace-profile", WorkspacePath: workspace, OriginSessionID: "origin-profile", ModelProfile: profile, Request: "preserve profile", Mode: "plan", IdempotencyKey: "profile-key"})
 	if err != nil {
 		t.Fatalf("create AI task: %v", err)
 	}
-	profile.Plan.Model = "mutated-after-create"
+	profile.Action.Model = "mutated-action-after-create"
+	profile.Plan.Model = "mutated-plan-after-create"
 	stored, ok, err := store.GetForAccount(item.AccountScopeID, workspace, item.ID)
-	if err != nil || !ok || stored.AIModelProfile == nil || stored.AIModelProfile.Plan == nil || stored.AIModelProfile.Plan.Model != "plan-model" || stored.AIModelProfile.Auto == nil || stored.AIModelProfile.Auto.Model != "auto-model" {
+	if err != nil || !ok || stored.AIModelProfile == nil {
 		t.Fatalf("stored AI task profile = %#v ok=%t err=%v", stored.AIModelProfile, ok, err)
 	}
-	_, _, _, _, err = svc.CreateAITaskWithReplay(CreateAITaskInput{AccountScopeID: "account-profile", UserID: "user-profile", WorkspaceID: "workspace-profile", WorkspacePath: workspace, OriginSessionID: "origin-profile", ModelProfile: &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "different", ModelMode: pebblestore.ModelProfileModeSingle, Single: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "different"}}, Request: "preserve profile", Mode: "plan", IdempotencyKey: "profile-key"})
+	storedProfile := stored.AIModelProfile
+	if storedProfile.Source != pebblestore.SessionModelProfileSourceSaved || !storedProfile.UseAccountDefault ||
+		storedProfile.ActionFavoriteID != "action-favorite" || storedProfile.ActionFavoriteName != "Action Favorite" ||
+		storedProfile.Action.Model != "action-model" || storedProfile.PlanFavoriteID != "plan-favorite" ||
+		storedProfile.PlanFavoriteName != "Plan Favorite" || storedProfile.Plan == nil ||
+		storedProfile.Plan.Model != "plan-model" || storedProfile.AppliedAt != 42 {
+		t.Fatalf("stored AI task profile = %#v", storedProfile)
+	}
+
+	_, _, _, _, err = svc.CreateAITaskWithReplay(CreateAITaskInput{
+		AccountScopeID:  "account-profile",
+		UserID:          "user-profile",
+		WorkspaceID:     "workspace-profile",
+		WorkspacePath:   workspace,
+		OriginSessionID: "origin-profile",
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Source:             pebblestore.SessionModelProfileSourceSaved,
+			UseAccountDefault:  true,
+			ActionFavoriteID:   "different-action-favorite",
+			ActionFavoriteName: "Different Action Favorite",
+			Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium"},
+			PlanFavoriteID:     "plan-favorite",
+			PlanFavoriteName:   "Plan Favorite",
+			Plan:               &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "high"},
+			AppliedAt:          42,
+		},
+		Request:        "preserve profile",
+		Mode:           "plan",
+		IdempotencyKey: "profile-key",
+	})
 	if err == nil || !strings.Contains(err.Error(), "different AI task model profile") {
 		t.Fatalf("model-profile digest conflict error = %v", err)
 	}
