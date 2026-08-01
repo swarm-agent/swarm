@@ -27,19 +27,23 @@ test('Desktop V3 route panes are keyed by route identity', async () => {
   )
 })
 
-test('Desktop V3 pane completions do not mutate replacement route instances after unmount', async () => {
+test('Desktop V3 pane completions stay isolated from replacement route instances', async () => {
   const newPane = await readNewSessionPane()
   const existingPane = await readExistingConversationPane()
 
-  assert.match(newPane, /const mountedRef = useRef\(true\)/)
-  assert.match(newPane, /return \(\) => \{\s*mountedRef\.current = false\s*\}/)
-  assert.match(
-    newPane,
-    /clearDesktopV3NewSessionOperation\(input\.workspacePath, input\.operation\.operationId\)\s*if \(!input\.mountedRef\.current\) return\s*input\.setOperation\(null\)\s*input\.navigateToSession\(input\.operation\.sessionId\)/s,
-  )
-  assert.match(newPane, /catch \(error\) \{\s*if \(mountedRef\.current\) \{\s*setStartError/s)
-  assert.match(newPane, /finally \{\s*if \(mountedRef\.current\) \{\s*setStarting\(false\)/s)
+  // The routed pane owns only a subscribed local controller. Unmounting removes
+  // the subscription, so its resolved-state effect cannot call into a replacement
+  // route instance and does not need the legacy async mountedRef choreography.
+  assert.match(newPane, /new DesktopV3RoutedNewSessionController\(postDesktopV3RoutedSessionStart\)/)
+  assert.match(newPane, /useEffect\(\(\) => controller\.subscribe\(setRoutedState\), \[controller\]\)/)
+  assert.match(newPane, /if \(routedState\.phase !== 'resolved'\) return/)
+  assert.match(newPane, /resolvedCallbackRef\.current\?\.\(routedState\.result\)/)
+  assert.doesNotMatch(newPane, /const mountedRef = useRef\(true\)/)
+  assert.doesNotMatch(newPane, /clearDesktopV3NewSessionOperation/)
+  assert.doesNotMatch(newPane, /navigateToSession/)
 
+  // Existing-conversation sends remain component-owned async work and retain
+  // their explicit mounted guard.
   assert.match(existingPane, /const mountedRef = useRef\(true\)/)
   assert.match(existingPane, /return \(\) => \{\s*mountedRef\.current = false\s*\}/)
   assert.match(
@@ -50,7 +54,7 @@ test('Desktop V3 pane completions do not mutate replacement route instances afte
   assert.match(existingPane, /finally \{\s*if \(mountedRef\.current\) \{\s*setSending\(false\)/s)
 })
 
-test('Desktop V3 route split keeps Path A and Path B source boundaries separate', async () => {
+test('Desktop V3 routed drafts and durable conversations keep separate ownership boundaries', async () => {
   const appPage = await readDesktopAppPage()
   const newPane = await readNewSessionPane()
   const existingPane = await readExistingConversationPane()
@@ -62,10 +66,25 @@ test('Desktop V3 route split keeps Path A and Path B source boundaries separate'
   assert.doesNotMatch(appPage, /postDesktopV3AppendMessage/)
   assert.doesNotMatch(appPage, /postDesktopV3CreateSession/)
 
-  assert.match(newPane, /from '\.\.\/\.\.\/session-v3\/new-session-flow'/)
+  // The new pane can request one routed start and report only a validated
+  // resolved result. It does not activate cache, realtime, sidebar, or URL state.
+  assert.match(newPane, /DesktopV3RoutedNewSessionController/)
+  assert.match(newPane, /postDesktopV3RoutedSessionStart/)
+  assert.match(newPane, /onRoutedSessionResolved/)
   assert.doesNotMatch(newPane, /existing-session-flow/)
-  assert.match(existingPane, /from '\.\.\/\.\.\/session-v3\/existing-session-flow'/)
-  assert.doesNotMatch(existingPane, /new-session-flow/)
+  assert.doesNotMatch(newPane, /dispatchDesktopV3Cache/)
+  assert.doesNotMatch(newPane, /activateDesktopV3RoutedSession/)
+  assert.doesNotMatch(newPane, /selectAndHydrateDesktopV3Session/)
+
+  // App ownership gates canonical activation against both workspace replacement
+  // and activation generation before it changes selection or navigation.
+  assert.match(appPage, /routedActivationWorkspaceRef\.current !== expectedWorkspacePath/)
+  assert.match(appPage, /activationGeneration === routedActivationGenerationRef\.current/)
+  assert.match(appPage, /activateDesktopV3RoutedSession\(/)
+  assert.match(appPage, /selectAndHydrateDesktopV3Session/)
+
+  assert.match(existingPane, /from ["']\.\.\/\.\.\/session-v3\/existing-session-flow["']/)
+  assert.doesNotMatch(existingPane, /DesktopV3RoutedNewSessionController/)
 })
 
 test('Desktop V3 ordinary route redirects after a hydrated system sidechat is classified', async () => {
