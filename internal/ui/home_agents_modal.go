@@ -402,7 +402,7 @@ func agentsModalEditorHasPendingChanges(editor *agentsModalEditor) bool {
 }
 
 func (p *HomePage) agentsModalEditorProfileSwitch(editor *agentsModalEditor) (string, bool) {
-	if p == nil || editor == nil {
+	if p == nil || editor == nil || editor.AgentSettingsLocked {
 		return "", false
 	}
 	selected := ""
@@ -946,7 +946,7 @@ func (p *HomePage) openAgentsModalUtilityAIEditor() {
 
 func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	profileName := strings.ToLower(strings.TrimSpace(profile.Name))
-	agentSettingsLocked := profileName == "system-clone" || profileName == "clone" || profileName == "coder" || profileName == "system-finder" || profileName == "finder" || profileName == "system-designer" || profileName == "designer"
+	agentSettingsLocked := isCompiledSingleModelSubagent(profileName)
 	modelReadOnly := false
 	modelMode := strings.ToLower(strings.TrimSpace(profile.ModelMode))
 	if modelMode != "split" {
@@ -987,7 +987,11 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 		modelProfileOptions = append(modelProfileOptions, agentsModalCreateProfileOption)
 	}
 	selectedModelProfileID := p.agentsModal.SelectedModelProfileID
-	if isCompiledSingleModelSubagent(profile.Name) && !agentsModalStringOptionExists(modelProfileOptions, selectedModelProfileID) {
+	if isCompiledSingleModelSubagent(profile.Name) {
+		// Compiled subagents do not have an active session profile. A saved
+		// single-model profile is only a copy source the user explicitly picks.
+		selectedModelProfileID = ""
+	} else if !agentsModalStringOptionExists(modelProfileOptions, selectedModelProfileID) {
 		selectedModelProfileID = ""
 	}
 	fields := []agentsModalEditorField{
@@ -1037,7 +1041,12 @@ func agentsModalStringOptionExists(options []string, target string) bool {
 
 func isCompiledSingleModelSubagent(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "system-clone" || name == "clone" || name == "coder" || name == "system-finder" || name == "finder" || name == "system-designer" || name == "designer"
+	switch name {
+	case "compact", "system-compact", "clone", "system-clone", "coder", "system-coder", "finder", "system-finder", "designer", "system-designer":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *HomePage) agentsModalModelProfileOptions(agent AgentModalProfile) []string {
@@ -1138,6 +1147,10 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		p.closeAgentsV2Editor()
 		return
 	case !editor.Editing && p.keybinds.Match(ev, KeybindAgentsProfileDefault):
+		if editor.AgentSettingsLocked {
+			p.agentsModal.Status = "compiled subagent profiles only copy single-model settings"
+			return
+		}
 		field := p.findAgentsModalEditorField(editor, "model_profile")
 		if field == nil {
 			p.agentsModal.Status = "select a saved Profile before setting the account default"
@@ -2523,7 +2536,10 @@ func agentsModalSessionModeLabel(value string) string {
 
 func agentsModalDisplayName(name string) string {
 	name = strings.TrimSpace(name)
-	if isCompiledSingleModelSubagent(name) && (strings.EqualFold(name, "clone") || strings.EqualFold(name, "system-clone") || strings.EqualFold(name, "coder")) {
+	if strings.EqualFold(name, "compact") || strings.EqualFold(name, "system-compact") {
+		return "Compact"
+	}
+	if isCompiledSingleModelSubagent(name) && (strings.EqualFold(name, "clone") || strings.EqualFold(name, "system-clone") || strings.EqualFold(name, "coder") || strings.EqualFold(name, "system-coder")) {
 		return "Coder"
 	}
 	if strings.EqualFold(name, "system-finder") {
@@ -3504,7 +3520,9 @@ func (p *HomePage) applyAgentsModalModelProfile(profileID string) bool {
 	if editor == nil {
 		return false
 	}
-	p.agentsModal.SelectedModelProfileID = profileID
+	if !editor.AgentSettingsLocked {
+		p.agentsModal.SelectedModelProfileID = profileID
+	}
 	if field := p.findAgentsModalEditorField(editor, "model_profile"); field != nil {
 		field.Value = profileID
 	}

@@ -2189,10 +2189,24 @@ func (c *API) DeleteModelFavorite(ctx context.Context, provider, model string) e
 }
 
 func (c *API) ListAgents(ctx context.Context, limit int) (AgentState, error) {
+	return c.listAgents(ctx, limit, "")
+}
+
+// ListAgentSummary uses the same compact agent projection as Desktop. Compiled
+// system subagents are intentionally supplied by UI settings instead of agent
+// store rows, so callers can materialize their canonical code-owned identities.
+func (c *API) ListAgentSummary(ctx context.Context, limit int) (AgentState, error) {
+	return c.listAgents(ctx, limit, "summary")
+}
+
+func (c *API) listAgents(ctx context.Context, limit int, view string) (AgentState, error) {
 	if limit <= 0 {
 		limit = 200
 	}
 	path := "/v2/agents?limit=" + strconv.Itoa(limit)
+	if strings.TrimSpace(view) != "" {
+		path += "&view=" + url.QueryEscape(strings.TrimSpace(view))
+	}
 	var resp struct {
 		OK                      bool                     `json:"ok"`
 		State                   AgentState               `json:"state"`

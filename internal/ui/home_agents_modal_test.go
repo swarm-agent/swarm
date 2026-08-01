@@ -169,7 +169,7 @@ func TestAgentsModalCompiledSubagentsOnlyOfferSingleProfiles(t *testing.T) {
 		{ProfileID: "split", Name: "Split", ModelMode: "split", Plan: &client.ModelProfileSelection{Provider: "codex", Model: "plan-model"}, Auto: &client.ModelProfileSelection{Provider: "codex", Model: "auto-model"}},
 	}
 
-	for _, agentName := range []string{"system-finder", "system-clone", "coder", "system-designer"} {
+	for _, agentName := range []string{"system-compact", "system-finder", "system-coder", "system-designer"} {
 		got := page.agentsModalModelProfileOptions(AgentModalProfile{Name: agentName, Mode: "subagent"})
 		if len(got) != 1 || got[0] != "single" {
 			t.Fatalf("%s profile options = %#v, want [single]", agentName, got)
@@ -179,6 +179,57 @@ func TestAgentsModalCompiledSubagentsOnlyOfferSingleProfiles(t *testing.T) {
 	got := page.agentsModalModelProfileOptions(AgentModalProfile{Name: "swarm", Mode: "primary"})
 	if len(got) != 2 {
 		t.Fatalf("primary profile options = %#v, want both profiles", got)
+	}
+}
+
+func TestAgentsModalCompiledSubagentEditorCopiesSingleProfileWithoutSessionControls(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles:         []AgentModalProfile{{Name: "system-compact", Mode: "subagent", Enabled: true, Provider: "codex", Model: "old-model", ModelMode: "split", DefaultSessionMode: "plan"}},
+		Providers:        []string{"codex"},
+		ModelsByProvider: map[string][]string{"codex": {"old-model", "single-model"}},
+		ModelProfiles: []client.ModelProfile{
+			{ProfileID: "single", Name: "Single", ModelMode: "single", Single: &client.ModelProfileSelection{Provider: "codex", Model: "single-model", Thinking: "high"}},
+			{ProfileID: "split", Name: "Split", ModelMode: "split", Plan: &client.ModelProfileSelection{Provider: "codex", Model: "plan-model"}, Auto: &client.ModelProfileSelection{Provider: "codex", Model: "auto-model"}},
+		},
+	})
+	page.openAgentsV2Editor()
+
+	editor := page.agentsModal.Editor
+	if editor == nil || !editor.AgentSettingsLocked {
+		t.Fatalf("compiled subagent editor = %#v, want locked single-model settings", editor)
+	}
+	for _, key := range []string{"default_session_mode", "model_mode", "plan_provider", "auto_provider"} {
+		field := page.findAgentsModalEditorField(editor, key)
+		if field != nil && agentsModalEditorFieldVisible(editor, *field) {
+			t.Fatalf("compiled subagent exposed unsupported %s field", key)
+		}
+	}
+	profileField := page.findAgentsModalEditorField(editor, "model_profile")
+	if profileField == nil || len(profileField.Options) != 1 || profileField.Options[0] != "single" {
+		t.Fatalf("compiled subagent profile choices = %#v, want only single", profileField)
+	}
+	if profileField.Value != "" {
+		t.Fatalf("compiled subagent inherited active session profile %q", profileField.Value)
+	}
+	profileField.Value = "single"
+	if !page.applyAgentsModalModelProfile("single") {
+		t.Fatal("single model profile was not copied into the subagent editor")
+	}
+	if page.agentsModal.SelectedModelProfileID != "" {
+		t.Fatalf("compiled subagent changed shared selected profile to %q", page.agentsModal.SelectedModelProfileID)
+	}
+	page.submitAgentsModalEditor()
+	action, ok := page.PopAgentsModalAction()
+	if !ok || action.Kind != AgentsModalActionUpsert || action.Upsert == nil {
+		t.Fatalf("compiled subagent save action = %#v", action)
+	}
+	if action.ModelProfileID != "" {
+		t.Fatalf("compiled subagent save tried to apply session profile %q", action.ModelProfileID)
+	}
+	if action.Upsert.ModelMode != "single" || action.Upsert.Provider != "codex" || action.Upsert.Model != "single-model" || action.Upsert.Thinking != "high" {
+		t.Fatalf("compiled subagent copied settings = %#v", action.Upsert)
 	}
 }
 

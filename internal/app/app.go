@@ -6066,10 +6066,13 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		if isCloneSystemAgentName(action.Upsert.Name) || isFinderSystemAgentName(action.Upsert.Name) || isDesignerSystemAgentName(action.Upsert.Name) {
+		if isCompactSystemAgentName(action.Upsert.Name) || isCloneSystemAgentName(action.Upsert.Name) || isFinderSystemAgentName(action.Upsert.Name) || isDesignerSystemAgentName(action.Upsert.Name) {
 			label := "Finder"
 			settingsField := "finder"
-			if isCloneSystemAgentName(action.Upsert.Name) {
+			if isCompactSystemAgentName(action.Upsert.Name) {
+				label = "Compact"
+				settingsField = "compact"
+			} else if isCloneSystemAgentName(action.Upsert.Name) {
 				label = "Coder"
 				settingsField = "coder"
 			} else if isDesignerSystemAgentName(action.Upsert.Name) {
@@ -6088,7 +6091,9 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 				Thinking:    strings.TrimSpace(action.Upsert.Thinking),
 				ServiceTier: strings.TrimSpace(action.Upsert.ServiceTier),
 			}
-			if settingsField == "coder" {
+			if settingsField == "compact" {
+				settings.Agents.Compact = selection
+			} else if settingsField == "coder" {
 				settings.Agents.Coder = selection
 			} else if settingsField == "designer" {
 				settings.Agents.Designer = selection
@@ -6098,16 +6103,6 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			if _, err := a.api.UpdateUISettings(ctx, settings); err != nil {
 				a.home.SetAgentsModalLoading(false)
 				a.home.SetAgentsModalError(fmt.Sprintf("save %s model failed: %v", label, err))
-				return
-			}
-			if profileID := strings.TrimSpace(action.ModelProfileID); profileID != "" {
-				if err := a.selectHomeModelProfile(profileID); err != nil {
-					a.home.SetAgentsModalLoading(false)
-					a.home.SetAgentsModalError(fmt.Sprintf("model settings saved, but switch profile failed: %v", err))
-					return
-				}
-				a.home.HideAgentsModal()
-				a.queueReload(false)
 				return
 			}
 			a.home.SetAgentsModalStatus(label + " single-model settings saved")
@@ -6189,9 +6184,14 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	}
 }
 
+func isCompactSystemAgentName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "compact" || name == "system-compact"
+}
+
 func isCloneSystemAgentName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "clone" || name == "coder" || name == "system-clone"
+	return name == "clone" || name == "coder" || name == "system-clone" || name == "system-coder"
 }
 
 func isFinderSystemAgentName(name string) bool {
@@ -6975,13 +6975,13 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 
-	state, err := a.api.ListAgents(ctx, 500)
+	state, err := a.api.ListAgentSummary(ctx, 200)
 	if err != nil {
 		a.home.SetAgentsModalLoading(false)
 		a.home.SetAgentsModalError(fmt.Sprintf("agent list failed: %v", err))
 		return
 	}
-	hints := make([]string, 0, len(state.Profiles)+2)
+	hints := make([]string, 0, len(state.Profiles)+6)
 	homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
 	hints = append(hints, homeProvider)
 	for _, profile := range state.Profiles {
@@ -6993,7 +6993,10 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 		a.home.SetAgentsModalError(fmt.Sprintf("system agent model settings failed: %v", err))
 		return
 	}
-	modalState := enrichSystemAgentModels(state, settings, a.homeModel)
+	modalState := canonicalAgentsModalState(state, settings)
+	for _, profile := range modalState.Profiles {
+		hints = append(hints, profile.Provider)
+	}
 	resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
 
 	a.home.SetAgentsModalData(mapAgentsModalData(
@@ -7007,7 +7010,7 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 		a.homeModel.ActiveModelProfile.ProfileID,
 	))
 	a.home.SetAgentsModalLoading(false)
-	status := fmt.Sprintf("agent profiles loaded: %d", len(state.Profiles))
+	status := fmt.Sprintf("agent profiles loaded: %d", len(modalState.Profiles))
 	if len(resolvedModels.Warnings) > 0 {
 		status += " (" + strings.Join(uniqueNonEmpty(resolvedModels.Warnings), "; ") + ")"
 	}
@@ -7246,32 +7249,12 @@ func enrichSystemAgentModels(state client.AgentState, settings client.UISettings
 	for i := range state.Profiles {
 		profile := &state.Profiles[i]
 		switch {
+		case isCompactSystemAgentName(profile.Name):
+			applyCompiledAgentModel(profile, settings.Agents.Compact)
 		case isFinderSystemAgentName(profile.Name):
-			override := settings.Agents.Finder
-			if strings.TrimSpace(override.Provider) != "" {
-				profile.Provider = strings.TrimSpace(override.Provider)
-			}
-			if strings.TrimSpace(override.Model) != "" {
-				profile.Model = strings.TrimSpace(override.Model)
-			}
-			if strings.TrimSpace(override.Thinking) != "" {
-				profile.Thinking = strings.TrimSpace(override.Thinking)
-			}
-			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
-			profile.ModelMode = "single"
+			applyCompiledAgentModel(profile, settings.Agents.Finder)
 		case isDesignerSystemAgentName(profile.Name):
-			override := settings.Agents.Designer
-			if strings.TrimSpace(override.Provider) != "" {
-				profile.Provider = strings.TrimSpace(override.Provider)
-			}
-			if strings.TrimSpace(override.Model) != "" {
-				profile.Model = strings.TrimSpace(override.Model)
-			}
-			if strings.TrimSpace(override.Thinking) != "" {
-				profile.Thinking = strings.TrimSpace(override.Thinking)
-			}
-			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
-			profile.ModelMode = "single"
+			applyCompiledAgentModel(profile, settings.Agents.Designer)
 		case isCloneSystemAgentName(profile.Name):
 			override := settings.Agents.Coder
 			profile.Provider = emptyFallback(strings.TrimSpace(override.Provider), strings.TrimSpace(home.ModelProvider))
@@ -7282,6 +7265,61 @@ func enrichSystemAgentModels(state client.AgentState, settings client.UISettings
 		}
 	}
 	return state
+}
+
+func applyCompiledAgentModel(profile *client.AgentProfile, selection client.UICompactAgentSettings) {
+	if profile == nil {
+		return
+	}
+	if strings.TrimSpace(selection.Provider) != "" {
+		profile.Provider = strings.TrimSpace(selection.Provider)
+	}
+	if strings.TrimSpace(selection.Model) != "" {
+		profile.Model = strings.TrimSpace(selection.Model)
+	}
+	if strings.TrimSpace(selection.Thinking) != "" {
+		profile.Thinking = strings.TrimSpace(selection.Thinking)
+	}
+	profile.AutoServiceTier = strings.TrimSpace(selection.ServiceTier)
+	profile.ModelMode = "single"
+}
+
+func canonicalAgentsModalState(state client.AgentState, settings client.UISettings) client.AgentState {
+	profiles := make([]client.AgentProfile, 0, len(state.Profiles)+4)
+	for _, profile := range state.Profiles {
+		name := strings.ToLower(strings.TrimSpace(profile.Name))
+		mode := strings.ToLower(strings.TrimSpace(profile.Mode))
+		if mode == "subagent" || isCompactSystemAgentName(name) || isCloneSystemAgentName(name) || isFinderSystemAgentName(name) || isDesignerSystemAgentName(name) {
+			continue
+		}
+		profiles = append(profiles, profile)
+	}
+	profiles = append(profiles,
+		compiledAgentsModalProfile("system-compact", "Compiled tool-free context compaction and titling utility", "read", settings.Agents.Compact),
+		compiledAgentsModalProfile("system-finder", "Compiled repository and web research subagent", "read", settings.Agents.Finder),
+		compiledAgentsModalProfile("system-coder", "Compiled isolated implementation subagent", "readwrite", settings.Agents.Coder),
+		compiledAgentsModalProfile("system-designer", "Compiled same-checkout UI iteration subagent with reusable workspace outputs", "readwrite", settings.Agents.Designer),
+	)
+	state.Profiles = profiles
+	return state
+}
+
+func compiledAgentsModalProfile(name, description, runtimeMode string, selection client.UICompactAgentSettings) client.AgentProfile {
+	return client.AgentProfile{
+		Name:               name,
+		Mode:               "subagent",
+		Description:        description,
+		Provider:           strings.TrimSpace(selection.Provider),
+		Model:              strings.TrimSpace(selection.Model),
+		Thinking:           strings.TrimSpace(selection.Thinking),
+		ModelMode:          "single",
+		AutoServiceTier:    strings.TrimSpace(selection.ServiceTier),
+		RuntimeMode:        runtimeMode,
+		ExecutionSetting:   runtimeMode,
+		DefaultSessionMode: "auto",
+		Enabled:            true,
+		Protected:          true,
+	}
 }
 
 func mapAgentsModalData(state client.AgentState, resolved providerModelResolverResult, defaultProvider, defaultModel, defaultThinking string, modelProfiles []client.ModelProfile, defaultModelProfileID, activeModelProfileID string) ui.AgentsModalData {
