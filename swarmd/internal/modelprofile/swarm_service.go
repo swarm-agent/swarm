@@ -6,138 +6,133 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-var ErrSwarmProfileNotFound = errors.New("swarm profile not found")
+var (
+	ErrSwarmModeSettingsNotFound           = errors.New("swarm mode settings not found")
+	ErrSwarmActionFavoriteNotFound         = errors.New("swarm action favorite not found")
+	ErrSwarmPlanFavoriteNotFound           = errors.New("swarm plan favorite not found")
+	ErrSwarmPlanConfigurationContradictory = errors.New("swarm plan configuration is contradictory")
+)
 
-type SwarmMemberInput struct {
-	AgentID   string
-	ModelMode string
-	Single    *Selection
-	Plan      *Selection
-	Auto      *Selection
+// SwarmSettings is the model assignment for the one compiled Swarm identity.
+type SwarmSettings = pebblestore.SwarmModeSettingsRecord
+
+type SwarmSettingsInput struct {
+	ActionFavoriteID string
+	PlanEnabled      bool
+	PlanFavoriteID   string
 }
-
-type SwarmInput struct {
-	Name    string
-	Members []SwarmMemberInput
-}
-
-type SwarmProfile = pebblestore.SwarmProfileRecord
 
 type SwarmService struct {
-	store *pebblestore.SwarmProfileStore
-	now   func() time.Time
-	newID func() string
+	settings  *pebblestore.SwarmModeSettingsStore
+	favorites *pebblestore.ModelProfileStore
+	now       func() time.Time
 }
 
-func NewSwarmService(store *pebblestore.SwarmProfileStore) *SwarmService {
-	return &SwarmService{store: store, now: time.Now, newID: func() string { return "sp_" + strings.ReplaceAll(uuid.NewString(), "-", "") }}
+func NewSwarmService(settings *pebblestore.SwarmModeSettingsStore, favorites *pebblestore.ModelProfileStore) *SwarmService {
+	return &SwarmService{settings: settings, favorites: favorites, now: time.Now}
 }
 
-func (s *SwarmService) Create(ctx context.Context, input SwarmInput) (SwarmProfile, error) {
+// Get returns the account's configured Action and optional Plan favorite assignments.
+// Referenced favorites are checked on every read so persisted dangling settings fail
+// explicitly instead of silently falling back to another model.
+func (s *SwarmService) Get(ctx context.Context) (SwarmSettings, error) {
 	principal, err := requirePrincipal(ctx)
 	if err != nil {
-		return SwarmProfile{}, err
+		return SwarmSettings{}, err
 	}
-	if s == nil || s.store == nil {
-		return SwarmProfile{}, ErrNotConfigured
+	if s == nil || s.settings == nil || s.favorites == nil {
+		return SwarmSettings{}, ErrNotConfigured
 	}
-	input, err = validateSwarmInput(input)
+
+	settings, found, err := s.settings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
-		return SwarmProfile{}, err
+		return SwarmSettings{}, mapSwarmModeStoreError(err)
 	}
-	now := s.now().UnixMilli()
-	return s.store.PutForAccount(SwarmProfile{ProfileID: s.newID(), AccountScopeID: principal.AccountScopeID, Name: input.Name, Members: swarmMembers(input.Members), CreatedAt: now, UpdatedAt: now})
+	if !found {
+		return SwarmSettings{}, ErrSwarmModeSettingsNotFound
+	}
+	if err := s.verifyFavorites(principal.AccountScopeID, settings); err != nil {
+		return SwarmSettings{}, err
+	}
+	return settings, nil
 }
 
-func (s *SwarmService) List(ctx context.Context) ([]SwarmProfile, error) {
+// Put replaces the account's model assignments after validating that every
+// referenced favorite belongs to that same account.
+func (s *SwarmService) Put(ctx context.Context, input SwarmSettingsInput) (SwarmSettings, error) {
 	principal, err := requirePrincipal(ctx)
 	if err != nil {
-		return nil, err
+		return SwarmSettings{}, err
 	}
-	if s == nil || s.store == nil {
-		return nil, ErrNotConfigured
+	if s == nil || s.settings == nil || s.favorites == nil {
+		return SwarmSettings{}, ErrNotConfigured
 	}
-	return s.store.ListForAccount(principal.AccountScopeID, 500)
+
+	settings := SwarmSettings{
+		AccountScopeID:   principal.AccountScopeID,
+		ActionFavoriteID: strings.TrimSpace(input.ActionFavoriteID),
+		PlanEnabled:      input.PlanEnabled,
+		PlanFavoriteID:   strings.TrimSpace(input.PlanFavoriteID),
+		UpdatedAt:        s.now().UnixMilli(),
+	}
+	if err := validateSwarmSettingsShape(settings); err != nil {
+		return SwarmSettings{}, err
+	}
+	if err := s.verifyFavorites(principal.AccountScopeID, settings); err != nil {
+		return SwarmSettings{}, err
+	}
+	stored, err := s.settings.PutForAccount(settings)
+	if err != nil {
+		return SwarmSettings{}, mapSwarmModeStoreError(err)
+	}
+	return stored, nil
 }
 
-func (s *SwarmService) Get(ctx context.Context, profileID string) (SwarmProfile, error) {
-	principal, err := requirePrincipal(ctx)
-	if err != nil {
-		return SwarmProfile{}, err
-	}
-	if s == nil || s.store == nil {
-		return SwarmProfile{}, ErrNotConfigured
-	}
-	profile, ok, err := s.store.GetForAccount(principal.AccountScopeID, profileID)
-	if err != nil {
-		return SwarmProfile{}, err
-	}
-	if !ok {
-		return SwarmProfile{}, ErrSwarmProfileNotFound
-	}
-	return profile, nil
+// Update is an explicit replacement alias for callers that describe settings
+// mutation as an update rather than a put.
+func (s *SwarmService) Update(ctx context.Context, input SwarmSettingsInput) (SwarmSettings, error) {
+	return s.Put(ctx, input)
 }
 
-func (s *SwarmService) Update(ctx context.Context, profileID string, input SwarmInput) (SwarmProfile, error) {
-	current, err := s.Get(ctx, profileID)
-	if err != nil {
-		return SwarmProfile{}, err
+func (s *SwarmService) verifyFavorites(accountScopeID string, settings SwarmSettings) error {
+	if _, found, err := s.favorites.GetForAccount(accountScopeID, settings.ActionFavoriteID); err != nil {
+		return err
+	} else if !found {
+		return ErrSwarmActionFavoriteNotFound
 	}
-	input, err = validateSwarmInput(input)
-	if err != nil {
-		return SwarmProfile{}, err
+	if !settings.PlanEnabled {
+		return nil
 	}
-	current.Name, current.Members, current.UpdatedAt = input.Name, swarmMembers(input.Members), s.now().UnixMilli()
-	return s.store.PutForAccount(current)
+	if _, found, err := s.favorites.GetForAccount(accountScopeID, settings.PlanFavoriteID); err != nil {
+		return err
+	} else if !found {
+		return ErrSwarmPlanFavoriteNotFound
+	}
+	return nil
 }
 
-func (s *SwarmService) Delete(ctx context.Context, profileID string) (bool, error) {
-	principal, err := requirePrincipal(ctx)
-	if err != nil {
-		return false, err
+func validateSwarmSettingsShape(settings SwarmSettings) error {
+	switch {
+	case strings.TrimSpace(settings.ActionFavoriteID) == "":
+		return pebblestore.ErrSwarmModeActionFavoriteIDRequired
+	case settings.PlanEnabled && strings.TrimSpace(settings.PlanFavoriteID) == "":
+		return errors.Join(ErrSwarmPlanConfigurationContradictory, pebblestore.ErrSwarmModePlanFavoriteIDRequired)
+	case !settings.PlanEnabled && strings.TrimSpace(settings.PlanFavoriteID) != "":
+		return errors.Join(ErrSwarmPlanConfigurationContradictory, pebblestore.ErrSwarmModePlanFavoriteIDUnexpected)
+	default:
+		return nil
 	}
-	if s == nil || s.store == nil {
-		return false, ErrNotConfigured
-	}
-	return s.store.DeleteForAccount(principal.AccountScopeID, profileID)
 }
 
-func validateSwarmInput(input SwarmInput) (SwarmInput, error) {
-	input.Name = strings.TrimSpace(input.Name)
-	if input.Name == "" {
-		return SwarmInput{}, errors.New("swarm profile name is required")
+func mapSwarmModeStoreError(err error) error {
+	switch {
+	case errors.Is(err, pebblestore.ErrSwarmModePlanFavoriteIDRequired),
+		errors.Is(err, pebblestore.ErrSwarmModePlanFavoriteIDUnexpected):
+		return errors.Join(ErrSwarmPlanConfigurationContradictory, err)
+	default:
+		return err
 	}
-	if len(input.Members) == 0 {
-		return SwarmInput{}, errors.New("swarm profile requires at least one member")
-	}
-	seen := make(map[string]struct{}, len(input.Members))
-	for i := range input.Members {
-		member := &input.Members[i]
-		member.AgentID = strings.ToLower(strings.TrimSpace(member.AgentID))
-		if member.AgentID == "" {
-			return SwarmInput{}, errors.New("swarm profile member agent_id is required")
-		}
-		if _, ok := seen[member.AgentID]; ok {
-			return SwarmInput{}, errors.New("swarm profile member agent_id must be unique")
-		}
-		seen[member.AgentID] = struct{}{}
-		validated, err := validateInput(Input{ModelMode: member.ModelMode, Single: member.Single, Plan: member.Plan, Auto: member.Auto, Name: member.AgentID})
-		if err != nil {
-			return SwarmInput{}, err
-		}
-		member.ModelMode, member.Single, member.Plan, member.Auto = validated.ModelMode, validated.Single, validated.Plan, validated.Auto
-	}
-	return input, nil
-}
-
-func swarmMembers(inputs []SwarmMemberInput) []pebblestore.SwarmProfileMember {
-	out := make([]pebblestore.SwarmProfileMember, len(inputs))
-	for i, member := range inputs {
-		out[i] = pebblestore.SwarmProfileMember{AgentID: member.AgentID, ModelMode: member.ModelMode, Single: cloneSelection(member.Single), Plan: cloneSelection(member.Plan), Auto: cloneSelection(member.Auto)}
-	}
-	return out
 }
