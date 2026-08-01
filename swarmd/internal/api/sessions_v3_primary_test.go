@@ -647,7 +647,14 @@ func TestSessionsV3PrimaryListAndHydrateRejectCrossUserSessions(t *testing.T) {
 	owned := pebblestore.SessionSnapshot{ID: "owned-session", UserID: owner.UserID, AccountScopeID: owner.AccountScopeID, WorkspacePath: "/workspace/owned", WorkspaceName: "owned", Title: "Owned", CreatedAt: 1, UpdatedAt: 1}
 	crossUser := pebblestore.SessionSnapshot{ID: "cross-user-session", UserID: foreign.UserID, AccountScopeID: owner.AccountScopeID, WorkspacePath: "/workspace/foreign", WorkspaceName: "foreign", Title: "Foreign", CreatedAt: 2, UpdatedAt: 2}
 	for _, session := range []pebblestore.SessionSnapshot{owned, crossUser} {
-		if err := sessionSvc.CreateSession(session); err != nil {
+		if _, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+			SessionID:      session.ID,
+			UserID:         session.UserID,
+			AccountScopeID: session.AccountScopeID,
+			Title:          session.Title,
+			WorkspacePath:  session.WorkspacePath,
+			WorkspaceName:  session.WorkspaceName,
+		}); err != nil {
 			t.Fatalf("create session %q: %v", session.ID, err)
 		}
 	}
@@ -3542,6 +3549,53 @@ func seedSessionsV3PrimaryAuthority(t *testing.T, server *Server, workspacePath 
 	return bindingID
 }
 
+func seedSessionsV2PrimaryAuthority(t *testing.T, server *Server, swarmStore any, swarmID, bindingID, workspacePath string) {
+	t.Helper()
+	store, ok := swarmStore.(*pebblestore.SwarmStore)
+	if !ok || store == nil || server == nil || server.topology == nil {
+		t.Fatal("server topology and swarm store are required")
+	}
+	swarmID = strings.TrimSpace(swarmID)
+	bindingID = strings.TrimSpace(bindingID)
+	workspacePath = strings.TrimSpace(workspacePath)
+	if swarmID == "" || bindingID == "" || workspacePath == "" {
+		t.Fatal("swarm id, binding id, and workspace path are required")
+	}
+	now := time.Now().UnixMilli()
+	if _, err := store.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: swarmID, Name: "host-swarm", Role: "master", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("put local node: %v", err)
+	}
+	if err := server.topology.UpsertRuntime(pebblestore.TopologyRuntimeRecord{SwarmID: swarmID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "host-swarm", Role: "master", Relationship: "self", Status: "online", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert local runtime: %v", err)
+	}
+	if _, err := server.topology.EnsureLocalSelfPlacementForPrincipal(testPrincipal().AccountScopeID, testPrincipal().UserID); err != nil {
+		t.Fatalf("ensure self placement: %v", err)
+	}
+	if _, err := server.topology.UpsertWorkspaceBinding(pebblestore.TopologyWorkspaceBindingRecord{
+		BindingID:                       bindingID,
+		UserID:                          testPrincipal().UserID,
+		AccountScopeID:                  testPrincipal().AccountScopeID,
+		SourceWorkspaceID:               "workspace-v3-" + bindingID,
+		SourceWorkspaceGeneration:       1,
+		SourceWorkspacePath:             workspacePath,
+		SourceWorkspaceName:             filepath.Base(workspacePath),
+		DestinationRuntimeSwarmID:       swarmID,
+		DestinationAuthorityHostSwarmID: swarmID,
+		DestinationHostSwarmID:          swarmID,
+		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
+		DestinationWorkspacePath:        workspacePath,
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
+		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
+		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
+		AttestedByHostSwarmID:           swarmID,
+		Writable:                        true,
+	}); err != nil {
+		t.Fatalf("upsert v3 binding: %v", err)
+	}
+}
+
 func assertNoSessionsForAccount(t *testing.T, sessionSvc *sessionruntime.Service) {
 	t.Helper()
 	sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10)
@@ -3699,7 +3753,7 @@ func getSessionsV3PrimaryTestMessages(t *testing.T, server *Server, sessionID st
 	return payload.Messages
 }
 
-func retiredDialSessionsV3PrimaryStream(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
+func retiredDialRoute(t *testing.T, baseURL, sessionID, rawQuery string) *gorillaws.Conn {
 	t.Helper()
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/v3/sessions/" + sessionID + "/stream"
 	if rawQuery != "" {
