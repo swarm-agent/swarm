@@ -9,6 +9,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -19,7 +20,7 @@ import (
 // after a provider credential has been verified and activated, create the
 // account's built-in agents already hydrated with verified snapshot defaults.
 func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
-	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.modelProfiles == nil || s.uiSettings == nil {
+	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.modelProfiles == nil || s.swarmProfiles == nil || s.uiSettings == nil {
 		return nil, errors.New("onboarding provider hydration is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
@@ -54,12 +55,21 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 	if err != nil {
 		return nil, fmt.Errorf("set global model default: %w", err)
 	}
+	// Agent hydration still accepts the legacy plan/auto input while the agent
+	// contract is being cut over. An absent optional Plan recommendation uses
+	// Action only for that internal bootstrap seam; it does not enable Plan mode.
+	hydrationPlanModel := providerDefaults.PlanModel
+	hydrationPlanThinking := providerDefaults.PlanThinking
+	if strings.TrimSpace(hydrationPlanModel) == "" || strings.TrimSpace(hydrationPlanThinking) == "" {
+		hydrationPlanModel = providerDefaults.AutoModel
+		hydrationPlanThinking = providerDefaults.AutoThinking
+	}
 	result, err := s.agents.EnsureHydratedDefaultsForAccount(accountScopeID, agentruntime.DefaultModelHydrationInput{
 		Provider:        providerID,
 		PrimaryModel:    providerDefaults.PrimaryModel,
 		PrimaryThinking: providerDefaults.PrimaryThinking,
-		PlanModel:       providerDefaults.PlanModel,
-		PlanThinking:    providerDefaults.PlanThinking,
+		PlanModel:       hydrationPlanModel,
+		PlanThinking:    hydrationPlanThinking,
 		AutoModel:       providerDefaults.AutoModel,
 		AutoThinking:    providerDefaults.AutoThinking,
 	})
@@ -83,13 +93,55 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
 		}
 	}
-	planSelection := modelprofile.Selection{Provider: providerID, Model: providerDefaults.PlanModel, Thinking: providerDefaults.PlanThinking}
-	actionSelection := modelprofile.Selection{Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking}
-	if _, _, err := s.modelProfiles.CreateFirstForAccount(accountScopeID, modelprofile.Input{
-		Name: "Swarm recommended", ModelMode: pebblestore.ModelProfileModeSplit,
-		Plan: &planSelection, Auto: &actionSelection,
-	}); err != nil {
-		return nil, fmt.Errorf("create onboarding recommended model profile: %w", err)
+	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{
+		Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(userID), AccountScopeID: accountScopeID,
+	})
+	favoriteState, err := s.modelProfiles.ListState(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read onboarding favorites: %w", err)
+	}
+	actionFavorite, found := findOnboardingFavorite(favoriteState.Profiles, providerID, providerDefaults.AutoModel, providerDefaults.AutoThinking)
+	createdIDs := make([]string, 0, 2)
+	rollbackCreatedFavorites := func() {
+		for i := len(createdIDs) - 1; i >= 0; i-- {
+			_, _ = s.modelProfiles.Delete(ctx, createdIDs[i])
+		}
+	}
+	if !found {
+		input := modelprofile.Input{Name: "Swarm Action", Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking}
+		if len(favoriteState.Profiles) == 0 {
+			actionFavorite, _, err = s.modelProfiles.CreateFirstForAccount(accountScopeID, input)
+		} else {
+			actionFavorite, err = s.modelProfiles.Create(ctx, input)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("create onboarding Action favorite: %w", err)
+		}
+		if strings.TrimSpace(actionFavorite.ProfileID) == "" {
+			return nil, errors.New("create onboarding Action favorite: account changed during initialization")
+		}
+		createdIDs = append(createdIDs, actionFavorite.ProfileID)
+	}
+	settingsInput := modelprofile.SwarmSettingsInput{ActionFavoriteID: actionFavorite.ProfileID}
+	if validDistinctOnboardingPlanFavorite(providerDefaults, actionFavorite) {
+		planFavorite, planFound := findOnboardingFavorite(favoriteState.Profiles, providerID, providerDefaults.PlanModel, providerDefaults.PlanThinking)
+		if !planFound {
+			var createErr error
+			planFavorite, createErr = s.modelProfiles.Create(ctx, modelprofile.Input{
+				Name: "Swarm Plan", Provider: providerID, Model: providerDefaults.PlanModel, Thinking: providerDefaults.PlanThinking,
+			})
+			if createErr != nil {
+				rollbackCreatedFavorites()
+				return nil, fmt.Errorf("create onboarding Plan favorite: %w", createErr)
+			}
+			createdIDs = append(createdIDs, planFavorite.ProfileID)
+		}
+		settingsInput.PlanEnabled = true
+		settingsInput.PlanFavoriteID = planFavorite.ProfileID
+	}
+	if _, err := s.swarmProfiles.Put(ctx, settingsInput); err != nil {
+		rollbackCreatedFavorites()
+		return nil, fmt.Errorf("set onboarding Swarm mode settings: %w", err)
 	}
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
@@ -257,12 +309,36 @@ func (s *Server) resolveOnboardingModelProvider(preferredProvider string) (provi
 	return "", defaults.ProviderDefaults{}, false, nil
 }
 
+func findOnboardingFavorite(favorites []modelprofile.Profile, provider, modelID, thinking string) (modelprofile.Profile, bool) {
+	provider = strings.TrimSpace(provider)
+	modelID = strings.TrimSpace(modelID)
+	thinking = strings.TrimSpace(thinking)
+	for _, favorite := range favorites {
+		if strings.EqualFold(strings.TrimSpace(favorite.Provider), provider) &&
+			strings.TrimSpace(favorite.Model) == modelID && strings.TrimSpace(favorite.Thinking) == thinking {
+			return favorite, true
+		}
+	}
+	return modelprofile.Profile{}, false
+}
+
+func validDistinctOnboardingPlanFavorite(providerDefaults defaults.ProviderDefaults, action modelprofile.Profile) bool {
+	planModel := strings.TrimSpace(providerDefaults.PlanModel)
+	planThinking := strings.TrimSpace(providerDefaults.PlanThinking)
+	if planModel == "" || planThinking == "" {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(providerDefaults.ProviderID), strings.TrimSpace(action.Provider)) ||
+		planModel != strings.TrimSpace(action.Model) ||
+		planThinking != strings.TrimSpace(action.Thinking)
+}
+
 func (s *Server) snapshotRecommendedOnboardingDefaults(providerID string, required bool) (defaults.ProviderDefaults, bool, error) {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	if providerID == "" {
 		return defaults.ProviderDefaults{}, false, nil
 	}
-	recommended, ok, err := s.model.RecommendedCatalogRoleDefaults(providerID, "auto", "plan", "compact", "finder", "coder", "designer")
+	recommended, ok, err := s.model.RecommendedCatalogRoleDefaults(providerID, "auto", "compact", "finder", "coder", "designer")
 	if err != nil {
 		return defaults.ProviderDefaults{}, false, fmt.Errorf("read onboarding model recommendations: %w", err)
 	}
@@ -273,15 +349,21 @@ func (s *Server) snapshotRecommendedOnboardingDefaults(providerID string, requir
 		return defaults.ProviderDefaults{}, false, nil
 	}
 	autoRec := recommendationForRole(recommended["auto"], "auto", "main")
-	planRec := recommendationForRole(recommended["plan"], "plan")
 	providerDefaults := defaults.ProviderDefaults{
 		ProviderID:      providerID,
 		PrimaryModel:    strings.TrimSpace(recommended["auto"].Model),
 		PrimaryThinking: recommendedThinking(autoRec, ""),
-		PlanModel:       strings.TrimSpace(recommended["plan"].Model),
-		PlanThinking:    recommendedThinking(planRec, ""),
 		AutoModel:       strings.TrimSpace(recommended["auto"].Model),
 		AutoThinking:    recommendedThinking(autoRec, ""),
+	}
+	plan, planOK, planErr := s.model.RecommendedCatalogRoleDefaults(providerID, "plan")
+	if planErr != nil {
+		return defaults.ProviderDefaults{}, false, fmt.Errorf("read onboarding Plan recommendation: %w", planErr)
+	}
+	if planOK {
+		planRec := recommendationForRole(plan["plan"], "plan")
+		providerDefaults.PlanModel = strings.TrimSpace(plan["plan"].Model)
+		providerDefaults.PlanThinking = recommendedThinking(planRec, "")
 	}
 	return providerDefaults, true, nil
 }
