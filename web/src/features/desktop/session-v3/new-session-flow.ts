@@ -870,6 +870,40 @@ export class DesktopV3RoutedNewSessionController {
     return this.submit()
   }
 
+  /**
+   * Completes the local handoff only after the app-level owner has published the
+   * durable routed result, connected realtime, and navigated successfully.
+   */
+  acknowledgeResolved(operationId: string): void {
+    const normalizedOperationId = operationId.trim()
+    if (!normalizedOperationId) throw new Error('Resolved routed Desktop start requires operation identity')
+    if (this.state.phase !== 'resolved' || this.state.operation.operationId !== normalizedOperationId) {
+      throw new Error('Only the current resolved routed Desktop start can be acknowledged')
+    }
+    clearDesktopV3RoutedStartOperation(normalizedOperationId)
+    this.reservedIdentity = null
+    this.generation += 1
+  }
+
+  /** Restores the exact routed operation when canonical activation fails. */
+  rejectResolved(operationId: string, error: unknown): DesktopV3RoutedFailedState {
+    if (this.state.phase !== 'resolved' || this.state.operation.operationId !== operationId) {
+      throw new Error('Only the current resolved routed Desktop start can be rejected')
+    }
+    const operation = this.state.operation
+    persistDesktopV3RoutedStartOperation(operation)
+    const failed: DesktopV3RoutedFailedState = {
+      phase: 'failed',
+      prompt: operation.snapshot.prompt,
+      snapshot: operation.snapshot,
+      operation,
+      error: error instanceof Error ? error.message : String(error),
+    }
+    this.generation += 1
+    this.publish(failed)
+    return failed
+  }
+
   private async run(
     operation: DesktopV3RoutedStartOperation,
     runGeneration: number,
@@ -877,7 +911,6 @@ export class DesktopV3RoutedNewSessionController {
     try {
       const result = validateDesktopV3RoutedStartResult(await this.postRoutedStart(operation.request))
       if (!this.isCurrent(operation, runGeneration)) return this.state
-      clearDesktopV3RoutedStartOperation(operation.operationId)
       const resolved: DesktopV3RoutedResolvedState = {
         phase: 'resolved',
         prompt: operation.snapshot.prompt,

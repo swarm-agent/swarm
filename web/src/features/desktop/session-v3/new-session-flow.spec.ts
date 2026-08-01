@@ -262,7 +262,41 @@ test('routed controller keeps the pending prompt local and resolves only canonic
     assert.equal(resolved.result.session_id, 'canonical-session')
   }
   assert.deepEqual(phases, ['routing', 'resolved'])
+  assert.equal(storage.size, 1)
+  if (resolved.phase !== 'resolved') throw new Error('expected resolved state')
+  controller.acknowledgeResolved(resolved.operation.operationId)
   assert.equal(storage.size, 0)
+}))
+
+test('routed activation rejection restores the exact operation and retry identity', async () => withAsyncSessionStorage(async (storage) => {
+  const requestIDs: string[] = []
+  const controller = new DesktopV3RoutedNewSessionController(async (request) => {
+    requestIDs.push(request.client_request_id)
+    return makeRoutedResult('canonical-session')
+  }, createDesktopV3RoutedDraftState('activate me'))
+  const snapshot = createDesktopV3RoutedComposerSnapshot({
+    prompt: ' activate me exactly ',
+    attachments: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
+    selectedAction: { id: 'action-1' },
+    selectedSkill: { canonicalName: 'skill-1' },
+    worktreePrimed: true,
+  })
+
+  const resolved = await controller.submit({ snapshot })
+  assert.equal(resolved.phase, 'resolved')
+  if (resolved.phase !== 'resolved') throw new Error('expected resolved state')
+  assert.equal(storage.size, 1)
+
+  const failed = controller.rejectResolved(resolved.operation.operationId, new Error('activation failed'))
+  assert.equal(failed.phase, 'failed')
+  assert.deepEqual(failed.snapshot, snapshot)
+  assert.match(failed.error, /activation failed/)
+  assert.equal(storage.size, 1)
+
+  const retried = await controller.retry()
+  assert.equal(retried.phase, 'resolved')
+  assert.equal(requestIDs.length, 2)
+  assert.equal(requestIDs[0], requestIDs[1])
 }))
 
 test('routed failure restores the exact composer snapshot and retries the same operation', async () => withAsyncSessionStorage(async () => {

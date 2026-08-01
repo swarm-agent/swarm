@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
-import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
-import type { DesktopChatRoute } from '../services/chat-routing'
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import {
   DesktopV3RoutedNewSessionController,
@@ -19,6 +17,7 @@ import {
   stageDesktopComposerAttachments,
   type DesktopComposerStagedAttachment,
 } from '../services/composer-attachments'
+import { DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS } from '../../session-v3/media-staging-api'
 import {
   createDesktopRoutedWorktreeIntent,
   encodeDesktopRoutedWorktreeIntentMetadata,
@@ -26,21 +25,10 @@ import {
 } from '../services/desktop-routed-worktree-intent'
 
 export interface DesktopV3NewSessionPaneProps {
-  modeCommand?: 'toggle-plan-auto' | null
-  onModeCommandHandled?: () => void
   workspace: WorkspaceEntry
-  workspaceSlug: string
-  routeOptions: DesktopChatRoute[]
-  pendingWorktreeBranch?: string | null
-  initialMode?: DesktopSessionMode
-  onModeChange?: (mode: DesktopSessionMode) => void
-  agentName?: string
-  onRoutedSessionResolved?: (result: DesktopV3RoutedStartResult) => void
-  onOpenChats?: () => void
+  onRoutedSessionResolved: (result: DesktopV3RoutedStartResult) => void | Promise<void>
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
-  agentSettingsOpenSignal?: number
-  agentSettingsInitialAgent?: string
   composerFocusSignal?: number
 }
 
@@ -58,28 +46,49 @@ export function DesktopV3NewSessionPane({
 }: DesktopV3NewSessionPaneProps) {
   const stagedAttachmentsRef = useRef<DesktopComposerStagedAttachment[]>([])
   const stagedAttachmentHistoryRef = useRef<DesktopComposerStagedAttachment[]>([])
+  const removedStagedAttachmentIdsRef = useRef(new Set<string>())
   const operationAttachmentsRef = useRef<DesktopComposerStagedAttachment[] | null>(null)
   const [controller] = useState(() => {
     const routedController = new DesktopV3RoutedNewSessionController(async (request) => {
       const result = await postDesktopV3RoutedSessionStart(request)
       const submittedAttachments = operationAttachmentsRef.current ?? []
-      if (submittedAttachments.length > 0) {
+      if (submittedAttachments.length > 0 && submittedAttachments.every((attachment) => attachment.size > 0)) {
         reconcileDesktopComposerStagedAttachments(submittedAttachments, result.first_message)
+      } else if ((result.first_message.media?.length ?? 0) !== submittedAttachments.length) {
+        throw new Error('Routed session returned a different attachment count')
       }
       return result
     })
-    if (routedController.getState().phase === 'failed') routedController.startDraft()
     return routedController
   })
   const [routedState, setRoutedState] = useState<DesktopV3RoutedNewSessionState>(() => controller.getState())
   const initialControllerState = controller.getState()
   const [draft, setDraft] = useState(() => initialControllerState.snapshot.prompt)
-  const [stagedAttachments, setStagedAttachments] = useState<DesktopComposerStagedAttachment[]>([])
+  const initialStagedAttachments = initialControllerState.phase === 'failed'
+    ? initialControllerState.snapshot.attachments.map((attachment, index) => ({
+        id: `restored:${index}:${attachment.staging_id}`,
+        stagingId: attachment.staging_id,
+        idempotencyKey: `${initialControllerState.operation.request.client_request_id}:media:${index}`,
+        name: `Staged attachment ${index + 1}`,
+        mimeType: 'application/octet-stream',
+        fileType: attachment.file_type,
+        modality: attachment.modality ?? 'document',
+        size: 0,
+        createdAt: initialControllerState.operation.createdAt,
+        expiresAt: initialControllerState.operation.createdAt + (DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS * 1000),
+      }))
+    : []
+  const [stagedAttachments, setStagedAttachments] = useState<DesktopComposerStagedAttachment[]>(initialStagedAttachments)
   const [worktreeIntent, setWorktreeIntent] = useState(() => createDesktopRoutedWorktreeIntent(initialControllerState.snapshot.worktreePrimed))
-  const [restoredSnapshot, setRestoredSnapshot] = useState<DesktopV3RoutedComposerSnapshot | null>(null)
+  const [restoredSnapshot, setRestoredSnapshot] = useState<DesktopV3RoutedComposerSnapshot | null>(() => initialControllerState.phase === 'failed' ? initialControllerState.snapshot : null)
   const [localError, setLocalError] = useState<string | null>(null)
   const resolvedCallbackRef = useRef(onRoutedSessionResolved)
-  const handledResolvedOperationRef = useRef('')
+  const activatingOperationRef = useRef('')
+  if (operationAttachmentsRef.current === null && initialControllerState.phase === 'failed') {
+    operationAttachmentsRef.current = initialStagedAttachments
+    stagedAttachmentsRef.current = initialStagedAttachments
+    stagedAttachmentHistoryRef.current = initialStagedAttachments
+  }
 
   useEffect(() => {
     resolvedCallbackRef.current = onRoutedSessionResolved
@@ -93,27 +102,44 @@ export function DesktopV3NewSessionPane({
 
   useEffect(() => {
     if (routedState.phase === 'failed') {
+      activatingOperationRef.current = ''
       setLocalError(null)
       const restoredAttachments = operationAttachmentsRef.current ?? []
-      stagedAttachmentsRef.current = restoredAttachments
-      setStagedAttachments(restoredAttachments)
+      const visibleAttachments = restoredAttachments.filter((attachment) => !removedStagedAttachmentIdsRef.current.has(attachment.stagingId))
+      stagedAttachmentsRef.current = visibleAttachments
+      setStagedAttachments(visibleAttachments)
       setDraft(routedState.snapshot.prompt)
       setWorktreeIntent(createDesktopRoutedWorktreeIntent(routedState.snapshot.worktreePrimed))
       setRestoredSnapshot(routedState.snapshot)
       return
     }
     if (routedState.phase !== 'resolved') return
-    if (handledResolvedOperationRef.current === routedState.operation.operationId) return
-    handledResolvedOperationRef.current = routedState.operation.operationId
+    if (activatingOperationRef.current === routedState.operation.operationId) return
+    activatingOperationRef.current = routedState.operation.operationId
     setLocalError(null)
-    operationAttachmentsRef.current = null
-    stagedAttachmentHistoryRef.current = []
-    stagedAttachmentsRef.current = []
-    setStagedAttachments([])
-    setRestoredSnapshot(null)
-    setWorktreeIntent(createDesktopRoutedWorktreeIntent(false))
-    resolvedCallbackRef.current?.(routedState.result)
-  }, [routedState])
+    let cancelled = false
+    const operationId = routedState.operation.operationId
+    void Promise.resolve()
+      .then(() => resolvedCallbackRef.current(routedState.result))
+      .then(() => {
+        controller.acknowledgeResolved(operationId)
+        operationAttachmentsRef.current = null
+        stagedAttachmentHistoryRef.current = []
+        removedStagedAttachmentIdsRef.current.clear()
+        stagedAttachmentsRef.current = []
+        if (cancelled) return
+        setStagedAttachments([])
+        setRestoredSnapshot(null)
+        setWorktreeIntent(createDesktopRoutedWorktreeIntent(false))
+      })
+      .catch((error) => {
+        activatingOperationRef.current = ''
+        if (controller.getState().phase === 'resolved') {
+          controller.rejectResolved(operationId, error)
+        }
+      })
+    return () => { cancelled = true }
+  }, [controller, routedState])
 
   function handleSubmit(snapshot: DesktopV3RoutedComposerSnapshot): Promise<DesktopV3RoutedNewSessionState> {
     try {
@@ -217,6 +243,7 @@ export function DesktopV3NewSessionPane({
           routedStagedAttachments={stagedAttachments}
           onRoutedStageAttachments={routedState.phase === 'failed' ? undefined : handleStageAttachments}
           onRoutedRemoveStagedAttachment={routedState.phase === 'failed' ? undefined : (stagingId) => setStagedAttachments((current) => {
+            removedStagedAttachmentIdsRef.current.add(stagingId)
             const next = current.filter((attachment) => attachment.stagingId !== stagingId)
             stagedAttachmentsRef.current = next
             return next
