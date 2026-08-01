@@ -115,7 +115,7 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	// provideriface has no structured-output field shared by every adapter. Keep
 	// the strict schema in system instructions and enforce it again with DecodeResult.
 	instructions := strings.TrimSpace(prompt) + "\nOutput JSON schema (authoritative): " + string(encodedSchema)
-	response, err := runner.CreateResponse(ctx, provideriface.Request{
+	response, err := runner.CreateResponse(authorityContext, provideriface.Request{
 		Model:       strings.TrimSpace(profile.Model),
 		Thinking:    strings.TrimSpace(profile.Thinking),
 		ServiceTier: strings.TrimSpace(profile.AutoServiceTier),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,13 +24,15 @@ type sessionRouterRecordingRunner struct {
 	createCalls    int
 	streamingCalls int
 	requests       []provideriface.Request
+	contexts       []context.Context
 }
 
 func (r *sessionRouterRecordingRunner) ID() string { return r.id }
 
-func (r *sessionRouterRecordingRunner) CreateResponse(_ context.Context, request provideriface.Request) (provideriface.Response, error) {
+func (r *sessionRouterRecordingRunner) CreateResponse(ctx context.Context, request provideriface.Request) (provideriface.Response, error) {
 	r.createCalls++
 	r.requests = append(r.requests, request)
+	r.contexts = append(r.contexts, ctx)
 	return r.response, r.err
 }
 
@@ -48,6 +51,10 @@ func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(
 	}
 	if runner.createCalls != 1 || runner.streamingCalls != 0 {
 		t.Fatalf("provider calls create=%d streaming=%d, want 1/0", runner.createCalls, runner.streamingCalls)
+	}
+	providerPrincipal, ok := identity.PrincipalFromContext(runner.contexts[0])
+	if !ok || !reflect.DeepEqual(providerPrincipal, principal) {
+		t.Fatalf("provider principal = %+v, ok=%v; want %+v", providerPrincipal, ok, principal)
 	}
 	if decision.Result.Mode != "plan" || decision.Workspace.WorkspaceID != entries[0].WorkspaceID || decision.Workspace.WorkspacePath != "/workspace/sole" {
 		t.Fatalf("decision = %+v", decision)
