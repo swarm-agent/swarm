@@ -1137,6 +1137,7 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 			session := normalizeSessionOwnership(*payload.Session)
 			session.ID = sessionID
 			session.Metadata = cloneSessionMetadataMap(session.Metadata)
+			session.ModelProfile = CloneSessionModelProfileSnapshot(session.ModelProfile)
 			replay.Session = &session
 		}
 		if payload.Lifecycle != nil {
@@ -2342,20 +2343,7 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 				session.Metadata = cloneSessionMetadataMap(current.Metadata)
 			}
 			if input.Kind != V3SessionMutationUpdateModelProfile && session.ModelProfile == nil && current.ModelProfile != nil {
-				profile := *current.ModelProfile
-				if profile.Single != nil {
-					selection := *profile.Single
-					profile.Single = &selection
-				}
-				if profile.Plan != nil {
-					selection := *profile.Plan
-					profile.Plan = &selection
-				}
-				if profile.Auto != nil {
-					selection := *profile.Auto
-					profile.Auto = &selection
-				}
-				session.ModelProfile = &profile
+				session.ModelProfile = CloneSessionModelProfileSnapshot(current.ModelProfile)
 			}
 		}
 		if session.UserID == "" {
@@ -2369,6 +2357,7 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 		}
 		session.UpdatedAt = now
 		session.Metadata = cloneSessionMetadataMap(session.Metadata)
+		session.ModelProfile = CloneSessionModelProfileSnapshot(session.ModelProfile)
 		return session, true, nil
 	}
 	if input.Message != nil {
@@ -2783,6 +2772,7 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if session.ID != "" {
 		snapshot := session
 		snapshot.Metadata = cloneSessionMetadataMap(snapshot.Metadata)
+		snapshot.ModelProfile = CloneSessionModelProfileSnapshot(snapshot.ModelProfile)
 		payload.Session = &snapshot
 	}
 	if message.ID != "" {

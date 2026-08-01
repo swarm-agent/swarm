@@ -19,16 +19,41 @@ const (
 	SessionModelProfileSourceTemporary = "temporary"
 )
 
+// SessionModelProfileSnapshot is the immutable model-selection contract bound
+// to a session. Action is always the resolved Action-mode selection. Plan is
+// present only when Plan mode was enabled when the snapshot was captured.
+// Favorite identity is copied into the snapshot so later favorite edits or
+// deletion cannot change the session's source attribution or model choices.
 type SessionModelProfileSnapshot struct {
-	Source            string                 `json:"source"`
-	SavedProfileID    string                 `json:"saved_profile_id,omitempty"`
-	UseAccountDefault bool                   `json:"use_account_default,omitempty"`
-	Name              string                 `json:"name,omitempty"`
-	ModelMode         string                 `json:"model_mode"`
-	Single            *ModelProfileSelection `json:"single,omitempty"`
-	Plan              *ModelProfileSelection `json:"plan,omitempty"`
-	Auto              *ModelProfileSelection `json:"auto,omitempty"`
-	AppliedAt         int64                  `json:"applied_at"`
+	Source             string                 `json:"source"`
+	UseAccountDefault  bool                   `json:"use_account_default,omitempty"`
+	ActionFavoriteID   string                 `json:"action_favorite_id,omitempty"`
+	ActionFavoriteName string                 `json:"action_favorite_name,omitempty"`
+	Action             ModelProfileSelection  `json:"action"`
+	PlanFavoriteID     string                 `json:"plan_favorite_id,omitempty"`
+	PlanFavoriteName   string                 `json:"plan_favorite_name,omitempty"`
+	Plan               *ModelProfileSelection `json:"plan,omitempty"`
+	AppliedAt          int64                  `json:"applied_at"`
+}
+
+// CloneSessionModelProfileSnapshot returns a deep copy suitable for crossing a
+// persistence, event, or service boundary without sharing mutable selections.
+func CloneSessionModelProfileSnapshot(profile *SessionModelProfileSnapshot) *SessionModelProfileSnapshot {
+	if profile == nil {
+		return nil
+	}
+	cloned := *profile
+	cloned.Plan = CloneModelProfileSelection(profile.Plan)
+	return &cloned
+}
+
+// CloneModelProfileSelection returns a copy of a resolved session selection.
+func CloneModelProfileSelection(selection *ModelProfileSelection) *ModelProfileSelection {
+	if selection == nil {
+		return nil
+	}
+	cloned := *selection
+	return &cloned
 }
 
 type SessionSnapshot struct {
@@ -1017,6 +1042,7 @@ func (s *SessionStore) getSessionFromReader(reader pebble.Reader, sessionID stri
 	session = normalizeSessionOwnership(session)
 	session.TemporaryWorkspaceRoots = NormalizeSessionTemporaryWorkspaceRoots(session.WorkspacePath, session.TemporaryWorkspaceRoots)
 	session.Metadata = cloneSessionMetadataMap(session.Metadata)
+	session.ModelProfile = CloneSessionModelProfileSnapshot(session.ModelProfile)
 	if lifecycle, lifecycleOK, err := getSessionLifecycleFromReader(reader, session.ID); err != nil {
 		return SessionSnapshot{}, false, err
 	} else if lifecycleOK {
