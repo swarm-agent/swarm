@@ -1,5 +1,11 @@
 import type { ModelOptionRecord } from '../types/chat'
-import type { DesktopV3MediaCapability, DesktopV3MediaCapabilityEntry } from '../../state/desktop-v3-cache-types'
+import type { DesktopV3MediaCapability, DesktopV3MediaCapabilityEntry, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
+import {
+  DESKTOP_V3_MEDIA_STAGING_MAX_BYTES,
+  DESKTOP_V3_MEDIA_STAGING_MAX_COUNT,
+  stageDesktopV3Media,
+  type DesktopV3MediaStagingRecord,
+} from '../../session-v3/media-staging-api'
 
 export const DESKTOP_COMPOSER_TEXT_FILE_MAX_BYTES = 1 << 20
 export const DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES = 4 << 20
@@ -115,4 +121,135 @@ export function appendComposerTextFile(draft: string, fileName: string, fileType
   const prefix = draft.trimEnd()
   const block = `File: ${safeName}\n\n\`\`\`${language}\n${content.replace(/\r\n?/g, '\n')}\n\`\`\``
   return prefix ? `${prefix}\n\n${block}` : block
+}
+
+export interface DesktopComposerStagedAttachment {
+  id: string
+  stagingId: string
+  idempotencyKey: string
+  name: string
+  mimeType: string
+  fileType?: string
+  modality: string
+  size: number
+  createdAt: number
+  expiresAt: number
+}
+
+export interface StageDesktopComposerAttachmentsInput {
+  files: readonly File[]
+  routedClientRequestId: string
+  existing?: readonly DesktopComposerStagedAttachment[]
+  signal?: AbortSignal
+  stage?: typeof stageDesktopV3Media
+}
+
+function preSessionModality(mimeType: string): string {
+  const topLevel = mimeType.split('/', 1)[0]
+  return topLevel === 'image' || topLevel === 'audio' || topLevel === 'video' ? topLevel : 'document'
+}
+
+function stagedAttachmentFromRecord(
+  file: File,
+  fileType: string | undefined,
+  idempotencyKey: string,
+  record: DesktopV3MediaStagingRecord,
+): DesktopComposerStagedAttachment {
+  return {
+    id: crypto.randomUUID(),
+    stagingId: record.id,
+    idempotencyKey,
+    name: record.file_name?.trim() || file.name.trim() || 'attachment',
+    mimeType: record.detected_mime_type,
+    fileType,
+    modality: preSessionModality(record.detected_mime_type),
+    size: record.size,
+    createdAt: record.created_at,
+    expiresAt: record.expires_at,
+  }
+}
+
+/**
+ * Stages routed-new-session files without creating hidden session or model state.
+ * Keys derive from the routed operation identity and remain stable when this
+ * function is retried with the same ordered file list.
+ */
+export async function stageDesktopComposerAttachments(
+  input: StageDesktopComposerAttachmentsInput,
+): Promise<DesktopComposerStagedAttachment[]> {
+  const routedClientRequestId = input.routedClientRequestId.trim()
+  if (!routedClientRequestId) throw new Error('Pre-session attachments require the routed client_request_id')
+  const existing = [...(input.existing ?? [])]
+  if (existing.length + input.files.length > DESKTOP_V3_MEDIA_STAGING_MAX_COUNT) {
+    throw new Error(`A routed message supports at most ${DESKTOP_V3_MEDIA_STAGING_MAX_COUNT} staged attachments.`)
+  }
+  for (const file of input.files) {
+    if (file.size > DESKTOP_V3_MEDIA_STAGING_MAX_BYTES) {
+      throw new Error(`${file.name || 'Attachment'} exceeds the 20 MB staging limit.`)
+    }
+  }
+
+  const stage = input.stage ?? stageDesktopV3Media
+  const staged: DesktopComposerStagedAttachment[] = []
+  for (const [index, file] of input.files.entries()) {
+    if (file.size <= 0) throw new Error(`${file.name || 'Attachment'} is empty.`)
+    const mimeType = composerFileMIME(file)
+    if (!mimeType) throw new Error(`${file.name || 'Attachment'} has no supported MIME type.`)
+    const fileType = composerFileType(file)
+    const idempotencyKey = `${routedClientRequestId}:media:${existing.length + index}`
+    const response = await stage({
+      body: file,
+      idempotencyKey,
+      mimeType,
+      fileName: file.name,
+      signal: input.signal,
+    })
+    staged.push(stagedAttachmentFromRecord(file, fileType, idempotencyKey, response.staging))
+  }
+  return [...existing, ...staged]
+}
+
+export function desktopComposerStagedMediaInput(
+  attachments: readonly DesktopComposerStagedAttachment[],
+): Array<{ staging_id: string; modality: string; file_type?: string }> {
+  if (attachments.length > DESKTOP_V3_MEDIA_STAGING_MAX_COUNT) {
+    throw new Error(`A routed message supports at most ${DESKTOP_V3_MEDIA_STAGING_MAX_COUNT} staged attachments.`)
+  }
+  const seen = new Set<string>()
+  return attachments.map((attachment) => {
+    const stagingId = attachment.stagingId.trim()
+    if (!stagingId || seen.has(stagingId)) throw new Error('Routed message contains an invalid or duplicate staging id')
+    seen.add(stagingId)
+    return {
+      staging_id: stagingId,
+      modality: attachment.modality.trim(),
+      file_type: attachment.fileType?.trim() || undefined,
+    }
+  })
+}
+
+export function reconcileDesktopComposerStagedAttachments(
+  staged: readonly DesktopComposerStagedAttachment[],
+  firstMessage: { media?: readonly DesktopV3MediaReference[] | null } | null | undefined,
+): DesktopV3MediaReference[] {
+  const refs = [...(firstMessage?.media ?? [])]
+  if (refs.length !== staged.length) {
+    throw new Error('Routed session returned a different attachment count')
+  }
+  return refs.map((reference, index) => {
+    const attachment = staged[index]
+    if (!reference.asset_id?.trim() || reference.size !== attachment.size) {
+      throw new Error(`Routed session returned mismatched attachment ${index + 1}`)
+    }
+    if (reference.modality.trim().toLowerCase() !== attachment.modality.trim().toLowerCase()) {
+      throw new Error(`Routed session returned mismatched attachment modality ${index + 1}`)
+    }
+    if (reference.mime_type.trim().toLowerCase() !== attachment.mimeType.trim().toLowerCase()) {
+      throw new Error(`Routed session returned mismatched attachment MIME type ${index + 1}`)
+    }
+    if (attachment.fileType && reference.file_type?.replace(/^\./, '').trim().toLowerCase() !== attachment.fileType.toLowerCase()) {
+      throw new Error(`Routed session returned mismatched attachment file type ${index + 1}`)
+    }
+    return reference
+  })
 }
