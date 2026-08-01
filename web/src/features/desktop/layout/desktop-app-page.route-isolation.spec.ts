@@ -34,7 +34,10 @@ test('Desktop V3 pane completions stay isolated from replacement route instances
   // The routed pane owns only a subscribed local controller. Unmounting removes
   // the subscription, so its resolved-state effect cannot call into a replacement
   // route instance and does not need the legacy async mountedRef choreography.
-  assert.match(newPane, /new DesktopV3RoutedNewSessionController\(postDesktopV3RoutedSessionStart\)/)
+  assert.match(
+    newPane,
+    /new DesktopV3RoutedNewSessionController\(async \(request\) => \{\s*const result = await postDesktopV3RoutedSessionStart\(request\)[\s\S]*?return result\s*\}\)/,
+  )
   assert.match(newPane, /useEffect\(\(\) => controller\.subscribe\(setRoutedState\), \[controller\]\)/)
   assert.match(newPane, /if \(routedState\.phase !== 'resolved'\) return/)
   assert.match(newPane, /resolvedCallbackRef\.current\?\.\(routedState\.result\)/)
