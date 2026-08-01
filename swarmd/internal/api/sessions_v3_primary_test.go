@@ -97,9 +97,7 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, storePath)
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
 		Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true),
-		Provider: "test-provider", Model: "single-model", Thinking: "medium", ModelMode: "split",
-		PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "high",
-		AutoProvider: "test-provider", AutoModel: "auto-model", AutoThinking: "low",
+		Provider: "test-provider", Model: "auto-model", Thinking: "low",
 		Prompt: "Swarm test primary prompt", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
 		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
@@ -110,6 +108,21 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 	}
 	parentPreference := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "full"}
 	parent := createSessionsV3PrimaryTestSessionWithPreference(t, server, "system-sidechat-parent", "system sidechat parent", parentPreference)
+	parent.ModelProfile = &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "favorite-action",
+		ActionFavoriteName: "Action",
+		Action:             pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "action-model", Thinking: "medium"},
+		PlanFavoriteID:     "favorite-plan",
+		PlanFavoriteName:   "Plan",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: parentPreference.Provider, Model: parentPreference.Model, Thinking: parentPreference.Thinking, ServiceTier: parentPreference.ServiceTier, ContextMode: parentPreference.ContextMode},
+		AppliedAt:          333,
+	}
+	parent.Preference = parentPreference
+	parent.Metadata = sessionsV3ModelProfileMetadata(parent.Metadata, parent.ModelProfile)
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: "system-sidechat-parent-profile", IdempotencyKey: "system-sidechat-parent-profile", PayloadHash: "system-sidechat-parent-profile", RequestHash: "system-sidechat-parent-profile", Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &parent}); err != nil {
+		t.Fatalf("seed parent model snapshot: %v", err)
+	}
 	planArgs := mustSessionsV3TestJSON(t, map[string]any{
 		"plan_id": "plan-sidechat-regression", "proposal_revision": 3,
 		"document": map[string]any{"info": map[string]any{"goal": "Prove Plan sidechat execution"}, "checkpoints": []any{}},
@@ -172,6 +185,9 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 			}
 			if stored.Metadata["system_agent_id"] != test.agentID || stored.Metadata["system_sidechat_kind"] != test.kind {
 				t.Fatalf("reopened %s metadata=%+v", test.kind, stored.Metadata)
+			}
+			if test.kind == "plan" && (stored.Mode != sessionruntime.ModeAuto || stored.ModelProfile == nil || stored.ModelProfile.ActionFavoriteID != "favorite-plan" || stored.ModelProfile.Action.Model != parentPreference.Model) {
+				t.Fatalf("reopened Plan sidechat current model authority=%+v", stored)
 			}
 			before := runner.callCount
 			postSessionsV3PrimaryTestMessage(t, restarted, test.sessionID, "system-sidechat-message-"+test.kind, "run "+test.kind+" sidechat")

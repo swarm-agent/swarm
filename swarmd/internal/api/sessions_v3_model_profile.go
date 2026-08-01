@@ -245,6 +245,10 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 		writeModelProfileError(w, err)
 		return
 	}
+	if resolved == nil {
+		writeError(w, http.StatusConflict, errors.New("cannot clear the session model profile because the current mode requires immutable model authority; replace the current mode slot instead"))
+		return
+	}
 	snapshot, err := mergeSessionsV3ModelProfileChoice(current, resolved)
 	if err != nil {
 		writeModelProfileError(w, err)
@@ -255,13 +259,9 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 	next.Metadata = sessionsV3ModelProfileMetadata(current.Metadata, snapshot)
 	if profilePreference, ok := sessionsV3ProfilePreference(next); ok {
 		next.Preference = normalizeSessionsV3ModelPreference(profilePreference)
-	} else if snapshot == nil {
-		transition, transitionErr := s.resolveSessionsV3ModeTransition(next, next.Mode)
-		if transitionErr != nil {
-			writeError(w, http.StatusBadRequest, transitionErr)
-			return
-		}
-		next.Preference = normalizeSessionsV3ModelPreference(transition.Preference)
+	} else {
+		writeError(w, http.StatusConflict, errors.New("session model profile current mode selection has no provider/model"))
+		return
 	}
 	next.UpdatedAt = now
 	policy := s.sessionsV3AgentModelPolicy(next, next.Preference, 0, 0)

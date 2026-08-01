@@ -84,15 +84,22 @@ func TestSessionsV3PlanSidechatUsesImmutableSnapshotAndPreservesParentState(t *t
 	if !reflect.DeepEqual(sidechat.Preference, wantPreference) {
 		t.Fatalf("Plan sidechat preference = %+v, want %+v", sidechat.Preference, wantPreference)
 	}
+	if sidechat.ModelProfile == nil || sidechat.ModelProfile.ActionFavoriteID != "favorite-plan" || sidechat.ModelProfile.ActionFavoriteName != "Plan" || sidechat.ModelProfile.Action.Provider != "PLAN-PROVIDER" || sidechat.ModelProfile.Action.Model != "plan-model" {
+		t.Fatalf("Plan sidechat auto slot is not bound to parent Plan selection: %+v", sidechat.ModelProfile)
+	}
+	effective, err := resolveSessionV3EffectivePreference(sidechat, pebblestore.AgentProfile{})
+	if err != nil || effective.Provider != "plan-provider" || effective.Model != "plan-model" || effective.Thinking != "high" {
+		t.Fatalf("Plan sidechat executor-visible model = %+v err=%v", effective, err)
+	}
 	if sidechat.Mode != sessionruntime.ModeAuto || !sessionsV3SystemSidechat(sidechat) || sessionsV3MetadataString(sidechat.Metadata, "parent_session_id") != created.ID || sidechat.Metadata["navigation_hidden"] != true || sidechat.Metadata["settings_locked"] != true {
 		t.Fatalf("Plan sidechat lost hidden parent-owned binding: %#v", sidechat)
 	}
-	lockedMode := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+sidechat.ID+"/mode", bytes.NewBufferString(`{"mode":"plan","client_request_id":"locked-plan-sidechat-mode"}`))
-	lockedMode.Header.Set("Content-Type", "application/json")
+	lockedMutation := httptest.NewRequest(http.MethodDelete, "/v3/sessions/"+sidechat.ID+"/model-profile", bytes.NewBufferString(`{"client_request_id":"locked-plan-sidechat-profile"}`))
+	lockedMutation.Header.Set("Content-Type", "application/json")
 	lockedRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(lockedRec, withTestPrincipal(lockedMode))
+	server.Handler().ServeHTTP(lockedRec, withTestPrincipal(lockedMutation))
 	if lockedRec.Code != http.StatusConflict || !strings.Contains(lockedRec.Body.String(), "parent-owned and locked") {
-		t.Fatalf("Plan sidechat mode lock status=%d body=%s", lockedRec.Code, lockedRec.Body.String())
+		t.Fatalf("Plan sidechat model-profile lock status=%d body=%s", lockedRec.Code, lockedRec.Body.String())
 	}
 	lockedSidechat, ok, err := sessionSvc.GetSession(sidechat.ID)
 	if err != nil || !ok || !reflect.DeepEqual(lockedSidechat, sidechat) {

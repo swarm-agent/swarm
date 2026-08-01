@@ -189,11 +189,16 @@ func TestSessionsV3PlanSidechatModelProfileClonesImmutableSnapshot(t *testing.T)
 		AppliedAt:          9,
 	}}
 	profile := sessionsV3PlanSidechatModelProfile(parent)
-	if profile == nil || profile.ActionFavoriteID != "action-id" || profile.Action.Model != "action-model" || profile.PlanFavoriteID != "plan-id" || profile.Plan == nil || profile.Plan.Model != "plan-model" || profile.Plan.Thinking != "high" || profile.AppliedAt != 9 {
+	if profile == nil || profile.ActionFavoriteID != "plan-id" || profile.ActionFavoriteName != "Plan" || profile.Action.Model != "plan-model" || profile.Action.Thinking != "high" || profile.PlanFavoriteID != "plan-id" || profile.Plan == nil || profile.Plan.Model != "plan-model" || profile.Plan.Thinking != "high" || profile.AppliedAt != 9 {
 		t.Fatalf("Plan sidechat model profile = %+v", profile)
 	}
+	sidechat := pebblestore.SessionSnapshot{Mode: sessionruntime.ModeAuto, ModelProfile: profile}
+	effective, err := resolveSessionV3EffectivePreference(sidechat, pebblestore.AgentProfile{})
+	if err != nil || effective.Model != "plan-model" || effective.Thinking != "high" {
+		t.Fatalf("Plan sidechat executor preference = %+v err=%v", effective, err)
+	}
 	parent.ModelProfile.Plan.Model = "mutated"
-	if profile.Plan == nil || profile.Plan.Model != "plan-model" {
+	if profile.Action.Model != "plan-model" || profile.Plan == nil || profile.Plan.Model != "plan-model" {
 		t.Fatalf("Plan sidechat model profile shares mutable selection: %+v", profile)
 	}
 }
@@ -250,6 +255,33 @@ func TestSessionsV3ModelProfileMutationCommitsCurrentSlotAndRealtimeOutbox(t *te
 	stored, ok, err := sessionSvc.GetSession(created.ID)
 	if err != nil || !ok || stored.Mode != sessionruntime.ModeAuto || stored.Preference.Model != "action-new" || stored.ModelProfile == nil || stored.ModelProfile.ActionFavoriteID != favorite.ProfileID || stored.ModelProfile.PlanFavoriteID != "plan-old" {
 		t.Fatalf("stored model mutation = %+v ok=%t err=%v", stored, ok, err)
+	}
+}
+
+func TestSessionsV3ModelProfileMutationRejectsClearWithoutChangingAuthorities(t *testing.T) {
+	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "model-profile-clear.pebble"))
+	defer func() { _ = closeStore() }()
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "model-profile-clear-create", "model profile clear", pebblestore.ModelPreference{Provider: "test-provider", Model: "action-model", Thinking: "medium"})
+	created.ModelProfile = &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, ActionFavoriteID: "action-old", ActionFavoriteName: "Action Old", Action: pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "action-model", Thinking: "medium"}, PlanFavoriteID: "plan-old", PlanFavoriteName: "Plan Old", Plan: &pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "plan-model"}, AppliedAt: 1}
+	created.Metadata = sessionsV3ModelProfileMetadata(created.Metadata, created.ModelProfile)
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID, ClientRequestID: "model-profile-clear-seed", IdempotencyKey: "model-profile-clear-seed", PayloadHash: "model-profile-clear-seed", RequestHash: "model-profile-clear-seed", Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &created, NowUnixMs: 2}); err != nil {
+		t.Fatalf("seed model profile: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/v3/sessions/"+created.ID+"/model-profile", strings.NewReader(`{"client_request_id":"model-profile-clear"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "requires immutable model authority") {
+		t.Fatalf("clear model profile status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok || stored.ModelProfile == nil || stored.ModelProfile.ActionFavoriteID != "action-old" || stored.Preference.Model != "action-model" {
+		t.Fatalf("clear changed durable authorities: session=%+v ok=%t err=%v", stored, ok, err)
+	}
+	metadataProfile, ok := stored.Metadata["model_profile"].(pebblestore.SessionModelProfileSnapshot)
+	if !ok || metadataProfile.ActionFavoriteID != "action-old" {
+		t.Fatalf("clear changed profile metadata: %#v", stored.Metadata["model_profile"])
 	}
 }
 

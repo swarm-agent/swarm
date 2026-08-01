@@ -389,7 +389,15 @@ func sessionsV3PlanSidechatModelProfile(parent pebblestore.SessionSnapshot) *peb
 	if parent.ModelProfile == nil || parent.ModelProfile.Plan == nil {
 		return nil
 	}
-	return pebblestore.CloneSessionModelProfileSnapshot(parent.ModelProfile)
+	profile := pebblestore.CloneSessionModelProfileSnapshot(parent.ModelProfile)
+	// The Plan sidechat is durably auto mode, so its executor-visible current
+	// slot must be the parent's immutable Plan selection. Retaining the parent's
+	// Action slot here would make the auto-mode executor silently run the parent
+	// Action model even though Session.Preference is bound to Plan.
+	profile.Action = *pebblestore.CloneModelProfileSelection(parent.ModelProfile.Plan)
+	profile.ActionFavoriteID = parent.ModelProfile.PlanFavoriteID
+	profile.ActionFavoriteName = parent.ModelProfile.PlanFavoriteName
+	return profile
 }
 
 func sessionsV3PlanSidechatSnapshotPreference(parent pebblestore.SessionSnapshot) (pebblestore.ModelPreference, bool) {
