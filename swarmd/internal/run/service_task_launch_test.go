@@ -1607,7 +1607,7 @@ func TestTaskChildInheritsImmutableModelProfileForAuthoritativeMode(t *testing.T
 	defer cleanup()
 	parent := bindTaskInheritanceModelProfile(t, svc, parentSessionID)
 
-	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "purpose-review", MetaPrompt: "review model inheritance"}, "review inheritance", "", nil)
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "finder", MetaPrompt: "review model inheritance"}, "review inheritance", "", nil)
 	if err != nil {
 		t.Fatalf("prepare plan child: %v", err)
 	}
@@ -1625,7 +1625,7 @@ func TestTaskChildInheritsImmutableModelProfileForAuthoritativeMode(t *testing.T
 	planDisabled := parent
 	planDisabled.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(parent.ModelProfile)
 	planDisabled.ModelProfile.Plan = nil
-	if _, err := svc.prepareDelegatedSubagentLaunch(planDisabled, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 2, RequestedSubagent: "purpose-review", MetaPrompt: "reject disabled plan"}, "disabled plan", "", nil); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
+	if _, err := svc.prepareDelegatedSubagentLaunch(planDisabled, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 2, RequestedSubagent: "finder", MetaPrompt: "reject disabled plan"}, "disabled plan", "", nil); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
 		t.Fatalf("Plan-disabled child error = %v", err)
 	}
 }
@@ -1634,7 +1634,7 @@ func TestTaskManifestBindsCompleteImmutableModelProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
-	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"review","subagent_type":"purpose-review","meta_prompt":"review"}`})
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"review","subagent_type":"finder","meta_prompt":"review"}`})
 	if err != nil {
 		t.Fatalf("build manifest: %v", err)
 	}
@@ -1806,6 +1806,7 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         "test-user",
 		AccountScopeID: "test-account",
 		Title:          "Parent",
 		WorkspacePath:  t.TempDir(),
