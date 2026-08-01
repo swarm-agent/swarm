@@ -141,6 +141,7 @@ export interface DesktopV3AgenticComposerProps {
   mode: DesktopSessionMode
   onModeSelect?: (mode: DesktopSessionMode) => void
   showModePicker?: boolean
+  resolvedSessionControls?: boolean
   executionLabel?: string
   currentAgent: string
   selectedPrimaryAgent: string
@@ -231,6 +232,7 @@ export function DesktopV3AgenticComposer({
   mode,
   onModeSelect,
   showModePicker = true,
+  resolvedSessionControls = false,
   executionLabel,
   currentAgent,
   selectedPrimaryAgent,
@@ -254,7 +256,7 @@ export function DesktopV3AgenticComposer({
   modelLockNotice = '',
   modelControlDetail = '',
   onOpenAgentSettings,
-  onAgentSelect,
+  onAgentSelect: _onAgentSelect,
   needsAuth = false,
   onOpenAuthSettings,
   onConfirmAgentSettings,
@@ -299,9 +301,6 @@ export function DesktopV3AgenticComposer({
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
-  const [agentSetupInitialAgent, setAgentSetupInitialAgent] = useState('')
-  const [agentSetupProfileId, setAgentSetupProfileId] = useState<string | null | undefined>(undefined)
-  const [createProfileSignal, setCreateProfileSignal] = useState(0)
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
   const [textAttachments, setTextAttachments] = useState<DesktopComposerTextAttachment[]>([])
@@ -329,23 +328,10 @@ export function DesktopV3AgenticComposer({
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
   const selectedThinking = thinking.trim() || 'off'
-  const effectiveAgentSetupOpenSignal = agentSettingsOpenSignal + agentSetupOpenSignal
-  const effectiveAgentSetupInitialAgent = agentSetupInitialAgent || agentSettingsInitialAgent
-  const openAgentSetup = useCallback((agent?: string) => {
-    setAgentSetupProfileId(undefined)
-    setAgentSetupInitialAgent(agent?.trim() || currentAgent)
+  void _onAgentSelect
+  const openAgentSetup = useCallback(() => {
     setAgentSetupOpenSignal((current) => current + 1)
-  }, [currentAgent])
-  const addModelProfile = useCallback(() => {
-    setAgentSetupProfileId('')
-    setAgentSetupInitialAgent(currentAgent)
-    setCreateProfileSignal((current) => current + 1)
-  }, [currentAgent])
-  const editModelProfile = useCallback((profileId: string) => {
-    setAgentSetupProfileId(profileId)
-    setAgentSetupInitialAgent(currentAgent)
-    setAgentSetupOpenSignal((current) => current + 1)
-  }, [currentAgent])
+  }, [])
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft
@@ -1059,7 +1045,9 @@ export function DesktopV3AgenticComposer({
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showModePicker ? (
-                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onEditProfile={editModelProfile} onReorderProfiles={onModelProfileReorder} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
+                  resolvedSessionControls
+                    ? <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} />
+                    : renderComposerControl(openAgentSetup, false)
                 ) : executionLabel ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
@@ -1084,7 +1072,9 @@ export function DesktopV3AgenticComposer({
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showModePicker ? (
-                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onEditProfile={editModelProfile} onReorderProfiles={onModelProfileReorder} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
+                  resolvedSessionControls
+                    ? <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} />
+                    : renderComposerControl(openAgentSetup, false)
                 ) : (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
                 )}
@@ -1100,7 +1090,7 @@ export function DesktopV3AgenticComposer({
           </div>
         </div>
       </div>
-      <AgentModelControl
+      {!resolvedSessionControls ? <AgentModelControl
         currentAgent={currentAgent}
         selectedPrimaryAgent={selectedPrimaryAgent}
         agents={selectableAgents}
@@ -1112,20 +1102,18 @@ export function DesktopV3AgenticComposer({
         modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}
-        openSignal={effectiveAgentSetupOpenSignal}
-        initialAgentName={effectiveAgentSetupInitialAgent}
-        onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
+        openSignal={agentSettingsOpenSignal + agentSetupOpenSignal}
+        initialAgentName={agentSettingsInitialAgent}
+        onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
         onSetDefaultModelProfile={onModelProfileSetDefault}
         onDeleteModelProfile={onModelProfileDelete}
         onReorderModelProfiles={onModelProfileReorder}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}
-        initialModelProfileId={agentSetupProfileId}
-        createModelProfileSignal={createProfileSignal}
         busy={agentModelControlBusy}
         showTrigger={false}
-      />
+      /> : null}
     </div>
   )
 }

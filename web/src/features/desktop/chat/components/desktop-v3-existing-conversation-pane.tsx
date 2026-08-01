@@ -2874,6 +2874,7 @@ export function DesktopV3ExistingConversationPane({
             onCompact={handleCompact}
             mode={mode}
             onModeSelect={handleModeSelect}
+            resolvedSessionControls
             currentAgent={selectedAgent || "Agent"}
             selectedPrimaryAgent={selectedAgent || ""}
             agents={agentState.profiles}
@@ -2911,6 +2912,7 @@ export function DesktopV3ExistingConversationPane({
                 if (next) setPreference(next);
               } catch (error) {
                 setSendError(error instanceof Error ? error.message : 'Failed to switch model profile');
+                throw error;
               } finally {
                 setAgentModelSaving(false);
               }
