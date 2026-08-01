@@ -34,26 +34,21 @@ const metadata = {
   },
 }
 
-test('stored session agent profile resolves one flat model without global split state', () => {
-  const planLock = resolveDesktopV3SessionAgentModelLock(metadata, 'plan')
-  const autoLock = resolveDesktopV3SessionAgentModelLock(metadata, 'auto')
+test('stored session agent profile resolves one flat model independent of lifecycle mode', () => {
+  const lock = resolveDesktopV3SessionAgentModelLock(metadata)
 
-  assert.equal(planLock?.agentName, 'non-default-agent')
-  assert.deepEqual(planLock && preferenceFromAgentModelLock(planLock, current, options), {
-    provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '', updatedAt: 1,
-  })
-  assert.deepEqual(autoLock && preferenceFromAgentModelLock(autoLock, current, options), {
+  assert.equal(lock?.agentName, 'non-default-agent')
+  assert.deepEqual(lock && preferenceFromAgentModelLock(lock, current, options), {
     provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '', updatedAt: 1,
   })
 })
 
 test('Swarm never claims model authority from agent profile state', () => {
   const swarmMetadata = { agent_profile: { ...metadata.agent_profile, name: 'swarm' } }
-  assert.equal(resolveDesktopV3SessionAgentModelLock(swarmMetadata, 'auto'), null)
-  assert.equal(resolveDesktopV3AgentModelLock([{ ...metadata.agent_profile, name: 'swarm' } as never], 'swarm', 'auto').locked, false)
+  assert.equal(resolveDesktopV3SessionAgentModelLock(swarmMetadata), null)
+  assert.equal(resolveDesktopV3AgentModelLock([{ ...metadata.agent_profile, name: 'swarm' } as never], 'swarm').locked, false)
 })
 
-test('missing or stale split stored agent profiles do not claim session authority', () => {
-  assert.equal(resolveDesktopV3SessionAgentModelLock({}, 'plan'), null)
-  assert.equal(resolveDesktopV3SessionAgentModelLock({ agent_profile: { ...metadata.agent_profile, model_mode: 'split' } }, 'auto'), null)
+test('missing stored agent profile does not claim session authority', () => {
+  assert.equal(resolveDesktopV3SessionAgentModelLock({}), null)
 })

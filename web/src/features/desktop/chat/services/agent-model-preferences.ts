@@ -1,4 +1,3 @@
-import { normalizeSessionMode, type DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { AgentProfileRecord, ModelOptionRecord, SessionPreferenceRecord } from '../types/chat'
 import { defaultModelThinking } from './model-options'
 
@@ -11,7 +10,6 @@ export type AgentModelLockState = {
   model: string
   thinking: string
   serviceTier: string
-  mode: DesktopSessionMode
   disabledReason: string
 }
 
@@ -27,17 +25,10 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
-export function resolveDesktopV3SessionAgentModelLock(
-  metadata: unknown,
-  mode: DesktopSessionMode = 'auto',
-): AgentModelLockState | null {
+export function resolveDesktopV3SessionAgentModelLock(metadata: unknown): AgentModelLockState | null {
   const profile = record(record(metadata).agent_profile)
   const agentName = String(profile.name ?? '').trim()
   if (!agentName || agentName.toLowerCase() === 'swarm') return null
-  const normalizedMode = normalizeSessionMode(mode)
-  for (const removed of ['model_mode', 'plan_provider', 'plan_model', 'plan_thinking', 'plan_service_tier', 'auto_provider', 'auto_model', 'auto_thinking', 'auto_service_tier']) {
-    if (removed in profile) return null
-  }
   const provider = String(profile.provider ?? '').trim()
   const model = String(profile.model ?? '').trim()
   if (!provider || !model) return null
@@ -52,7 +43,6 @@ export function resolveDesktopV3SessionAgentModelLock(
     model,
     thinking,
     serviceTier,
-    mode: normalizedMode,
     disabledReason: '',
   }
 }
@@ -60,13 +50,11 @@ export function resolveDesktopV3SessionAgentModelLock(
 export function resolveDesktopV3AgentModelLock(
   agents: AgentProfileRecord[],
   selectedAgentName: string,
-  mode: DesktopSessionMode = 'auto',
 ): AgentModelLockState {
-  const normalizedMode = normalizeSessionMode(mode)
   const profile = findAgentProfile(agents, selectedAgentName)
   const agentName = profile?.name.trim() || selectedAgentName.trim()
   if (agentName.toLowerCase() === 'swarm') {
-    return { profile, locked: false, customized: false, agentName, provider: '', model: '', thinking: '', serviceTier: '', mode: normalizedMode, disabledReason: '' }
+    return { profile, locked: false, customized: false, agentName, provider: '', model: '', thinking: '', serviceTier: '', disabledReason: '' }
   }
   const preference = {
     provider: profile?.provider.trim() ?? '',
@@ -84,7 +72,6 @@ export function resolveDesktopV3AgentModelLock(
     model: preference.model,
     thinking: preference.thinking,
     serviceTier: preference.serviceTier,
-    mode: normalizedMode,
     disabledReason: '',
   }
 }

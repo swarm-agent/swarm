@@ -14,7 +14,9 @@ test('plan remains a composer lifecycle toggle rather than a favorite bundle mod
 })
 
 test('agent setup edits one flat favorite and does not expose split model policy controls', () => {
-  assert.match(settingsSource, /title=\{draftProfile.*'Favorite model'\}/)
+  const favoriteEditorSource = settingsSource.slice(settingsSource.indexOf('<ModelDraftEditor'))
+  assert.match(favoriteEditorSource, /title=\{draftProfile && isSystemUtility\(draftProfile\.name\) \?[^\n]+: 'Favorite model'\}/)
   assert.match(settingsSource, /modelProfile: \{ name: profileName, \.\.\.toSelection\(singleDraft\) \}/)
   assert.doesNotMatch(settingsSource, /DraftMode|ModelPolicyChoices|PrimaryAgentControlRow|Plan agent model|Action agent model|planDraft|autoDraft/)
+  assert.doesNotMatch(settingsSource, /mode\s*===\s*['"]plan['"]|mode\s*===\s*['"]auto['"]/)
 })
