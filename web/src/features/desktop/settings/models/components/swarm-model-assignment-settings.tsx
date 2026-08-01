@@ -58,9 +58,6 @@ export function buildSwarmModelAssignmentSaveInput(input: {
   if (!planFavoriteId || !favoriteIds.has(planFavoriteId)) {
     return { value: null, error: 'Choose a Plan favorite.' }
   }
-  if (planFavoriteId === actionFavoriteId) {
-    return { value: null, error: 'Plan must use a different favorite from Action.' }
-  }
   return { value: { actionFavoriteId, planEnabled: true, planFavoriteId }, error: null }
 }
 
@@ -197,13 +194,13 @@ export function SwarmModelAssignmentSettings({
               >
                 <option value="">Choose a Plan favorite</option>
                 {normalizedFavorites.map((favorite) => (
-                  <option key={favorite.id} value={favorite.id} disabled={favorite.id === draftActionFavoriteId}>
+                  <option key={favorite.id} value={favorite.id}>
                     {favoriteLabel(favorite)}
                   </option>
                 ))}
               </Select>
               <p id="swarm-plan-favorite-help" className="text-xs text-[var(--app-text-muted)]">
-                Plan must use a different favorite from Action.
+                Plan may reuse Action or select another flat favorite.
               </p>
             </div>
           ) : null}

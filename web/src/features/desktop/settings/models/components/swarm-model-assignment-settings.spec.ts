@@ -32,7 +32,7 @@ test('disabled Plan omits its assignment from the save contract', () => {
   })
 })
 
-test('enabled Plan requires a distinct available favorite', () => {
+test('enabled Plan requires an available favorite and may reuse Action', () => {
   assert.deepEqual(buildSwarmModelAssignmentSaveInput({
     favoriteIds,
     actionFavoriteId: 'favorite-action',
@@ -44,7 +44,10 @@ test('enabled Plan requires a distinct available favorite', () => {
     actionFavoriteId: 'favorite-action',
     planEnabled: true,
     planFavoriteId: 'favorite-action',
-  }), { value: null, error: 'Plan must use a different favorite from Action.' })
+  }), {
+    value: { actionFavoriteId: 'favorite-action', planEnabled: true, planFavoriteId: 'favorite-action' },
+    error: null,
+  })
 
   assert.deepEqual(buildSwarmModelAssignmentSaveInput({
     favoriteIds,
@@ -66,6 +69,7 @@ test('component exposes one pure-prop save seam and explicit Action and Plan con
   assert.match(source, />\s*Action <span/)
   assert.match(source, />Enable Plan assignment</)
   assert.match(source, />\s*Plan <span/)
-  assert.match(source, /Plan must use a different favorite from Action/)
+  assert.match(source, /Plan may reuse Action or select another flat favorite/)
+  assert.doesNotMatch(source, /disabled=\{favorite\.id === draftActionFavoriteId\}/)
   assert.doesNotMatch(source, /requestJson|useQuery|useMutation/)
 })

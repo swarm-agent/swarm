@@ -27,27 +27,20 @@ const options: ModelOptionRecord[] = [
 const metadata = {
   agent_profile: {
     name: 'non-default-agent',
-    runtime_mode: 'plan_auto',
-    exit_plan_mode_enabled: true,
-    model_mode: 'split',
-    plan_provider: 'openai',
-    plan_model: 'profile-plan',
-    plan_thinking: 'high',
-    plan_service_tier: '',
-    auto_provider: 'anthropic',
-    auto_model: 'profile-action',
-    auto_thinking: 'medium',
-    auto_service_tier: 'fast',
+    provider: 'anthropic',
+    model: 'profile-action',
+    thinking: 'medium',
+    service_tier: 'fast',
   },
 }
 
-test('stored session agent profile resolves its plan and action models without global profile state', () => {
+test('stored session agent profile resolves one flat model without global split state', () => {
   const planLock = resolveDesktopV3SessionAgentModelLock(metadata, 'plan')
   const autoLock = resolveDesktopV3SessionAgentModelLock(metadata, 'auto')
 
   assert.equal(planLock?.agentName, 'non-default-agent')
   assert.deepEqual(planLock && preferenceFromAgentModelLock(planLock, current, options), {
-    provider: 'openai', model: 'profile-plan', thinking: 'high', serviceTier: '', contextMode: '', updatedAt: 1,
+    provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '', updatedAt: 1,
   })
   assert.deepEqual(autoLock && preferenceFromAgentModelLock(autoLock, current, options), {
     provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '', updatedAt: 1,
@@ -60,6 +53,7 @@ test('Swarm never claims model authority from agent profile state', () => {
   assert.equal(resolveDesktopV3AgentModelLock([{ ...metadata.agent_profile, name: 'swarm' } as never], 'swarm', 'auto').locked, false)
 })
 
-test('missing stored agent profile does not claim session authority', () => {
+test('missing or stale split stored agent profiles do not claim session authority', () => {
   assert.equal(resolveDesktopV3SessionAgentModelLock({}, 'plan'), null)
+  assert.equal(resolveDesktopV3SessionAgentModelLock({ agent_profile: { ...metadata.agent_profile, model_mode: 'split' } }, 'auto'), null)
 })

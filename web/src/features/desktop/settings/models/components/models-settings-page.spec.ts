@@ -42,6 +42,7 @@ test('model options collapse context variants into one flat favorite editor choi
 })
 
 test('Models page uses canonical queries, mutations, invalidation, and explicit errors', () => {
+  assert.match(source, /Manage flat favorites and assign Default\/Action plus optional Plan for Swarm/)
   assert.match(source, /modelOptionsQueryOptions\(\)/)
   assert.match(source, /modelProfilesQueryOptions\(\)/)
   assert.match(source, /createModelProfile/)

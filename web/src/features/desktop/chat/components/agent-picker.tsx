@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check, Settings2 } from 'lucide-react'
-import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { AgentProfileRecord } from '../types/chat'
 import { displayAgentName } from '../services/agent-display'
 
@@ -9,7 +8,6 @@ interface AgentPickerProps {
   currentAgent: string
   selectedPrimaryAgent: string
   agents: AgentProfileRecord[]
-  mode?: DesktopSessionMode
   onSelect: (agent: string) => void | Promise<void>
   onOpenSettings?: (agent: string) => void
   thinkingTagsEnabled?: boolean
@@ -24,7 +22,7 @@ const DROPDOWN_VIEWPORT_GUTTER = 8
 const MOBILE_DROPDOWN_BREAKPOINT = 640
 const DESKTOP_DROPDOWN_WIDTH = 480
 
-export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode = 'auto', onSelect, onOpenSettings, thinkingTagsEnabled, onThinkingTagsToggle, thinkingTagsBusy = false, disabled = false, triggerClassName = '', compactThinkingLabel = false }: AgentPickerProps) {
+export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, onSelect, onOpenSettings, thinkingTagsEnabled, onThinkingTagsToggle, thinkingTagsBusy = false, disabled = false, triggerClassName = '', compactThinkingLabel = false }: AgentPickerProps) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const dropdownRef = useRef<HTMLDivElement | null>(null)
@@ -51,20 +49,8 @@ export function AgentPicker({ currentAgent, selectedPrimaryAgent, agents, mode =
       priorityActive ? serviceTier.trim() : '',
     ].filter(Boolean).join(' · ')
   }
-  const activeProfileModelLabel = (profile: AgentProfileRecord) => {
-    if (profile.modelMode !== 'split') {
-      return settingLabel(profile.provider, profile.model, profile.thinking, profile.autoServiceTier)
-    }
-    return mode === 'plan'
-      ? settingLabel(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier)
-      : settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier)
-  }
-  const profileModelLabels = (profile: AgentProfileRecord) => profile.modelMode === 'split'
-    ? [
-        `Plan ${settingLabel(profile.planProvider, profile.planModel, profile.planThinking, profile.planServiceTier)}`,
-        `Auto ${settingLabel(profile.autoProvider, profile.autoModel, profile.autoThinking, profile.autoServiceTier)}`,
-      ]
-    : [activeProfileModelLabel(profile)]
+  const activeProfileModelLabel = (profile: AgentProfileRecord) => settingLabel(profile.provider, profile.model, profile.thinking, '')
+  const profileModelLabels = (profile: AgentProfileRecord) => [activeProfileModelLabel(profile)]
   const selectedAgentDetail = currentProfile ? activeProfileModelLabel(currentProfile) : ''
   const selectedAgentTriggerDetail = compactThinkingLabel
     ? selectedAgentDetail.replace(/(^| · )medium(?= · |$)/i, '$1med')

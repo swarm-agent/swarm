@@ -132,7 +132,7 @@ export function ModelsSettingsPage() {
         </div>
         <div>
           <h2 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">Models</h2>
-          <p className="text-sm text-[var(--app-text-muted)]">Manage reusable favorites and assign them to Swarm modes.</p>
+          <p className="text-sm text-[var(--app-text-muted)]">Manage flat favorites and assign Default/Action plus optional Plan for Swarm.</p>
         </div>
       </header>
 
