@@ -362,6 +362,38 @@ func TestDeploySessionNavigationUsesActualSourceWorkspace(t *testing.T) {
 	}
 }
 
+func TestInheritedSessionModelProfileSelectsModeAndDeepClones(t *testing.T) {
+	profile := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "action-favorite",
+		ActionFavoriteName: "Action",
+		Action:              pebblestore.ModelProfileSelection{Provider: "openai", Model: "action", Thinking: "medium"},
+		PlanFavoriteID:     "plan-favorite",
+		PlanFavoriteName:   "Plan",
+		Plan:                &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan", Thinking: "high"},
+		AppliedAt:           42,
+	}
+	cloned, err := inheritedSessionModelProfile(profile, sessionruntime.ModePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloned == profile || cloned.Plan == profile.Plan {
+		t.Fatal("inherited profile was not deeply cloned")
+	}
+	preference, err := manageSessionsDeployModelProfilePreference(cloned, sessionruntime.ModePlan)
+	if err != nil || preference.Provider != "codex" || preference.Model != "plan" {
+		t.Fatalf("plan preference = %#v err=%v", preference, err)
+	}
+	cloned.Plan.Model = "mutated"
+	if profile.Plan.Model != "plan" {
+		t.Fatal("inherited Plan selection aliases parent")
+	}
+	profile.Plan = nil
+	if _, err := inheritedSessionModelProfile(profile, sessionruntime.ModePlan); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
+		t.Fatalf("Plan-disabled inheritance error = %v", err)
+	}
+}
+
 func TestAITaskDeploymentDigestBindsImmutableModelProfileSnapshot(t *testing.T) {
 	profile := &pebblestore.SessionModelProfileSnapshot{
 		Source:             pebblestore.SessionModelProfileSourceSaved,

@@ -1574,6 +1574,84 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 }
 
+func bindTaskInheritanceModelProfile(t *testing.T, svc *Service, sessionID string) pebblestore.SessionSnapshot {
+	t.Helper()
+	parent, ok, err := svc.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%t err=%v", ok, err)
+	}
+	parent.ModelProfile = &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "test-action",
+		ActionFavoriteName: "Test Action",
+		Action:              pebblestore.ModelProfileSelection{Provider: "parent-provider", Model: "parent-model", Thinking: "high"},
+		PlanFavoriteID:     "test-plan",
+		PlanFavoriteName:   "Test Plan",
+		Plan:                &pebblestore.ModelProfileSelection{Provider: "parent-plan-provider", Model: "parent-plan-model", Thinking: "medium"},
+		AppliedAt:           1,
+	}
+	payloadHash := "test-parent-model-profile:" + sessionID
+	updated, updateErr := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: payloadHash, IdempotencyKey: payloadHash, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &parent})
+	if updateErr != nil || updated.Session == nil {
+		t.Fatalf("bind parent model profile: result=%#v err=%v", updated, updateErr)
+	}
+	return *updated.Session
+}
+
+func TestTaskChildInheritsImmutableModelProfileForAuthoritativeMode(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent := bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "purpose-review", MetaPrompt: "review model inheritance"}, "review inheritance", "", nil)
+	if err != nil {
+		t.Fatalf("prepare plan child: %v", err)
+	}
+	if launch.ChildSession.ModelProfile == nil || launch.ChildSession.ModelProfile == parent.ModelProfile || launch.ChildSession.ModelProfile.Plan == parent.ModelProfile.Plan {
+		t.Fatalf("child model profile was not deeply cloned: parent=%#v child=%#v", parent.ModelProfile, launch.ChildSession.ModelProfile)
+	}
+	if launch.ChildSession.Preference.Provider != "parent-plan-provider" || launch.ChildSession.Preference.Model != "parent-plan-model" {
+		t.Fatalf("plan child preference = %#v", launch.ChildSession.Preference)
+	}
+	launch.ChildSession.ModelProfile.Plan.Model = "mutated-child-plan"
+	if parent.ModelProfile.Plan.Model != "parent-plan-model" {
+		t.Fatalf("child Plan mutation aliased parent snapshot: %#v", parent.ModelProfile)
+	}
+
+	planDisabled := parent
+	planDisabled.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(parent.ModelProfile)
+	planDisabled.ModelProfile.Plan = nil
+	if _, err := svc.prepareDelegatedSubagentLaunch(planDisabled, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 2, RequestedSubagent: "purpose-review", MetaPrompt: "reject disabled plan"}, "disabled plan", "", nil); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
+		t.Fatalf("Plan-disabled child error = %v", err)
+	}
+}
+
+func TestTaskManifestBindsCompleteImmutableModelProfile(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"review","subagent_type":"purpose-review","meta_prompt":"review"}`})
+	if err != nil {
+		t.Fatalf("build manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 || manifest.Launches[0].ModelProfileSnapshot == nil || manifest.Launches[0].ModelProfileSnapshot.ActionFavoriteID != "test-action" || manifest.Launches[0].ModelProfileSnapshot.Plan == nil || manifest.Launches[0].ModelProfileSnapshot.PlanFavoriteID != "test-plan" {
+		t.Fatalf("manifest model snapshot = %#v", manifest.Launches)
+	}
+	first := manifest.ManifestHash
+	originalProfile := pebblestore.CloneSessionModelProfileSnapshot(manifest.Launches[0].ModelProfileSnapshot)
+	manifest.Launches[0].ModelProfileSnapshot.Plan.Model = "tampered-plan"
+	second, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("task manifest digest did not bind complete model profile")
+	}
+	if equalSessionModelProfiles(manifest.Launches[0].ModelProfileSnapshot, originalProfile) {
+		t.Fatal("task manifest model-profile tamper was not detectable")
+	}
+}
+
 func TestCoderLaunchDoesNotRequirePersistedProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()

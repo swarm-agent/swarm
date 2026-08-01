@@ -503,6 +503,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 
 	childMode := effectiveTaskChildMode(sessionMode)
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
+	modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
+	if parentSession.ModelProfile != nil {
+		modelProfile, err = inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
+		if err != nil {
+			return taskLaunchPrepared{}, fmt.Errorf("task child model profile: %w", err)
+		}
+		preference, err = manageSessionsDeployModelProfilePreference(modelProfile, childMode)
+		if err != nil {
+			return taskLaunchPrepared{}, fmt.Errorf("task child model preference: %w", err)
+		}
+	}
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
 	childWorkspacePath := strings.TrimSpace(parentSession.WorkspacePath)
@@ -609,6 +620,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		Title:                   childTitle,
 		Mode:                    childMode,
 		Preference:              preference,
+		ModelProfile:            modelProfile,
 		Metadata:                childMetadata,
 		CreatedAt:               nowMS,
 		UpdatedAt:               nowMS,
@@ -3163,6 +3175,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 
 	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
+	trustedModelProfiles := make([]*pebblestore.SessionModelProfileSnapshot, len(launchSpecs))
 	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
 	if approved := strings.TrimSpace(req.ApprovedArguments); approved != "" {
@@ -3187,6 +3200,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			if row.ProfileSnapshot == nil {
 				return "", fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
+			}
+			if (row.ModelProfileSnapshot == nil) != (parentSession.ModelProfile == nil) || !equalSessionModelProfiles(row.ModelProfileSnapshot, parentSession.ModelProfile) {
+				return "", fmt.Errorf("approved task manifest launch %d model profile snapshot mismatch", i)
 			}
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
 			if err != nil {
@@ -3214,6 +3230,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				trustedVirtualTargets[i] = row.ParentCopy
 			}
 			trustedProfiles[i] = &profile
+			trustedModelProfiles[i] = cloneManageSessionsDeployModelProfile(row.ModelProfileSnapshot)
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
 		}
 	}
@@ -3261,7 +3278,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if agentruntime.IsCoderAgentName(requestedSubagent) {
 			launchTaskBase = coderTaskBase
 		}
-		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
+		launchParent := parentSession
+		if strings.TrimSpace(req.ApprovedArguments) != "" {
+			launchParent.ModelProfile = cloneManageSessionsDeployModelProfile(trustedModelProfiles[i])
+		}
+		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(launchParent, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
 			VirtualTarget:     trustedVirtualTargets[i],
 			TaskBase:          launchTaskBase,

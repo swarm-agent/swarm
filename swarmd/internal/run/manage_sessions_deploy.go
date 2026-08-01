@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
-	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
@@ -299,8 +299,11 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		}
 		preference := resolution.preferenceForMode(parent.Preference, input.Mode)
 		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
-		if strings.EqualFold(profile.Name, agentruntime.SwarmAgentID) {
-			modelProfile, err = s.resolveSwarmDefaultModelProfile(parent.AccountScopeID, parent.ModelProfile, time.Now().UnixMilli())
+		if aiTask != nil && parent.ModelProfile == nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] queued AI task is missing its immutable model profile", i)
+		}
+		if parent.ModelProfile != nil {
+			modelProfile, err = inheritedSessionModelProfile(parent.ModelProfile, input.Mode)
 			if err != nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] model profile: %w", i, err)
 			}
@@ -320,7 +323,7 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 			}
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
 		}
-		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, ModelProfile: modelProfile, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
+		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, ModelProfile: cloneManageSessionsDeployModelProfile(modelProfile), WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
 		if input.Worktree {
 			if s.worktrees == nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)
@@ -368,6 +371,21 @@ func (s *Service) resolveSwarmDefaultModelProfile(accountScopeID string, bound *
 
 func cloneManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
 	return pebblestore.CloneSessionModelProfileSnapshot(profile)
+}
+
+func inheritedSessionModelProfile(profile *pebblestore.SessionModelProfileSnapshot, mode string) (*pebblestore.SessionModelProfileSnapshot, error) {
+	cloned := cloneManageSessionsDeployModelProfile(profile)
+	if err := validateManageSessionsDeployModelProfile(cloned); err != nil {
+		return nil, fmt.Errorf("parent immutable model profile: %w", err)
+	}
+	if _, err := manageSessionsDeployModelProfilePreference(cloned, mode); err != nil {
+		return nil, err
+	}
+	return cloned, nil
+}
+
+func equalSessionModelProfiles(left, right *pebblestore.SessionModelProfileSnapshot) bool {
+	return reflect.DeepEqual(cloneManageSessionsDeployModelProfile(left), cloneManageSessionsDeployModelProfile(right))
 }
 
 func validateManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) error {

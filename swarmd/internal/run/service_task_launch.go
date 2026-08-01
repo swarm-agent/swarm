@@ -160,7 +160,8 @@ type taskLaunchManifestRow struct {
 	SourceAgentName       string                         `json:"source_agent_name,omitempty"`
 	SourceProfileMode     string                         `json:"source_profile_mode,omitempty"`
 	InheritedRuntimeMode  string                         `json:"inherited_runtime_mode,omitempty"`
-	ProfileSnapshot       *pebblestore.AgentProfile      `json:"profile_snapshot,omitempty"`
+	ProfileSnapshot       *pebblestore.AgentProfile                 `json:"profile_snapshot,omitempty"`
+	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot  `json:"model_profile_snapshot"`
 }
 
 type taskLaunchResolvedToolSummary struct {
@@ -1608,6 +1609,9 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 
 func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.SessionSnapshot, requested, childMode string) (pebblestore.AgentProfile, bool, string, error) {
 	if strings.EqualFold(strings.TrimSpace(requested), agentruntime.SwarmAgentID) {
+		if parentSession.ModelProfile == nil {
+			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("Swarm child launch requires the parent immutable model profile")
+		}
 		state, err := s.agents.ListStateForAccount(parentSession.AccountScopeID, 2000)
 		if err != nil {
 			return pebblestore.AgentProfile{}, false, "", err
@@ -1623,7 +1627,7 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		if !found {
 			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("Swarm agent is not configured")
 		}
-		modelProfile, err := s.resolveSwarmDefaultModelProfile(parentSession.AccountScopeID, parentSession.ModelProfile, time.Now().UnixMilli())
+		modelProfile, err := inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
 		if err != nil {
 			return pebblestore.AgentProfile{}, false, "", err
 		}
@@ -1632,7 +1636,6 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 			return pebblestore.AgentProfile{}, false, "", err
 		}
 		profile := resolution.ExecutionProfile
-		profile.ModelMode = pebblestore.ModelProfileModeSingle
 		profile.Provider, profile.Model, profile.Thinking = preference.Provider, preference.Model, preference.Thinking
 		profile.AutoServiceTier, profile.ContextMode = preference.ServiceTier, preference.ContextMode
 		return profile, false, "", nil
@@ -1780,6 +1783,16 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		}
 		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, disabledTools, executionMode)
 		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
+		if parentSession.ModelProfile != nil {
+			modelProfile, profileErr := inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
+			if profileErr != nil {
+				return taskLaunchManifest{}, fmt.Errorf("task launches[%d] model profile: %w", i, profileErr)
+			}
+			preference, profileErr = manageSessionsDeployModelProfilePreference(modelProfile, childMode)
+			if profileErr != nil {
+				return taskLaunchManifest{}, fmt.Errorf("task launches[%d] model preference: %w", i, profileErr)
+			}
+		}
 		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
 			Description:           parsed.Description,
@@ -1813,6 +1826,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			SourceProfileMode:    strings.TrimSpace(subagentProfile.Mode),
 			InheritedRuntimeMode: pebblestore.AgentProfileRuntimeMode(subagentProfile),
 			ProfileSnapshot:      &subagentProfile,
+			ModelProfileSnapshot: cloneManageSessionsDeployModelProfile(parentSession.ModelProfile),
 		})
 	}
 	if len(launches) == 0 {

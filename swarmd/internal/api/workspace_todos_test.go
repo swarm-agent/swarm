@@ -114,6 +114,16 @@ func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing
 	}); err != nil {
 		t.Fatalf("put origin workspace binding: %v", err)
 	}
+	modelProfile := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "action-favorite",
+		ActionFavoriteName: "Action",
+		Action:              pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model"},
+		PlanFavoriteID:     "plan-favorite",
+		PlanFavoriteName:   "Plan",
+		Plan:                &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model"},
+		AppliedAt:           42,
+	}
 	origin, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		UserID:         testPrincipal().UserID,
 		AccountScopeID: testPrincipal().AccountScopeID,
@@ -132,10 +142,18 @@ func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing
 	if err != nil {
 		t.Fatalf("create worktree origin session: %v", err)
 	}
+	origin.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(modelProfile)
+	payloadHash := "worktree-origin-model-profile"
+	updated, updateErr := server.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: origin.ID, UserID: origin.UserID, AccountScopeID: origin.AccountScopeID, ClientRequestID: payloadHash, IdempotencyKey: payloadHash, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &origin})
+	if updateErr != nil || updated.Session == nil {
+		t.Fatalf("bind worktree origin model profile: result=%#v err=%v", updated, updateErr)
+	}
+	origin = *updated.Session
 
+	requestMode := sessionruntime.ModeAuto
 	raw, _ := json.Marshal(map[string]any{
 		"action": "ai_task", "workspace_path": worktreePath, "owner_kind": "user",
-		"text": "launch from canonical workspace", "origin_session_id": origin.ID, "mode": "auto",
+		"text": "launch from canonical workspace", "origin_session_id": origin.ID, "mode": requestMode,
 	})
 	recorder := httptest.NewRecorder()
 	request := withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/workspace/todos", bytes.NewReader(raw)))
@@ -149,11 +167,18 @@ func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing
 		t.Fatalf("enqueued jobs=%#v", queue.items)
 	}
 	queued := queue.items[0]
-	if queued.WorkspacePath != workspacePath || queued.WorkspaceID != workspaceScope.WorkspaceID || queued.OriginSessionID != origin.ID {
+	if queued.WorkspacePath != workspacePath || queued.WorkspaceID != workspaceScope.WorkspaceID || queued.OriginSessionID != origin.ID || queued.AIMode != requestMode {
 		t.Fatalf("queued canonical task=%#v", queued)
 	}
 	if queued.WorkspacePath == worktreePath {
 		t.Fatalf("queued task was incorrectly routed to origin worktree %q", worktreePath)
+	}
+	if queued.AIModelProfile == nil || queued.AIModelProfile == origin.ModelProfile || queued.AIModelProfile.Plan == nil || queued.AIModelProfile.Plan == origin.ModelProfile.Plan || queued.AIModelProfile.Action.Model != "action-model" || queued.AIModelProfile.Plan.Model != "plan-model" {
+		t.Fatalf("queued immutable model profile = %#v origin=%#v", queued.AIModelProfile, origin.ModelProfile)
+	}
+	origin.ModelProfile.Action.Model = "mutated-origin-action"
+	if queued.AIModelProfile.Action.Model != "action-model" {
+		t.Fatalf("queued Action selection aliased origin after acceptance: %#v", queued.AIModelProfile)
 	}
 
 	otherWorkspacePath := t.TempDir()

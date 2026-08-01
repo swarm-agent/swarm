@@ -96,11 +96,18 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, us
 	}
 	workspacePath, taskID = strings.TrimSpace(workspacePath), strings.TrimSpace(taskID)
 	mode = strings.ToLower(strings.TrimSpace(mode))
+	modelProfile = cloneManageSessionsDeployModelProfile(modelProfile)
 	if workspacePath == "" || taskID == "" || strings.TrimSpace(originalRequest) == "" {
 		return "", fmt.Errorf("AI task workspace, id, and original request are required")
 	}
 	if mode != sessionruntime.ModePlan && mode != sessionruntime.ModeAuto {
 		return "", fmt.Errorf("AI task mode must be plan or auto")
+	}
+	if modelProfile == nil {
+		return "", fmt.Errorf("AI task requires its queued immutable model profile")
+	}
+	if _, err := inheritedSessionModelProfile(modelProfile, mode); err != nil {
+		return "", fmt.Errorf("AI task model profile: %w", err)
 	}
 	if _, err := ParseAITaskPreparation(marshalAITaskPreparation(preparation)); err != nil {
 		return "", err

@@ -3,7 +3,6 @@ package run
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -405,7 +404,8 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("open todo event log: %v", err)
 	}
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(todoStore), todoEvents, nil, svc.sessions)
-	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, Request: "Fix the queued task", Mode: sessionruntime.ModeAuto, IdempotencyKey: "request-1"})
+	queuedProfile := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, Action: pebblestore.ModelProfileSelection{Provider: "openai", Model: "other-auto-model", Thinking: "high"}, Plan: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "other-plan-model", Thinking: "high"}, AppliedAt: 1}
+	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, ModelProfile: queuedProfile, Request: "Fix the queued task", Mode: sessionruntime.ModeAuto, IdempotencyKey: "request-1"})
 	if err != nil {
 		t.Fatalf("create queued AI task: %v", err)
 	}
@@ -495,9 +495,15 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	}
 
 	originModelProfile := &pebblestore.SessionModelProfileSnapshot{
-		Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "profile-standard", Name: "standard", ModelMode: pebblestore.ModelProfileModeSplit, AppliedAt: 77,
-		Plan: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "saved-plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "full"},
-		Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "saved-auto-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"},
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		UseAccountDefault:  false,
+		ActionFavoriteID:   "favorite-action",
+		ActionFavoriteName: "Action Favorite",
+		Action:              pebblestore.ModelProfileSelection{Provider: "openai", Model: "saved-auto-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"},
+		PlanFavoriteID:     "favorite-plan",
+		PlanFavoriteName:   "Plan Favorite",
+		Plan:                &pebblestore.ModelProfileSelection{Provider: "codex", Model: "saved-plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "full"},
+		AppliedAt:           77,
 	}
 	linkedOriginTask, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, OriginSessionID: parent.ID, ModelProfile: originModelProfile, Request: "Fix a linked task", Mode: sessionruntime.ModePlan, IdempotencyKey: "request-2"})
 	if err != nil {
@@ -519,8 +525,8 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	if originLinkedSession.Preference.Provider != "codex" || originLinkedSession.Preference.Model != "saved-plan-model" || originLinkedSession.Preference.Thinking != "xhigh" || originLinkedSession.Preference.ServiceTier != "fast" || originLinkedSession.Preference.ContextMode != "full" {
 		t.Fatalf("saved model-profile plan session = %#v", originLinkedSession)
 	}
-	if originLinkedSession.ModelProfile == nil || originLinkedSession.ModelProfile.SavedProfileID != "profile-standard" || originLinkedSession.ModelProfile.Auto == nil || originLinkedSession.ModelProfile.Auto.Model != "saved-auto-model" {
-		t.Fatalf("saved model profile was not persisted on child: %#v", originLinkedSession.ModelProfile)
+	if originLinkedSession.ModelProfile == nil || originLinkedSession.ModelProfile.Plan == nil || originLinkedSession.ModelProfile.ActionFavoriteID != "favorite-action" || originLinkedSession.ModelProfile.Action.Model != "saved-auto-model" || originLinkedSession.ModelProfile.Plan.Model != "saved-plan-model" {
+		t.Fatalf("saved model profile was not persisted on child: child=%#v origin=%#v", originLinkedSession.ModelProfile, originModelProfile)
 	}
 	transition, transitionErr := modelpolicy.ResolveModeTransition(originLinkedSession, pebblestore.AgentProfile{Name: "other-primary"}, sessionruntime.ModeAuto, func(preference pebblestore.ModelPreference) (modelpolicy.ResolvedPreference, error) {
 		return modelpolicy.ResolvedPreference{Preference: preference, ContextWindow: 180000, MaxOutputTokens: 12000}, nil
@@ -535,36 +541,15 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("optional origin linkage was not preserved: parent=%q metadata=%#v", enqueuedParentID, originLinkedSession.Metadata)
 	}
 
-	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
-		Name: "swarm", Mode: agentruntime.ModePrimary, ModelMode: "single",
-		Provider: "anthropic", Model: "configured-single-model", Thinking: "low",
-		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, Enabled: pebblestore.BoolPtr(true),
-	}); err != nil {
-		t.Fatalf("configure single-model Swarm: %v", err)
+	planDisabled := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, Action: pebblestore.ModelProfileSelection{Provider: "anthropic", Model: "action-only", Thinking: "low"}, AppliedAt: 88}
+	disabledTask, _, _, createErr := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, ModelProfile: planDisabled, Request: "reject disabled Plan", Mode: sessionruntime.ModePlan, IdempotencyKey: "plan-disabled"})
+	if createErr != nil {
+		t.Fatalf("create Plan-disabled task: %v", createErr)
 	}
-	if _, _, _, err := svc.agents.ActivatePrimaryForAccount(accountScopeID, "swarm"); err != nil {
-		t.Fatalf("activate single-model Swarm: %v", err)
+	if bindErr := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, disabledTask.ID, "queued", "preparing", "", false, "", ""); bindErr != nil {
+		t.Fatalf("claim Plan-disabled task: %v", bindErr)
 	}
-	for index, mode := range []string{sessionruntime.ModePlan, sessionruntime.ModeAuto} {
-		task, _, _, createErr := todoSvc.CreateAITask(todo.CreateAITaskInput{
-			AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath,
-			Request: "Use single model in " + mode, Mode: mode, IdempotencyKey: fmt.Sprintf("single-%d", index),
-		})
-		if createErr != nil {
-			t.Fatalf("create single-model %s task: %v", mode, createErr)
-		}
-		if bindErr := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, task.ID, "queued", "preparing", "", false, "", ""); bindErr != nil {
-			t.Fatalf("claim single-model %s task: %v", mode, bindErr)
-		}
-		if _, executeErr := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, task.ID, task.AIRequest, task.AIMode, task.AIModelProfile, AITaskPreparation{Title: "Single " + mode, WorktreeName: "single-" + mode}, svc.sessions.ApplySessionMutation); executeErr != nil {
-			t.Fatalf("execute single-model %s task: %v", mode, executeErr)
-		}
-		deployed, exists, getErr := svc.sessions.GetSession(enqueuedSessionID)
-		if getErr != nil || !exists {
-			t.Fatalf("load single-model %s session: exists=%t err=%v", mode, exists, getErr)
-		}
-		if deployed.Mode != mode || deployed.Preference.Provider != "anthropic" || deployed.Preference.Model != "configured-single-model" || deployed.Preference.Thinking != "low" {
-			t.Fatalf("single-model %s session = %#v", mode, deployed)
-		}
+	if _, executeErr := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, disabledTask.ID, disabledTask.AIRequest, disabledTask.AIMode, disabledTask.AIModelProfile, AITaskPreparation{Title: "Disabled Plan", WorktreeName: "disabled-plan"}, svc.sessions.ApplySessionMutation); executeErr == nil || !strings.Contains(executeErr.Error(), "Plan mode disabled") {
+		t.Fatalf("Plan-disabled execution error = %v", executeErr)
 	}
 }
