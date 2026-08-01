@@ -86,7 +86,7 @@ test('Desktop V3 route selection stays isolated from runtime ownership', async (
     source,
     /dispatchDesktopV3Cache\(selectSession\(undefined\)\)/,
   )
-  assert.match(source, /requireDesktopV3RealtimeControllerReady\(\)/)
+  assert.match(source, /requireDesktopV3RealtimeControllerReady/)
   assert.doesNotMatch(source, /selectedSessionId=\{routeSessionId \|\| selectedDesktopV3SessionId\}/)
   assert.doesNotMatch(source, /<DesktopV3ChatPane[\s\S]*selectedSessionId=\{selectedDesktopV3SessionId\}/)
 })
