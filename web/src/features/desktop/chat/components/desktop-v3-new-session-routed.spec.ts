@@ -47,7 +47,7 @@ test('routed pending and failure stay local and retry the persisted controller i
   assert.match(paneSource, /routedState\.phase === 'failed'[\s\S]*controller\.retry\(\)/)
   assert.match(paneSource, /const visibleAttachments = restoredAttachments\.filter[\s\S]*visibleAttachments\.length !== current\.snapshot\.attachments\.length[\s\S]*controller\.retry\(\)/)
   assert.match(paneSource, /removedStagedAttachmentIdsRef\.current\.add\(stagingId\)/)
-  assert.match(paneSource, /stagedAttachmentsRef\.current = restoredAttachments/)
+  assert.match(paneSource, /stagedAttachmentsRef\.current = visibleAttachments/)
   assert.match(paneSource, /setDraft\(routedState\.snapshot\.prompt\)/)
   assert.match(paneSource, /setWorktreeIntent\(createDesktopRoutedWorktreeIntent\(routedState\.snapshot\.worktreePrimed\)\)/)
   assert.match(paneSource, /setRestoredSnapshot\(routedState\.snapshot\)/)

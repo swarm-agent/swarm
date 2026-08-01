@@ -172,29 +172,11 @@ func applyAgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfil
 	return applyAgentPreferenceOverridesForMode(base, agentProfile, sessionruntime.ModeAuto)
 }
 
-func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile, mode string) pebblestore.ModelPreference {
+func applyAgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile, _ string) pebblestore.ModelPreference {
 	providerOverride := strings.ToLower(strings.TrimSpace(agentProfile.Provider))
 	modelOverride := strings.TrimSpace(agentProfile.Model)
 	thinkingOverride := normalizeThinkingLevel(agentProfile.Thinking)
-
-	if pebblestore.AgentModelMode(agentProfile) == "split" && pebblestore.AgentSupportsSplitModel(agentProfile) {
-		mode = sessionruntime.NormalizeMode(mode)
-		if mode == sessionruntime.ModePlan {
-			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))
-			modelOverride = strings.TrimSpace(agentProfile.PlanModel)
-			thinkingOverride = normalizeThinkingLevel(agentProfile.PlanThinking)
-			if serviceTierOverride := strings.TrimSpace(agentProfile.PlanServiceTier); serviceTierOverride != "" {
-				base.ServiceTier = serviceTierOverride
-			}
-		} else if mode == sessionruntime.ModeAuto {
-			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
-			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
-			thinkingOverride = normalizeThinkingLevel(agentProfile.AutoThinking)
-			if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
-				base.ServiceTier = serviceTierOverride
-			}
-		}
-	} else if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
+	if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
 		base.ServiceTier = serviceTierOverride
 	}
 

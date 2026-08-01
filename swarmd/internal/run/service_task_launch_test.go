@@ -934,7 +934,7 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 }
 
-func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+func TestPrepareDelegatedSubagentLaunchUsesFlatProfileInPlanMode(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
@@ -943,15 +943,10 @@ func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t 
 	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
 		Name:                "split-reviewer",
 		Mode:                agentruntime.ModeSubagent,
-		Description:         "Split review specialist",
-		ModelMode:           "split",
-		PlanProvider:        "fireworks",
-		PlanModel:           "accounts/fireworks/models/glm-5p1",
-		PlanThinking:        "high",
-		PlanServiceTier:     "priority",
-		AutoProvider:        "static",
-		AutoModel:           "auto-review-model",
-		AutoThinking:        "low",
+		Description:         "Flat review specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Thinking:            "high",
 		Prompt:              "Review according to mode.",
 		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
@@ -1001,8 +996,8 @@ func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t 
 	if got := launch.ChildSession.Preference.Thinking; got != "high" {
 		t.Fatalf("child thinking = %q, want high", got)
 	}
-	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
-		t.Fatalf("child service tier = %q, want priority", got)
+	if got := launch.ChildSession.Preference.ServiceTier; got != "" {
+		t.Fatalf("child service tier = %q, want standard", got)
 	}
 	if launch.SubagentProvider != "fireworks" || launch.SubagentModel != "accounts/fireworks/models/glm-5p1" {
 		t.Fatalf("launch display preference = %q/%q, want plan profile settings", launch.SubagentProvider, launch.SubagentModel)
@@ -1017,12 +1012,12 @@ func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t 
 	if child.Mode != sessionruntime.ModePlan {
 		t.Fatalf("persisted child mode = %q, want plan", child.Mode)
 	}
-	if child.Preference.Provider != "fireworks" || child.Preference.Model != "accounts/fireworks/models/glm-5p1" || child.Preference.ServiceTier != "priority" {
-		t.Fatalf("persisted child preference = %#v, want plan split profile settings", child.Preference)
+	if child.Preference.Provider != "fireworks" || child.Preference.Model != "accounts/fireworks/models/glm-5p1" || child.Preference.ServiceTier != "" {
+		t.Fatalf("persisted child preference = %#v, want flat profile settings", child.Preference)
 	}
 }
 
-func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+func TestBuildTaskLaunchPermissionPayloadUsesFlatProfileInPlanMode(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
@@ -1030,15 +1025,10 @@ func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(
 	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
 		Name:                "split-manifest-reviewer",
 		Mode:                agentruntime.ModeSubagent,
-		Description:         "Split manifest specialist",
-		ModelMode:           "split",
-		PlanProvider:        "fireworks",
-		PlanModel:           "accounts/fireworks/models/glm-5p1",
-		PlanThinking:        "high",
-		PlanServiceTier:     "priority",
-		AutoProvider:        "static",
-		AutoModel:           "auto-review-model",
-		AutoThinking:        "low",
+		Description:         "Flat manifest specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Thinking:            "high",
 		Prompt:              "Review according to mode.",
 		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
@@ -1090,7 +1080,7 @@ func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(
 		t.Fatalf("row child mode = %q, want plan", row.ChildMode)
 	}
 	if row.SubagentProvider != "fireworks" || row.SubagentModel != "accounts/fireworks/models/glm-5p1" {
-		t.Fatalf("row preference = %q/%q, want plan split profile settings", row.SubagentProvider, row.SubagentModel)
+		t.Fatalf("row preference = %q/%q, want flat profile settings", row.SubagentProvider, row.SubagentModel)
 	}
 }
 
@@ -1242,7 +1232,7 @@ func TestPrepareTargetedSubagentLaunchPreservesSupportedPriorityServiceTier(t *t
 	}
 }
 
-func TestApplyAgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
+func TestApplyAgentPreferenceOverridesFlatProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
 	base := pebblestore.ModelPreference{
 		Provider:    "codex",
 		Model:       "gpt-5.4",
@@ -1251,15 +1241,9 @@ func TestApplyAgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceT
 		ContextMode: "1m",
 	}
 	profile := pebblestore.AgentProfile{
-		ModelMode:       "split",
-		AutoProvider:    "fireworks",
-		AutoModel:       "accounts/fireworks/models/glm-5p1",
-		AutoThinking:    "high",
-		PlanProvider:    "static",
-		PlanModel:       "plan-review-model",
-		PlanThinking:    "low",
-		PlanServiceTier: "",
-		AutoServiceTier: "",
+		Provider: "fireworks",
+		Model:    "accounts/fireworks/models/glm-5p1",
+		Thinking: "high",
 	}
 
 	got := applyAgentPreferenceOverridesForMode(base, profile, sessionruntime.ModeAuto)
@@ -1529,7 +1513,7 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: "swarm", Mode: agentruntime.ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
-		AutoProvider: "codex", AutoModel: "swarm-auto-model", AutoThinking: "high", AutoServiceTier: "priority",
+		Provider: "codex", Model: "swarm-auto-model", Thinking: "high", AutoServiceTier: "priority",
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "trusted parent prompt",
 		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}, Enabled: true,
 	})
@@ -1588,11 +1572,11 @@ func bindTaskInheritanceModelProfile(t *testing.T, svc *Service, sessionID strin
 		Source:             pebblestore.SessionModelProfileSourceSaved,
 		ActionFavoriteID:   "test-action",
 		ActionFavoriteName: "Test Action",
-		Action:              pebblestore.ModelProfileSelection{Provider: "parent-provider", Model: "parent-model", Thinking: "high"},
+		Action:             pebblestore.ModelProfileSelection{Provider: "parent-provider", Model: "parent-model", Thinking: "high"},
 		PlanFavoriteID:     "test-plan",
 		PlanFavoriteName:   "Test Plan",
-		Plan:                &pebblestore.ModelProfileSelection{Provider: "parent-plan-provider", Model: "parent-plan-model", Thinking: "medium"},
-		AppliedAt:           1,
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "parent-plan-provider", Model: "parent-plan-model", Thinking: "medium"},
+		AppliedAt:          1,
 	}
 	payloadHash := "test-parent-model-profile:" + sessionID
 	updated, updateErr := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: payloadHash, IdempotencyKey: payloadHash, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &parent})

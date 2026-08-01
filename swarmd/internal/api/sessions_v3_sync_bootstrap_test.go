@@ -264,10 +264,10 @@ func TestSessionsV3AgentModelPolicyIgnoresLegacySplitMetadata(t *testing.T) {
 		Preference: fallback,
 		Metadata: map[string]any{
 			"agent_name": "legacy-agent",
-			"agent_profile": pebblestore.AgentProfile{
-				Name: "legacy-agent", ModelMode: "split",
-				PlanProvider: "codex", PlanModel: "mutable-plan-model",
-				AutoProvider: "codex", AutoModel: "mutable-action-model",
+			"agent_profile": map[string]any{
+				"name": "legacy-agent", "model_mode": "split",
+				"plan_provider": "codex", "plan_model": "mutable-plan-model",
+				"auto_provider": "codex", "auto_model": "mutable-action-model",
 			},
 		},
 	}

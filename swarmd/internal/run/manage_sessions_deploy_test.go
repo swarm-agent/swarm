@@ -51,16 +51,15 @@ func TestParseManageSessionsDeployArgumentsBoundsAndModes(t *testing.T) {
 	}
 }
 
-func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromModePreferences(t *testing.T) {
+func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromFlatPreference(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
-	split := pebblestore.AgentProfile{
-		Name: agentruntime.SwarmAgentID, Mode: agentruntime.ModePrimary, Enabled: true, ModelMode: "split",
-		PlanProvider: "codex", PlanModel: "plan-model", PlanThinking: "high",
-		AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "medium",
+	stored := pebblestore.AgentProfile{
+		Name: agentruntime.SwarmAgentID, Mode: agentruntime.ModePrimary, Enabled: true,
+		Provider: "anthropic", Model: "flat-model", Thinking: "low", AutoServiceTier: "priority",
 	}
-	resolution, found, err := svc.resolveManageSessionsDeployAgent(map[string]pebblestore.AgentProfile{agentruntime.SwarmAgentID: split}, agentruntime.SwarmAgentID)
+	resolution, found, err := svc.resolveManageSessionsDeployAgent(map[string]pebblestore.AgentProfile{agentruntime.SwarmAgentID: stored}, agentruntime.SwarmAgentID)
 	if err != nil || !found {
 		t.Fatalf("resolve Swarm: found=%t err=%v", found, err)
 	}
@@ -68,34 +67,13 @@ func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromModePrefer
 	if identity.Name != agentruntime.SwarmAgentID || identity.Mode != agentruntime.ModePrimary || identity.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || identity.Prompt != agentruntime.SwarmAgentPrompt() || identity.ToolContract == nil {
 		t.Fatalf("compiled Swarm identity = %#v", identity)
 	}
-	if identity.Provider != "" || identity.Model != "" || identity.Thinking != "" || identity.ModelMode != "" {
+	if identity.Provider != "" || identity.Model != "" || identity.Thinking != "" {
 		t.Fatalf("compiled Swarm identity became model-bearing: %#v", identity)
-	}
-	for _, test := range []struct {
-		name, mode, provider, model, thinking string
-	}{
-		{name: "split auto", mode: sessionruntime.ModeAuto, provider: "openai", model: "auto-model", thinking: "medium"},
-		{name: "split plan", mode: sessionruntime.ModePlan, provider: "codex", model: "plan-model", thinking: "high"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			got := resolution.preferenceForMode(pebblestore.ModelPreference{}, test.mode)
-			if got.Provider != test.provider || got.Model != test.model || got.Thinking != test.thinking {
-				t.Fatalf("preference = %#v", got)
-			}
-		})
-	}
-
-	single := split
-	single.ModelMode = "single"
-	single.Provider, single.Model, single.Thinking = "anthropic", "single-model", "low"
-	resolution, found, err = svc.resolveManageSessionsDeployAgent(map[string]pebblestore.AgentProfile{agentruntime.SwarmAgentID: single}, agentruntime.SwarmAgentID)
-	if err != nil || !found {
-		t.Fatalf("resolve single-model Swarm: found=%t err=%v", found, err)
 	}
 	for _, mode := range []string{sessionruntime.ModeAuto, sessionruntime.ModePlan} {
 		got := resolution.preferenceForMode(pebblestore.ModelPreference{}, mode)
-		if got.Provider != "anthropic" || got.Model != "single-model" || got.Thinking != "low" {
-			t.Fatalf("single %s preference = %#v", mode, got)
+		if got.Provider != "anthropic" || got.Model != "flat-model" || got.Thinking != "low" || got.ServiceTier != "priority" {
+			t.Fatalf("flat %s preference = %#v", mode, got)
 		}
 	}
 
@@ -117,11 +95,11 @@ func TestSwarmDefaultModelResolutionPreservesCompleteBoundSnapshot(t *testing.T)
 		UseAccountDefault:  true,
 		ActionFavoriteID:   "favorite-action",
 		ActionFavoriteName: "Action",
-		Action:              pebblestore.ModelProfileSelection{Provider: "Codex", Model: "action-model", Thinking: "high", ServiceTier: "fast", ContextMode: "compact"},
+		Action:             pebblestore.ModelProfileSelection{Provider: "Codex", Model: "action-model", Thinking: "high", ServiceTier: "fast", ContextMode: "compact"},
 		PlanFavoriteID:     "favorite-plan",
 		PlanFavoriteName:   "Plan",
-		Plan:                &pebblestore.ModelProfileSelection{Provider: "OpenAI", Model: "plan-model", Thinking: "medium", ServiceTier: "priority", ContextMode: "full"},
-		AppliedAt:           99,
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "OpenAI", Model: "plan-model", Thinking: "medium", ServiceTier: "priority", ContextMode: "full"},
+		AppliedAt:          99,
 	}
 	resolved, err := svc.resolveSwarmDefaultModelProfile("test-account", bound, 123)
 	if err != nil {
@@ -173,38 +151,22 @@ func TestResolveQueuedAITaskDeployAgentUsesSwarmIdentity(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
-	active := pebblestore.AgentProfile{
-		Name: "split-primary", Mode: agentruntime.ModePrimary, Enabled: true,
-		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		ModelMode: "split", PlanProvider: "codex", PlanModel: "plan-model", PlanThinking: "high",
-		AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "medium",
+	swarm := pebblestore.AgentProfile{
+		Name: agentruntime.SwarmAgentID, Mode: agentruntime.ModePrimary, Enabled: true,
+		Provider: "openai", Model: "flat-model", Thinking: "medium",
 	}
-	swarm := pebblestore.AgentProfile{Name: agentruntime.SwarmAgentID, Mode: agentruntime.ModePrimary, Enabled: true}
-	profiles := map[string]pebblestore.AgentProfile{active.Name: active, agentruntime.SwarmAgentID: swarm}
+	profiles := map[string]pebblestore.AgentProfile{agentruntime.SwarmAgentID: swarm}
 
-	resolution, found, err := svc.resolveQueuedAITaskDeployAgent(profiles, active.Name)
+	resolution, found, err := svc.resolveQueuedAITaskDeployAgent(profiles, "ignored-primary")
 	if err != nil || !found {
-		t.Fatalf("resolve active split primary: found=%t err=%v", found, err)
+		t.Fatalf("resolve queued Swarm: found=%t err=%v", found, err)
 	}
 	if resolution.ExecutionProfile.Name != agentruntime.SwarmAgentID || resolution.PreferenceProfile.Name != agentruntime.SwarmAgentID {
 		t.Fatalf("queued task resolution = %#v, want Swarm identity", resolution)
 	}
-
-	profiles[agentruntime.SwarmAgentID] = func() pebblestore.AgentProfile {
-		swarmSplit := active
-		swarmSplit.Name = agentruntime.SwarmAgentID
-		return swarmSplit
-	}()
-	compiledSwarm, found, err := svc.resolveQueuedAITaskDeployAgent(profiles, agentruntime.SwarmAgentID)
-	if err != nil || !found || compiledSwarm.ExecutionProfile.Name != agentruntime.SwarmAgentID || compiledSwarm.ExecutionProfile.ModelMode != "" || compiledSwarm.PreferenceProfile.ModelMode != "split" {
-		t.Fatalf("active Swarm split resolution = %#v found=%t err=%v", compiledSwarm, found, err)
-	}
-
-	active.ModelMode = "single"
-	profiles[active.Name] = active
-	fallback, found, err := svc.resolveQueuedAITaskDeployAgent(profiles, active.Name)
-	if err != nil || !found || fallback.ExecutionProfile.Name != agentruntime.SwarmAgentID {
-		t.Fatalf("single active resolution = %#v found=%t err=%v", fallback, found, err)
+	preference := resolution.preferenceForMode(pebblestore.ModelPreference{}, sessionruntime.ModeAuto)
+	if preference.Provider != "openai" || preference.Model != "flat-model" || preference.Thinking != "medium" {
+		t.Fatalf("queued flat preference = %#v", preference)
 	}
 }
 
@@ -367,11 +329,11 @@ func TestInheritedSessionModelProfileSelectsModeAndDeepClones(t *testing.T) {
 		Source:             pebblestore.SessionModelProfileSourceSaved,
 		ActionFavoriteID:   "action-favorite",
 		ActionFavoriteName: "Action",
-		Action:              pebblestore.ModelProfileSelection{Provider: "openai", Model: "action", Thinking: "medium"},
+		Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "action", Thinking: "medium"},
 		PlanFavoriteID:     "plan-favorite",
 		PlanFavoriteName:   "Plan",
-		Plan:                &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan", Thinking: "high"},
-		AppliedAt:           42,
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan", Thinking: "high"},
+		AppliedAt:          42,
 	}
 	cloned, err := inheritedSessionModelProfile(profile, sessionruntime.ModePlan)
 	if err != nil {
@@ -399,11 +361,11 @@ func TestAITaskDeploymentDigestBindsImmutableModelProfileSnapshot(t *testing.T) 
 		Source:             pebblestore.SessionModelProfileSourceSaved,
 		ActionFavoriteID:   "favorite-action",
 		ActionFavoriteName: "Action",
-		Action:              pebblestore.ModelProfileSelection{Provider: "openai", Model: "action"},
+		Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "action"},
 		PlanFavoriteID:     "favorite-plan",
 		PlanFavoriteName:   "Plan",
-		Plan:                &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan"},
-		AppliedAt:           42,
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan"},
+		AppliedAt:          42,
 	}
 	first, err := aiTaskDeploymentDigest("account", "/workspace", "task", profile)
 	if err != nil {

@@ -49,7 +49,7 @@ test('routed activation derives URL identity from the returned source workspace 
   assert.match(source, /routedActivationGenerationRef\.current \+= 1|\+\+routedActivationGenerationRef\.current/)
   assert.match(handler, /await navigate\([\s\S]*params: \{ workspaceSlug, sessionId: response\.session_id \}/)
   assert.match(handler, /activationStillCurrent[\s\S]*throw new Error\('Routed Desktop activation is stale'\)/)
-  assert.match(source, /onRoutedSessionResolved:[\s\S]*handleRoutedSessionResolved\(result, routeWorkspace\.path\)/)
+  assert.match(source, /onRoutedSessionResolved=\{\(result\) => handleRoutedSessionResolved\(result, routeWorkspace\.path\)\}/)
 })
 
 test('routed activation validates all returned display authority and never publishes before realtime readiness', async () => {
@@ -91,7 +91,7 @@ test('routed activation owns navigation rollback and suppresses stale failure to
   assert.match(source, /window\.dispatchEvent\(new PopStateEvent\('popstate'/)
   assert.match(handler, /await activateDesktopV3RoutedSession\(/)
   assert.match(handler, /await navigate\(/)
-  assert.match(handler, /if \(activationStillCurrent\(\)\)[\s\S]*setDesktopToast/[\s\S]*throw error/)
+  assert.match(handler, /if \(activationStillCurrent\(\)\)[\s\S]*setDesktopToast[\s\S]*throw error/)
   assert.doesNotMatch(handler, /void navigate\(/)
 })
 

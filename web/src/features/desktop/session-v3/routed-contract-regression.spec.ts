@@ -106,6 +106,8 @@ test('routed pending shell remains local and failure restores exact controls for
     assert.equal(resolved.result.session_id, 'canonical-session')
     assert.deepEqual(resolved.snapshot, initialSnapshot)
     assert.deepEqual(requests, [requests[0], requests[0]])
+    assert.equal(storage.size, 1)
+    controller.acknowledgeResolved(resolved.operation.operationId)
     assert.equal(storage.size, 0)
   })
 })
@@ -115,7 +117,7 @@ test('new-session pane keeps resolved authority behind pending shell until activ
 
   assert.match(source, /const pendingState = routedState\.phase === 'resolved' \? 'routing' : routedState\.phase/)
   assert.match(source, /routedState\.phase === 'failed'[\s\S]*setDraft\(routedState\.snapshot\.prompt\)[\s\S]*setWorktreeIntent\(createDesktopRoutedWorktreeIntent\(routedState\.snapshot\.worktreePrimed\)\)[\s\S]*setRestoredSnapshot\(routedState\.snapshot\)/)
-  assert.match(source, /routedState\.phase !== 'resolved'[\s\S]*resolvedCallbackRef\.current\?\.\(routedState\.result\)/)
+  assert.match(source, /routedState\.phase !== 'resolved'[\s\S]*resolvedCallbackRef\.current\(routedState\.result\)/)
   assert.match(source, /showComposer = routedState\.phase === 'draft' \|\| routedState\.phase === 'worktree-primed' \|\| routedState\.phase === 'failed'/)
   assert.doesNotMatch(source, /dispatchDesktopV3Cache|selectSession|ensureSessionConnected|navigate\(/)
 })

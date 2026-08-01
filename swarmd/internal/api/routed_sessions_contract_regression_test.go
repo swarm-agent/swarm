@@ -46,7 +46,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		denied := postRoutedSessionAtomicityRequest(t, planServer, principal, map[string]any{
 			"input": "plan this work", "client_request_id": deniedRequestID,
 		})
-		if denied.Code != http.StatusBadRequest || !strings.Contains(denied.Body.String(), "Plan disabled") {
+		if denied.Code != http.StatusBadRequest || !strings.Contains(denied.Body.String(), "was not advertised") {
 			t.Fatalf("disabled Plan status=%d body=%s", denied.Code, denied.Body.String())
 		}
 		assertNoRoutedSessionDurableAuthority(t, planSessions, principal, stableSessionsV3PrimarySessionID(principal, "routed:"+deniedRequestID), deniedRequestID)
@@ -76,9 +76,10 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
 		name := "Contract Worktree"
 		fixture.runner.response.Text = `{"title":"Worktree contract","mode":"auto","worktree":true,"worktree_name":"` + name + `"}`
+		managedPath := t.TempDir()
 		worktrees := &routedContractRollbackWorktree{routedWorktreeServiceStub: routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-			config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent/<id>"},
-			allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/contract-worktree", RepoRoot: "/source/repo", BaseBranch: "dev", BranchName: "agent/contract-worktree", WorkspaceID: "contract-worktree"},
+			config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent/<id>"},
+			allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, RepoRoot: managedPath, BaseBranch: "dev", BranchName: "agent/contract-worktree", WorkspaceID: "contract-worktree"},
 		}}}
 		fixture.server.SetWorktreeService(worktrees)
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "contract-rollback")

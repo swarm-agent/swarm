@@ -5860,7 +5860,7 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 		if !strings.Contains(req.Instructions, "Current session mode: plan.") {
 			return provideriface.Response{}, fmt.Errorf("initial instructions did not use plan mode:\n%s", req.Instructions)
 		}
-		document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending"}}}
+		document := map[string]any{"info": map[string]any{"goal": "continue in auto"}, "checkpoints": []map[string]any{{"id": "cp-1", "title": "continue", "status": "pending", "order": 1, "tasks": []string{"continue work"}, "acceptance_criteria": []string{"work completes"}}}}
 		args := mustSessionsV3TestJSON(t, map[string]any{"title": "Plan: continue", "document": document})
 		return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{CallID: "call-exit-plan", Name: "exit_plan_mode", Arguments: args}}}, nil
 	}
@@ -5898,21 +5898,25 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
 	server.runner = runSvc
 	server.SetBypassPermissions(true)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", PlanProvider: "test-provider", PlanModel: "plan-model", PlanThinking: "low", AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"exit_plan_mode": {Enabled: pebblestore.BoolPtr(true)}, "write": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
-		t.Fatalf("upsert exit-plan swarm agent: %v", err)
-	}
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 0
 	server.v3SessionExecutor = exec
 
-	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "plan-model", Thinking: "low"})
-	settingsBody := `{"client_request_id":"provider-exit-plan-restart-mode","mode":"plan"}`
-	settingsReq := httptest.NewRequest(http.MethodPatch, "/v3/sessions/"+created.ID+"/settings", bytes.NewBufferString(settingsBody))
-	settingsReq.Header.Set("Content-Type", "application/json")
-	settingsRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(settingsRec, withTestPrincipal(settingsReq))
-	if settingsRec.Code != http.StatusOK {
-		t.Fatalf("set session plan mode status=%d want=%d body=%s", settingsRec.Code, http.StatusOK, settingsRec.Body.String())
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-exit-plan-restart-create", "provider exit plan restart", workspace, pebblestore.ModelPreference{Provider: "auto-provider", Model: "auto-model", Thinking: "high"})
+	created.ModelProfile = &pebblestore.SessionModelProfileSnapshot{
+		Source:    pebblestore.SessionModelProfileSourceSaved,
+		Action:    pebblestore.ModelProfileSelection{Provider: "auto-provider", Model: "auto-model", Thinking: "high"},
+		Plan:      &pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "plan-model", Thinking: "low"},
+		AppliedAt: created.UpdatedAt,
+	}
+	created.Metadata["model_profile"] = *created.ModelProfile
+	if err := sessionSvc.Store().UpdateSession(created); err != nil {
+		t.Fatalf("seed immutable Action/Plan snapshot: %v", err)
+	}
+	created.Mode = sessionruntime.ModePlan
+	created.Preference = pebblestore.ModelPreference{Provider: "test-provider", Model: "plan-model", Thinking: "low", UpdatedAt: created.ModelProfile.AppliedAt}
+	if err := sessionSvc.Store().UpdateSession(created); err != nil {
+		t.Fatalf("seed routed Plan session state: %v", err)
 	}
 	updated, ok, err := sessionSvc.GetSession(created.ID)
 	if err != nil || !ok {
@@ -5923,8 +5927,11 @@ func TestSessionsV3ExecutorExitPlanModeUsesV3MutationAndRefreshesContinuationRun
 	if err != nil {
 		t.Fatalf("decode stored agent profile after plan mode update: %v", err)
 	}
-	if profile.ModelMode != "split" || profile.PlanModel != "plan-model" || profile.AutoProvider != "auto-provider" || profile.AutoModel != "auto-model" {
-		t.Fatalf("stored agent profile after plan mode update = %+v", profile)
+	if profile.Name != agentruntime.SwarmAgentID || profile.Provider != "" || profile.Model != "" || profile.Thinking != "" {
+		t.Fatalf("stored compiled Swarm identity after plan mode update = %+v", profile)
+	}
+	if created.ModelProfile == nil || created.ModelProfile.Plan == nil || created.ModelProfile.Action.Model != "auto-model" || created.ModelProfile.Plan.Model != "plan-model" {
+		t.Fatalf("stored immutable model snapshot after plan mode update = %+v", created.ModelProfile)
 	}
 	if created.Mode != sessionruntime.ModePlan {
 		t.Fatalf("created session mode = %q, want plan", created.Mode)
