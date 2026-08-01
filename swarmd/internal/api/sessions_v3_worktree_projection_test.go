@@ -5,33 +5,62 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/stream"
 )
 
 func TestSessionsV3WorktreeProjectionUsesDurableSnapshotFacts(t *testing.T) {
-	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "worktree-projection", "Worktree projection", "/source/workspace")
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "worktree-projection.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	server := NewServer(nil, nil, nil, nil, sessionSvc, nil, nil, nil, nil, nil, nil, events, stream.NewHub(events))
+	server.v3SessionExecutor = nil
 
+	principal := testPrincipal()
+	now := time.Now().UnixMilli()
+	created := pebblestore.SessionSnapshot{
+		ID:                 "worktree-projection",
+		UserID:             principal.UserID,
+		AccountScopeID:     principal.AccountScopeID,
+		Title:              "Worktree projection",
+		Mode:               sessionruntime.ModeAuto,
+		WorkspacePath:      "/managed/final-worktree",
+		WorkspaceName:      "workspace",
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   "/managed/final-worktree",
+		WorktreeBaseBranch: "dev",
+		WorktreeBranch:     "agent/final-worktree-1",
+		Metadata: map[string]any{
+			"routed_worktree_name":             "final-worktree-1",
+			"swarm_v3_source_workspace_path":  "/source/workspace",
+			"swarm_v3_runtime_workspace_path": "/managed/final-worktree",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if _, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+		ClientRequestID: "create-worktree-projection", IdempotencyKey: "create-worktree-projection",
+		PayloadHash: "create-worktree-projection", RequestHash: "create-worktree-projection",
+		Kind: sessionruntime.SessionMutationCreateSession, Session: &created, NowUnixMs: now,
+	}); err != nil {
+		t.Fatalf("persist worktree session facts: %v", err)
+	}
 	stored, ok, err := sessionSvc.Store().GetSession(created.ID)
 	if err != nil || !ok {
 		t.Fatalf("load session: ok=%t err=%v", ok, err)
-	}
-	stored.WorkspacePath = "/managed/final-worktree"
-	stored.WorktreeEnabled = true
-	stored.WorktreeRootPath = "/managed/final-worktree"
-	stored.WorktreeBaseBranch = "dev"
-	stored.WorktreeBranch = "agent/final-worktree-1"
-	if stored.Metadata == nil {
-		stored.Metadata = map[string]any{}
-	}
-	stored.Metadata["routed_worktree_name"] = "final-worktree-1"
-	stored.Metadata["swarm_v3_source_workspace_path"] = "/source/workspace"
-	stored.Metadata["swarm_v3_runtime_workspace_path"] = stored.WorktreeRootPath
-	stored.UpdatedAt++
-	if err := sessionSvc.Store().UpdateSession(stored); err != nil {
-		t.Fatalf("persist worktree session facts: %v", err)
 	}
 
 	body := `{"surface":"desktop","session_ids":["` + created.ID + `"],"history":{"mode":"none"},"resources":{"session_view":true}}`
