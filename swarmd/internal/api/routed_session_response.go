@@ -23,6 +23,7 @@ type sessionsV3SessionIdentity struct {
 	RuntimeSwarmID         string `json:"runtime_swarm_id,omitempty"`
 	AuthorityHostSwarmID   string `json:"authority_host_swarm_id,omitempty"`
 	WorktreeEnabled        bool   `json:"worktree_enabled"`
+	RequestedWorktreeName  string `json:"requested_worktree_name,omitempty"`
 	WorktreeRootPath       string `json:"worktree_root_path,omitempty"`
 	WorktreeBaseBranch     string `json:"worktree_base_branch,omitempty"`
 	WorktreeBranch         string `json:"worktree_branch,omitempty"`
@@ -69,10 +70,11 @@ func sessionsV3SessionIdentityFromSnapshot(session pebblestore.SessionSnapshot) 
 		RuntimeWorkspacePath: runtimePath,
 		RuntimeSwarmID:       sessionsV3MetadataString(session.Metadata, "swarm_v3_runtime_swarm_id"),
 		AuthorityHostSwarmID: sessionsV3MetadataString(session.Metadata, "swarm_v3_authority_host_swarm_id"),
-		WorktreeEnabled:      session.WorktreeEnabled,
-		WorktreeRootPath:     strings.TrimSpace(session.WorktreeRootPath),
-		WorktreeBaseBranch:   strings.TrimSpace(session.WorktreeBaseBranch),
-		WorktreeBranch:       strings.TrimSpace(session.WorktreeBranch),
+		WorktreeEnabled:        session.WorktreeEnabled,
+		RequestedWorktreeName: sessionsV3MetadataString(session.Metadata, "routed_worktree_name"),
+		WorktreeRootPath:       strings.TrimSpace(session.WorktreeRootPath),
+		WorktreeBaseBranch:     strings.TrimSpace(session.WorktreeBaseBranch),
+		WorktreeBranch:         strings.TrimSpace(session.WorktreeBranch),
 	}, nil
 }
 

@@ -782,15 +782,25 @@ func v3RealtimeSessionSnapshotFromRecord(record sessionruntime.RealtimeOutboxRec
 }
 
 func v3RealtimeSessionSnapshotFromMembership(membership pebblestore.V3RealtimeOutboxMembership) pebblestore.SessionSnapshot {
+	metadata := cloneSessionsV3Metadata(membership.Metadata)
+	if requestedName := strings.TrimSpace(membership.RequestedWorktreeName); requestedName != "" {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["routed_worktree_name"] = requestedName
+	}
 	return pebblestore.SessionSnapshot{
 		ID:                      strings.TrimSpace(membership.SessionID),
 		UserID:                  strings.TrimSpace(membership.UserID),
 		AccountScopeID:          strings.TrimSpace(membership.AccountScopeID),
 		WorkspacePath:           strings.TrimSpace(membership.WorkspacePath),
 		WorkspaceName:           strings.TrimSpace(membership.WorkspaceName),
+		WorktreeEnabled:         membership.WorktreeEnabled,
 		WorktreeRootPath:        strings.TrimSpace(membership.WorktreeRootPath),
+		WorktreeBaseBranch:      strings.TrimSpace(membership.WorktreeBaseBranch),
+		WorktreeBranch:          strings.TrimSpace(membership.WorktreeBranch),
 		TemporaryWorkspaceRoots: append([]string(nil), membership.TemporaryWorkspaceRoots...),
-		Metadata:                cloneSessionsV3Metadata(membership.Metadata),
+		Metadata:                metadata,
 	}
 }
 

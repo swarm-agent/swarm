@@ -1036,6 +1036,7 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 		"swarm_v3_source_workspace_name",
 		"swarm_v3_source_workspace_path",
 		"swarm_v3_runtime_workspace_path",
+		"routed_worktree_name",
 		"swarm_v3_placement_generation",
 		"swarm_v3_binding_generation",
 		"swarm_v3_tui_directory_session",

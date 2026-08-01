@@ -42,6 +42,7 @@ func TestBuildSessionsV3RoutedStartResponseProjectsDurableAuthority(t *testing.T
 			"swarm_v3_runtime_workspace_path":     "/runtime/worktree",
 			"swarm_v3_runtime_swarm_id":           "runtime-swarm",
 			"swarm_v3_authority_host_swarm_id":    "host-swarm",
+			"routed_worktree_name":                 "routed-final-1",
 		},
 	}
 	message := pebblestore.MessageSnapshot{ID: "message-1", SessionID: session.ID, Role: "user", Content: "first prompt", CreatedAt: 101}
@@ -60,7 +61,7 @@ func TestBuildSessionsV3RoutedStartResponseProjectsDurableAuthority(t *testing.T
 	if identity == nil || identity.WorkspaceBindingID != "binding-id" || identity.SourceWorkspaceID != "source-id" || identity.SourceWorkspacePath != "/source/workspace" || identity.RuntimeWorkspacePath != "/runtime/worktree" {
 		t.Fatalf("workspace identity = %+v", identity)
 	}
-	if !identity.WorktreeEnabled || identity.WorkspaceID != "worktree-id" || identity.WorktreeRootPath != "/runtime/worktree" || identity.WorktreeBaseBranch != "dev" || identity.WorktreeBranch != "agent/routed" {
+	if !identity.WorktreeEnabled || identity.RequestedWorktreeName != "routed-final-1" || identity.WorkspaceID != "worktree-id" || identity.WorktreeRootPath != "/runtime/worktree" || identity.WorktreeBaseBranch != "dev" || identity.WorktreeBranch != "agent/routed" {
 		t.Fatalf("worktree identity = %+v", identity)
 	}
 	if response.Session.ModelProfile == nil || response.Session.ModelProfile.PlanFavoriteID != "favorite-plan" || response.Session.ModelProfile.Plan.Model != "gpt-routed" {
@@ -105,7 +106,7 @@ func TestSessionsV3SessionIdentityReportsOnlyPersistedWorktreeFacts(t *testing.T
 	if err != nil {
 		t.Fatalf("project plain identity: %v", err)
 	}
-	if identity.WorktreeEnabled || identity.WorktreeRootPath != "" || identity.WorktreeBaseBranch != "" || identity.WorktreeBranch != "" || identity.WorkspaceID != "" {
+	if identity.WorktreeEnabled || identity.RequestedWorktreeName != "" || identity.WorktreeRootPath != "" || identity.WorktreeBaseBranch != "" || identity.WorktreeBranch != "" || identity.WorkspaceID != "" {
 		t.Fatalf("plain identity invented worktree facts: %+v", identity)
 	}
 }

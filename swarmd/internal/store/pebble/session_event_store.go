@@ -236,7 +236,11 @@ type V3RealtimeOutboxMembership struct {
 	AccountScopeID          string         `json:"account_scope_id,omitempty"`
 	WorkspacePath           string         `json:"workspace_path,omitempty"`
 	WorkspaceName           string         `json:"workspace_name,omitempty"`
+	WorktreeEnabled         bool           `json:"worktree_enabled,omitempty"`
+	RequestedWorktreeName   string         `json:"requested_worktree_name,omitempty"`
 	WorktreeRootPath        string         `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch      string         `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch          string         `json:"worktree_branch,omitempty"`
 	TemporaryWorkspaceRoots []string       `json:"temporary_workspace_roots,omitempty"`
 	Metadata                map[string]any `json:"metadata,omitempty"`
 	Deleted                 bool           `json:"deleted,omitempty"`
@@ -288,11 +292,26 @@ func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64
 		AccountScopeID:          strings.TrimSpace(session.AccountScopeID),
 		WorkspacePath:           strings.TrimSpace(session.WorkspacePath),
 		WorkspaceName:           strings.TrimSpace(session.WorkspaceName),
+		WorktreeEnabled:         session.WorktreeEnabled,
+		RequestedWorktreeName:   v3RealtimeMembershipMetadataString(session.Metadata, "routed_worktree_name"),
 		WorktreeRootPath:        strings.TrimSpace(session.WorktreeRootPath),
+		WorktreeBaseBranch:      strings.TrimSpace(session.WorktreeBaseBranch),
+		WorktreeBranch:          strings.TrimSpace(session.WorktreeBranch),
 		TemporaryWorkspaceRoots: append([]string(nil), session.TemporaryWorkspaceRoots...),
 		Metadata:                v3RealtimeMembershipMetadata(session.Metadata),
 		CapturedAt:              now,
 	}
+}
+
+func v3RealtimeMembershipMetadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
@@ -302,7 +321,7 @@ func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, key := range []string{
 		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
-		"swarm_v3_source_workspace_path",
+		"swarm_v3_source_workspace_path", "routed_worktree_name",
 		"swarm_v3_tui_cwd_path", "swarm_v3_tui_original_cwd_path", "swarm_v3_tui_worktree_path",
 	} {
 		if value, ok := metadata[key]; ok {
