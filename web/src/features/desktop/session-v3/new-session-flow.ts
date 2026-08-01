@@ -453,5 +453,340 @@ export async function startNewDesktopV3Session(input: {
 function acceptedRunPhase(raw: SessionMessageMutationResponse | MessageMutationConflictResponse): string {
   if (raw.ok === false) return ''
   return raw.run_intent?.status.trim().toLowerCase() ?? ''
-  return ''
+}
+
+/**
+ * Local-only state for the canonical routed Desktop start. None of the draft,
+ * primed, routing, or failed variants is a durable session and callers must not
+ * publish one into the V3 cache, sidebar, realtime controller, or URL.
+ */
+export interface DesktopV3RoutedDraftState {
+  phase: 'draft'
+  prompt: string
+}
+
+export interface DesktopV3RoutedWorktreePrimedState {
+  phase: 'worktree-primed'
+  prompt: string
+}
+
+export interface DesktopV3RoutedMediaInput {
+  staging_id: string
+  modality?: string
+  file_type?: string
+}
+
+export interface DesktopV3RoutedStartRequest {
+  input: string
+  client_request_id: string
+  idempotency_key: string
+  agent_name?: string
+  metadata?: Record<string, unknown>
+  media?: DesktopV3RoutedMediaInput[]
+}
+
+export interface DesktopV3RoutedStartOperation {
+  version: 1
+  operationId: string
+  createdAt: number
+  request: DesktopV3RoutedStartRequest
+}
+
+export interface DesktopV3RoutedStartResult {
+  ok: true
+  session_id: string
+  title: string
+  starting_mode: string
+  replayed: boolean
+  session: { id?: string; session_id?: string }
+  session_view: unknown
+  first_message: { id?: string; session_id?: string }
+  projection: { session_id?: string }
+  mutation: { session_id?: string }
+}
+
+export interface DesktopV3RoutedRoutingState {
+  phase: 'routing'
+  prompt: string
+  operation: DesktopV3RoutedStartOperation
+}
+
+export interface DesktopV3RoutedResolvedState {
+  phase: 'resolved'
+  prompt: string
+  operation: DesktopV3RoutedStartOperation
+  result: DesktopV3RoutedStartResult
+}
+
+export interface DesktopV3RoutedFailedState {
+  phase: 'failed'
+  prompt: string
+  operation: DesktopV3RoutedStartOperation
+  error: string
+}
+
+export type DesktopV3RoutedNewSessionState =
+  | DesktopV3RoutedDraftState
+  | DesktopV3RoutedWorktreePrimedState
+  | DesktopV3RoutedRoutingState
+  | DesktopV3RoutedResolvedState
+  | DesktopV3RoutedFailedState
+
+export interface CreateDesktopV3RoutedStartOperationInput {
+  prompt: string
+  agentName?: string
+  metadata?: Record<string, unknown>
+  media?: DesktopV3RoutedMediaInput[]
+}
+
+export type PostDesktopV3RoutedStart = (
+  request: DesktopV3RoutedStartRequest,
+) => Promise<DesktopV3RoutedStartResult>
+
+const ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v1'
+
+function normalizedRoutedMedia(media: DesktopV3RoutedMediaInput[] | undefined): DesktopV3RoutedMediaInput[] | undefined {
+  if (!media?.length) return undefined
+  return media.map((item) => {
+    const stagingID = item.staging_id.trim()
+    if (!stagingID) throw new Error('Routed Desktop media requires staging_id')
+    return {
+      staging_id: stagingID,
+      modality: item.modality?.trim() || undefined,
+      file_type: item.file_type?.trim() || undefined,
+    }
+  })
+}
+
+export function createDesktopV3RoutedDraftState(prompt = ''): DesktopV3RoutedDraftState {
+  return { phase: 'draft', prompt }
+}
+
+export function createDesktopV3RoutedWorktreePrimedState(prompt = ''): DesktopV3RoutedWorktreePrimedState {
+  return { phase: 'worktree-primed', prompt }
+}
+
+export function createDesktopV3RoutedStartOperation(
+  input: CreateDesktopV3RoutedStartOperationInput,
+): DesktopV3RoutedStartOperation {
+  const prompt = input.prompt.trim()
+  if (!prompt) throw new Error('Routed Desktop start requires a prompt')
+  const operationId = crypto.randomUUID()
+  const clientRequestID = `desktop-v3-routed:${operationId}`
+  return {
+    version: 1,
+    operationId,
+    createdAt: Date.now(),
+    request: {
+      input: prompt,
+      client_request_id: clientRequestID,
+      idempotency_key: clientRequestID,
+      agent_name: input.agentName?.trim() || undefined,
+      metadata: input.metadata ? { ...input.metadata } : undefined,
+      media: normalizedRoutedMedia(input.media),
+    },
+  }
+}
+
+function isStoredDesktopV3RoutedStartOperation(value: unknown): value is DesktopV3RoutedStartOperation {
+  if (!value || typeof value !== 'object') return false
+  const operation = value as Partial<DesktopV3RoutedStartOperation>
+  if (operation.version !== 1 || !operation.operationId?.trim() || typeof operation.createdAt !== 'number' || !Number.isFinite(operation.createdAt)) return false
+  const request = operation.request
+  if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
+  if (request.idempotency_key !== request.client_request_id) return false
+  if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
+  if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
+  return true
+}
+
+export function persistDesktopV3RoutedStartOperation(operation: DesktopV3RoutedStartOperation): void {
+  if (typeof window === 'undefined') return
+  window.sessionStorage.setItem(ROUTED_NEW_SESSION_OPERATION_KEY, JSON.stringify(operation))
+}
+
+export function loadDesktopV3RoutedStartOperation(): DesktopV3RoutedStartOperation | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.sessionStorage.getItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+    if (!raw) return null
+    const operation: unknown = JSON.parse(raw)
+    if (isStoredDesktopV3RoutedStartOperation(operation)) return operation
+    window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+    return null
+  } catch {
+    window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+    return null
+  }
+}
+
+export function clearDesktopV3RoutedStartOperation(operationId?: string): void {
+  if (typeof window === 'undefined') return
+  if (operationId) {
+    const current = loadDesktopV3RoutedStartOperation()
+    if (current && current.operationId !== operationId) return
+  }
+  window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+}
+
+export function restoreDesktopV3RoutedNewSessionState(): DesktopV3RoutedNewSessionState {
+  const operation = loadDesktopV3RoutedStartOperation()
+  if (!operation) return createDesktopV3RoutedDraftState()
+  return {
+    phase: 'failed',
+    prompt: operation.request.input,
+    operation,
+    error: 'Routing was interrupted. Retry to resume the same routed start.',
+  }
+}
+
+function routedResultRecordSessionID(record: { id?: unknown; session_id?: unknown }): string {
+  const value = record.session_id ?? record.id
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function validateDesktopV3RoutedStartResult(result: DesktopV3RoutedStartResult): DesktopV3RoutedStartResult {
+  if (!result || result.ok !== true) throw new Error('Routed Desktop start returned an unsuccessful response')
+  const sessionID = result.session_id?.trim()
+  if (!sessionID) throw new Error('Routed Desktop start returned no canonical session_id')
+  if (!result.title?.trim() || !result.starting_mode?.trim()) {
+    throw new Error('Routed Desktop start returned incomplete routed authority')
+  }
+  if (routedResultRecordSessionID(result.session) !== sessionID) {
+    throw new Error('Routed Desktop start returned a mismatched session')
+  }
+  for (const [label, record] of [
+    ['first message', result.first_message],
+    ['projection', result.projection],
+    ['mutation', result.mutation],
+  ] as const) {
+    if (!record || routedResultRecordSessionID(record) !== sessionID) {
+      throw new Error(`Routed Desktop start returned a mismatched ${label}`)
+    }
+  }
+  return result
+}
+
+/**
+ * Small framework-neutral controller consumed by the new-chat UI. The injected
+ * transport is the only side effect besides retaining retry identity in
+ * sessionStorage. Canonical V3 activation is deliberately left to the owner of
+ * the resolved state.
+ */
+export class DesktopV3RoutedNewSessionController {
+  private state: DesktopV3RoutedNewSessionState
+  private generation = 0
+  private activeRun: Promise<DesktopV3RoutedNewSessionState> | null = null
+  private readonly listeners = new Set<(state: DesktopV3RoutedNewSessionState) => void>()
+
+  constructor(
+    private readonly postRoutedStart: PostDesktopV3RoutedStart,
+    initialState: DesktopV3RoutedNewSessionState = restoreDesktopV3RoutedNewSessionState(),
+  ) {
+    this.state = initialState
+  }
+
+  getState(): DesktopV3RoutedNewSessionState {
+    return this.state
+  }
+
+  subscribe(listener: (state: DesktopV3RoutedNewSessionState) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  startDraft(prompt = ''): DesktopV3RoutedDraftState {
+    this.invalidateCurrentOperation()
+    const state = createDesktopV3RoutedDraftState(prompt)
+    this.publish(state)
+    return state
+  }
+
+  primeWorktree(prompt = ''): DesktopV3RoutedWorktreePrimedState {
+    this.invalidateCurrentOperation()
+    const state = createDesktopV3RoutedWorktreePrimedState(prompt)
+    this.publish(state)
+    return state
+  }
+
+  submit(input?: CreateDesktopV3RoutedStartOperationInput): Promise<DesktopV3RoutedNewSessionState> {
+    if (this.state.phase === 'routing' && this.activeRun) return this.activeRun
+
+    let operation: DesktopV3RoutedStartOperation
+    if (this.state.phase === 'failed') {
+      operation = this.state.operation
+    } else if (this.state.phase === 'draft' || this.state.phase === 'worktree-primed') {
+      operation = createDesktopV3RoutedStartOperation(input ?? { prompt: this.state.prompt })
+    } else {
+      return Promise.reject(new Error('Resolved routed Desktop start cannot be submitted again'))
+    }
+
+    persistDesktopV3RoutedStartOperation(operation)
+    const runGeneration = ++this.generation
+    this.publish({ phase: 'routing', prompt: operation.request.input, operation })
+    const run = this.run(operation, runGeneration)
+    this.activeRun = run
+    void run.finally(() => {
+      if (this.activeRun === run) this.activeRun = null
+    }).catch(() => undefined)
+    return run
+  }
+
+  retry(): Promise<DesktopV3RoutedNewSessionState> {
+    if (this.state.phase !== 'failed') {
+      return Promise.reject(new Error('Only a failed routed Desktop start can be retried'))
+    }
+    return this.submit()
+  }
+
+  private async run(
+    operation: DesktopV3RoutedStartOperation,
+    runGeneration: number,
+  ): Promise<DesktopV3RoutedNewSessionState> {
+    try {
+      const result = validateDesktopV3RoutedStartResult(await this.postRoutedStart(operation.request))
+      if (!this.isCurrent(operation, runGeneration)) return this.state
+      clearDesktopV3RoutedStartOperation(operation.operationId)
+      const resolved: DesktopV3RoutedResolvedState = {
+        phase: 'resolved',
+        prompt: operation.request.input,
+        operation,
+        result,
+      }
+      this.publish(resolved)
+      return resolved
+    } catch (error) {
+      if (!this.isCurrent(operation, runGeneration)) return this.state
+      const failed: DesktopV3RoutedFailedState = {
+        phase: 'failed',
+        prompt: operation.request.input,
+        operation,
+        error: error instanceof Error ? error.message : String(error),
+      }
+      this.publish(failed)
+      return failed
+    }
+  }
+
+  private isCurrent(operation: DesktopV3RoutedStartOperation, generation: number): boolean {
+    return generation === this.generation
+      && (this.state.phase === 'routing')
+      && this.state.operation.operationId === operation.operationId
+  }
+
+  private invalidateCurrentOperation(): void {
+    const operation = this.state.phase === 'routing'
+      || this.state.phase === 'failed'
+      || this.state.phase === 'resolved'
+      ? this.state.operation
+      : null
+    this.generation += 1
+    this.activeRun = null
+    if (operation) clearDesktopV3RoutedStartOperation(operation.operationId)
+  }
+
+  private publish(state: DesktopV3RoutedNewSessionState): void {
+    this.state = state
+    for (const listener of this.listeners) listener(state)
+  }
 }

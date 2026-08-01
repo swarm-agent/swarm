@@ -2,8 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  DesktopV3RoutedNewSessionController,
   createDesktopV3CreateOnlySessionOperation,
   createDesktopV3NewSessionOperation,
+  createDesktopV3RoutedDraftState,
+  createDesktopV3RoutedStartOperation,
+  createDesktopV3RoutedWorktreePrimedState,
+  loadDesktopV3RoutedStartOperation,
+  persistDesktopV3RoutedStartOperation,
+  restoreDesktopV3RoutedNewSessionState,
   desktopV3NewSessionOperationMatchesRoute,
   loadDesktopV3NewSessionOperation,
   persistDesktopV3NewSessionOperation,
@@ -105,6 +112,162 @@ function withSessionStorage(run: (storage: Map<string, string>) => void): void {
     globalThis.window = previousWindow
   }
 }
+
+async function withAsyncSessionStorage(run: (storage: Map<string, string>) => Promise<void>): Promise<void> {
+  const previousWindow = globalThis.window
+  const storage = new Map<string, string>()
+  globalThis.window = {
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+  } as Window & typeof globalThis
+  try {
+    await run(storage)
+  } finally {
+    globalThis.window = previousWindow
+  }
+}
+
+function makeRoutedResult(sessionId: string) {
+  return {
+    ok: true as const,
+    session_id: sessionId,
+    title: 'Router title',
+    starting_mode: 'auto',
+    replayed: false,
+    session: { id: sessionId },
+    session_view: { identity: { session_id: sessionId } },
+    first_message: { id: 'message-1', session_id: sessionId },
+    projection: { session_id: sessionId, last_event_seq: 1 },
+    mutation: { session_id: sessionId, message: { id: 'message-1' } },
+  }
+}
+
+test('routed draft and worktree-primed state contain no preselected authority', () => {
+  assert.deepEqual(createDesktopV3RoutedDraftState('draft'), { phase: 'draft', prompt: 'draft' })
+  assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), { phase: 'worktree-primed', prompt: 'primed' })
+  assert.equal('sessionId' in createDesktopV3RoutedDraftState(), false)
+  assert.equal('workspace' in createDesktopV3RoutedWorktreePrimedState(), false)
+})
+
+test('routed operation persists one stable transport identity across reload', () => withSessionStorage(() => {
+  const operation = createDesktopV3RoutedStartOperation({
+    prompt: ' route this ',
+    agentName: ' swarm ',
+    metadata: { source: 'desktop-v3' },
+    media: [{ staging_id: ' staged-1 ', modality: ' image ', file_type: ' png ' }],
+  })
+
+  assert.equal(operation.request.input, 'route this')
+  assert.equal(operation.request.agent_name, 'swarm')
+  assert.equal(operation.request.client_request_id, `desktop-v3-routed:${operation.operationId}`)
+  assert.equal(operation.request.idempotency_key, operation.request.client_request_id)
+  assert.deepEqual(operation.request.media, [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }])
+  assert.equal('session_id' in operation.request, false)
+  assert.equal('workspace_path' in operation.request, false)
+  assert.equal('mode' in operation.request, false)
+  assert.equal('model' in operation.request, false)
+
+  persistDesktopV3RoutedStartOperation(operation)
+  assert.deepEqual(loadDesktopV3RoutedStartOperation(), JSON.parse(JSON.stringify(operation)))
+  const restored = restoreDesktopV3RoutedNewSessionState()
+  assert.equal(restored.phase, 'failed')
+  if (restored.phase === 'failed') {
+    assert.equal(restored.operation.operationId, operation.operationId)
+    assert.equal(restored.operation.request.client_request_id, operation.request.client_request_id)
+  }
+}))
+
+test('routed controller keeps the pending prompt local and resolves only canonical response', async () => withAsyncSessionStorage(async (storage) => {
+  let resolveRequest!: (value: ReturnType<typeof makeRoutedResult>) => void
+  const requests: unknown[] = []
+  const controller = new DesktopV3RoutedNewSessionController((request) => {
+    requests.push(request)
+    return new Promise((resolve) => { resolveRequest = resolve })
+  }, createDesktopV3RoutedDraftState('route me'))
+  const phases: string[] = []
+  controller.subscribe((state) => phases.push(state.phase))
+
+  const pending = controller.submit({ prompt: 'route me' })
+  const routing = controller.getState()
+  assert.equal(routing.phase, 'routing')
+  assert.equal(routing.prompt, 'route me')
+  assert.equal(requests.length, 1)
+  assert.equal(storage.size, 1)
+  if (routing.phase !== 'routing') throw new Error('expected routing state')
+
+  resolveRequest(makeRoutedResult('canonical-session'))
+  const resolved = await pending
+  assert.equal(resolved.phase, 'resolved')
+  if (resolved.phase === 'resolved') {
+    assert.equal(resolved.result.session_id, 'canonical-session')
+  }
+  assert.deepEqual(phases, ['routing', 'resolved'])
+  assert.equal(storage.size, 0)
+}))
+
+test('routed failure is retryable with the same exact idempotency identity', async () => withAsyncSessionStorage(async () => {
+  const requestIDs: string[] = []
+  let attempts = 0
+  const controller = new DesktopV3RoutedNewSessionController(async (request) => {
+    requestIDs.push(request.client_request_id)
+    attempts += 1
+    if (attempts === 1) throw new Error('network ambiguous')
+    return makeRoutedResult('canonical-session')
+  }, createDesktopV3RoutedDraftState('retry me'))
+
+  const failed = await controller.submit({ prompt: 'retry me' })
+  assert.equal(failed.phase, 'failed')
+  if (failed.phase === 'failed') assert.match(failed.error, /network ambiguous/)
+  const resolved = await controller.retry()
+  assert.equal(resolved.phase, 'resolved')
+  assert.equal(requestIDs.length, 2)
+  assert.equal(requestIDs[0], requestIDs[1])
+}))
+
+test('stale routed success cannot activate after a newer local draft starts', async () => withAsyncSessionStorage(async () => {
+  let resolveRequest!: (value: ReturnType<typeof makeRoutedResult>) => void
+  const controller = new DesktopV3RoutedNewSessionController(() => new Promise((resolve) => {
+    resolveRequest = resolve
+  }), createDesktopV3RoutedDraftState('old prompt'))
+
+  const pending = controller.submit({ prompt: 'old prompt' })
+  controller.startDraft('new prompt')
+  resolveRequest(makeRoutedResult('stale-session'))
+  const result = await pending
+
+  assert.equal(result.phase, 'draft')
+  assert.equal(controller.getState().phase, 'draft')
+  assert.equal(controller.getState().prompt, 'new prompt')
+}))
+
+test('stale routed failure cannot replace a newer local draft', async () => withAsyncSessionStorage(async () => {
+  let rejectRequest!: (reason: Error) => void
+  const controller = new DesktopV3RoutedNewSessionController(() => new Promise((_resolve, reject) => {
+    rejectRequest = reject
+  }), createDesktopV3RoutedDraftState('old prompt'))
+
+  const pending = controller.submit({ prompt: 'old prompt' })
+  controller.startDraft('new prompt')
+  rejectRequest(new Error('stale failure'))
+  const result = await pending
+
+  assert.equal(result.phase, 'draft')
+  assert.equal(controller.getState().prompt, 'new prompt')
+}))
+
+test('mismatched routed response remains local failed state', async () => withAsyncSessionStorage(async () => {
+  const controller = new DesktopV3RoutedNewSessionController(async () => ({
+    ...makeRoutedResult('canonical-session'),
+    projection: { session_id: 'other-session', last_event_seq: 1 },
+  }), createDesktopV3RoutedDraftState('route me'))
+
+  const state = await controller.submit({ prompt: 'route me' })
+  assert.equal(state.phase, 'failed')
+  if (state.phase === 'failed') assert.match(state.error, /mismatched projection/)
+}))
 
 test('Path A operation contains stable create and first-message wire payloads', () => {
   const operation = createDesktopV3NewSessionOperation({
