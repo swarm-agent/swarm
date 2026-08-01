@@ -14,24 +14,26 @@ import (
 const modelProfilesPath = "/v1/model-profiles"
 
 type modelProfileRequest struct {
-	Name      string                             `json:"name"`
-	ModelMode string                             `json:"model_mode"`
-	Single    *pebblestore.ModelProfileSelection `json:"single,omitempty"`
-	Plan      *pebblestore.ModelProfileSelection `json:"plan,omitempty"`
-	Auto      *pebblestore.ModelProfileSelection `json:"auto,omitempty"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Thinking    string `json:"thinking"`
+	ServiceTier string `json:"service_tier"`
+	ContextMode string `json:"context_mode"`
 }
 
 type modelProfileResponse struct {
-	ProfileID string                             `json:"profile_id"`
-	Name      string                             `json:"name"`
-	ModelMode string                             `json:"model_mode"`
-	Single    *pebblestore.ModelProfileSelection `json:"single,omitempty"`
-	Plan      *pebblestore.ModelProfileSelection `json:"plan,omitempty"`
-	Auto      *pebblestore.ModelProfileSelection `json:"auto,omitempty"`
-	CreatedAt int64                              `json:"created_at"`
-	UpdatedAt int64                              `json:"updated_at"`
-	SortOrder int                                `json:"sort_order"`
-	IsDefault bool                               `json:"is_default"`
+	ProfileID   string `json:"profile_id"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Thinking    string `json:"thinking"`
+	ServiceTier string `json:"service_tier"`
+	ContextMode string `json:"context_mode"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+	SortOrder   int    `json:"sort_order"`
+	IsDefault   bool   `json:"is_default"`
 }
 
 type modelProfilesBulkDeleteRequest struct {
@@ -219,11 +221,30 @@ func (s *Server) modelProfileContext(w http.ResponseWriter, r *http.Request) (co
 }
 
 func (r modelProfileRequest) input() modelprofile.Input {
-	return modelprofile.Input{Name: r.Name, ModelMode: r.ModelMode, Single: r.Single, Plan: r.Plan, Auto: r.Auto}
+	return modelprofile.Input{
+		Name:        r.Name,
+		Provider:    r.Provider,
+		Model:       r.Model,
+		Thinking:    r.Thinking,
+		ServiceTier: r.ServiceTier,
+		ContextMode: r.ContextMode,
+	}
 }
 
 func modelProfileFromRecord(profile modelprofile.Profile) modelProfileResponse {
-	return modelProfileResponse{ProfileID: profile.ProfileID, Name: profile.Name, ModelMode: profile.ModelMode, Single: profile.Single, Plan: profile.Plan, Auto: profile.Auto, CreatedAt: profile.CreatedAt, UpdatedAt: profile.UpdatedAt, SortOrder: profile.SortOrder, IsDefault: profile.IsDefault}
+	return modelProfileResponse{
+		ProfileID:   profile.ProfileID,
+		Name:        profile.Name,
+		Provider:    profile.Provider,
+		Model:       profile.Model,
+		Thinking:    profile.Thinking,
+		ServiceTier: profile.ServiceTier,
+		ContextMode: profile.ContextMode,
+		CreatedAt:   profile.CreatedAt,
+		UpdatedAt:   profile.UpdatedAt,
+		SortOrder:   profile.SortOrder,
+		IsDefault:   profile.IsDefault,
+	}
 }
 
 func parseModelProfileID(path string) (string, error) {
