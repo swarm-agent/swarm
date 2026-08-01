@@ -112,8 +112,14 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if len(messages) != 1 || messages[0].Role != "user" || messages[0].Content != "create the routed session" {
 		t.Fatalf("durable first messages = %+v", messages)
 	}
-	if firstResponse.Message.ID != messages[0].ID || firstResponse.Message.SessionID != stored.ID {
-		t.Fatalf("response first message = %+v, durable=%+v", firstResponse.Message, messages[0])
+	if firstResponse.FirstMessage.ID != messages[0].ID || firstResponse.FirstMessage.SessionID != stored.ID {
+		t.Fatalf("response first message = %+v, durable=%+v", firstResponse.FirstMessage, messages[0])
+	}
+	if firstResponse.SessionView.Identity == nil || firstResponse.SessionView.Identity.SessionID != stored.ID || firstResponse.SessionView.AgenticSettings.EffectivePreference.Model != stored.Preference.Model {
+		t.Fatalf("response session view = %+v", firstResponse.SessionView)
+	}
+	if firstResponse.Mutation.SessionID != stored.ID || firstResponse.Mutation.Message == nil || firstResponse.Mutation.Message.ID != messages[0].ID {
+		t.Fatalf("response atomic mutation = %+v", firstResponse.Mutation)
 	}
 	projection, projectionOK, err := sessions.GetSessionProjection(stored.ID)
 	if err != nil || !projectionOK || projection.LastEventSeq != 1 || projection.ProjectionHighWatermarkSeq != 1 {
@@ -146,7 +152,7 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())
 	}
 	replayResponse := decodeRoutedSessionAtomicityResponse(t, replay)
-	if !replayResponse.Replayed || replayResponse.SessionID != stored.ID || replayResponse.Message.ID != messages[0].ID {
+	if !replayResponse.Replayed || replayResponse.SessionID != stored.ID || replayResponse.FirstMessage.ID != messages[0].ID || !replayResponse.Mutation.Replayed {
 		t.Fatalf("replay response = %+v", replayResponse)
 	}
 	if runner.createCalls != 1 {
@@ -169,12 +175,14 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 }
 
 type routedSessionAtomicityResponse struct {
-	OK         bool                             `json:"ok"`
-	SessionID  string                           `json:"session_id"`
-	Session    pebblestore.SessionSnapshot      `json:"session"`
-	Projection sessionruntime.SessionProjection `json:"projection"`
-	Message    pebblestore.MessageSnapshot      `json:"message"`
-	Replayed   bool                             `json:"replayed"`
+	OK           bool                                 `json:"ok"`
+	SessionID    string                               `json:"session_id"`
+	Session      pebblestore.SessionSnapshot          `json:"session"`
+	SessionView  sessionsV3SessionView                `json:"session_view"`
+	Projection   sessionruntime.SessionProjection     `json:"projection"`
+	FirstMessage pebblestore.MessageSnapshot          `json:"first_message"`
+	Mutation     sessionruntime.SessionMutationResult `json:"mutation"`
+	Replayed     bool                                 `json:"replayed"`
 }
 
 func decodeRoutedSessionAtomicityResponse(t *testing.T, recorder *httptest.ResponseRecorder) routedSessionAtomicityResponse {

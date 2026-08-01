@@ -405,12 +405,17 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 	sessionID := stableSessionsV3PrimarySessionID(principal, "routed:"+clientRequestID)
-	if replay, found, replayErr := s.routedSessionReplay(principal, sessionID, requestHash); replayErr != nil {
+	if replay, found, replayErr := s.routedSessionReplay(principal, sessionID, clientRequestID, requestHash); replayErr != nil {
 		writeRoutedSessionError(w, replayErr)
 		return
 	} else if found {
+		response, responseErr := s.routedSessionResponse(principal, replay)
+		if responseErr != nil {
+			writeRoutedSessionError(w, responseErr)
+			return
+		}
 		cleanup = false
-		writeJSON(w, http.StatusOK, routedSessionResponse(replay))
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 
@@ -449,12 +454,15 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	}
 	candidate.WorkspacePath = canonical.SourceWorkspacePath
 	candidate.WorkspaceName = firstNonEmpty(canonical.SourceWorkspaceName, decision.Workspace.WorkspaceName)
-	candidate.Metadata = cloneSessionsV3Metadata(canonical.Metadata)
+	createRequest := sessionCreateRequest{Metadata: cloneSessionsV3Metadata(canonical.Metadata)}
+	if err := applyRoutedSessionRouterTitle(&createRequest, decision.Result.Title); err != nil {
+		writeRoutedSessionError(w, err)
+		return
+	}
+	candidate.Title = createRequest.Title
+	candidate.Metadata = createRequest.Metadata
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
-	candidate.Metadata["title_pending"] = false
-	candidate.Metadata["title_source"] = "router"
-	candidate.Metadata["title_locked"] = true
 	candidate.Metadata["routed_worktree_requested"] = decision.Result.Worktree
 	if decision.Result.WorktreeName != nil {
 		candidate.Metadata["routed_worktree_name"] = strings.TrimSpace(*decision.Result.WorktreeName)
@@ -527,7 +535,17 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: mutation.RunIntent.RunID, EpochID: mutation.RunIntent.EpochID}
 	}
 	result := routedSessionStartResult{Session: created, Projection: mutation.Projection, Message: mutation.Message, Mutation: mutation, Replayed: mutation.Replayed, EnqueueJob: enqueueJob}
-	writeJSON(w, http.StatusOK, routedSessionResponse(result))
+	response, responseErr := s.routedSessionResponse(principal, result)
+	if responseErr != nil {
+		// The atomic mutation is already durable. Surface the canonical mapping
+		// failure without presenting a partial legacy success contract.
+		writeRoutedSessionError(w, responseErr)
+		if enqueueJob != nil {
+			s.v3SessionExecutor.EnqueueRun(*enqueueJob)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 	if enqueueJob != nil {
 		s.v3SessionExecutor.EnqueueRun(*enqueueJob)
 	}
@@ -584,7 +602,7 @@ func routedSessionCreateHash(session pebblestore.SessionSnapshot, message pebble
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (s *Server) routedSessionReplay(principal identity.Principal, sessionID, requestHash string) (routedSessionStartResult, bool, error) {
+func (s *Server) routedSessionReplay(principal identity.Principal, sessionID, clientRequestID, requestHash string) (routedSessionStartResult, bool, error) {
 	if s == nil || s.sessions == nil {
 		return routedSessionStartResult{}, false, errors.New("sessions v3 service is not configured")
 	}
@@ -595,13 +613,6 @@ func (s *Server) routedSessionReplay(principal identity.Principal, sessionID, re
 	if session.AccountScopeID != principal.AccountScopeID || sessionsV3MetadataString(session.Metadata, "routed_start_request_hash") != requestHash {
 		return routedSessionStartResult{}, false, sessionruntime.ErrSessionIdempotencyConflict
 	}
-	messages, err := s.sessions.ListSessionMessageTail(sessionID, 1)
-	if err != nil {
-		return routedSessionStartResult{}, false, err
-	}
-	if len(messages) != 1 || !strings.EqualFold(messages[0].Role, "user") {
-		return routedSessionStartResult{}, false, errors.New("routed session idempotency record is incomplete")
-	}
 	projection, ok, err := s.sessions.GetSessionProjection(sessionID)
 	if err != nil {
 		return routedSessionStartResult{}, false, err
@@ -609,16 +620,76 @@ func (s *Server) routedSessionReplay(principal identity.Principal, sessionID, re
 	if !ok {
 		return routedSessionStartResult{}, false, errors.New("routed session replay projection is missing")
 	}
+	record, ok, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationCreateSession, clientRequestID)
+	if err != nil {
+		return routedSessionStartResult{}, false, err
+	}
+	if !ok {
+		return routedSessionStartResult{}, false, errors.New("routed session replay idempotency record is missing")
+	}
+	if strings.TrimSpace(record.Result.MessageID) == "" {
+		return routedSessionStartResult{}, false, errors.New("routed session replay idempotency record is missing the first message")
+	}
+	afterSeq := uint64(0)
+	if record.Result.FirstSeq > 0 {
+		afterSeq = record.Result.FirstSeq - 1
+	}
+	messages, err := s.sessions.ListSessionMessages(sessionID, afterSeq, 1)
+	if err != nil {
+		return routedSessionStartResult{}, false, err
+	}
+	if len(messages) != 1 || messages[0].ID != record.Result.MessageID || !strings.EqualFold(messages[0].Role, "user") {
+		return routedSessionStartResult{}, false, errors.New("routed session idempotency record is incomplete")
+	}
+	primarySeq := record.Result.LastSeq
+	if primarySeq == 0 {
+		primarySeq = record.Result.FirstSeq
+	}
+	mutation := sessionruntime.SessionMutationResult{
+		SessionID:       sessionID,
+		PrimarySeq:      primarySeq,
+		FirstSeq:        record.Result.FirstSeq,
+		LastSeq:         record.Result.LastSeq,
+		EventIDs:        append([]string(nil), record.Result.EventIDs...),
+		PayloadHash:     record.Result.PayloadHash,
+		ResponseVersion: record.Result.ResponseVersion,
+		ResponseStatus:  record.Result.ResponseStatus,
+		ResponseBody:    append(json.RawMessage(nil), record.Result.ResponseBody...),
+		Conflict:        record.Result.Conflict,
+		Error:           record.Result.Error,
+		Idempotency:     record,
+		Projection:      projection,
+		Session:         &session,
+		Message:         &messages[0],
+		Replayed:        true,
+	}
+	if primarySeq != 0 {
+		if event, found, eventErr := s.sessions.Store().GetV3SessionEvent(sessionID, primarySeq); eventErr != nil {
+			return routedSessionStartResult{}, false, eventErr
+		} else if found {
+			mutation.Event = event
+		}
+	}
+	if strings.TrimSpace(record.Result.RunID) != "" {
+		if runIntent, found, runErr := s.sessions.Store().GetV3SessionRunIntent(sessionID, record.Result.RunID); runErr != nil {
+			return routedSessionStartResult{}, false, runErr
+		} else if found {
+			mutation.RunIntent = &runIntent
+		}
+	}
 	message := messages[0]
-	return routedSessionStartResult{Session: session, Projection: projection, Message: &message, Replayed: true}, true, nil
+	return routedSessionStartResult{Session: session, Projection: projection, Message: &message, Mutation: mutation, Replayed: true}, true, nil
 }
 
-func routedSessionResponse(result routedSessionStartResult) map[string]any {
-	response := map[string]any{"ok": true, "session_id": result.Session.ID, "session": result.Session, "projection": result.Projection, "message": result.Message, "replayed": result.Replayed}
-	if strings.TrimSpace(result.Mutation.SessionID) != "" {
-		response["mutation"] = sessionV3MutationResultResponse(result.Mutation)
+func (s *Server) routedSessionResponse(principal identity.Principal, result routedSessionStartResult) (sessionsV3RoutedStartResponse, error) {
+	if result.Message == nil {
+		return sessionsV3RoutedStartResponse{}, errors.New("routed session first durable message is missing")
 	}
-	return response
+	view, err := s.buildSessionsV3SessionView(principal, result.Session, result.Projection, nil, false)
+	if err != nil {
+		return sessionsV3RoutedStartResponse{}, err
+	}
+	return s.buildSessionsV3RoutedStartResponse(view, result.Session, *result.Message, result.Projection, result.Mutation, result.Replayed)
 }
 
 func writeRoutedSessionError(w http.ResponseWriter, err error) {

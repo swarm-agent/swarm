@@ -30,19 +30,19 @@ type sessionsV3SessionIdentity struct {
 
 // sessionsV3RoutedStartResponse is the immediate response contract for a
 // durable routed start. It deliberately contains the canonical session view
-// plus the exact first user message and mutation facts supplied by the
+// plus the exact first user message and single atomic mutation supplied by the
 // coordinator. It does not predict a worktree that has not been persisted.
 type sessionsV3RoutedStartResponse struct {
-	OK              bool                                  `json:"ok"`
-	SessionID       string                                `json:"session_id"`
-	Title           string                                `json:"title"`
-	StartingMode    string                                `json:"starting_mode"`
-	Session         pebblestore.SessionSnapshot           `json:"session"`
-	SessionView     sessionsV3SessionView                 `json:"session_view"`
-	FirstMessage    pebblestore.MessageSnapshot           `json:"first_message"`
-	Projection      pebblestore.V3SessionProjection       `json:"projection"`
-	CreateMutation  sessionruntime.SessionMutationResult  `json:"create_mutation"`
-	MessageMutation sessionruntime.SessionMutationResult  `json:"message_mutation"`
+	OK           bool                                 `json:"ok"`
+	SessionID    string                               `json:"session_id"`
+	Title        string                               `json:"title"`
+	StartingMode string                               `json:"starting_mode"`
+	Replayed     bool                                 `json:"replayed"`
+	Session      pebblestore.SessionSnapshot          `json:"session"`
+	SessionView  sessionsV3SessionView                `json:"session_view"`
+	FirstMessage pebblestore.MessageSnapshot          `json:"first_message"`
+	Projection   pebblestore.V3SessionProjection      `json:"projection"`
+	Mutation     sessionruntime.SessionMutationResult `json:"mutation"`
 }
 
 func sessionsV3SessionIdentityFromSnapshot(session pebblestore.SessionSnapshot) (sessionsV3SessionIdentity, error) {
@@ -84,8 +84,8 @@ func (s *Server) buildSessionsV3RoutedStartResponse(
 	session pebblestore.SessionSnapshot,
 	firstMessage pebblestore.MessageSnapshot,
 	projection pebblestore.V3SessionProjection,
-	createMutation sessionruntime.SessionMutationResult,
-	messageMutation sessionruntime.SessionMutationResult,
+	mutation sessionruntime.SessionMutationResult,
+	replayed bool,
 ) (sessionsV3RoutedStartResponse, error) {
 	identity, err := sessionsV3SessionIdentityFromSnapshot(session)
 	if err != nil {
@@ -103,20 +103,26 @@ func (s *Server) buildSessionsV3RoutedStartResponse(
 	if strings.TrimSpace(projection.SessionID) != identity.SessionID || projection.LastEventSeq == 0 {
 		return sessionsV3RoutedStartResponse{}, errors.New("routed session projection is required")
 	}
-	if strings.TrimSpace(createMutation.SessionID) != identity.SessionID || strings.TrimSpace(messageMutation.SessionID) != identity.SessionID {
-		return sessionsV3RoutedStartResponse{}, errors.New("routed session mutations do not match session")
+	if strings.TrimSpace(mutation.SessionID) != identity.SessionID {
+		return sessionsV3RoutedStartResponse{}, errors.New("routed session mutation does not match session")
+	}
+	if mutation.Message == nil || strings.TrimSpace(mutation.Message.ID) != strings.TrimSpace(firstMessage.ID) {
+		return sessionsV3RoutedStartResponse{}, errors.New("routed session mutation does not contain the first durable message")
+	}
+	if strings.TrimSpace(mutation.Projection.SessionID) != identity.SessionID || mutation.Projection.LastEventSeq != projection.LastEventSeq {
+		return sessionsV3RoutedStartResponse{}, errors.New("routed session mutation projection does not match durable projection")
 	}
 	view.Identity = &identity
 	return sessionsV3RoutedStartResponse{
-		OK:              true,
-		SessionID:       identity.SessionID,
-		Title:           identity.Title,
-		StartingMode:    strings.TrimSpace(session.Mode),
-		Session:         session,
-		SessionView:     view,
-		FirstMessage:    firstMessage,
-		Projection:      projection,
-		CreateMutation:  sessionV3MutationResultResponse(createMutation),
-		MessageMutation: sessionV3MutationResultResponse(messageMutation),
+		OK:           true,
+		SessionID:    identity.SessionID,
+		Title:        identity.Title,
+		StartingMode: strings.TrimSpace(session.Mode),
+		Replayed:     replayed,
+		Session:      session,
+		SessionView:  view,
+		FirstMessage: firstMessage,
+		Projection:   projection,
+		Mutation:     sessionV3MutationResultResponse(mutation),
 	}, nil
 }

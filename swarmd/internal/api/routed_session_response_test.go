@@ -46,11 +46,10 @@ func TestBuildSessionsV3RoutedStartResponseProjectsDurableAuthority(t *testing.T
 	}
 	message := pebblestore.MessageSnapshot{ID: "message-1", SessionID: session.ID, Role: "user", Content: "first prompt", CreatedAt: 101}
 	projection := pebblestore.V3SessionProjection{SessionID: session.ID, LastEventSeq: 2, ProjectionHighWatermarkSeq: 2, UpdatedAt: 101}
-	createMutation := sessionruntime.SessionMutationResult{SessionID: session.ID, Session: &session, Projection: pebblestore.V3SessionProjection{SessionID: session.ID, LastEventSeq: 1}}
-	messageMutation := sessionruntime.SessionMutationResult{SessionID: session.ID, Session: &session, Message: &message, Projection: projection}
+	mutation := sessionruntime.SessionMutationResult{SessionID: session.ID, Session: &session, Message: &message, Projection: projection}
 	view := sessionsV3SessionView{AgenticSettings: sessionsV3AgenticSettings{Mode: session.Mode, EffectivePreference: session.Preference}}
 
-	response, err := (&Server{}).buildSessionsV3RoutedStartResponse(view, session, message, projection, createMutation, messageMutation)
+	response, err := (&Server{}).buildSessionsV3RoutedStartResponse(view, session, message, projection, mutation, false)
 	if err != nil {
 		t.Fatalf("build routed response: %v", err)
 	}
@@ -70,8 +69,11 @@ func TestBuildSessionsV3RoutedStartResponseProjectsDurableAuthority(t *testing.T
 	if response.FirstMessage.Content != "first prompt" || response.Projection.LastEventSeq != 2 {
 		t.Fatalf("message/projection = %+v %+v", response.FirstMessage, response.Projection)
 	}
-	if response.CreateMutation.Session != nil || response.MessageMutation.Session != nil {
-		t.Fatalf("mutation responses duplicated session snapshot: create=%+v message=%+v", response.CreateMutation, response.MessageMutation)
+	if response.Mutation.Session != nil || response.Mutation.Message == nil {
+		t.Fatalf("atomic mutation response = %+v", response.Mutation)
+	}
+	if response.Replayed {
+		t.Fatal("new routed response was marked replayed")
 	}
 
 	raw, err := json.Marshal(response)
@@ -82,7 +84,7 @@ func TestBuildSessionsV3RoutedStartResponseProjectsDurableAuthority(t *testing.T
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		t.Fatalf("decode routed response: %v", err)
 	}
-	for _, key := range []string{"session_id", "title", "starting_mode", "session", "session_view", "first_message", "projection", "create_mutation", "message_mutation"} {
+	for _, key := range []string{"session_id", "title", "starting_mode", "replayed", "session", "session_view", "first_message", "projection", "mutation"} {
 		if _, ok := wire[key]; !ok {
 			t.Fatalf("wire response missing %q: %s", key, string(raw))
 		}
@@ -111,9 +113,21 @@ func TestSessionsV3SessionIdentityReportsOnlyPersistedWorktreeFacts(t *testing.T
 func TestBuildSessionsV3RoutedStartResponseRejectsNonDurableMessage(t *testing.T) {
 	session := pebblestore.SessionSnapshot{ID: "session", Title: "Title", Mode: "auto", WorkspacePath: "/workspace", WorkspaceName: "workspace"}
 	projection := pebblestore.V3SessionProjection{SessionID: session.ID, LastEventSeq: 2}
-	mutation := sessionruntime.SessionMutationResult{SessionID: session.ID}
-	_, err := (&Server{}).buildSessionsV3RoutedStartResponse(sessionsV3SessionView{}, session, pebblestore.MessageSnapshot{ID: "message", SessionID: "other", Role: "user"}, projection, mutation, mutation)
+	message := pebblestore.MessageSnapshot{ID: "message", SessionID: "other", Role: "user"}
+	mutation := sessionruntime.SessionMutationResult{SessionID: session.ID, Message: &message, Projection: projection}
+	_, err := (&Server{}).buildSessionsV3RoutedStartResponse(sessionsV3SessionView{}, session, message, projection, mutation, false)
 	if err == nil {
 		t.Fatal("mismatched first message was accepted")
+	}
+}
+
+func TestBuildSessionsV3RoutedStartResponseRejectsSplitMutationProjection(t *testing.T) {
+	session := pebblestore.SessionSnapshot{ID: "session", Title: "Title", Mode: "auto", WorkspacePath: "/workspace", WorkspaceName: "workspace"}
+	message := pebblestore.MessageSnapshot{ID: "message", SessionID: session.ID, Role: "user"}
+	projection := pebblestore.V3SessionProjection{SessionID: session.ID, LastEventSeq: 2}
+	mutation := sessionruntime.SessionMutationResult{SessionID: session.ID, Message: &message, Projection: pebblestore.V3SessionProjection{SessionID: session.ID, LastEventSeq: 1}}
+	_, err := (&Server{}).buildSessionsV3RoutedStartResponse(sessionsV3SessionView{}, session, message, projection, mutation, false)
+	if err == nil {
+		t.Fatal("split create/message mutation projection was accepted")
 	}
 }
