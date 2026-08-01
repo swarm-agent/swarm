@@ -5,6 +5,7 @@ import {
   DesktopV3RoutedNewSessionController,
   createDesktopV3CreateOnlySessionOperation,
   createDesktopV3NewSessionOperation,
+  createDesktopV3RoutedComposerSnapshot,
   createDesktopV3RoutedDraftState,
   createDesktopV3RoutedStartOperation,
   createDesktopV3RoutedWorktreePrimedState,
@@ -145,21 +146,37 @@ function makeRoutedResult(sessionId: string) {
   }
 }
 
-test('routed draft and worktree-primed state contain no preselected authority', () => {
-  assert.deepEqual(createDesktopV3RoutedDraftState('draft'), { phase: 'draft', prompt: 'draft' })
-  assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), { phase: 'worktree-primed', prompt: 'primed' })
+test('routed draft and worktree-primed state contain only exact local composer state', () => {
+  assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {
+    phase: 'draft',
+    prompt: 'draft',
+    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: false },
+  })
+  assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), {
+    phase: 'worktree-primed',
+    prompt: 'primed',
+    snapshot: { prompt: 'primed', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: true },
+  })
   assert.equal('sessionId' in createDesktopV3RoutedDraftState(), false)
   assert.equal('workspace' in createDesktopV3RoutedWorktreePrimedState(), false)
 })
 
 test('routed operation persists one stable transport identity across reload', () => withSessionStorage(() => {
-  const operation = createDesktopV3RoutedStartOperation({
+  const snapshot = createDesktopV3RoutedComposerSnapshot({
     prompt: ' route this ',
+    attachments: [{ staging_id: ' staged-1 ', modality: ' image ', file_type: ' png ' }],
+    selectedAction: { id: 'action-1', arguments: ['--exact', ' value '] },
+    selectedSkill: { canonicalName: 'skill/example', scope: 'workspace' },
+    worktreePrimed: true,
+  })
+  const operation = createDesktopV3RoutedStartOperation({
+    snapshot,
     agentName: ' swarm ',
     metadata: { source: 'desktop-v3' },
-    media: [{ staging_id: ' staged-1 ', modality: ' image ', file_type: ' png ' }],
   })
 
+  assert.equal(operation.version, 1)
+  assert.deepEqual(operation.snapshot, snapshot)
   assert.equal(operation.request.input, 'route this')
   assert.equal(operation.request.agent_name, 'swarm')
   assert.equal(operation.request.client_request_id, `desktop-v3-routed:${operation.operationId}`)
@@ -175,6 +192,8 @@ test('routed operation persists one stable transport identity across reload', ()
   const restored = restoreDesktopV3RoutedNewSessionState()
   assert.equal(restored.phase, 'failed')
   if (restored.phase === 'failed') {
+    assert.deepEqual(restored.snapshot, snapshot)
+    assert.equal(restored.prompt, ' route this ')
     assert.equal(restored.operation.operationId, operation.operationId)
     assert.equal(restored.operation.request.client_request_id, operation.request.client_request_id)
   }
@@ -208,7 +227,7 @@ test('routed controller keeps the pending prompt local and resolves only canonic
   assert.equal(storage.size, 0)
 }))
 
-test('routed failure is retryable with the same exact idempotency identity', async () => withAsyncSessionStorage(async () => {
+test('routed failure restores the exact composer snapshot and retries the same operation', async () => withAsyncSessionStorage(async () => {
   const requestIDs: string[] = []
   let attempts = 0
   const controller = new DesktopV3RoutedNewSessionController(async (request) => {
@@ -217,14 +236,86 @@ test('routed failure is retryable with the same exact idempotency identity', asy
     if (attempts === 1) throw new Error('network ambiguous')
     return makeRoutedResult('canonical-session')
   }, createDesktopV3RoutedDraftState('retry me'))
+  const snapshot = createDesktopV3RoutedComposerSnapshot({
+    prompt: ' retry me exactly ',
+    attachments: [
+      { staging_id: 'staged-2', modality: 'image', file_type: 'png' },
+      { staging_id: 'staged-1', modality: 'file', file_type: 'pdf' },
+    ],
+    selectedAction: { id: 'action-7', name: 'Deploy', arguments: ['--keep-order'] },
+    selectedSkill: { canonicalName: 'skill/release', description: ' exact ' },
+    worktreePrimed: true,
+  })
 
-  const failed = await controller.submit({ prompt: 'retry me' })
+  const failed = await controller.submit({ snapshot })
   assert.equal(failed.phase, 'failed')
-  if (failed.phase === 'failed') assert.match(failed.error, /network ambiguous/)
+  if (failed.phase === 'failed') {
+    assert.match(failed.error, /network ambiguous/)
+    assert.deepEqual(failed.snapshot, snapshot)
+    assert.equal(failed.prompt, snapshot.prompt)
+    assert.equal(failed.operation.request.input, snapshot.prompt.trim())
+    assert.deepEqual(failed.operation.request.media, snapshot.attachments)
+  }
   const resolved = await controller.retry()
   assert.equal(resolved.phase, 'resolved')
   assert.equal(requestIDs.length, 2)
   assert.equal(requestIDs[0], requestIDs[1])
+}))
+
+test('routed interruption recovery rejects corrupted snapshots and retains exact valid snapshots', () => withSessionStorage((storage) => {
+  const snapshot = createDesktopV3RoutedComposerSnapshot({
+    prompt: ' interrupted draft ',
+    attachments: [{ staging_id: 'stage-a', modality: 'image' }],
+    selectedAction: { id: 'action-a' },
+    selectedSkill: { canonicalName: 'skill-a' },
+    worktreePrimed: false,
+  })
+  const operation = createDesktopV3RoutedStartOperation({ snapshot })
+  persistDesktopV3RoutedStartOperation(operation)
+
+  const recovered = restoreDesktopV3RoutedNewSessionState()
+  assert.equal(recovered.phase, 'failed')
+  if (recovered.phase === 'failed') {
+    assert.deepEqual(recovered.snapshot, snapshot)
+    assert.equal(recovered.operation.request.client_request_id, operation.request.client_request_id)
+  }
+
+  const corrupted = JSON.parse([...storage.values()][0] ?? '{}')
+  corrupted.snapshot.attachments[0].staging_id = ''
+  storage.set('swarm.desktop.v3.routed-new-session.v1', JSON.stringify(corrupted))
+  assert.equal(loadDesktopV3RoutedStartOperation(), null)
+  assert.equal(storage.size, 0)
+}))
+
+test('routed invalidation clears only the invalidated operation and preserves the newer exact draft', async () => withAsyncSessionStorage(async (storage) => {
+  let resolveRequest!: (value: ReturnType<typeof makeRoutedResult>) => void
+  const controller = new DesktopV3RoutedNewSessionController(() => new Promise((resolve) => {
+    resolveRequest = resolve
+  }), createDesktopV3RoutedDraftState('old prompt'))
+  const oldSnapshot = createDesktopV3RoutedComposerSnapshot({
+    prompt: 'old prompt',
+    attachments: [{ staging_id: 'old-stage' }],
+    selectedAction: { id: 'old-action' },
+    selectedSkill: null,
+    worktreePrimed: true,
+  })
+  const pending = controller.submit({ snapshot: oldSnapshot })
+
+  const newSnapshot = createDesktopV3RoutedComposerSnapshot({
+    prompt: 'new prompt ',
+    attachments: [{ staging_id: 'new-stage' }],
+    selectedAction: null,
+    selectedSkill: { canonicalName: 'new-skill' },
+    worktreePrimed: false,
+  })
+  const draft = controller.startDraft(newSnapshot.prompt, newSnapshot)
+  assert.deepEqual(draft.snapshot, newSnapshot)
+  assert.equal(storage.size, 0)
+
+  resolveRequest(makeRoutedResult('stale-session'))
+  const stale = await pending
+  assert.equal(stale.phase, 'draft')
+  assert.equal(stale.prompt, newSnapshot.prompt)
 }))
 
 test('stale routed success cannot activate after a newer local draft starts', async () => withAsyncSessionStorage(async () => {

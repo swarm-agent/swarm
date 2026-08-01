@@ -460,20 +460,35 @@ function acceptedRunPhase(raw: SessionMessageMutationResponse | MessageMutationC
  * primed, routing, or failed variants is a durable session and callers must not
  * publish one into the V3 cache, sidebar, realtime controller, or URL.
  */
+export interface DesktopV3RoutedMediaInput {
+  staging_id: string
+  modality?: string
+  file_type?: string
+}
+
+/**
+ * Serializable composer state captured before the local composer is cleared.
+ * Action and skill records intentionally remain opaque here: the controller
+ * owns exact rollback, not interpretation of either workspace-owned record.
+ */
+export interface DesktopV3RoutedComposerSnapshot {
+  prompt: string
+  attachments: DesktopV3RoutedMediaInput[]
+  selectedAction: unknown | null
+  selectedSkill: unknown | null
+  worktreePrimed: boolean
+}
+
 export interface DesktopV3RoutedDraftState {
   phase: 'draft'
   prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
 }
 
 export interface DesktopV3RoutedWorktreePrimedState {
   phase: 'worktree-primed'
   prompt: string
-}
-
-export interface DesktopV3RoutedMediaInput {
-  staging_id: string
-  modality?: string
-  file_type?: string
+  snapshot: DesktopV3RoutedComposerSnapshot
 }
 
 export interface DesktopV3RoutedStartRequest {
@@ -489,6 +504,7 @@ export interface DesktopV3RoutedStartOperation {
   version: 1
   operationId: string
   createdAt: number
+  snapshot: DesktopV3RoutedComposerSnapshot
   request: DesktopV3RoutedStartRequest
 }
 
@@ -508,12 +524,14 @@ export interface DesktopV3RoutedStartResult {
 export interface DesktopV3RoutedRoutingState {
   phase: 'routing'
   prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
   operation: DesktopV3RoutedStartOperation
 }
 
 export interface DesktopV3RoutedResolvedState {
   phase: 'resolved'
   prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
   operation: DesktopV3RoutedStartOperation
   result: DesktopV3RoutedStartResult
 }
@@ -521,6 +539,7 @@ export interface DesktopV3RoutedResolvedState {
 export interface DesktopV3RoutedFailedState {
   phase: 'failed'
   prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
   operation: DesktopV3RoutedStartOperation
   error: string
 }
@@ -533,10 +552,14 @@ export type DesktopV3RoutedNewSessionState =
   | DesktopV3RoutedFailedState
 
 export interface CreateDesktopV3RoutedStartOperationInput {
-  prompt: string
+  prompt?: string
+  snapshot?: DesktopV3RoutedComposerSnapshot
   agentName?: string
   metadata?: Record<string, unknown>
   media?: DesktopV3RoutedMediaInput[]
+  selectedAction?: unknown | null
+  selectedSkill?: unknown | null
+  worktreePrimed?: boolean
 }
 
 export type PostDesktopV3RoutedStart = (
@@ -558,18 +581,64 @@ function normalizedRoutedMedia(media: DesktopV3RoutedMediaInput[] | undefined): 
   })
 }
 
-export function createDesktopV3RoutedDraftState(prompt = ''): DesktopV3RoutedDraftState {
-  return { phase: 'draft', prompt }
+export function createDesktopV3RoutedComposerSnapshot(
+  input: Partial<DesktopV3RoutedComposerSnapshot> & Pick<DesktopV3RoutedComposerSnapshot, 'prompt'>,
+): DesktopV3RoutedComposerSnapshot {
+  return {
+    prompt: input.prompt,
+    attachments: input.attachments?.map((attachment) => ({ ...attachment })) ?? [],
+    selectedAction: input.selectedAction === undefined || input.selectedAction === null
+      ? null
+      : cloneRoutedComposerSelection(input.selectedAction),
+    selectedSkill: input.selectedSkill === undefined || input.selectedSkill === null
+      ? null
+      : cloneRoutedComposerSelection(input.selectedSkill),
+    worktreePrimed: input.worktreePrimed === true,
+  }
 }
 
-export function createDesktopV3RoutedWorktreePrimedState(prompt = ''): DesktopV3RoutedWorktreePrimedState {
-  return { phase: 'worktree-primed', prompt }
+function cloneRoutedComposerSelection(selection: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(selection)) as unknown
+  } catch {
+    throw new Error('Routed Desktop composer selection must be serializable')
+  }
+}
+
+export function createDesktopV3RoutedDraftState(
+  prompt = '',
+  snapshot = createDesktopV3RoutedComposerSnapshot({ prompt }),
+): DesktopV3RoutedDraftState {
+  if (prompt !== snapshot.prompt) throw new Error('Routed Desktop draft prompt must match its composer snapshot')
+  return { phase: 'draft', prompt: snapshot.prompt, snapshot }
+}
+
+export function createDesktopV3RoutedWorktreePrimedState(
+  prompt = '',
+  snapshot = createDesktopV3RoutedComposerSnapshot({ prompt, worktreePrimed: true }),
+): DesktopV3RoutedWorktreePrimedState {
+  if (prompt !== snapshot.prompt) throw new Error('Routed Desktop worktree prompt must match its composer snapshot')
+  if (!snapshot.worktreePrimed) throw new Error('Routed Desktop worktree state requires a primed composer snapshot')
+  return { phase: 'worktree-primed', prompt: snapshot.prompt, snapshot }
 }
 
 export function createDesktopV3RoutedStartOperation(
   input: CreateDesktopV3RoutedStartOperationInput,
 ): DesktopV3RoutedStartOperation {
-  const prompt = input.prompt.trim()
+  if (input.snapshot && input.media !== undefined) {
+    throw new Error('Routed Desktop start accepts snapshot attachments or media, not both')
+  }
+  if (input.snapshot && input.prompt !== undefined && input.prompt !== input.snapshot.prompt) {
+    throw new Error('Routed Desktop start prompt must match the captured composer snapshot')
+  }
+  const snapshot = createDesktopV3RoutedComposerSnapshot(input.snapshot ?? {
+    prompt: input.prompt ?? '',
+    attachments: input.media,
+    selectedAction: input.selectedAction,
+    selectedSkill: input.selectedSkill,
+    worktreePrimed: input.worktreePrimed,
+  })
+  const prompt = snapshot.prompt.trim()
   if (!prompt) throw new Error('Routed Desktop start requires a prompt')
   const operationId = crypto.randomUUID()
   const clientRequestID = `desktop-v3-routed:${operationId}`
@@ -577,13 +646,14 @@ export function createDesktopV3RoutedStartOperation(
     version: 1,
     operationId,
     createdAt: Date.now(),
+    snapshot,
     request: {
       input: prompt,
       client_request_id: clientRequestID,
       idempotency_key: clientRequestID,
       agent_name: input.agentName?.trim() || undefined,
       metadata: input.metadata ? { ...input.metadata } : undefined,
-      media: normalizedRoutedMedia(input.media),
+      media: normalizedRoutedMedia(snapshot.attachments),
     },
   }
 }
@@ -592,11 +662,24 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   if (!value || typeof value !== 'object') return false
   const operation = value as Partial<DesktopV3RoutedStartOperation>
   if (operation.version !== 1 || !operation.operationId?.trim() || typeof operation.createdAt !== 'number' || !Number.isFinite(operation.createdAt)) return false
+  const snapshot = operation.snapshot
+  if (!isStoredDesktopV3RoutedComposerSnapshot(snapshot)) return false
   const request = operation.request
   if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
   if (request.idempotency_key !== request.client_request_id) return false
   if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
   if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
+  if (request.input !== snapshot.prompt.trim()) return false
+  if (JSON.stringify(request.media ?? []) !== JSON.stringify(normalizedRoutedMedia(snapshot.attachments) ?? [])) return false
+  return true
+}
+
+function isStoredDesktopV3RoutedComposerSnapshot(value: unknown): value is DesktopV3RoutedComposerSnapshot {
+  if (!value || typeof value !== 'object') return false
+  const snapshot = value as Partial<DesktopV3RoutedComposerSnapshot>
+  if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean') return false
+  if (!Array.isArray(snapshot.attachments) || snapshot.attachments.some((item) => !item?.staging_id?.trim())) return false
+  if (snapshot.selectedAction === undefined || snapshot.selectedSkill === undefined) return false
   return true
 }
 
@@ -634,7 +717,8 @@ export function restoreDesktopV3RoutedNewSessionState(): DesktopV3RoutedNewSessi
   if (!operation) return createDesktopV3RoutedDraftState()
   return {
     phase: 'failed',
-    prompt: operation.request.input,
+    prompt: operation.snapshot.prompt,
+    snapshot: operation.snapshot,
     operation,
     error: 'Routing was interrupted. Retry to resume the same routed start.',
   }
@@ -695,16 +779,22 @@ export class DesktopV3RoutedNewSessionController {
     return () => this.listeners.delete(listener)
   }
 
-  startDraft(prompt = ''): DesktopV3RoutedDraftState {
+  startDraft(
+    prompt = '',
+    snapshot = createDesktopV3RoutedComposerSnapshot({ prompt }),
+  ): DesktopV3RoutedDraftState {
     this.invalidateCurrentOperation()
-    const state = createDesktopV3RoutedDraftState(prompt)
+    const state = createDesktopV3RoutedDraftState(prompt, snapshot)
     this.publish(state)
     return state
   }
 
-  primeWorktree(prompt = ''): DesktopV3RoutedWorktreePrimedState {
+  primeWorktree(
+    prompt = '',
+    snapshot = createDesktopV3RoutedComposerSnapshot({ prompt, worktreePrimed: true }),
+  ): DesktopV3RoutedWorktreePrimedState {
     this.invalidateCurrentOperation()
-    const state = createDesktopV3RoutedWorktreePrimedState(prompt)
+    const state = createDesktopV3RoutedWorktreePrimedState(prompt, snapshot)
     this.publish(state)
     return state
   }
@@ -716,14 +806,14 @@ export class DesktopV3RoutedNewSessionController {
     if (this.state.phase === 'failed') {
       operation = this.state.operation
     } else if (this.state.phase === 'draft' || this.state.phase === 'worktree-primed') {
-      operation = createDesktopV3RoutedStartOperation(input ?? { prompt: this.state.prompt })
+      operation = createDesktopV3RoutedStartOperation(input ?? { snapshot: this.state.snapshot })
     } else {
       return Promise.reject(new Error('Resolved routed Desktop start cannot be submitted again'))
     }
 
     persistDesktopV3RoutedStartOperation(operation)
     const runGeneration = ++this.generation
-    this.publish({ phase: 'routing', prompt: operation.request.input, operation })
+    this.publish({ phase: 'routing', prompt: operation.snapshot.prompt, snapshot: operation.snapshot, operation })
     const run = this.run(operation, runGeneration)
     this.activeRun = run
     void run.finally(() => {
@@ -749,7 +839,8 @@ export class DesktopV3RoutedNewSessionController {
       clearDesktopV3RoutedStartOperation(operation.operationId)
       const resolved: DesktopV3RoutedResolvedState = {
         phase: 'resolved',
-        prompt: operation.request.input,
+        prompt: operation.snapshot.prompt,
+        snapshot: operation.snapshot,
         operation,
         result,
       }
@@ -759,7 +850,8 @@ export class DesktopV3RoutedNewSessionController {
       if (!this.isCurrent(operation, runGeneration)) return this.state
       const failed: DesktopV3RoutedFailedState = {
         phase: 'failed',
-        prompt: operation.request.input,
+        prompt: operation.snapshot.prompt,
+        snapshot: operation.snapshot,
         operation,
         error: error instanceof Error ? error.message : String(error),
       }
