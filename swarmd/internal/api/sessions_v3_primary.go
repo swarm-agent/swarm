@@ -390,7 +390,26 @@ func sessionsV3SystemSidechatID(parentSessionID, kind string) (string, string) {
 }
 
 func sessionsV3PlanSidechatPreference(parent pebblestore.SessionSnapshot) pebblestore.ModelPreference {
-	return parent.Preference
+	preference, _ := sessionsV3PlanSidechatSnapshotPreference(parent)
+	return preference
+}
+
+func sessionsV3PlanSidechatSnapshotPreference(parent pebblestore.SessionSnapshot) (pebblestore.ModelPreference, bool) {
+	if parent.ModelProfile == nil || parent.ModelProfile.Plan == nil {
+		return pebblestore.ModelPreference{}, false
+	}
+	selection := parent.ModelProfile.Plan
+	if strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
+		return pebblestore.ModelPreference{}, false
+	}
+	return pebblestore.ModelPreference{
+		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),
+		Model:       strings.TrimSpace(selection.Model),
+		Thinking:    strings.TrimSpace(selection.Thinking),
+		ServiceTier: strings.TrimSpace(selection.ServiceTier),
+		ContextMode: strings.TrimSpace(selection.ContextMode),
+		UpdatedAt:   parent.ModelProfile.AppliedAt,
+	}, true
 }
 
 func sessionsV3SidechatInt64(value any) int64 {
@@ -495,14 +514,20 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	}
 	var planPreference pebblestore.ModelPreference
 	if kind == "plan" {
-		// The parent session's durable preference is the selected model setup and
-		// therefore the authority for Plan. Do not infer a separate Plan model
-		// from the agent snapshot or re-resolve a model profile here.
-		planPreference = sessionsV3PlanSidechatPreference(parent)
+		// Plan sidechats are bound to the parent's immutable session snapshot.
+		// Never inherit the mutable current preference or re-resolve account
+		// settings, because either can drift after session creation.
+		var planEnabled bool
+		planPreference, planEnabled = sessionsV3PlanSidechatSnapshotPreference(parent)
+		if !planEnabled {
+			writeError(w, http.StatusConflict, errors.New("Plan is disabled for the parent session model snapshot"))
+			return
+		}
 		profile.Provider = planPreference.Provider
 		profile.Model = planPreference.Model
 		profile.Thinking = planPreference.Thinking
-		profile.PlanServiceTier = planPreference.ServiceTier
+		profile.AutoServiceTier = planPreference.ServiceTier
+		profile.ContextMode = planPreference.ContextMode
 		contextJSON, marshalErr := json.Marshal(planContext)
 		if marshalErr != nil {
 			writeError(w, http.StatusConflict, fmt.Errorf("encode pending plan context: %w", marshalErr))
