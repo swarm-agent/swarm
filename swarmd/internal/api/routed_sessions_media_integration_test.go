@@ -216,18 +216,18 @@ func TestRoutedSessionStagedMediaBindsDurablyAndReplayIsStable(t *testing.T) {
 		t.Fatalf("routed media status=%d body=%s", response.Code, response.Body.String())
 	}
 	var body struct {
-		SessionID  string                         `json:"session_id"`
-		Message    pebblestore.MessageSnapshot    `json:"message"`
-		Projection pebblestore.V3SessionProjection `json:"projection"`
-		Replayed   bool                           `json:"replayed"`
+		SessionID    string                          `json:"session_id"`
+		FirstMessage pebblestore.MessageSnapshot     `json:"first_message"`
+		Projection   pebblestore.V3SessionProjection `json:"projection"`
+		Replayed     bool                            `json:"replayed"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode routed response: %v", err)
 	}
-	if body.Replayed || body.SessionID == "" || body.Message.SessionID != body.SessionID || body.Projection.SessionID != body.SessionID || len(body.Message.Media) != 1 {
+	if body.Replayed || body.SessionID == "" || body.FirstMessage.SessionID != body.SessionID || body.Projection.SessionID != body.SessionID || len(body.FirstMessage.Media) != 1 {
 		t.Fatalf("non-canonical routed response: %+v", body)
 	}
-	reference := body.Message.Media[0]
+	reference := body.FirstMessage.Media[0]
 	bound, found, err := fixture.staging.Get(fixture.principal.AccountScopeID, staged.ID)
 	if err != nil || !found || bound.State != pebblestore.MediaStagingStateBound || bound.BoundSessionID != body.SessionID || bound.AuthorityAssetID != reference.AssetID {
 		t.Fatalf("staging bind found=%t err=%v record=%+v reference=%+v", found, err, bound, reference)

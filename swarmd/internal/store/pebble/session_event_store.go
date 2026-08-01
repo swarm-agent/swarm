@@ -537,6 +537,17 @@ func V3RealtimeOutboxCursor(endpointSeq uint64) string {
 	return fmt.Sprintf("cursor-%d", endpointSeq)
 }
 
+// SetMediaStagingBindCommitHookForTest installs a failure seam immediately
+// before the atomic routed media/session authority batch commits.
+func (s *SessionStore) SetMediaStagingBindCommitHookForTest(hook func(sessionID string) error) func() {
+	if s == nil || s.store == nil {
+		return func() {}
+	}
+	previous := s.store.sessionMutations.beforeMediaStagingBindCommit
+	s.store.sessionMutations.beforeMediaStagingBindCommit = hook
+	return func() { s.store.sessionMutations.beforeMediaStagingBindCommit = previous }
+}
+
 func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
@@ -709,7 +720,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	var mediaStagingRecords []MediaStagingRecord
 	if len(input.MediaStagingBindings) > 0 {
-		mediaStagingRecords, replayed, bindErr := NewMediaStagingStore(s.store).prepareBindLocked(BindMediaStagingInput{
+		var replayed bool
+		var bindErr error
+		mediaStagingRecords, replayed, bindErr = NewMediaStagingStore(s.store).prepareBindLocked(BindMediaStagingInput{
 			AccountScopeID: input.AccountScopeID,
 			SessionID:      input.SessionID,
 			Bindings:       input.MediaStagingBindings,

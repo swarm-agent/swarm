@@ -123,7 +123,8 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	}
 	projection, projectionOK, err := sessions.GetSessionProjection(stored.ID)
 	if err != nil || !projectionOK || projection.LastEventSeq != 1 || projection.ProjectionHighWatermarkSeq != 1 {
-		t.Fatalf("projection exists=%t projection=%+v err=%v", projectionOK, projection, err)
+		events, _ := sessions.ListSessionEvents(stored.ID, 0, 10)
+		t.Fatalf("projection exists=%t projection=%+v mutation=%+v events=%+v err=%v", projectionOK, projection, firstResponse.Mutation, events, err)
 	}
 	if firstResponse.Projection.SessionID != stored.ID || firstResponse.Projection.LastEventSeq != projection.LastEventSeq {
 		t.Fatalf("response projection=%+v durable=%+v", firstResponse.Projection, projection)
@@ -248,6 +249,7 @@ func assertRoutedSessionAtomicityCardinality(t *testing.T, sessions *sessionrunt
 
 func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRecordingRunner, planEnabled, workspaceEnabled bool) (*Server, *sessionruntime.Service, identity.Principal) {
 	t.Helper()
+	t.Setenv("SWARM_V3_DIAGNOSTICS", "0")
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "routed-session-atomicity.pebble"))
 	if err != nil {
 		t.Fatalf("open routed atomicity store: %v", err)
@@ -321,6 +323,9 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "local-swarm", Name: "Local", Role: "host"}); err != nil {
 		t.Fatalf("put local swarm node: %v", err)
+	}
+	if _, err := topologyStore.PutRuntimeForAccount(principal.AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "local-swarm", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Name: "Local"}); err != nil {
+		t.Fatalf("put local runtime: %v", err)
 	}
 	if _, err := topologyStore.PutRuntimePlacementForAccount(principal.AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "local-swarm", AccountScopeID: principal.AccountScopeID, AuthorityHostSwarmID: "local-swarm", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
 		t.Fatalf("put local runtime placement: %v", err)
