@@ -60,11 +60,12 @@ type sessionsV3CreateRequest struct {
 }
 
 type sessionsV3ModelProfileInline struct {
-	Name      string                             `json:"name,omitempty"`
-	ModelMode string                             `json:"model_mode"`
-	Single    *pebblestore.ModelProfileSelection `json:"single,omitempty"`
-	Plan      *pebblestore.ModelProfileSelection `json:"plan,omitempty"`
-	Auto      *pebblestore.ModelProfileSelection `json:"auto,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Thinking    string `json:"thinking"`
+	ServiceTier string `json:"service_tier,omitempty"`
+	ContextMode string `json:"context_mode,omitempty"`
 }
 
 type sessionsV3ModelProfileChoice struct {

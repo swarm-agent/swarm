@@ -69,13 +69,23 @@ func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice
 		return sessionModelProfileSnapshotFromSaved(profile, appliedAt), nil
 	}
 	inline := choice.Temporary
-	validated, err := modelprofile.ValidateInput(modelprofile.Input{Name: firstNonEmpty(inline.Name, "Temporary"), ModelMode: inline.ModelMode, Single: inline.Single, Plan: inline.Plan, Auto: inline.Auto})
+	validated, err := modelprofile.ValidateInput(modelprofile.Input{
+		Name:        firstNonEmpty(inline.Name, "Temporary"),
+		Provider:    inline.Provider,
+		Model:       inline.Model,
+		Thinking:    inline.Thinking,
+		ServiceTier: inline.ServiceTier,
+		ContextMode: inline.ContextMode,
+	})
 	if err != nil {
 		return nil, err
 	}
 	return &pebblestore.SessionModelProfileSnapshot{
-		Source: pebblestore.SessionModelProfileSourceTemporary, Name: validated.Name, ModelMode: validated.ModelMode,
-		Single: cloneSessionModelSelection(validated.Single), Plan: cloneSessionModelSelection(validated.Plan), Auto: cloneSessionModelSelection(validated.Auto), AppliedAt: appliedAt,
+		Source:    pebblestore.SessionModelProfileSourceTemporary,
+		Name:      validated.Name,
+		ModelMode: pebblestore.ModelProfileModeSingle,
+		Single:    sessionModelSelectionFromFlatProfile(validated.Provider, validated.Model, validated.Thinking, validated.ServiceTier, validated.ContextMode),
+		AppliedAt: appliedAt,
 	}, nil
 }
 
@@ -87,8 +97,22 @@ func sessionModelProfileSnapshotFromSavedDefault(profile modelprofile.Profile, a
 
 func sessionModelProfileSnapshotFromSaved(profile modelprofile.Profile, appliedAt int64) *pebblestore.SessionModelProfileSnapshot {
 	return &pebblestore.SessionModelProfileSnapshot{
-		Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: profile.ProfileID, Name: profile.Name, ModelMode: profile.ModelMode,
-		Single: cloneSessionModelSelection(profile.Single), Plan: cloneSessionModelSelection(profile.Plan), Auto: cloneSessionModelSelection(profile.Auto), AppliedAt: appliedAt,
+		Source:         pebblestore.SessionModelProfileSourceSaved,
+		SavedProfileID: profile.ProfileID,
+		Name:           profile.Name,
+		ModelMode:      pebblestore.ModelProfileModeSingle,
+		Single:         sessionModelSelectionFromFlatProfile(profile.Provider, profile.Model, profile.Thinking, profile.ServiceTier, profile.ContextMode),
+		AppliedAt:      appliedAt,
+	}
+}
+
+func sessionModelSelectionFromFlatProfile(provider, model, thinking, serviceTier, contextMode string) *pebblestore.ModelProfileSelection {
+	return &pebblestore.ModelProfileSelection{
+		Provider:    provider,
+		Model:       model,
+		Thinking:    thinking,
+		ServiceTier: serviceTier,
+		ContextMode: contextMode,
 	}
 }
 

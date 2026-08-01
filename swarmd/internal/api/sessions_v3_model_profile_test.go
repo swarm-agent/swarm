@@ -25,8 +25,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	server := &Server{modelProfiles: service}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
-	selection := pebblestore.ModelProfileSelection{Provider: "openai", Model: "saved-model", Thinking: "high", ContextMode: "full"}
-	created, err := service.Create(ctx, modelprofile.Input{Name: "Saved", ModelMode: pebblestore.ModelProfileModeSingle, Single: &selection})
+	created, err := service.Create(ctx, modelprofile.Input{Name: "Saved", Provider: "openai", Model: "saved-model", Thinking: "high", ServiceTier: "priority", ContextMode: "full"})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -39,15 +38,17 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("resolve explicit default: %v", err)
 	}
-	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.SavedProfileID != created.ProfileID || !saved.UseAccountDefault || saved.Single.Model != "saved-model" || saved.Single.ContextMode != "full" {
-		t.Fatalf("saved snapshot = %+v", saved)
+	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.SavedProfileID != created.ProfileID || !saved.UseAccountDefault || saved.ModelMode != pebblestore.ModelProfileModeSingle || saved.Single == nil || saved.Single.Model != "saved-model" || saved.Single.ServiceTier != "priority" || saved.Single.ContextMode != "full" || saved.Plan != nil || saved.Auto != nil || saved.AppliedAt != 10 {
+		t.Fatalf("saved default snapshot = %+v", saved)
 	}
-	selection.Model = "edited-model"
-	if saved.Single.Model != "saved-model" {
-		t.Fatalf("saved snapshot mutated with source selection: %+v", saved)
+	savedByID, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{SavedProfileID: created.ProfileID}, 11)
+	if err != nil {
+		t.Fatalf("resolve saved profile: %v", err)
 	}
-	updatedSelection := pebblestore.ModelProfileSelection{Provider: "openai", Model: "updated-model", Thinking: "medium", ContextMode: "compact"}
-	if _, err := service.Update(ctx, created.ProfileID, modelprofile.Input{Name: "Renamed", ModelMode: pebblestore.ModelProfileModeSingle, Single: &updatedSelection}); err != nil {
+	if savedByID == nil || savedByID.SavedProfileID != created.ProfileID || savedByID.UseAccountDefault || savedByID.ModelMode != pebblestore.ModelProfileModeSingle || savedByID.Single == nil || savedByID.Single.Model != "saved-model" || savedByID.AppliedAt != 11 {
+		t.Fatalf("saved profile snapshot = %+v", savedByID)
+	}
+	if _, err := service.Update(ctx, created.ProfileID, modelprofile.Input{Name: "Renamed", Provider: "openai", Model: "updated-model", Thinking: "medium", ContextMode: "compact"}); err != nil {
 		t.Fatalf("update saved profile: %v", err)
 	}
 	if deleted, err := service.Delete(ctx, created.ProfileID); err != nil || !deleted {
@@ -57,16 +58,29 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 		t.Fatalf("session snapshot changed after saved profile update/delete: %+v", saved)
 	}
 
-	temporary, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{Temporary: &sessionsV3ModelProfileInline{Name: "Scratch", ModelMode: pebblestore.ModelProfileModeSplit, Plan: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model", Thinking: "high"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium"}}}, 20)
+	temporary, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{Temporary: &sessionsV3ModelProfileInline{Name: "Scratch", Provider: "openai", Model: "temporary-model", Thinking: "high", ServiceTier: "fast", ContextMode: "compact"}}, 20)
 	if err != nil {
 		t.Fatalf("resolve temporary: %v", err)
 	}
-	if temporary == nil || temporary.Source != pebblestore.SessionModelProfileSourceTemporary || temporary.SavedProfileID != "" || temporary.UseAccountDefault || temporary.Plan.Model != "plan-model" || temporary.Auto.Model != "action-model" {
+	if temporary == nil || temporary.Source != pebblestore.SessionModelProfileSourceTemporary || temporary.SavedProfileID != "" || temporary.UseAccountDefault || temporary.ModelMode != pebblestore.ModelProfileModeSingle || temporary.Single == nil || temporary.Single.Provider != "openai" || temporary.Single.Model != "temporary-model" || temporary.Single.Thinking != "high" || temporary.Single.ServiceTier != "fast" || temporary.Single.ContextMode != "compact" || temporary.Plan != nil || temporary.Auto != nil || temporary.AppliedAt != 20 {
 		t.Fatalf("temporary snapshot = %+v", temporary)
 	}
 	state, err := service.ListState(ctx)
 	if err != nil || len(state.Profiles) != 0 {
 		t.Fatalf("temporary profile was saved: profiles=%d err=%v", len(state.Profiles), err)
+	}
+}
+
+func TestSessionsV3ModelProfileChoiceRejectsRemovedBundleFields(t *testing.T) {
+	for _, field := range []string{"model_mode", "single", "plan", "auto"} {
+		t.Run(field, func(t *testing.T) {
+			body := `{"client_request_id":"request","choice":{"temporary":{"name":"Temporary","provider":"openai","model":"gpt-test","thinking":"high","` + field + `":{}}}}`
+			var request sessionsV3ModelProfileApplyRequest
+			err := decodeJSONBytes([]byte(body), &request)
+			if err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("decode removed field %q error = %v, want unknown field", field, err)
+			}
+		})
 	}
 }
 
@@ -102,8 +116,7 @@ func TestSessionsV3ExplicitModelProfilePreferenceMatchesDurableSessionPreference
 	defer func() { _ = closeStore() }()
 	principal := testPrincipal()
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
-	selection := pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "profile-model", Thinking: "high"}
-	profile, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "Explicit", ModelMode: pebblestore.ModelProfileModeSingle, Single: &selection})
+	profile, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "Explicit", Provider: "test-provider", Model: "profile-model", Thinking: "high"})
 	if err != nil {
 		t.Fatalf("create model profile: %v", err)
 	}
