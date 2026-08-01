@@ -305,13 +305,47 @@ func (s *Server) handleSessionV3PrimaryPlanModeSubmitPlan(w http.ResponseWriter,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.planLifecycle.SubmitPlanForApproval(sessionruntime.PlanLifecyclePlanInput{SessionID: sessionID, PlanID: planID, Title: req.Title, Plan: req.Plan, Document: req.Document, AgentCanSubmit: true, ContinuationPolicy: req.ContinuationPolicy, ContinueAutomatically: req.ContinueAutomatically, ApplySessionMutation: s.applySessionV3PrimaryMutation, BuildLifecycleMessage: func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
-		message, ok := runruntime.BuildPlanExecutionLifecycleSystemMessage(runruntime.PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_fresh_context"}})
-		if !ok {
-			return nil
-		}
-		return &pebblestore.MessageSnapshot{Role: "system", Content: message.Content, Metadata: message.Metadata}
-	}})
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	transition, err := s.resolveSessionsV3ModeTransition(session, sessionruntime.ModeAuto)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolve auto model policy: %w", err))
+		return
+	}
+	activeProfile := cloneSessionsV3AgentProfile(transition.ActiveProfile)
+	result, err := s.planLifecycle.SubmitPlanForApproval(sessionruntime.PlanLifecyclePlanInput{
+		SessionID:             sessionID,
+		PlanID:                planID,
+		Title:                 req.Title,
+		Plan:                  req.Plan,
+		Document:              req.Document,
+		AgentCanSubmit:         true,
+		ContinuationPolicy:    req.ContinuationPolicy,
+		ContinueAutomatically: req.ContinueAutomatically,
+		ApplySessionMutation:  s.applySessionV3PrimaryMutation,
+		ModeEventFields: map[string]any{
+			"preference":         transition.Preference,
+			"context_window":     transition.ContextWindow,
+			"max_output_tokens":  transition.MaxOutputTokens,
+			"agent_model_policy": transition.AgentModelPolicy,
+		},
+		ModePreference:        transition.Preference,
+		ModeAgentProfile:      &activeProfile,
+		BuildLifecycleMessage: func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
+			message, ok := runruntime.BuildPlanExecutionLifecycleSystemMessage(runruntime.PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_fresh_context"}})
+			if !ok {
+				return nil
+			}
+			return &pebblestore.MessageSnapshot{Role: "system", Content: message.Content, Metadata: message.Metadata}
+		},
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

@@ -46,6 +46,9 @@ func TestSessionsV3PlanEntryPreservesLifecycleAuthorities(t *testing.T) {
 	if sessionruntime.NormalizeMode(updated.Mode) != sessionruntime.ModePlan {
 		t.Fatalf("entered mode = %q, want plan", updated.Mode)
 	}
+	if updated.ModelProfile == nil || updated.ModelProfile.Plan == nil {
+		t.Fatalf("entered session lost immutable Plan snapshot: %#v", updated.ModelProfile)
+	}
 
 	afterPlan := sessionsV3PlanModeGetPlan(t, sessionSvc, created.ID, beforePlan.ID)
 	if !reflect.DeepEqual(afterPlan, beforePlan) {
