@@ -345,76 +345,62 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 	return manifest, nil
 }
 
-func (s *Service) resolveSwarmDefaultModelProfile(accountScopeID string, bound *pebblestore.SessionModelProfileSnapshot, appliedAt int64) (*pebblestore.SessionModelProfileSnapshot, error) {
-	if bound != nil && !bound.UseAccountDefault {
+func (s *Service) resolveSwarmDefaultModelProfile(accountScopeID string, bound *pebblestore.SessionModelProfileSnapshot, _ int64) (*pebblestore.SessionModelProfileSnapshot, error) {
+	if err := validateManageSessionsDeployModelProfile(bound); err == nil {
+		// A session snapshot is immutable even when it records that the account
+		// default was its source. Re-reading mutable favorites here would change
+		// the model contract inherited by a deployed child.
 		return cloneManageSessionsDeployModelProfile(bound), nil
+	}
+
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope is required to resolve Swarm model assignments")
 	}
 	if s == nil || s.modelProfiles == nil {
 		return nil, errors.New("model profile service is not configured")
 	}
-	profile, ok, err := s.modelProfiles.GetDefaultForAccount(accountScopeID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, errors.New("account has no default model profile")
-	}
-	return &pebblestore.SessionModelProfileSnapshot{
-		Source:            pebblestore.SessionModelProfileSourceSaved,
-		SavedProfileID:    profile.ProfileID,
-		UseAccountDefault: true,
-		Name:              profile.Name,
-		ModelMode:         pebblestore.ModelProfileModeSingle,
-		Single: &pebblestore.ModelProfileSelection{
-			Provider:    profile.Provider,
-			Model:       profile.Model,
-			Thinking:    profile.Thinking,
-			ServiceTier: profile.ServiceTier,
-			ContextMode: profile.ContextMode,
-		},
-		AppliedAt: appliedAt,
-	}, nil
-}
-
-func cloneManageSessionsDeployModelSelection(selection *pebblestore.ModelProfileSelection) *pebblestore.ModelProfileSelection {
-	if selection == nil {
-		return nil
-	}
-	cloned := *selection
-	return &cloned
+	// The flat favorites service alone cannot identify the account's required
+	// Action and optional Plan assignments. Do not turn its independently
+	// ordered default favorite into a synthetic Action-only snapshot.
+	return nil, errors.New("calling session has no complete immutable Swarm model snapshot; account Swarm Action/Plan assignments must be resolved before deployment")
 }
 
 func cloneManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
+	return pebblestore.CloneSessionModelProfileSnapshot(profile)
+}
+
+func validateManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) error {
 	if profile == nil {
-		return nil
+		return errors.New("model profile is required")
 	}
-	cloned := *profile
-	if profile.Single != nil {
-		cloned.Single = cloneManageSessionsDeployModelSelection(profile.Single)
+	if strings.TrimSpace(profile.Action.Provider) == "" || strings.TrimSpace(profile.Action.Model) == "" {
+		return errors.New("session model profile Action selection has no provider/model")
 	}
-	if profile.Plan != nil {
-		cloned.Plan = cloneManageSessionsDeployModelSelection(profile.Plan)
+	if profile.Plan != nil && (strings.TrimSpace(profile.Plan.Provider) == "" || strings.TrimSpace(profile.Plan.Model) == "") {
+		return errors.New("session model profile Plan selection has no provider/model")
 	}
-	if profile.Auto != nil {
-		cloned.Auto = cloneManageSessionsDeployModelSelection(profile.Auto)
-	}
-	return &cloned
+	return nil
 }
 
 func manageSessionsDeployModelProfilePreference(profile *pebblestore.SessionModelProfileSnapshot, mode string) (pebblestore.ModelPreference, error) {
-	if profile == nil {
-		return pebblestore.ModelPreference{}, errors.New("model profile is required")
+	if err := validateManageSessionsDeployModelProfile(profile); err != nil {
+		return pebblestore.ModelPreference{}, err
 	}
-	selection := profile.Single
-	if strings.EqualFold(strings.TrimSpace(profile.ModelMode), pebblestore.ModelProfileModeSplit) {
-		if sessionruntime.NormalizeMode(mode) == sessionruntime.ModePlan {
-			selection = profile.Plan
-		} else {
-			selection = profile.Auto
+	selection := &profile.Action
+	selectionName := strings.TrimSpace(profile.ActionFavoriteName)
+	if sessionruntime.NormalizeMode(mode) == sessionruntime.ModePlan {
+		selection = profile.Plan
+		selectionName = strings.TrimSpace(profile.PlanFavoriteName)
+		if selection == nil {
+			return pebblestore.ModelPreference{}, errors.New("session model profile has Plan mode disabled")
 		}
 	}
-	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
-		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile %q has no %s provider/model", strings.TrimSpace(profile.Name), sessionruntime.NormalizeMode(mode))
+	if selectionName == "" {
+		selectionName = sessionruntime.NormalizeMode(mode)
+	}
+	if strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
+		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile selection %q has no provider/model", selectionName)
 	}
 	return pebblestore.ModelPreference{
 		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),

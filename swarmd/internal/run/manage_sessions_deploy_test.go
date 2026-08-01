@@ -2,13 +2,11 @@ package run
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/modelprofile"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -110,47 +108,64 @@ func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromModePrefer
 	}
 }
 
-func TestSwarmDefaultModelResolutionAdaptsFlatFavoriteToSingleSnapshot(t *testing.T) {
-	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+func TestSwarmDefaultModelResolutionPreservesCompleteBoundSnapshot(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "profiles.pebble"))
+	bound := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		UseAccountDefault:  true,
+		ActionFavoriteID:   "favorite-action",
+		ActionFavoriteName: "Action",
+		Action:              pebblestore.ModelProfileSelection{Provider: "Codex", Model: "action-model", Thinking: "high", ServiceTier: "fast", ContextMode: "compact"},
+		PlanFavoriteID:     "favorite-plan",
+		PlanFavoriteName:   "Plan",
+		Plan:                &pebblestore.ModelProfileSelection{Provider: "OpenAI", Model: "plan-model", Thinking: "medium", ServiceTier: "priority", ContextMode: "full"},
+		AppliedAt:           99,
+	}
+	resolved, err := svc.resolveSwarmDefaultModelProfile("test-account", bound, 123)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	profiles := modelprofile.NewService(pebblestore.NewModelProfileStore(store))
-	svc.SetModelProfileService(profiles)
-	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "test-account", AccountScopeSource: identity.AccountScopeSourceServerState})
-	current, err := profiles.Create(ctx, modelprofile.Input{
-		Name: "Current", Provider: "Codex", Model: "current-model", Thinking: "high", ServiceTier: "fast", ContextMode: "compact",
-	})
-	if err != nil {
-		t.Fatal(err)
+	if resolved == bound || resolved.Plan == bound.Plan {
+		t.Fatal("bound snapshot was not cloned")
 	}
-	parent, ok, err := svc.sessions.GetSession(parentSessionID)
-	if err != nil || !ok {
-		t.Fatalf("load parent: ok=%t err=%v", ok, err)
+	if resolved.ActionFavoriteID != "favorite-action" || resolved.Action.Model != "action-model" || resolved.PlanFavoriteID != "favorite-plan" || resolved.Plan == nil || resolved.Plan.Model != "plan-model" || resolved.AppliedAt != 99 {
+		t.Fatalf("resolved snapshot = %#v", resolved)
 	}
-	stale := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "stale", UseAccountDefault: true, ModelMode: pebblestore.ModelProfileModeSingle, Single: &pebblestore.ModelProfileSelection{Provider: "static", Model: "stale"}}
-	resolved, err := svc.resolveSwarmDefaultModelProfile(parent.AccountScopeID, stale, 99)
-	if err != nil {
-		t.Fatal(err)
+	resolved.Plan.Model = "mutated"
+	if bound.Plan.Model != "plan-model" {
+		t.Fatalf("bound Plan selection mutated through clone: %#v", bound)
 	}
-	if resolved.Source != pebblestore.SessionModelProfileSourceSaved || resolved.SavedProfileID != current.ProfileID || !resolved.UseAccountDefault || resolved.Name != "Current" || resolved.ModelMode != pebblestore.ModelProfileModeSingle || resolved.AppliedAt != 99 {
-		t.Fatalf("flat default snapshot metadata = %#v", resolved)
-	}
-	if resolved.Single == nil || resolved.Single.Provider != "Codex" || resolved.Single.Model != "current-model" || resolved.Single.Thinking != "high" || resolved.Single.ServiceTier != "fast" || resolved.Single.ContextMode != "compact" || resolved.Plan != nil || resolved.Auto != nil {
-		t.Fatalf("flat default snapshot selection = %#v", resolved)
-	}
-	for _, mode := range []string{sessionruntime.ModePlan, sessionruntime.ModeAuto} {
-		preference, err := manageSessionsDeployModelProfilePreference(resolved, mode)
+
+	for _, test := range []struct {
+		mode, provider, model string
+	}{
+		{mode: sessionruntime.ModeAuto, provider: "codex", model: "action-model"},
+		{mode: sessionruntime.ModePlan, provider: "openai", model: "mutated"},
+	} {
+		preference, err := manageSessionsDeployModelProfilePreference(resolved, test.mode)
 		if err != nil {
-			t.Fatalf("%s preference: %v", mode, err)
+			t.Fatalf("%s preference: %v", test.mode, err)
 		}
-		if preference.Provider != "codex" || preference.Model != "current-model" || preference.Thinking != "high" || preference.ServiceTier != "fast" || preference.ContextMode != "compact" || preference.UpdatedAt != 99 {
-			t.Fatalf("%s preference = %#v", mode, preference)
+		if preference.Provider != test.provider || preference.Model != test.model || preference.UpdatedAt != 99 {
+			t.Fatalf("%s preference = %#v", test.mode, preference)
 		}
+	}
+}
+
+func TestSwarmDefaultModelResolutionRejectsMissingImmutableAssignments(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	_, err := svc.resolveSwarmDefaultModelProfile("test-account", nil, 99)
+	if err == nil || !strings.Contains(err.Error(), "model profile service is not configured") {
+		t.Fatalf("missing snapshot error = %v", err)
+	}
+
+	actionOnly := &pebblestore.SessionModelProfileSnapshot{Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action"}}
+	if _, err := manageSessionsDeployModelProfilePreference(actionOnly, sessionruntime.ModePlan); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
+		t.Fatalf("Plan-disabled preference error = %v", err)
 	}
 }
 
@@ -347,19 +362,37 @@ func TestDeploySessionNavigationUsesActualSourceWorkspace(t *testing.T) {
 	}
 }
 
-func TestAITaskDeploymentDigestBindsModelProfileSnapshot(t *testing.T) {
-	profile := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "profile-1", ModelMode: pebblestore.ModelProfileModeSplit, Plan: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "auto"}}
+func TestAITaskDeploymentDigestBindsImmutableModelProfileSnapshot(t *testing.T) {
+	profile := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "favorite-action",
+		ActionFavoriteName: "Action",
+		Action:              pebblestore.ModelProfileSelection{Provider: "openai", Model: "action"},
+		PlanFavoriteID:     "favorite-plan",
+		PlanFavoriteName:   "Plan",
+		Plan:                &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan"},
+		AppliedAt:           42,
+	}
 	first, err := aiTaskDeploymentDigest("account", "/workspace", "task", profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile.Auto.Model = "different"
+	profile.Plan.Model = "different"
 	second, err := aiTaskDeploymentDigest("account", "/workspace", "task", profile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first == second {
 		t.Fatal("AI task deployment digest did not bind model profile snapshot")
+	}
+	profile.Plan.Model = "plan"
+	profile.ActionFavoriteID = "different-action"
+	third, err := aiTaskDeploymentDigest("account", "/workspace", "task", profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == third {
+		t.Fatal("AI task deployment digest did not bind favorite identity")
 	}
 }
 
