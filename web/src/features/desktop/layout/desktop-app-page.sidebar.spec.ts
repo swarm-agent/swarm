@@ -219,6 +219,20 @@ test('sidebar cards use explicit selection mode without hover-driven checkboxes 
   assert.doesNotMatch(rowSource, /checkboxRevealSuppressed|checkboxPointerInsideRef|checkboxFocusInsideRef/)
 })
 
+test('sidebar rename input keeps space key events away from the row shortcut', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const rowStart = source.indexOf('const SessionRow = memo')
+  const rowEnd = source.indexOf('interface RenderSidebarSessionGroupsInput', rowStart)
+  const rowSource = source.slice(rowStart, rowEnd)
+  const renameInputStart = rowSource.indexOf('value={renameDraft}')
+  const renameInputEnd = rowSource.indexOf('className="h-6 w-full', renameInputStart)
+  const renameInputSource = rowSource.slice(renameInputStart, renameInputEnd)
+
+  assert.ok(renameInputStart >= 0 && renameInputEnd > renameInputStart)
+  assert.match(renameInputSource, /onKeyDown=\{\(event\) => \{\s*event\.stopPropagation\(\)/)
+  assert.match(renameInputSource, /if \(event\.key === 'Escape'\) \{ event\.preventDefault\(\); setRenameError\(null\); setRenaming\(false\) \}/)
+})
+
 test('selection mode exits only through explicit clear or successful archive', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   assert.equal((source.match(/setSidebarSelectionMode\(false\)/g) ?? []).length, 2)

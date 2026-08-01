@@ -2294,7 +2294,8 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                     onChange={(event) => setRenameDraft(event.target.value)}
                     onClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => {
-                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setRenameError(null); setRenaming(false) }
+                      event.stopPropagation()
+                      if (event.key === 'Escape') { event.preventDefault(); setRenameError(null); setRenaming(false) }
                     }}
                     className="h-6 w-full rounded border border-[var(--app-border-accent)] bg-[var(--app-bg-inset)] px-1.5 text-[12px] text-[var(--app-text)] outline-none"
                   />
