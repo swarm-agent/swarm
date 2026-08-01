@@ -675,7 +675,7 @@ export function createDesktopV3RoutedStartOperation(
       input: requestInput,
       client_request_id: clientRequestID,
       idempotency_key: clientRequestID,
-      agent_name: input.agentName?.trim() || undefined,
+      ...(input.agentName?.trim() ? { agent_name: input.agentName.trim() } : {}),
       metadata: input.metadata ? { ...input.metadata } : undefined,
       media: normalizedRoutedMedia(snapshot.attachments),
     },

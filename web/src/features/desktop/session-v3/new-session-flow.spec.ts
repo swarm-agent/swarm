@@ -206,6 +206,14 @@ test('routed worktree prime affects only Router input and never introduces a nam
   assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'selectedAction', 'selectedSkill', 'worktreePrimed'])
 })
 
+test('routed operation omits optional authority fields when the caller supplies no value', () => {
+  const operation = createDesktopV3RoutedStartOperation({ prompt: 'route me' })
+
+  assert.deepEqual(Object.keys(operation.request).sort(), [
+    'client_request_id', 'idempotency_key', 'input', 'media', 'metadata',
+  ])
+})
+
 test('routed operation rejects malformed reserved identity', () => {
   assert.throws(() => createDesktopV3RoutedStartOperation({
     prompt: 'route me',

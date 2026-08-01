@@ -195,8 +195,13 @@ export function DesktopV3NewSessionPane({
     const current = controller.getState()
     if (current.phase !== 'failed') return
     const restoredAttachments = operationAttachmentsRef.current ?? []
-    stagedAttachmentsRef.current = restoredAttachments
-    setStagedAttachments(restoredAttachments)
+    const visibleAttachments = restoredAttachments.filter((attachment) => !removedStagedAttachmentIdsRef.current.has(attachment.stagingId))
+    if (visibleAttachments.length !== current.snapshot.attachments.length) {
+      setLocalError('Restore every staged attachment before retrying this routed session.')
+      return
+    }
+    stagedAttachmentsRef.current = visibleAttachments
+    setStagedAttachments(visibleAttachments)
     setDraft(current.snapshot.prompt)
     setWorktreeIntent(createDesktopRoutedWorktreeIntent(current.snapshot.worktreePrimed))
     setRestoredSnapshot(current.snapshot)
