@@ -105,8 +105,8 @@ export interface WorkspaceDefinitionWire {
   definition_status?: string
   definition?: string
   definition_error?: string
-  definition_suggestion?: string
-  definition_attempts?: number
+  definition_model_suggestion?: string
+  definition_attempt_count?: number
   definition_generation?: number
   definition_updated_at?: number
 }
@@ -189,8 +189,8 @@ function mapWorkspaceDefinition(entry: WorkspaceDefinitionWire): WorkspaceDefini
     definitionStatus,
     definition: String(entry.definition ?? '').trim(),
     definitionError: String(entry.definition_error ?? '').trim(),
-    definitionSuggestion: String(entry.definition_suggestion ?? '').trim(),
-    definitionAttempts: typeof entry.definition_attempts === 'number' ? entry.definition_attempts : 0,
+    definitionSuggestion: String(entry.definition_model_suggestion ?? '').trim(),
+    definitionAttempts: typeof entry.definition_attempt_count === 'number' ? entry.definition_attempt_count : 0,
     definitionGeneration: typeof entry.definition_generation === 'number' ? entry.definition_generation : 0,
     definitionUpdatedAt: typeof entry.definition_updated_at === 'number' ? entry.definition_updated_at : 0,
   }
