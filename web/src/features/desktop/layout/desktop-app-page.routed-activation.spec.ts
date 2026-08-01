@@ -13,7 +13,13 @@ test('routed new-chat activation only publishes a validated canonical result', a
   const activation = source.slice(activationStart, activationEnd)
 
   assert.ok(activationStart >= 0 && activationEnd > activationStart)
-  assert.match(activation, /normalizeDesktopV3RoutedSessionStartResponse\(result\)/)
+  const normalizationStart = source.indexOf('function desktopV3RoutedResultResponse')
+  const normalizationEnd = source.indexOf('function desktopV3RoutedSessionView', normalizationStart)
+  const normalization = source.slice(normalizationStart, normalizationEnd)
+
+  assert.ok(normalizationStart >= 0 && normalizationEnd > normalizationStart)
+  assert.match(normalization, /normalizeDesktopV3RoutedSessionStartResponse\(result\)/)
+  assert.match(activation, /const response = desktopV3RoutedResultResponse\(result\)/)
   assert.match(activation, /shouldActivate\(\)[\s\S]*requireRealtimeController\(\)[\s\S]*structuredClone\(previousState\)[\s\S]*commitSnapshot\(previousState, nextState, \[\.\.\.actions\]\)[\s\S]*ensureSessionConnected\(sessionId\)/)
   assert.match(activation, /sessionCreateResponseToAction\(createResponse, sidebarScopeId\)/)
   assert.match(activation, /messageMutationResponseToAction\(messageResponse,[\s\S]*response\.first_message\.id\)/)
