@@ -71,6 +71,10 @@ func (s *Server) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if len(req.ProfileIDs) == 0 {
+			writeError(w, http.StatusBadRequest, errors.New("profile_ids must contain at least one profile id"))
+			return
+		}
 		profiles, err := s.modelProfiles.Reorder(ctx, req.ProfileIDs)
 		if err != nil {
 			writeModelProfileError(w, err)
