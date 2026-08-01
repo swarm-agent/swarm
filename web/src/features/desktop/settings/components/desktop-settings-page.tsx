@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bell, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
+import { Bell, Boxes, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, UserRound, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
@@ -12,12 +12,14 @@ import { ShortcutsSettingsPage } from '../shortcuts/components/shortcuts-setting
 import { VaultSettingsPage } from '../vault/components/vault-settings-page'
 import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-page'
 import { TailscaleSettingsPage } from '../tailscale/components/tailscale-settings-page'
+import { ModelsSettingsPage } from '../models/components/models-settings-page'
 import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
   { id: 'account', label: 'Account', icon: UserRound },
   { id: 'auth', label: 'Auth', icon: Key },
+  { id: 'models', label: 'Models', icon: Boxes },
   { id: 'permissions', label: 'Permissions', icon: Shield },
   { id: 'tailscale', label: 'Tailscale', icon: Network },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -159,6 +161,7 @@ export function DesktopSettingsPage() {
           <div className="w-full max-w-4xl">
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
+            {activeTab === 'models' ? <ModelsSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
             {activeTab === 'tailscale' ? <TailscaleSettingsPage /> : null}
             {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}
