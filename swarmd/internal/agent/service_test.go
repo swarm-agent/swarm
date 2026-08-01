@@ -183,6 +183,33 @@ func TestCompiledSwarmRejectsAgentConfigurationUpdates(t *testing.T) {
 	}
 }
 
+func TestRestoreDefaultsKeepsCompiledSwarmAsPrimary(t *testing.T) {
+	svc, agents := newTestService(t)
+	if err := agents.PutProfile(pebblestore.AgentProfile{
+		Name: "replacement", Mode: ModeSubagent, Enabled: true,
+	}); err != nil {
+		t.Fatalf("put replacement profile: %v", err)
+	}
+	if err := agents.SetActivePrimary("replacement"); err != nil {
+		t.Fatalf("seed stale custom primary: %v", err)
+	}
+
+	state, _, _, err := svc.RestoreDefaults()
+	if err != nil {
+		t.Fatalf("RestoreDefaults() error = %v", err)
+	}
+	if state.ActivePrimary != SwarmAgentID {
+		t.Fatalf("RestoreDefaults() active primary = %q, want %q", state.ActivePrimary, SwarmAgentID)
+	}
+	activePrimary, ok, err := agents.GetActivePrimary()
+	if err != nil || !ok || activePrimary != SwarmAgentID {
+		t.Fatalf("stored active primary = %q ok=%v err=%v, want %q", activePrimary, ok, err, SwarmAgentID)
+	}
+	if _, _, _, err := svc.ActivatePrimary("replacement"); err == nil || !strings.Contains(err.Error(), "only primary") {
+		t.Fatalf("ActivatePrimary(replacement) error = %v, want only-primary rejection", err)
+	}
+}
+
 func TestRestoreDefaultsDoesNotPersistOrAssignClone(t *testing.T) {
 	svc, agents := newTestService(t)
 	state, _, _, err := svc.RestoreDefaults()

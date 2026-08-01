@@ -1440,18 +1440,8 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 		restored = append(restored, profile.Name)
 	}
 
-	activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
-	if err != nil {
+	if err := s.setActivePrimaryForAccountLocked(accountScopeID, SwarmAgentID); err != nil {
 		return State{}, 0, nil, err
-	}
-	validActivePrimary, err := s.activePrimaryValidForAccountLocked(accountScopeID, activePrimary)
-	if err != nil {
-		return State{}, 0, nil, err
-	}
-	if !validActivePrimary {
-		if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
-			return State{}, 0, nil, err
-		}
 	}
 	for purpose, profileName := range defaultSubagentAssignments() {
 		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
