@@ -669,6 +669,44 @@ func TestAgentsModalEditorOffersDesktopStyleCompletionActions(t *testing.T) {
 	}
 }
 
+func TestAgentsModalEditorCancelDiscardsWithoutSaveConfirmation(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles:         []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true, ModelMode: "single", Provider: "codex", Model: "gpt-test", Thinking: "high"}},
+		Providers:        []string{"codex"},
+		ModelsByProvider: map[string][]string{"codex": {"gpt-test"}},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"codex/gpt-test": {Provider: "codex", Model: "gpt-test", ThinkingOptions: []string{"off", "high"}, DefaultThinking: "high"},
+		},
+	})
+	page.openAgentsV2Editor()
+	editor := page.agentsModal.Editor
+	thinking := page.findAgentsModalEditorField(editor, "thinking")
+	if thinking == nil {
+		t.Fatal("thinking field missing")
+	}
+	thinking.Value = "off"
+	if !agentsModalEditorHasPendingChanges(editor) {
+		t.Fatal("test setup did not create pending changes")
+	}
+
+	page.handleAgentsModalEditorAction("cancel")
+
+	if page.agentsModal.ConfirmUnsaved {
+		t.Fatal("Cancel opened a save confirmation; want immediate discard")
+	}
+	if page.agentsModal.Editor != nil || page.agentsModal.Screen != agentsV2ScreenList {
+		t.Fatalf("Cancel left editor open: screen=%q editor=%#v", page.agentsModal.Screen, page.agentsModal.Editor)
+	}
+	if page.agentsModal.Status != "changes discarded; back to agent list" {
+		t.Fatalf("Cancel status = %q", page.agentsModal.Status)
+	}
+	if _, ok := page.PopAgentsModalAction(); ok {
+		t.Fatal("Cancel queued a save/apply action")
+	}
+}
+
 func TestAgentsModalEditorButtonsStayVisibleAndOperableAtConstrainedHeight(t *testing.T) {
 	page := NewHomePage(model.EmptyHome())
 	page.ShowAgentsModal()

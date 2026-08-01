@@ -1430,12 +1430,7 @@ func (p *HomePage) handleAgentsModalEditorAction(action string) {
 	p.agentsModal.Error = ""
 	switch action {
 	case "cancel":
-		if agentsModalEditorHasPendingChanges(editor) {
-			p.openAgentsModalUnsavedConfirm()
-			return
-		}
-		p.agentsModal.Focus = agentsModalFocusProfiles
-		p.agentsModal.Status = "back to agent list"
+		p.closeAgentsModalEditorDiscard()
 	case "temporary":
 		input, ok := p.agentsModalEditorModelProfileInput(editor)
 		if !ok {
