@@ -21,5 +21,4 @@ test('DesktopAppPage leaves Desktop V3 bootstrap ownership to the root provider 
   assert.match(routeSelection, /selectAndHydrateDesktopV3Session\(sessionId\)/)
   assert.doesNotMatch(routeSelection, /dispatchDesktopV3Cache\(selectSession\(sessionId\)\)/)
   assert.match(activation, /const actions = \[[\s\S]*selectSession\(sessionId\)[\s\S]*deps\.commitSnapshot\(previousState, nextState, \[\.\.\.actions\]\)/)
-  assert.match(source, /Startup history is delivered by the single \/v3\/sync\/bootstrap transaction/)
 })

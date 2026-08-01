@@ -45,10 +45,10 @@ test('Desktop V3 pane completions stay isolated from replacement route instances
   // Existing-conversation sends remain component-owned async work and retain
   // their explicit mounted guard.
   assert.match(existingPane, /const mountedRef = useRef\(true\)/)
-  assert.match(existingPane, /return \(\) => \{\s*mountedRef\.current = false\s*\}/)
+  assert.match(existingPane, /return \(\) => \{\s*mountedRef\.current = false;\s*\}/)
   assert.match(
     existingPane,
-    /clearDesktopV3ExistingMessageOperation\(input\.sessionId, input\.operation\.operationId\)\s*if \(!input\.mountedRef\.current\) return\s*input\.setOperation\(null\)\s*input\.setDraft\(''\)/s,
+    /clearDesktopV3ExistingMessageOperation\(\s*input\.sessionId,\s*input\.operation\.operationId,?\s*\);\s*if \(!input\.mountedRef\.current\) return;\s*input\.setOperation\(null\);\s*input\.setDraft\(["']{2}\);/s,
   )
   assert.match(existingPane, /catch \(error\) \{\s*if \(mountedRef\.current\) \{\s*setSendError/s)
   assert.match(existingPane, /finally \{\s*if \(mountedRef\.current\) \{\s*setSending\(false\)/s)
