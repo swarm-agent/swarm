@@ -117,6 +117,25 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 	}
 }
 
+func TestAppendResolvedModelPolicyInstructionsReportsRequestFacts(t *testing.T) {
+	instructions := AppendResolvedModelPolicyInstructions("base", sessionruntime.ModePlan, pebblestore.ModelPreference{
+		Provider: "Codex", Model: "gpt-5.4", Thinking: "high", ServiceTier: "priority", ContextMode: "1m",
+	})
+	for _, want := range []string{
+		"Resolved model policy (authoritative for this run):",
+		"- session_mode: plan",
+		"- provider: codex",
+		"- model: gpt-5.4",
+		"- thinking: high",
+		"- service_tier: priority",
+		"- context_mode: 1m",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("instructions missing %q:\n%s", want, instructions)
+		}
+	}
+}
+
 func TestProviderRequestRuntimeContextUsesResolvedIdentityAndUTC(t *testing.T) {
 	now := time.Date(2026, time.July, 12, 9, 8, 7, 0, time.FixedZone("test", 2*60*60))
 	base := provideriface.Request{

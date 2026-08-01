@@ -577,6 +577,69 @@ func TestSessionV3CancelRunDoesNotMutateUnrelatedPlanOwnership(t *testing.T) {
 	}
 }
 
+func TestResolveSessionV3EffectivePreferenceUsesImmutableModeSelection(t *testing.T) {
+	profile := &pebblestore.SessionModelProfileSnapshot{
+		AppliedAt: 77,
+		Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model", Thinking: "high", ServiceTier: "priority", ContextMode: "1m"},
+		Plan:   &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"},
+	}
+	for _, test := range []struct {
+		mode string
+		want pebblestore.ModelPreference
+	}{
+		{mode: sessionruntime.ModeAuto, want: pebblestore.ModelPreference{Provider: "codex", Model: "action-model", Thinking: "high", ServiceTier: "priority", ContextMode: "1m"}},
+		{mode: sessionruntime.ModePlan, want: pebblestore.ModelPreference{Provider: "openai", Model: "plan-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"}},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			session := pebblestore.SessionSnapshot{Mode: test.mode, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(profile), Preference: test.want}
+			got, err := resolveSessionV3EffectivePreference(session, pebblestore.AgentProfile{Name: agentruntime.SwarmAgentID})
+			if err != nil {
+				t.Fatalf("resolve effective preference: %v", err)
+			}
+			if got.Provider != test.want.Provider || got.Model != test.want.Model || got.Thinking != test.want.Thinking || got.ServiceTier != test.want.ServiceTier || got.ContextMode != test.want.ContextMode {
+				t.Fatalf("effective preference = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveSessionV3EffectivePreferenceRejectsDisabledPlanAndIgnoresPreferenceDrift(t *testing.T) {
+	profile := &pebblestore.SessionModelProfileSnapshot{Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model"}}
+	if _, err := resolveSessionV3EffectivePreference(pebblestore.SessionSnapshot{Mode: sessionruntime.ModePlan, ModelProfile: profile}, pebblestore.AgentProfile{Name: agentruntime.SwarmAgentID}); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
+		t.Fatalf("disabled Plan error = %v", err)
+	}
+	profile.Plan = &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model"}
+	got, err := resolveSessionV3EffectivePreference(pebblestore.SessionSnapshot{Mode: sessionruntime.ModeAuto, ModelProfile: profile, Preference: pebblestore.ModelPreference{Provider: "openai", Model: "drift"}}, pebblestore.AgentProfile{Name: agentruntime.SwarmAgentID})
+	if err != nil || got.Provider != "codex" || got.Model != "action-model" {
+		t.Fatalf("snapshot-bound preference = %#v err=%v, want codex/action-model", got, err)
+	}
+}
+
+func TestHydrateSessionV3ExecutorJobKeepsRunIdentityForSnapshotBoundRecovery(t *testing.T) {
+	intent := pebblestore.V3SessionRunIntent{SessionID: "session-1", RunID: "run-1", EpochID: "epoch-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "attempt-1", RunSessionID: "session-1", ParentSessionID: "parent-1", ResumeContext: true}
+	job := hydrateSessionV3ExecutorJobFromIntent(sessionV3ExecutorJob{SessionID: intent.SessionID, RunID: intent.RunID}, intent)
+	if job.SessionID != intent.SessionID || job.RunID != intent.RunID || job.PlanID != intent.PlanID || job.CheckpointID != intent.CheckpointID || job.AttemptID != intent.AttemptID || !job.ResumeContext {
+		t.Fatalf("hydrated recovery job = %#v, want durable intent identity %#v", job, intent)
+	}
+}
+
+func TestSessionV3ProviderRequestAndMetadataAgreeWithResolvedPreference(t *testing.T) {
+	preference := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high", ServiceTier: "priority", ContextMode: "1m"}
+	response := sessionV3AssistantResponse{ProviderID: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode}
+	metadata := response.metadata("run-1")
+	for key, want := range map[string]string{"provider": preference.Provider, "model": preference.Model, "thinking": preference.Thinking, "service_tier": preference.ServiceTier, "context_mode": preference.ContextMode} {
+		if got := fmt.Sprint(metadata[key]); got != want {
+			t.Fatalf("metadata[%q] = %q, want %q", key, got, want)
+		}
+	}
+	instructions := runruntime.AppendResolvedModelPolicyInstructions("base", sessionruntime.ModePlan, preference)
+	for _, want := range []string{"session_mode: plan", "provider: codex", "model: gpt-5.4", "thinking: high", "service_tier: priority", "context_mode: 1m"} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("instructions missing %q: %s", want, instructions)
+		}
+	}
+}
+
 func TestApplySessionV3AgentPreferenceOverridesPreservesSupportedPriorityServiceTier(t *testing.T) {
 	base := pebblestore.ModelPreference{
 		Provider:    "codex",
@@ -597,67 +660,6 @@ func TestApplySessionV3AgentPreferenceOverridesPreservesSupportedPriorityService
 	}
 	if got.ServiceTier != "priority" {
 		t.Fatalf("service tier = %q, want priority", got.ServiceTier)
-	}
-	if got.ContextMode != "" {
-		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)
-	}
-}
-
-func TestApplySessionV3AgentPreferenceOverridesSplitProfileUsesPlanSettingsForPlanMode(t *testing.T) {
-	base := pebblestore.ModelPreference{
-		Provider: "codex",
-		Model:    "gpt-5.4",
-		Thinking: "medium",
-	}
-	profile := pebblestore.AgentProfile{
-		ModelMode:       "split",
-		PlanProvider:    "fireworks",
-		PlanModel:       "accounts/fireworks/models/glm-5p1",
-		PlanThinking:    "high",
-		PlanServiceTier: "priority",
-		AutoProvider:    "static",
-		AutoModel:       "auto-review-model",
-		AutoThinking:    "low",
-	}
-
-	got := applySessionV3AgentPreferenceOverridesForMode(base, profile, "plan")
-	if got.Provider != "fireworks" || got.Model != "accounts/fireworks/models/glm-5p1" {
-		t.Fatalf("preference provider/model = %q/%q, want fireworks/accounts/fireworks/models/glm-5p1", got.Provider, got.Model)
-	}
-	if got.Thinking != "high" {
-		t.Fatalf("thinking = %q, want high", got.Thinking)
-	}
-	if got.ServiceTier != "priority" {
-		t.Fatalf("service tier = %q, want priority", got.ServiceTier)
-	}
-}
-
-func TestApplySessionV3AgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
-	base := pebblestore.ModelPreference{
-		Provider:    "codex",
-		Model:       "gpt-5.4",
-		Thinking:    "high",
-		ServiceTier: "priority",
-		ContextMode: "1m",
-	}
-	profile := pebblestore.AgentProfile{
-		ModelMode:       "split",
-		AutoProvider:    "fireworks",
-		AutoModel:       "accounts/fireworks/models/glm-5p1",
-		AutoThinking:    "high",
-		PlanProvider:    "static",
-		PlanModel:       "plan-review-model",
-		PlanThinking:    "low",
-		PlanServiceTier: "",
-		AutoServiceTier: "",
-	}
-
-	got := applySessionV3AgentPreferenceOverridesForMode(base, profile, "auto")
-	if got.Provider != "fireworks" || got.Model != "accounts/fireworks/models/glm-5p1" {
-		t.Fatalf("preference provider/model = %q/%q, want fireworks/accounts/fireworks/models/glm-5p1", got.Provider, got.Model)
-	}
-	if got.ServiceTier != "priority" {
-		t.Fatalf("service tier = %q, want inherited priority", got.ServiceTier)
 	}
 	if got.ContextMode != "" {
 		t.Fatalf("context mode = %q, want cleared for non-codex/gpt-5.4", got.ContextMode)

@@ -1023,6 +1023,9 @@ type sessionV3AssistantResponse struct {
 	ExecutorKind                  string
 	ProviderID                    string
 	Model                         string
+	Thinking                      string
+	ServiceTier                   string
+	ContextMode                   string
 	ProviderLineageID             string
 	ProviderConfigurationHash     string
 	ContextBranchID               string
@@ -1071,6 +1074,15 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 	}
 	if model := strings.TrimSpace(r.Model); model != "" {
 		metadata["model"] = model
+	}
+	if thinking := strings.TrimSpace(r.Thinking); thinking != "" {
+		metadata["thinking"] = thinking
+	}
+	if serviceTier := strings.TrimSpace(r.ServiceTier); serviceTier != "" {
+		metadata["service_tier"] = serviceTier
+	}
+	if contextMode := strings.TrimSpace(r.ContextMode); contextMode != "" {
+		metadata["context_mode"] = contextMode
 	}
 	if lineageID := strings.TrimSpace(r.ProviderLineageID); lineageID != "" {
 		metadata["provider_lineage_id"] = lineageID
@@ -1671,10 +1683,6 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if strings.TrimSpace(content) == "" {
 		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
 	}
-	model := strings.TrimSpace(response.Model)
-	if model == "" {
-		model = modelName
-	}
 	providerRunnerID := strings.TrimSpace(runner.ID())
 	if providerRunnerID == "" {
 		providerRunnerID = providerID
@@ -1685,8 +1693,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		AgentName:                     agentName,
 		ResolvedAgentName:             agentName,
 		ExecutorKind:                  "v3_provider",
-		ProviderID:                    providerRunnerID,
-		Model:                         model,
+		ProviderID:                    providerID,
+		Model:                         modelName,
+		Thinking:                      strings.TrimSpace(loopResult.FinalRequest.Thinking),
+		ServiceTier:                   strings.TrimSpace(loopResult.FinalRequest.ServiceTier),
+		ContextMode:                   strings.TrimSpace(loopResult.FinalRequest.ContextMode),
 		ProviderResponseID:            strings.TrimSpace(response.ID),
 		StopReason:                    strings.TrimSpace(response.StopReason),
 		Usage:                         response.Usage,
@@ -1958,6 +1969,9 @@ func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3Executor
 	appendLine("- context_branch_id: " + strings.TrimSpace(req.ContextBranchID))
 	appendLine("- target_provider: " + strings.TrimSpace(resolved.Preference.Provider))
 	appendLine("- target_model: " + strings.TrimSpace(resolved.Preference.Model))
+	appendLine("- target_thinking: " + strings.TrimSpace(resolved.Preference.Thinking))
+	appendLine("- target_service_tier: " + strings.TrimSpace(resolved.Preference.ServiceTier))
+	appendLine("- target_context_mode: " + strings.TrimSpace(resolved.Preference.ContextMode))
 	appendLine("- previous_provider: " + strings.TrimSpace(req.PreviousProviderID))
 	appendLine("- previous_model: " + strings.TrimSpace(req.PreviousModel))
 	appendLine("- new_provider: " + strings.TrimSpace(req.NewProviderID))
@@ -2531,8 +2545,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				AgentName:                     agentName,
 				ResolvedAgentName:             agentName,
 				ExecutorKind:                  "v3_provider",
-				ProviderID:                    strings.TrimSpace(runner.ID()),
-				Model:                         strings.TrimSpace(firstNonEmpty(response.Model, baseReq.Model)),
+				ProviderID:                    strings.TrimSpace(resolved.Preference.Provider),
+				Model:                         strings.TrimSpace(baseReq.Model),
+				Thinking:                      strings.TrimSpace(baseReq.Thinking),
+				ServiceTier:                   strings.TrimSpace(baseReq.ServiceTier),
+				ContextMode:                   strings.TrimSpace(baseReq.ContextMode),
 				ProviderLineageID:             baseReq.ProviderLineageID,
 				ContextBranchID:               baseReq.ContextBranchID,
 				ProviderCacheKey:              baseReq.ProviderCacheKey,
@@ -3336,12 +3353,9 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	effectivePreference := session.Preference
-	if !strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
-		effectivePreference = applySessionV3AgentPreferenceOverridesForMode(effectivePreference, agentProfile, session.Mode)
-	}
-	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
-		effectivePreference = profilePreference
+	effectivePreference, err := resolveSessionV3EffectivePreference(session, agentProfile)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
 	}
 	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(effectivePreference)
 	if err != nil {
@@ -3362,6 +3376,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
+	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
 	}
@@ -4325,32 +4340,45 @@ func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) str
 	return strings.Join(lines, "\n")
 }
 
-func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile) pebblestore.ModelPreference {
-	return applySessionV3AgentPreferenceOverridesForMode(base, agentProfile, sessionruntime.ModeAuto)
+func resolveSessionV3EffectivePreference(session pebblestore.SessionSnapshot, agentProfile pebblestore.AgentProfile) (pebblestore.ModelPreference, error) {
+	if session.ModelProfile != nil {
+		preference, err := sessionV3ModelProfilePreferenceForMode(*session.ModelProfile, session.Mode)
+		if err != nil {
+			return pebblestore.ModelPreference{}, err
+		}
+		return preference, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
+		return normalizeSessionsV3ModelPreference(session.Preference), nil
+	}
+	return applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile), nil
 }
 
-func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile, mode string) pebblestore.ModelPreference {
+func sessionV3ModelProfilePreferenceForMode(profile pebblestore.SessionModelProfileSnapshot, mode string) (pebblestore.ModelPreference, error) {
+	selection := &profile.Action
+	if sessionruntime.NormalizeMode(mode) == sessionruntime.ModePlan {
+		selection = profile.Plan
+		if selection == nil {
+			return pebblestore.ModelPreference{}, errors.New("session model profile has Plan mode disabled")
+		}
+	}
+	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
+		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile %s selection has no provider/model", sessionruntime.NormalizeMode(mode))
+	}
+	return normalizeSessionsV3ModelPreference(pebblestore.ModelPreference{
+		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),
+		Model:       selection.Model,
+		Thinking:    selection.Thinking,
+		ServiceTier: selection.ServiceTier,
+		ContextMode: selection.ContextMode,
+		UpdatedAt:   profile.AppliedAt,
+	}), nil
+}
+
+func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile) pebblestore.ModelPreference {
 	providerOverride := strings.ToLower(strings.TrimSpace(agentProfile.Provider))
 	modelOverride := strings.TrimSpace(agentProfile.Model)
 	thinkingOverride := strings.TrimSpace(agentProfile.Thinking)
-	if pebblestore.AgentModelMode(agentProfile) == "split" && pebblestore.AgentSupportsSplitModel(agentProfile) {
-		mode = sessionruntime.NormalizeMode(mode)
-		if mode == sessionruntime.ModePlan {
-			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))
-			modelOverride = strings.TrimSpace(agentProfile.PlanModel)
-			thinkingOverride = strings.TrimSpace(agentProfile.PlanThinking)
-			if serviceTierOverride := strings.TrimSpace(agentProfile.PlanServiceTier); serviceTierOverride != "" {
-				base.ServiceTier = serviceTierOverride
-			}
-		} else if mode == sessionruntime.ModeAuto {
-			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
-			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
-			thinkingOverride = strings.TrimSpace(agentProfile.AutoThinking)
-			if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
-				base.ServiceTier = serviceTierOverride
-			}
-		}
-	}
 	if providerOverride != "" && modelOverride != "" {
 		base.Provider = providerOverride
 		base.Model = modelOverride
@@ -4359,6 +4387,12 @@ func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPrefere
 	}
 	if thinkingOverride != "" {
 		base.Thinking = thinkingOverride
+	}
+	if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
+		base.ServiceTier = serviceTierOverride
+	}
+	if contextModeOverride := strings.TrimSpace(agentProfile.ContextMode); contextModeOverride != "" {
+		base.ContextMode = contextModeOverride
 	}
 	base.Thinking = normalizeSessionV3ThinkingWithProvider(base.Provider, base.Thinking)
 	base.ServiceTier = modelruntime.NormalizeServiceTierForProvider(base.Provider, base.ServiceTier)

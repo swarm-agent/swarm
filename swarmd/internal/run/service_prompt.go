@@ -316,6 +316,26 @@ func (s *Service) ComposeRuntimeInstructions(scope tool.WorkspaceScope, mode str
 	return composeModeAwareInstructions(base, mode, bypassPermissions, agentProfile)
 }
 
+// AppendResolvedModelPolicyInstructions records the immutable model facts used
+// for this provider run. Keeping the rendered policy adjacent to the request
+// contract prevents prompt-visible state from drifting from provider settings.
+func AppendResolvedModelPolicyInstructions(base, mode string, preference pebblestore.ModelPreference) string {
+	facts := strings.TrimSpace(strings.Join([]string{
+		"Resolved model policy (authoritative for this run):",
+		"- session_mode: " + sessionruntime.NormalizeMode(mode),
+		"- provider: " + strings.ToLower(strings.TrimSpace(preference.Provider)),
+		"- model: " + strings.TrimSpace(preference.Model),
+		"- thinking: " + strings.TrimSpace(preference.Thinking),
+		"- service_tier: " + strings.TrimSpace(preference.ServiceTier),
+		"- context_mode: " + strings.TrimSpace(preference.ContextMode),
+	}, "\n"))
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return facts
+	}
+	return base + "\n\n" + facts
+}
+
 func (s *Service) composeInstructionsForScope(scope tool.WorkspaceScope, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	return s.composeInstructionsForScopeWithDiscoveryRoots(scope, scope.Roots, agentProfile, userInstructions)
 }
