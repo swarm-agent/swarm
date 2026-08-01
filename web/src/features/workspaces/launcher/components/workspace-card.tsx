@@ -14,6 +14,7 @@ import { formatWorkspaceDirectories } from '../services/workspace-format'
 import { createWorkspaceAccentStyle } from '../services/workspace-theme'
 import type { WorkspaceEntry } from '../types/workspace'
 import { WorkspaceWorktreeToggle } from './workspace-worktree-toggle'
+import { WorkspaceDefinitionStatus } from './workspace-definition-status'
 
 interface WorkspaceCardProps {
   workspace: WorkspaceEntry
@@ -127,6 +128,8 @@ export function WorkspaceCard({
           />
         ) : null}
       </div>
+
+      <WorkspaceDefinitionStatus workspace={workspace} compact={density === 'compact'} />
 
       <div className="grid gap-2">
         <div className="flex flex-wrap gap-2">

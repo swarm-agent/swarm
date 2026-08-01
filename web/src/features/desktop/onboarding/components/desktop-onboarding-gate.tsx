@@ -23,8 +23,9 @@ import { applyWorkspaceTheme } from '../../../workspaces/launcher/services/works
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
+import { waitForWorkspaceDefinition, workspaceDefinitionFailureMessage } from '../../../workspaces/launcher/services/workspace-definition-lifecycle'
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
-import type { WorkspaceDiscoverEntry, WorkspaceResolution } from '../../../workspaces/launcher/types/workspace'
+import type { WorkspaceDiscoverEntry, WorkspaceEntry, WorkspaceResolution } from '../../../workspaces/launcher/types/workspace'
 
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
 type CodexOAuthMode = StartCodexOAuthInput['method']
@@ -69,6 +70,26 @@ function deriveInitialStep(status: DesktopOnboardingStatus): OnboardingStep {
 function fallbackWorkspaceNameFromPath(path: string): string {
   const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] || path.trim() || 'workspace'
+}
+
+function workspaceDefinitionResolution(workspace: WorkspaceEntry): WorkspaceResolution {
+  return {
+    requestedPath: workspace.path,
+    resolvedPath: workspace.path,
+    workspaceId: workspace.workspaceId,
+    workspaceGeneration: workspace.workspaceGeneration,
+    state: workspace.state,
+    localWorkspaceBindingId: workspace.localWorkspaceBindingId,
+    workspaceName: workspace.workspaceName,
+    themeId: workspace.themeId,
+    definitionStatus: workspace.definitionStatus ?? '',
+    definition: workspace.definition ?? '',
+    definitionError: workspace.definitionError ?? '',
+    definitionSuggestion: workspace.definitionSuggestion ?? '',
+    definitionAttempts: workspace.definitionAttempts ?? 0,
+    definitionGeneration: workspace.definitionGeneration ?? 0,
+    definitionUpdatedAt: workspace.definitionUpdatedAt ?? 0,
+  }
 }
 
 function apiCompatibleMethods(provider: ProviderStatus): AuthMethod[] {
@@ -117,8 +138,9 @@ function pendingMessage(action: PendingAction): string | null {
     case 'oauth-complete':
       return 'Completing sign-in…'
     case 'finalize':
-    case 'workspace':
       return 'Setting up your Swarm…'
+    case 'workspace':
+      return 'Router is personalizing this workspace…'
     default:
       return null
   }
@@ -165,7 +187,7 @@ function OnboardingBrandHeader({ restart, step }: { restart: boolean; step: Onbo
   )
 }
 
-function OnboardingSetupPane() {
+function OnboardingSetupPane({ personalizing }: { personalizing: boolean }) {
   return (
     <div className="grid min-h-[25rem] place-items-center px-6 text-center" role="status" aria-live="polite">
       <div className="grid max-w-md gap-4">
@@ -173,9 +195,13 @@ function OnboardingSetupPane() {
           <img src={SWARM_MARK_SRC} alt="" className="size-8" aria-hidden="true" />
         </div>
         <div className="grid gap-2">
-          <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Setting up your Swarm…</h2>
+          <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">
+            {personalizing ? 'Personalizing your workspace…' : 'Setting up your Swarm…'}
+          </h2>
           <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-            Holding the onboarding surface steady while the workspace is confirmed.
+            {personalizing
+              ? 'Router is reading the bounded workspace context and preparing a durable definition before onboarding continues.'
+              : 'Holding the onboarding surface steady while the workspace is confirmed.'}
           </p>
         </div>
       </div>
@@ -526,6 +552,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setWorkspaceError(null)
       transitionToSetup()
       try {
+        const workspace = savedWorkspaceByPath.get(path)
+        if (workspace?.definitionStatus === 'pending') {
+          await waitForWorkspaceDefinition(workspaceDefinitionResolution(workspace))
+          await refreshWorkspaces()
+        } else if (workspace?.definitionStatus === 'failed') {
+          throw new Error(workspaceDefinitionFailureMessage(workspace))
+        }
         const resolution = await openWorkspace(path)
         await finishWithWorkspace(resolution, path)
       } catch (err) {
@@ -548,17 +581,16 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setWorkspaceError(null)
       transitionToSetup()
       try {
-        const savedWorkspace = savedWorkspaceByPath.get(entry.path)
-        if (!savedWorkspace) {
-          await saveWorkspace({
-            path: entry.path,
-            name: entry.name || fallbackWorkspaceNameFromPath(entry.path),
-            themeId: 'inherit',
-            makeCurrent: true,
-          })
-        }
-        const resolution = await openWorkspace(entry.path)
-        await finishWithWorkspace(resolution, entry.path)
+        const resolution = await saveWorkspace({
+          path: entry.path,
+          name: entry.name || fallbackWorkspaceNameFromPath(entry.path),
+          themeId: 'inherit',
+          makeCurrent: true,
+        })
+        await waitForWorkspaceDefinition(resolution)
+        await refreshWorkspaces()
+        const selectedResolution = await openWorkspace(entry.path)
+        await finishWithWorkspace(selectedResolution, entry.path)
       } catch (err) {
         transitionToStep('workspace')
         setWorkspaceError(err instanceof Error ? err.message : 'Failed to save and open workspace')
@@ -766,7 +798,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 panelVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
               ].join(' ')}
             >
-              {view === 'setup' ? <OnboardingSetupPane /> : null}
+              {view === 'setup' ? <OnboardingSetupPane personalizing={pendingAction === 'workspace'} /> : null}
 
               {view === 'identity' ? (
                 <form className="grid h-full content-start gap-6" onSubmit={handleIdentitySubmit}>

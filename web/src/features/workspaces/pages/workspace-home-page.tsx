@@ -7,6 +7,7 @@ import { Badge } from '../../../components/ui/badge'
 import { WorkspaceStatus } from '../launcher/components/workspace-status'
 import { WorkspaceFolderTree } from '../launcher/components/workspace-folder-tree'
 import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory } from '../launcher/components/workspace-editor-modal'
+import { WorkspaceDefinitionStatus } from '../launcher/components/workspace-definition-status'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../launcher/services/workspace-route'
 import { formatWorkspaceDirectories, formatWorkspacePath } from '../launcher/services/workspace-format'
 import type { WorkspaceBrowseResult, WorkspaceDiscoverEntry, WorkspaceEntry } from '../launcher/types/workspace'
@@ -227,6 +228,9 @@ function PinnedWorkspaceCard({ workspace, current, busy, dragging, onOpen, onEdi
           Edit
         </button>
         <ChevronRight size={16} className="text-[var(--app-text-subtle)] transition-transform group-hover:translate-x-0.5" />
+      </div>
+      <div className="col-span-full ml-[6.5rem] max-sm:ml-0">
+        <WorkspaceDefinitionStatus workspace={workspace} compact />
       </div>
     </div>
   )

@@ -1,7 +1,21 @@
 import type { WorkspaceTodoSummary } from '../../todos/types'
 import type { WorkspaceOverviewTopologyRoute } from './workspace-overview'
 
-export interface WorkspaceEntry {
+export type WorkspaceDefinitionStatus = '' | 'pending' | 'completed' | 'failed'
+
+export interface WorkspaceDefinitionFields {
+  definitionStatus: WorkspaceDefinitionStatus
+  definition: string
+  definitionError: string
+  definitionSuggestion: string
+  definitionAttempts: number
+  definitionGeneration: number
+  definitionUpdatedAt: number
+}
+
+type OptionalWorkspaceDefinitionFields = Partial<WorkspaceDefinitionFields>
+
+export interface WorkspaceEntry extends OptionalWorkspaceDefinitionFields {
   path: string
   workspaceId?: string
   workspaceGeneration?: number
@@ -34,7 +48,7 @@ export interface WorkspaceEntry {
   topologyRoutes: WorkspaceOverviewTopologyRoute[]
 }
 
-export interface WorkspaceResolution {
+export interface WorkspaceResolution extends OptionalWorkspaceDefinitionFields {
   requestedPath: string
   resolvedPath: string
   workspaceId?: string
@@ -87,7 +101,17 @@ export interface WorkspaceBrowseResponse {
   browser: WorkspaceBrowseResultWire
 }
 
-export interface WorkspaceEntryWire {
+export interface WorkspaceDefinitionWire {
+  definition_status?: string
+  definition?: string
+  definition_error?: string
+  definition_suggestion?: string
+  definition_attempts?: number
+  definition_generation?: number
+  definition_updated_at?: number
+}
+
+export interface WorkspaceEntryWire extends WorkspaceDefinitionWire {
   path: string
   workspace_id?: string
   workspace_generation?: number
@@ -118,7 +142,7 @@ export interface WorkspaceEntryWire {
   git_committed_deletions?: number
 }
 
-export interface WorkspaceResolutionWire {
+export interface WorkspaceResolutionWire extends WorkspaceDefinitionWire {
   requested_path: string
   resolved_path: string
   workspace_id?: string
@@ -156,8 +180,25 @@ export interface WorkspaceBrowseResultWire {
   entries: WorkspaceBrowseEntryWire[]
 }
 
+function mapWorkspaceDefinition(entry: WorkspaceDefinitionWire): WorkspaceDefinitionFields {
+  const rawStatus = String(entry.definition_status ?? '').trim().toLowerCase()
+  const definitionStatus: WorkspaceDefinitionStatus = rawStatus === 'pending' || rawStatus === 'completed' || rawStatus === 'failed'
+    ? rawStatus
+    : ''
+  return {
+    definitionStatus,
+    definition: String(entry.definition ?? '').trim(),
+    definitionError: String(entry.definition_error ?? '').trim(),
+    definitionSuggestion: String(entry.definition_suggestion ?? '').trim(),
+    definitionAttempts: typeof entry.definition_attempts === 'number' ? entry.definition_attempts : 0,
+    definitionGeneration: typeof entry.definition_generation === 'number' ? entry.definition_generation : 0,
+    definitionUpdatedAt: typeof entry.definition_updated_at === 'number' ? entry.definition_updated_at : 0,
+  }
+}
+
 export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
   return {
+    ...mapWorkspaceDefinition(entry),
     path: entry.path,
     workspaceId: String(entry.workspace_id ?? '').trim(),
     workspaceGeneration: typeof entry.workspace_generation === 'number' ? entry.workspace_generation : 0,
@@ -193,6 +234,7 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
 
 export function mapWorkspaceResolution(entry: WorkspaceResolutionWire): WorkspaceResolution {
   return {
+    ...mapWorkspaceDefinition(entry),
     requestedPath: entry.requested_path,
     resolvedPath: entry.resolved_path,
     workspaceId: String(entry.workspace_id ?? '').trim(),
