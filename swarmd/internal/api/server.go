@@ -236,6 +236,7 @@ type worktreeService interface {
 	AllocateDetachedWorkspaceForPrincipal(principal identity.Principal, workspacePath, nameSeed string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
+	RollbackAllocation(allocation worktreeruntime.Allocation) error
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
 	ListManaged(workspacePath string) ([]worktreeruntime.ManagedWorktree, error)
 	ListManagedForPrincipal(principal identity.Principal, workspacePath string) ([]worktreeruntime.ManagedWorktree, error)

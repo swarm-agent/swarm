@@ -350,9 +350,8 @@ func canonicalWorktreeSessionStateError(session pebblestore.SessionSnapshot, mis
 }
 
 // handleRoutedSessionStart is the canonical Desktop new-session transaction.
-// It resolves all non-durable routing authority before entering the V3 mutation
-// boundary and never allocates a managed worktree; routed worktree facts remain
-// intent until the dedicated allocator realizes them.
+// It resolves all non-durable routing authority, including any managed worktree
+// allocation, before entering the V3 mutation boundary.
 func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -464,8 +463,21 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
 	candidate.Metadata["routed_worktree_requested"] = decision.Result.Worktree
-	if decision.Result.WorktreeName != nil {
-		candidate.Metadata["routed_worktree_name"] = strings.TrimSpace(*decision.Result.WorktreeName)
+
+	var worktreeAllocation worktreeruntime.Allocation
+	worktreeCommitted := false
+	defer func() {
+		if worktreeCommitted || strings.TrimSpace(worktreeAllocation.WorkspacePath) == "" || s == nil || s.worktrees == nil {
+			return
+		}
+		if rollbackErr := s.worktrees.RollbackAllocation(worktreeAllocation); rollbackErr != nil {
+			log.Printf("routed session worktree rollback failed session_id=%q path=%q branch=%q err=%v", sessionID, worktreeAllocation.WorkspacePath, worktreeAllocation.BranchName, rollbackErr)
+		}
+	}()
+	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, decision.Result.Worktree, decision.Result.WorktreeName)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
 	}
 
 	var mediaPlan runruntime.PreSessionMediaBindingPlan
@@ -518,6 +530,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	}
 	cleanup = false
 	mediaCommitted = true
+	worktreeCommitted = true
 	created := candidate
 	if mutation.Session != nil {
 		created = *mutation.Session
@@ -540,6 +553,97 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, response)
 	if enqueueJob != nil {
 		s.v3SessionExecutor.EnqueueRun(*enqueueJob)
+	}
+}
+
+func (s *Server) applyRoutedSessionWorktreeDecision(candidate *pebblestore.SessionSnapshot, principal identity.Principal, sessionID string, requested bool, routerName *string) (worktreeruntime.Allocation, error) {
+	if candidate == nil {
+		return worktreeruntime.Allocation{}, errors.New("routed session candidate is required")
+	}
+	if candidate.Metadata == nil {
+		candidate.Metadata = make(map[string]any)
+	}
+	if !requested {
+		candidate.Metadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(candidate.WorkspacePath)
+		candidate.Metadata["swarm_v3_source_workspace_name"] = strings.TrimSpace(candidate.WorkspaceName)
+		candidate.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(candidate.WorkspacePath)
+		return worktreeruntime.Allocation{}, nil
+	}
+	if routerName == nil || strings.TrimSpace(*routerName) == "" {
+		return worktreeruntime.Allocation{}, errors.New("Router selected a worktree without a worktree_name")
+	}
+	allocation, finalRequestedName, err := s.allocateRoutedSessionWorktree(principal, *candidate, sessionID, *routerName)
+	if err != nil {
+		return worktreeruntime.Allocation{}, err
+	}
+	applyRoutedSessionWorktreeAllocation(candidate, candidate.WorkspacePath, *routerName, finalRequestedName, allocation)
+	return allocation, nil
+}
+
+func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, candidate pebblestore.SessionSnapshot, sessionID, routerName string) (worktreeruntime.Allocation, string, error) {
+	if s == nil || s.worktrees == nil {
+		return worktreeruntime.Allocation{}, "", errors.New("worktree service is not configured")
+	}
+	sourceWorkspacePath := strings.TrimSpace(candidate.WorkspacePath)
+	config, err := s.worktrees.GetConfigForPrincipal(principal, sourceWorkspacePath)
+	if err != nil {
+		return worktreeruntime.Allocation{}, "", fmt.Errorf("read routed worktree config: %w", err)
+	}
+	if !config.Enabled {
+		return worktreeruntime.Allocation{}, "", errors.New("Router selected a worktree but managed worktrees are disabled for the routed workspace")
+	}
+	branchName, err := worktreeruntime.CanonicalizeRequestedWorktreeName(routerName, config.BranchName)
+	if err != nil {
+		return worktreeruntime.Allocation{}, "", err
+	}
+	baseBranch := strings.TrimSpace(config.BaseBranch)
+	if config.UseCurrentBranch {
+		baseBranch = ""
+	}
+	allocation, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, sourceWorkspacePath, sessionID, baseBranch, branchName)
+	if err == nil {
+		return allocation, strings.TrimSpace(routerName), nil
+	}
+	if !worktreeruntime.IsRequestedWorktreeNameConflict(err) {
+		return worktreeruntime.Allocation{}, "", err
+	}
+	retryBranchName, retryErr := worktreeruntime.CanonicalizeRequestedWorktreeNameRetry(routerName, config.BranchName)
+	if retryErr != nil {
+		return worktreeruntime.Allocation{}, "", retryErr
+	}
+	allocation, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, sourceWorkspacePath, sessionID, baseBranch, retryBranchName)
+	if err != nil {
+		return worktreeruntime.Allocation{}, "", err
+	}
+	return allocation, strings.TrimSpace(routerName) + " (1)", nil
+}
+
+func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot, sourceWorkspacePath, routerName, finalRequestedName string, allocation worktreeruntime.Allocation) {
+	if candidate == nil {
+		return
+	}
+	if candidate.Metadata == nil {
+		candidate.Metadata = make(map[string]any)
+	}
+	routerName = strings.TrimSpace(routerName)
+	candidate.WorkspacePath = strings.TrimSpace(allocation.WorkspacePath)
+	candidate.WorktreeEnabled = true
+	candidate.WorktreeRootPath = strings.TrimSpace(allocation.WorkspacePath)
+	candidate.WorktreeBaseBranch = strings.TrimSpace(allocation.BaseBranch)
+	candidate.WorktreeBranch = strings.TrimSpace(allocation.BranchName)
+	candidate.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
+	candidate.Metadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(sourceWorkspacePath)
+	candidate.Metadata["swarm_v3_source_workspace_name"] = strings.TrimSpace(candidate.WorkspaceName)
+	candidate.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
+	finalRequestedName = strings.TrimSpace(finalRequestedName)
+	candidate.Metadata["routed_worktree_name"] = routerName
+	candidate.Metadata["routed_worktree_original_name"] = routerName
+	candidate.Metadata["routed_worktree_requested_name"] = finalRequestedName
+	candidate.Metadata["routed_worktree_final_requested_name"] = finalRequestedName
+	candidate.Metadata["routed_worktree_branch"] = strings.TrimSpace(allocation.BranchName)
+	candidate.Metadata["routed_worktree_final_branch"] = strings.TrimSpace(allocation.BranchName)
+	if baseCommit := strings.TrimSpace(allocation.BaseCommit); baseCommit != "" {
+		candidate.Metadata["base_commit"] = baseCommit
 	}
 }
 
