@@ -88,15 +88,8 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	}
 
 	agentService := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if err := agentService.EnsureDefaults(); err != nil {
-		t.Fatalf("ensure agent defaults: %v", err)
-	}
-	if _, _, _, err := agentService.UpsertForAccount(principal.AccountScopeID, agentruntime.UpsertInput{
-		Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true), Prompt: "Routed media test agent",
-		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"media_inspect": {Enabled: pebblestore.BoolPtr(true)}}},
-	}); err != nil {
-		t.Fatalf("configure swarm agent: %v", err)
+	if err := agentService.EnsureDefaultsForAccount(principal.AccountScopeID); err != nil {
+		t.Fatalf("ensure account agent defaults: %v", err)
 	}
 
 	catalogStore := pebblestore.NewModelCatalogStore(store)

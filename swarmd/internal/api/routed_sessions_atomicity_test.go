@@ -264,15 +264,8 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	permissionService := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
 	permissionService.SetSessionResolver(sessionService)
 	agentService := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
-	if err := agentService.EnsureDefaults(); err != nil {
-		t.Fatalf("ensure agent defaults: %v", err)
-	}
-	if _, _, _, err := agentService.UpsertForAccount(principal.AccountScopeID, agentruntime.UpsertInput{
-		Name: "swarm", Mode: agentruntime.ModePrimary, Enabled: pebblestore.BoolPtr(true), Prompt: "Routed atomicity test agent",
-		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}},
-	}); err != nil {
-		t.Fatalf("configure routed agent: %v", err)
+	if err := agentService.EnsureDefaultsForAccount(principal.AccountScopeID); err != nil {
+		t.Fatalf("ensure account agent defaults: %v", err)
 	}
 
 	providers := registry.New()
