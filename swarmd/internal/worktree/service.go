@@ -79,6 +79,9 @@ type RequestedWorktreeNameConflictError struct {
 }
 
 func (e *RequestedWorktreeNameConflictError) Error() string {
+	if e == nil {
+		return "requested worktree name is already taken"
+	}
 	name := strings.TrimSpace(e.WorktreeName)
 	if e.Cause == nil {
 		return fmt.Sprintf("worktree name %q is already taken", name)
@@ -86,7 +89,12 @@ func (e *RequestedWorktreeNameConflictError) Error() string {
 	return fmt.Sprintf("worktree name %q is already taken: %v", name, e.Cause)
 }
 
-func (e *RequestedWorktreeNameConflictError) Unwrap() error { return e.Cause }
+func (e *RequestedWorktreeNameConflictError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
 
 func IsRequestedWorktreeNameConflict(err error) bool {
 	var conflict *RequestedWorktreeNameConflictError
@@ -335,19 +343,38 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 		return Allocation{}, err
 	}
 	if _, statErr := os.Stat(worktreePath); statErr == nil {
-		return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: fmt.Errorf("target worktree path %q already exists", worktreePath)}
+		cause := fmt.Errorf("target worktree path %q already exists", worktreePath)
+		if exactBranchName {
+			return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: cause}
+		}
+		return Allocation{}, cause
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return Allocation{}, fmt.Errorf("check target worktree path: %w", statErr)
 	}
-	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch); err != nil {
-		_ = os.RemoveAll(worktreePath)
-		if isRequestedWorktreeNameGitConflict(err) {
-			return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: err}
+	branchExisted, branchErr := localBranchExists(repoRoot, branchName)
+	if branchErr != nil {
+		return Allocation{}, fmt.Errorf("check worktree branch: %w", branchErr)
+	}
+	if exactBranchName && branchExisted {
+		return Allocation{}, &RequestedWorktreeNameConflictError{
+			WorktreeName: branchName,
+			Cause:        fmt.Errorf("branch %q already exists", branchName),
 		}
-		return Allocation{}, fmt.Errorf("create session worktree: %w", err)
+	}
+	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch); err != nil {
+		cleanupErr := cleanupFailedWorktreeAllocation(repoRoot, worktreePath)
+		if !branchExisted {
+			cleanupErr = errors.Join(cleanupErr, cleanupPartialBranch(repoRoot, branchName, effectiveBranch))
+		}
+		cause := allocationFailureWithCleanup(err, cleanupErr)
+		if exactBranchName && isExactRequestedWorktreeConflict(err, branchName, worktreePath) {
+			return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: cause}
+		}
+		return Allocation{}, fmt.Errorf("create session worktree: %w", cause)
 	}
 	if err := os.Chmod(worktreePath, appstorage.PrivateDirPerm); err != nil {
-		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", err)
+		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
+		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", allocationFailureWithCleanup(err, cleanupErr))
 	}
 	return Allocation{
 		WorkspacePath: worktreePath,
@@ -1228,13 +1255,148 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	return output, nil
 }
 
-func isRequestedWorktreeNameGitConflict(err error) bool {
-	if err == nil {
+func localBranchExists(repoRoot, branchName string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git show-ref --verify: %w", err)
+	}
+	return true, nil
+}
+
+func isExactRequestedWorktreeConflict(err error, branchName, worktreePath string) bool {
+	var addErr *gitWorktreeAddError
+	if !errors.As(err, &addErr) {
 		return false
 	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "already exists") || strings.Contains(text, "already checked out")
+	text := strings.ToLower(addErr.Output)
+	branchName = strings.ToLower(strings.TrimSpace(branchName))
+	worktreePath = strings.ToLower(filepath.Clean(strings.TrimSpace(worktreePath)))
+	branchCollision := branchName != "" && strings.Contains(text, branchName) &&
+		(strings.Contains(text, "already exists") || strings.Contains(text, "already checked out"))
+	pathCollision := worktreePath != "" && strings.Contains(text, worktreePath) &&
+		(strings.Contains(text, "already exists") || strings.Contains(text, "already checked out"))
+	return branchCollision || pathCollision
 }
+
+func cleanupFailedWorktreeAllocation(repoRoot, worktreePath string) error {
+	var cleanupErrs []error
+	registered, err := worktreePathRegistered(repoRoot, worktreePath)
+	if err != nil {
+		cleanupErrs = append(cleanupErrs, err)
+	} else if registered {
+		if _, err := runGit(repoRoot, "worktree", "remove", "--force", worktreePath); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree metadata: %w", err))
+		} else if err := os.RemoveAll(worktreePath); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
+		}
+	} else if owned, ownershipErr := partialWorktreePathOwnedByRepository(repoRoot, worktreePath); ownershipErr != nil {
+		cleanupErrs = append(cleanupErrs, ownershipErr)
+	} else if owned {
+		if err := os.RemoveAll(worktreePath); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
+		}
+	}
+	if _, err := runGit(repoRoot, "worktree", "prune"); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("prune partial worktree metadata: %w", err))
+	}
+	return errors.Join(cleanupErrs...)
+}
+
+func worktreePathRegistered(repoRoot, worktreePath string) (bool, error) {
+	output, err := runGit(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("inspect partial worktree metadata: %w", err)
+	}
+	for _, entry := range parseWorktreeList(output) {
+		if sameCleanPath(entry.Path, worktreePath) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func partialWorktreePathOwnedByRepository(repoRoot, worktreePath string) (bool, error) {
+	gitMarker, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect partial worktree ownership: %w", err)
+	}
+	markerText := strings.TrimSpace(string(gitMarker))
+	if !strings.HasPrefix(markerText, "gitdir:") {
+		return false, nil
+	}
+	marker := strings.TrimSpace(strings.TrimPrefix(markerText, "gitdir:"))
+	if marker == "" {
+		return false, nil
+	}
+	marker, err = resolveGitPath(worktreePath, marker)
+	if err != nil {
+		return false, fmt.Errorf("resolve partial worktree ownership: %w", err)
+	}
+	commonDir, err := runGit(repoRoot, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return false, fmt.Errorf("resolve repository metadata for cleanup: %w", err)
+	}
+	commonDir, err = resolveGitPath(repoRoot, commonDir)
+	if err != nil {
+		return false, fmt.Errorf("resolve repository metadata path for cleanup: %w", err)
+	}
+	return pathWithinRoot(filepath.Join(commonDir, "worktrees"), marker), nil
+}
+
+func cleanupAllocatedWorktree(repoRoot, worktreePath, branchName string) error {
+	cleanupErr := cleanupFailedWorktreeAllocation(repoRoot, worktreePath)
+	if exists, err := localBranchExists(repoRoot, branchName); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("inspect partial worktree branch: %w", err))
+	} else if exists {
+		if _, err := runGit(repoRoot, "branch", "-D", branchName); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove partial worktree branch: %w", err))
+		}
+	}
+	return cleanupErr
+}
+
+func cleanupPartialBranch(repoRoot, branchName, effectiveBranch string) error {
+	branchHead, err := runGit(repoRoot, "rev-parse", "--verify", "refs/heads/"+branchName+"^{commit}")
+	if err != nil {
+		return nil
+	}
+	baseHead, err := runGit(repoRoot, "rev-parse", "--verify", effectiveBranch+"^{commit}")
+	if err != nil || branchHead != baseHead {
+		return nil
+	}
+	if _, err := runGit(repoRoot, "branch", "-D", branchName); err != nil {
+		return fmt.Errorf("remove partial worktree branch: %w", err)
+	}
+	return nil
+}
+
+func allocationFailureWithCleanup(cause, cleanupErr error) error {
+	if cleanupErr == nil {
+		return cause
+	}
+	return fmt.Errorf("%w; cleanup failed: %v", cause, cleanupErr)
+}
+
+type gitWorktreeAddError struct {
+	Args   []string
+	Output string
+	Cause  error
+}
+
+func (e *gitWorktreeAddError) Error() string {
+	return fmt.Sprintf("git %s: %s", strings.Join(e.Args, " "), e.Output)
+}
+
+func (e *gitWorktreeAddError) Unwrap() error { return e.Cause }
 
 func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch string) (string, error) {
 	args := []string{"worktree", "add", "-b", branchName, worktreePath, effectiveBranch}
@@ -1253,7 +1415,7 @@ func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch strin
 		if combinedOutput == "" {
 			combinedOutput = strings.TrimSpace(err.Error())
 		}
-		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), combinedOutput)
+		return "", &gitWorktreeAddError{Args: append([]string(nil), args...), Output: combinedOutput, Cause: err}
 	}
 	return combinedOutput, nil
 }
