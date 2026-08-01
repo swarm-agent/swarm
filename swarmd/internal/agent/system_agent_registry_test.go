@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, PlanSidechatAgentID, ReviewCommitAgentID, WorkspaceDefinitionAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, WorkspaceDefinitionAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -73,7 +73,7 @@ func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltinSystemAgentRegistry() error = %v", err)
 	}
-	want := []string{SwarmAgentID, CoderAgentID, DesignerAgentID, FinderAgentID}
+	want := []string{SwarmAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID}
 	if got := registry.UserVisibleIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("UserVisibleIDs() = %v, want %v", got, want)
 	}
@@ -202,6 +202,17 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	if len(reviewCommit.ToolContract.Tools) != 5 {
 		t.Fatalf("Review Commit tool contract is not least privilege: %+v", reviewCommit.ToolContract)
+	}
+
+	workspaceDefinition, err := registry.ReconcileSnapshot(WorkspaceDefinitionAgentID, pebblestore.AgentProfile{Name: WorkspaceDefinitionAgentID, Provider: "codex", Model: "router-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspaceDefinition.Name != WorkspaceDefinitionAgentID || workspaceDefinition.Provider != "codex" || workspaceDefinition.Model != "router-model" || workspaceDefinition.Thinking != "high" || workspaceDefinition.AutoServiceTier != "priority" {
+		t.Fatalf("Workspace Definition model snapshot mismatch: %+v", workspaceDefinition)
+	}
+	if workspaceDefinition.Prompt != WorkspaceDefinitionAgentPrompt() || workspaceDefinition.RuntimeMode != pebblestore.AgentRuntimeModeRead || workspaceDefinition.ToolContract == nil || workspaceDefinition.ToolContract.Preset != "custom" || len(workspaceDefinition.ToolContract.Tools) != 0 {
+		t.Fatalf("Workspace Definition immutable contract was not restored: %+v", workspaceDefinition)
 	}
 
 	compact, err := registry.Materialize(CompactAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "utility-model", Thinking: "medium"})
