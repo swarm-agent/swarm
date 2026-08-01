@@ -166,7 +166,7 @@ func (s *Server) handleAgentsV2(w http.ResponseWriter, r *http.Request) {
 		"ok": true,
 		"state": map[string]any{
 			"profiles": publicProfiles, "custom_tools": state.CustomTools,
-			"active_primary": state.ActivePrimary, "active_subagent": state.ActiveSubagent, "version": state.Version,
+			"active_subagent": state.ActiveSubagent, "version": state.Version,
 		},
 		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
 		"tool_inventory":            toolInventory,
@@ -237,7 +237,6 @@ func compactAgentStateForDesktop(state agentruntime.State) map[string]any {
 	}
 	return map[string]any{
 		"profiles":        profiles,
-		"active_primary":  state.ActivePrimary,
 		"active_subagent": state.ActiveSubagent,
 		"version":         state.Version,
 	}
@@ -326,7 +325,6 @@ func (s *Server) handleAgentDefaultsRestoreV2(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                        true,
 		"profiles":                  publicAgentProfileList(state.Profiles),
-		"active_primary":            state.ActivePrimary,
 		"active_subagent":           state.ActiveSubagent,
 		"version":                   state.Version,
 		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
@@ -355,7 +353,6 @@ func (s *Server) handleAgentDefaultsResetV2(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                        true,
 		"profiles":                  publicAgentProfileList(state.Profiles),
-		"active_primary":            state.ActivePrimary,
 		"active_subagent":           state.ActiveSubagent,
 		"version":                   version,
 		"provider_defaults_preview": s.providerDefaultsPreviewForState(state),
@@ -384,31 +381,6 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, errors.New("agent path is invalid"))
 			return
 		}
-	}
-
-	if len(segments) == 2 && strings.EqualFold(segments[0], "active") && strings.EqualFold(segments[1], "primary") {
-		if r.Method != http.MethodPut {
-			methodNotAllowed(w)
-			return
-		}
-		var req struct {
-			Name string `json:"name"`
-		}
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		activePrimary, version, _, err := s.agents.ActivatePrimaryForAccount(principal.AccountScopeID, req.Name)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":             true,
-			"active_primary": activePrimary,
-			"version":        version,
-		})
-		return
 	}
 
 	if len(segments) == 2 && strings.EqualFold(segments[1], "tool-contract") {
@@ -613,10 +585,9 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":             true,
-			"deleted":        result.Deleted,
-			"active_primary": result.ActivePrimary,
-			"version":        version,
+			"ok":      true,
+			"deleted": result.Deleted,
+			"version": version,
 		})
 	default:
 		methodNotAllowed(w)

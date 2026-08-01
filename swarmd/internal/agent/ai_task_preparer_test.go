@@ -10,7 +10,6 @@ import (
 func TestAITaskPreparerUsesCanonicalParentModelAndReadOnlyTools(t *testing.T) {
 	profile := AITaskPreparerAgentProfileForParent(pebblestore.AgentProfile{
 		Provider: "fallback-provider", Model: "fallback-model", Thinking: "low",
-		AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high",
 	})
 	if profile.Provider != "fallback-provider" || profile.Model != "fallback-model" || profile.Thinking != "low" {
 		t.Fatalf("preparer did not inherit canonical parent preference: %#v", profile)

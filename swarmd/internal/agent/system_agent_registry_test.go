@@ -188,7 +188,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("AI mandatory denial %q was not restored", denied)
 		}
 	}
-	reviewCommit, err := registry.Materialize(ReviewCommitAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "base-model", Thinking: "high", AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "xhigh", AutoServiceTier: "priority"})
+	reviewCommit, err := registry.Materialize(ReviewCommitAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "base-model", Thinking: "high", AutoServiceTier: "priority"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
 	}
-	if swarm.Provider != "" || swarm.Model != "" || swarm.Thinking != "" || swarm.ModelMode != "" || swarm.PlanProvider != "" || swarm.PlanModel != "" || swarm.PlanThinking != "" || swarm.PlanServiceTier != "" || swarm.AutoProvider != "" || swarm.AutoModel != "" || swarm.AutoThinking != "" || swarm.AutoServiceTier != "" {
+	if swarm.Provider != "" || swarm.Model != "" || swarm.Thinking != "" || swarm.AutoServiceTier != "" {
 		t.Fatalf("Swarm system identity retained model-bearing profile fields: %+v", swarm)
 	}
 

@@ -62,7 +62,7 @@ func (s *ModelProfileStore) ListForAccount(accountScopeID string, limit int) ([]
 	return state.Profiles, err
 }
 
-// ListStateForAccount returns profiles and repairs legacy missing/dangling defaults atomically.
+// ListStateForAccount returns flat favorites and fails if the required default is missing or dangling.
 func (s *ModelProfileStore) ListStateForAccount(accountScopeID string, limit int) (ModelProfileListState, error) {
 	if s == nil || s.store == nil {
 		return ModelProfileListState{}, errors.New("model profile store is not configured")
@@ -81,18 +81,14 @@ func (s *ModelProfileStore) ListStateForAccount(accountScopeID string, limit int
 	if err != nil {
 		return ModelProfileListState{}, err
 	}
-	if !containsModelProfile(profiles, defaultID) {
-		if len(profiles) == 0 {
-			defaultID = ""
-			if err := s.store.Delete(KeyModelProfileDefaultForAccount(accountScopeID)); err != nil {
-				return ModelProfileListState{}, err
-			}
-		} else {
-			defaultID = profiles[0].ProfileID
-			if err := s.store.PutBytes(KeyModelProfileDefaultForAccount(accountScopeID), []byte(defaultID)); err != nil {
-				return ModelProfileListState{}, err
-			}
+	if len(profiles) == 0 {
+		if defaultID != "" {
+			return ModelProfileListState{}, errors.New("model profile default is dangling")
 		}
+	} else if defaultID == "" {
+		return ModelProfileListState{}, errors.New("model profile default is required")
+	} else if !containsModelProfile(profiles, defaultID) {
+		return ModelProfileListState{}, errors.New("model profile default is dangling")
 	}
 	for i := range profiles {
 		profiles[i].IsDefault = profiles[i].ProfileID == defaultID
@@ -190,11 +186,15 @@ func (s *ModelProfileStore) putForAccount(record ModelProfileRecord, onlyIfEmpty
 	if err != nil {
 		return ModelProfileRecord{}, err
 	}
-	if !containsModelProfile(profiles, defaultID) {
-		defaultID = ""
-	}
-	if defaultID == "" {
+	if len(profiles) == 0 {
+		if defaultID != "" && defaultID != record.ProfileID {
+			return ModelProfileRecord{}, errors.New("model profile default is dangling")
+		}
 		defaultID = record.ProfileID
+	} else if defaultID == "" {
+		return ModelProfileRecord{}, errors.New("model profile default is required")
+	} else if !containsModelProfile(profiles, defaultID) {
+		return ModelProfileRecord{}, errors.New("model profile default is dangling")
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()

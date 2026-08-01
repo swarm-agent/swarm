@@ -688,7 +688,7 @@ func reconcileSwarmAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.A
 func reconcilePlanSidechatAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := PlanSidechatAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
-	profile.AutoServiceTier = firstNonEmptyProfileValue(snapshot.AutoServiceTier, snapshot.PlanServiceTier)
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	if strings.TrimSpace(snapshot.Prompt) != "" {
 		profile.Prompt = strings.TrimSpace(snapshot.Prompt)
 	}

@@ -112,6 +112,23 @@ func TestModelProfileStoreAccountIsolation(t *testing.T) {
 	}
 }
 
+func TestModelProfileStoreFailsClosedOnMissingOrDanglingDefault(t *testing.T) {
+	profiles := openModelProfileTestStore(t)
+	putModelProfileForTest(t, profiles, modelProfileTestRecord("account-a", "one", "One"))
+	if err := profiles.store.Delete(KeyModelProfileDefaultForAccount("account-a")); err != nil {
+		t.Fatalf("delete default: %v", err)
+	}
+	if _, err := profiles.ListStateForAccount("account-a", 10); err == nil || err.Error() != "model profile default is required" {
+		t.Fatalf("missing default error = %v", err)
+	}
+	if err := profiles.store.PutBytes(KeyModelProfileDefaultForAccount("account-a"), []byte("missing")); err != nil {
+		t.Fatalf("seed dangling default: %v", err)
+	}
+	if _, err := profiles.ListStateForAccount("account-a", 10); err == nil || err.Error() != "model profile default is dangling" {
+		t.Fatalf("dangling default error = %v", err)
+	}
+}
+
 func TestModelProfileStoreNameConflictIsAccountScoped(t *testing.T) {
 	profiles := openModelProfileTestStore(t)
 	putModelProfileForTest(t, profiles, modelProfileTestRecord("account-a", "one", " Favorite "))

@@ -12,7 +12,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestAgentV2RejectsRemovedSplitModelFields(t *testing.T) {
+func TestAgentV2RejectsRemovedSplitModelAndPrimaryActivationContracts(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "agents.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -36,5 +36,13 @@ func TestAgentV2RejectsRemovedSplitModelFields(t *testing.T) {
 		if !strings.Contains(res.Body.String(), "unknown field") {
 			t.Fatalf("field %q error = %s, want unknown field", field, res.Body.String())
 		}
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/v2/agents/active/primary", strings.NewReader(`{"name":"custom"}`))
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), principal))
+	res := httptest.NewRecorder()
+	server.handleAgentByNameV2(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("removed active-primary route status = %d, want %d: %s", res.Code, http.StatusNotFound, res.Body.String())
 	}
 }

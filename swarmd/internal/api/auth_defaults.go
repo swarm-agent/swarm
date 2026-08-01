@@ -55,24 +55,7 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 	if err != nil {
 		return nil, fmt.Errorf("set global model default: %w", err)
 	}
-	// Agent hydration still accepts the legacy plan/auto input while the agent
-	// contract is being cut over. An absent optional Plan recommendation uses
-	// Action only for that internal bootstrap seam; it does not enable Plan mode.
-	hydrationPlanModel := providerDefaults.PlanModel
-	hydrationPlanThinking := providerDefaults.PlanThinking
-	if strings.TrimSpace(hydrationPlanModel) == "" || strings.TrimSpace(hydrationPlanThinking) == "" {
-		hydrationPlanModel = providerDefaults.AutoModel
-		hydrationPlanThinking = providerDefaults.AutoThinking
-	}
-	result, err := s.agents.EnsureHydratedDefaultsForAccount(accountScopeID, agentruntime.DefaultModelHydrationInput{
-		Provider:        providerID,
-		PrimaryModel:    providerDefaults.PrimaryModel,
-		PrimaryThinking: providerDefaults.PrimaryThinking,
-		PlanModel:       hydrationPlanModel,
-		PlanThinking:    hydrationPlanThinking,
-		AutoModel:       providerDefaults.AutoModel,
-		AutoThinking:    providerDefaults.AutoThinking,
-	})
+	result, err := s.agents.EnsureHydratedDefaultsForAccount(accountScopeID)
 	if err != nil {
 		return nil, fmt.Errorf("create hydrated agent defaults: %w", err)
 	}

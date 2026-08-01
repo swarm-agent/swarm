@@ -11,9 +11,6 @@ import (
 )
 
 // SwarmModeSettingsPath is the canonical account-scoped Swarm model-mode endpoint.
-// Wave 2 route wiring must add this exact registration to registerSwarmRoutes:
-//
-//	mux.HandleFunc(SwarmModeSettingsPath, s.handleSwarmModeSettings)
 const SwarmModeSettingsPath = "/v1/swarm/model-settings"
 
 type swarmModeSettingsRequest struct {

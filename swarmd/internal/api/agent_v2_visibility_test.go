@@ -13,7 +13,7 @@ func TestCompactAgentStateForDesktopHidesSystemAgentsFromSummary(t *testing.T) {
 		{Name: agentruntime.PlanSidechatAgentID, Mode: agentruntime.ModeSubagent, Enabled: true},
 		{Name: agentruntime.AISidechatAgentID, Mode: agentruntime.ModeSubagent, Enabled: true},
 		{Name: agentruntime.CompactAgentID, Mode: agentruntime.ModeSubagent, Enabled: true},
-		{Name: "custom", Mode: agentruntime.ModePrimary, Enabled: true},
+		{Name: "custom", Mode: agentruntime.ModeSubagent, Enabled: true},
 	}}
 	got := compactAgentStateForDesktop(state)
 	profiles, ok := got["profiles"].([]compactAgentProfileForDesktop)

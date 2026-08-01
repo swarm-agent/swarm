@@ -18,14 +18,6 @@ func TestCompactAgentStateForDesktopOmitsSettingsOnlyPayload(t *testing.T) {
 			Provider:            "codex",
 			Model:               "gpt-5-codex",
 			Thinking:            "medium",
-			ModelMode:           "split",
-			PlanProvider:        "codex",
-			PlanModel:           "gpt-5.4",
-			PlanThinking:        "high",
-			PlanServiceTier:     "fast",
-			AutoProvider:        "codex",
-			AutoModel:           "gpt-5.4-mini",
-			AutoThinking:        "medium",
 			AutoServiceTier:     "flex",
 			Prompt:              strings.Repeat("settings-only prompt ", 32),
 			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
@@ -52,12 +44,12 @@ func TestCompactAgentStateForDesktopOmitsSettingsOnlyPayload(t *testing.T) {
 			t.Fatalf("compact agent state contains %q: %s", forbidden, body)
 		}
 	}
-	for _, forbidden := range []string{"model_mode", "plan_provider", "plan_model", "plan_thinking", "plan_service_tier", "auto_provider", "auto_model", "auto_thinking", "auto_service_tier", "gpt-5.4", "gpt-5.4-mini", "fast", "flex"} {
+	for _, forbidden := range []string{"model_mode", "plan_provider", "plan_model", "plan_thinking", "plan_service_tier", "auto_provider", "auto_model", "auto_thinking", "auto_service_tier", "flex"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("compact agent state retained split model field %q: %s", forbidden, body)
 		}
 	}
-	for _, required := range []string{"profiles", "active_primary", "swarm", "runtime_mode", "plan_auto", "default_session_mode", "auto", "enabled"} {
+	for _, required := range []string{"profiles", "swarm", "runtime_mode", "plan_auto", "default_session_mode", "auto", "enabled"} {
 		if !strings.Contains(body, required) {
 			t.Fatalf("compact agent state missing %q: %s", required, body)
 		}
@@ -69,13 +61,6 @@ func TestCompactAgentStateForDesktopMaterializesCompiledSwarmAsEnabled(t *testin
 		Profiles: []pebblestore.AgentProfile{{
 			Name:               agentruntime.SwarmAgentID,
 			Mode:               agentruntime.ModePrimary,
-			ModelMode:          "split",
-			PlanProvider:       "codex",
-			PlanModel:          "gpt-plan",
-			PlanThinking:       "high",
-			AutoProvider:       "codex",
-			AutoModel:          "gpt-auto",
-			AutoThinking:       "medium",
 			RuntimeMode:        pebblestore.AgentRuntimeModePlanAuto,
 			DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto,
 			Enabled:            false,
