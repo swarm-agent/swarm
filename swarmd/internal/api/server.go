@@ -28,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	"swarm/packages/swarmd/internal/longsessiondiag"
+	"swarm/packages/swarmd/internal/mediastaging"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -127,6 +128,7 @@ type Server struct {
 	startedAt                   time.Time
 	bypassPermissions           bool
 	longSessionDiagnostics      *longsessiondiag.Recorder
+	mediaStaging                *mediastaging.Service
 
 	longSessionDesktopSampleLogOnce sync.Once
 
@@ -302,6 +304,14 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 func (s *Server) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
 	if s != nil {
 		s.longSessionDiagnostics = recorder
+	}
+}
+
+// SetMediaStagingService configures bounded, account-scoped pre-session media
+// staging. The service deliberately has no session or model authority.
+func (s *Server) SetMediaStagingService(service *mediastaging.Service) {
+	if s != nil {
+		s.mediaStaging = service
 	}
 }
 

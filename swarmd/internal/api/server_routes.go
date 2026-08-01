@@ -151,6 +151,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/integrations", s.handleIntegrations)
 	mux.HandleFunc("/v1/integrations/workspaces", s.handleIntegrationWorkspaces)
 	mux.HandleFunc("/v1/integrations/workspaces/", s.handleIntegrationWorkspaceByID)
+	mux.HandleFunc(MediaStagingCollectionPath, s.handleMediaStagingCollection)
+	mux.HandleFunc(MediaStagingCollectionPath+"/", s.handleMediaStagingItem)
 	mux.HandleFunc(V3RealtimeStreamPath, s.handleV3RealtimeStream)
 	mux.HandleFunc(V3SyncBootstrapPath, s.handleSessionsV3SyncBootstrap)
 	mux.HandleFunc(V3SyncHydratePath, s.handleSessionsV3SyncHydrate)
