@@ -164,11 +164,14 @@ type authLoginResult struct {
 }
 
 type codexOAuthLoginSession struct {
-	Provider  string
-	Label     string
-	Active    bool
-	SessionID string
-	AuthURL   string
+	Provider        string
+	Label           string
+	Active          bool
+	Method          string
+	SessionID       string
+	AuthURL         string
+	VerificationURL string
+	UserCode        string
 }
 
 type codexCodeLoginState struct {
@@ -5535,9 +5538,14 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 			a.home.SetAuthModalError(fmt.Sprintf("copy failed: %v", err))
 			return
 		}
-		if a.home.AuthModalEditorMode() == "codex_browser_pending" {
+		switch a.home.AuthModalEditorMode() {
+		case "codex_browser_pending":
 			a.home.SetAuthModalLoading(true)
 			a.home.SetAuthModalStatus("Auth URL copied to clipboard. Finish sign-in in your browser; this modal will close automatically after confirmation.")
+			return
+		case "codex_device_pending":
+			a.home.SetAuthModalLoading(true)
+			a.home.SetAuthModalStatus("Device sign-in value copied. Complete approval on another device; Swarm is still waiting for confirmation.")
 			return
 		}
 		a.home.SetAuthModalLoading(false)
@@ -6109,7 +6117,7 @@ func (a *App) startProviderLogin(login *ui.AuthModalLogin) {
 		return
 	}
 
-	if method != "auto" && method != "code" {
+	if method != "auto" && method != "code" && method != "device" {
 		method = "auto"
 	}
 
@@ -6131,7 +6139,7 @@ func (a *App) startProviderLogin(login *ui.AuthModalLogin) {
 	}
 
 	startCtx, startCancel := context.WithTimeout(context.Background(), 45*time.Second)
-	session, browserWarning, err := a.beginCodexBrowserLogin(startCtx, login, openBrowser)
+	session, browserWarning, err := a.beginCodexOAuthSession(startCtx, login, method, openBrowser)
 	startCancel()
 	if err != nil {
 		a.authLogging.Store(false)
@@ -6139,11 +6147,19 @@ func (a *App) startProviderLogin(login *ui.AuthModalLogin) {
 		a.home.SetAuthModalError(fmt.Sprintf("oauth login failed: %v", err))
 		return
 	}
-	a.home.StartAuthModalCodexBrowserPending(codexBrowserPendingStatus(browserWarning), session.AuthURL)
+	if method == "device" {
+		a.home.StartAuthModalCodexDevicePending(codexDevicePendingStatus(browserWarning), session.VerificationURL, session.UserCode)
+	} else {
+		a.home.StartAuthModalCodexBrowserPending(codexBrowserPendingStatus(browserWarning), session.AuthURL)
+	}
 	a.home.SetAuthModalLoading(true)
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		timeout := 6 * time.Minute
+		if session.Method == "device" {
+			timeout = 16 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		result := a.runCodexOAuthLogin(ctx, session)
 		select {
@@ -6198,7 +6214,7 @@ func (a *App) consumeAuthLoginResult() {
 	}
 }
 
-func (a *App) beginCodexBrowserLogin(ctx context.Context, login *ui.AuthModalLogin, openBrowser bool) (codexOAuthLoginSession, string, error) {
+func (a *App) beginCodexOAuthSession(ctx context.Context, login *ui.AuthModalLogin, method string, openBrowser bool) (codexOAuthLoginSession, string, error) {
 	if a == nil || a.api == nil {
 		return codexOAuthLoginSession{}, "", errors.New("auth api unavailable")
 	}
@@ -6214,18 +6230,28 @@ func (a *App) beginCodexBrowserLogin(ctx context.Context, login *ui.AuthModalLog
 		active = login.Active
 	}
 
+	apiMethod := "manual"
+	if method == "device" {
+		apiMethod = "device"
+	}
 	session, err := a.api.StartCodexOAuth(ctx, client.CodexOAuthStartRequest{
 		Provider: provider,
 		Label:    label,
 		Active:   active,
-		Method:   "manual",
+		Method:   apiMethod,
 	})
 	if err != nil {
 		return codexOAuthLoginSession{}, "", err
 	}
 
 	authURL := strings.TrimSpace(session.AuthURL)
-	if authURL == "" {
+	verificationURL := strings.TrimSpace(session.VerificationURL)
+	userCode := strings.TrimSpace(session.UserCode)
+	if method == "device" {
+		if verificationURL == "" || userCode == "" {
+			return codexOAuthLoginSession{}, "", errors.New("codex device login returned no verification URL or user code; use Remote URL fallback")
+		}
+	} else if authURL == "" {
 		return codexOAuthLoginSession{}, "", errors.New("codex oauth start returned empty auth url")
 	}
 	browserWarning := ""
@@ -6235,31 +6261,68 @@ func (a *App) beginCodexBrowserLogin(ctx context.Context, login *ui.AuthModalLog
 		}
 	}
 	return codexOAuthLoginSession{
-		Provider:  provider,
-		Label:     label,
-		Active:    active,
-		SessionID: strings.TrimSpace(session.SessionID),
-		AuthURL:   authURL,
+		Provider:        provider,
+		Label:           label,
+		Active:          active,
+		Method:          method,
+		SessionID:       strings.TrimSpace(session.SessionID),
+		AuthURL:         authURL,
+		VerificationURL: verificationURL,
+		UserCode:        userCode,
 	}, browserWarning, nil
 }
 
+func codexDevicePendingStatus(warning string) string {
+	status := "Open the verification URL on any device, enter the displayed code, and approve Codex. Device code is recommended for remote TUI sessions."
+	if strings.TrimSpace(warning) != "" {
+		status += " " + strings.TrimSpace(warning)
+	}
+	return status
+}
+
 func codexBrowserPendingStatus(browserWarning string) string {
-	status := "Finish Codex sign-in in your browser. This modal will close automatically after confirmation."
+	status := "Finish local Codex sign-in in your browser. This modal will close automatically after confirmation."
 	if strings.TrimSpace(browserWarning) != "" {
 		status += " " + strings.TrimSpace(browserWarning)
 	}
 	return status
 }
 
-func (a *App) runCodexOAuthLogin(ctx context.Context, session codexOAuthLoginSession) authLoginResult {
-	callbackInput, err := waitForLocalCodexOAuthCallback(ctx, oauthStateFromAuthURL(session.AuthURL))
-	if err != nil {
-		return authLoginResult{err: err, clearCodexPending: true}
+func (a *App) waitForCodexOAuthSession(ctx context.Context, sessionID string) (client.CodexOAuthSessionStatus, error) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		status, err := a.api.GetCodexOAuthStatus(ctx, sessionID)
+		if err != nil {
+			return client.CodexOAuthSessionStatus{}, err
+		}
+		switch strings.ToLower(strings.TrimSpace(status.Status)) {
+		case "success", "error":
+			return status, nil
+		}
+		select {
+		case <-ctx.Done():
+			return client.CodexOAuthSessionStatus{}, ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	completedSession, err := a.api.CompleteCodexOAuth(ctx, client.CodexOAuthCompleteRequest{
-		SessionID:     session.SessionID,
-		CallbackInput: callbackInput,
-	})
+}
+
+func (a *App) runCodexOAuthLogin(ctx context.Context, session codexOAuthLoginSession) authLoginResult {
+	var completedSession client.CodexOAuthSessionStatus
+	var err error
+	if session.Method == "device" {
+		completedSession, err = a.waitForCodexOAuthSession(ctx, session.SessionID)
+	} else {
+		callbackInput, callbackErr := waitForLocalCodexOAuthCallback(ctx, oauthStateFromAuthURL(session.AuthURL))
+		if callbackErr != nil {
+			return authLoginResult{err: callbackErr, clearCodexPending: true}
+		}
+		completedSession, err = a.api.CompleteCodexOAuth(ctx, client.CodexOAuthCompleteRequest{
+			SessionID:     session.SessionID,
+			CallbackInput: callbackInput,
+		})
+	}
 	if err != nil {
 		return authLoginResult{err: err, clearCodexPending: true}
 	}

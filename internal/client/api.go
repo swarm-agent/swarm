@@ -1855,15 +1855,18 @@ type CodexOAuthStartRequest struct {
 }
 
 type CodexOAuthSessionStatus struct {
-	SessionID  string          `json:"session_id"`
-	Provider   string          `json:"provider"`
-	Method     string          `json:"method"`
-	Label      string          `json:"label,omitempty"`
-	Active     bool            `json:"active"`
-	AuthURL    string          `json:"auth_url,omitempty"`
-	Status     string          `json:"status"`
-	Error      string          `json:"error,omitempty"`
-	Credential *AuthCredential `json:"credential,omitempty"`
+	SessionID       string          `json:"session_id"`
+	Provider        string          `json:"provider"`
+	Method          string          `json:"method"`
+	Label           string          `json:"label,omitempty"`
+	Active          bool            `json:"active"`
+	AuthURL         string          `json:"auth_url,omitempty"`
+	VerificationURL string          `json:"verification_url,omitempty"`
+	UserCode        string          `json:"user_code,omitempty"`
+	ExpiresAt       int64           `json:"expires_at,omitempty"`
+	Status          string          `json:"status"`
+	Error           string          `json:"error,omitempty"`
+	Credential      *AuthCredential `json:"credential,omitempty"`
 }
 
 type CodexOAuthCompleteRequest struct {
