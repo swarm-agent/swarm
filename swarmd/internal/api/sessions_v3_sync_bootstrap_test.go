@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	"testing"

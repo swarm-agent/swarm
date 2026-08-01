@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 
+	"swarm-refactor/swarmtui/pkg/startupconfig"
+
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"

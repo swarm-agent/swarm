@@ -247,6 +247,10 @@ func (sessionsV3ReadLatencyNoopProgressWriter) RecordReasoningEvent(sessionV3Exe
 	return sessionruntime.SessionMutationResult{}, nil
 }
 
+func (sessionsV3ReadLatencyNoopProgressWriter) RecordProviderToolConstructionEvent(sessionV3ExecutorJob, string, int, int, provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error) {
+	return sessionruntime.SessionMutationResult{}, nil
+}
+
 func sessionsV3ReadLatencyFixture(lineCount int) string {
 	var b strings.Builder
 	for line := 1; line <= lineCount; line++ {
