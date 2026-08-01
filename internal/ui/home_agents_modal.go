@@ -263,8 +263,8 @@ func (p *HomePage) SetAgentsModalData(data AgentsModalData) {
 		record.Model = strings.TrimSpace(record.Model)
 		record.ThinkingOptions = normalizeAgentsModalCatalogOptions(record.ThinkingOptions)
 		record.DefaultThinking = normalizeThinkingValue(record.DefaultThinking)
-		record.ServiceTiers = normalizeAgentsModalServiceTierOptions(record.ServiceTiers)
-		record.DefaultServiceTier = strings.ToLower(strings.TrimSpace(record.DefaultServiceTier))
+		record.ServiceTiers = normalizeAgentsModalServiceTierOptions(record.ServiceTiers, record.ServiceTierMappings)
+		record.DefaultServiceTier = normalizeAgentsModalServiceTierValue(record.DefaultServiceTier)
 		p.agentsModal.ModelCatalog[key] = record
 	}
 	p.agentsModal.DefaultProvider = strings.ToLower(strings.TrimSpace(data.DefaultProvider))
@@ -971,15 +971,15 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 		{Key: "provider", Label: "Provider", Value: singleProvider, Placeholder: "choose provider", Options: providerOptions},
 		{Key: "model", Label: "Model", Value: profile.Model, Placeholder: "choose model", Options: p.agentsModalModelOptionsForProvider(singleProvider)},
 		{Key: "thinking", Label: "Thinking", Value: profile.Thinking, Placeholder: "off", Options: p.agentsModalThinkingOptions(singleProvider, profile.Model)},
-		{Key: "service_tier", Label: "Priority", Value: profile.ServiceTier, Placeholder: "standard", Options: p.agentsModalServiceTierOptions(singleProvider, profile.Model)},
+		{Key: "service_tier", Label: "Priority", Value: profile.ServiceTier, Placeholder: "off", Options: p.agentsModalServiceTierOptions(singleProvider, profile.Model)},
 		{Key: "plan_provider", Label: "Provider", Value: planProvider, Placeholder: "choose provider", Options: providerOptions},
 		{Key: "plan_model", Label: "Model", Value: planModel, Placeholder: "choose model", Options: p.agentsModalModelOptionsForProvider(planProvider)},
 		{Key: "plan_thinking", Label: "Thinking", Value: planThinking, Placeholder: "off", Options: p.agentsModalThinkingOptions(planProvider, planModel)},
-		{Key: "plan_service_tier", Label: "Priority", Value: profile.PlanServiceTier, Placeholder: "standard", Options: p.agentsModalServiceTierOptions(planProvider, planModel)},
+		{Key: "plan_service_tier", Label: "Priority", Value: profile.PlanServiceTier, Placeholder: "off", Options: p.agentsModalServiceTierOptions(planProvider, planModel)},
 		{Key: "auto_provider", Label: "Provider", Value: autoProvider, Placeholder: "choose provider", Options: providerOptions},
 		{Key: "auto_model", Label: "Model", Value: autoModel, Placeholder: "choose model", Options: p.agentsModalModelOptionsForProvider(autoProvider)},
 		{Key: "auto_thinking", Label: "Thinking", Value: autoThinking, Placeholder: "off", Options: p.agentsModalThinkingOptions(autoProvider, autoModel)},
-		{Key: "auto_service_tier", Label: "Priority", Value: profile.AutoServiceTier, Placeholder: "standard", Options: p.agentsModalServiceTierOptions(autoProvider, autoModel)},
+		{Key: "auto_service_tier", Label: "Priority", Value: profile.AutoServiceTier, Placeholder: "off", Options: p.agentsModalServiceTierOptions(autoProvider, autoModel)},
 	}
 	p.agentsModal.Editor = &agentsModalEditor{Mode: "model", TargetName: profile.Name, Fields: fields, AgentSettingsLocked: agentSettingsLocked, ModelReadOnly: modelReadOnly}
 	p.normalizeAgentsModalEditorFields(p.agentsModal.Editor)
@@ -2695,10 +2695,22 @@ func normalizeAgentsModalCatalogOptions(values []string) []string {
 	return dedupeAgentsModalOptions(out)
 }
 
-func normalizeAgentsModalServiceTierOptions(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value = strings.ToLower(strings.TrimSpace(value)); value != "" {
+func normalizeAgentsModalServiceTierValue(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" || value == "standard" || value == "off" || value == "batch" {
+		return ""
+	}
+	return value
+}
+
+func normalizeAgentsModalServiceTierOptions(values []string, mappings []client.ModelCatalogServiceTierMapping) []string {
+	candidates := append([]string(nil), values...)
+	for _, mapping := range mappings {
+		candidates = append(candidates, mapping.Tier, mapping.SwarmSetting)
+	}
+	out := make([]string, 0, len(candidates))
+	for _, value := range candidates {
+		if value = normalizeAgentsModalServiceTierValue(value); value != "" {
 			out = append(out, value)
 		}
 	}
@@ -3094,7 +3106,7 @@ func (p *HomePage) applyAgentsModalModelProfile(profileID string) bool {
 func agentsModalEditorOptionDisplay(value string) string {
 	v := strings.TrimSpace(value)
 	if v == "" {
-		return "standard"
+		return "off"
 	}
 	switch strings.ToLower(v) {
 	case "y":
@@ -3123,7 +3135,7 @@ func agentsModalEditorFieldDisplayValue(field agentsModalEditorField, fallback s
 		}
 	case "service_tier", "plan_service_tier", "auto_service_tier":
 		if value == "" {
-			return "standard"
+			return "off"
 		}
 	case "enabled":
 		if parseYN(value) {

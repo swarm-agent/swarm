@@ -10,6 +10,47 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
+func TestAgentsModalPriorityShowsOffAndUsesCatalogMappings(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles:         []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true, Provider: "anthropic", Model: "claude-test"}},
+		Providers:        []string{"anthropic"},
+		ModelsByProvider: map[string][]string{"anthropic": {"claude-test"}},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"anthropic/claude-test": {
+				Provider:     "anthropic",
+				Model:        "claude-test",
+				ServiceTiers: []string{"standard", "priority", "batch"},
+				ServiceTierMappings: []client.ModelCatalogServiceTierMapping{
+					{Tier: "standard", SwarmSetting: "off"},
+					{Tier: "priority", SwarmSetting: "fast"},
+				},
+			},
+		},
+	})
+
+	field := page.findAgentsModalEditorField(page.agentsModal.Editor, "service_tier")
+	if field == nil {
+		t.Fatal("priority field missing")
+	}
+	if got := agentsModalEditorFieldDisplayValue(*field, field.Placeholder); got != "off" {
+		t.Fatalf("empty priority display = %q, want off", got)
+	}
+	if got, want := field.Options, []string{"", "priority", "fast"}; len(got) != len(want) {
+		t.Fatalf("priority options = %#v, want %#v", got, want)
+	} else {
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("priority options = %#v, want %#v", got, want)
+			}
+		}
+	}
+	if got := agentsModalEditorOptionDisplay(""); got != "off" {
+		t.Fatalf("empty priority option label = %q, want off", got)
+	}
+}
+
 func TestAgentsModalCompiledSubagentsOnlyOfferSingleProfiles(t *testing.T) {
 	page := &HomePage{}
 	page.agentsModal.ModelProfiles = []client.ModelProfile{
