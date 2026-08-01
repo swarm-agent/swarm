@@ -1061,13 +1061,21 @@ func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind 
 	}
 	if kind == V3RealtimeKindWorksetSessionUpdated || kind == V3RealtimeKindWorksetSessionDiscovered {
 		if session, ok := s.v3RealtimeSessionSnapshotForRecord(record); ok {
-			shell := sessionsV3SyncSessionShell(session)
+			shell, err := sessionsV3SyncSessionShell(session)
+			if err != nil {
+				_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "session_model_policy_invalid", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+				return false
+			}
 			message.Session = &shell
 		} else if session, ok, err := s.sessions.GetSession(record.SessionID); err != nil {
 			_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "session_shell_lookup_failed", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
 			return false
 		} else if ok {
-			shell := sessionsV3SyncSessionShell(session)
+			shell, err := sessionsV3SyncSessionShell(session)
+			if err != nil {
+				_ = s.sendV3RealtimeMessage(conn, NewV3RealtimeCursorError(record.SessionID, "session_model_policy_invalid", err.Error(), record.EndpointSeq-1, record.EndpointSeq))
+				return false
+			}
 			message.Session = &shell
 		}
 		if state, ok, err := s.sessions.GetSessionRunState(record.SessionID); err == nil && ok {

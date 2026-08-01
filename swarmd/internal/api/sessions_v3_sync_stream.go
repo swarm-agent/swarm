@@ -115,6 +115,9 @@ func sanitizeV3SyncStreamValue(eventType string, value any) {
 }
 
 func sanitizeV3SyncStreamSessionPayload(session map[string]any) {
+	// Durable replay carries the session preference/model snapshot as the
+	// authoritative current-mode policy. Keep those top-level fields and only
+	// trim metadata that belongs to settings or execution internals.
 	metadata, ok := session["metadata"].(map[string]any)
 	if !ok {
 		return

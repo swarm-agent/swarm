@@ -11,9 +11,7 @@ import (
 	"strings"
 	"time"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/modelpolicy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -740,7 +738,11 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		if !sessionsV3SyncTombstoneMatchesSelector(tombstone, selectorValue) {
 			continue
 		}
-		tombstone.Session = sessionsV3SyncSessionShell(tombstone.Session)
+		shell, err := sessionsV3SyncSessionShell(tombstone.Session)
+		if err != nil {
+			return sessionsV3SyncSnapshotResponseBody{}, err
+		}
+		tombstone.Session = shell
 		tombstones[sessionID] = tombstone
 	}
 	if timings != nil {
@@ -748,11 +750,15 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		timings.totalDur = time.Since(totalStart)
 	}
 
+	sessionShells, err := sessionsV3SyncSessionShells(snapshot.SessionsByID)
+	if err != nil {
+		return sessionsV3SyncSnapshotResponseBody{}, err
+	}
 	response := sessionsV3SyncSnapshotResponseBody{
 		OK:                           true,
 		Rev:                          snapshot.Rev,
 		SnapshotEndpointCursor:       snapshotEndpointCursor,
-		SessionsByID:                 sessionsV3SyncSessionShells(snapshot.SessionsByID),
+		SessionsByID:                 sessionShells,
 		ProjectionsBySession:         snapshot.ProjectionsBySession,
 		MessagesBySession:            snapshot.MessagesBySession,
 		EventsBySession:              snapshot.EventsBySession,
@@ -910,21 +916,10 @@ func (s *Server) resolveSessionsV3SyncPreference(preference pebblestore.ModelPre
 }
 
 func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.SessionSnapshot, defaultPreference pebblestore.ModelPreference, defaultContextWindow, defaultMaxOutputTokens int, resolvePreference func(pebblestore.ModelPreference) sessionsV3SyncResolvedPreference) sessionsV3AgentModelPolicy {
-	if session.ModelProfile == nil && strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModeAuto) && s != nil && s.agents != nil {
-		if name := firstNonEmpty(sessionsV3MetadataString(session.Metadata, "resolved_agent_name"), sessionsV3MetadataString(session.Metadata, "agent_name")); name != "" {
-			if current, err := s.agents.ResolveAgentForAccount(session.AccountScopeID, name); err == nil {
-				if transition, err := modelpolicy.ResolveModeTransition(session, current, session.Mode, func(preference pebblestore.ModelPreference) (modelpolicy.ResolvedPreference, error) {
-					resolved := sessionsV3SyncResolvedPreference{Preference: preference}
-					if resolvePreference != nil {
-						resolved = resolvePreference(preference)
-					}
-					return modelpolicy.ResolvedPreference{Preference: resolved.Preference, ContextWindow: resolved.ContextWindow, MaxOutputTokens: resolved.MaxOutputTokens}, nil
-				}); err == nil && transition.Preference == defaultPreference {
-					return transition.AgentModelPolicy
-				}
-			}
-		}
-	}
+	// Projection must depend only on the immutable session snapshot. In
+	// particular, do not re-read the mutable account agent profile while
+	// hydrating or replaying a session: metadata and ModelProfile are the
+	// durable policy inputs for every client surface.
 	policy := sessionsV3AgentModelPolicy{
 		AgentName:       sessionsV3MetadataString(session.Metadata, "agent_name"),
 		ResolvedAgent:   sessionsV3MetadataString(session.Metadata, "resolved_agent_name"),
@@ -967,80 +962,41 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 		}
 		return policy
 	}
-	profile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
-	if err != nil {
-		return policy
-	}
-	if strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.SwarmAgentID) {
-		return policy
-	}
-	if strings.TrimSpace(profile.Name) != "" {
-		policy.AgentName = strings.TrimSpace(profile.Name)
-		policy.ResolvedAgent = strings.TrimSpace(profile.Name)
-	}
-	agentPref := sessionsV3AgentPresetPreference(profile)
-	policySource := "agent_preset"
-	policyReason := "Agent model is set in agent settings; update the agent model in agent settings to choose a different model."
-	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
-		if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
-			agentPref = sessionsV3SplitAgentPreference(profile.PlanProvider, profile.PlanModel, profile.PlanThinking, profile.PlanServiceTier, profile.UpdatedAt)
-			policySource = "agent_plan_preset"
-			policyReason = "Agent plan model is set in agent settings; exit plan mode uses the configured auto model."
-		} else {
-			agentPref = sessionsV3SplitAgentPreference(profile.AutoProvider, profile.AutoModel, profile.AutoThinking, profile.AutoServiceTier, profile.UpdatedAt)
-			policySource = "agent_auto_preset"
-			policyReason = "Agent auto model is set in agent settings; enter plan mode uses the configured plan model."
-		}
-	}
-	if strings.TrimSpace(agentPref.Provider) == "" || strings.TrimSpace(agentPref.Model) == "" {
-		return policy
-	}
-	policy.Source = policySource
-	policy.Locked = true
-	policy.Reason = policyReason
-	policy.Preference = normalizeSessionsV3ModelPreference(agentPref)
-	policy.ContextWindow = 0
-	policy.MaxOutputTokens = 0
-	if resolvePreference != nil {
-		resolved := resolvePreference(policy.Preference)
-		policy.Preference = resolved.Preference
-		policy.ContextWindow = resolved.ContextWindow
-		policy.MaxOutputTokens = resolved.MaxOutputTokens
-	}
 	return policy
 }
 
-func sessionsV3SplitAgentPreference(provider, model, thinking, serviceTier string, updatedAt int64) pebblestore.ModelPreference {
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	model = strings.TrimSpace(model)
-	if provider == "" || model == "" {
-		return pebblestore.ModelPreference{}
-	}
-	return pebblestore.ModelPreference{
-		Provider:    provider,
-		Model:       model,
-		Thinking:    normalizeSessionV3ThinkingWithProvider(provider, thinking),
-		ServiceTier: strings.TrimSpace(serviceTier),
-		UpdatedAt:   updatedAt,
-	}
-}
-
-func sessionsV3SyncSessionShells(sessions map[string]pebblestore.SessionSnapshot) map[string]pebblestore.SessionSnapshot {
+func sessionsV3SyncSessionShells(sessions map[string]pebblestore.SessionSnapshot) (map[string]pebblestore.SessionSnapshot, error) {
 	if len(sessions) == 0 {
-		return sessions
+		return sessions, nil
 	}
 	out := make(map[string]pebblestore.SessionSnapshot, len(sessions))
 	for sessionID, session := range sessions {
-		out[sessionID] = sessionsV3SyncSessionShell(session)
+		shell, err := sessionsV3SyncSessionShell(session)
+		if err != nil {
+			return nil, err
+		}
+		out[sessionID] = shell
 	}
-	return out
+	return out, nil
 }
 
-func sessionsV3SyncSessionShell(session pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
-	session.Preference = pebblestore.ModelPreference{}
+func sessionsV3SyncSessionShell(session pebblestore.SessionSnapshot) (pebblestore.SessionSnapshot, error) {
+	if session.ModelProfile != nil {
+		profilePreference, ok := sessionsV3ProfilePreference(session)
+		if !ok {
+			if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) && session.ModelProfile.Plan == nil {
+				return pebblestore.SessionSnapshot{}, errors.New("session model profile has Plan mode disabled")
+			}
+			return pebblestore.SessionSnapshot{}, errors.New("session model profile current mode selection has no provider/model")
+		}
+		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
+		session.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(session.ModelProfile)
+	} else {
+		session.Preference = normalizeSessionsV3ModelPreference(session.Preference)
+	}
 	session.Lifecycle = nil
 	session.Metadata = sessionsV3SyncShellMetadata(session.Metadata)
-	return session
+	return session, nil
 }
 
 func sessionsV3SyncShellMetadata(metadata map[string]any) map[string]any {

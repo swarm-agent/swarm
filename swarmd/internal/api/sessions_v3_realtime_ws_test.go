@@ -963,6 +963,17 @@ func TestV3RealtimeWorksetVisibilityChangedInDiscoversAndAutoSubscribes(t *testi
 	moved := *created.Session
 	moved.WorkspacePath = "/workspace/visible"
 	moved.WorkspaceName = "visible"
+	moved.Preference = pebblestore.ModelPreference{Provider: "stale", Model: "stale-model"}
+	moved.ModelProfile = &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "favorite-action",
+		ActionFavoriteName: "Action Favorite",
+		Action:             pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model"},
+		PlanFavoriteID:     "favorite-plan",
+		PlanFavoriteName:   "Plan Favorite",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "xhigh"},
+		AppliedAt:          1900,
+	}
 
 	httpServer := newV3RealtimeHTTPTestServer(t, server)
 	conn := dialV3RealtimeStream(t, httpServer.URL)
@@ -992,6 +1003,9 @@ func TestV3RealtimeWorksetVisibilityChangedInDiscoversAndAutoSubscribes(t *testi
 	assertV3RealtimeFrame(t, discovered, V3RealtimeKindWorksetSessionDiscovered, created.SessionID, 0)
 	if discovered.WorksetID != "desktop:workspace:/workspace/visible" || discovered.WorksetSubscriptionID != "desktop-client:desktop:workspace:/workspace/visible" || !discovered.AutoSubscribed || discovered.SubscriptionID == "" || discovered.EventType != "session.visibility.changed" {
 		t.Fatalf("visibility-in discovery frame = %+v", discovered)
+	}
+	if discovered.Session == nil || discovered.Session.Preference.Model != "action-model" || discovered.Session.ModelProfile == nil || discovered.Session.ModelProfile.ActionFavoriteID != "favorite-action" {
+		t.Fatalf("visibility-in discovery model projection = %+v", discovered.Session)
 	}
 	assertV3RealtimeSignedCursorSeq(t, server, discovered.EndpointCursor, visibilityChanged.RealtimeOutbox.EndpointSeq)
 
