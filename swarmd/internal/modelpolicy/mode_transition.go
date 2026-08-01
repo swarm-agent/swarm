@@ -100,10 +100,15 @@ func ResolveModeTransition(session pebblestore.SessionSnapshot, activeProfile pe
 		}
 		policy.Locked = true
 		policy.Reason = "Session model profile controls the model; clear or replace the session profile to change it."
-		policy.ProfileID = strings.TrimSpace(session.ModelProfile.SavedProfileID)
-		policy.ProfileName = strings.TrimSpace(session.ModelProfile.Name)
 		policy.ProfileSource = strings.TrimSpace(session.ModelProfile.Source)
-		policy.ProfileMode = strings.TrimSpace(session.ModelProfile.ModelMode)
+		policy.ProfileMode = targetMode
+		if targetMode == sessionruntime.ModePlan {
+			policy.ProfileID = strings.TrimSpace(session.ModelProfile.PlanFavoriteID)
+			policy.ProfileName = strings.TrimSpace(session.ModelProfile.PlanFavoriteName)
+		} else {
+			policy.ProfileID = strings.TrimSpace(session.ModelProfile.ActionFavoriteID)
+			policy.ProfileName = strings.TrimSpace(session.ModelProfile.ActionFavoriteName)
+		}
 	} else if !strings.EqualFold(agentName, agentruntime.SwarmAgentID) || agentProfileHasModePolicy(profile, targetMode) {
 		var ok bool
 		preference, policy.Source, policy.Reason, ok = agentPreferenceForMode(preference, profile, targetMode)
@@ -180,16 +185,20 @@ func agentPreferenceForMode(base pebblestore.ModelPreference, profile pebblestor
 }
 
 func modelProfilePreference(profile pebblestore.SessionModelProfileSnapshot, mode string) (pebblestore.ModelPreference, error) {
-	selection := profile.Single
-	if profile.ModelMode == pebblestore.ModelProfileModeSplit {
-		if mode == sessionruntime.ModePlan {
-			selection = profile.Plan
-		} else {
-			selection = profile.Auto
+	selection := &profile.Action
+	selectionName := strings.TrimSpace(profile.ActionFavoriteName)
+	if mode == sessionruntime.ModePlan {
+		selection = profile.Plan
+		selectionName = strings.TrimSpace(profile.PlanFavoriteName)
+		if selection == nil {
+			return pebblestore.ModelPreference{}, errors.New("session model profile has Plan mode disabled")
 		}
 	}
 	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
-		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile %q has no %s provider/model", strings.TrimSpace(profile.Name), mode)
+		if selectionName == "" {
+			selectionName = mode
+		}
+		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile selection %q has no provider/model", selectionName)
 	}
 	return pebblestore.ModelPreference{
 		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),
