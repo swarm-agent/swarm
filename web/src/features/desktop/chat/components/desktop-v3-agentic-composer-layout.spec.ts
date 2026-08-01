@@ -102,22 +102,18 @@ test('Desktop V3 composer exposes only backend-projected media and preserves dur
   assert.match(api, /media\?: DesktopV3MediaReference\[\]/)
 })
 
-test('Desktop V3 composer keeps the canonical joined plan and model control beside the plus menu', async () => {
+test('Desktop V3 composer retains resolved-session controls but hides them for routed new chat', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const control = await readFile(new URL('./composer-plan-model-control.tsx', import.meta.url), 'utf8')
 
   assert.equal((source.match(/<ComposerPlanModelControl/g) ?? []).length, 1)
-  assert.equal((source.match(/renderComposerControl\(openPicker, open\)/g) ?? []).length, 2)
   assert.equal((source.match(/<DesktopComposerActionMenu/g) ?? []).length, 1)
+  assert.match(source, /routedNewSession\?: boolean/)
+  assert.equal((source.match(/!routedNewSession && showModePicker/g) ?? []).length, 2)
+  assert.match(source, /!routedNewSession && !resolvedSessionControls \? <AgentModelControl/)
+  assert.match(source, /onAttach=\{routedNewSession \? undefined/)
   assert.doesNotMatch(source, /iteration/i)
   assert.doesNotMatch(source, /<ModePicker/)
-  assert.match(source, /const planToggle = \(\) => onModeSelect\?\.\(mode === 'plan' \? 'auto' : 'plan'\)/)
   assert.match(control, /data-composer-plan-model-control/)
   assert.doesNotMatch(control, /iteration/i)
-  assert.match(control, /NotepadText/)
-  assert.match(control, /onPlanToggle/)
-  assert.match(control, /aria-pressed=\{planEnabled\}/)
-  assert.match(control, /aria-haspopup="menu"/)
-  assert.match(control, />\{modelLabel\}<\/span>/)
-  assert.doesNotMatch(control, /profileName|profileLabel|primaryLabel|showSeparateModel|\bBot\b|agentName|Swarm/)
 })

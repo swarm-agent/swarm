@@ -21,18 +21,10 @@ import {
 } from './desktop-v3-existing-conversation-pane'
 import { resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import {
-  completeDesktopV3NewSessionStarted,
-} from './desktop-v3-new-session-pane'
-import {
   createDesktopV3ExistingMessageOperation,
   persistDesktopV3ExistingMessageOperation,
   loadDesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
-import {
-  createDesktopV3NewSessionOperation,
-  persistDesktopV3NewSessionOperation,
-  loadDesktopV3NewSessionOperation,
-} from '../../session-v3/new-session-flow'
 import type { DesktopChatRoute } from '../services/chat-routing'
 import type { AgentProfileRecord } from '../types/chat'
 
@@ -129,91 +121,6 @@ test('Existing message completion clears the mounted composer draft after send',
   assert.equal(loadDesktopV3ExistingMessageOperation('session-a'), null)
   assert.equal(operationRef, null)
   assert.equal(draft, '')
-}))
-
-test('Workspace A creation completion after navigation does not navigate away from workspace B or clear B retained operation', () => withSessionStorage(() => {
-  const operationA = createDesktopV3NewSessionOperation({
-    workspacePath: '/workspace-a',
-    workspaceName: 'workspace-a',
-    route,
-    prompt: 'blocked A',
-    agentName: 'swarm',
-  })
-  const operationB = createDesktopV3NewSessionOperation({
-    workspacePath: '/workspace-b',
-    workspaceName: 'workspace-b',
-    route: {
-      ...route,
-      hostWorkspacePath: '/workspace-b',
-      runtimeWorkspacePath: '/workspace-b',
-      workspaceName: 'workspace-b',
-    },
-    prompt: 'retained B',
-    agentName: 'swarm',
-  })
-  persistDesktopV3NewSessionOperation(operationA)
-  persistDesktopV3NewSessionOperation(operationB)
-
-  let draftA = operationA.firstMessageRequest.content
-  let visibleWorkspacePath = '/workspace-b'
-  let operationRefB = operationB
-  const navigations: string[] = []
-  completeDesktopV3NewSessionStarted({
-    workspacePath: '/workspace-a',
-    operation: operationA,
-    mountedRef: { current: false },
-    setOperation: () => {
-      operationRefB = operationA
-    },
-    setDraft: (nextDraft) => {
-      draftA = nextDraft
-    },
-    navigateToSession: (sessionId) => {
-      visibleWorkspacePath = '/workspace-a'
-      navigations.push(sessionId)
-    },
-  })
-
-  assert.equal(loadDesktopV3NewSessionOperation('/workspace-a'), null)
-  assert.equal(draftA, operationA.firstMessageRequest.content)
-  assert.equal(loadDesktopV3NewSessionOperation('/workspace-b')?.operationId, operationB.operationId)
-  assert.equal(operationRefB.operationId, operationB.operationId)
-  assert.equal(visibleWorkspacePath, '/workspace-b')
-  assert.deepEqual(navigations, [])
-}))
-
-test('New session completion clears the mounted composer draft after send', () => withSessionStorage(() => {
-  const operation = createDesktopV3NewSessionOperation({
-    workspacePath: '/workspace-a',
-    workspaceName: 'workspace-a',
-    route,
-    prompt: 'sent text',
-    agentName: 'swarm',
-  })
-  persistDesktopV3NewSessionOperation(operation)
-
-  let draft = operation.firstMessageRequest.content
-  let operationRef: typeof operation | null = operation
-  const navigations: string[] = []
-  completeDesktopV3NewSessionStarted({
-    workspacePath: '/workspace-a',
-    operation,
-    mountedRef: { current: true },
-    setOperation: (nextOperation) => {
-      operationRef = nextOperation
-    },
-    setDraft: (nextDraft) => {
-      draft = nextDraft
-    },
-    navigateToSession: (sessionId) => {
-      navigations.push(sessionId)
-    },
-  })
-
-  assert.equal(loadDesktopV3NewSessionOperation('/workspace-a'), null)
-  assert.equal(operationRef, null)
-  assert.equal(draft, '')
-  assert.deepEqual(navigations, [operation.sessionId])
 }))
 
 

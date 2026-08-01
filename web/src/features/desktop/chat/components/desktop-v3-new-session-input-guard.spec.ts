@@ -2,19 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-test('Desktop V3 new session input initializes from defaults without overwriting user changes', async () => {
+test('Desktop V3 new session input is neutral until the routed response resolves', async () => {
   const source = await readFile(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /const \[selectedAgent, setSelectedAgent\] = useState\(agentNameProp\.trim\(\) \|\| agentState\.activePrimary \|\| ''\)/)
-  assert.match(source, /const modeManuallySelectedRef = useRef\(false\)/)
-  assert.match(source, /const agentManuallySelectedRef = useRef\(false\)/)
-  assert.match(source, /const preferenceManuallyChangedRef = useRef\(false\)/)
-  assert.match(source, /if \(modeManuallySelectedRef\.current\) return[\s\S]*setMode\(defaultMode\)/)
-  assert.match(source, /if \(agentManuallySelectedRef\.current\) return current/)
-  assert.match(source, /if \(preferenceManuallyChangedRef\.current\) return current/)
-  assert.match(source, /function handleModeChange\(nextMode: DesktopSessionMode\)[\s\S]*modeManuallySelectedRef\.current = true[\s\S]*setMode\(nextMode\)/)
-  assert.match(source, /updateDraftModelPreference\(\{[\s\S]*thinking: thinkingForDraftDefault\(nextPreference\.thinking\)[\s\S]*queryClient\.setQueryData\(draftModelQueryKey\(\), updated\)/)
-  assert.match(source, /agentProfile && \(agentProfile\.provider\.trim\(\) \|\| agentProfile\.model\.trim\(\)\)\) return/)
-  assert.match(source, /void persistDraftModelDefault\(next\)/)
-  assert.match(source, /onModeChange=\{handleModeChange\}/)
+  assert.match(source, /DesktopV3RoutedNewSessionController/)
+  assert.match(source, /DesktopV3RoutedPendingShell/)
+  assert.match(source, /routedNewSession/)
+  assert.match(source, /canSubmit=\{Boolean\(draft\.trim\(\)\)\}/)
+  assert.doesNotMatch(source, /selectedRoute|selectedAgent|selectedModel|modelProfile|handleModeSelect/)
+  assert.doesNotMatch(source, /draftModelQueryOptions|agentStateQueryOptions|modelOptionsQueryOptions/)
 })

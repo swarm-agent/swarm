@@ -138,14 +138,14 @@ export interface DesktopV3AgenticComposerProps {
   mediaCapability?: DesktopV3MediaCapability | null
   onUploadAttachment?: (file: File, signal: AbortSignal) => Promise<DesktopV3MediaReference>
   onStop?: () => void | Promise<void>
-  mode: DesktopSessionMode
+  mode?: DesktopSessionMode
   onModeSelect?: (mode: DesktopSessionMode) => void
   showModePicker?: boolean
   resolvedSessionControls?: boolean
   executionLabel?: string
-  currentAgent: string
-  selectedPrimaryAgent: string
-  agents: AgentProfileRecord[]
+  currentAgent?: string
+  selectedPrimaryAgent?: string
+  agents?: AgentProfileRecord[]
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
   onModelProfileSelect?: (profileId: string) => void | Promise<void>
@@ -155,8 +155,8 @@ export interface DesktopV3AgenticComposerProps {
   modelProfilesLoading?: boolean
   modelProfilesError?: string | null
   onUseAgentModelDefault?: () => void | Promise<void>
-  modelOptions: ModelOptionRecord[]
-  selectedModelKey: string
+  modelOptions?: ModelOptionRecord[]
+  selectedModelKey?: string
   selectedServiceTier?: string
   agentSettingsOpenSignal?: number
   agentSettingsInitialAgent?: string
@@ -170,7 +170,7 @@ export interface DesktopV3AgenticComposerProps {
   onOpenAuthSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   agentModelControlBusy?: boolean
-  thinking: string
+  thinking?: string
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
@@ -184,6 +184,8 @@ export interface DesktopV3AgenticComposerProps {
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
   focusSignal?: number
   workspacePath?: string
+  /** Neutral pre-route composer: hides all mode, agent, and model authority controls. */
+  routedNewSession?: boolean
 }
 
 export const DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME = "mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5";
@@ -229,14 +231,14 @@ export function DesktopV3AgenticComposer({
   mediaCapability = null,
   onUploadAttachment,
   onStop,
-  mode,
+  mode = 'auto',
   onModeSelect,
   showModePicker = true,
   resolvedSessionControls = false,
   executionLabel,
-  currentAgent,
-  selectedPrimaryAgent,
-  agents,
+  currentAgent = '',
+  selectedPrimaryAgent = '',
+  agents = [],
   modelProfiles = [],
   activeModelProfile,
   onModelProfileSelect,
@@ -246,8 +248,8 @@ export function DesktopV3AgenticComposer({
   modelProfilesLoading = false,
   modelProfilesError = null,
   onUseAgentModelDefault: _onUseAgentModelDefault,
-  modelOptions,
-  selectedModelKey,
+  modelOptions = [],
+  selectedModelKey = '',
   selectedServiceTier = '',
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = '',
@@ -261,7 +263,7 @@ export function DesktopV3AgenticComposer({
   onOpenAuthSettings,
   onConfirmAgentSettings,
   agentModelControlBusy = false,
-  thinking,
+  thinking = '',
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
@@ -275,6 +277,7 @@ export function DesktopV3AgenticComposer({
   onDropTodo,
   focusSignal = 0,
   workspacePath = '',
+  routedNewSession = false,
 }: DesktopV3AgenticComposerProps) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const composerRootRef = useRef<HTMLDivElement | null>(null)
@@ -649,7 +652,7 @@ export function DesktopV3AgenticComposer({
     }
     void onSlashCommand?.(command, draft)
     if (command.action.kind === 'open-model-picker') {
-      openAgentSetup(currentAgent)
+      if (!routedNewSession) openAgentSetup(currentAgent)
       onDraftChange('')
       return
     }
@@ -659,7 +662,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
+  }, [currentAgent, draft, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
@@ -715,6 +718,10 @@ export function DesktopV3AgenticComposer({
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
+    if (routedNewSession) {
+      setAttachmentError('Attachments will be available after routed staging is connected.')
+      return
+    }
     if (uploadingAttachment) {
       setAttachmentError('Wait for the current attachment batch to finish before adding more files.')
       return
@@ -780,7 +787,7 @@ export function DesktopV3AgenticComposer({
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null
       setUploadingAttachment(false)
     }
-  }, [attachments.length, draft, effectiveMediaCapability, mediaCapability?.denial_reasons, onUploadAttachment, textAttachments, uploadingAttachment])
+  }, [attachments.length, draft, effectiveMediaCapability, mediaCapability?.denial_reasons, onUploadAttachment, routedNewSession, textAttachments, uploadingAttachment])
 
   useEffect(() => {
     const dropZone = composerRootRef.current?.closest<HTMLElement>('[data-desktop-chat-drop-zone]') ?? null
@@ -1030,8 +1037,8 @@ export function DesktopV3AgenticComposer({
             <DesktopComposerActionMenu
               disabled={composerDisabled}
               onPrimeTask={handlePrimeTask}
-              onAttach={() => fileInputRef.current?.click()}
-              attachDisabled={composerDisabled || uploadingAttachment}
+              onAttach={routedNewSession ? undefined : () => fileInputRef.current?.click()}
+              attachDisabled={routedNewSession || composerDisabled || uploadingAttachment}
               attaching={uploadingAttachment}
               contextLabel={contextLabel}
               contextTooltip={contextTooltip}
@@ -1044,11 +1051,11 @@ export function DesktopV3AgenticComposer({
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : showModePicker ? (
+                {primedTaskMode ? taskModeIndicator() : !routedNewSession && showModePicker ? (
                   resolvedSessionControls
                     ? <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} />
                     : renderComposerControl(openAgentSetup, false)
-                ) : executionLabel ? (
+                ) : executionLabel && !routedNewSession ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>
@@ -1071,13 +1078,13 @@ export function DesktopV3AgenticComposer({
             </div>
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : showModePicker ? (
+                {primedTaskMode ? taskModeIndicator() : !routedNewSession && showModePicker ? (
                   resolvedSessionControls
                     ? <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} />
                     : renderComposerControl(openAgentSetup, false)
-                ) : (
+                ) : !routedNewSession ? (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
-                )}
+                ) : null}
 
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -1090,7 +1097,7 @@ export function DesktopV3AgenticComposer({
           </div>
         </div>
       </div>
-      {!resolvedSessionControls ? <AgentModelControl
+      {!routedNewSession && !resolvedSessionControls ? <AgentModelControl
         currentAgent={currentAgent}
         selectedPrimaryAgent={selectedPrimaryAgent}
         agents={selectableAgents}
