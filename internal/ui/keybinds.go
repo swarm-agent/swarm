@@ -125,7 +125,6 @@ const (
 	KeybindAgentsToggleEnabled   KeybindID = "agents.toggle_enabled"
 	KeybindAgentsEdit            KeybindID = "agents.edit"
 	KeybindAgentsEditAlt         KeybindID = "agents.edit_alt"
-	KeybindAgentsNew             KeybindID = "agents.new"
 	KeybindAgentsFilterAll       KeybindID = "agents.filter_all"
 	KeybindAgentsFilterPrimary   KeybindID = "agents.filter_primary"
 	KeybindAgentsFilterSubagent  KeybindID = "agents.filter_subagent"
@@ -308,7 +307,6 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindAgentsToggleEnabled, Group: "Agents Modal", Action: "Toggle selected enabled", Default: "t", Editable: true},
 	{ID: KeybindAgentsEdit, Group: "Agents Modal", Action: "Edit selected", Default: "e", Editable: true},
 	{ID: KeybindAgentsEditAlt, Group: "Agents Modal", Action: "Edit selected (alt)", Default: "p", Editable: true},
-	{ID: KeybindAgentsNew, Group: "Agents Modal", Action: "Create new agent", Default: "n", Editable: true},
 	{ID: KeybindAgentsFilterAll, Group: "Agents Modal", Action: "Filter all", Default: "0", Editable: true},
 	{ID: KeybindAgentsFilterPrimary, Group: "Agents Modal", Action: "Filter primary", Default: "1", Editable: true},
 	{ID: KeybindAgentsFilterSubagent, Group: "Agents Modal", Action: "Filter subagent", Default: "2", Editable: true},

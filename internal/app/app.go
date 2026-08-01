@@ -5855,6 +5855,30 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	switch action.Kind {
 	case ui.AgentsModalActionRefresh:
 		a.refreshAgentsModalData("Refreshing agent profiles...")
+	case ui.AgentsModalActionCreateModelProfile:
+		if action.ModelProfile == nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError("model profile payload is missing")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		profile, err := a.api.CreateModelProfile(ctx, *action.ModelProfile)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("create model profile failed: %v", err))
+			return
+		}
+		state, err := a.api.ListModelProfiles(ctx)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("model profile created, but refresh failed: %v", err))
+			a.queueReload(false)
+			return
+		}
+		a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
+		a.refreshAgentsModalData("model profile created: " + emptyFallback(strings.TrimSpace(profile.Name), profile.ProfileID))
+		a.queueReload(false)
 	case ui.AgentsModalActionSetProfileDefault:
 		profileID := strings.TrimSpace(action.ModelProfileID)
 		if profileID == "" {

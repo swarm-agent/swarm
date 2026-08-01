@@ -37,6 +37,28 @@ type ModelProfileState struct {
 	DefaultProfileID string         `json:"default_profile_id"`
 }
 
+// ModelProfileInput is the canonical saved-profile payload shared by the TUI
+// and Desktop model-profile API.
+type ModelProfileInput struct {
+	Name      string                 `json:"name"`
+	ModelMode string                 `json:"model_mode"`
+	Single    *ModelProfileSelection `json:"single,omitempty"`
+	Plan      *ModelProfileSelection `json:"plan,omitempty"`
+	Auto      *ModelProfileSelection `json:"auto,omitempty"`
+}
+
+// CreateModelProfile persists an account-owned saved profile through the same
+// daemon endpoint used by Desktop.
+func (c *API) CreateModelProfile(ctx context.Context, input ModelProfileInput) (ModelProfile, error) {
+	var response struct {
+		Profile ModelProfile `json:"model_profile"`
+	}
+	if err := c.postJSON(ctx, "/v1/model-profiles", input, &response, true); err != nil {
+		return ModelProfile{}, err
+	}
+	return response.Profile, nil
+}
+
 func (c *API) ListModelProfiles(ctx context.Context) (ModelProfileState, error) {
 	var state ModelProfileState
 	if err := c.getJSON(ctx, "/v1/model-profiles", &state, true); err != nil {

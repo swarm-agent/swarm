@@ -65,13 +65,14 @@ type AgentsModalData struct {
 type AgentsModalActionKind string
 
 const (
-	AgentsModalActionRefresh           AgentsModalActionKind = "refresh"
-	AgentsModalActionSetUtilityAI      AgentsModalActionKind = "set-utility-ai"
-	AgentsModalActionResetDefaults     AgentsModalActionKind = "reset-defaults"
-	AgentsModalActionActivatePrimary   AgentsModalActionKind = "activate-primary"
-	AgentsModalActionUpsert            AgentsModalActionKind = "upsert"
-	AgentsModalActionDelete            AgentsModalActionKind = "delete"
-	AgentsModalActionSetProfileDefault AgentsModalActionKind = "set-profile-default"
+	AgentsModalActionRefresh            AgentsModalActionKind = "refresh"
+	AgentsModalActionSetUtilityAI       AgentsModalActionKind = "set-utility-ai"
+	AgentsModalActionResetDefaults      AgentsModalActionKind = "reset-defaults"
+	AgentsModalActionActivatePrimary    AgentsModalActionKind = "activate-primary"
+	AgentsModalActionUpsert             AgentsModalActionKind = "upsert"
+	AgentsModalActionCreateModelProfile AgentsModalActionKind = "create-model-profile"
+	AgentsModalActionDelete             AgentsModalActionKind = "delete"
+	AgentsModalActionSetProfileDefault  AgentsModalActionKind = "set-profile-default"
 )
 
 type AgentsModalUpsert struct {
@@ -108,6 +109,7 @@ type AgentsModalAction struct {
 	Name           string
 	Upsert         *AgentsModalUpsert
 	UtilityAI      *AgentsModalUtilityAI
+	ModelProfile   *client.ModelProfileInput
 	StatusHint     string
 	ModelProfileID string
 }
@@ -120,6 +122,8 @@ const (
 	agentsModalFocusSearch
 )
 
+const agentsModalCreateProfileOption = "__create_new_profile__"
+
 type agentsModalEditor struct {
 	Mode                string
 	TargetName          string
@@ -127,7 +131,9 @@ type agentsModalEditor struct {
 	InitialFields       []agentsModalEditorField
 	Selected            int
 	Editing             bool
-	RequirePrompt       bool
+	EditingOption       string
+	EditingOptionSet    bool
+	CreateModelProfile  bool
 	AgentSettingsLocked bool
 	ModelReadOnly       bool
 }
@@ -406,7 +412,7 @@ func (p *HomePage) closeAgentsModalEditorDiscard() {
 	}
 	p.agentsModal.Focus = agentsModalFocusProfiles
 	p.agentsModal.DetailScroll = 0
-	p.agentsModal.Status = "changes discarded; back to agent cards"
+	p.agentsModal.Status = "changes discarded; back to agent list"
 	p.dismissAgentsModalUnsavedConfirm()
 	p.clearAgentsModalDeleteConfirm()
 }
@@ -452,7 +458,7 @@ func (p *HomePage) handleAgentsModalKey(ev *tcell.EventKey) {
 			}
 			p.agentsModal.Focus = agentsModalFocusProfiles
 			p.agentsModal.DetailScroll = 0
-			p.agentsModal.Status = "back to agent cards"
+			p.agentsModal.Status = "back to agent list"
 			p.clearAgentsModalDeleteConfirm()
 			return
 		}
@@ -476,10 +482,9 @@ func (p *HomePage) handleAgentsModalKey(ev *tcell.EventKey) {
 		p.clearAgentsModalDeleteConfirm()
 		return
 	case p.keybinds.Match(ev, KeybindModalFocusRight):
-		switch p.agentsModal.Focus {
-		case agentsModalFocusProfiles:
-			p.agentsModal.Focus = agentsModalFocusDetails
-		default:
+		if p.agentsModal.Focus == agentsModalFocusProfiles {
+			p.focusAgentsModalDetails()
+		} else {
 			p.agentsModal.Focus = agentsModalFocusSearch
 		}
 		p.clearAgentsModalDeleteConfirm()
@@ -571,8 +576,26 @@ func (p *HomePage) handleAgentsModalRune(ev *tcell.EventKey) {
 			Kind:       AgentsModalActionRefresh,
 			StatusHint: "Refreshing agent profiles...",
 		})
+	case p.keybinds.Match(ev, KeybindAgentsRestoreDefaults):
+		p.openAgentsModalUtilityAIEditor()
+	case p.keybinds.Match(ev, KeybindAgentsResetDefaults):
+		if p.agentsModal.ConfirmResetDefaults {
+			p.enqueueAgentsModalAction(AgentsModalAction{
+				Kind:       AgentsModalActionResetDefaults,
+				StatusHint: "Resetting all agents to defaults...",
+			})
+			return
+		}
+		p.agentsModal.ConfirmResetDefaults = true
+		p.agentsModal.Status = "Warning: Shift+Z again resets all agents/tools to built-in defaults and deletes custom agents"
+	case p.keybinds.Match(ev, KeybindAgentsActivate), p.keybinds.Match(ev, KeybindAgentsActivateAlt):
+		p.handleAgentsActivateSelected()
+	case p.keybinds.Match(ev, KeybindAgentsDelete):
+		p.handleAgentsDeleteSelected()
+	case p.keybinds.Match(ev, KeybindAgentsToggleEnabled):
+		p.toggleAgentsSelectedEnabled()
 	case p.keybinds.Match(ev, KeybindAgentsEdit), p.keybinds.Match(ev, KeybindAgentsEditAlt):
-		p.agentsModal.Focus = agentsModalFocusDetails
+		p.focusAgentsModalDetails()
 	case p.keybinds.Match(ev, KeybindAgentsFilterAll):
 		p.agentsModal.FilterMode = "all"
 		p.agentsModal.reconcileSelections()
@@ -617,10 +640,6 @@ func (p *HomePage) handleAgentsModalMouseWheel(x, y, delta int) {
 	if delta == 0 {
 		return
 	}
-	if p.agentsModal.Editor != nil || p.agentsModal.Focus == agentsModalFocusDetails {
-		p.scrollAgentsModalDetail(delta * 3)
-		return
-	}
 	if target, ok := p.agentsModalTargetAt(x, y); ok {
 		switch target.Action {
 		case "agents-profile":
@@ -652,7 +671,7 @@ func (p *HomePage) activateAgentsModalTarget(target clickTarget) {
 		p.clearAgentsModalDeleteConfirm()
 		p.openAgentsModalEditEditor(p.agentsModal.Profiles[target.Index])
 		p.agentsModal.Focus = agentsModalFocusProfiles
-		p.agentsModal.Status = fmt.Sprintf("selected agent: %s • Enter edits model setup", p.selectedAgentsModalName())
+		p.agentsModal.Status = fmt.Sprintf("selected agent: %s • Enter or Right opens model settings", p.selectedAgentsModalName())
 	case "agents-detail":
 		p.agentsModal.Focus = agentsModalFocusDetails
 		if target.Index >= 0 && target.Index < len(p.agentsModal.Profiles) {
@@ -663,10 +682,29 @@ func (p *HomePage) activateAgentsModalTarget(target clickTarget) {
 		if editor == nil || target.Index < 0 || target.Index >= len(editor.Fields) {
 			return
 		}
+		p.beginAgentsModalEditorFieldEdit(editor, target.Index)
+		p.agentsModal.Focus = agentsModalFocusDetails
+		p.agentsModal.Status = fmt.Sprintf("editing %s • Enter commits the choice", strings.ToLower(strings.TrimSpace(editor.Fields[target.Index].Label)))
+		p.agentsModal.Error = ""
+	case "agents-editor-option", "agents-model-profile-option":
+		editor := p.agentsModal.Editor
+		if editor == nil || target.Index < 0 || target.Index >= len(editor.Fields) {
+			return
+		}
 		editor.Selected = target.Index
+		editor.Fields[target.Index].Value = target.Meta
 		editor.Editing = false
 		p.agentsModal.Focus = agentsModalFocusDetails
-		p.agentsModal.Status = fmt.Sprintf("selected %s • Enter opens choices", strings.ToLower(strings.TrimSpace(editor.Fields[target.Index].Label)))
+		if target.Action == "agents-model-profile-option" {
+			if target.Meta == agentsModalCreateProfileOption {
+				p.openAgentsModalCreateModelProfileEditor()
+				return
+			}
+			p.applyAgentsModalModelProfile(target.Meta)
+			return
+		}
+		p.syncAgentsModalEditorDependentOptions(editor)
+		p.agentsModal.Status = fmt.Sprintf("field updated: %s", strings.ToLower(strings.TrimSpace(editor.Fields[target.Index].Label)))
 		p.agentsModal.Error = ""
 	case "agents-profile-default":
 		p.queueAgentsModalProfileDefault(target.Meta)
@@ -686,22 +724,29 @@ func (p *HomePage) handleAgentsModalEnter() {
 	case agentsModalFocusSearch:
 		p.agentsModal.Focus = agentsModalFocusProfiles
 	case agentsModalFocusProfiles:
-		profile, ok := p.selectedAgentsModalProfile()
-		if !ok {
-			p.agentsModal.Status = "No agent selected"
-			return
-		}
-		if p.agentsModal.Editor == nil || !strings.EqualFold(p.agentsModal.Editor.TargetName, profile.Name) {
-			p.openAgentsModalEditEditor(profile)
-		}
-		p.agentsModal.Focus = agentsModalFocusDetails
-		p.agentsModal.DetailScroll = 0
-		p.agentsModal.Status = fmt.Sprintf("Editing model setup: %s", profile.Name)
+		p.focusAgentsModalDetails()
 	case agentsModalFocusDetails:
 		if p.agentsModal.Editor != nil {
 			p.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 		}
 	}
+}
+
+func (p *HomePage) focusAgentsModalDetails() {
+	if p == nil {
+		return
+	}
+	profile, ok := p.selectedAgentsModalProfile()
+	if !ok {
+		p.agentsModal.Status = "No agent selected"
+		return
+	}
+	if p.agentsModal.Editor == nil || !strings.EqualFold(p.agentsModal.Editor.TargetName, profile.Name) {
+		p.openAgentsModalEditEditor(profile)
+	}
+	p.agentsModal.Focus = agentsModalFocusDetails
+	p.agentsModal.DetailScroll = 0
+	p.agentsModal.Status = fmt.Sprintf("Editing model settings: %s", agentsModalDisplayName(profile.Name))
 }
 
 func (p *HomePage) handleAgentsActivateSelected() {
@@ -781,43 +826,45 @@ func (p *HomePage) handleAgentsDeleteSelected() {
 	p.clearAgentsModalDeleteConfirm()
 }
 
-func (p *HomePage) openAgentsModalCreateEditor() {
-	providerOptions := p.agentsModalProviderOptions()
-	modelOptions := p.agentsModalModelOptionsForProvider("")
-	thinkingOptions := p.agentsModalThinkingOptions("", "")
-	p.agentsModal.Editor = &agentsModalEditor{
-		Mode:          "create",
-		TargetName:    "",
-		RequirePrompt: true,
-		Fields: []agentsModalEditorField{
-			{Key: "name", Label: "Name", Value: "", Placeholder: "new-agent"},
-			{Key: "mode", Label: "Mode", Value: "subagent", Placeholder: "primary|subagent|background", Options: []string{"primary", "subagent", "background"}},
-			{Key: "description", Label: "Role", Value: "", Placeholder: "What this agent does"},
-			{Key: "model_mode", Label: "Model setup", Value: "single", Placeholder: "single|split", Options: []string{"single", "split"}},
-			{Key: "provider", Label: "Single provider", Value: "", Placeholder: "inherit default provider", Options: providerOptions},
-			{Key: "model", Label: "Single model", Value: "", Placeholder: "inherit default model", Options: modelOptions},
-			{Key: "thinking", Label: "Single thinking", Value: "", Placeholder: "Inherit", Options: thinkingOptions},
-			{Key: "plan_provider", Label: "Plan provider", Value: "", Placeholder: "inherit single provider", Options: providerOptions},
-			{Key: "plan_model", Label: "Plan model", Value: "", Placeholder: "inherit single model", Options: modelOptions},
-			{Key: "plan_thinking", Label: "Plan thinking", Value: "", Placeholder: "inherit", Options: thinkingOptions},
-			{Key: "plan_service_tier", Label: "Plan priority", Value: "", Placeholder: "default", Options: []string{""}},
-			{Key: "auto_provider", Label: "Action provider", Value: "", Placeholder: "inherit single provider", Options: providerOptions},
-			{Key: "auto_model", Label: "Action model", Value: "", Placeholder: "inherit single model", Options: modelOptions},
-			{Key: "auto_thinking", Label: "Action thinking", Value: "", Placeholder: "inherit", Options: thinkingOptions},
-			{Key: "auto_service_tier", Label: "Action priority", Value: "", Placeholder: "default", Options: []string{""}},
-			{Key: "enabled", Label: "Enabled", Value: "y", Placeholder: "y", Options: []string{"y", "n"}},
-			{Key: "prompt", Label: "Prompt", Value: "", Placeholder: "System prompt"},
-		},
+func (p *HomePage) openAgentsModalCreateModelProfileEditor() {
+	selectedAgent, ok := p.selectedAgentsModalProfile()
+	if !ok {
+		p.agentsModal.Error = "select an agent before creating a model profile"
+		return
 	}
-	p.agentsModal.Editor.Editing = false
-	p.normalizeAgentsModalEditorFields(p.agentsModal.Editor)
-	p.agentsModal.Editor.InitialFields = cloneAgentsModalEditorFields(p.agentsModal.Editor.Fields)
+	p.openAgentsModalEditEditor(selectedAgent)
+	editor := p.agentsModal.Editor
+	if editor == nil {
+		return
+	}
+	editor.CreateModelProfile = true
+	editor.AgentSettingsLocked = false
+	editor.ModelReadOnly = false
+	filtered := make([]agentsModalEditorField, 0, len(editor.Fields))
+	filtered = append(filtered, agentsModalEditorField{Key: "profile_name", Label: "Profile name", Placeholder: "My model profile"})
+	for _, field := range editor.Fields {
+		if field.Key == "model_profile" || field.Key == "default_session_mode" {
+			continue
+		}
+		filtered = append(filtered, field)
+	}
+	editor.Fields = filtered
+	for i := range editor.Fields {
+		switch editor.Fields[i].Key {
+		case "provider", "model", "thinking", "service_tier",
+			"plan_provider", "plan_model", "plan_thinking", "plan_service_tier",
+			"auto_provider", "auto_model", "auto_thinking", "auto_service_tier":
+			editor.Fields[i].Value = ""
+		}
+	}
+	p.syncAgentsModalEditorDependentOptions(editor)
+	editor.InitialFields = cloneAgentsModalEditorFields(editor.Fields)
+	editor.Selected = 0
+	editor.Editing = true
 	p.agentsModal.Focus = agentsModalFocusDetails
 	p.agentsModal.DetailScroll = 0
-	p.agentsModal.Status = fmt.Sprintf("Create profile editor. Enter edits/commits fields. %s saves changes.", p.agentsModalEditorSaveLabel())
+	p.agentsModal.Status = fmt.Sprintf("Name the saved model profile, adjust its model settings, then %s creates it", p.agentsModalEditorSaveLabel())
 	p.agentsModal.Error = ""
-	p.dismissAgentsModalUnsavedConfirm()
-	p.clearAgentsModalDeleteConfirm()
 }
 
 func (p *HomePage) openAgentsModalUtilityAIEditor() {
@@ -843,8 +890,8 @@ func (p *HomePage) openAgentsModalUtilityAIEditor() {
 	if thinking == "" {
 		thinking = "off"
 	}
-	providerOptions := p.agentsModalProviderOptionsWithInherit(false)
-	modelOptions := p.agentsModalModelOptionsForProviderWithInherit(provider, false)
+	providerOptions := p.agentsModalProviderOptions()
+	modelOptions := p.agentsModalModelOptionsForProvider(provider)
 	thinkingOptions := p.agentsModalThinkingOptions(provider, model)
 	p.agentsModal.Editor = &agentsModalEditor{
 		Mode:       "utility-ai",
@@ -883,7 +930,7 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 	if sessionMode != "plan" {
 		sessionMode = "auto"
 	}
-	providerOptions := p.agentsModalProviderOptionsWithInherit(false)
+	providerOptions := p.agentsModalProviderOptions()
 	singleProvider := strings.ToLower(strings.TrimSpace(profile.Provider))
 	planProvider := strings.ToLower(strings.TrimSpace(profile.PlanProvider))
 	autoProvider := strings.ToLower(strings.TrimSpace(profile.AutoProvider))
@@ -910,6 +957,9 @@ func (p *HomePage) openAgentsModalEditEditor(profile AgentModalProfile) {
 		autoThinking = strings.TrimSpace(profile.Thinking)
 	}
 	modelProfileOptions := p.agentsModalModelProfileOptions(profile)
+	if !isCompiledSingleModelSubagent(profile.Name) {
+		modelProfileOptions = append(modelProfileOptions, agentsModalCreateProfileOption)
+	}
 	selectedModelProfileID := p.agentsModal.SelectedModelProfileID
 	if isCompiledSingleModelSubagent(profile.Name) && !agentsModalStringOptionExists(modelProfileOptions, selectedModelProfileID) {
 		selectedModelProfileID = ""
@@ -1023,6 +1073,8 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindEditorClose):
 		if editor.Editing {
 			editor.Editing = false
+			editor.EditingOption = ""
+			editor.EditingOptionSet = false
 			p.agentsModal.Status = "field edit canceled"
 			return
 		}
@@ -1031,11 +1083,13 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 			return
 		}
 		p.agentsModal.Focus = agentsModalFocusProfiles
-		p.agentsModal.Status = "back to agent cards"
+		p.agentsModal.Status = "back to agent list"
 		return
 	case p.keybinds.Match(ev, KeybindAgentsEditorSave):
 		if editor.Editing {
 			editor.Editing = false
+			editor.EditingOption = ""
+			editor.EditingOptionSet = false
 		}
 		p.dismissAgentsModalUnsavedConfirm()
 		if !agentsModalEditorHasPendingChanges(editor) {
@@ -1051,12 +1105,16 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindEditorFocusNext):
 		if editor.Editing {
 			editor.Editing = false
+			editor.EditingOption = ""
+			editor.EditingOptionSet = false
 		}
 		moveField(1)
 		return
 	case p.keybinds.Match(ev, KeybindEditorFocusPrev):
 		if editor.Editing {
 			editor.Editing = false
+			editor.EditingOption = ""
+			editor.EditingOptionSet = false
 		}
 		moveField(-1)
 		return
@@ -1064,7 +1122,7 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		if editor.Editing {
 			field := selectedField()
 			if field != nil && len(field.Options) > 0 {
-				p.cycleAgentsModalEditorOption(field, -1)
+				p.cycleAgentsModalEditorOption(editor, field, -1)
 				return
 			}
 		}
@@ -1074,7 +1132,7 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		if editor.Editing {
 			field := selectedField()
 			if field != nil && len(field.Options) > 0 {
-				p.cycleAgentsModalEditorOption(field, 1)
+				p.cycleAgentsModalEditorOption(editor, field, 1)
 				return
 			}
 		}
@@ -1084,7 +1142,7 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		if editor.Editing {
 			field := selectedField()
 			if field != nil && len(field.Options) > 0 {
-				p.cycleAgentsModalEditorOption(field, -1)
+				p.cycleAgentsModalEditorOption(editor, field, -1)
 			}
 		} else {
 			moveField(-1)
@@ -1094,7 +1152,7 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		if editor.Editing {
 			field := selectedField()
 			if field != nil && len(field.Options) > 0 {
-				p.cycleAgentsModalEditorOption(field, 1)
+				p.cycleAgentsModalEditorOption(editor, field, 1)
 			}
 		} else {
 			moveField(1)
@@ -1126,13 +1184,14 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		if len(field.Options) > 0 {
 			field.Value = ""
 			p.syncAgentsModalEditorDependentOptions(editor)
+			p.beginAgentsModalEditorFieldEdit(editor, editor.Selected)
 			return
 		}
 		field.Value = ""
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
 		if !editor.Editing {
-			editor.Editing = true
+			p.beginAgentsModalEditorFieldEdit(editor, editor.Selected)
 			field := selectedField()
 			fieldLabel := "field"
 			if field != nil {
@@ -1145,13 +1204,23 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 			}
 			return
 		}
+		field := selectedField()
+		if field != nil && len(field.Options) > 0 && editor.EditingOptionSet {
+			field.Value = editor.EditingOption
+		}
 		editor.Editing = false
-		if field := selectedField(); field != nil && field.Key == "model_profile" {
+		editor.EditingOption = ""
+		editor.EditingOptionSet = false
+		if field != nil && field.Key == "model_profile" {
+			if field.Value == agentsModalCreateProfileOption {
+				p.openAgentsModalCreateModelProfileEditor()
+				return
+			}
 			p.applyAgentsModalModelProfile(field.Value)
 			return
 		}
 		p.syncAgentsModalEditorDependentOptions(editor)
-		if field := selectedField(); field != nil {
+		if field != nil {
 			p.agentsModal.Status = fmt.Sprintf("field updated: %s", strings.ToLower(strings.TrimSpace(field.Label)))
 		}
 		return
@@ -1184,7 +1253,7 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 			return
 		}
 		if len(field.Options) > 0 {
-			p.selectAgentsModalEditorOptionByRune(field, r)
+			p.selectAgentsModalEditorOptionByRune(editor, field, r)
 			return
 		}
 		if unicode.IsPrint(r) {
@@ -1279,8 +1348,8 @@ func (p *HomePage) submitAgentsModalEditor() {
 	}
 
 	if editor.Mode == "utility-ai" || editor.Mode == "utility-ai-overwrite" {
-		provider := p.normalizeAgentsModalProviderValueWithFallback(get("provider"), false)
-		model := p.normalizeAgentsModalModelValueWithFallback(provider, get("model"), false)
+		provider := p.normalizeAgentsModalProviderValue(get("provider"))
+		model := p.normalizeAgentsModalModelValue(provider, get("model"))
 		if provider == "" || model == "" {
 			p.agentsModal.Error = "provider and model are required for Utility AI"
 			return
@@ -1303,6 +1372,11 @@ func (p *HomePage) submitAgentsModalEditor() {
 			},
 			StatusHint: agentsModalUtilityAIStatusHint(provider, model, overwriteExplicit),
 		})
+		return
+	}
+
+	if editor.CreateModelProfile {
+		p.submitAgentsModalModelProfileCreate(editor, get)
 		return
 	}
 
@@ -1331,12 +1405,12 @@ func (p *HomePage) submitAgentsModalEditor() {
 			upsert.Provider = ""
 			upsert.Model = ""
 			upsert.Thinking = ""
-			upsert.PlanProvider = p.normalizeAgentsModalProviderValueWithFallback(get("plan_provider"), false)
-			upsert.PlanModel = p.normalizeAgentsModalModelValueWithFallback(upsert.PlanProvider, get("plan_model"), false)
+			upsert.PlanProvider = p.normalizeAgentsModalProviderValue(get("plan_provider"))
+			upsert.PlanModel = p.normalizeAgentsModalModelValue(upsert.PlanProvider, get("plan_model"))
 			upsert.PlanThinking = normalizeAgentsModalThinkingValue(get("plan_thinking"), p.agentsModalThinkingOptions(upsert.PlanProvider, upsert.PlanModel), "")
 			upsert.PlanServiceTier = strings.ToLower(get("plan_service_tier"))
-			upsert.AutoProvider = p.normalizeAgentsModalProviderValueWithFallback(get("auto_provider"), false)
-			upsert.AutoModel = p.normalizeAgentsModalModelValueWithFallback(upsert.AutoProvider, get("auto_model"), false)
+			upsert.AutoProvider = p.normalizeAgentsModalProviderValue(get("auto_provider"))
+			upsert.AutoModel = p.normalizeAgentsModalModelValue(upsert.AutoProvider, get("auto_model"))
 			upsert.AutoThinking = normalizeAgentsModalThinkingValue(get("auto_thinking"), p.agentsModalThinkingOptions(upsert.AutoProvider, upsert.AutoModel), "")
 			upsert.AutoServiceTier = strings.ToLower(get("auto_service_tier"))
 			if upsert.PlanProvider == "" || upsert.PlanModel == "" || upsert.AutoProvider == "" || upsert.AutoModel == "" {
@@ -1351,8 +1425,8 @@ func (p *HomePage) submitAgentsModalEditor() {
 			upsert.AutoProvider = ""
 			upsert.AutoModel = ""
 			upsert.AutoThinking = ""
-			upsert.Provider = p.normalizeAgentsModalProviderValueWithFallback(get("provider"), false)
-			upsert.Model = p.normalizeAgentsModalModelValueWithFallback(upsert.Provider, get("model"), false)
+			upsert.Provider = p.normalizeAgentsModalProviderValue(get("provider"))
+			upsert.Model = p.normalizeAgentsModalModelValue(upsert.Provider, get("model"))
 			upsert.Thinking = normalizeAgentsModalThinkingValue(get("thinking"), p.agentsModalThinkingOptions(upsert.Provider, upsert.Model), "")
 			upsert.ServiceTier = strings.ToLower(get("service_tier"))
 			upsert.AutoServiceTier = upsert.ServiceTier
@@ -1401,22 +1475,10 @@ func (p *HomePage) submitAgentsModalEditor() {
 		Enabled:         &enabled,
 	}
 
-	if editor.Mode == "create" {
-		upsert.Name = strings.ToLower(strings.TrimSpace(get("name")))
-		if upsert.Name == "" {
-			p.agentsModal.Error = "agent name is required"
-			return
-		}
-		if editor.RequirePrompt && strings.TrimSpace(upsert.Prompt) == "" {
-			p.agentsModal.Error = "prompt is required for new profiles"
-			return
-		}
-	} else {
-		upsert.Name = strings.ToLower(strings.TrimSpace(editor.TargetName))
-		if upsert.Name == "" {
-			p.agentsModal.Error = "target agent is missing"
-			return
-		}
+	upsert.Name = strings.ToLower(strings.TrimSpace(editor.TargetName))
+	if upsert.Name == "" {
+		p.agentsModal.Error = "target agent is missing"
+		return
 	}
 
 	if strings.EqualFold(upsert.Name, "swarm") {
@@ -1430,6 +1492,50 @@ func (p *HomePage) submitAgentsModalEditor() {
 		Kind:       AgentsModalActionUpsert,
 		Upsert:     &upsert,
 		StatusHint: fmt.Sprintf("Saving profile %s...", upsert.Name),
+	})
+}
+
+func (p *HomePage) submitAgentsModalModelProfileCreate(editor *agentsModalEditor, get func(string) string) {
+	name := strings.TrimSpace(get("profile_name"))
+	if name == "" {
+		p.agentsModal.Error = "model profile name is required"
+		return
+	}
+	modelMode := strings.ToLower(strings.TrimSpace(get("model_mode")))
+	input := client.ModelProfileInput{Name: name, ModelMode: modelMode}
+	selection := func(prefix string) (*client.ModelProfileSelection, bool) {
+		provider := p.normalizeAgentsModalProviderValue(get(prefix + "provider"))
+		model := p.normalizeAgentsModalModelValue(provider, get(prefix+"model"))
+		thinking := normalizeAgentsModalThinkingValue(get(prefix+"thinking"), p.agentsModalThinkingOptions(provider, model), "")
+		if provider == "" || model == "" || thinking == "" {
+			return nil, false
+		}
+		return &client.ModelProfileSelection{
+			Provider: provider, Model: model, Thinking: thinking,
+			ServiceTier: strings.ToLower(strings.TrimSpace(get(prefix + "service_tier"))),
+		}, true
+	}
+	if modelMode == "split" {
+		plan, planOK := selection("plan_")
+		auto, autoOK := selection("auto_")
+		if !planOK || !autoOK {
+			p.agentsModal.Error = "provider, model, and thinking are required for both Plan and Action"
+			return
+		}
+		input.Plan, input.Auto = plan, auto
+	} else {
+		input.ModelMode = "single"
+		single, ok := selection("")
+		if !ok {
+			p.agentsModal.Error = "provider, model, and thinking are required"
+			return
+		}
+		input.Single = single
+	}
+	editor.InitialFields = cloneAgentsModalEditorFields(editor.Fields)
+	p.enqueueAgentsModalAction(AgentsModalAction{
+		Kind: AgentsModalActionCreateModelProfile, ModelProfile: &input,
+		StatusHint: "Creating saved model profile " + name + "...",
 	})
 }
 
@@ -1533,7 +1639,7 @@ func (p *HomePage) moveAgentsModalSelection(delta int) {
 	}
 	p.agentsModal.SelectedProfile = nextProfile
 	p.agentsModal.DetailScroll = 0
-	p.openAgentsModalEditEditor(p.agentsModal.Profiles[p.agentsModal.SelectedProfile])
+	p.openAgentsModalEditEditor(p.agentsModal.Profiles[nextProfile])
 	p.agentsModal.Focus = agentsModalFocusProfiles
 	if p.agentsModal.ConfirmDelete && !strings.EqualFold(strings.TrimSpace(p.agentsModal.ConfirmName), p.selectedAgentsModalName()) {
 		p.clearAgentsModalDeleteConfirm()
@@ -1778,9 +1884,9 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 				status = fmt.Sprintf("Enter edit/commit field • %s save • Esc close", saveLabel)
 			}
 		} else if p.agentsModal.Focus == agentsModalFocusDetails {
-			status = fmt.Sprintf("Enter edits field • %s saves • Esc returns to agent cards", saveLabel)
+			status = fmt.Sprintf("Enter edits field • %s saves • Left or Esc returns to agents", saveLabel)
 		} else {
-			status = "Select an agent card • Enter edits its model setup • r refresh"
+			status = "Up/Down selects an agent • Enter or Right opens model settings"
 		}
 	}
 	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, statusStyle, clampEllipsis(status, rect.W-4))
@@ -1790,7 +1896,7 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	if p.agentsModal.Focus == agentsModalFocusSearch {
 		searchEdit = " [edit]"
 	}
-	meta := fmt.Sprintf("Selected agent model settings • filter: %s", filter)
+	meta := fmt.Sprintf("Agents and model settings • filter: %s", filter)
 	DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.TextMuted, clampEllipsis(meta, rect.W-4))
 	searchLine := "search" + searchEdit + ": " + p.agentsModal.Search
 	DrawText(s, rect.X+2, rect.Y+3, rect.W-4, p.theme.TextMuted, clampEllipsis(searchLine, rect.W-4))
@@ -1800,22 +1906,21 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	if bodyRect.W < 28 || bodyRect.H < 8 {
 		return
 	}
-
 	if bodyRect.W >= 70 {
 		leftW := maxInt(28, bodyRect.W*38/100)
 		left := Rect{X: bodyRect.X, Y: bodyRect.Y, W: leftW, H: bodyRect.H}
 		right := Rect{X: bodyRect.X + leftW + 1, Y: bodyRect.Y, W: bodyRect.W - leftW - 1, H: bodyRect.H}
 		p.drawAgentsModalListPane(s, left)
 		p.drawAgentsModalDetailPane(s, right)
-	} else if p.agentsModal.Editor != nil || p.agentsModal.Focus == agentsModalFocusDetails {
+	} else if p.agentsModal.Focus == agentsModalFocusDetails {
 		p.drawAgentsModalDetailPane(s, bodyRect)
 	} else {
 		p.drawAgentsModalListPane(s, bodyRect)
 	}
 
-	help := "Enter edit model settings • Tab switch pane • ↑/↓ select agent • r refresh • Esc close"
+	help := "↑/↓ select agent • Enter/Right model settings • r refresh • Esc close"
 	if p.agentsModal.Focus == agentsModalFocusDetails {
-		help = "Enter edit • Tab focus • ↑/↓ or PgUp/PgDn scroll • Esc back to cards"
+		help = "Enter edit • Left/Esc agents • ↑/↓ fields • PgUp/PgDn scroll"
 	}
 	if editor := p.agentsModal.Editor; editor != nil {
 		if agentsModalEditorHasPendingChanges(editor) {
@@ -1825,7 +1930,7 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 		}
 	}
 	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, clampEllipsis(help, rect.W-4))
-	DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "Only provider, model, thinking, and priority are editable here")
+	DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "Agents stay on the left; the selected agent's model settings stay on the right")
 	if p.agentsModal.ConfirmUnsaved {
 		p.drawAgentsModalUnsavedConfirm(s, rect)
 	}
@@ -1891,10 +1996,6 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, header)
 
 	matches := groupedAgentsModalIndexes(p.agentsFilteredIndexes(), p.agentsModal.Profiles)
-	if len(matches) == 0 {
-		DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.Warning, "no profiles match current filter")
-		return
-	}
 
 	contentW := rect.W - 4
 	contentH := rect.H - 2
@@ -1947,7 +2048,7 @@ func (p *HomePage) drawAgentsModalListPane(s tcell.Screen, rect Rect) {
 			}
 			lines = append(lines, agentsModalRenderLine{Text: clampEllipsis(nameLine, contentW), Style: lineStyle, ProfileIdx: idx, ProfileTarget: true})
 
-			behaviorLines := agentsModalModelBehaviorLines(profile)
+			behaviorLines := p.agentsModalModelBehaviorLines(profile)
 			for _, behavior := range behaviorLines {
 				for _, line := range wrapAgentsModalWithPrefix("    ", behavior, contentW) {
 					lines = append(lines, agentsModalRenderLine{Text: line, Style: metaStyle, ProfileIdx: idx, ProfileTarget: true})
@@ -2013,25 +2114,59 @@ func agentsModalDisplayName(name string) string {
 	return name
 }
 
-func agentsModalModelBehaviorLines(profile AgentModalProfile) []string {
-	format := func(label, provider, model, thinking, tier string) string {
-		selection := strings.Trim(strings.TrimSpace(provider)+"/"+modelpkg.DisplayModelName(provider, model), "/")
-		if selection == "" {
-			selection = "Default model"
-		}
-		parts := []string{label + ": " + selection}
-		if thinking = strings.TrimSpace(thinking); thinking != "" {
-			parts = append(parts, "thinking "+thinking)
-		}
-		if tier = strings.TrimSpace(tier); tier != "" {
-			parts = append(parts, "priority "+tier)
-		}
-		return strings.Join(parts, " • ")
+func agentsModalFormatModelSelection(label, provider, model, thinking, tier string) string {
+	selection := strings.Trim(strings.TrimSpace(provider)+"/"+modelpkg.DisplayModelName(provider, model), "/")
+	if selection == "" {
+		selection = "Default model"
 	}
+	parts := []string{label + ": " + selection}
+	if thinking = strings.TrimSpace(thinking); thinking != "" {
+		parts = append(parts, "thinking "+thinking)
+	}
+	if tier = strings.TrimSpace(tier); tier != "" {
+		parts = append(parts, "priority "+tier)
+	}
+	return strings.Join(parts, " • ")
+}
+
+func (p *HomePage) agentsModalSelectedModelProfile() *client.ModelProfile {
+	if p == nil {
+		return nil
+	}
+	selectedID := strings.TrimSpace(p.agentsModal.SelectedModelProfileID)
+	if selectedID == "" {
+		selectedID = strings.TrimSpace(p.agentsModal.ActiveModelProfileID)
+	}
+	if selectedID == "" {
+		selectedID = strings.TrimSpace(p.agentsModal.DefaultModelProfileID)
+	}
+	for i := range p.agentsModal.ModelProfiles {
+		if strings.TrimSpace(p.agentsModal.ModelProfiles[i].ProfileID) == selectedID {
+			return &p.agentsModal.ModelProfiles[i]
+		}
+	}
+	return nil
+}
+
+func (p *HomePage) agentsModalModelBehaviorLines(profile AgentModalProfile) []string {
+	format := agentsModalFormatModelSelection
 	if strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
 		return []string{
 			format("Plan", profile.PlanProvider, profile.PlanModel, profile.PlanThinking, profile.PlanServiceTier),
 			format("Action", profile.AutoProvider, profile.AutoModel, profile.AutoThinking, profile.AutoServiceTier),
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") {
+		if saved := p.agentsModalSelectedModelProfile(); saved != nil {
+			if strings.EqualFold(strings.TrimSpace(saved.ModelMode), "split") && saved.Plan != nil && saved.Auto != nil {
+				return []string{
+					format("Plan", saved.Plan.Provider, saved.Plan.Model, saved.Plan.Thinking, saved.Plan.ServiceTier),
+					format("Action", saved.Auto.Provider, saved.Auto.Model, saved.Auto.Thinking, saved.Auto.ServiceTier),
+				}
+			}
+			if saved.Single != nil {
+				return []string{format("Single", saved.Single.Provider, saved.Single.Model, saved.Single.Thinking, saved.Single.ServiceTier)}
+			}
 		}
 	}
 	return []string{"Single model"}
@@ -2049,9 +2184,34 @@ func agentsModalEditorModelMode(editor *agentsModalEditor) string {
 	return "single"
 }
 
+func agentsModalEditorFieldValue(editor *agentsModalEditor, key string) string {
+	if editor == nil {
+		return ""
+	}
+	for _, field := range editor.Fields {
+		if field.Key == key {
+			return strings.TrimSpace(field.Value)
+		}
+	}
+	return ""
+}
+
 func agentsModalEditorFieldVisible(editor *agentsModalEditor, field agentsModalEditorField) bool {
 	if editor == nil || editor.Mode != "model" {
 		return true
+	}
+	if editor.CreateModelProfile {
+		if field.Key == "model_profile" || field.Key == "default_session_mode" {
+			return false
+		}
+		dependency := map[string]string{
+			"model": "provider", "thinking": "model", "service_tier": "model",
+			"plan_model": "plan_provider", "plan_thinking": "plan_model", "plan_service_tier": "plan_model",
+			"auto_model": "auto_provider", "auto_thinking": "auto_model", "auto_service_tier": "auto_model",
+		}[field.Key]
+		if dependency != "" && agentsModalEditorFieldValue(editor, dependency) == "" {
+			return false
+		}
 	}
 	if editor.AgentSettingsLocked && (field.Key == "default_session_mode" || field.Key == "model_mode") {
 		return false
@@ -2087,7 +2247,7 @@ func agentsModalVisibleEditorFieldIndexes(editor *agentsModalEditor) []int {
 
 func agentsModalEditorFieldGroup(key string) string {
 	switch {
-	case key == "model_profile":
+	case key == "model_profile" || key == "profile_name":
 		return "profiles"
 	case strings.HasPrefix(key, "plan_"):
 		return "plan"
@@ -2140,7 +2300,11 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 
 	if editor != nil {
 		modelMode := agentsModalEditorModelMode(editor)
-		lines = append(lines, agentsModalRenderLine{Text: nonEmpty(agentsModalDisplayName(profile.Name), "Agent"), Style: p.theme.Text.Bold(true)})
+		editorTitle := nonEmpty(agentsModalDisplayName(profile.Name), "Agent")
+		if editor.CreateModelProfile {
+			editorTitle = "New model profile"
+		}
+		lines = append(lines, agentsModalRenderLine{Text: editorTitle, Style: p.theme.Text.Bold(true)})
 		if editor.AgentSettingsLocked {
 			lockText := "Compiled system agent: agent identity, default session, and model policy are locked."
 			lockText += " Only independent single-model choices are editable."
@@ -2161,7 +2325,11 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 				}
 				switch group {
 				case "profiles":
-					lines = append(lines, agentsModalRenderLine{Text: "Your profiles", Style: p.theme.Primary.Bold(true)})
+					heading := "YOUR PROFILE"
+					if editor.CreateModelProfile {
+						heading = "NEW SAVED PROFILE"
+					}
+					lines = append(lines, agentsModalRenderLine{Text: heading, Style: p.theme.Primary.Bold(true)})
 				case "single":
 					lines = append(lines, agentsModalRenderLine{Text: "Single model", Style: p.theme.Primary.Bold(true)})
 				case "plan":
@@ -2258,6 +2426,9 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 			if i == editor.Selected && editor.Editing && len(field.Options) > 0 {
 				choices := dedupeAgentsModalOptions(field.Options)
 				current := normalizeAgentsModalOptionValue(field.Value, choices, "")
+				if editor.EditingOptionSet {
+					current = normalizeAgentsModalOptionValue(editor.EditingOption, choices, "")
+				}
 				optionListStart = len(lines)
 				lines = append(lines, agentsModalRenderLine{Text: "    Select with arrows, then Enter:", Style: p.theme.TextMuted})
 				for _, option := range choices {
@@ -2279,7 +2450,14 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 						choiceStyle = p.theme.Text
 					}
 					for _, line := range wrapAgentsModalWithPrefix(choicePrefix, label, contentWidth) {
-						lines = append(lines, agentsModalRenderLine{Text: line, Style: choiceStyle})
+						lines = append(lines, agentsModalRenderLine{
+							Text:               line,
+							Style:              choiceStyle,
+							FieldIdx:           i,
+							OptionTarget:       true,
+							OptionValue:        option,
+							ModelProfileOption: field.Key == "model_profile",
+						})
 					}
 				}
 			}
@@ -2308,7 +2486,7 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 		lines = append(lines, agentsModalRenderLine{Text: saveHint, Style: p.theme.TextMuted})
 	} else {
 		lines = append(lines, agentsModalRenderLine{Text: nonEmpty(agentsModalDisplayName(profile.Name), "Agent"), Style: p.theme.Text.Bold(true)})
-		for _, behavior := range agentsModalModelBehaviorLines(profile) {
+		for _, behavior := range p.agentsModalModelBehaviorLines(profile) {
 			for _, wrapped := range Wrap(behavior, contentWidth) {
 				lines = append(lines, agentsModalRenderLine{Text: wrapped, Style: p.theme.Text})
 			}
@@ -2347,7 +2525,13 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 		line := lines[lineIdx]
 		lineY := rowY + i
 		DrawText(s, rect.X+2, lineY, contentWidth, line.Style, line.Text)
-		if line.FieldTarget {
+		if line.OptionTarget {
+			action := "agents-editor-option"
+			if line.ModelProfileOption {
+				action = "agents-model-profile-option"
+			}
+			p.registerAgentsModalTarget(Rect{X: rect.X + 2, Y: lineY, W: contentWidth, H: 1}, action, line.FieldIdx, line.OptionValue)
+		} else if line.FieldTarget {
 			p.registerAgentsModalTarget(Rect{X: rect.X + 2, Y: lineY, W: contentWidth, H: 1}, "agents-editor-field", line.FieldIdx, "")
 			if line.ProfileDefaultTarget {
 				starX := rect.X + 2 + minInt(maxInt(0, utf8.RuneCountInString(line.Text)-1), maxInt(0, contentWidth-1))
@@ -2366,6 +2550,9 @@ type agentsModalRenderLine struct {
 	ProfileTarget        bool
 	FieldIdx             int
 	FieldTarget          bool
+	OptionTarget         bool
+	OptionValue          string
+	ModelProfileOption   bool
 	ProfileDefaultTarget bool
 	ModelProfileID       string
 }
@@ -2551,14 +2738,7 @@ func (s *agentsModalState) defaultModelForProvider(providerID string) string {
 }
 
 func (p *HomePage) agentsModalProviderOptions() []string {
-	return p.agentsModalProviderOptionsWithInherit(true)
-}
-
-func (p *HomePage) agentsModalProviderOptionsWithInherit(includeInherit bool) []string {
-	out := make([]string, 0, len(p.agentsModal.Providers)+2)
-	if includeInherit {
-		out = append(out, "")
-	}
+	out := make([]string, 0, len(p.agentsModal.Providers)+1)
 	out = append(out, p.agentsModal.Providers...)
 	if strings.TrimSpace(p.agentsModal.DefaultProvider) != "" {
 		out = append(out, strings.TrimSpace(p.agentsModal.DefaultProvider))
@@ -2567,33 +2747,16 @@ func (p *HomePage) agentsModalProviderOptionsWithInherit(includeInherit bool) []
 }
 
 func (p *HomePage) normalizeAgentsModalProviderValue(raw string) string {
-	return p.normalizeAgentsModalProviderValueWithFallback(raw, true)
-}
-
-func (p *HomePage) normalizeAgentsModalProviderValueWithFallback(raw string, allowDefault bool) string {
 	value := normalizeAgentsModalProviderID(raw)
-	options := p.agentsModalProviderOptionsWithInherit(allowDefault)
-	if matched, ok := findAgentsModalOption(options, value); ok {
+	if matched, ok := findAgentsModalOption(p.agentsModalProviderOptions(), value); ok {
 		return normalizeAgentsModalProviderID(matched)
-	}
-	if allowDefault {
-		if matched, ok := findAgentsModalOption(options, p.agentsModal.DefaultProvider); ok {
-			return normalizeAgentsModalProviderID(matched)
-		}
 	}
 	return ""
 }
 
 func (p *HomePage) agentsModalModelOptionsForProvider(providerID string) []string {
-	return p.agentsModalModelOptionsForProviderWithInherit(providerID, true)
-}
-
-func (p *HomePage) agentsModalModelOptionsForProviderWithInherit(providerID string, includeInherit bool) []string {
 	providerID = normalizeAgentsModalProviderID(providerID)
-	out := make([]string, 0, len(p.agentsModal.ModelsByProvider[providerID])+2)
-	if includeInherit {
-		out = append(out, "")
-	}
+	out := make([]string, 0, len(p.agentsModal.ModelsByProvider[providerID])+1)
 	if providerID != "" {
 		out = append(out, p.agentsModal.ModelsByProvider[providerID]...)
 		if fallback := p.agentsModal.defaultModelForProvider(providerID); fallback != "" {
@@ -2604,47 +2767,25 @@ func (p *HomePage) agentsModalModelOptionsForProviderWithInherit(providerID stri
 }
 
 func (p *HomePage) agentsModalThinkingOptions(providerID, model string) []string {
-	effectiveProvider := normalizeAgentsModalProviderID(providerID)
-	if effectiveProvider == "" {
-		effectiveProvider = normalizeAgentsModalProviderID(p.agentsModal.DefaultProvider)
+	providerID = normalizeAgentsModalProviderID(providerID)
+	model = strings.TrimSpace(model)
+	if providerID == "" || model == "" {
+		return nil
 	}
-	effectiveModel := strings.TrimSpace(model)
-	if effectiveModel == "" {
-		effectiveModel = p.agentsModal.defaultModelForProvider(effectiveProvider)
-	}
-	record, ok := p.agentsModalCatalogRecord(effectiveProvider, effectiveModel)
+	record, ok := p.agentsModalCatalogRecord(providerID, model)
 	if !ok {
-		return []string{""}
+		return nil
 	}
-	return dedupeAgentsModalOptions(append([]string{""}, record.ThinkingOptions...))
+	return normalizeAgentsModalCatalogOptions(record.ThinkingOptions)
 }
 
 func (p *HomePage) normalizeAgentsModalModelValue(providerID, raw string) string {
-	return p.normalizeAgentsModalModelValueWithFallback(providerID, raw, true)
-}
-
-func (p *HomePage) normalizeAgentsModalModelValueWithFallback(providerID, raw string, allowFallback bool) string {
 	providerID = normalizeAgentsModalProviderID(providerID)
 	if providerID == "" {
 		return ""
 	}
-	value := strings.TrimSpace(raw)
-	options := p.agentsModalModelOptionsForProviderWithInherit(providerID, allowFallback)
-	if matched, ok := findAgentsModalOption(options, value); ok {
+	if matched, ok := findAgentsModalOption(p.agentsModalModelOptionsForProvider(providerID), raw); ok {
 		return matched
-	}
-	if allowFallback {
-		fallback := p.agentsModal.defaultModelForProvider(providerID)
-		if matched, ok := findAgentsModalOption(options, fallback); ok {
-			return matched
-		}
-	}
-	if allowFallback {
-		for _, option := range options {
-			if strings.TrimSpace(option) != "" {
-				return option
-			}
-		}
 	}
 	return ""
 }
@@ -2717,11 +2858,9 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 	}
 
 	providerField := p.findAgentsModalEditorField(editor, "provider")
-	utilityEditor := editor.Mode == "utility-ai" || editor.Mode == "utility-ai-overwrite"
-	allowInherit := !utilityEditor && editor.Mode != "model"
 	if providerField != nil {
-		providerField.Options = p.agentsModalProviderOptionsWithInherit(allowInherit)
-		providerField.Value = p.normalizeAgentsModalProviderValueWithFallback(providerField.Value, allowInherit)
+		providerField.Options = p.agentsModalProviderOptions()
+		providerField.Value = p.normalizeAgentsModalProviderValue(providerField.Value)
 	}
 	selectedProvider := ""
 	if providerField != nil {
@@ -2730,8 +2869,8 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 
 	modelField := p.findAgentsModalEditorField(editor, "model")
 	if modelField != nil {
-		modelField.Options = p.agentsModalModelOptionsForProviderWithInherit(selectedProvider, allowInherit)
-		modelField.Value = p.normalizeAgentsModalModelValueWithFallback(selectedProvider, modelField.Value, allowInherit)
+		modelField.Options = p.agentsModalModelOptionsForProvider(selectedProvider)
+		modelField.Value = p.normalizeAgentsModalModelValue(selectedProvider, modelField.Value)
 	}
 
 	modelValue := ""
@@ -2740,7 +2879,11 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 	}
 	if thinking := p.findAgentsModalEditorField(editor, "thinking"); thinking != nil {
 		thinking.Options = p.agentsModalThinkingOptions(selectedProvider, modelValue)
-		thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, "")
+		thinkingFallback := ""
+		if record, ok := p.agentsModalCatalogRecord(selectedProvider, modelValue); ok {
+			thinkingFallback = record.DefaultThinking
+		}
+		thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, thinkingFallback)
 	}
 	if serviceTier := p.findAgentsModalEditorField(editor, "service_tier"); serviceTier != nil {
 		serviceTier.Options = p.agentsModalServiceTierOptions(selectedProvider, modelValue)
@@ -2751,12 +2894,12 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 		if provider == nil {
 			continue
 		}
-		provider.Options = p.agentsModalProviderOptionsWithInherit(false)
-		provider.Value = p.normalizeAgentsModalProviderValueWithFallback(provider.Value, false)
+		provider.Options = p.agentsModalProviderOptions()
+		provider.Value = p.normalizeAgentsModalProviderValue(provider.Value)
 		model := p.findAgentsModalEditorField(editor, prefix+"_model")
 		if model != nil {
-			model.Options = p.agentsModalModelOptionsForProviderWithInherit(provider.Value, false)
-			model.Value = p.normalizeAgentsModalModelValueWithFallback(provider.Value, model.Value, false)
+			model.Options = p.agentsModalModelOptionsForProvider(provider.Value)
+			model.Value = p.normalizeAgentsModalModelValue(provider.Value, model.Value)
 		}
 		thinking := p.findAgentsModalEditorField(editor, prefix+"_thinking")
 		modelValue := ""
@@ -2765,7 +2908,11 @@ func (p *HomePage) syncAgentsModalEditorDependentOptions(editor *agentsModalEdit
 		}
 		if thinking != nil {
 			thinking.Options = p.agentsModalThinkingOptions(provider.Value, modelValue)
-			thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, "")
+			thinkingFallback := ""
+			if record, ok := p.agentsModalCatalogRecord(provider.Value, modelValue); ok {
+				thinkingFallback = record.DefaultThinking
+			}
+			thinking.Value = normalizeAgentsModalThinkingValue(thinking.Value, thinking.Options, thinkingFallback)
 		}
 		if serviceTier := p.findAgentsModalEditorField(editor, prefix+"_service_tier"); serviceTier != nil {
 			serviceTier.Options = p.agentsModalServiceTierOptions(provider.Value, modelValue)
@@ -2797,8 +2944,26 @@ func nonEmptySlice(values []string, fallback []string) []string {
 	return values
 }
 
-func (p *HomePage) cycleAgentsModalEditorOption(field *agentsModalEditorField, delta int) {
-	if field == nil || delta == 0 {
+func (p *HomePage) beginAgentsModalEditorFieldEdit(editor *agentsModalEditor, fieldIndex int) {
+	if editor == nil || fieldIndex < 0 || fieldIndex >= len(editor.Fields) {
+		return
+	}
+	editor.Selected = fieldIndex
+	editor.Editing = true
+	editor.EditingOption = ""
+	editor.EditingOptionSet = false
+	field := &editor.Fields[fieldIndex]
+	options := dedupeAgentsModalOptions(field.Options)
+	if len(options) == 0 {
+		return
+	}
+	field.Options = options
+	editor.EditingOption = normalizeAgentsModalOptionValue(field.Value, options, "")
+	editor.EditingOptionSet = true
+}
+
+func (p *HomePage) cycleAgentsModalEditorOption(editor *agentsModalEditor, field *agentsModalEditorField, delta int) {
+	if editor == nil || field == nil || delta == 0 {
 		return
 	}
 	options := dedupeAgentsModalOptions(field.Options)
@@ -2806,17 +2971,21 @@ func (p *HomePage) cycleAgentsModalEditorOption(field *agentsModalEditorField, d
 		return
 	}
 	field.Options = options
-	idx := findAgentsModalOptionIndex(options, field.Value)
+	current := field.Value
+	if editor.EditingOptionSet {
+		current = editor.EditingOption
+	}
+	idx := findAgentsModalOptionIndex(options, current)
 	if idx < 0 {
 		idx = 0
 	}
 	idx = (idx + delta + len(options)) % len(options)
-	field.Value = options[idx]
-	p.syncAgentsModalEditorDependentOptions(p.agentsModal.Editor)
+	editor.EditingOption = options[idx]
+	editor.EditingOptionSet = true
 }
 
-func (p *HomePage) selectAgentsModalEditorOptionByRune(field *agentsModalEditorField, r rune) {
-	if field == nil || !unicode.IsPrint(r) {
+func (p *HomePage) selectAgentsModalEditorOptionByRune(editor *agentsModalEditor, field *agentsModalEditorField, r rune) {
+	if editor == nil || field == nil || !unicode.IsPrint(r) {
 		return
 	}
 	options := dedupeAgentsModalOptions(field.Options)
@@ -2827,8 +2996,8 @@ func (p *HomePage) selectAgentsModalEditorOptionByRune(field *agentsModalEditorF
 	for _, option := range options {
 		label := strings.ToLower(agentsModalEditorOptionDisplay(option))
 		if strings.HasPrefix(label, search) {
-			field.Value = option
-			p.syncAgentsModalEditorDependentOptions(p.agentsModal.Editor)
+			editor.EditingOption = option
+			editor.EditingOptionSet = true
 			return
 		}
 	}
@@ -2836,6 +3005,9 @@ func (p *HomePage) selectAgentsModalEditorOptionByRune(field *agentsModalEditorF
 
 func (p *HomePage) agentsModalModelProfileLabel(profileID string) string {
 	profileID = strings.TrimSpace(profileID)
+	if profileID == agentsModalCreateProfileOption {
+		return "Create new profile"
+	}
 	if p == nil || profileID == "" {
 		return "No saved profile"
 	}
@@ -2922,7 +3094,7 @@ func (p *HomePage) applyAgentsModalModelProfile(profileID string) bool {
 func agentsModalEditorOptionDisplay(value string) string {
 	v := strings.TrimSpace(value)
 	if v == "" {
-		return "inherit"
+		return "standard"
 	}
 	switch strings.ToLower(v) {
 	case "y":
@@ -2939,15 +3111,15 @@ func agentsModalEditorFieldDisplayValue(field agentsModalEditorField, fallback s
 	switch field.Key {
 	case "provider", "plan_provider", "auto_provider":
 		if value == "" {
-			return "inherit default provider"
+			return "choose provider"
 		}
 	case "model", "plan_model", "auto_model":
 		if value == "" {
-			return "inherit default model"
+			return "choose model"
 		}
 	case "thinking", "plan_thinking", "auto_thinking":
 		if value == "" {
-			return "inherit default thinking"
+			return "choose thinking"
 		}
 	case "service_tier", "plan_service_tier", "auto_service_tier":
 		if value == "" {
@@ -3016,7 +3188,7 @@ func agentsModalModeLabel(mode string) string {
 func agentsModalModelLabel(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return "inherit default model"
+		return "choose model"
 	}
 	return model
 }
@@ -3024,7 +3196,7 @@ func agentsModalModelLabel(model string) string {
 func agentsModalThinkingLabel(thinking string) string {
 	thinking = strings.TrimSpace(thinking)
 	if thinking == "" {
-		return "Inherit"
+		return "choose thinking"
 	}
 	return thinking
 }
