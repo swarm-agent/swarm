@@ -165,6 +165,11 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
+	if _, err := pebblestore.RunModelProfileFlatMigration(store); err != nil {
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("migrate model profiles to flat favorites: %w", err)
+	}
 	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
 		_ = store.Close()
@@ -363,7 +368,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(google.NewRunner(authStore))
 	providers.RegisterRunner(openai.NewRunner(authStore, codexClient))
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
-	modelProfileSvc := modelprofile.NewService(pebblestore.NewModelProfileStore(store))
+	modelProfileStore := pebblestore.NewModelProfileStore(store)
+	modelProfileSvc := modelprofile.NewService(modelProfileStore)
+	swarmModeSettingsSvc := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), modelProfileStore)
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetModelProfileService(modelProfileSvc)
 	runSvc.SetWorkspaceService(workspaceSvc)
@@ -435,7 +442,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetModelProfileService(modelProfileSvc)
-	apiServer.SetSwarmProfileService(modelprofile.NewSwarmService(pebblestore.NewSwarmProfileStore(store)))
+	apiServer.SetSwarmProfileService(swarmModeSettingsSvc)
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
