@@ -593,23 +593,23 @@ export function DesktopV3AgenticComposer({
       setAttachmentError('Wait for all attachments to finish uploading before sending the message.')
       return
     }
-    const visibleDraft = textareaRef.current?.value ?? dictationComposer
+    const rawDraft = textareaRef.current?.value ?? dictationComposer
     const textAttachmentDraft = textAttachments.reduce(
       (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
-      visibleDraft,
+      rawDraft,
     )
     const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
     const skillInstruction = selectedWorkspaceSkill
       ? `Use the skill-use tool to load "${selectedWorkspaceSkill.canonicalName}" before executing this request.`
       : ''
-    const skillDraft = skillInstruction
+    const visibleDraft = skillInstruction
       ? `${skillInstruction}${attachmentDraft.trim() ? `\n\n${attachmentDraft}` : ''}`
       : attachmentDraft
     const submittedDraft = primedTaskMode === 'plan'
-      ? `/task plan ${skillDraft}`
+      ? `/task plan ${visibleDraft}`
       : primedTaskMode === 'action'
-        ? `/task ${skillDraft}`
-        : skillDraft
+        ? `/task ${visibleDraft}`
+        : visibleDraft
     await submitDesktopComposer({
       draft: submittedDraft,
       canStop,
@@ -1033,12 +1033,24 @@ export function DesktopV3AgenticComposer({
             </div>
           ) : null}
           <div className="flex min-w-0 items-center gap-2 overflow-visible bg-transparent px-4 py-3 text-[11px]" data-composer-bottom-row>
-            <input ref={fileInputRef} type="file" hidden multiple onChange={(event) => { void handleAttachmentFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
+            {effectiveMediaCapability ? (
+              <input
+                ref={fileInputRef}
+                type="file"
+                hidden
+                multiple
+                accept={effectiveMediaCapability.capabilities.flatMap((capability) => [
+                  ...(capability.mime_types ?? []),
+                  ...(capability.file_types ?? []).map((fileType) => `.${fileType.replace(/^\./, '')}`),
+                ]).join(',')}
+                onChange={(event) => { void handleAttachmentFiles(Array.from(event.target.files ?? [])); event.target.value = '' }}
+              />
+            ) : null}
             <DesktopComposerActionMenu
               disabled={composerDisabled}
               onPrimeTask={handlePrimeTask}
-              onAttach={routedNewSession ? undefined : () => fileInputRef.current?.click()}
-              attachDisabled={routedNewSession || composerDisabled || uploadingAttachment}
+              onAttach={routedNewSession ? undefined : effectiveMediaCapability ? () => fileInputRef.current?.click() : undefined}
+              attachDisabled={routedNewSession || !effectiveMediaCapability || composerDisabled || uploadingAttachment}
               attaching={uploadingAttachment}
               contextLabel={contextLabel}
               contextTooltip={contextTooltip}

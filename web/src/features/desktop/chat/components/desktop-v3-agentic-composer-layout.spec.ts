@@ -17,7 +17,7 @@ test('Desktop V3 composer keeps compact and attachment actions inside the plus m
 
   assert.doesNotMatch(source, /showCompactButton|onShowCompactButtonToggle/)
   assert.match(source, /<DesktopComposerActionMenu[\s\S]*contextLabel=\{contextLabel\}[\s\S]*onCompact=\{onCompact/)
-  assert.match(source, /onAttach=\{effectiveMediaCapability \? \(\) => fileInputRef\.current\?\.click\(\) : undefined\}/)
+  assert.match(source, /onAttach=\{routedNewSession \? undefined : effectiveMediaCapability \? \(\) => fileInputRef\.current\?\.click\(\) : undefined\}/)
   assert.doesNotMatch(source, /aria-label="Attach media"/)
   assert.match(actions, /data-testid="desktop-composer-attach-menu-item"/)
   assert.match(actions, /<Paperclip size=\{16\}/)
@@ -87,8 +87,10 @@ test('Desktop V3 composer exposes only backend-projected media and preserves dur
 
   assert.match(composer, /mediaCapability\?\.status === 'available'/)
   assert.match(composer, /accept=\{effectiveMediaCapability\.capabilities\.flatMap/)
+  assert.match(composer, /capability\.mime_types \?\? \[\]/)
+  assert.match(composer, /capability\.file_types \?\? \[\]/)
   assert.match(composer, /onPaste=\{\(event\)/)
-  assert.match(composer, /event\.dataTransfer\.files/)
+  assert.match(composer, /event\.(?:clipboardData|dataTransfer)\.files/)
   assert.match(composer, /attachment capability changed/i)
   assert.match(composer, /attachments,\s*onSubmit/)
   assert.match(pane, /getDesktopV3MediaCapability\(normalizedSessionId\)/)
