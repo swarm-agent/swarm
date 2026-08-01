@@ -89,6 +89,26 @@ func TestOnboardingWorkspaceErrorAllowsRetryAndCompletionUnlocks(t *testing.T) {
 	}
 }
 
+func TestOnboardingProviderRendersTwoCardsPerRow(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	page := readyOnboardingPage()
+	page.ShowOnboardingProvider("Choose a provider")
+	page.Draw(screen)
+	lines := strings.Split(dumpHomeTestScreen(screen, 100, 30), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "codex") && strings.Contains(line, "openai") {
+			return
+		}
+	}
+	t.Fatalf("provider onboarding did not render two cards in one row:\n%s", strings.Join(lines, "\n"))
+}
+
 func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 	screen := tcell.NewSimulationScreen("")
 	if err := screen.Init(); err != nil {

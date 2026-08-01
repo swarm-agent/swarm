@@ -443,12 +443,31 @@ func (p *HomePage) drawOnboardingProvider(s tcell.Screen, content Rect) {
 	if selected < 0 || selected >= len(providers) {
 		selected = 0
 	}
-	start := maxInt(0, selected-2)
-	end := minInt(len(providers), start+5)
-	y := content.Y + 1
+
+	const columns = 2
+	const gutter = 2
+	const cardHeight = 3
+	const rowGap = 1
+	cardW := (content.W - gutter) / columns
+	maxRows := maxInt(1, (content.H-1)/(cardHeight+rowGap))
+	totalRows := (len(providers) + columns - 1) / columns
+	selectedRow := selected / columns
+	startRow := maxInt(0, selectedRow-maxRows/2)
+	startRow = minInt(startRow, maxInt(0, totalRows-maxRows))
+	start := startRow * columns
+	end := minInt(len(providers), start+maxRows*columns)
+
 	for i := start; i < end; i++ {
+		visibleIndex := i - start
+		row := visibleIndex / columns
+		column := visibleIndex % columns
 		provider := providers[i]
-		card := Rect{X: content.X, Y: y, W: content.W, H: 2}
+		card := Rect{
+			X: content.X + column*(cardW+gutter),
+			Y: content.Y + 1 + row*(cardHeight+rowGap),
+			W: cardW,
+			H: cardHeight,
+		}
 		style := p.theme.Border
 		textStyle := p.theme.Text
 		prefix := "  "
@@ -462,9 +481,8 @@ func (p *HomePage) drawOnboardingProvider(s tcell.Screen, content Rect) {
 		if provider.Ready {
 			state = "connected"
 		}
-		label := fmt.Sprintf("%s%-14s  %s", prefix, provider.ID, state)
-		DrawText(s, card.X+1, card.Y, card.W-2, textStyle, clampEllipsis(label, card.W-2))
-		y += 3
+		label := fmt.Sprintf("%s%s  ·  %s", prefix, provider.ID, state)
+		DrawText(s, card.X+1, card.Y+1, card.W-2, textStyle, clampEllipsis(label, card.W-2))
 	}
 }
 
