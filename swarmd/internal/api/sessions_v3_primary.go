@@ -1914,12 +1914,7 @@ func (s *Server) handleSessionV3PrimaryTitle(w http.ResponseWriter, r *http.Requ
 	}
 	next := session
 	next.Title = title
-	next.Metadata = cloneSessionsV3Metadata(session.Metadata)
-	if next.Metadata == nil {
-		next.Metadata = map[string]any{}
-	}
-	next.Metadata["title_locked"] = true
-	next.Metadata["title_source"] = "manual"
+	next.Metadata = authoritativeSessionTitleMetadata(session.Metadata, "manual")
 	next.UpdatedAt = time.Now().UnixMilli()
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateTitle, map[string]any{"title": title, "metadata": next.Metadata})
 	if err != nil {

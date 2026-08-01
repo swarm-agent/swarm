@@ -1348,7 +1348,7 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	now := time.Now().UnixMilli()
 	current.Title = title
 	current.UpdatedAt = now
-	current.Metadata = cloneSessionsV3Metadata(current.Metadata)
+	current.Metadata = authoritativeSessionTitleMetadata(current.Metadata, "compact")
 	payload, err := json.Marshal(map[string]any{
 		"session_id": job.SessionID,
 		"title":      title,
@@ -4285,6 +4285,9 @@ func sessionV3TitleGenerationLocked(metadata map[string]any) bool {
 		return false
 	}
 	if sessionV3MetadataBool(metadata, "title_locked") || sessionV3MetadataBool(metadata, "background") {
+		return true
+	}
+	if strings.EqualFold(sessionV3MetadataString(metadata, "title_source"), routedSessionTitleSourceRouter) {
 		return true
 	}
 	for _, pair := range []struct{ key, value string }{

@@ -4186,6 +4186,9 @@ func sessionTitleGenerationLocked(metadata map[string]any) bool {
 	if metadataBoolValue(metadata, "title_locked") || metadataBoolValue(metadata, "background") {
 		return true
 	}
+	if metadataStringValueEquals(metadata, "title_source", "router") {
+		return true
+	}
 	if metadataStringValueEquals(metadata, "lineage_kind", "delegated_subagent") ||
 		metadataStringValueEquals(metadata, "launch_source", "task") ||
 		metadataStringValueEquals(metadata, "launch_source", "targeted_subagent") ||
@@ -4444,6 +4447,14 @@ func (s *Service) applySessionTitleUpdate(sessionID, title, stage string, emit S
 	}
 	title = strings.TrimSpace(title)
 	if title == "" {
+		return
+	}
+	current, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		s.emitSessionTitleWarning(sessionID, stage, err, emit)
+		return
+	}
+	if !ok || sessionTitleGenerationLocked(current.Metadata) {
 		return
 	}
 	updated, env, err := s.sessions.SetTitle(sessionID, title)
