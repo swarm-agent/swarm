@@ -1,4 +1,5 @@
 const COMPILED_SYSTEM_AGENT_LABELS: Readonly<Record<string, string>> = {
+  'system-compact': 'Compact',
   'system-finder': 'Finder',
   'system-coder': 'Coder',
   'system-designer': 'Designer',
