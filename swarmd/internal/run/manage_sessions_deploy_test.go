@@ -110,7 +110,7 @@ func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromModePrefer
 	}
 }
 
-func TestSwarmDefaultModelResolutionUsesCurrentProfileAcrossTaskAndDeployPaths(t *testing.T) {
+func TestSwarmDefaultModelResolutionAdaptsFlatFavoriteToSingleSnapshot(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
@@ -122,13 +122,10 @@ func TestSwarmDefaultModelResolutionUsesCurrentProfileAcrossTaskAndDeployPaths(t
 	profiles := modelprofile.NewService(pebblestore.NewModelProfileStore(store))
 	svc.SetModelProfileService(profiles)
 	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "test-account", AccountScopeSource: identity.AccountScopeSourceServerState})
-	plan := pebblestore.ModelProfileSelection{Provider: "codex", Model: "current-plan", Thinking: "high"}
-	auto := pebblestore.ModelProfileSelection{Provider: "openai", Model: "current-auto", Thinking: "medium"}
-	current, err := profiles.Create(ctx, modelprofile.Input{Name: "Current", ModelMode: pebblestore.ModelProfileModeSplit, Plan: &plan, Auto: &auto})
+	current, err := profiles.Create(ctx, modelprofile.Input{
+		Name: "Current", Provider: "Codex", Model: "current-model", Thinking: "high", ServiceTier: "fast", ContextMode: "compact",
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := profiles.SetDefault(ctx, current.ProfileID); err != nil {
 		t.Fatal(err)
 	}
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
@@ -137,50 +134,22 @@ func TestSwarmDefaultModelResolutionUsesCurrentProfileAcrossTaskAndDeployPaths(t
 	}
 	stale := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "stale", UseAccountDefault: true, ModelMode: pebblestore.ModelProfileModeSingle, Single: &pebblestore.ModelProfileSelection{Provider: "static", Model: "stale"}}
 	resolved, err := svc.resolveSwarmDefaultModelProfile(parent.AccountScopeID, stale, 99)
-	if err != nil || resolved.SavedProfileID != current.ProfileID || !resolved.UseAccountDefault || resolved.Plan.Model != "current-plan" || resolved.Auto.Model != "current-auto" {
-		t.Fatalf("current default resolution = %#v err=%v", resolved, err)
-	}
-	parent.ModelProfile = stale
-	for _, tc := range []struct{ mode, model string }{{sessionruntime.ModePlan, "current-plan"}, {sessionruntime.ModeAuto, "current-auto"}} {
-		profile, _, _, err := svc.resolveTaskLaunchProfileForMode(parent, agentruntime.SwarmAgentID, tc.mode)
-		if err != nil || profile.Model != tc.model {
-			t.Fatalf("direct task %s profile = %#v err=%v", tc.mode, profile, err)
-		}
-		preference, err := manageSessionsDeployModelProfilePreference(resolved, tc.mode)
-		if err != nil || preference.Model != tc.model {
-			t.Fatalf("deployed task %s preference = %#v err=%v", tc.mode, preference, err)
-		}
-	}
-
-	explicit := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceTemporary, ModelMode: pebblestore.ModelProfileModeSplit, Plan: &pebblestore.ModelProfileSelection{Provider: "google", Model: "explicit-plan"}, Auto: &pebblestore.ModelProfileSelection{Provider: "openrouter", Model: "explicit-auto"}}
-	resolved, err = svc.resolveSwarmDefaultModelProfile(parent.AccountScopeID, explicit, 100)
-	if err != nil || resolved.UseAccountDefault || resolved.Plan.Model != "explicit-plan" || resolved.Auto.Model != "explicit-auto" {
-		t.Fatalf("explicit profile resolution = %#v err=%v", resolved, err)
-	}
-	parent.ModelProfile = explicit
-	for _, tc := range []struct{ mode, model string }{{sessionruntime.ModePlan, "explicit-plan"}, {sessionruntime.ModeAuto, "explicit-auto"}} {
-		profile, _, _, err := svc.resolveTaskLaunchProfileForMode(parent, agentruntime.SwarmAgentID, tc.mode)
-		if err != nil || profile.Model != tc.model {
-			t.Fatalf("explicit direct task %s profile = %#v err=%v", tc.mode, profile, err)
-		}
-	}
-
-	single := pebblestore.ModelProfileSelection{Provider: "anthropic", Model: "current-single", Thinking: "low"}
-	singleProfile, err := profiles.Create(ctx, modelprofile.Input{Name: "Single", ModelMode: pebblestore.ModelProfileModeSingle, Single: &single})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := profiles.SetDefault(ctx, singleProfile.ProfileID); err != nil {
-		t.Fatal(err)
+	if resolved.Source != pebblestore.SessionModelProfileSourceSaved || resolved.SavedProfileID != current.ProfileID || !resolved.UseAccountDefault || resolved.Name != "Current" || resolved.ModelMode != pebblestore.ModelProfileModeSingle || resolved.AppliedAt != 99 {
+		t.Fatalf("flat default snapshot metadata = %#v", resolved)
 	}
-	resolved, err = svc.resolveSwarmDefaultModelProfile(parent.AccountScopeID, stale, 100)
-	if err != nil || resolved.Single.Model != "current-single" {
-		t.Fatalf("single current default = %#v err=%v", resolved, err)
+	if resolved.Single == nil || resolved.Single.Provider != "Codex" || resolved.Single.Model != "current-model" || resolved.Single.Thinking != "high" || resolved.Single.ServiceTier != "fast" || resolved.Single.ContextMode != "compact" || resolved.Plan != nil || resolved.Auto != nil {
+		t.Fatalf("flat default snapshot selection = %#v", resolved)
 	}
 	for _, mode := range []string{sessionruntime.ModePlan, sessionruntime.ModeAuto} {
 		preference, err := manageSessionsDeployModelProfilePreference(resolved, mode)
-		if err != nil || preference.Model != "current-single" {
-			t.Fatalf("single %s preference = %#v err=%v", mode, preference, err)
+		if err != nil {
+			t.Fatalf("%s preference: %v", mode, err)
+		}
+		if preference.Provider != "codex" || preference.Model != "current-model" || preference.Thinking != "high" || preference.ServiceTier != "fast" || preference.ContextMode != "compact" || preference.UpdatedAt != 99 {
+			t.Fatalf("%s preference = %#v", mode, preference)
 		}
 	}
 }

@@ -360,9 +360,19 @@ func (s *Service) resolveSwarmDefaultModelProfile(accountScopeID string, bound *
 		return nil, errors.New("account has no default model profile")
 	}
 	return &pebblestore.SessionModelProfileSnapshot{
-		Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: profile.ProfileID, UseAccountDefault: true,
-		Name: profile.Name, ModelMode: profile.ModelMode, Single: cloneManageSessionsDeployModelSelection(profile.Single),
-		Plan: cloneManageSessionsDeployModelSelection(profile.Plan), Auto: cloneManageSessionsDeployModelSelection(profile.Auto), AppliedAt: appliedAt,
+		Source:            pebblestore.SessionModelProfileSourceSaved,
+		SavedProfileID:    profile.ProfileID,
+		UseAccountDefault: true,
+		Name:              profile.Name,
+		ModelMode:         pebblestore.ModelProfileModeSingle,
+		Single: &pebblestore.ModelProfileSelection{
+			Provider:    profile.Provider,
+			Model:       profile.Model,
+			Thinking:    profile.Thinking,
+			ServiceTier: profile.ServiceTier,
+			ContextMode: profile.ContextMode,
+		},
+		AppliedAt: appliedAt,
 	}, nil
 }
 
