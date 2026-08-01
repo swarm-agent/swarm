@@ -1873,7 +1873,19 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	pendingEntry, err := s.workspace.MarkDefinitionPendingForPrincipal(principal, entry.Path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("persist workspace definition pending state: %w", err))
+		return
+	}
+	resolution = workspaceResolutionWithDefinition(resolution, pendingEntry)
 	resolution.LocalWorkspaceBindingID = binding.BindingID
+	if err := s.launchWorkspaceDefinitionJob(principal, pendingEntry); err != nil {
+		if failedEntry, current, persistErr := s.workspace.FailDefinitionForPrincipal(principal, pendingEntry.Path, pendingEntry.DefinitionGeneration, err.Error(), workspaceDefinitionModelSuggestion, 0); persistErr == nil && current {
+			resolution = workspaceResolutionWithDefinition(resolution, failedEntry)
+			resolution.LocalWorkspaceBindingID = binding.BindingID
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                         true,
 		"workspace":                  resolution,

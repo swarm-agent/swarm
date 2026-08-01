@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,23 +27,40 @@ type WorkspaceReplicationSync struct {
 	Modules []string `json:"modules,omitempty"`
 }
 
+const (
+	WorkspaceDefinitionStatusPending   = "pending"
+	WorkspaceDefinitionStatusCompleted = "completed"
+	WorkspaceDefinitionStatusFailed    = "failed"
+)
+
 type WorkspaceEntry struct {
-	AccountScopeID      string   `json:"account_scope_id,omitempty"`
-	WorkspaceID         string   `json:"workspace_id"`
-	WorkspaceGeneration int64    `json:"workspace_generation"`
-	State               string   `json:"state,omitempty"`
-	Path                string   `json:"path"`
-	Name                string   `json:"name"`
-	ThemeID             string   `json:"theme_id,omitempty"`
-	Directories         []string `json:"directories,omitempty"`
-	SortIndex           int      `json:"sort_index,omitempty"`
-	AddedAt             int64    `json:"added_at"`
-	UpdatedAt           int64    `json:"updated_at"`
-	LastSelectedAt      int64    `json:"last_selected_at"`
+	AccountScopeID             string   `json:"account_scope_id,omitempty"`
+	WorkspaceID                string   `json:"workspace_id"`
+	WorkspaceGeneration        int64    `json:"workspace_generation"`
+	State                      string   `json:"state,omitempty"`
+	Path                       string   `json:"path"`
+	Name                       string   `json:"name"`
+	ThemeID                    string   `json:"theme_id,omitempty"`
+	Directories                []string `json:"directories,omitempty"`
+	SortIndex                  int      `json:"sort_index,omitempty"`
+	AddedAt                    int64    `json:"added_at"`
+	UpdatedAt                  int64    `json:"updated_at"`
+	LastSelectedAt             int64    `json:"last_selected_at"`
+	Definition                 string   `json:"definition,omitempty"`
+	DefinitionStatus           string   `json:"definition_status,omitempty"`
+	DefinitionAttemptCount     int      `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration       int64    `json:"definition_generation,omitempty"`
+	DefinitionError            string   `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion  string   `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt        int64    `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt      int64    `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt         int64    `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt        int64    `json:"definition_updated_at,omitempty"`
 }
 
 type WorkspaceStore struct {
-	store *Store
+	store        *Store
+	definitionMu sync.Mutex
 }
 
 func NewWorkspaceStore(store *Store) *WorkspaceStore {
@@ -67,6 +85,115 @@ func (s *WorkspaceStore) SetCurrentForAccount(accountScopeID, userID, path, name
 
 func (s *WorkspaceStore) AddForAccount(accountScopeID, path, name string) (WorkspaceEntry, error) {
 	return s.upsertForAccount(accountScopeID, path, name, "", false)
+}
+
+// MarkDefinitionPendingForAccount starts a new workspace-definition generation.
+// It is intentionally persisted before the caller launches asynchronous analysis.
+func (s *WorkspaceStore) MarkDefinitionPendingForAccount(accountScopeID, path string) (WorkspaceEntry, error) {
+	s.definitionMu.Lock()
+	defer s.definitionMu.Unlock()
+	entry, ok, err := s.GetForAccount(accountScopeID, path)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", strings.TrimSpace(path))
+	}
+	now := time.Now().UnixMilli()
+	entry.DefinitionGeneration++
+	if entry.DefinitionGeneration <= 0 {
+		entry.DefinitionGeneration = 1
+	}
+	entry.Definition = ""
+	entry.DefinitionStatus = WorkspaceDefinitionStatusPending
+	entry.DefinitionAttemptCount = 0
+	entry.DefinitionError = ""
+	entry.DefinitionModelSuggestion = ""
+	entry.DefinitionPendingAt = now
+	entry.DefinitionCompletedAt = 0
+	entry.DefinitionFailedAt = 0
+	entry.DefinitionUpdatedAt = now
+	entry.UpdatedAt = now
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *WorkspaceStore) RecordDefinitionAttemptForAccount(accountScopeID, path string, generation int64, attempt int) (WorkspaceEntry, bool, error) {
+	s.definitionMu.Lock()
+	defer s.definitionMu.Unlock()
+	entry, current, err := s.definitionEntryForGeneration(accountScopeID, path, generation)
+	if err != nil || !current {
+		return entry, current, err
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+	entry.DefinitionAttemptCount = attempt
+	entry.DefinitionUpdatedAt = time.Now().UnixMilli()
+	entry.UpdatedAt = entry.DefinitionUpdatedAt
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, false, err
+	}
+	return entry, true, nil
+}
+
+func (s *WorkspaceStore) CompleteDefinitionForAccount(accountScopeID, path string, generation int64, definition string, attempts int) (WorkspaceEntry, bool, error) {
+	s.definitionMu.Lock()
+	defer s.definitionMu.Unlock()
+	entry, current, err := s.definitionEntryForGeneration(accountScopeID, path, generation)
+	if err != nil || !current {
+		return entry, current, err
+	}
+	now := time.Now().UnixMilli()
+	entry.Definition = strings.TrimSpace(definition)
+	entry.DefinitionStatus = WorkspaceDefinitionStatusCompleted
+	entry.DefinitionAttemptCount = attempts
+	entry.DefinitionError = ""
+	entry.DefinitionModelSuggestion = ""
+	entry.DefinitionCompletedAt = now
+	entry.DefinitionFailedAt = 0
+	entry.DefinitionUpdatedAt = now
+	entry.UpdatedAt = now
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, false, err
+	}
+	return entry, true, nil
+}
+
+func (s *WorkspaceStore) FailDefinitionForAccount(accountScopeID, path string, generation int64, failure, suggestion string, attempts int) (WorkspaceEntry, bool, error) {
+	s.definitionMu.Lock()
+	defer s.definitionMu.Unlock()
+	entry, current, err := s.definitionEntryForGeneration(accountScopeID, path, generation)
+	if err != nil || !current {
+		return entry, current, err
+	}
+	now := time.Now().UnixMilli()
+	entry.Definition = ""
+	entry.DefinitionStatus = WorkspaceDefinitionStatusFailed
+	entry.DefinitionAttemptCount = attempts
+	entry.DefinitionError = strings.TrimSpace(failure)
+	entry.DefinitionModelSuggestion = strings.TrimSpace(suggestion)
+	entry.DefinitionCompletedAt = 0
+	entry.DefinitionFailedAt = now
+	entry.DefinitionUpdatedAt = now
+	entry.UpdatedAt = now
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, false, err
+	}
+	return entry, true, nil
+}
+
+func (s *WorkspaceStore) definitionEntryForGeneration(accountScopeID, path string, generation int64) (WorkspaceEntry, bool, error) {
+	entry, ok, err := s.GetForAccount(accountScopeID, path)
+	if err != nil {
+		return WorkspaceEntry{}, false, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, false, fmt.Errorf("workspace %q not found", strings.TrimSpace(path))
+	}
+	return entry, entry.DefinitionGeneration == generation && entry.DefinitionStatus == WorkspaceDefinitionStatusPending, nil
 }
 
 func (s *WorkspaceStore) SaveForAccount(accountScopeID, path, name, themeID string, selected bool) (WorkspaceEntry, error) {

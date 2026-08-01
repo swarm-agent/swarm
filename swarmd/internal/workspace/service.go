@@ -22,33 +22,53 @@ type Service struct {
 }
 
 type Resolution struct {
-	RequestedPath           string `json:"requested_path"`
-	ResolvedPath            string `json:"resolved_path"`
-	WorkspaceID             string `json:"workspace_id,omitempty"`
-	LocalWorkspaceBindingID string `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceGeneration     int64  `json:"workspace_generation,omitempty"`
-	WorkspaceState          string `json:"workspace_state,omitempty"`
-	WorkspacePath           string `json:"workspace_path"`
-	WorkspaceName           string `json:"workspace_name"`
-	ThemeID                 string `json:"theme_id,omitempty"`
+	RequestedPath                    string `json:"requested_path"`
+	ResolvedPath                     string `json:"resolved_path"`
+	WorkspaceID                      string `json:"workspace_id,omitempty"`
+	LocalWorkspaceBindingID          string `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceGeneration              int64  `json:"workspace_generation,omitempty"`
+	WorkspaceState                   string `json:"workspace_state,omitempty"`
+	WorkspacePath                    string `json:"workspace_path"`
+	WorkspaceName                    string `json:"workspace_name"`
+	ThemeID                          string `json:"theme_id,omitempty"`
+	Definition                       string `json:"definition,omitempty"`
+	DefinitionStatus                 string `json:"definition_status,omitempty"`
+	DefinitionAttemptCount           int    `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration             int64  `json:"definition_generation,omitempty"`
+	DefinitionError                  string `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion        string `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt              int64  `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt            int64  `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt               int64  `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt              int64  `json:"definition_updated_at,omitempty"`
 }
 
 type Entry struct {
-	Path                    string   `json:"path"`
-	WorkspaceID             string   `json:"workspace_id,omitempty"`
-	WorkspaceGeneration     int64    `json:"workspace_generation,omitempty"`
-	State                   string   `json:"state,omitempty"`
-	LocalWorkspaceBindingID string   `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName           string   `json:"workspace_name"`
-	ThemeID                 string   `json:"theme_id,omitempty"`
-	Directories             []string `json:"directories"`
-	IsGitRepo               bool     `json:"is_git_repo"`
-	SortIndex               int      `json:"sort_index"`
-	AddedAt                 int64    `json:"added_at"`
-	UpdatedAt               int64    `json:"updated_at"`
-	LastSelectedAt          int64    `json:"last_selected_at"`
-	Active                  bool     `json:"active"`
-	WorktreeEnabled         bool     `json:"worktree_enabled"`
+	Path                       string   `json:"path"`
+	WorkspaceID                string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration        int64    `json:"workspace_generation,omitempty"`
+	State                      string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID    string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName              string   `json:"workspace_name"`
+	ThemeID                    string   `json:"theme_id,omitempty"`
+	Directories                []string `json:"directories"`
+	IsGitRepo                  bool     `json:"is_git_repo"`
+	SortIndex                  int      `json:"sort_index"`
+	AddedAt                    int64    `json:"added_at"`
+	UpdatedAt                  int64    `json:"updated_at"`
+	LastSelectedAt             int64    `json:"last_selected_at"`
+	Active                     bool     `json:"active"`
+	WorktreeEnabled            bool     `json:"worktree_enabled"`
+	Definition                 string   `json:"definition,omitempty"`
+	DefinitionStatus           string   `json:"definition_status,omitempty"`
+	DefinitionAttemptCount     int      `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration       int64    `json:"definition_generation,omitempty"`
+	DefinitionError            string   `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion  string   `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt        int64    `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt      int64    `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt         int64    `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt        int64    `json:"definition_updated_at,omitempty"`
 }
 
 type Scope struct {
@@ -101,6 +121,34 @@ func (s *Service) GetByWorkspaceIDForPrincipal(principal identity.Principal, wor
 		return pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
 	}
 	return s.store.GetByWorkspaceIDForAccount(principal.AccountScopeID, workspaceID)
+}
+
+func (s *Service) MarkDefinitionPendingForPrincipal(principal identity.Principal, path string) (pebblestore.WorkspaceEntry, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, err
+	}
+	return s.store.MarkDefinitionPendingForAccount(principal.AccountScopeID, path)
+}
+
+func (s *Service) RecordDefinitionAttemptForPrincipal(principal identity.Principal, path string, generation int64, attempt int) (pebblestore.WorkspaceEntry, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, false, err
+	}
+	return s.store.RecordDefinitionAttemptForAccount(principal.AccountScopeID, path, generation, attempt)
+}
+
+func (s *Service) CompleteDefinitionForPrincipal(principal identity.Principal, path string, generation int64, definition string, attempts int) (pebblestore.WorkspaceEntry, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, false, err
+	}
+	return s.store.CompleteDefinitionForAccount(principal.AccountScopeID, path, generation, definition, attempts)
+}
+
+func (s *Service) FailDefinitionForPrincipal(principal identity.Principal, path string, generation int64, failure, suggestion string, attempts int) (pebblestore.WorkspaceEntry, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, false, err
+	}
+	return s.store.FailDefinitionForAccount(principal.AccountScopeID, path, generation, failure, suggestion, attempts)
 }
 
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {
@@ -488,7 +536,17 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 			UpdatedAt:           entry.UpdatedAt,
 			LastSelectedAt:      entry.LastSelectedAt,
 			Active:              false,
-			WorktreeEnabled:     false,
+			WorktreeEnabled:           false,
+			Definition:                entry.Definition,
+			DefinitionStatus:          entry.DefinitionStatus,
+			DefinitionAttemptCount:    entry.DefinitionAttemptCount,
+			DefinitionGeneration:      entry.DefinitionGeneration,
+			DefinitionError:           entry.DefinitionError,
+			DefinitionModelSuggestion: entry.DefinitionModelSuggestion,
+			DefinitionPendingAt:       entry.DefinitionPendingAt,
+			DefinitionCompletedAt:     entry.DefinitionCompletedAt,
+			DefinitionFailedAt:        entry.DefinitionFailedAt,
+			DefinitionUpdatedAt:       entry.DefinitionUpdatedAt,
 		})
 	}
 	return out, nil
@@ -527,7 +585,17 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			UpdatedAt:           entry.UpdatedAt,
 			LastSelectedAt:      entry.LastSelectedAt,
 			Active:              active,
-			WorktreeEnabled:     false,
+			WorktreeEnabled:           false,
+			Definition:                entry.Definition,
+			DefinitionStatus:          entry.DefinitionStatus,
+			DefinitionAttemptCount:    entry.DefinitionAttemptCount,
+			DefinitionGeneration:      entry.DefinitionGeneration,
+			DefinitionError:           entry.DefinitionError,
+			DefinitionModelSuggestion: entry.DefinitionModelSuggestion,
+			DefinitionPendingAt:       entry.DefinitionPendingAt,
+			DefinitionCompletedAt:     entry.DefinitionCompletedAt,
+			DefinitionFailedAt:        entry.DefinitionFailedAt,
+			DefinitionUpdatedAt:       entry.DefinitionUpdatedAt,
 		})
 	}
 	return out, nil
@@ -1103,7 +1171,18 @@ func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 }
 
 func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.WorkspaceEntry, workspaceName string) Resolution {
-	return resolutionForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID))
+	resolution := resolutionForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID))
+	resolution.Definition = entry.Definition
+	resolution.DefinitionStatus = entry.DefinitionStatus
+	resolution.DefinitionAttemptCount = entry.DefinitionAttemptCount
+	resolution.DefinitionGeneration = entry.DefinitionGeneration
+	resolution.DefinitionError = entry.DefinitionError
+	resolution.DefinitionModelSuggestion = entry.DefinitionModelSuggestion
+	resolution.DefinitionPendingAt = entry.DefinitionPendingAt
+	resolution.DefinitionCompletedAt = entry.DefinitionCompletedAt
+	resolution.DefinitionFailedAt = entry.DefinitionFailedAt
+	resolution.DefinitionUpdatedAt = entry.DefinitionUpdatedAt
+	return resolution
 }
 
 func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string) Resolution {
