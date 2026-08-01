@@ -113,12 +113,6 @@ type sessionsV3CompactRequest struct {
 	Instructions    string `json:"instructions,omitempty"`
 }
 
-type sessionsV3ModeRequest struct {
-	Mode            string `json:"mode"`
-	ClientRequestID string `json:"client_request_id,omitempty"`
-	IdempotencyKey  string `json:"idempotency_key,omitempty"`
-}
-
 type sessionsV3AgentRequest struct {
 	AgentName       string `json:"agent_name"`
 	ClientRequestID string `json:"client_request_id,omitempty"`
@@ -138,7 +132,6 @@ type sessionsV3PreferenceRequest struct {
 type sessionsV3SettingsPatchRequest struct {
 	ClientRequestID string                       `json:"client_request_id"`
 	IfProjectionSeq *uint64                      `json:"if_projection_seq,omitempty"`
-	Mode            *string                      `json:"mode,omitempty"`
 	AgentName       *string                      `json:"agent_name,omitempty"`
 	Preference      *sessionsV3PreferenceRequest `json:"preference,omitempty"`
 }
@@ -311,8 +304,6 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryCompact(w, r, principal, sessionID)
 	case "settings":
 		s.handleSessionV3PrimarySettings(w, r, principal, sessionID)
-	case "mode":
-		s.handleSessionV3PrimaryMode(w, r, principal, sessionID)
 	case "agent":
 		s.handleSessionV3PrimaryAgent(w, r, principal, sessionID)
 	case "preference":
@@ -392,6 +383,13 @@ func sessionsV3SystemSidechatID(parentSessionID, kind string) (string, string) {
 func sessionsV3PlanSidechatPreference(parent pebblestore.SessionSnapshot) pebblestore.ModelPreference {
 	preference, _ := sessionsV3PlanSidechatSnapshotPreference(parent)
 	return preference
+}
+
+func sessionsV3PlanSidechatModelProfile(parent pebblestore.SessionSnapshot) *pebblestore.SessionModelProfileSnapshot {
+	if parent.ModelProfile == nil || parent.ModelProfile.Plan == nil {
+		return nil
+	}
+	return pebblestore.CloneSessionModelProfileSnapshot(parent.ModelProfile)
 }
 
 func sessionsV3PlanSidechatSnapshotPreference(parent pebblestore.SessionSnapshot) (pebblestore.ModelPreference, bool) {
@@ -537,7 +535,10 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	metadata := sessionsV3SystemSidechatMetadata(parentSessionID, kind, profile)
+	var modelProfile *pebblestore.SessionModelProfileSnapshot
 	if kind == "plan" {
+		modelProfile = sessionsV3PlanSidechatModelProfile(parent)
+		metadata = sessionsV3ModelProfileMetadata(metadata, modelProfile)
 		metadata["plan_permission_id"], metadata["plan_id"], metadata["plan_revision"] = req.PermissionID, req.PlanID, req.PlanRevision
 		metadata["plan_context_source"] = "permission_projection"
 	}
@@ -559,15 +560,25 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		next := existing
 		next.Metadata = metadata
 		next.Preference = preference
+		next.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(modelProfile)
 		next.Mode = sessionruntime.ModeAuto
 		next.UpdatedAt = time.Now().UnixMilli()
 		updateKey := fmt.Sprintf("system-sidechat-bind:%s:%s:%d", kind, req.PermissionID, req.PlanRevision)
-		updateHash, hashErr := sessionsV3UpdatePayloadHash(sidecarID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"metadata": metadata, "preference": preference})
+		updateKind := sessionruntime.SessionMutationUpdateMetadata
+		if kind == "plan" {
+			updateKind = sessionruntime.SessionMutationUpdateModelProfile
+		}
+		updateHash, hashErr := sessionsV3UpdatePayloadHash(sidecarID, updateKind, map[string]any{"metadata": metadata, "preference": preference, "model_profile": modelProfile})
 		if hashErr != nil {
 			writeError(w, http.StatusBadRequest, hashErr)
 			return
 		}
-		updateResult, updateErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: updateKey, IdempotencyKey: updateKey, PayloadHash: updateHash, RequestHash: updateHash, Kind: sessionruntime.SessionMutationUpdateMetadata, Session: &next, NowUnixMs: next.UpdatedAt})
+		updateEventPayload, marshalErr := json.Marshal(map[string]any{"session_id": sidecarID, "metadata": metadata, "preference": preference, "model_profile": modelProfile, "updated_at": next.UpdatedAt})
+		if marshalErr != nil {
+			writeError(w, http.StatusBadRequest, marshalErr)
+			return
+		}
+		updateResult, updateErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: updateKey, IdempotencyKey: updateKey, PayloadHash: updateHash, RequestHash: updateHash, Kind: updateKind, EventPayload: updateEventPayload, Session: &next, NowUnixMs: next.UpdatedAt})
 		if updateErr != nil {
 			writeError(w, http.StatusBadRequest, updateErr)
 			return
@@ -575,7 +586,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": updateResult.Replayed})
 		return
 	}
-	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, Metadata: metadata, CreatedAt: now, UpdatedAt: now}
+	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(modelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now}
 	payload, _ := json.Marshal(struct {
 		Parent, Permission, Plan string
 		Revision                 int64
@@ -1543,89 +1554,6 @@ func (s *Server) rejectSystemSidechatMutation(w http.ResponseWriter, session peb
 	return true
 }
 
-func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	var req sessionsV3ModeRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	clientRequestID, ok := sessionsV3MutationClientRequestID(w, r, req.ClientRequestID, req.IdempotencyKey)
-	if !ok {
-		return
-	}
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if !sessionruntime.IsValidMode(mode) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", req.Mode))
-		return
-	}
-	mode = sessionruntime.NormalizeMode(mode)
-	session, found, err := s.requireSessionV3Access(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if !found {
-		writeSessionNotFound(w)
-		return
-	}
-	if s.rejectSystemSidechatMutation(w, session) {
-		return
-	}
-	next := session
-	transition, err := s.resolveSessionsV3ModeTransition(session, mode)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolve %s model policy: %w", mode, err))
-		return
-	}
-	next.Mode = mode
-	next.Preference = transition.Preference
-	next.Metadata = cloneSessionsV3Metadata(next.Metadata)
-	next.Metadata["agent_profile"] = cloneSessionsV3AgentProfile(transition.ActiveProfile)
-	next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-	next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-	next.UpdatedAt = time.Now().UnixMilli()
-	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, map[string]any{"mode": mode})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	eventPayload, err := json.Marshal(map[string]any{
-		"session_id": sessionID, "mode": mode, "updated_at": next.UpdatedAt,
-		"preference": transition.Preference, "context_window": transition.ContextWindow, "max_output_tokens": transition.MaxOutputTokens,
-		"agent_model_policy": transition.AgentModelPolicy,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          principal.UserID,
-		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationUpdateMode,
-		EventPayload:    eventPayload,
-		Session:         &next,
-		NowUnixMs:       next.UpdatedAt,
-	})
-	if err != nil {
-		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
-			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict})
-			return
-		}
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, s.sessionV3ModeMutationResponseWithPolicy(next, mode, &result))
-}
-
 func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -1720,7 +1648,7 @@ func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
 		return
 	}
-	if req.Mode == nil && req.AgentName == nil && req.Preference == nil {
+	if req.AgentName == nil && req.Preference == nil {
 		writeError(w, http.StatusBadRequest, errors.New("at least one setting field is required"))
 		return
 	}
@@ -1749,31 +1677,6 @@ func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.R
 		payload["resolved_agent_name"] = resolvedAgent.ResolvedName
 		payload["agent_mode"] = resolvedAgent.Mode
 		payload["runtime_mode"] = resolvedAgent.RuntimeMode
-		payload["metadata"] = next.Metadata
-	}
-	if req.Mode != nil {
-		mode := strings.ToLower(strings.TrimSpace(*req.Mode))
-		if !sessionruntime.IsValidMode(mode) {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", *req.Mode))
-			return
-		}
-		mode = sessionruntime.NormalizeMode(mode)
-		transition, resolveErr := s.resolveSessionsV3ModeTransition(next, mode)
-		if resolveErr != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("resolve %s model policy: %w", mode, resolveErr))
-			return
-		}
-		next.Mode = mode
-		next.Preference = transition.Preference
-		next.Metadata = cloneSessionsV3Metadata(next.Metadata)
-		next.Metadata["agent_profile"] = cloneSessionsV3AgentProfile(transition.ActiveProfile)
-		next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-		next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-		payload["mode"] = mode
-		payload["preference"] = transition.Preference
-		payload["context_window"] = transition.ContextWindow
-		payload["max_output_tokens"] = transition.MaxOutputTokens
-		payload["agent_model_policy"] = transition.AgentModelPolicy
 		payload["metadata"] = next.Metadata
 	}
 	if req.Preference != nil {
@@ -2668,35 +2571,6 @@ func (s *Server) requireArchivedSessionV3Access(principal identity.Principal, se
 		return pebblestore.SessionSnapshot{}, false, nil
 	}
 	return session, true, nil
-}
-
-func sessionV3ModeMutationResponse(sessionID, mode string, mutation *sessionruntime.SessionMutationResult) map[string]any {
-	response := map[string]any{
-		"ok":              true,
-		"session_id":      sessionID,
-		"mode":            mode,
-		"mutation":        nil,
-		"realtime_outbox": nil,
-	}
-	if mutation != nil {
-		response["mutation"] = sessionV3MutationResultResponse(*mutation)
-		response["realtime_outbox"] = mutation.RealtimeOutbox
-	}
-	return response
-}
-
-func (s *Server) sessionV3ModeMutationResponseWithPolicy(session pebblestore.SessionSnapshot, mode string, mutation *sessionruntime.SessionMutationResult) map[string]any {
-	response := sessionV3ModeMutationResponse(session.ID, mode, mutation)
-	preference := normalizeSessionsV3ModelPreference(session.Preference)
-	agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, 0, 0)
-	if agentModelPolicy.Locked {
-		preference = agentModelPolicy.Preference
-		response["context_window"] = agentModelPolicy.ContextWindow
-		response["max_output_tokens"] = agentModelPolicy.MaxOutputTokens
-	}
-	response["preference"] = preference
-	response["agent_model_policy"] = agentModelPolicy
-	return response
 }
 
 func (s *Server) validateSessionsV3PrimaryStopTarget(principal identity.Principal, sessionID, targetSwarmID string) (bool, error) {

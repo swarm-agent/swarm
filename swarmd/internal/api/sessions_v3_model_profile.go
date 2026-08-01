@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -143,6 +144,40 @@ func cloneSessionsV3ModelProfileSnapshot(profile pebblestore.SessionModelProfile
 	return *pebblestore.CloneSessionModelProfileSnapshot(&profile)
 }
 
+func mergeSessionsV3ModelProfileChoice(current pebblestore.SessionSnapshot, resolved *pebblestore.SessionModelProfileSnapshot) (*pebblestore.SessionModelProfileSnapshot, error) {
+	if resolved == nil {
+		return nil, nil
+	}
+	mode := sessionruntime.NormalizeMode(current.Mode)
+	if current.ModelProfile == nil {
+		if mode == sessionruntime.ModePlan && resolved.Plan == nil {
+			return nil, errors.New("cannot set the Plan model slot before the session has an Action model slot")
+		}
+		return pebblestore.CloneSessionModelProfileSnapshot(resolved), nil
+	}
+
+	next := pebblestore.CloneSessionModelProfileSnapshot(current.ModelProfile)
+	next.Source = resolved.Source
+	next.UseAccountDefault = resolved.UseAccountDefault
+	next.AppliedAt = resolved.AppliedAt
+	if mode == sessionruntime.ModePlan {
+		selection := &resolved.Action
+		favoriteID, favoriteName := resolved.ActionFavoriteID, resolved.ActionFavoriteName
+		if resolved.Plan != nil {
+			selection = resolved.Plan
+			favoriteID, favoriteName = resolved.PlanFavoriteID, resolved.PlanFavoriteName
+		}
+		next.Plan = pebblestore.CloneModelProfileSelection(selection)
+		next.PlanFavoriteID = favoriteID
+		next.PlanFavoriteName = favoriteName
+	} else {
+		next.Action = resolved.Action
+		next.ActionFavoriteID = resolved.ActionFavoriteID
+		next.ActionFavoriteName = resolved.ActionFavoriteName
+	}
+	return next, nil
+}
+
 func sessionsV3ProfilePreference(session pebblestore.SessionSnapshot) (pebblestore.ModelPreference, bool) {
 	profile := session.ModelProfile
 	if profile == nil {
@@ -205,7 +240,12 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 	}
 	now := time.Now().UnixMilli()
 	ctx := identity.ContextWithPrincipal(r.Context(), principal)
-	snapshot, err := s.resolveSessionsV3ModelProfileChoice(ctx, &req.Choice, now)
+	resolved, err := s.resolveSessionsV3ModelProfileChoice(ctx, &req.Choice, now)
+	if err != nil {
+		writeModelProfileError(w, err)
+		return
+	}
+	snapshot, err := mergeSessionsV3ModelProfileChoice(current, resolved)
 	if err != nil {
 		writeModelProfileError(w, err)
 		return
@@ -215,15 +255,28 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 	next.Metadata = sessionsV3ModelProfileMetadata(current.Metadata, snapshot)
 	if profilePreference, ok := sessionsV3ProfilePreference(next); ok {
 		next.Preference = normalizeSessionsV3ModelPreference(profilePreference)
+	} else if snapshot == nil {
+		transition, transitionErr := s.resolveSessionsV3ModeTransition(next, next.Mode)
+		if transitionErr != nil {
+			writeError(w, http.StatusBadRequest, transitionErr)
+			return
+		}
+		next.Preference = normalizeSessionsV3ModelPreference(transition.Preference)
 	}
 	next.UpdatedAt = now
-	payload := map[string]any{"session_id": sessionID, "model_profile": snapshot, "updated_at": now}
+	policy := s.sessionsV3AgentModelPolicy(next, next.Preference, 0, 0)
+	payload := map[string]any{"session_id": sessionID, "model_profile": snapshot, "preference": next.Preference, "agent_model_policy": policy, "updated_at": now}
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateModelProfile, payload)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &next, ExpectedLastEventSeq: req.IfProjectionSeq, NowUnixMs: now})
+	eventPayload, err := json.Marshal(payload)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationUpdateModelProfile, EventPayload: eventPayload, Session: &next, ExpectedLastEventSeq: req.IfProjectionSeq, NowUnixMs: now})
 	if err != nil {
 		var conflict *pebblestore.V3ProjectionConflictError
 		if errors.As(err, &conflict) {
@@ -237,8 +290,12 @@ func (s *Server) handleSessionV3PrimaryModelProfile(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	policy := s.sessionsV3AgentModelPolicy(next, next.Preference, 0, 0)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "metadata": next.Metadata, "model_profile": snapshot, "agent_model_policy": policy, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
+	responseSession := next
+	if result.Session != nil {
+		responseSession = *result.Session
+	}
+	responsePolicy := s.sessionsV3AgentModelPolicy(responseSession, responseSession.Preference, 0, 0)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "metadata": responseSession.Metadata, "model_profile": responseSession.ModelProfile, "preference": responseSession.Preference, "agent_model_policy": responsePolicy, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 
 func boolPtr(value bool) *bool { return &value }

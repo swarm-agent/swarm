@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -82,14 +83,18 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 
 func TestSessionsV3ModelProfileChoiceRejectsRemovedBundleFields(t *testing.T) {
 	for _, field := range []string{"model_mode", "single", "plan", "auto"} {
-		t.Run(field, func(t *testing.T) {
-			body := `{"client_request_id":"request","choice":{"temporary":{"name":"Temporary","provider":"openai","model":"gpt-test","thinking":"high","` + field + `":{}}}}`
-			var request sessionsV3ModelProfileApplyRequest
-			err := decodeJSONBytes([]byte(body), &request)
-			if err == nil || !strings.Contains(err.Error(), "unknown field") {
-				t.Fatalf("decode removed field %q error = %v, want unknown field", field, err)
-			}
-		})
+		for index, body := range []string{
+			`{"client_request_id":"request","choice":{"` + field + `":{}}}`,
+			`{"client_request_id":"request","choice":{"temporary":{"name":"Temporary","provider":"openai","model":"gpt-test","thinking":"high","` + field + `":{}}}}`,
+		} {
+			t.Run(fmt.Sprintf("%s_%d", field, index), func(t *testing.T) {
+				var request sessionsV3ModelProfileApplyRequest
+				err := decodeJSONBytes([]byte(body), &request)
+				if err == nil || !strings.Contains(err.Error(), "unknown field") {
+					t.Fatalf("decode removed field %q error = %v, want unknown field", field, err)
+				}
+			})
+		}
 	}
 }
 
@@ -168,6 +173,153 @@ func TestSessionsV3PlanSidechatPreferencePassesThroughParentModelSetup(t *testin
 	}
 	if got := sessionsV3PlanSidechatPreference(parent); got != profilePreference {
 		t.Fatalf("durable model-profile preference changed: got %+v want %+v", got, profilePreference)
+	}
+}
+
+func TestSessionsV3PlanSidechatModelProfileClonesImmutableSnapshot(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		UseAccountDefault:  true,
+		ActionFavoriteID:   "action-id",
+		ActionFavoriteName: "Action",
+		Action:             pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "action-model"},
+		PlanFavoriteID:     "plan-id",
+		PlanFavoriteName:   "Plan",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "plan-model", Thinking: "high"},
+		AppliedAt:          9,
+	}}
+	profile := sessionsV3PlanSidechatModelProfile(parent)
+	if profile == nil || profile.ActionFavoriteID != "action-id" || profile.Action.Model != "action-model" || profile.PlanFavoriteID != "plan-id" || profile.Plan == nil || profile.Plan.Model != "plan-model" || profile.Plan.Thinking != "high" || profile.AppliedAt != 9 {
+		t.Fatalf("Plan sidechat model profile = %+v", profile)
+	}
+	parent.ModelProfile.Plan.Model = "mutated"
+	if profile.Plan == nil || profile.Plan.Model != "plan-model" {
+		t.Fatalf("Plan sidechat model profile shares mutable selection: %+v", profile)
+	}
+}
+
+func TestSessionsV3ModelProfileMutationCommitsCurrentSlotAndRealtimeOutbox(t *testing.T) {
+	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "model-profile-mutation.pebble"))
+	defer func() { _ = closeStore() }()
+	principal := testPrincipal()
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+	favorite, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "Action New", Provider: "test-provider", Model: "action-new", Thinking: "high"})
+	if err != nil {
+		t.Fatalf("create favorite: %v", err)
+	}
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "model-profile-mutation-create", "model profile mutation", pebblestore.ModelPreference{Provider: "test-provider", Model: "action-old", Thinking: "medium"})
+	created.ModelProfile = &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, ActionFavoriteID: "action-old", ActionFavoriteName: "Action Old", Action: pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "action-old"}, PlanFavoriteID: "plan-old", PlanFavoriteName: "Plan Old", Plan: &pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "plan-old"}, AppliedAt: 1}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID, ClientRequestID: "model-profile-mutation-seed", IdempotencyKey: "model-profile-mutation-seed", PayloadHash: "model-profile-mutation-seed", RequestHash: "model-profile-mutation-seed", Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &created, NowUnixMs: 2}); err != nil {
+		t.Fatalf("seed model profile: %v", err)
+	}
+
+	body := `{"client_request_id":"model-profile-mutation-update","choice":{"saved_profile_id":"` + favorite.ProfileID + `"}}`
+	req := httptest.NewRequest(http.MethodPut, "/v3/sessions/"+created.ID+"/model-profile", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("model mutation status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Preference     pebblestore.ModelPreference            `json:"preference"`
+		ModelProfile   pebblestore.SessionModelProfileSnapshot `json:"model_profile"`
+		Mutation       sessionruntime.SessionMutationResult    `json:"mutation"`
+		RealtimeOutbox *pebblestore.V3RealtimeOutboxRecord     `json:"realtime_outbox"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode model mutation: %v", err)
+	}
+	if response.Mutation.Event.EventType != "session.model_profile.updated" || response.RealtimeOutbox == nil {
+		t.Fatalf("model mutation durability = %+v outbox=%+v", response.Mutation, response.RealtimeOutbox)
+	}
+	var eventPayload struct {
+		ModelProfile     pebblestore.SessionModelProfileSnapshot `json:"model_profile"`
+		Preference       pebblestore.ModelPreference             `json:"preference"`
+		AgentModelPolicy sessionsV3AgentModelPolicy               `json:"agent_model_policy"`
+	}
+	if err := json.Unmarshal(response.Mutation.Event.Payload, &eventPayload); err != nil {
+		t.Fatalf("decode model mutation event: %v", err)
+	}
+	if eventPayload.ModelProfile.ActionFavoriteID != favorite.ProfileID || eventPayload.Preference.Model != "action-new" || eventPayload.AgentModelPolicy.Preference.Model != "action-new" {
+		t.Fatalf("model mutation policy event = %+v", eventPayload)
+	}
+	if response.Preference.Model != "action-new" || response.ModelProfile.ActionFavoriteID != favorite.ProfileID || response.ModelProfile.PlanFavoriteID != "plan-old" || response.ModelProfile.Plan == nil || response.ModelProfile.Plan.Model != "plan-old" || response.ModelProfile.AppliedAt <= 2 {
+		t.Fatalf("model mutation response = %+v preference=%+v", response.ModelProfile, response.Preference)
+	}
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok || stored.Mode != sessionruntime.ModeAuto || stored.Preference.Model != "action-new" || stored.ModelProfile == nil || stored.ModelProfile.ActionFavoriteID != favorite.ProfileID || stored.ModelProfile.PlanFavoriteID != "plan-old" {
+		t.Fatalf("stored model mutation = %+v ok=%t err=%v", stored, ok, err)
+	}
+}
+
+func TestSessionsV3ModelProfileMutationRejectsActiveRunWithoutChangingSnapshot(t *testing.T) {
+	server, sessionSvc, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "model-profile-active-run.pebble"))
+	defer func() { _ = closeStore() }()
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "model-profile-active-run-create", "model profile active run", pebblestore.ModelPreference{Provider: "test-provider", Model: "action-model", Thinking: "medium"})
+	created.ModelProfile = &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, ActionFavoriteID: "action-old", ActionFavoriteName: "Action Old", Action: pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "action-model"}, AppliedAt: 1}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID, ClientRequestID: "model-profile-seed", IdempotencyKey: "model-profile-seed", PayloadHash: "model-profile-seed", RequestHash: "model-profile-seed", Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &created, NowUnixMs: 2}); err != nil {
+		t.Fatalf("seed model profile: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID, ClientRequestID: "model-profile-active-run", IdempotencyKey: "model-profile-active-run", PayloadHash: "model-profile-active-run", RequestHash: "model-profile-active-run", Kind: sessionruntime.SessionMutationRecordRunIntent, RunIntent: &pebblestore.V3SessionRunIntent{RunID: "run-active", Status: sessionruntime.RunIntentPendingExecutor}, NowUnixMs: 3}); err != nil {
+		t.Fatalf("record active run: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/v3/sessions/"+created.ID+"/model-profile", strings.NewReader(`{"client_request_id":"model-profile-clear-active"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "active run") {
+		t.Fatalf("active-run model mutation status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, ok, err := sessionSvc.GetSession(created.ID)
+	if err != nil || !ok || stored.ModelProfile == nil || stored.ModelProfile.ActionFavoriteID != "action-old" || stored.Mode != sessionruntime.ModeAuto {
+		t.Fatalf("model snapshot changed during active run: session=%+v ok=%t err=%v", stored, ok, err)
+	}
+}
+
+func TestSessionsV3ModelProfileChoiceUpdatesCurrentModeSlotAndPreservesOtherSlot(t *testing.T) {
+	original := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "action-old",
+		ActionFavoriteName: "Action Old",
+		Action:             pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "action-old"},
+		PlanFavoriteID:     "plan-old",
+		PlanFavoriteName:   "Plan Old",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "plan-old"},
+		AppliedAt:          1,
+	}
+	choice := &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "favorite-new",
+		ActionFavoriteName: "Favorite New",
+		Action:             pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "new-model", Thinking: "high"},
+		AppliedAt:          2,
+	}
+
+	auto, err := mergeSessionsV3ModelProfileChoice(pebblestore.SessionSnapshot{Mode: sessionruntime.ModeAuto, ModelProfile: original}, choice)
+	if err != nil {
+		t.Fatalf("merge auto slot: %v", err)
+	}
+	if auto.Source != pebblestore.SessionModelProfileSourceSaved || auto.AppliedAt != 2 || auto.ActionFavoriteID != "favorite-new" || auto.Action.Model != "new-model" || auto.PlanFavoriteID != "plan-old" || auto.Plan == nil || auto.Plan.Model != "plan-old" {
+		t.Fatalf("auto slot merge = %+v", auto)
+	}
+	plan, err := mergeSessionsV3ModelProfileChoice(pebblestore.SessionSnapshot{Mode: sessionruntime.ModePlan, ModelProfile: original}, choice)
+	if err != nil {
+		t.Fatalf("merge plan slot: %v", err)
+	}
+	if plan.Source != pebblestore.SessionModelProfileSourceSaved || plan.AppliedAt != 2 || plan.ActionFavoriteID != "action-old" || plan.Action.Model != "action-old" || plan.PlanFavoriteID != "favorite-new" || plan.Plan == nil || plan.Plan.Model != "new-model" {
+		t.Fatalf("plan slot merge = %+v", plan)
+	}
+	if original.Action.Model != "action-old" || original.Plan == nil || original.Plan.Model != "plan-old" {
+		t.Fatalf("merge mutated original snapshot: %+v", original)
+	}
+}
+
+func TestSessionsV3ModelProfileChoiceRejectsInitialPlanSlotWithoutAction(t *testing.T) {
+	_, err := mergeSessionsV3ModelProfileChoice(pebblestore.SessionSnapshot{Mode: sessionruntime.ModePlan}, &pebblestore.SessionModelProfileSnapshot{Action: pebblestore.ModelProfileSelection{Provider: "test-provider", Model: "plan-only"}})
+	if err == nil || !strings.Contains(err.Error(), "Action model slot") {
+		t.Fatalf("initial Plan slot error = %v", err)
 	}
 }
 

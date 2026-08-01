@@ -416,7 +416,7 @@ func TestSessionsV3PrimaryWorktreeCreateReplayDoesNotReallocate(t *testing.T) {
 	}
 }
 
-func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
+func TestSessionsV3PrimaryPreferenceUsesV3PrimaryMutation(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "mode-pref-create", "mode preference", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"})
 	now := time.Now().UnixMilli()
@@ -488,43 +488,6 @@ func TestSessionsV3PrimaryModeAndPreferenceUseV3PrimaryMutation(t *testing.T) {
 	}
 	if prefGetPayload.SessionID != created.ID || prefGetPayload.Preference.Model != "gpt-5.4" || prefGetPayload.UnexpectedSession != nil {
 		t.Fatalf("preference get payload = %+v", prefGetPayload)
-	}
-
-	modeReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/mode", bytes.NewBufferString(`{"mode":"plan"}`))
-	modeReq.Header.Set("Content-Type", "application/json")
-	modeRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(modeRec, withTestPrincipal(modeReq))
-	if modeRec.Code != http.StatusOK {
-		t.Fatalf("mode status = %d, want %d, body=%s", modeRec.Code, http.StatusOK, modeRec.Body.String())
-	}
-	var modePayload struct {
-		OK             bool                                 `json:"ok"`
-		SessionID      string                               `json:"session_id"`
-		Mode           string                               `json:"mode"`
-		Mutation       sessionruntime.SessionMutationResult `json:"mutation"`
-		RealtimeOutbox *pebblestore.V3RealtimeOutboxRecord  `json:"realtime_outbox"`
-	}
-	if err := json.Unmarshal(modeRec.Body.Bytes(), &modePayload); err != nil {
-		t.Fatalf("decode mode response: %v", err)
-	}
-	if !modePayload.OK || modePayload.SessionID != created.ID || modePayload.Mode != "plan" || modePayload.Mutation.Event.EventType != "session.mode.updated" || modePayload.RealtimeOutbox == nil {
-		t.Fatalf("mode payload = %+v", modePayload)
-	}
-	var modeRaw map[string]json.RawMessage
-	if err := json.Unmarshal(modeRec.Body.Bytes(), &modeRaw); err != nil {
-		t.Fatalf("decode raw mode response: %v", err)
-	}
-	for _, forbidden := range []string{"session", "projection", "messages", "events", "messages_by_session", "events_by_session", "sessions_by_id", "projections_by_session", "workset_id", "worksets", "subscriptions", "realtime"} {
-		if _, ok := modeRaw[forbidden]; ok {
-			t.Fatalf("mode response includes forbidden snapshot/reconnect field %q: %s", forbidden, modeRec.Body.String())
-		}
-	}
-	var modeEventPayload map[string]any
-	if err := json.Unmarshal(modePayload.Mutation.Event.Payload, &modeEventPayload); err != nil {
-		t.Fatalf("decode mode event payload: %v", err)
-	}
-	if modeEventPayload["mode"] != "plan" {
-		t.Fatalf("mode event payload = %+v", modeEventPayload)
 	}
 
 	prefReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/preference", bytes.NewBufferString(`{"provider":"codex","model":"gpt-5.4","thinking":"high","service_tier":"fast"}`))
