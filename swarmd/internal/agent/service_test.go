@@ -163,31 +163,25 @@ func TestEnsureDefaultsExposesCompiledSwarmAndPersistsOnlyModelContext(t *testin
 	}
 }
 
-func TestCompiledSwarmAllowsConfigurationOnlyUpdates(t *testing.T) {
+func TestCompiledSwarmRejectsAgentConfigurationUpdates(t *testing.T) {
 	svc, agents := newTestService(t)
 	if err := svc.EnsureDefaults(); err != nil {
 		t.Fatalf("EnsureDefaults() error = %v", err)
 	}
-	profile, _, _, err := svc.Upsert(UpsertInput{
+	_, _, _, err := svc.Upsert(UpsertInput{
 		Name: SwarmAgentID, Mode: ModeSubagent, Description: "mutable", Prompt: "mutable",
 		ModelMode: "split", PlanProvider: "codex", PlanModel: "plan-model", PlanThinking: "high", PlanProviderSet: true, PlanModelSet: true, PlanThinkingSet: true,
 		AutoProvider: "codex", AutoModel: "auto-model", AutoThinking: "medium", AutoProviderSet: true, AutoModelSet: true, AutoThinkingSet: true,
 		DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, RuntimeMode: pebblestore.AgentRuntimeModeRead,
 	})
-	if err != nil {
-		t.Fatalf("Upsert(swarm) error = %v", err)
-	}
-	if profile.Mode != ModePrimary || profile.Description != "Compiled primary orchestrator" || profile.Prompt != SwarmAgentPrompt() || profile.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || !profile.Enabled || !profile.Protected {
-		t.Fatalf("compiled Swarm identity/runtime changed: %+v", profile)
-	}
-	if profile.ModelMode != "split" || profile.PlanModel != "plan-model" || profile.AutoModel != "auto-model" || profile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
-		t.Fatalf("Swarm configuration was not applied: %+v", profile)
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("Upsert(swarm) error = %v, want reserved rejection", err)
 	}
 	stored, ok, err := agents.GetProfile(SwarmAgentID)
 	if err != nil || !ok {
 		t.Fatalf("stored Swarm context ok=%v err=%v", ok, err)
 	}
-	if stored.Prompt != "" || stored.ToolContract != nil || stored.Mode != ModePrimary || stored.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
+	if stored.Prompt != "" || stored.ToolContract != nil || stored.Mode != ModePrimary {
 		t.Fatalf("persisted Swarm row escaped configuration-only shape: %+v", stored)
 	}
 }
@@ -415,60 +409,28 @@ func TestNormalizeModelServiceTierKeepsPriorityDistinctFromFast(t *testing.T) {
 	}
 }
 
-func TestUpsertPlanCapableAgentPreservesSplitModelFields(t *testing.T) {
+func TestUpsertPlanCapableAgentIgnoresLegacySplitModelFields(t *testing.T) {
 	svc, _ := newTestService(t)
 	enabled := true
 	profile, _, _, err := svc.Upsert(UpsertInput{
-		Name:                "planner-model-probe",
-		Mode:                ModeSubagent,
-		Description:         "planner model probe",
-		Provider:            "codex",
-		Model:               "base-model",
-		Thinking:            "low",
-		ModelMode:           "split",
-		PlanProvider:        "codex",
-		PlanModel:           "gpt-5.4",
-		PlanThinking:        "high",
-		PlanServiceTier:     "fast",
-		AutoProvider:        "fireworks",
-		AutoModel:           "glm-5p1",
-		AutoThinking:        "medium",
-		AutoServiceTier:     "priority",
-		Prompt:              "Probe model settings.",
-		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_only"},
-		Enabled:             &enabled,
-		ProviderSet:         true,
-		ModelSet:            true,
-		ThinkingSet:         true,
-		PlanProviderSet:     true,
-		PlanModelSet:        true,
-		PlanThinkingSet:     true,
-		PlanServiceTierSet:  true,
-		AutoProviderSet:     true,
-		AutoModelSet:        true,
-		AutoThinkingSet:     true,
-		AutoServiceTierSet:  true,
+		Name: "planner-model-probe", Mode: ModeSubagent, Description: "planner model probe",
+		Provider: "codex", Model: "base-model", Thinking: "low", ProviderSet: true, ModelSet: true, ThinkingSet: true,
+		ModelMode: "split", PlanProvider: "codex", PlanModel: "gpt-5.4", AutoProvider: "fireworks", AutoModel: "glm-5p1",
+		Prompt: "Probe model settings.", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: &enabled,
 	})
 	if err != nil {
-		t.Fatalf("create plan-capable split profile: %v", err)
+		t.Fatalf("create plan-capable profile: %v", err)
 	}
-	if profile.ModelMode != "split" {
-		t.Fatalf("model_mode = %q, want split", profile.ModelMode)
+	if profile.Provider != "codex" || profile.Model != "base-model" || profile.Thinking != "low" {
+		t.Fatalf("canonical fields = %+v", profile)
 	}
-	if profile.Provider != "" || profile.Model != "" || profile.Thinking != "" {
-		t.Fatalf("single fields were not cleared for split profile: %+v", profile)
-	}
-	if profile.PlanProvider != "codex" || profile.PlanModel != "gpt-5.4" || profile.PlanThinking != "high" || profile.PlanServiceTier != "fast" {
-		t.Fatalf("plan split fields = %+v", profile)
-	}
-	if profile.AutoProvider != "fireworks" || profile.AutoModel != "glm-5p1" || profile.AutoThinking != "medium" || profile.AutoServiceTier != "priority" {
-		t.Fatalf("auto split fields = %+v", profile)
+	if profile.ModelMode != "" || profile.PlanProvider != "" || profile.PlanModel != "" || profile.AutoProvider != "" || profile.AutoModel != "" {
+		t.Fatalf("legacy split fields survived: %+v", profile)
 	}
 }
 
-func TestUpsertClearsExplicitSplitModelFields(t *testing.T) {
+func TestUpsertContinuesIgnoringExplicitSplitModelFields(t *testing.T) {
 	svc, _ := newTestService(t)
 	enabled := true
 	created, _, _, err := svc.Upsert(UpsertInput{

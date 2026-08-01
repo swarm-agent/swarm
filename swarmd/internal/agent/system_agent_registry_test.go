@@ -153,14 +153,14 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	planPrompt := PlanSidechatAgentPromptWithContext(`{"plan_id":"plan-1","proposal_revision":7}`)
 	plan, err := registry.ReconcileSnapshot(PlanSidechatAgentID, pebblestore.AgentProfile{
-		Name: PlanSidechatAgentID, Provider: "codex", Model: "plan-model", Thinking: "high", PlanServiceTier: "priority",
+		Name: PlanSidechatAgentID, Provider: "codex", Model: "plan-model", Thinking: "high", AutoServiceTier: "priority",
 		Prompt: planPrompt, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, Enabled: false,
 		ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(true)}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Prompt != planPrompt || plan.Provider != "codex" || plan.Model != "plan-model" || plan.PlanServiceTier != "priority" {
+	if plan.Prompt != planPrompt || plan.Provider != "codex" || plan.Model != "plan-model" || plan.AutoServiceTier != "priority" {
 		t.Fatalf("dynamic Plan data was not preserved: %+v", plan)
 	}
 	if !plan.Enabled || plan.RuntimeMode != pebblestore.AgentRuntimeModeRead || plan.ExitPlanModeEnabled == nil || *plan.ExitPlanModeEnabled {
@@ -188,12 +188,12 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("AI mandatory denial %q was not restored", denied)
 		}
 	}
-	reviewCommit, err := registry.Materialize(ReviewCommitAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "base-model", AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "high", AutoServiceTier: "priority"})
+	reviewCommit, err := registry.Materialize(ReviewCommitAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "base-model", Thinking: "high", AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "xhigh", AutoServiceTier: "priority"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewCommit.Provider != "openai" || reviewCommit.Model != "auto-model" || reviewCommit.Thinking != "high" || reviewCommit.AutoServiceTier != "priority" || reviewCommit.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
-		t.Fatalf("Review Commit auto model inheritance mismatch: %+v", reviewCommit)
+	if reviewCommit.Provider != "codex" || reviewCommit.Model != "base-model" || reviewCommit.Thinking != "high" || reviewCommit.AutoServiceTier != "priority" || reviewCommit.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+		t.Fatalf("Review Commit canonical model inheritance mismatch: %+v", reviewCommit)
 	}
 	for _, allowed := range []string{"read", "git_status", "git_diff", "git_add", "git_commit"} {
 		if cfg := reviewCommit.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
@@ -284,7 +284,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
 	}
-	if swarm.Provider != "" || swarm.Model != "" || swarm.ModelMode != "" || swarm.PlanProvider != "" || swarm.PlanModel != "" || swarm.AutoProvider != "" || swarm.AutoModel != "" {
+	if swarm.Provider != "" || swarm.Model != "" || swarm.Thinking != "" || swarm.ModelMode != "" || swarm.PlanProvider != "" || swarm.PlanModel != "" || swarm.PlanThinking != "" || swarm.PlanServiceTier != "" || swarm.AutoProvider != "" || swarm.AutoModel != "" || swarm.AutoThinking != "" || swarm.AutoServiceTier != "" {
 		t.Fatalf("Swarm system identity retained model-bearing profile fields: %+v", swarm)
 	}
 

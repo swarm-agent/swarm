@@ -45,23 +45,26 @@ type UpsertInput struct {
 	ProviderSet         bool                           `json:"-"`
 	ModelSet            bool                           `json:"-"`
 	ThinkingSet         bool                           `json:"-"`
-	PlanProviderSet     bool                           `json:"-"`
-	PlanModelSet        bool                           `json:"-"`
-	PlanThinkingSet     bool                           `json:"-"`
-	PlanServiceTierSet  bool                           `json:"-"`
-	AutoProviderSet     bool                           `json:"-"`
-	AutoModelSet        bool                           `json:"-"`
-	AutoThinkingSet     bool                           `json:"-"`
-	AutoServiceTierSet  bool                           `json:"-"`
-	ModelMode           string                         `json:"model_mode"`
-	PlanProvider        string                         `json:"plan_provider"`
-	PlanModel           string                         `json:"plan_model"`
-	PlanThinking        string                         `json:"plan_thinking"`
-	PlanServiceTier     string                         `json:"plan_service_tier"`
-	AutoProvider        string                         `json:"auto_provider"`
-	AutoModel           string                         `json:"auto_model"`
-	AutoThinking        string                         `json:"auto_thinking"`
-	AutoServiceTier     string                         `json:"auto_service_tier"`
+	// Legacy split fields remain as compile-time input compatibility for callers
+	// outside the agent-contract cut. Agent persistence ignores them and the v2
+	// API no longer accepts or returns them.
+	PlanProviderSet    bool   `json:"-"`
+	PlanModelSet       bool   `json:"-"`
+	PlanThinkingSet    bool   `json:"-"`
+	PlanServiceTierSet bool   `json:"-"`
+	AutoProviderSet    bool   `json:"-"`
+	AutoModelSet       bool   `json:"-"`
+	AutoThinkingSet    bool   `json:"-"`
+	AutoServiceTierSet bool   `json:"-"`
+	ModelMode          string `json:"-"`
+	PlanProvider       string `json:"-"`
+	PlanModel          string `json:"-"`
+	PlanThinking       string `json:"-"`
+	PlanServiceTier    string `json:"-"`
+	AutoProvider       string `json:"-"`
+	AutoModel          string `json:"-"`
+	AutoThinking       string `json:"-"`
+	AutoServiceTier    string `json:"-"`
 	Prompt              string                         `json:"prompt"`
 	RuntimeMode         string                         `json:"runtime_mode"`
 	DefaultSessionMode  string                         `json:"default_session_mode"`
@@ -72,6 +75,9 @@ type UpsertInput struct {
 	Enabled             *bool                          `json:"enabled"`
 }
 
+// DefaultModelHydrationInput is retained until onboarding callers switch to
+// flat favorites and Swarm mode settings. Agent hydration deliberately ignores
+// these former split model values.
 type DefaultModelHydrationInput struct {
 	Provider        string
 	PrimaryModel    string
@@ -159,22 +165,11 @@ func (s *Service) EnsureDefaultsForAccount(accountScopeID string) error {
 	return s.ensureDefaultsForAccount(accountScopeID)
 }
 
-func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input DefaultModelHydrationInput) (DefaultModelHydrationResult, error) {
+func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, _ DefaultModelHydrationInput) (DefaultModelHydrationResult, error) {
 	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
 	if err != nil {
 		return DefaultModelHydrationResult{}, err
 	}
-	input.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
-	input.PrimaryModel = strings.TrimSpace(input.PrimaryModel)
-	input.PrimaryThinking = strings.TrimSpace(input.PrimaryThinking)
-	input.PlanModel = strings.TrimSpace(input.PlanModel)
-	input.PlanThinking = strings.TrimSpace(input.PlanThinking)
-	input.AutoModel = strings.TrimSpace(input.AutoModel)
-	input.AutoThinking = strings.TrimSpace(input.AutoThinking)
-	if input.Provider == "" || input.PrimaryModel == "" || input.PlanModel == "" || input.AutoModel == "" {
-		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require provider and main, plan, and auto models")
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -197,13 +192,6 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 		name := normalizeName(profile.Name)
 		switch name {
 		case "swarm":
-			profile.ModelMode = "split"
-			profile.PlanProvider = input.Provider
-			profile.PlanModel = input.PlanModel
-			profile.PlanThinking = input.PlanThinking
-			profile.AutoProvider = input.Provider
-			profile.AutoModel = input.AutoModel
-			profile.AutoThinking = input.AutoThinking
 			result.Agents = append(result.Agents, name)
 		default:
 			continue
@@ -239,7 +227,6 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 		"account_scope_id": strings.TrimSpace(accountScopeID),
 		"state":            state,
 		"version":          version,
-		"provider":         input.Provider,
 	})
 	if err != nil {
 		return DefaultModelHydrationResult{}, err
@@ -563,10 +550,7 @@ func (s *Service) cleanupCompiledSwarmContextForAccountLocked(accountScopeID str
 		return err
 	}
 	context := pebblestore.AgentProfile{
-		Name: SwarmAgentID, Mode: ModePrimary, Provider: stored.Provider, Model: stored.Model, Thinking: stored.Thinking,
-		ModelMode: stored.ModelMode, PlanProvider: stored.PlanProvider, PlanModel: stored.PlanModel, PlanThinking: stored.PlanThinking, PlanServiceTier: stored.PlanServiceTier,
-		AutoProvider: stored.AutoProvider, AutoModel: stored.AutoModel, AutoThinking: stored.AutoThinking, AutoServiceTier: stored.AutoServiceTier,
-		DefaultSessionMode: stored.DefaultSessionMode, UpdatedAt: stored.UpdatedAt,
+		Name: SwarmAgentID, Mode: ModePrimary, DefaultSessionMode: stored.DefaultSessionMode, UpdatedAt: stored.UpdatedAt,
 	}
 	return s.putProfileForAccountLocked(accountScopeID, context)
 }
@@ -611,9 +595,6 @@ func shouldRemoveBuiltInParallel(profile pebblestore.AgentProfile) bool {
 		return false
 	}
 	if strings.TrimSpace(profile.Provider) != "" || strings.TrimSpace(profile.Model) != "" || strings.TrimSpace(profile.Thinking) != "" {
-		return false
-	}
-	if strings.TrimSpace(profile.ModelMode) != "" || strings.TrimSpace(profile.PlanProvider) != "" || strings.TrimSpace(profile.PlanModel) != "" || strings.TrimSpace(profile.AutoProvider) != "" || strings.TrimSpace(profile.AutoModel) != "" {
 		return false
 	}
 	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
@@ -1315,7 +1296,7 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for compiled system agents", profile.Name)
 	}
 	if profile.Name == SwarmAgentID {
-		return s.upsertSwarmConfigurationForAccountLocked(accountScopeID, input)
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for compiled system agents", profile.Name)
 	}
 	existing, ok, err := s.getProfileForAccountLocked(accountScopeID, profile.Name)
 	if err != nil {
@@ -1337,33 +1318,6 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if !stringFieldProvided(input.ThinkingSet, input.Thinking) {
 			profile.Thinking = existing.Thinking
 		}
-		if strings.TrimSpace(input.ModelMode) == "" {
-			profile.ModelMode = existing.ModelMode
-		}
-		if !stringFieldProvided(input.PlanProviderSet, input.PlanProvider) {
-			profile.PlanProvider = existing.PlanProvider
-		}
-		if !stringFieldProvided(input.PlanModelSet, input.PlanModel) {
-			profile.PlanModel = existing.PlanModel
-		}
-		if !stringFieldProvided(input.PlanThinkingSet, input.PlanThinking) {
-			profile.PlanThinking = existing.PlanThinking
-		}
-		if !stringFieldProvided(input.PlanServiceTierSet, input.PlanServiceTier) {
-			profile.PlanServiceTier = existing.PlanServiceTier
-		}
-		if !stringFieldProvided(input.AutoProviderSet, input.AutoProvider) {
-			profile.AutoProvider = existing.AutoProvider
-		}
-		if !stringFieldProvided(input.AutoModelSet, input.AutoModel) {
-			profile.AutoModel = existing.AutoModel
-		}
-		if !stringFieldProvided(input.AutoThinkingSet, input.AutoThinking) {
-			profile.AutoThinking = existing.AutoThinking
-		}
-		if !stringFieldProvided(input.AutoServiceTierSet, input.AutoServiceTier) {
-			profile.AutoServiceTier = existing.AutoServiceTier
-		}
 		if strings.TrimSpace(profile.Prompt) == "" {
 			profile.Prompt = existing.Prompt
 		}
@@ -1384,20 +1338,6 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		}
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(existing.ToolContract)
-		}
-	}
-	if profile.Name == "swarm" {
-		profile.Mode = ModePrimary
-		profile.Enabled = true
-		if pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeRead && pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeReadWrite {
-			profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
-		}
-	}
-	if profile.Mode == ModePrimary {
-		if profile.Name == "swarm" && pebblestore.AgentModelMode(profile) == "split" {
-			profile.Provider = ""
-			profile.Model = ""
-			profile.Thinking = ""
 		}
 	}
 	profile, err = finalizeRuntimeProfile(profile, input, ok)
@@ -1427,90 +1367,6 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	}
 
 	env, err := s.appendEventLocked(eventType, profile.Name, map[string]any{
-		"account_scope_id": strings.TrimSpace(accountScopeID),
-		"profile":          profile,
-		"state":            state,
-		"version":          version,
-	})
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	return profile, version, &env, nil
-}
-
-func (s *Service) upsertSwarmConfigurationForAccountLocked(accountScopeID string, input UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
-	stored, exists, err := s.getProfileForAccountLocked(accountScopeID, SwarmAgentID)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	context := stored
-	context.Name, context.Mode = SwarmAgentID, ModePrimary
-	if stringFieldProvided(input.ProviderSet, input.Provider) {
-		context.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
-	}
-	if stringFieldProvided(input.ModelSet, input.Model) {
-		context.Model = strings.TrimSpace(input.Model)
-	}
-	if stringFieldProvided(input.ThinkingSet, input.Thinking) {
-		context.Thinking = strings.ToLower(strings.TrimSpace(input.Thinking))
-	}
-	if strings.TrimSpace(input.ModelMode) != "" {
-		context.ModelMode = pebblestore.NormalizeAgentModelMode(input.ModelMode)
-	}
-	if stringFieldProvided(input.PlanProviderSet, input.PlanProvider) {
-		context.PlanProvider = strings.ToLower(strings.TrimSpace(input.PlanProvider))
-	}
-	if stringFieldProvided(input.PlanModelSet, input.PlanModel) {
-		context.PlanModel = strings.TrimSpace(input.PlanModel)
-	}
-	if stringFieldProvided(input.PlanThinkingSet, input.PlanThinking) {
-		context.PlanThinking = strings.ToLower(strings.TrimSpace(input.PlanThinking))
-	}
-	if stringFieldProvided(input.PlanServiceTierSet, input.PlanServiceTier) {
-		context.PlanServiceTier = pebblestore.NormalizeModelServiceTier(input.PlanServiceTier)
-	}
-	if stringFieldProvided(input.AutoProviderSet, input.AutoProvider) {
-		context.AutoProvider = strings.ToLower(strings.TrimSpace(input.AutoProvider))
-	}
-	if stringFieldProvided(input.AutoModelSet, input.AutoModel) {
-		context.AutoModel = strings.TrimSpace(input.AutoModel)
-	}
-	if stringFieldProvided(input.AutoThinkingSet, input.AutoThinking) {
-		context.AutoThinking = strings.ToLower(strings.TrimSpace(input.AutoThinking))
-	}
-	if stringFieldProvided(input.AutoServiceTierSet, input.AutoServiceTier) {
-		context.AutoServiceTier = pebblestore.NormalizeModelServiceTier(input.AutoServiceTier)
-	}
-	if strings.TrimSpace(input.DefaultSessionMode) != "" {
-		context.DefaultSessionMode = pebblestore.NormalizeAgentDefaultSessionMode(input.DefaultSessionMode)
-	}
-	if pebblestore.AgentModelMode(context) == "split" {
-		context.Provider, context.Model, context.Thinking = "", "", ""
-	} else {
-		context.PlanProvider, context.PlanModel, context.PlanThinking, context.PlanServiceTier = "", "", "", ""
-		context.AutoProvider, context.AutoModel, context.AutoThinking = "", "", ""
-	}
-	context.UpdatedAt = time.Now().UnixMilli()
-	if err := s.putProfileForAccountLocked(accountScopeID, context); err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	version, err := s.bumpVersionForAccountLocked(accountScopeID)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	profile, err := s.ResolveSystemAgent(SwarmAgentID, context)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	eventType := "agent.profile.updated"
-	if !exists {
-		eventType = "agent.profile.created"
-	}
-	env, err := s.appendEventLocked(eventType, SwarmAgentID, map[string]any{
 		"account_scope_id": strings.TrimSpace(accountScopeID),
 		"profile":          profile,
 		"state":            state,
@@ -2417,15 +2273,6 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		Provider:            strings.ToLower(strings.TrimSpace(input.Provider)),
 		Model:               strings.TrimSpace(input.Model),
 		Thinking:            strings.ToLower(strings.TrimSpace(input.Thinking)),
-		ModelMode:           pebblestore.NormalizeAgentModelMode(input.ModelMode),
-		PlanProvider:        strings.ToLower(strings.TrimSpace(input.PlanProvider)),
-		PlanModel:           strings.TrimSpace(input.PlanModel),
-		PlanThinking:        strings.ToLower(strings.TrimSpace(input.PlanThinking)),
-		PlanServiceTier:     pebblestore.NormalizeModelServiceTier(input.PlanServiceTier),
-		AutoProvider:        strings.ToLower(strings.TrimSpace(input.AutoProvider)),
-		AutoModel:           strings.TrimSpace(input.AutoModel),
-		AutoThinking:        strings.ToLower(strings.TrimSpace(input.AutoThinking)),
-		AutoServiceTier:     pebblestore.NormalizeModelServiceTier(input.AutoServiceTier),
 		Prompt:              strings.TrimSpace(input.Prompt),
 		RuntimeMode:         runtimeMode,
 		DefaultSessionMode:  defaultSessionMode,

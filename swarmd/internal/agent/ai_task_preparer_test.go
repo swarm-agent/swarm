@@ -7,13 +7,13 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestAITaskPreparerUsesSwarmAutoModelAndReadOnlyTools(t *testing.T) {
+func TestAITaskPreparerUsesCanonicalParentModelAndReadOnlyTools(t *testing.T) {
 	profile := AITaskPreparerAgentProfileForParent(pebblestore.AgentProfile{
 		Provider: "fallback-provider", Model: "fallback-model", Thinking: "low",
 		AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high",
 	})
-	if profile.Provider != "auto-provider" || profile.Model != "auto-model" || profile.Thinking != "high" {
-		t.Fatalf("preparer did not inherit auto preference: %#v", profile)
+	if profile.Provider != "fallback-provider" || profile.Model != "fallback-model" || profile.Thinking != "low" {
+		t.Fatalf("preparer did not inherit canonical parent preference: %#v", profile)
 	}
 	for _, name := range []string{"read", "search", "list"} {
 		tool, ok := profile.ToolContract.Tools[name]

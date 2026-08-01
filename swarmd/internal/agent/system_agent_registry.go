@@ -557,12 +557,9 @@ func CompactAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.A
 }
 
 func AITaskPreparerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
-	provider := firstNonEmptyProfileValue(parent.AutoProvider, parent.Provider)
-	model := firstNonEmptyProfileValue(parent.AutoModel, parent.Model)
-	thinking := firstNonEmptyProfileValue(parent.AutoThinking, parent.Thinking)
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: AITaskPreparerAgentID, Mode: ModeSubagent, Description: "Compiled read-only queued AI task preparer",
-		Provider: provider, Model: model, Thinking: thinking, AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: AITaskPreparerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: AITaskPreparerAgentToolContract(), Enabled: true,
 	})
@@ -573,12 +570,9 @@ func reconcileAITaskPreparerAgentProfile(snapshot pebblestore.AgentProfile) pebb
 }
 
 func ReviewCommitAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
-	provider := firstNonEmptyProfileValue(parent.AutoProvider, parent.Provider)
-	model := firstNonEmptyProfileValue(parent.AutoModel, parent.Model)
-	thinking := firstNonEmptyProfileValue(parent.AutoThinking, parent.Thinking)
 	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: ReviewCommitAgentID, Mode: ModeSubagent, Description: "Compiled one-shot review commit agent",
-		Provider: provider, Model: model, Thinking: thinking, AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: ReviewCommitAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ReviewCommitAgentToolContract(), Enabled: true,
 	})
@@ -636,9 +630,9 @@ func DesignerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.
 func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := parent
 	profile.Name, profile.Mode, profile.Description = AISidechatAgentID, ModeSubagent, "Reserved hidden parent-owned AI sidechat"
-	profile.Provider = firstNonEmptyProfileValue(parent.AutoProvider, parent.Provider)
-	profile.Model = firstNonEmptyProfileValue(parent.AutoModel, parent.Model)
-	profile.Thinking = firstNonEmptyProfileValue(parent.AutoThinking, parent.Thinking)
+	profile.Provider = strings.TrimSpace(parent.Provider)
+	profile.Model = strings.TrimSpace(parent.Model)
+	profile.Thinking = strings.TrimSpace(parent.Thinking)
 	profile.Prompt = AISidechatAgentPrompt()
 	profile.RuntimeMode, profile.ExecutionSetting = pebblestore.AgentRuntimeModeReadWrite, pebblestore.AgentExecutionSettingReadWrite
 	profile.ExitPlanModeEnabled, profile.Enabled = pebblestore.BoolPtr(false), true
@@ -664,7 +658,7 @@ func reconcileSwarmAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.A
 func reconcilePlanSidechatAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := PlanSidechatAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
-	profile.PlanServiceTier = snapshot.PlanServiceTier
+	profile.AutoServiceTier = firstNonEmptyProfileValue(snapshot.AutoServiceTier, snapshot.PlanServiceTier)
 	if strings.TrimSpace(snapshot.Prompt) != "" {
 		profile.Prompt = strings.TrimSpace(snapshot.Prompt)
 	}

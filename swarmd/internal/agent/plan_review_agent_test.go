@@ -96,10 +96,10 @@ func TestFinderContractExplicitlyDisablesRecursiveTask(t *testing.T) {
 	}
 }
 
-func TestReservedAISidechatUsesAutoModelAndDisablesPlanTransitions(t *testing.T) {
+func TestReservedAISidechatUsesCanonicalModelAndDisablesPlanTransitions(t *testing.T) {
 	parent := pebblestore.AgentProfile{Provider: "single-provider", Model: "single-model", AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}, "plan_manage": {Enabled: pebblestore.BoolPtr(true)}}}}
 	profile := AISidechatAgentProfileForParent(parent)
-	if profile.Name != AISidechatAgentID || profile.Provider != "auto-provider" || profile.Model != "auto-model" || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+	if profile.Name != AISidechatAgentID || profile.Provider != "single-provider" || profile.Model != "single-model" || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
 		t.Fatalf("unexpected AI sidechat: %+v", profile)
 	}
 	for _, name := range []string{"plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {
