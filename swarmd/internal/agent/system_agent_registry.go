@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	routerruntime "swarm/packages/swarmd/internal/router"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -30,6 +31,8 @@ const (
 	ReviewCommitAgentName        = "Review Commit"
 	WorkspaceDefinitionAgentID   = "system-workspace-definition"
 	WorkspaceDefinitionAgentName = "Workspace Definition"
+	RouterAgentID                = "system-router"
+	RouterAgentName              = "Router"
 
 	SystemSidechatKindPlan     = "plan"
 	SystemSidechatKindAI       = "ai"
@@ -239,6 +242,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileWorkspaceDefinitionAgentProfile,
 	},
 	{
+		ID:          RouterAgentID,
+		DisplayName: RouterAgentName,
+		Materialize: RouterAgentProfileForParent,
+		Reconcile:   reconcileRouterAgentProfile,
+	},
+	{
 		ID:           FinderAgentID,
 		DisplayName:  FinderAgentName,
 		UserVisible:  true,
@@ -346,6 +355,14 @@ func CompactAgentPrompt() string {
 }
 
 func CompactAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{}}
+}
+
+func RouterAgentPrompt() string {
+	return routerruntime.SystemPrompt()
+}
+
+func RouterAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{}}
 }
 
@@ -580,6 +597,19 @@ func ReviewCommitAgentProfileForParent(parent pebblestore.AgentProfile) pebblest
 
 func reconcileReviewCommitAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	return ReviewCommitAgentProfileForParent(snapshot)
+}
+
+func RouterAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: RouterAgentID, Mode: ModeSubagent, Description: "Compiled hidden tool-free session Router",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Prompt: RouterAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: RouterAgentToolContract(), Enabled: true,
+	})
+}
+
+func reconcileRouterAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return RouterAgentProfileForParent(snapshot)
 }
 
 func WorkspaceDefinitionAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
