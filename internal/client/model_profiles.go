@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 )
 
@@ -54,6 +55,22 @@ func (c *API) CreateModelProfile(ctx context.Context, input ModelProfileInput) (
 		Profile ModelProfile `json:"model_profile"`
 	}
 	if err := c.postJSON(ctx, "/v1/model-profiles", input, &response, true); err != nil {
+		return ModelProfile{}, err
+	}
+	return response.Profile, nil
+}
+
+// UpdateModelProfile updates an account-owned saved profile through the same
+// daemon endpoint used by Desktop.
+func (c *API) UpdateModelProfile(ctx context.Context, profileID string, input ModelProfileInput) (ModelProfile, error) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return ModelProfile{}, errors.New("profile id is required")
+	}
+	var response struct {
+		Profile ModelProfile `json:"model_profile"`
+	}
+	if err := c.putJSON(ctx, "/v1/model-profiles/"+url.PathEscape(profileID), input, &response, true); err != nil {
 		return ModelProfile{}, err
 	}
 	return response.Profile, nil

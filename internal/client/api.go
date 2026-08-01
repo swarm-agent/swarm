@@ -557,6 +557,7 @@ type SessionCreateOptions struct {
 type SessionV3ModelProfileChoice struct {
 	UseAccountDefault *bool
 	SavedProfileID    string
+	Temporary         *ModelProfileInput
 	UseAgentDefault   *bool
 }
 
@@ -3036,6 +3037,9 @@ func sessionV3ModelProfileCreateRequest(choice *SessionV3ModelProfileChoice) map
 	if choice.UseAccountDefault != nil && *choice.UseAccountDefault {
 		return map[string]any{"use_account_default": true}
 	}
+	if choice.Temporary != nil {
+		return map[string]any{"temporary": choice.Temporary}
+	}
 	if choice.UseAgentDefault != nil && *choice.UseAgentDefault {
 		return map[string]any{"use_agent_default": true}
 	}
@@ -3595,19 +3599,25 @@ func (c *API) SetSessionV3Preference(ctx context.Context, sessionID string, req 
 }
 
 func (c *API) SetSessionV3ModelProfile(ctx context.Context, sessionID, profileID string) (SessionV3AgentModelPolicy, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return SessionV3AgentModelPolicy{}, errors.New("session id is required")
-	}
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
 		return SessionV3AgentModelPolicy{}, errors.New("model profile id is required")
 	}
+	return c.SetSessionV3ModelProfileChoice(ctx, sessionID, SessionV3ModelProfileChoice{SavedProfileID: profileID})
+}
+
+func (c *API) SetSessionV3ModelProfileChoice(ctx context.Context, sessionID string, choice SessionV3ModelProfileChoice) (SessionV3AgentModelPolicy, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3AgentModelPolicy{}, errors.New("session id is required")
+	}
+	choiceRequest := sessionV3ModelProfileCreateRequest(&choice)
+	if choiceRequest == nil {
+		return SessionV3AgentModelPolicy{}, errors.New("model profile choice is required")
+	}
 	req := map[string]any{
 		"client_request_id": newSessionV3ClientRequestID("model-profile"),
-		"choice": map[string]any{
-			"saved_profile_id": profileID,
-		},
+		"choice":            choiceRequest,
 	}
 	var resp struct {
 		AgentModelPolicy SessionV3AgentModelPolicy `json:"agent_model_policy"`

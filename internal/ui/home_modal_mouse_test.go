@@ -89,7 +89,7 @@ func TestModelsModalChatOverlayMouseRoutesToModelTargets(t *testing.T) {
 	}
 }
 
-func TestAgentsModalMouseSelectsAgentFromLeftPane(t *testing.T) {
+func TestAgentsModalMouseOpensAgentInV2Editor(t *testing.T) {
 	p := NewHomePage(model.EmptyHome())
 	p.ShowAgentsModal()
 	p.SetAgentsModalData(AgentsModalData{
@@ -110,8 +110,8 @@ func TestAgentsModalMouseSelectsAgentFromLeftPane(t *testing.T) {
 	if got := p.selectedAgentsModalName(); got != "finder" {
 		t.Fatalf("selected profile = %q, want finder", got)
 	}
-	if p.agentsModal.Focus != agentsModalFocusProfiles {
-		t.Fatalf("focus = %v, want agent list", p.agentsModal.Focus)
+	if p.agentsModal.Focus != agentsModalFocusDetails || p.agentsModal.Screen != agentsV2ScreenEditor {
+		t.Fatalf("focus/screen = %v/%v, want V2 editor", p.agentsModal.Focus, p.agentsModal.Screen)
 	}
 	if p.agentsModal.Editor == nil || p.agentsModal.Editor.TargetName != "finder" {
 		t.Fatalf("editor = %#v, want finder settings", p.agentsModal.Editor)
@@ -164,11 +164,10 @@ func TestAgentsModalMouseClickEditorFieldStartsEditing(t *testing.T) {
 	p.SetAgentsModalData(AgentsModalData{
 		Profiles: []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true}},
 	})
-	profile, ok := p.selectedAgentsModalProfile()
-	if !ok {
+	if _, ok := p.selectedAgentsModalProfile(); !ok {
 		t.Fatalf("expected selected profile")
 	}
-	p.openAgentsModalEditEditor(profile)
+	p.openAgentsV2Editor()
 
 	screen := newModalMouseTestScreen(t, 110, 30)
 	defer screen.Fini()

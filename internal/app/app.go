@@ -5876,8 +5876,76 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			a.queueReload(false)
 			return
 		}
-		a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
-		a.refreshAgentsModalData("model profile created: " + emptyFallback(strings.TrimSpace(profile.Name), profile.ProfileID))
+		next := refreshHomeModelProfiles(a.currentHomeModel(), state)
+		if action.ApplyModelProfile {
+			if err := a.applySelectedProfileToV3Chat(ctx, profile.ProfileID); err != nil {
+				a.home.SetAgentsModalLoading(false)
+				a.home.SetAgentsModalError(fmt.Sprintf("model profile created, but apply failed: %v", err))
+				return
+			}
+			next = applyHomeModelProfile(next, profile)
+			a.applyHomeModel(next)
+			a.home.HideAgentsModal()
+		} else {
+			a.applyHomeModel(next)
+			a.refreshAgentsModalData("model profile created: " + emptyFallback(strings.TrimSpace(profile.Name), profile.ProfileID))
+		}
+		a.queueReload(false)
+	case ui.AgentsModalActionUpdateModelProfile:
+		if action.ModelProfile == nil || strings.TrimSpace(action.ModelProfileID) == "" {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError("saved model profile and profile id are required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		profile, err := a.api.UpdateModelProfile(ctx, action.ModelProfileID, *action.ModelProfile)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("update model profile failed: %v", err))
+			return
+		}
+		state, err := a.api.ListModelProfiles(ctx)
+		if err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("model profile updated, but refresh failed: %v", err))
+			return
+		}
+		next := refreshHomeModelProfiles(a.currentHomeModel(), state)
+		if action.ApplyModelProfile {
+			if err := a.applySelectedProfileToV3Chat(ctx, profile.ProfileID); err != nil {
+				a.home.SetAgentsModalLoading(false)
+				a.home.SetAgentsModalError(fmt.Sprintf("model profile saved, but apply failed: %v", err))
+				return
+			}
+			next = applyHomeModelProfile(next, profile)
+			a.applyHomeModel(next)
+			a.home.HideAgentsModal()
+		} else {
+			a.applyHomeModel(next)
+			a.refreshAgentsModalData("model profile saved: " + emptyFallback(strings.TrimSpace(profile.Name), profile.ProfileID))
+		}
+		a.queueReload(false)
+	case ui.AgentsModalActionApplyTemporary:
+		if action.ModelProfile == nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError("temporary model profile payload is missing")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		choice := client.SessionV3ModelProfileChoice{Temporary: action.ModelProfile}
+		if err := a.applyModelProfileChoiceToV3Chat(ctx, choice); err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("apply temporary model profile failed: %v", err))
+			return
+		}
+		temporary := client.ModelProfile{Name: action.ModelProfile.Name, ModelMode: action.ModelProfile.ModelMode, Single: action.ModelProfile.Single, Plan: action.ModelProfile.Plan, Auto: action.ModelProfile.Auto}
+		next := applyHomeModelProfile(a.currentHomeModel(), temporary)
+		next.ActiveModelProfile.Source = "temporary"
+		next.ActiveModelProfile.ProfileID = ""
+		a.applyHomeModel(next)
+		a.home.HideAgentsModal()
 		a.queueReload(false)
 	case ui.AgentsModalActionSwitchProfile:
 		profileID := strings.TrimSpace(action.ModelProfileID)

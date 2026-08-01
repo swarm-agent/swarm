@@ -29,6 +29,7 @@ func TestAgentsModalPriorityShowsOffAndUsesCatalogMappings(t *testing.T) {
 			},
 		},
 	})
+	page.openAgentsV2Editor()
 
 	field := page.findAgentsModalEditorField(page.agentsModal.Editor, "service_tier")
 	if field == nil {
@@ -48,6 +49,116 @@ func TestAgentsModalPriorityShowsOffAndUsesCatalogMappings(t *testing.T) {
 	}
 	if got := agentsModalEditorOptionDisplay(""); got != "off" {
 		t.Fatalf("empty priority option label = %q, want off", got)
+	}
+}
+
+func TestAgentsModalInitialSelectedProfileHydratesCleanlyAndActionsWaitForEdit(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles: []AgentModalProfile{{
+			Name: "swarm", Mode: "primary", Enabled: true, ModelMode: "split",
+			PlanProvider: "codex", PlanModel: "agent-plan", PlanThinking: "max", PlanServiceTier: "fast",
+			AutoProvider: "codex", AutoModel: "agent-action", AutoThinking: "xhigh", AutoServiceTier: "fast",
+		}},
+		Providers: []string{"codex"},
+		ModelsByProvider: map[string][]string{
+			"codex": {"agent-plan", "agent-action", "profile-model"},
+		},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"codex/profile-model": {
+				Provider: "codex", Model: "profile-model",
+				ThinkingOptions: []string{"max", "xhigh"}, DefaultThinking: "xhigh",
+				ServiceTiers: []string{"fast"},
+			},
+		},
+		ModelProfiles: []client.ModelProfile{{
+			ProfileID: "max", Name: "Max", ModelMode: "single",
+			Single: &client.ModelProfileSelection{Provider: "codex", Model: "profile-model", Thinking: "xhigh", ServiceTier: "fast"},
+		}},
+		DefaultModelProfileID: "max",
+		ActiveModelProfileID:  "max",
+	})
+	if page.agentsModal.Editor != nil || page.agentsModal.Screen != agentsV2ScreenList {
+		t.Fatal("/agents must remain on the V2 list until an agent is opened")
+	}
+	page.openAgentsV2Editor()
+
+	editor := page.agentsModal.Editor
+	if editor == nil {
+		t.Fatal("V2 Agents editor missing after opening the selected agent")
+	}
+	for key, want := range map[string]string{
+		"model_profile": "max",
+		"model_mode":    "single",
+		"provider":      "codex",
+		"model":         "profile-model",
+		"thinking":      "xhigh",
+		"service_tier":  "fast",
+	} {
+		field := page.findAgentsModalEditorField(editor, key)
+		if field == nil || field.Value != want {
+			t.Fatalf("initial %s = %#v, want %q from selected model profile", key, field, want)
+		}
+	}
+	if agentsModalEditorHasPendingChanges(editor) {
+		t.Fatal("selected model profile hydration made the initial editor dirty")
+	}
+
+	render := func() string {
+		t.Helper()
+		screen := tcell.NewSimulationScreen("UTF-8")
+		if err := screen.Init(); err != nil {
+			t.Fatal(err)
+		}
+		defer screen.Fini()
+		screen.SetSize(110, 30)
+		page.drawAgentsModal(screen)
+		screen.Show()
+		cells, width, _ := screen.GetContents()
+		var text strings.Builder
+		for i, cell := range cells {
+			if i > 0 && i%width == 0 {
+				text.WriteByte('\n')
+			}
+			if len(cell.Runes) > 0 {
+				text.WriteRune(cell.Runes[0])
+			} else {
+				text.WriteByte(' ')
+			}
+		}
+		return text.String()
+	}
+	initial := render()
+	if strings.Contains(initial, "Choose how to continue") || strings.Contains(initial, "[ Save and apply ]") {
+		t.Fatalf("completion actions rendered before an edit:\n%s", initial)
+	}
+	for _, want := range []string{"[Provider: codex]", "[Model: profile-model]", "[Thinking: xhigh]", "[Priority: fast]"} {
+		if !strings.Contains(initial, want) {
+			t.Fatalf("initial render missing selected-profile value %q:\n%s", want, initial)
+		}
+	}
+
+	thinking := page.findAgentsModalEditorField(editor, "thinking")
+	for i := range editor.Fields {
+		if &editor.Fields[i] == thinking {
+			editor.Selected = i
+			break
+		}
+	}
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if !agentsModalEditorHasPendingChanges(editor) {
+		t.Fatal("first genuine profile edit did not make the editor dirty")
+	}
+	edited := render()
+	if !strings.Contains(edited, "Choose how to continue") || !strings.Contains(edited, "[ Save and apply ]") {
+		t.Fatalf("completion actions did not appear after the first edit:\n%s", edited)
+	}
+	page.handleAgentsModalEditorAction("temporary")
+	action, ok := page.PopAgentsModalAction()
+	if !ok || action.ModelProfile == nil || action.ModelProfile.Single == nil || action.ModelProfile.Single.Thinking != "max" {
+		t.Fatalf("completion action did not preserve edited thinking value: %#v", action)
 	}
 }
 
@@ -91,7 +202,7 @@ func TestAgentsModalSwarmUsesCanonicalDefaultSplitProfile(t *testing.T) {
 	}
 }
 
-func TestAgentsModalWideRendersAgentListBesideSettings(t *testing.T) {
+func TestAgentsModalV2InitiallyRendersOnlyAgentList(t *testing.T) {
 	for _, width := range []int{130, 84} {
 		page := NewHomePage(model.EmptyHome())
 		page.ShowAgentsModal()
@@ -125,13 +236,15 @@ func TestAgentsModalWideRendersAgentListBesideSettings(t *testing.T) {
 			}
 		}
 		text := rendered.String()
-		for _, want := range []string{"Agents [focus]", "swarm", "Model Settings"} {
+		for _, want := range []string{"Agents", "Agent", "Model profile / model", "swarm", "Dual", "Plan: codex/plan-model"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("width %d missing %q in:\n%s", width, want, text)
 			}
 		}
-		if strings.Contains(text, "Active profile [focus]") || strings.Contains(text, "Profile controls stay on top") {
-			t.Fatalf("width %d retained the stacked selector in:\n%s", width, text)
+		for _, rejected := range []string{"Model Settings", "Edit agent", "[Provider:", "[Model:"} {
+			if strings.Contains(text, rejected) {
+				t.Fatalf("width %d V2 list leaked editor content %q:\n%s", width, rejected, text)
+			}
 		}
 		screen.Fini()
 	}
@@ -152,19 +265,23 @@ func TestAgentsModalListNavigationAndSettingsFocus(t *testing.T) {
 	if page.agentsModal.Focus != agentsModalFocusProfiles {
 		t.Fatalf("focus = %v, want agent list", page.agentsModal.Focus)
 	}
+	if page.agentsModal.Editor != nil || page.agentsModal.Screen != agentsV2ScreenList {
+		t.Fatalf("list selection opened an editor early: screen=%v editor=%#v", page.agentsModal.Screen, page.agentsModal.Editor)
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if page.agentsModal.Editor == nil || page.agentsModal.Editor.TargetName != "reviewer" {
 		t.Fatalf("editor target = %#v, want reviewer", page.agentsModal.Editor)
 	}
-
-	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
-	if page.agentsModal.Focus != agentsModalFocusDetails {
-		t.Fatalf("Right focus = %v, want settings", page.agentsModal.Focus)
+	if page.agentsModal.Screen != agentsV2ScreenEditor {
+		t.Fatalf("Enter screen = %v, want V2 editor", page.agentsModal.Screen)
 	}
-
-	page.agentsModal.Focus = agentsModalFocusProfiles
-	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if page.agentsModal.Focus != agentsModalFocusDetails {
 		t.Fatalf("Enter focus = %v, want settings", page.agentsModal.Focus)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if page.agentsModal.Screen != agentsV2ScreenList || page.agentsModal.Editor != nil {
+		t.Fatalf("Esc did not return to the V2 list: screen=%v editor=%#v", page.agentsModal.Screen, page.agentsModal.Editor)
 	}
 }
 
@@ -247,6 +364,14 @@ func TestAgentsModalCreateProfileUsesCanonicalSavedModelProfileAction(t *testing
 		t.Fatalf("right profile dropdown options = %#v, want create as final option", field)
 	}
 	field.Value = agentsModalCreateProfileOption
+	page.agentsModal.Editor.EditingOption = agentsModalCreateProfileOption
+	page.agentsModal.Editor.EditingOptionSet = true
+	for i := range page.agentsModal.Editor.Fields {
+		if &page.agentsModal.Editor.Fields[i] == field {
+			page.agentsModal.Editor.Selected = i
+			break
+		}
+	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	editor := page.agentsModal.Editor
 	if editor == nil || !editor.CreateModelProfile || editor.Mode != "model" {
@@ -428,7 +553,7 @@ func TestAgentsModalEmptyProviderAndModelPickersPreselectFirstOption(t *testing.
 	}
 }
 
-func TestAgentsModalProfileSaveSwitchesChangedSelectionAndDQueuesDefault(t *testing.T) {
+func TestAgentsModalProfileSwitchAndDefaultQueueDistinctActions(t *testing.T) {
 	newPage := func() *HomePage {
 		page := NewHomePage(model.EmptyHome())
 		page.ShowAgentsModal()
@@ -446,7 +571,9 @@ func TestAgentsModalProfileSaveSwitchesChangedSelectionAndDQueuesDefault(t *test
 		if field == nil {
 			t.Fatal("profile field missing")
 		}
-		field.Value = "selected"
+		if !page.applyAgentsModalModelProfile("selected") {
+			t.Fatal("failed to hydrate selected profile into V2 editor")
+		}
 		return page
 	}
 
@@ -461,13 +588,13 @@ func TestAgentsModalProfileSaveSwitchesChangedSelectionAndDQueuesDefault(t *test
 	}
 
 	switchPage := newPage()
-	switchPage.HandleKey(tcell.NewEventKey(tcell.KeyCtrlY, 0, tcell.ModCtrl))
+	switchPage.queueAgentsModalProfileSwitch("selected")
 	switchAction, ok := switchPage.PopAgentsModalAction()
-	if !ok || switchAction.Kind != AgentsModalActionUpsert || switchAction.Upsert == nil || switchAction.ModelProfileID != "selected" {
-		t.Fatalf("Ctrl+Y action = %#v, want save action carrying changed profile selection", switchAction)
+	if !ok || switchAction.Kind != AgentsModalActionSwitchProfile || switchAction.ModelProfileID != "selected" {
+		t.Fatalf("switch action = %#v, want canonical active-profile switch", switchAction)
 	}
 	if !switchPage.AgentsModalVisible() {
-		t.Fatal("Ctrl+Y closed the modal before save and switch succeeded")
+		t.Fatal("profile switch closed the modal before the app confirmed success")
 	}
 }
 
@@ -485,10 +612,365 @@ func TestAgentsModalProfileDirectionsWrapAndRemainComplete(t *testing.T) {
 	if got := strings.Join(lines, " "); got != agentsModalProfileDirections {
 		t.Fatalf("wrapped profile directions = %q, want complete text %q", got, agentsModalProfileDirections)
 	}
-	for _, want := range []string{"Profile directions:", "Enter selects a profile", "D sets account default", "Ctrl+Y saves and switches a changed profile"} {
+	for _, want := range []string{"Profile directions:", "Enter selects a profile", "D sets account default", "use the completion buttons below"} {
 		if !strings.Contains(agentsModalProfileDirections, want) {
 			t.Fatalf("profile directions missing %q: %q", want, agentsModalProfileDirections)
 		}
+	}
+}
+
+func TestAgentsModalEditorOffersDesktopStyleCompletionActions(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles:         []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true, ModelMode: "single", Provider: "codex", Model: "gpt-test", Thinking: "high"}},
+		Providers:        []string{"codex"},
+		ModelsByProvider: map[string][]string{"codex": {"gpt-test"}},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"codex/gpt-test": {Provider: "codex", Model: "gpt-test", ThinkingOptions: []string{"off", "high"}, DefaultThinking: "high"},
+		},
+		ModelProfiles:        []client.ModelProfile{{ProfileID: "saved", Name: "Saved", ModelMode: "single", Single: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-test", Thinking: "high"}}},
+		ActiveModelProfileID: "saved",
+	})
+	page.openAgentsV2Editor()
+
+	actions := agentsModalEditorActions(page.agentsModal.Editor)
+	labels := make([]string, 0, len(actions))
+	for _, action := range actions {
+		labels = append(labels, action.Label)
+	}
+	for _, want := range []string{"Cancel", "Continue for this chat only", "Save as new", "Save and apply"} {
+		found := false
+		for _, label := range labels {
+			if label == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("editor actions = %#v, missing Desktop-equivalent %q", labels, want)
+		}
+	}
+
+	page.handleAgentsModalEditorAction("temporary")
+	action, ok := page.PopAgentsModalAction()
+	if !ok || action.Kind != AgentsModalActionApplyTemporary || action.ModelProfile == nil || action.ModelProfile.Single == nil {
+		t.Fatalf("temporary action = %#v, want temporary model-profile application", action)
+	}
+	if action.ModelProfile.Single.Provider != "codex" || action.ModelProfile.Single.Model != "gpt-test" {
+		t.Fatalf("temporary model profile = %#v", action.ModelProfile)
+	}
+
+	page.SetAgentsModalLoading(false)
+	page.handleAgentsModalEditorAction("save")
+	action, ok = page.PopAgentsModalAction()
+	if !ok || action.Kind != AgentsModalActionUpdateModelProfile || action.ModelProfileID != "saved" || !action.ApplyModelProfile {
+		t.Fatalf("save action = %#v, want saved-profile update and apply", action)
+	}
+}
+
+func TestAgentsModalEditorButtonsStayVisibleAndOperableAtConstrainedHeight(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles: []AgentModalProfile{{
+			Name: "swarm", Mode: "primary", Enabled: true, ModelMode: "split",
+			PlanProvider: "codex", PlanModel: "gpt-test", PlanThinking: "high",
+			AutoProvider: "codex", AutoModel: "gpt-test", AutoThinking: "high",
+		}},
+		Providers:        []string{"codex"},
+		ModelsByProvider: map[string][]string{"codex": {"gpt-test"}},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"codex/gpt-test": {Provider: "codex", Model: "gpt-test", ThinkingOptions: []string{"off", "high"}, DefaultThinking: "high"},
+		},
+		ModelProfiles: []client.ModelProfile{{
+			ProfileID: "saved", Name: "Saved", ModelMode: "split",
+			Plan: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-test", Thinking: "high"},
+			Auto: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-test", Thinking: "high"},
+		}},
+		ActiveModelProfileID: "saved",
+	})
+	page.openAgentsV2Editor()
+	editor := page.agentsModal.Editor
+	actionThinking := page.findAgentsModalEditorField(editor, "auto_thinking")
+	if actionThinking == nil {
+		t.Fatal("Action thinking field missing")
+	}
+	actionThinking.Value = "off"
+	visible := agentsModalVisibleEditorFieldIndexes(editor)
+	editor.Selected = visible[len(visible)-1]
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if !editor.ActionFocused || editor.ActionSelected != 0 {
+		t.Fatalf("Down from final field focus = action:%v index:%d, want first completion button", editor.ActionFocused, editor.ActionSelected)
+	}
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	if editor.ActionFocused || editor.Selected != visible[len(visible)-1] {
+		t.Fatalf("Up from first completion button = action:%v field:%d, want final field %d", editor.ActionFocused, editor.Selected, visible[len(visible)-1])
+	}
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	if !editor.ActionFocused || editor.ActionSelected != 0 {
+		t.Fatalf("Tab from final field focus = action:%v index:%d, want first completion button", editor.ActionFocused, editor.ActionSelected)
+	}
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if editor.ActionSelected != 1 {
+		t.Fatalf("Right action index = %d, want 1", editor.ActionSelected)
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(110, 20)
+	page.drawAgentsModal(screen)
+	screen.Show()
+	cells, width, _ := screen.GetContents()
+	var rendered strings.Builder
+	for i, cell := range cells {
+		if i > 0 && i%width == 0 {
+			rendered.WriteByte('\n')
+		}
+		if len(cell.Runes) > 0 {
+			rendered.WriteRune(cell.Runes[0])
+		} else {
+			rendered.WriteByte(' ')
+		}
+	}
+	text := rendered.String()
+	actionAt := strings.Index(text, "Action")
+	for _, label := range []string{"Cancel", "Continue for this chat only", "Save as new", "Save and apply"} {
+		buttonAt := strings.Index(text, "[ "+label+" ]")
+		if buttonAt < 0 || buttonAt < actionAt {
+			t.Fatalf("constrained editor did not keep %q visible below Action:\n%s", label, text)
+		}
+	}
+
+	var temporaryTarget *clickTarget
+	for i := range page.agentsModalTargets {
+		target := &page.agentsModalTargets[i]
+		if target.Action == "agents-editor-action" && target.Meta == "temporary" {
+			temporaryTarget = target
+			break
+		}
+	}
+	if temporaryTarget == nil {
+		t.Fatal("visible Continue for this chat only button was not registered as a mouse target")
+	}
+	page.activateAgentsModalTarget(*temporaryTarget)
+	action, ok := page.PopAgentsModalAction()
+	if !ok || action.Kind != AgentsModalActionApplyTemporary {
+		t.Fatalf("mouse activation action = %#v, want temporary application", action)
+	}
+}
+
+func TestAgentsModalExistingProfileDraftImmediatelyShowsCompletionActions(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles:         []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true, ModelMode: "single", Provider: "codex", Model: "gpt-test", Thinking: "high"}},
+		Providers:        []string{"codex"},
+		ModelsByProvider: map[string][]string{"codex": {"gpt-test"}},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"codex/gpt-test": {Provider: "codex", Model: "gpt-test", ThinkingOptions: []string{"off", "high"}, DefaultThinking: "high"},
+		},
+		ModelProfiles:        []client.ModelProfile{{ProfileID: "saved", Name: "Saved", ModelMode: "single", Single: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-test", Thinking: "high"}}},
+		ActiveModelProfileID: "saved",
+	})
+	page.openAgentsV2Editor()
+	editor := page.agentsModal.Editor
+	thinking := page.findAgentsModalEditorField(editor, "thinking")
+	if thinking == nil {
+		t.Fatal("thinking field missing")
+	}
+	for i := range editor.Fields {
+		if &editor.Fields[i] == thinking {
+			editor.Selected = i
+			break
+		}
+	}
+
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if thinking.Value != "high" || editor.EditingOption != "off" {
+		t.Fatalf("draft picker state = value %q draft %q, want unchanged value and off draft", thinking.Value, editor.EditingOption)
+	}
+	if !agentsModalEditorHasPendingChanges(editor) {
+		t.Fatal("uncommitted picker change was not detected immediately")
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(110, 20)
+	page.drawAgentsModal(screen)
+	screen.Show()
+	cells, width, _ := screen.GetContents()
+	var rendered strings.Builder
+	for i, cell := range cells {
+		if i > 0 && i%width == 0 {
+			rendered.WriteByte('\n')
+		}
+		if len(cell.Runes) > 0 {
+			rendered.WriteRune(cell.Runes[0])
+		} else {
+			rendered.WriteByte(' ')
+		}
+	}
+	text := rendered.String()
+	for _, label := range []string{"Cancel", "Continue for this chat only", "Save as new", "Save and apply"} {
+		if !strings.Contains(text, "[ "+label+" ]") {
+			t.Fatalf("existing-profile draft did not immediately show %q at constrained height:\n%s", label, text)
+		}
+	}
+
+	page.handleAgentsModalEditorAction("temporary")
+	action, ok := page.PopAgentsModalAction()
+	if !ok || action.ModelProfile == nil || action.ModelProfile.Single == nil || action.ModelProfile.Single.Thinking != "off" {
+		t.Fatalf("completion action did not preserve active picker draft: %#v", action)
+	}
+}
+
+func TestAgentsModalNewProfileEditImmediatelyShowsCompletionActions(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles:         []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true}},
+		Providers:        []string{"codex"},
+		ModelsByProvider: map[string][]string{"codex": {"gpt-test"}},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"codex/gpt-test": {Provider: "codex", Model: "gpt-test", ThinkingOptions: []string{"off", "high"}, DefaultThinking: "high"},
+		},
+	})
+	page.openAgentsModalCreateModelProfileEditor()
+	editor := page.agentsModal.Editor
+	if editor == nil || !editor.CreateModelProfile || !editor.Editing {
+		t.Fatalf("new-profile editor state = %#v", editor)
+	}
+
+	page.handleAgentsModalEditorKey(tcell.NewEventKey(tcell.KeyRune, 'N', tcell.ModNone))
+	if !agentsModalEditorHasPendingChanges(editor) {
+		t.Fatal("new-profile text edit was not detected immediately")
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(110, 20)
+	page.drawAgentsModal(screen)
+	screen.Show()
+	cells, width, _ := screen.GetContents()
+	var rendered strings.Builder
+	for i, cell := range cells {
+		if i > 0 && i%width == 0 {
+			rendered.WriteByte('\n')
+		}
+		if len(cell.Runes) > 0 {
+			rendered.WriteRune(cell.Runes[0])
+		} else {
+			rendered.WriteByte(' ')
+		}
+	}
+	text := rendered.String()
+	for _, label := range []string{"Cancel", "Continue for this chat only", "Create profile and apply"} {
+		if !strings.Contains(text, "[ "+label+" ]") {
+			t.Fatalf("new-profile edit did not immediately show %q at constrained height:\n%s", label, text)
+		}
+	}
+}
+
+func TestAgentsModalSingleModelRendersProviderFirstThenVerticalOptions(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(AgentsModalData{
+		Profiles:  []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true, ModelMode: "single"}},
+		Providers: []string{"anthropic", "codex"},
+		ModelsByProvider: map[string][]string{
+			"anthropic": {"claude-sonnet"},
+		},
+		ModelCatalog: map[string]client.ModelCatalogRecord{
+			"anthropic/claude-sonnet": {
+				Provider:        "anthropic",
+				Model:           "claude-sonnet",
+				ThinkingOptions: []string{"off", "high"},
+				DefaultThinking: "high",
+				ServiceTiers:    []string{"priority"},
+			},
+		},
+	})
+	page.openAgentsV2Editor()
+
+	render := func() []string {
+		t.Helper()
+		screen := tcell.NewSimulationScreen("UTF-8")
+		if err := screen.Init(); err != nil {
+			t.Fatal(err)
+		}
+		defer screen.Fini()
+		screen.SetSize(110, 38)
+		page.drawAgentsModal(screen)
+		screen.Show()
+		cells, width, _ := screen.GetContents()
+		lines := make([]string, 0, len(cells)/width)
+		for start := 0; start < len(cells); start += width {
+			var line strings.Builder
+			end := minInt(start+width, len(cells))
+			for _, cell := range cells[start:end] {
+				if len(cell.Runes) > 0 {
+					line.WriteRune(cell.Runes[0])
+				} else {
+					line.WriteByte(' ')
+				}
+			}
+			lines = append(lines, line.String())
+		}
+		return lines
+	}
+	findLine := func(lines []string, text string) int {
+		t.Helper()
+		for i, line := range lines {
+			if strings.Contains(line, text) {
+				return i
+			}
+		}
+		return -1
+	}
+
+	initial := render()
+	providerLine := findLine(initial, "[Provider: choose provider]")
+	if providerLine < 0 {
+		t.Fatalf("single-model provider choice missing from initial render:\n%s", strings.Join(initial, "\n"))
+	}
+	for _, hidden := range []string{"[Model:", "[Thinking:", "[Priority:"} {
+		if findLine(initial, hidden) >= 0 {
+			t.Fatalf("single-model %s rendered before provider selection:\n%s", hidden, strings.Join(initial, "\n"))
+		}
+	}
+
+	editor := page.agentsModal.Editor
+	page.findAgentsModalEditorField(editor, "provider").Value = "anthropic"
+	page.syncAgentsModalEditorDependentOptions(editor)
+	providerChosen := render()
+	providerLine = findLine(providerChosen, "[Provider: anthropic]")
+	modelLine := findLine(providerChosen, "[Model: choose model]")
+	if providerLine < 0 || modelLine <= providerLine {
+		t.Fatalf("model did not render underneath the selected provider:\n%s", strings.Join(providerChosen, "\n"))
+	}
+
+	page.findAgentsModalEditorField(editor, "model").Value = "claude-sonnet"
+	page.syncAgentsModalEditorDependentOptions(editor)
+	complete := render()
+	ordered := []string{"[Provider: anthropic]", "[Model: claude-sonnet]", "[Thinking: high]", "[Priority: off]"}
+	previous := -1
+	for _, text := range ordered {
+		line := findLine(complete, text)
+		if line <= previous {
+			t.Fatalf("single-model fields are not a vertical ordered list (%q at line %d after %d):\n%s", text, line, previous, strings.Join(complete, "\n"))
+		}
+		previous = line
 	}
 }
 

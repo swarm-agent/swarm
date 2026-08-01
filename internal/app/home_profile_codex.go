@@ -106,6 +106,10 @@ func (a *App) setModelProfileStatus(status string) {
 }
 
 func (a *App) applySelectedProfileToV3Chat(ctx context.Context, profileID string) error {
+	return a.applyModelProfileChoiceToV3Chat(ctx, client.SessionV3ModelProfileChoice{SavedProfileID: strings.TrimSpace(profileID)})
+}
+
+func (a *App) applyModelProfileChoiceToV3Chat(ctx context.Context, choice client.SessionV3ModelProfileChoice) error {
 	if a.v3ChatDraftActive() {
 		return nil
 	}
@@ -113,7 +117,7 @@ func (a *App) applySelectedProfileToV3Chat(ctx context.Context, profileID string
 		return nil
 	}
 	sessionID := strings.TrimSpace(a.v3Chat.Runtime().Store().Snapshot().Session.ID)
-	policy, err := a.api.SetSessionV3ModelProfile(ctx, sessionID, profileID)
+	policy, err := a.api.SetSessionV3ModelProfileChoice(ctx, sessionID, choice)
 	if err != nil {
 		return err
 	}
