@@ -78,7 +78,7 @@ test('Desktop V3 routed drafts and durable conversations keep separate ownership
 
   // App ownership gates canonical activation against both workspace replacement
   // and activation generation before it changes selection or navigation.
-  assert.match(appPage, /routedActivationWorkspaceRef\.current !== expectedWorkspacePath/)
+  assert.match(appPage, /routedActivationWorkspaceRef\.current === expectedWorkspacePath/)
   assert.match(appPage, /activationGeneration === routedActivationGenerationRef\.current/)
   assert.match(appPage, /activateDesktopV3RoutedSession\(/)
   assert.match(appPage, /selectAndHydrateDesktopV3Session/)

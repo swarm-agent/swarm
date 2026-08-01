@@ -233,12 +233,25 @@ interface DesktopV3RoutedActivationDeps {
   getSnapshot: typeof getDesktopV3CacheSnapshot
   commitSnapshot: typeof commitDesktopV3CacheSnapshot
   requireRealtimeController: typeof requireDesktopV3RealtimeControllerReady
+  currentURL: () => string
+  replaceURL: (url: string) => void
+}
+
+function currentDesktopURL(): string {
+  if (typeof window === 'undefined') return ''
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`
 }
 
 const desktopV3RoutedActivationDeps: DesktopV3RoutedActivationDeps = {
   getSnapshot: getDesktopV3CacheSnapshot,
   commitSnapshot: commitDesktopV3CacheSnapshot,
   requireRealtimeController: requireDesktopV3RealtimeControllerReady,
+  currentURL: currentDesktopURL,
+  replaceURL: (url) => {
+    if (typeof window === 'undefined' || !url) return
+    window.history.replaceState(window.history.state, '', url)
+    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+  },
 }
 
 function desktopV3RoutedResultResponse(result: DesktopV3RoutedStartResult): DesktopV3RoutedSessionStartResponse {
@@ -249,24 +262,87 @@ function desktopV3RoutedSessionView(response: DesktopV3RoutedSessionStartRespons
   return response.session_view as unknown as DesktopV3SessionView
 }
 
+function desktopV3RoutedRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function desktopV3RoutedRequiredString(value: unknown, field: string): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized) throw new Error(`Routed Desktop activation requires canonical ${field}`)
+  return normalized
+}
+
+function validateDesktopV3RoutedActivationResponse(response: DesktopV3RoutedSessionStartResponse): void {
+  const identity = response.session_view.identity
+  const settings = desktopV3RoutedRecord(response.session_view.agentic_settings)
+  const mediaCapability = desktopV3RoutedRecord(response.session_view.media_capability)
+  const sessionId = response.session_id.trim()
+  const title = response.title.trim()
+  desktopV3RoutedRequiredString(identity.source_workspace_name, 'source workspace name')
+  desktopV3RoutedRequiredString(identity.source_workspace_path, 'source workspace')
+  const runtimeWorkspacePath = desktopV3RoutedRequiredString(identity.runtime_workspace_path, 'runtime workspace')
+  if (desktopV3RoutedRequiredString(identity.session_id, 'session identity') !== sessionId
+    || desktopV3RoutedRequiredString(identity.title, 'session title') !== title) {
+    throw new Error('Routed Desktop activation received inconsistent canonical identity')
+  }
+  desktopV3RoutedRequiredString(response.first_message.content, 'first message')
+  if (desktopV3RoutedRequiredString(response.session.workspace_path, 'runtime workspace') !== runtimeWorkspacePath
+    || desktopV3RoutedRequiredString(response.session.title, 'session title') !== title) {
+    throw new Error('Routed Desktop activation received inconsistent canonical session authority')
+  }
+  if (!settings || response.session.mode !== response.starting_mode || settings.mode !== response.starting_mode) {
+    throw new Error('Routed Desktop activation received inconsistent canonical mode authority')
+  }
+  desktopV3RoutedRequiredString(settings.agent_name, 'agent')
+  desktopV3RoutedRequiredString(settings.resolved_agent_name, 'resolved agent')
+  const effectivePreference = desktopV3RoutedRecord(settings.effective_preference)
+  desktopV3RoutedRequiredString(effectivePreference?.provider, 'model provider')
+  desktopV3RoutedRequiredString(effectivePreference?.model, 'model')
+  if (!mediaCapability || !Array.isArray(mediaCapability.capabilities)) {
+    throw new Error('Routed Desktop activation requires canonical media capability')
+  }
+  if (typeof identity.worktree_enabled !== 'boolean') {
+    throw new Error('Routed Desktop activation requires canonical worktree intent')
+  }
+  if (identity.requested_worktree_name !== undefined && typeof identity.requested_worktree_name !== 'string') {
+    throw new Error('Routed Desktop activation received invalid requested worktree authority')
+  }
+  if (identity.worktree_enabled) {
+    const worktreeRootPath = desktopV3RoutedRequiredString(identity.worktree_root_path, 'worktree root')
+    const worktreeBranch = desktopV3RoutedRequiredString(identity.worktree_branch, 'worktree branch')
+    if (response.session.worktree_enabled !== true
+      || response.session.worktree_root_path?.trim() !== worktreeRootPath
+      || response.session.worktree_branch?.trim() !== worktreeBranch) {
+      throw new Error('Routed Desktop activation received inconsistent canonical worktree authority')
+    }
+  } else if (response.session.worktree_enabled === true) {
+    throw new Error('Routed Desktop activation received inconsistent disabled worktree authority')
+  }
+}
+
 /**
- * Atomically publishes one already-durable routed result into Desktop V3 state.
- * Draft, primed, routing, and failed UI state never reaches this boundary.
+ * Publishes one already-durable routed result only after validation and realtime
+ * connection succeed. Any later publish/navigation failure restores the exact
+ * prior cache selection/sidebar snapshot and URL while the activation still owns
+ * the state it published.
  */
 export async function activateDesktopV3RoutedSession(
   result: DesktopV3RoutedStartResult,
   deps: DesktopV3RoutedActivationDeps,
   shouldActivate: () => boolean,
+  onActivated?: (response: DesktopV3RoutedSessionStartResponse) => Promise<void> | void,
 ): Promise<DesktopV3RoutedSessionStartResponse> {
   const response = desktopV3RoutedResultResponse(result)
+  validateDesktopV3RoutedActivationResponse(response)
   const sessionId = response.session_id
-  if (!response.session_view.identity.source_workspace_path.trim()) {
-    throw new Error('Routed Desktop start returned no canonical source workspace')
-  }
-
   if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
 
   const previousState = deps.getSnapshot()
+  const previousURL = deps.currentURL()
+  const previousSelectedSessionId = previousState.selectedSessionId
+  const previousSidebarOrderByScope = structuredClone(previousState.sessionOrderByScope)
   const sidebarScopeId = previousState.desktopSidebarBootstrap.scopeId?.trim()
   if (!sidebarScopeId) throw new Error('Routed Desktop activation requires the canonical sidebar scope')
 
@@ -300,17 +376,41 @@ export async function activateDesktopV3RoutedSession(
     selectSession(sessionId),
   ] as const
 
-  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
   const controller = await deps.requireRealtimeController()
+  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
+  await controller.ensureSessionConnected(sessionId)
   if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
 
   let nextState = structuredClone(previousState)
   for (const action of actions) nextState = desktopV3CacheReducer(nextState, action)
-  nextState.sessionViewsById[sessionId] = desktopV3RoutedSessionView(response)
-  deps.commitSnapshot(previousState, nextState, [...actions])
+  const routedView = desktopV3RoutedSessionView(response)
+  nextState.sessionViewsById[sessionId] = routedView
+  const routedSettings = routedView.agentic_settings
+  if (!routedSettings) throw new Error('Routed Desktop activation requires canonical agentic settings')
+  nextState.preferencesBySession[sessionId] = routedSettings.effective_preference
+    ?? routedSettings.stored_preference
+  nextState.agentModelPolicyBySession[sessionId] = routedSettings.agent_model_policy
+  if (routedView.has_active_plan !== undefined) nextState.hasActivePlanBySession[sessionId] = routedView.has_active_plan
+  if (routedView.active_plan !== undefined) nextState.plansBySession[sessionId] = routedView.active_plan
 
-  if (shouldActivate()) await controller.ensureSessionConnected(sessionId)
-  return response
+  let published = false
+  try {
+    if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
+    published = true
+    deps.commitSnapshot(previousState, nextState, [...actions])
+    await onActivated?.(response)
+    return response
+  } catch (error) {
+    const ownsPublishedState = published && deps.getSnapshot() === nextState
+      && previousState.selectedSessionId === previousSelectedSessionId
+      && JSON.stringify(previousState.sessionOrderByScope) === JSON.stringify(previousSidebarOrderByScope)
+    const currentURL = deps.currentURL()
+    const routedSessionSuffix = `/${encodeURIComponent(sessionId)}`
+    const ownsRoute = shouldActivate() || (ownsPublishedState && currentURL.split(/[?#]/, 1)[0]?.endsWith(routedSessionSuffix) === true)
+    if (ownsPublishedState) deps.commitSnapshot(nextState, previousState, [])
+    if (ownsRoute && currentURL !== previousURL) deps.replaceURL(previousURL)
+    throw error
+  }
 }
 
 function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
@@ -3556,27 +3656,27 @@ export function DesktopAppPage() {
       setDesktopToast({ message: error instanceof Error ? error.message : 'Routed session authority is invalid.', tone: 'error' })
       return
     }
+    const activationStillCurrent = () => activationGeneration === routedActivationGenerationRef.current
+      && routedActivationWorkspaceRef.current === expectedWorkspacePath
     void activateDesktopV3RoutedSession(
       result,
       desktopV3RoutedActivationDeps,
-      () => activationGeneration === routedActivationGenerationRef.current
-        && routedActivationWorkspaceRef.current === expectedWorkspacePath,
-    )
-      .then((response) => {
-        if (activationGeneration !== routedActivationGenerationRef.current) return
-        if (routedActivationWorkspaceRef.current !== expectedWorkspacePath) return
+      activationStillCurrent,
+      async (response) => {
+        if (!activationStillCurrent()) throw new Error('Routed Desktop activation is stale')
         const identity = response.session_view.identity
         const workspaceSlug = workspaceSlugByPath.get(canonicalWorkspace.path)
           ?? workspaceRouteSlugBase({ path: canonicalWorkspace.path, workspaceName: identity.source_workspace_name })
-        setMobileSidebarOpen(false)
-        void navigate({
+        await navigate({
           to: '/$workspaceSlug/$sessionId',
           params: { workspaceSlug, sessionId: response.session_id },
           replace: true,
         })
-      })
+        setMobileSidebarOpen(false)
+      },
+    )
       .catch((error) => {
-        if (activationGeneration !== routedActivationGenerationRef.current) return
+        if (!activationStillCurrent()) return
         setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to activate routed session.', tone: 'error' })
       })
   }, [navigate, workspaceByPath, workspaces, workspaceSlugByPath])
