@@ -225,16 +225,12 @@ export interface ModelProfileSelectionRecord {
   contextMode: string;
 }
 
-export interface ModelProfileRecord {
+export interface ModelProfileRecord extends ModelProfileSelectionRecord {
   profileId: string;
   name: string;
-  modelMode: 'single' | 'split';
-  single: ModelProfileSelectionRecord | null;
-  plan: ModelProfileSelectionRecord | null;
-  auto: ModelProfileSelectionRecord | null;
   createdAt: number;
   updatedAt: number;
-  sortOrder?: number;
+  sortOrder: number;
   isDefault: boolean;
 }
 
@@ -243,12 +239,8 @@ export interface ModelProfileState {
   defaultProfileId: string;
 }
 
-export interface ModelProfileInput {
+export interface ModelProfileInput extends ModelProfileSelectionRecord {
   name: string;
-  modelMode: 'single' | 'split';
-  single: ModelProfileSelectionRecord | null;
-  plan: ModelProfileSelectionRecord | null;
-  auto: ModelProfileSelectionRecord | null;
 }
 
 export type ModelProfileChoice =
@@ -261,7 +253,6 @@ export interface ActiveModelProfileState {
   source: 'saved' | 'temporary' | 'agent-default' | '';
   profileId: string;
   name: string;
-  modelMode: 'single' | 'split' | '';
 }
 
 export interface ResolvedSessionPreference {
