@@ -6,11 +6,12 @@ import {
   withCompactAgentSettings,
   withDesignerAgentSettings,
   withFinderAgentSettings,
+  withRouterAgentSettings,
 } from '../types/swarm-settings'
 
 export async function saveSystemAgentSettings(input: {
   current: UISettingsWire
-  agent: 'compact' | 'finder' | 'coder' | 'designer'
+  agent: 'compact' | 'finder' | 'coder' | 'designer' | 'router'
   settings: UICompactAgentSettingsWire
 }): Promise<UISettingsWire> {
   const next = input.agent === 'compact'
@@ -19,7 +20,9 @@ export async function saveSystemAgentSettings(input: {
       ? withFinderAgentSettings(input.current, input.settings)
       : input.agent === 'coder'
         ? withCoderAgentSettings(input.current, input.settings)
-        : withDesignerAgentSettings(input.current, input.settings)
+        : input.agent === 'designer'
+          ? withDesignerAgentSettings(input.current, input.settings)
+          : withRouterAgentSettings(input.current, input.settings)
   return patchUISettings(next)
 }
 

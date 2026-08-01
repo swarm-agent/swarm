@@ -3358,6 +3358,7 @@ type uiAgentSettingsPatchPresence struct {
 	Finder   *uiCompactAgentSettingsPatchPresence `json:"finder"`
 	Coder    *uiCompactAgentSettingsPatchPresence `json:"coder"`
 	Designer *uiCompactAgentSettingsPatchPresence `json:"designer"`
+	Router   *uiCompactAgentSettingsPatchPresence `json:"router"`
 }
 
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
@@ -3496,6 +3497,20 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Agents.Designer.ServiceTier != nil {
 			settings.Agents.Designer.ServiceTier = patch.Agents.Designer.ServiceTier
+		}
+	}
+	if raw.Agents != nil && raw.Agents.Router != nil {
+		if raw.Agents.Router.Provider != nil {
+			settings.Agents.Router.Provider = patch.Agents.Router.Provider
+		}
+		if raw.Agents.Router.Model != nil {
+			settings.Agents.Router.Model = patch.Agents.Router.Model
+		}
+		if raw.Agents.Router.Thinking != nil {
+			settings.Agents.Router.Thinking = patch.Agents.Router.Thinking
+		}
+		if raw.Agents.Router.ServiceTier != nil {
+			settings.Agents.Router.ServiceTier = patch.Agents.Router.ServiceTier
 		}
 	}
 	return settings

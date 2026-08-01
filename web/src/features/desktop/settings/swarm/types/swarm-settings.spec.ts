@@ -8,12 +8,14 @@ import {
   normalizeGlobalThemeSettings,
   normalizeDesignerAgentSettings,
   normalizeFinderAgentSettings,
+  normalizeRouterAgentSettings,
   normalizeSessionMode,
   normalizeSidebarHideInactiveHours,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
   withDesignerAgentSettings,
   withFinderAgentSettings,
+  withRouterAgentSettings,
   withSidebarHideInactiveHours,
   type UISettingsWire,
 } from './swarm-settings'
@@ -73,6 +75,18 @@ test('Designer settings normalize and persist through the immutable system-agent
   assert.deepEqual(normalizeDesignerAgentSettings(saved), {
     provider: 'codex',
     model: 'gpt-5.4-mini',
+    thinking: 'medium',
+    service_tier: 'priority',
+  })
+  assert.equal(saved.agents?.finder?.model, 'claude')
+})
+
+test('Router settings normalize and persist through the existing system-agent settings path', () => {
+  const current: UISettingsWire = { agents: { finder: { provider: 'anthropic', model: 'claude' } } }
+  const saved = withRouterAgentSettings(current, { provider: 'OPENAI', model: 'router-model', thinking: 'medium', service_tier: 'PRIORITY' })
+  assert.deepEqual(normalizeRouterAgentSettings(saved), {
+    provider: 'openai',
+    model: 'router-model',
     thinking: 'medium',
     service_tier: 'priority',
   })

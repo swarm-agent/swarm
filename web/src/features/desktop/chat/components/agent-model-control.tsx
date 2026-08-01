@@ -7,7 +7,7 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
-import { normalizeCoderAgentSettings, normalizeCompactAgentSettings, normalizeDesignerAgentSettings, normalizeFinderAgentSettings } from '../../settings/swarm/types/swarm-settings'
+import { normalizeCoderAgentSettings, normalizeCompactAgentSettings, normalizeDesignerAgentSettings, normalizeFinderAgentSettings, normalizeRouterAgentSettings } from '../../settings/swarm/types/swarm-settings'
 import { displayAgentName } from '../services/agent-display'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
@@ -72,10 +72,11 @@ const COMPACT_AGENT_NAME = 'system-compact'
 const FINDER_AGENT_NAME = 'system-finder'
 const CODER_AGENT_NAME = 'system-coder'
 const DESIGNER_AGENT_NAME = 'system-designer'
+const ROUTER_AGENT_NAME = 'system-router'
 const SWARM_AGENT_NAME = 'swarm'
 
 function isSystemUtility(name: string): boolean {
-  return name === COMPACT_AGENT_NAME || name === FINDER_AGENT_NAME || name === CODER_AGENT_NAME || name === DESIGNER_AGENT_NAME
+  return name === COMPACT_AGENT_NAME || name === FINDER_AGENT_NAME || name === CODER_AGENT_NAME || name === DESIGNER_AGENT_NAME || name === ROUTER_AGENT_NAME
 }
 
 function isCompiledSystemAgent(name: string): boolean {
@@ -316,6 +317,7 @@ export function AgentModelControl({
   const finderSettings = normalizeFinderAgentSettings(uiSettings)
   const coderSettings = normalizeCoderAgentSettings(uiSettings)
   const designerSettings = normalizeDesignerAgentSettings(uiSettings)
+  const routerSettings = normalizeRouterAgentSettings(uiSettings)
   const coderSettingsEnabled = Boolean(coderSettings.provider && coderSettings.model)
   const compactProfile = useMemo<AgentProfileRecord>(() => ({
     name: COMPACT_AGENT_NAME,
@@ -358,6 +360,18 @@ export function AgentModelControl({
     exitPlanModeEnabled: false, toolScope: null, toolContract: null,
     enabled: true, protected: true, updatedAt: 0,
   }), [coderSettings.model, coderSettings.provider, coderSettings.service_tier, coderSettings.thinking, coderSettingsEnabled])
+  const routerProfile = useMemo<AgentProfileRecord>(() => ({
+    name: ROUTER_AGENT_NAME,
+    mode: 'subagent',
+    description: 'Compiled Router model selection',
+    provider: routerSettings.provider, model: routerSettings.model, thinking: routerSettings.thinking, modelMode: 'single',
+    planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
+    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: routerSettings.service_tier,
+    prompt: '', runtimeMode: 'read', defaultSessionMode: 'auto', executionSetting: 'read',
+    exitPlanModeEnabled: false, toolScope: null,
+    toolContract: { preset: 'custom', inheritPolicy: false, tools: {} },
+    enabled: true, protected: true, updatedAt: 0,
+  }), [routerSettings.model, routerSettings.provider, routerSettings.service_tier, routerSettings.thinking])
   const designerProfile = useMemo<AgentProfileRecord>(() => ({
     name: DESIGNER_AGENT_NAME,
     mode: 'subagent',
@@ -383,7 +397,7 @@ export function AgentModelControl({
   const [profileNameFocusSignal, setProfileNameFocusSignal] = useState(0)
   const initializedOpenRef = useRef(false)
   const profileNameInputRef = useRef<HTMLInputElement | null>(null)
-  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), compactProfile, finderProfile, coderProfile, designerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile])
+  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), compactProfile, finderProfile, coderProfile, designerProfile, routerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile, routerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
   const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
   const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
@@ -636,7 +650,7 @@ export function AgentModelControl({
       if (isSystemUtility(profile.name)) {
         const saved = await saveSystemAgentSettings({
           current: uiSettings,
-          agent: profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : 'finder',
+          agent: profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : profile.name === ROUTER_AGENT_NAME ? 'router' : 'finder',
           settings: {
             provider: String(action.agentPatch.provider ?? '').trim(),
             model: String(action.agentPatch.model ?? '').trim(),

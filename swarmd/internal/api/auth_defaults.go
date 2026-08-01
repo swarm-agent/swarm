@@ -78,6 +78,7 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 		settings.Agents.Finder = recommended.Finder
 		settings.Agents.Coder = recommended.Coder
 		settings.Agents.Designer = recommended.Designer
+		settings.Agents.Router = recommended.Router
 		if _, settingsErr := s.uiSettings.SetForAccount(accountScopeID, settings); settingsErr != nil {
 			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
 		}
@@ -101,7 +102,7 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 		Thinking:    providerDefaults.PrimaryThinking,
 		GlobalModel: true,
 		Agents:      result.Agents,
-		Subagents:   []string{"compact", "finder", "coder", "designer"},
+		Subagents:   []string{"compact", "finder", "coder", "designer", "router"},
 	}, nil
 }
 
@@ -286,7 +287,7 @@ func (s *Server) snapshotRecommendedOnboardingDefaults(providerID string, requir
 }
 
 func hasConfiguredOnboardingSubagentSettings(settings uisettings.AgentSettings) bool {
-	for _, configured := range []uisettings.CompactAgentSettings{settings.Compact, settings.Finder, settings.Coder, settings.Designer} {
+	for _, configured := range []uisettings.CompactAgentSettings{settings.Compact, settings.Finder, settings.Coder, settings.Designer, settings.Router} {
 		if strings.TrimSpace(configured.Provider) != "" || strings.TrimSpace(configured.Model) != "" || strings.TrimSpace(configured.Thinking) != "" || strings.TrimSpace(configured.ServiceTier) != "" {
 			return true
 		}
@@ -299,11 +300,12 @@ type onboardingSubagentSettings struct {
 	Finder   uisettings.CompactAgentSettings
 	Coder    uisettings.CompactAgentSettings
 	Designer uisettings.CompactAgentSettings
+	Router   uisettings.CompactAgentSettings
 }
 
 func (s *Server) recommendedOnboardingSubagentSettings(providerID string) (onboardingSubagentSettings, bool, error) {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	recommended, ok, err := s.model.RecommendedCatalogRoleDefaults(providerID, "compact", "finder", "coder", "designer")
+	recommended, ok, err := s.model.RecommendedCatalogRoleDefaults(providerID, "compact", "finder", "coder", "designer", "router")
 	if err != nil {
 		return onboardingSubagentSettings{}, false, fmt.Errorf("read onboarding subagent recommendations: %w", err)
 	}
@@ -322,7 +324,7 @@ func (s *Server) recommendedOnboardingSubagentSettings(providerID string) (onboa
 	}
 	return onboardingSubagentSettings{
 		Compact: selection("compact"), Finder: selection("finder"),
-		Coder: selection("coder"), Designer: selection("designer"),
+		Coder: selection("coder"), Designer: selection("designer"), Router: selection("router"),
 	}, true, nil
 }
 

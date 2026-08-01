@@ -107,6 +107,7 @@ type AgentSettings struct {
 	Finder   CompactAgentSettings `json:"finder,omitempty"`
 	Coder    CompactAgentSettings `json:"coder,omitempty"`
 	Designer CompactAgentSettings `json:"designer,omitempty"`
+	Router   CompactAgentSettings `json:"router,omitempty"`
 }
 
 type UISettings struct {
@@ -269,6 +270,12 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 				Thinking:    strings.TrimSpace(record.Agents.Designer.Thinking),
 				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Designer.ServiceTier)),
 			},
+			Router: CompactAgentSettings{
+				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Router.Provider)),
+				Model:       strings.TrimSpace(record.Agents.Router.Model),
+				Thinking:    strings.TrimSpace(record.Agents.Router.Thinking),
+				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Router.ServiceTier)),
+			},
 		},
 		UpdatedAt: record.UpdatedAt,
 	}
@@ -385,6 +392,12 @@ func agentRecordFromSettings(settings AgentSettings) *pebblestore.UIAgentSetting
 			Model:       strings.TrimSpace(settings.Designer.Model),
 			Thinking:    strings.TrimSpace(settings.Designer.Thinking),
 			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Designer.ServiceTier)),
+		},
+		Router: pebblestore.UICompactAgentSettingsRecord{
+			Provider:    strings.ToLower(strings.TrimSpace(settings.Router.Provider)),
+			Model:       strings.TrimSpace(settings.Router.Model),
+			Thinking:    strings.TrimSpace(settings.Router.Thinking),
+			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Router.ServiceTier)),
 		},
 	}
 }

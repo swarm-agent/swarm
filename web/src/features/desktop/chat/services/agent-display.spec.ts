@@ -10,3 +10,7 @@ test('compiled Compact uses its product label', () => {
 test('compiled Designer uses its product label', () => {
   assert.equal(displayAgentName('system-designer'), 'Designer')
 })
+
+test('compiled Router uses its product label', () => {
+  assert.equal(displayAgentName('system-router'), 'Router')
+})

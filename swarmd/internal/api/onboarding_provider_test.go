@@ -67,6 +67,7 @@ func seedOnboardingProviderRecommendations(t *testing.T, catalogStore *pebblesto
 		{Provider: providerID, Model: "snapshot-finder-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "finder", Thinking: "medium"}}, Source: "test"},
 		{Provider: providerID, Model: "snapshot-coder-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "coder", Thinking: "high"}}, Source: "test"},
 		{Provider: providerID, Model: "snapshot-designer-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "designer", Thinking: "medium"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-router-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "router", Thinking: "low"}}, Source: "test"},
 	}
 	if err := catalogStore.ReplaceSnapshot(records, pebblestore.ModelCatalogMeta{LiveSnapshotVersion: "test-snapshot", ExpiresAt: 4102444800000, RecordCount: len(records), SourceURL: "test://catalog"}); err != nil {
 		t.Fatalf("seed catalog recommendations: %v", err)
@@ -168,6 +169,7 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 		"finder":   {uiSettings.Agents.Finder, "snapshot-finder-model", "medium"},
 		"coder":    {uiSettings.Agents.Coder, "snapshot-coder-model", "high"},
 		"designer": {uiSettings.Agents.Designer, "snapshot-designer-model", "medium"},
+		"router":   {uiSettings.Agents.Router, "snapshot-router-model", "low"},
 	}
 	for name, want := range wantSystemAgents {
 		if want.got.Provider != "openai" || want.got.Model != want.model || want.got.Thinking != want.thinking {
