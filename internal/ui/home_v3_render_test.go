@@ -48,6 +48,46 @@ func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 	}
 }
 
+func TestRequiredOnboardingReplacesHomepageAndAcceptsInput(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
+	if !page.OnboardingVisible() {
+		t.Fatal("required onboarding was not made visible")
+	}
+	page.Draw(screen)
+
+	text := dumpHomeTestScreen(screen, 100, 30)
+	if !strings.Contains(text, "Required Swarm setup") {
+		t.Fatalf("required onboarding missing from home page:\n%s", text)
+	}
+	if strings.Contains(text, "Talk to Swarm") {
+		t.Fatalf("main homepage rendered behind required onboarding:\n%s", text)
+	}
+
+	for _, r := range "alice" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	for _, r := range "Local Swarm" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	action, ok := page.PopHomeAction()
+	if !ok {
+		t.Fatal("submitting required onboarding did not queue a save action")
+	}
+	if action.Kind != HomeActionSaveOnboarding || action.Username != "alice" || action.SwarmName != "Local Swarm" {
+		t.Fatalf("onboarding action = %+v", action)
+	}
+}
+
 func TestV3HomepageCompactLayoutOmitsLaunchPanel(t *testing.T) {
 	screen := tcell.NewSimulationScreen("")
 	if err := screen.Init(); err != nil {

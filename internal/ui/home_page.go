@@ -136,7 +136,7 @@ type HomePage struct {
 }
 
 func NewHomePage(m model.HomeModel) *HomePage {
-	return &HomePage{
+	page := &HomePage{
 		theme:        NordTheme(),
 		keybinds:     NewDefaultKeyBindings(),
 		model:        m,
@@ -145,6 +145,10 @@ func NewHomePage(m model.HomeModel) *HomePage {
 		swarmName:    "Local",
 		promptCursor: 0,
 	}
+	if m.OnboardingRequired {
+		page.ShowOnboardingLocked("Complete required identity setup before using Swarm.")
+	}
+	return page
 }
 
 func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
@@ -531,6 +535,12 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	p.bottomBarTargets = p.bottomBarTargets[:0]
 
 	if w <= 0 || h <= 0 {
+		return
+	}
+	if p.onboarding.Visible {
+		p.drawOnboarding(s)
+		p.drawAuthModal(s)
+		p.drawAuthDefaultsInfoModal(s)
 		return
 	}
 	if w < 16 || h < 4 {
