@@ -8,7 +8,7 @@ test('Desktop V3 new session input is neutral until the routed response resolves
   assert.match(source, /DesktopV3RoutedNewSessionController/)
   assert.match(source, /DesktopV3RoutedPendingShell/)
   assert.match(source, /routedNewSession/)
-  assert.match(source, /canSubmit=\{Boolean\(draft\.trim\(\)\)\}/)
+  assert.match(source, /canSubmit=\{Boolean\(draft\.trim\(\)\) \|\| stagedAttachments\.length > 0\}/)
   assert.doesNotMatch(source, /selectedRoute|selectedAgent|selectedModel|modelProfile|handleModeSelect/)
   assert.doesNotMatch(source, /draftModelQueryOptions|agentStateQueryOptions|modelOptionsQueryOptions/)
 })

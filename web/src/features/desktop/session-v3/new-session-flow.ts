@@ -1,4 +1,5 @@
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
+import type { DesktopV3MediaReference } from '../state/desktop-v3-cache-types'
 import type { ModelProfileChoice } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
@@ -516,7 +517,7 @@ export interface DesktopV3RoutedStartResult {
   replayed: boolean
   session: { id?: string; session_id?: string }
   session_view: unknown
-  first_message: { id?: string; session_id?: string }
+  first_message: { id?: string; session_id?: string; media?: DesktopV3MediaReference[] }
   projection: { session_id?: string }
   mutation: { session_id?: string }
 }
@@ -551,6 +552,11 @@ export type DesktopV3RoutedNewSessionState =
   | DesktopV3RoutedResolvedState
   | DesktopV3RoutedFailedState
 
+export interface DesktopV3RoutedOperationIdentity {
+  operationId: string
+  clientRequestId: string
+}
+
 export interface CreateDesktopV3RoutedStartOperationInput {
   prompt?: string
   snapshot?: DesktopV3RoutedComposerSnapshot
@@ -560,6 +566,8 @@ export interface CreateDesktopV3RoutedStartOperationInput {
   selectedAction?: unknown | null
   selectedSkill?: unknown | null
   worktreePrimed?: boolean
+  /** Reserved before media staging so uploads and the routed start share one identity. */
+  identity?: DesktopV3RoutedOperationIdentity
 }
 
 export type PostDesktopV3RoutedStart = (
@@ -622,6 +630,19 @@ export function createDesktopV3RoutedWorktreePrimedState(
   return { phase: 'worktree-primed', prompt: snapshot.prompt, snapshot }
 }
 
+export function createDesktopV3RoutedOperationIdentity(): DesktopV3RoutedOperationIdentity {
+  const operationId = crypto.randomUUID()
+  return { operationId, clientRequestId: `desktop-v3-routed:${operationId}` }
+}
+
+export function desktopV3RoutedRequestInput(snapshot: DesktopV3RoutedComposerSnapshot): string {
+  const prompt = snapshot.prompt.trim()
+  if (!prompt) throw new Error('Routed Desktop start requires a prompt')
+  return snapshot.worktreePrimed
+    ? `${prompt}\n\nUse a managed worktree for this session.`
+    : prompt
+}
+
 export function createDesktopV3RoutedStartOperation(
   input: CreateDesktopV3RoutedStartOperationInput,
 ): DesktopV3RoutedStartOperation {
@@ -638,17 +659,20 @@ export function createDesktopV3RoutedStartOperation(
     selectedSkill: input.selectedSkill,
     worktreePrimed: input.worktreePrimed,
   })
-  const prompt = snapshot.prompt.trim()
-  if (!prompt) throw new Error('Routed Desktop start requires a prompt')
-  const operationId = crypto.randomUUID()
-  const clientRequestID = `desktop-v3-routed:${operationId}`
+  const requestInput = desktopV3RoutedRequestInput(snapshot)
+  const identity = input.identity ?? createDesktopV3RoutedOperationIdentity()
+  const operationId = identity.operationId.trim()
+  const clientRequestID = identity.clientRequestId.trim()
+  if (!operationId || clientRequestID !== `desktop-v3-routed:${operationId}`) {
+    throw new Error('Routed Desktop operation identity is invalid')
+  }
   return {
     version: 1,
     operationId,
     createdAt: Date.now(),
     snapshot,
     request: {
-      input: prompt,
+      input: requestInput,
       client_request_id: clientRequestID,
       idempotency_key: clientRequestID,
       agent_name: input.agentName?.trim() || undefined,
@@ -669,7 +693,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   if (request.idempotency_key !== request.client_request_id) return false
   if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
   if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
-  if (request.input !== snapshot.prompt.trim()) return false
+  if (request.input !== desktopV3RoutedRequestInput(snapshot)) return false
   if (JSON.stringify(request.media ?? []) !== JSON.stringify(normalizedRoutedMedia(snapshot.attachments) ?? [])) return false
   return true
 }
@@ -761,6 +785,7 @@ export class DesktopV3RoutedNewSessionController {
   private state: DesktopV3RoutedNewSessionState
   private generation = 0
   private activeRun: Promise<DesktopV3RoutedNewSessionState> | null = null
+  private reservedIdentity: DesktopV3RoutedOperationIdentity | null = null
   private readonly listeners = new Set<(state: DesktopV3RoutedNewSessionState) => void>()
 
   constructor(
@@ -777,6 +802,17 @@ export class DesktopV3RoutedNewSessionController {
   subscribe(listener: (state: DesktopV3RoutedNewSessionState) => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  prepareOperationIdentity(): DesktopV3RoutedOperationIdentity {
+    if (this.state.phase === 'failed' || this.state.phase === 'routing' || this.state.phase === 'resolved') {
+      return {
+        operationId: this.state.operation.operationId,
+        clientRequestId: this.state.operation.request.client_request_id,
+      }
+    }
+    if (!this.reservedIdentity) this.reservedIdentity = createDesktopV3RoutedOperationIdentity()
+    return { ...this.reservedIdentity }
   }
 
   startDraft(
@@ -806,7 +842,12 @@ export class DesktopV3RoutedNewSessionController {
     if (this.state.phase === 'failed') {
       operation = this.state.operation
     } else if (this.state.phase === 'draft' || this.state.phase === 'worktree-primed') {
-      operation = createDesktopV3RoutedStartOperation(input ?? { snapshot: this.state.snapshot })
+      const operationInput: CreateDesktopV3RoutedStartOperationInput = input ?? { snapshot: this.state.snapshot }
+      operation = createDesktopV3RoutedStartOperation({
+        ...operationInput,
+        identity: operationInput.identity ?? this.prepareOperationIdentity(),
+      })
+      this.reservedIdentity = null
     } else {
       return Promise.reject(new Error('Resolved routed Desktop start cannot be submitted again'))
     }
@@ -874,6 +915,7 @@ export class DesktopV3RoutedNewSessionController {
       : null
     this.generation += 1
     this.activeRun = null
+    this.reservedIdentity = null
     if (operation) clearDesktopV3RoutedStartOperation(operation.operationId)
   }
 

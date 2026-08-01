@@ -17,7 +17,7 @@ test('Desktop V3 composer keeps compact and attachment actions inside the plus m
 
   assert.doesNotMatch(source, /showCompactButton|onShowCompactButtonToggle/)
   assert.match(source, /<DesktopComposerActionMenu[\s\S]*contextLabel=\{contextLabel\}[\s\S]*onCompact=\{onCompact/)
-  assert.match(source, /onAttach=\{routedNewSession \? undefined : effectiveMediaCapability \? \(\) => fileInputRef\.current\?\.click\(\) : undefined\}/)
+  assert.match(source, /onAttach=\{routedNewSession \? \(onRoutedStageAttachments \? \(\) => fileInputRef\.current\?\.click\(\) : undefined\) : effectiveMediaCapability/)
   assert.doesNotMatch(source, /aria-label="Attach media"/)
   assert.match(actions, /data-testid="desktop-composer-attach-menu-item"/)
   assert.match(actions, /<Paperclip size=\{16\}/)
@@ -66,6 +66,7 @@ test('Desktop V3 composer opens task actions from a borderless plus trigger and 
   assert.match(actions, /event\.key !== 'Escape'/)
   assert.match(actions, /if \(disabled\) closeMenu\(\)/)
   assert.match(source, /if \(dictationEnabledRef\.current\) stopDictation\(false\)/)
+  assert.match(source, /if \(routedNewSession\)[\s\S]*onRoutedWorktreeRequestedChange\?\.\(true\)/)
   assert.doesNotMatch(actions, /createPortal/)
 })
 
@@ -86,7 +87,7 @@ test('Desktop V3 composer exposes only backend-projected media and preserves dur
   const api = await readFile(new URL('../../session-v3/write-api.ts', import.meta.url), 'utf8')
 
   assert.match(composer, /mediaCapability\?\.status === 'available'/)
-  assert.match(composer, /accept=\{effectiveMediaCapability\.capabilities\.flatMap/)
+  assert.match(composer, /accept=\{effectiveMediaCapability\?\.capabilities\.flatMap/)
   assert.match(composer, /capability\.mime_types \?\? \[\]/)
   assert.match(composer, /capability\.file_types \?\? \[\]/)
   assert.match(composer, /onPaste=\{\(event\)/)
@@ -113,7 +114,7 @@ test('Desktop V3 composer retains resolved-session controls but hides them for r
   assert.match(source, /routedNewSession\?: boolean/)
   assert.equal((source.match(/!routedNewSession && showModePicker/g) ?? []).length, 2)
   assert.match(source, /!routedNewSession && !resolvedSessionControls \? <AgentModelControl/)
-  assert.match(source, /onAttach=\{routedNewSession \? undefined/)
+  assert.match(source, /onAttach=\{routedNewSession \? \(onRoutedStageAttachments/)
   assert.doesNotMatch(source, /iteration/i)
   assert.doesNotMatch(source, /<ModePicker/)
   assert.match(control, /data-composer-plan-model-control/)

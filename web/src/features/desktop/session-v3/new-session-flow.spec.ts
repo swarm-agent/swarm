@@ -7,6 +7,7 @@ import {
   createDesktopV3NewSessionOperation,
   createDesktopV3RoutedComposerSnapshot,
   createDesktopV3RoutedDraftState,
+  desktopV3RoutedRequestInput,
   createDesktopV3RoutedStartOperation,
   createDesktopV3RoutedWorktreePrimedState,
   loadDesktopV3RoutedStartOperation,
@@ -177,7 +178,7 @@ test('routed operation persists one stable transport identity across reload', ()
 
   assert.equal(operation.version, 1)
   assert.deepEqual(operation.snapshot, snapshot)
-  assert.equal(operation.request.input, 'route this')
+  assert.equal(operation.request.input, 'route this\n\nUse a managed worktree for this session.')
   assert.equal(operation.request.agent_name, 'swarm')
   assert.equal(operation.request.client_request_id, `desktop-v3-routed:${operation.operationId}`)
   assert.equal(operation.request.idempotency_key, operation.request.client_request_id)
@@ -197,6 +198,43 @@ test('routed operation persists one stable transport identity across reload', ()
     assert.equal(restored.operation.operationId, operation.operationId)
     assert.equal(restored.operation.request.client_request_id, operation.request.client_request_id)
   }
+}))
+
+test('routed worktree prime affects only Router input and never introduces a name field', () => {
+  const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'route me', worktreePrimed: true })
+  assert.equal(desktopV3RoutedRequestInput(snapshot), 'route me\n\nUse a managed worktree for this session.')
+  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'selectedAction', 'selectedSkill', 'worktreePrimed'])
+})
+
+test('routed operation rejects malformed reserved identity', () => {
+  assert.throws(() => createDesktopV3RoutedStartOperation({
+    prompt: 'route me',
+    identity: { operationId: 'operation-a', clientRequestId: 'desktop-v3-routed:operation-b' },
+  }), /operation identity is invalid/)
+})
+
+test('routed controller reserves one identity before staging and reuses it for submit', async () => withAsyncSessionStorage(async () => {
+  let postedClientRequestID = ''
+  const controller = new DesktopV3RoutedNewSessionController(async (request) => {
+    postedClientRequestID = request.client_request_id
+    return makeRoutedResult('canonical-session')
+  }, createDesktopV3RoutedDraftState('route me'))
+
+  const first = controller.prepareOperationIdentity()
+  const second = controller.prepareOperationIdentity()
+  assert.deepEqual(second, first)
+
+  const state = await controller.submit({
+    prompt: 'route me',
+    media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
+  })
+  assert.equal(state.phase, 'resolved')
+  assert.equal(postedClientRequestID, first.clientRequestId)
+
+  const nextController = new DesktopV3RoutedNewSessionController(async () => makeRoutedResult('canonical-session-2'), createDesktopV3RoutedDraftState('next'))
+  const discarded = nextController.prepareOperationIdentity()
+  nextController.startDraft('replacement')
+  assert.notDeepEqual(nextController.prepareOperationIdentity(), discarded)
 }))
 
 test('routed controller keeps the pending prompt local and resolves only canonical response', async () => withAsyncSessionStorage(async (storage) => {
@@ -253,7 +291,7 @@ test('routed failure restores the exact composer snapshot and retries the same o
     assert.match(failed.error, /network ambiguous/)
     assert.deepEqual(failed.snapshot, snapshot)
     assert.equal(failed.prompt, snapshot.prompt)
-    assert.equal(failed.operation.request.input, snapshot.prompt.trim())
+    assert.equal(failed.operation.request.input, `${snapshot.prompt.trim()}\n\nUse a managed worktree for this session.`)
     assert.deepEqual(failed.operation.request.media, snapshot.attachments)
   }
   const resolved = await controller.retry()

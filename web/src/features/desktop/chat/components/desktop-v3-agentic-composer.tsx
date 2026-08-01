@@ -6,6 +6,7 @@ import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
+import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import { submitDesktopComposer } from '../services/composer-submit'
 import {
@@ -13,6 +14,10 @@ import {
   DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES,
   admitComposerFile,
   appendComposerTextFile,
+  composerFileType,
+  desktopComposerStagedMediaInput,
+  isComposerTextFile,
+  type DesktopComposerStagedAttachment,
 } from '../services/composer-attachments'
 import {
   chatMentionCandidates,
@@ -29,6 +34,7 @@ import { DesktopComposerActionMenu, type DesktopComposerTaskMode } from './deskt
 import { DesktopWorkspaceActionPanel } from './desktop-workspace-action-panel'
 import type { WorkspaceAction } from '../../../workspaces/actions/types'
 import type { WorkspaceSkill } from '../services/workspace-skills'
+import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -135,6 +141,13 @@ export interface DesktopV3AgenticComposerProps {
   submitLabel?: string
   error?: string | null
   onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>
+  onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState>
+  routedStagedAttachments?: readonly DesktopComposerStagedAttachment[]
+  onRoutedStageAttachments?: (files: File[], signal: AbortSignal) => Promise<void>
+  onRoutedRemoveStagedAttachment?: (stagingId: string) => void
+  routedComposerSnapshot?: DesktopV3RoutedComposerSnapshot | null
+  routedWorktreeRequested?: boolean
+  onRoutedWorktreeRequestedChange?: (requested: boolean) => void
   mediaCapability?: DesktopV3MediaCapability | null
   onUploadAttachment?: (file: File, signal: AbortSignal) => Promise<DesktopV3MediaReference>
   onStop?: () => void | Promise<void>
@@ -228,6 +241,13 @@ export function DesktopV3AgenticComposer({
   submitLabel: _submitLabel,
   error,
   onSubmit,
+  onRoutedSubmit,
+  routedStagedAttachments = [],
+  onRoutedStageAttachments,
+  onRoutedRemoveStagedAttachment,
+  routedComposerSnapshot = null,
+  routedWorktreeRequested = false,
+  onRoutedWorktreeRequestedChange,
   mediaCapability = null,
   onUploadAttachment,
   onStop,
@@ -286,6 +306,7 @@ export function DesktopV3AgenticComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const uploadAbortRef = useRef<AbortController | null>(null)
   const textAttachmentSequenceRef = useRef(0)
+  const routedSubmissionRef = useRef(false)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -540,7 +561,15 @@ export function DesktopV3AgenticComposer({
 
   useEffect(() => {
     if (!error) setDismissedComposerError(null)
-  }, [error])
+    if (routedNewSession && error) routedSubmissionRef.current = false
+  }, [error, routedNewSession])
+
+  useEffect(() => {
+    if (!routedNewSession || !routedComposerSnapshot) return
+    routedSubmissionRef.current = false
+    setSelectedWorkspaceAction((routedComposerSnapshot.selectedAction as WorkspaceAction | null) ?? null)
+    setSelectedWorkspaceSkill((routedComposerSnapshot.selectedSkill as WorkspaceSkill | null) ?? null)
+  }, [routedComposerSnapshot, routedNewSession])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -576,6 +605,13 @@ export function DesktopV3AgenticComposer({
 
   const handlePrimeTask = useCallback((taskMode: DesktopComposerTaskMode) => {
     if (dictationEnabledRef.current) stopDictation(false)
+    if (routedNewSession) {
+      onRoutedWorktreeRequestedChange?.(true)
+      if (typeof window !== 'undefined') {
+        window.requestAnimationFrame(() => textareaRef.current?.focus())
+      }
+      return
+    }
     setPrimedTaskMode(taskMode)
     if (typeof window === 'undefined') return
     window.requestAnimationFrame(() => {
@@ -586,19 +622,20 @@ export function DesktopV3AgenticComposer({
       textarea.setSelectionRange(cursorPosition, cursorPosition)
       resizeTextareaElement(textarea)
     })
-  }, [resizeTextareaElement, stopDictation])
+  }, [onRoutedWorktreeRequestedChange, resizeTextareaElement, routedNewSession, stopDictation])
 
   const handleSubmitClick = useCallback(async () => {
     if (uploadingAttachment) {
       setAttachmentError('Wait for all attachments to finish uploading before sending the message.')
       return
     }
+    if (routedNewSession && routedSubmissionRef.current) return
     const rawDraft = textareaRef.current?.value ?? dictationComposer
     const textAttachmentDraft = textAttachments.reduce(
       (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
       rawDraft,
     )
-    const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
+    const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 || routedStagedAttachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
     const skillInstruction = selectedWorkspaceSkill
       ? `Use the skill-use tool to load "${selectedWorkspaceSkill.canonicalName}" before executing this request.`
       : ''
@@ -610,6 +647,33 @@ export function DesktopV3AgenticComposer({
       : primedTaskMode === 'action'
         ? `/task ${visibleDraft}`
         : visibleDraft
+    if (routedNewSession && onRoutedSubmit) {
+      routedSubmissionRef.current = true
+      const routedSnapshot = {
+        prompt: submittedDraft,
+        attachments: desktopComposerStagedMediaInput(routedStagedAttachments),
+        selectedAction: selectedWorkspaceAction,
+        selectedSkill: selectedWorkspaceSkill,
+        worktreePrimed: routedWorktreeRequested,
+      }
+      let routedSubmit: Promise<DesktopV3RoutedNewSessionState>
+      try {
+        routedSubmit = onRoutedSubmit(routedSnapshot)
+      } catch (cause) {
+        routedSubmissionRef.current = false
+        setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
+        return
+      }
+      clearComposerForSubmit()
+      setSelectedWorkspaceAction(null)
+      void routedSubmit.then((state) => {
+        if (state.phase === 'failed') routedSubmissionRef.current = false
+      }).catch((cause) => {
+        routedSubmissionRef.current = false
+        setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
+      })
+      return
+    }
     await submitDesktopComposer({
       draft: submittedDraft,
       canStop,
@@ -619,7 +683,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit, primedTaskMode, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
+  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -718,12 +782,55 @@ export function DesktopV3AgenticComposer({
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
-    if (routedNewSession) {
-      setAttachmentError('Attachments will be available after routed staging is connected.')
-      return
-    }
     if (uploadingAttachment) {
       setAttachmentError('Wait for the current attachment batch to finish before adding more files.')
+      return
+    }
+    if (routedNewSession) {
+      const routedTextFiles = files.filter(isComposerTextFile)
+      const routedMediaFiles = files.filter((file) => !isComposerTextFile(file))
+      if (textAttachments.length + routedTextFiles.length > DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT) {
+        setAttachmentError(`Add at most ${DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT} text or code files per message.`)
+        return
+      }
+      const existingTextBytes = textAttachments.reduce((total, item) => total + item.size, 0)
+      const routedTextBytes = routedTextFiles.reduce((total, file) => total + file.size, 0)
+      const draftBytes = new TextEncoder().encode(draft).byteLength
+      if (draftBytes + existingTextBytes + routedTextBytes > DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES) {
+        setAttachmentError('The message and selected text/code files exceed the 4 MB combined limit.')
+        return
+      }
+      if (routedMediaFiles.length > 0 && !onRoutedStageAttachments) {
+        setAttachmentError('Pre-session attachment staging is unavailable.')
+        return
+      }
+      setAttachmentError(null)
+      setUploadingAttachment(true)
+      const controller = new AbortController()
+      uploadAbortRef.current = controller
+      try {
+        const pendingTextAttachments = await Promise.all(routedTextFiles.map(async (file) => {
+          textAttachmentSequenceRef.current += 1
+          return {
+            id: textAttachmentSequenceRef.current,
+            name: file.name.trim() || 'attachment.txt',
+            fileType: composerFileType(file),
+            size: file.size,
+            content: await file.text(),
+          } satisfies DesktopComposerTextAttachment
+        }))
+        if (routedMediaFiles.length > 0) {
+          await onRoutedStageAttachments!(routedMediaFiles, controller.signal)
+        }
+        if (pendingTextAttachments.length > 0) {
+          setTextAttachments((current) => [...current, ...pendingTextAttachments])
+        }
+      } catch (error) {
+        setAttachmentError(error instanceof Error ? error.message : 'Attachment staging failed.')
+      } finally {
+        if (uploadAbortRef.current === controller) uploadAbortRef.current = null
+        setUploadingAttachment(false)
+      }
       return
     }
     const admissions = files.map((file) => ({ file, admission: admitComposerFile(file, effectiveMediaCapability) }))
@@ -787,7 +894,7 @@ export function DesktopV3AgenticComposer({
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null
       setUploadingAttachment(false)
     }
-  }, [attachments.length, draft, effectiveMediaCapability, mediaCapability?.denial_reasons, onUploadAttachment, routedNewSession, textAttachments, uploadingAttachment])
+  }, [attachments.length, draft, effectiveMediaCapability, mediaCapability?.denial_reasons, onRoutedStageAttachments, onUploadAttachment, routedNewSession, textAttachments, uploadingAttachment])
 
   useEffect(() => {
     const dropZone = composerRootRef.current?.closest<HTMLElement>('[data-desktop-chat-drop-zone]') ?? null
@@ -997,7 +1104,7 @@ export function DesktopV3AgenticComposer({
               />
             </div>
           </div>
-          {attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
+          {attachments.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
             <div className="flex flex-wrap gap-2 border-t border-[var(--app-border)] px-4 py-2" data-testid="desktop-media-attachments">
               {selectedWorkspaceSkill ? (
                 <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-selected-skill">
@@ -1007,6 +1114,14 @@ export function DesktopV3AgenticComposer({
                   <button type="button" aria-label={`Remove ${selectedWorkspaceSkill.name} skill`} onClick={() => setSelectedWorkspaceSkill(null)}><X size={13} /></button>
                 </span>
               ) : null}
+              {routedStagedAttachments.map((attachment) => (
+                <span key={attachment.stagingId} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
+                  <FileImage size={13} aria-hidden="true" />
+                  <span className="max-w-48 truncate">{attachment.name}</span>
+                  <span className="text-[var(--app-text-muted)]">{Math.ceil(attachment.size / 1024)} KB</span>
+                  {onRoutedRemoveStagedAttachment ? <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => onRoutedRemoveStagedAttachment(attachment.stagingId)}><X size={13} /></button> : null}
+                </span>
+              ))}
               {attachments.map((attachment, index) => (
                 <span key={`${attachment.asset_id}:${index}`} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
                   <FileImage size={13} aria-hidden="true" />
@@ -1033,13 +1148,13 @@ export function DesktopV3AgenticComposer({
             </div>
           ) : null}
           <div className="flex min-w-0 items-center gap-2 overflow-visible bg-transparent px-4 py-3 text-[11px]" data-composer-bottom-row>
-            {effectiveMediaCapability ? (
+            {effectiveMediaCapability || (routedNewSession && onRoutedStageAttachments) ? (
               <input
                 ref={fileInputRef}
                 type="file"
                 hidden
                 multiple
-                accept={effectiveMediaCapability.capabilities.flatMap((capability) => [
+                accept={effectiveMediaCapability?.capabilities.flatMap((capability) => [
                   ...(capability.mime_types ?? []),
                   ...(capability.file_types ?? []).map((fileType) => `.${fileType.replace(/^\./, '')}`),
                 ]).join(',')}
@@ -1049,8 +1164,8 @@ export function DesktopV3AgenticComposer({
             <DesktopComposerActionMenu
               disabled={composerDisabled}
               onPrimeTask={handlePrimeTask}
-              onAttach={routedNewSession ? undefined : effectiveMediaCapability ? () => fileInputRef.current?.click() : undefined}
-              attachDisabled={routedNewSession || !effectiveMediaCapability || composerDisabled || uploadingAttachment}
+              onAttach={routedNewSession ? (onRoutedStageAttachments ? () => fileInputRef.current?.click() : undefined) : effectiveMediaCapability ? () => fileInputRef.current?.click() : undefined}
+              attachDisabled={(routedNewSession ? !onRoutedStageAttachments : !effectiveMediaCapability) || composerDisabled || uploadingAttachment}
               attaching={uploadingAttachment}
               contextLabel={contextLabel}
               contextTooltip={contextTooltip}
@@ -1061,6 +1176,9 @@ export function DesktopV3AgenticComposer({
               onSkillSelect={setSelectedWorkspaceSkill}
             />
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
+            {routedNewSession && onRoutedWorktreeRequestedChange ? (
+              <DesktopRoutedWorktreePrime requested={routedWorktreeRequested} onRequestedChange={onRoutedWorktreeRequestedChange} disabled={composerDisabled || uploadingAttachment} />
+            ) : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : !routedNewSession && showModePicker ? (
