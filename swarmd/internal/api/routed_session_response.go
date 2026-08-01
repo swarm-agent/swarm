@@ -59,6 +59,10 @@ func sessionsV3SessionIdentityFromSnapshot(session pebblestore.SessionSnapshot) 
 		strings.TrimSpace(session.WorktreeRootPath),
 		strings.TrimSpace(session.WorkspacePath),
 	)
+	requestedWorktreeName := ""
+	if session.WorktreeEnabled {
+		requestedWorktreeName = sessionsV3MetadataString(session.Metadata, "routed_worktree_name")
+	}
 	return sessionsV3SessionIdentity{
 		SessionID:            strings.TrimSpace(session.ID),
 		Title:                strings.TrimSpace(session.Title),
@@ -71,7 +75,7 @@ func sessionsV3SessionIdentityFromSnapshot(session pebblestore.SessionSnapshot) 
 		RuntimeSwarmID:       sessionsV3MetadataString(session.Metadata, "swarm_v3_runtime_swarm_id"),
 		AuthorityHostSwarmID: sessionsV3MetadataString(session.Metadata, "swarm_v3_authority_host_swarm_id"),
 		WorktreeEnabled:        session.WorktreeEnabled,
-		RequestedWorktreeName: sessionsV3MetadataString(session.Metadata, "routed_worktree_name"),
+		RequestedWorktreeName: requestedWorktreeName,
 		WorktreeRootPath:       strings.TrimSpace(session.WorktreeRootPath),
 		WorktreeBaseBranch:     strings.TrimSpace(session.WorktreeBaseBranch),
 		WorktreeBranch:         strings.TrimSpace(session.WorktreeBranch),

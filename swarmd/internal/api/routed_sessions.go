@@ -626,6 +626,10 @@ func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot
 		candidate.Metadata = make(map[string]any)
 	}
 	routerName = strings.TrimSpace(routerName)
+	finalRequestedName = strings.TrimSpace(finalRequestedName)
+	if finalRequestedName == "" {
+		finalRequestedName = routerName
+	}
 	candidate.WorkspacePath = strings.TrimSpace(allocation.WorkspacePath)
 	candidate.WorktreeEnabled = true
 	candidate.WorktreeRootPath = strings.TrimSpace(allocation.WorkspacePath)
@@ -635,13 +639,10 @@ func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot
 	candidate.Metadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(sourceWorkspacePath)
 	candidate.Metadata["swarm_v3_source_workspace_name"] = strings.TrimSpace(candidate.WorkspaceName)
 	candidate.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
-	finalRequestedName = strings.TrimSpace(finalRequestedName)
-	candidate.Metadata["routed_worktree_name"] = routerName
+	candidate.Metadata["routed_worktree_name"] = finalRequestedName
 	candidate.Metadata["routed_worktree_original_name"] = routerName
 	candidate.Metadata["routed_worktree_requested_name"] = finalRequestedName
-	candidate.Metadata["routed_worktree_final_requested_name"] = finalRequestedName
 	candidate.Metadata["routed_worktree_branch"] = strings.TrimSpace(allocation.BranchName)
-	candidate.Metadata["routed_worktree_final_branch"] = strings.TrimSpace(allocation.BranchName)
 	if baseCommit := strings.TrimSpace(allocation.BaseCommit); baseCommit != "" {
 		candidate.Metadata["base_commit"] = baseCommit
 	}

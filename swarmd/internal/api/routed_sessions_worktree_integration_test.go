@@ -168,17 +168,21 @@ func TestApplyRoutedSessionWorktreeAllocationPreservesSourceAndRecordsFacts(t *t
 	if candidate.WorkspacePath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeRootPath != allocation.WorkspacePath || candidate.WorktreeBaseBranch != "dev" || candidate.WorktreeBranch != "router/fix-api-1" {
 		t.Fatalf("candidate worktree facts = %+v", candidate)
 	}
+	for _, legacyKey := range []string{"routed_worktree_final_requested_name", "routed_worktree_final_branch"} {
+		if _, ok := candidate.Metadata[legacyKey]; ok {
+			t.Fatalf("legacy metadata %q remains: %+v", legacyKey, candidate.Metadata)
+		}
+	}
 	want := map[string]any{
-		"swarm_v3_source_workspace_path":      "/source/repo",
-		"swarm_v3_runtime_workspace_path":     allocation.WorkspacePath,
-		"routed_worktree_original_name":       "Fix API",
-		"routed_worktree_requested_name":       "Fix API (1)",
-		"routed_worktree_final_requested_name": "Fix API (1)",
-		"routed_worktree_branch":               "router/fix-api-1",
-		"routed_worktree_final_branch":         "router/fix-api-1",
-		"workspace_id":                         "router-fix-api-1",
-		"base_commit":                          "abc123",
-		"existing":                             true,
+		"swarm_v3_source_workspace_path":  "/source/repo",
+		"swarm_v3_runtime_workspace_path": allocation.WorkspacePath,
+		"routed_worktree_name":            "Fix API (1)",
+		"routed_worktree_original_name":   "Fix API",
+		"routed_worktree_requested_name":  "Fix API (1)",
+		"routed_worktree_branch":          "router/fix-api-1",
+		"workspace_id":                    "router-fix-api-1",
+		"base_commit":                     "abc123",
+		"existing":                        true,
 	}
 	for key, value := range want {
 		if candidate.Metadata[key] != value {

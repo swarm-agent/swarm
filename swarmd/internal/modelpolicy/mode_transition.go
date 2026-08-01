@@ -144,44 +144,26 @@ func ResolveModeTransition(session pebblestore.SessionSnapshot, activeProfile pe
 	}, nil
 }
 
-func agentProfileHasModePolicy(profile pebblestore.AgentProfile, mode string) bool {
-	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
-		if mode == sessionruntime.ModePlan {
-			return strings.TrimSpace(profile.PlanProvider) != "" && strings.TrimSpace(profile.PlanModel) != ""
-		}
-		return strings.TrimSpace(profile.AutoProvider) != "" && strings.TrimSpace(profile.AutoModel) != ""
-	}
+func agentProfileHasModePolicy(profile pebblestore.AgentProfile, _ string) bool {
 	return strings.TrimSpace(profile.Provider) != "" && strings.TrimSpace(profile.Model) != ""
 }
 
-func agentPreferenceForMode(base pebblestore.ModelPreference, profile pebblestore.AgentProfile, mode string) (pebblestore.ModelPreference, string, string, bool) {
+func agentPreferenceForMode(base pebblestore.ModelPreference, profile pebblestore.AgentProfile, _ string) (pebblestore.ModelPreference, string, string, bool) {
 	provider := strings.ToLower(strings.TrimSpace(profile.Provider))
 	model := strings.TrimSpace(profile.Model)
-	thinking := strings.TrimSpace(profile.Thinking)
-	serviceTier := strings.TrimSpace(profile.AutoServiceTier)
-	source := "agent_preset"
-	reason := "Agent model is set in agent settings; update the agent model in agent settings to choose a different model."
-	if pebblestore.AgentModelMode(profile) == "split" && pebblestore.AgentSupportsSplitModel(profile) {
-		if mode == sessionruntime.ModePlan {
-			provider, model, thinking, serviceTier = strings.ToLower(strings.TrimSpace(profile.PlanProvider)), strings.TrimSpace(profile.PlanModel), strings.TrimSpace(profile.PlanThinking), strings.TrimSpace(profile.PlanServiceTier)
-			source = "agent_plan_preset"
-			reason = "Agent plan model is set in agent settings; exit plan mode uses the configured auto model."
-		} else {
-			provider, model, thinking, serviceTier = strings.ToLower(strings.TrimSpace(profile.AutoProvider)), strings.TrimSpace(profile.AutoModel), strings.TrimSpace(profile.AutoThinking), strings.TrimSpace(profile.AutoServiceTier)
-			source = "agent_auto_preset"
-			reason = "Agent auto model is set in agent settings; enter plan mode uses the configured plan model."
-		}
-	}
 	if provider == "" || model == "" {
 		return base, "default", "", false
 	}
 	base.Provider, base.Model = provider, model
-	if thinking != "" {
+	if thinking := strings.TrimSpace(profile.Thinking); thinking != "" {
 		base.Thinking = thinking
 	}
-	base.ServiceTier = serviceTier
+	base.ServiceTier = strings.TrimSpace(profile.AutoServiceTier)
+	if contextMode := strings.TrimSpace(profile.ContextMode); contextMode != "" {
+		base.ContextMode = contextMode
+	}
 	base.UpdatedAt = profile.UpdatedAt
-	return base, source, reason, true
+	return base, "agent_preset", "Agent model is set in agent settings; update the agent model in agent settings to choose a different model.", true
 }
 
 func modelProfilePreference(profile pebblestore.SessionModelProfileSnapshot, mode string) (pebblestore.ModelPreference, error) {

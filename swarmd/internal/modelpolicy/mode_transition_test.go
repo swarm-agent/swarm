@@ -23,10 +23,7 @@ func TestResolveModeTransitionUsesSnapshotActionOnRepeatedExit(t *testing.T) {
 		Plan:             &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-snapshot", Thinking: "high"},
 		AppliedAt:        42,
 	}
-	profile := pebblestore.AgentProfile{
-		Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split",
-		AutoProvider: "codex", AutoModel: "mutable-action-v1", PlanProvider: "codex", PlanModel: "mutable-plan-v1",
-	}
+	profile := pebblestore.AgentProfile{Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), Provider: "codex", Model: "mutable-model-v1"}
 	session := pebblestore.SessionSnapshot{
 		Mode:         sessionruntime.ModePlan,
 		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: "plan-snapshot"},
@@ -45,8 +42,8 @@ func TestResolveModeTransitionUsesSnapshotActionOnRepeatedExit(t *testing.T) {
 
 	// A repeated exit must remain bound to the immutable session snapshot even
 	// if mutable agent/account policy has changed since session creation.
-	profile.AutoModel = "mutable-action-v2"
-	profile.AutoThinking = "low"
+	profile.Model = "mutable-model-v2"
+	profile.Thinking = "low"
 	session.Preference = pebblestore.ModelPreference{Provider: "codex", Model: "stale-plan"}
 	second, err := ResolveModeTransition(session, profile, sessionruntime.ModeAuto, resolve)
 	if err != nil {
@@ -100,10 +97,7 @@ func TestResolveModeTransitionRejectsDisabledSnapshotPlan(t *testing.T) {
 		},
 		Metadata: map[string]any{"agent_name": "swarm"},
 	}
-	activeProfile := pebblestore.AgentProfile{
-		Name: "swarm", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split",
-		PlanProvider: "codex", PlanModel: "mutable-plan-fallback",
-	}
+	activeProfile := pebblestore.AgentProfile{Name: "swarm", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), Provider: "codex", Model: "mutable-fallback"}
 	_, err := ResolveModeTransition(session, activeProfile, sessionruntime.ModePlan, func(preference pebblestore.ModelPreference) (ResolvedPreference, error) {
 		resolverCalled = true
 		return ResolvedPreference{Preference: preference}, nil
@@ -116,10 +110,10 @@ func TestResolveModeTransitionRejectsDisabledSnapshotPlan(t *testing.T) {
 	}
 }
 
-func TestResolveModeTransitionPreservesNonSnapshotAgentFallback(t *testing.T) {
+func TestResolveModeTransitionPreservesFlatAgentFallback(t *testing.T) {
 	profile := pebblestore.AgentProfile{
-		Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split",
-		AutoProvider: "codex", AutoModel: "fallback-action", AutoThinking: "medium", AutoServiceTier: "fast", UpdatedAt: 10,
+		Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+		Provider: "codex", Model: "fallback-model", Thinking: "medium", AutoServiceTier: "fast", ContextMode: "compact", UpdatedAt: 10,
 	}
 	session := pebblestore.SessionSnapshot{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "old"}, Metadata: map[string]any{"agent_name": "custom"}}
 	transition, err := ResolveModeTransition(session, profile, sessionruntime.ModeAuto, func(preference pebblestore.ModelPreference) (ResolvedPreference, error) {
@@ -128,8 +122,8 @@ func TestResolveModeTransitionPreservesNonSnapshotAgentFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transition.Preference.Model != "fallback-action" || transition.AgentModelPolicy.Source != "agent_auto_preset" || !transition.AgentModelPolicy.Locked {
-		t.Fatalf("non-snapshot fallback = %#v", transition)
+	if transition.Preference.Model != "fallback-model" || transition.Preference.ContextMode != "compact" || transition.AgentModelPolicy.Source != "agent_preset" || !transition.AgentModelPolicy.Locked {
+		t.Fatalf("flat agent fallback = %#v", transition)
 	}
 }
 

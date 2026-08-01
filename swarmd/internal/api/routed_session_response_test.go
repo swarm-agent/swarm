@@ -101,6 +101,7 @@ func TestSessionsV3SessionIdentityReportsOnlyPersistedWorktreeFacts(t *testing.T
 		Metadata: map[string]any{
 			"swarm_v3_source_workspace_path":  "/source/workspace",
 			"swarm_v3_runtime_workspace_path": "/runtime/workspace",
+			"routed_worktree_name":             "phantom",
 		},
 	})
 	if err != nil {
