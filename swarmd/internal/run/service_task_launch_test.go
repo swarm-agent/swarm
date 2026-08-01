@@ -1542,6 +1542,7 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	if _, _, err := svc.sessions.UpdateMetadata(parentSessionID, metadata); err != nil {
 		t.Fatalf("update parent metadata: %v", err)
 	}
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
 	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
 		"prompt": "implement independent scope", "launches": []any{map[string]any{"subagent_type": "coder", "meta_prompt": "implement backend"}},
 	})})
@@ -1557,8 +1558,11 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	if !slices.Equal(manifest.Launches[0].OwnedScope, []string{"."}) {
 		t.Fatalf("Coder manifest owned scope = %#v, want canonical whole-worktree scope", manifest.Launches[0].OwnedScope)
 	}
-	if manifest.Launches[0].ProfileSnapshot.Provider != "codex" || manifest.Launches[0].ProfileSnapshot.Model != "swarm-auto-model" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "priority" {
-		t.Fatalf("Coder did not inherit active Swarm auto preference and service tier: %#v", manifest.Launches[0])
+	if manifest.Launches[0].ProfileSnapshot.Provider != "parent-provider" || manifest.Launches[0].ProfileSnapshot.Model != "parent-model" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "" {
+		t.Fatalf("Coder did not inherit the immutable parent Action preference: %#v", manifest.Launches[0])
+	}
+	if manifest.Launches[0].ModelProfileSnapshot == nil || manifest.Launches[0].ModelProfileSnapshot.Action.Model != "parent-model" || manifest.Launches[0].ModelProfileSnapshot.Plan == nil || manifest.Launches[0].ModelProfileSnapshot.Plan.Model != "parent-plan-model" {
+		t.Fatalf("Coder manifest omitted the complete immutable parent model profile: %#v", manifest.Launches[0])
 	}
 	coderTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
 	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
@@ -1656,11 +1655,24 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		}
 	}
 	sourceName := strings.TrimSpace(parentProfile.Name)
-	provider := firstNonEmptyString(parentProfile.AutoProvider, parentSession.Preference.Provider, parentProfile.Provider)
-	modelName := firstNonEmptyString(parentProfile.AutoModel, parentSession.Preference.Model, parentProfile.Model)
-	thinking := firstNonEmptyString(parentProfile.AutoThinking, parentSession.Preference.Thinking, parentProfile.Thinking)
-	serviceTier := firstNonEmptyString(parentProfile.AutoServiceTier, parentSession.Preference.ServiceTier)
-	if s.uiSettings != nil {
+	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, parentProfile, childMode)
+	if parentSession.ModelProfile != nil {
+		modelProfile, profileErr := inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
+		if profileErr != nil {
+			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder parent model profile: %w", profileErr)
+		}
+		preference, profileErr = manageSessionsDeployModelProfilePreference(modelProfile, childMode)
+		if profileErr != nil {
+			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder parent model preference: %w", profileErr)
+		}
+	} else if strings.EqualFold(sourceName, agentruntime.SwarmAgentID) {
+		return pebblestore.AgentProfile{}, true, sourceName, errors.New("Coder launch from Swarm requires the parent immutable model profile")
+	}
+	provider := strings.TrimSpace(preference.Provider)
+	modelName := strings.TrimSpace(preference.Model)
+	thinking := strings.TrimSpace(preference.Thinking)
+	serviceTier := strings.TrimSpace(preference.ServiceTier)
+	if parentSession.ModelProfile == nil && s.uiSettings != nil {
 		if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(parentSession.AccountScopeID)); settingsErr == nil {
 			override := settings.Agents.Coder
 			if strings.TrimSpace(override.Provider) != "" {
@@ -1682,6 +1694,7 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		Model:           modelName,
 		Thinking:        thinking,
 		AutoServiceTier: serviceTier,
+		ContextMode:     strings.TrimSpace(preference.ContextMode),
 	})
 	if err != nil {
 		return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("resolve compiled Coder: %w", err)
@@ -1783,8 +1796,10 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		}
 		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, disabledTools, executionMode)
 		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
+		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
+		var profileErr error
 		if parentSession.ModelProfile != nil {
-			modelProfile, profileErr := inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
+			modelProfile, profileErr = inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
 			if profileErr != nil {
 				return taskLaunchManifest{}, fmt.Errorf("task launches[%d] model profile: %w", i, profileErr)
 			}
@@ -1826,7 +1841,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			SourceProfileMode:    strings.TrimSpace(subagentProfile.Mode),
 			InheritedRuntimeMode: pebblestore.AgentProfileRuntimeMode(subagentProfile),
 			ProfileSnapshot:      &subagentProfile,
-			ModelProfileSnapshot: cloneManageSessionsDeployModelProfile(parentSession.ModelProfile),
+			ModelProfileSnapshot: cloneManageSessionsDeployModelProfile(modelProfile),
 		})
 	}
 	if len(launches) == 0 {
