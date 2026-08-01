@@ -428,6 +428,70 @@ func TestAgentsModalEmptyProviderAndModelPickersPreselectFirstOption(t *testing.
 	}
 }
 
+func TestAgentsModalProfileSaveSwitchesChangedSelectionAndDQueuesDefault(t *testing.T) {
+	newPage := func() *HomePage {
+		page := NewHomePage(model.EmptyHome())
+		page.ShowAgentsModal()
+		page.SetAgentsModalData(AgentsModalData{
+			Profiles: []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true}},
+			ModelProfiles: []client.ModelProfile{
+				{ProfileID: "default", Name: "Default", ModelMode: "single", Single: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-default"}},
+				{ProfileID: "selected", Name: "Selected", ModelMode: "single", Single: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-selected"}},
+			},
+			DefaultModelProfileID: "default",
+			ActiveModelProfileID:  "default",
+		})
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+		field := page.findAgentsModalEditorField(page.agentsModal.Editor, "model_profile")
+		if field == nil {
+			t.Fatal("profile field missing")
+		}
+		field.Value = "selected"
+		return page
+	}
+
+	defaultPage := newPage()
+	defaultPage.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'd', tcell.ModNone))
+	defaultAction, ok := defaultPage.PopAgentsModalAction()
+	if !ok || defaultAction.Kind != AgentsModalActionSetProfileDefault || defaultAction.ModelProfileID != "selected" {
+		t.Fatalf("D action = %#v, want account-default action for selected profile", defaultAction)
+	}
+	if !defaultPage.AgentsModalVisible() {
+		t.Fatal("D closed the modal before the default operation completed")
+	}
+
+	switchPage := newPage()
+	switchPage.HandleKey(tcell.NewEventKey(tcell.KeyCtrlY, 0, tcell.ModCtrl))
+	switchAction, ok := switchPage.PopAgentsModalAction()
+	if !ok || switchAction.Kind != AgentsModalActionUpsert || switchAction.Upsert == nil || switchAction.ModelProfileID != "selected" {
+		t.Fatalf("Ctrl+Y action = %#v, want save action carrying changed profile selection", switchAction)
+	}
+	if !switchPage.AgentsModalVisible() {
+		t.Fatal("Ctrl+Y closed the modal before save and switch succeeded")
+	}
+}
+
+func TestAgentsModalProfileDirectionsWrapAndRemainComplete(t *testing.T) {
+	const width = 36
+	lines := agentsModalProfileDirectionLines(width)
+	if len(lines) < 2 {
+		t.Fatalf("profile directions did not wrap at width %d: %#v", width, lines)
+	}
+	for _, line := range lines {
+		if got := len([]rune(line)); got > width {
+			t.Fatalf("wrapped profile direction %q is %d runes wide, want at most %d", line, got, width)
+		}
+	}
+	if got := strings.Join(lines, " "); got != agentsModalProfileDirections {
+		t.Fatalf("wrapped profile directions = %q, want complete text %q", got, agentsModalProfileDirections)
+	}
+	for _, want := range []string{"Profile directions:", "Enter selects a profile", "D sets account default", "Ctrl+Y saves and switches a changed profile"} {
+		if !strings.Contains(agentsModalProfileDirections, want) {
+			t.Fatalf("profile directions missing %q: %q", want, agentsModalProfileDirections)
+		}
+	}
+}
+
 func TestAgentsModalCompiledSubagentDisplayNames(t *testing.T) {
 	for input, want := range map[string]string{
 		"system-clone":    "Coder",

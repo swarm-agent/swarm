@@ -5330,7 +5330,7 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 	case ui.HomeActionOpenProfilesModal:
 		a.openProfilesModal()
 	case ui.HomeActionSelectModelProfile:
-		a.selectHomeModelProfile(action.ModelProfileID)
+		_ = a.selectHomeModelProfile(action.ModelProfileID)
 	case ui.HomeActionRefreshCodexUsage:
 		a.refreshHomeCodexAccount()
 	case ui.HomeActionConsumeCodexReset:
@@ -5879,6 +5879,19 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
 		a.refreshAgentsModalData("model profile created: " + emptyFallback(strings.TrimSpace(profile.Name), profile.ProfileID))
 		a.queueReload(false)
+	case ui.AgentsModalActionSwitchProfile:
+		profileID := strings.TrimSpace(action.ModelProfileID)
+		if profileID == "" {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError("profile id is required")
+			return
+		}
+		if err := a.selectHomeModelProfile(profileID); err != nil {
+			a.home.SetAgentsModalLoading(false)
+			a.home.SetAgentsModalError(fmt.Sprintf("switch profile failed: %v", err))
+			return
+		}
+		a.home.HideAgentsModal()
 	case ui.AgentsModalActionSetProfileDefault:
 		profileID := strings.TrimSpace(action.ModelProfileID)
 		if profileID == "" {
@@ -5901,7 +5914,7 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 			a.queueReload(false)
 			return
 		}
-		a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
+		a.applyHomeModel(refreshHomeModelProfiles(a.currentHomeModel(), state))
 		label := emptyFallback(strings.TrimSpace(profile.Name), profileID)
 		a.refreshAgentsModalData("account default profile: " + label)
 		a.queueReload(false)
@@ -6019,6 +6032,16 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 				a.home.SetAgentsModalError(fmt.Sprintf("save %s model failed: %v", label, err))
 				return
 			}
+			if profileID := strings.TrimSpace(action.ModelProfileID); profileID != "" {
+				if err := a.selectHomeModelProfile(profileID); err != nil {
+					a.home.SetAgentsModalLoading(false)
+					a.home.SetAgentsModalError(fmt.Sprintf("model settings saved, but switch profile failed: %v", err))
+					return
+				}
+				a.home.HideAgentsModal()
+				a.queueReload(false)
+				return
+			}
 			a.home.SetAgentsModalStatus(label + " single-model settings saved")
 			a.refreshAgentsModalData("")
 			a.queueReload(false)
@@ -6063,6 +6086,16 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		if err != nil {
 			a.home.SetAgentsModalLoading(false)
 			a.home.SetAgentsModalError(fmt.Sprintf("save agent failed: %v", err))
+			return
+		}
+		if profileID := strings.TrimSpace(action.ModelProfileID); profileID != "" {
+			if err := a.selectHomeModelProfile(profileID); err != nil {
+				a.home.SetAgentsModalLoading(false)
+				a.home.SetAgentsModalError(fmt.Sprintf("agent saved, but switch profile failed: %v", err))
+				return
+			}
+			a.home.HideAgentsModal()
+			a.queueReload(false)
 			return
 		}
 		a.home.SetAgentsModalStatus(fmt.Sprintf("agent saved: %s (%s)", profile.Name, profile.Mode))
@@ -9362,45 +9395,53 @@ func applyHomeModelResolved(next model.HomeModel, resolved client.ModelResolved)
 	return next
 }
 
-func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
+func refreshHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
 	next.ModelProfiles = append([]client.ModelProfile(nil), state.Profiles...)
 	next.DefaultModelProfileID = strings.TrimSpace(state.DefaultProfileID)
+	return next
+}
+
+func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
+	next = refreshHomeModelProfiles(next, state)
 	next.ActiveModelProfile = model.ActiveModelProfile{Source: "agent-default"}
 	if next.DefaultModelProfileID == "" {
 		return next
 	}
 	for _, profile := range next.ModelProfiles {
-		if strings.TrimSpace(profile.ProfileID) != next.DefaultModelProfileID {
-			continue
+		if strings.TrimSpace(profile.ProfileID) == next.DefaultModelProfileID {
+			return applyHomeModelProfile(next, profile)
 		}
-		next.ActiveModelProfile = model.ActiveModelProfile{
-			Source:    "saved",
-			ProfileID: strings.TrimSpace(profile.ProfileID),
-			Name:      strings.TrimSpace(profile.Name),
-			ModelMode: strings.TrimSpace(profile.ModelMode),
+	}
+	return next
+}
+
+func applyHomeModelProfile(next model.HomeModel, profile client.ModelProfile) model.HomeModel {
+	next.ActiveModelProfile = model.ActiveModelProfile{
+		Source:    "saved",
+		ProfileID: strings.TrimSpace(profile.ProfileID),
+		Name:      strings.TrimSpace(profile.Name),
+		ModelMode: strings.TrimSpace(profile.ModelMode),
+	}
+	applySelection := func(selection *client.ModelProfileSelection) (string, string, string, string, string) {
+		if selection == nil {
+			return "", "", "", "", ""
 		}
-		if strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
-			applySelection := func(selection *client.ModelProfileSelection) (string, string, string, string, string) {
-				if selection == nil {
-					return "", "", "", "", ""
-				}
-				return strings.TrimSpace(selection.Provider), strings.TrimSpace(selection.Model), strings.TrimSpace(selection.Thinking), strings.TrimSpace(selection.ServiceTier), strings.TrimSpace(selection.ContextMode)
-			}
-			next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = applySelection(profile.Plan)
-			next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = applySelection(profile.Auto)
-		} else if profile.Single != nil {
-			next.ModelProvider = strings.TrimSpace(profile.Single.Provider)
-			next.ModelName = strings.TrimSpace(profile.Single.Model)
-			next.ThinkingLevel = strings.TrimSpace(profile.Single.Thinking)
-			next.ServiceTier = strings.TrimSpace(profile.Single.ServiceTier)
-			next.ContextMode = strings.TrimSpace(profile.Single.ContextMode)
-			next.PlanModelProvider, next.AutoModelProvider = next.ModelProvider, next.ModelProvider
-			next.PlanModelName, next.AutoModelName = next.ModelName, next.ModelName
-			next.PlanThinkingLevel, next.AutoThinkingLevel = next.ThinkingLevel, next.ThinkingLevel
-			next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
-			next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
-		}
-		break
+		return strings.TrimSpace(selection.Provider), strings.TrimSpace(selection.Model), strings.TrimSpace(selection.Thinking), strings.TrimSpace(selection.ServiceTier), strings.TrimSpace(selection.ContextMode)
+	}
+	if strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+		next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = applySelection(profile.Plan)
+		next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = applySelection(profile.Auto)
+	} else if profile.Single != nil {
+		next.ModelProvider = strings.TrimSpace(profile.Single.Provider)
+		next.ModelName = strings.TrimSpace(profile.Single.Model)
+		next.ThinkingLevel = strings.TrimSpace(profile.Single.Thinking)
+		next.ServiceTier = strings.TrimSpace(profile.Single.ServiceTier)
+		next.ContextMode = strings.TrimSpace(profile.Single.ContextMode)
+		next.PlanModelProvider, next.AutoModelProvider = next.ModelProvider, next.ModelProvider
+		next.PlanModelName, next.AutoModelName = next.ModelName, next.ModelName
+		next.PlanThinkingLevel, next.AutoThinkingLevel = next.ThinkingLevel, next.ThinkingLevel
+		next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
+		next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
 	}
 	return next
 }

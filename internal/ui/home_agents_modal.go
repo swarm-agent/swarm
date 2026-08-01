@@ -73,6 +73,7 @@ const (
 	AgentsModalActionCreateModelProfile AgentsModalActionKind = "create-model-profile"
 	AgentsModalActionDelete             AgentsModalActionKind = "delete"
 	AgentsModalActionSetProfileDefault  AgentsModalActionKind = "set-profile-default"
+	AgentsModalActionSwitchProfile      AgentsModalActionKind = "switch-profile"
 )
 
 type AgentsModalUpsert struct {
@@ -371,17 +372,28 @@ func agentsModalEditorHasPendingChanges(editor *agentsModalEditor) bool {
 		initialByKey[field.Key] = field.Value
 	}
 	for _, current := range editor.Fields {
-		if current.Key == "model_profile" {
-			continue
-		}
 		initial, ok := initialByKey[current.Key]
 		if !ok || current.Value != initial {
 			return true
 		}
 		delete(initialByKey, current.Key)
 	}
-	delete(initialByKey, "model_profile")
 	return len(initialByKey) != 0
+}
+
+func (p *HomePage) agentsModalEditorProfileSwitch(editor *agentsModalEditor) (string, bool) {
+	if p == nil || editor == nil {
+		return "", false
+	}
+	selected := ""
+	for _, field := range editor.Fields {
+		if field.Key == "model_profile" {
+			selected = strings.TrimSpace(field.Value)
+			break
+		}
+	}
+	active := strings.TrimSpace(p.agentsModal.ActiveModelProfileID)
+	return selected, selected != "" && selected != active
 }
 
 func (p *HomePage) agentsModalEditorSaveLabel() string {
@@ -1085,6 +1097,14 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		p.agentsModal.Focus = agentsModalFocusProfiles
 		p.agentsModal.Status = "back to agent list"
 		return
+	case !editor.Editing && p.keybinds.Match(ev, KeybindAgentsProfileDefault):
+		field := p.findAgentsModalEditorField(editor, "model_profile")
+		if field == nil {
+			p.agentsModal.Status = "select a saved Profile before setting the account default"
+			return
+		}
+		p.queueAgentsModalProfileDefault(field.Value)
+		return
 	case p.keybinds.Match(ev, KeybindAgentsEditorSave):
 		if editor.Editing {
 			editor.Editing = false
@@ -1095,6 +1115,10 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 		if !agentsModalEditorHasPendingChanges(editor) {
 			if editor.Mode == "utility-ai" || editor.Mode == "utility-ai-overwrite" {
 				p.submitAgentsModalEditor()
+				return
+			}
+			if profileID, switchProfile := p.agentsModalEditorProfileSwitch(editor); switchProfile {
+				p.queueAgentsModalProfileSwitch(profileID)
 				return
 			}
 			p.agentsModal.Status = "No pending changes to save"
@@ -1238,13 +1262,6 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 
 	if ev.Key() == tcell.KeyRune {
 		r := ev.Rune()
-		if r == '*' {
-			field := selectedField()
-			if field != nil && field.Key == "model_profile" {
-				p.queueAgentsModalProfileDefault(field.Value)
-			}
-			return
-		}
 		if !editor.Editing {
 			return
 		}
@@ -1260,6 +1277,22 @@ func (p *HomePage) handleAgentsModalEditorKey(ev *tcell.EventKey) {
 			field.Value += string(r)
 		}
 	}
+}
+
+func (p *HomePage) queueAgentsModalProfileSwitch(profileID string) {
+	profileID = strings.TrimSpace(profileID)
+	if p == nil || profileID == "" {
+		return
+	}
+	if !p.agentsModalHasModelProfile(profileID) {
+		p.agentsModal.Error = "selected profile is no longer available"
+		return
+	}
+	p.enqueueAgentsModalAction(AgentsModalAction{
+		Kind:           AgentsModalActionSwitchProfile,
+		ModelProfileID: profileID,
+		StatusHint:     "switching profile...",
+	})
 }
 
 func (p *HomePage) queueAgentsModalProfileDefault(profileID string) {
@@ -1435,8 +1468,14 @@ func (p *HomePage) submitAgentsModalEditor() {
 				return
 			}
 		}
+		modelProfileID, switchProfile := p.agentsModalEditorProfileSwitch(editor)
 		editor.InitialFields = cloneAgentsModalEditorFields(editor.Fields)
-		p.enqueueAgentsModalAction(AgentsModalAction{Kind: AgentsModalActionUpsert, Upsert: &upsert, StatusHint: fmt.Sprintf("Saving setup for %s...", upsert.Name)})
+		action := AgentsModalAction{Kind: AgentsModalActionUpsert, Upsert: &upsert, StatusHint: fmt.Sprintf("Saving setup for %s...", upsert.Name)}
+		if switchProfile {
+			action.ModelProfileID = modelProfileID
+			action.StatusHint = fmt.Sprintf("Saving setup for %s and switching profile...", upsert.Name)
+		}
+		p.enqueueAgentsModalAction(action)
 		return
 	}
 
@@ -2476,7 +2515,9 @@ func (p *HomePage) drawAgentsModalDetailPane(s tcell.Screen, rect Rect) {
 		}
 		lines = append(lines, agentsModalRenderLine{Text: "", Style: p.theme.TextMuted})
 		if len(p.agentsModal.ModelProfiles) > 0 {
-			lines = append(lines, agentsModalRenderLine{Text: "Profile: Enter opens choices • * stars the selected profile as account default", Style: p.theme.TextMuted})
+			for _, direction := range agentsModalProfileDirectionLines(contentWidth) {
+				lines = append(lines, agentsModalRenderLine{Text: direction, Style: p.theme.TextMuted})
+			}
 		}
 		saveLabel := p.agentsModalEditorSaveLabel()
 		saveHint := fmt.Sprintf("Enter edit/commit field • Tab move field • %s save • Esc close", saveLabel)
@@ -2555,6 +2596,12 @@ type agentsModalRenderLine struct {
 	ModelProfileOption   bool
 	ProfileDefaultTarget bool
 	ModelProfileID       string
+}
+
+const agentsModalProfileDirections = "Profile directions: Enter selects a profile • D sets account default • Ctrl+Y saves and switches a changed profile"
+
+func agentsModalProfileDirectionLines(width int) []string {
+	return Wrap(agentsModalProfileDirections, width)
 }
 
 func wrapAgentsModalWithPrefix(prefix, body string, width int) []string {

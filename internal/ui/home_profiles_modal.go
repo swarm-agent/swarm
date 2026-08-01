@@ -23,7 +23,7 @@ func (p *HomePage) ShowProfilesModal() {
 	p.profilesModal.Visible = true
 	p.profilesModal.Selected = 0
 	for i, profile := range p.model.ModelProfiles {
-		if strings.TrimSpace(profile.ProfileID) == strings.TrimSpace(p.model.DefaultModelProfileID) {
+		if strings.TrimSpace(profile.ProfileID) == strings.TrimSpace(p.model.ActiveModelProfile.ProfileID) {
 			p.profilesModal.Selected = i
 			break
 		}
@@ -130,7 +130,7 @@ func (p *HomePage) drawProfilesModal(s tcell.Screen) {
 	FillRect(s, rect, p.theme.Panel)
 	DrawBox(s, rect, p.theme.BorderActive)
 	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, "Model Profiles")
-	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.TextMuted, "Quick switch for the durable default used by new sessions")
+	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.TextMuted, "Switch the active profile; account default is managed in /agents")
 
 	rowY := rect.Y + 3
 	availableRows := rect.H - 6
@@ -149,11 +149,18 @@ func (p *HomePage) drawProfilesModal(s tcell.Screen) {
 				prefix = "> "
 				style = p.theme.Primary.Bold(true)
 			}
-			active := ""
-			if strings.TrimSpace(profile.ProfileID) == strings.TrimSpace(p.model.DefaultModelProfileID) {
-				active = "  [active]"
+			markers := make([]string, 0, 2)
+			if strings.TrimSpace(profile.ProfileID) == strings.TrimSpace(p.model.ActiveModelProfile.ProfileID) {
+				markers = append(markers, "active")
 			}
-			label := fmt.Sprintf("%s%s%s  %s", prefix, emptyValue(strings.TrimSpace(profile.Name), profile.ProfileID), active, modelProfileSummary(profile, p.sessionMode))
+			if strings.TrimSpace(profile.ProfileID) == strings.TrimSpace(p.model.DefaultModelProfileID) {
+				markers = append(markers, "default")
+			}
+			state := ""
+			if len(markers) > 0 {
+				state = "  [" + strings.Join(markers, ", ") + "]"
+			}
+			label := fmt.Sprintf("%s%s%s  %s", prefix, emptyValue(strings.TrimSpace(profile.Name), profile.ProfileID), state, modelProfileSummary(profile, p.sessionMode))
 			DrawText(s, rect.X+2, rowY, rect.W-4, style, clampEllipsis(label, rect.W-4))
 			p.profilesModalTargets = append(p.profilesModalTargets, clickTarget{Rect: Rect{X: rect.X + 2, Y: rowY, W: rect.W - 4, H: 1}, Action: "profile-row", Index: i})
 			rowY++

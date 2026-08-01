@@ -128,6 +128,7 @@ const (
 	KeybindAgentsFilterAll       KeybindID = "agents.filter_all"
 	KeybindAgentsFilterPrimary   KeybindID = "agents.filter_primary"
 	KeybindAgentsFilterSubagent  KeybindID = "agents.filter_subagent"
+	KeybindAgentsProfileDefault  KeybindID = "agents.profile_default"
 
 	KeybindThemeJumpHomeAlt KeybindID = "theme.jump_home_alt"
 	KeybindThemeJumpEndAlt  KeybindID = "theme.jump_end_alt"
@@ -310,6 +311,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindAgentsFilterAll, Group: "Agents Modal", Action: "Filter all", Default: "0", Editable: true},
 	{ID: KeybindAgentsFilterPrimary, Group: "Agents Modal", Action: "Filter primary", Default: "1", Editable: true},
 	{ID: KeybindAgentsFilterSubagent, Group: "Agents Modal", Action: "Filter subagent", Default: "2", Editable: true},
+	{ID: KeybindAgentsProfileDefault, Group: "Agents Modal", Action: "Set selected profile as account default", Default: "d", Editable: true},
 
 	{ID: KeybindThemeJumpHomeAlt, Group: "Theme Modal", Action: "Jump home (alt)", Default: "g", Editable: true},
 	{ID: KeybindThemeJumpEndAlt, Group: "Theme Modal", Action: "Jump end (alt)", Default: "shift+g", Editable: true},
