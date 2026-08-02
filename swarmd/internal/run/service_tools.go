@@ -3163,39 +3163,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 
 	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
-	trustedModelProfiles := make([]*pebblestore.SessionModelProfileSnapshot, len(launchSpecs))
 	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
 	if approved := strings.TrimSpace(req.ApprovedArguments); approved != "" {
-		var envelope struct {
-			ManifestHash string             `json:"manifest_hash"`
-			Manifest     taskLaunchManifest `json:"manifest"`
-		}
-		if err := json.Unmarshal([]byte(approved), &envelope); err != nil {
-			return "", fmt.Errorf("approved task manifest invalid: %w", err)
-		}
-		digest, err := taskLaunchManifestDigest(envelope.Manifest)
-		if err != nil || digest != strings.TrimSpace(envelope.ManifestHash) || digest != strings.TrimSpace(envelope.Manifest.ManifestHash) {
-			return "", errors.New("approved task manifest snapshot hash mismatch")
-		}
-		if len(envelope.Manifest.Launches) != len(launchSpecs) {
-			return "", errors.New("approved task manifest launch count mismatch")
+		manifest, manifestErr := parseApprovedTaskLaunchManifest(approved, launchSpecs)
+		if manifestErr != nil {
+			return "", manifestErr
 		}
 		for i := range launchSpecs {
-			row := envelope.Manifest.Launches[i]
-			if !strings.EqualFold(strings.TrimSpace(row.RequestedSubagentType), strings.TrimSpace(launchSpecs[i].RequestedSubagentType)) {
-				return "", fmt.Errorf("approved task manifest launch %d target mismatch", i)
-			}
-			if row.ProfileSnapshot == nil {
-				return "", fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
-			}
-			expectedModelProfile := parentSession.ModelProfile
-			if agentruntime.IsCoderAgentName(launchSpecs[i].RequestedSubagentType) {
-				expectedModelProfile = nil
-			}
-			if !equalSessionModelProfiles(row.ModelProfileSnapshot, expectedModelProfile) {
-				return "", fmt.Errorf("approved task manifest launch %d model profile snapshot mismatch", i)
-			}
+			row := manifest.Launches[i]
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
 			if err != nil {
 				return "", err
@@ -3222,7 +3198,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				trustedVirtualTargets[i] = row.ParentCopy
 			}
 			trustedProfiles[i] = &profile
-			trustedModelProfiles[i] = cloneManageSessionsDeployModelProfile(row.ModelProfileSnapshot)
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
 		}
 	}
@@ -3270,11 +3245,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if agentruntime.IsCoderAgentName(requestedSubagent) {
 			launchTaskBase = coderTaskBase
 		}
-		launchParent := parentSession
-		if strings.TrimSpace(req.ApprovedArguments) != "" {
-			launchParent.ModelProfile = cloneManageSessionsDeployModelProfile(trustedModelProfiles[i])
-		}
-		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(launchParent, sessionMode, taskLaunchPrepared{
+		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
 			LaunchIndex:       i + 1,
 			VirtualTarget:     trustedVirtualTargets[i],
 			TaskBase:          launchTaskBase,

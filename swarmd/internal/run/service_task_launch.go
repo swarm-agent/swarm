@@ -1680,6 +1680,33 @@ func taskLaunchManifestDigest(manifest taskLaunchManifest) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSpec) (taskLaunchManifest, error) {
+	var envelope struct {
+		ManifestHash string             `json:"manifest_hash"`
+		Manifest     taskLaunchManifest `json:"manifest"`
+	}
+	if err := json.Unmarshal([]byte(approved), &envelope); err != nil {
+		return taskLaunchManifest{}, fmt.Errorf("approved task manifest invalid: %w", err)
+	}
+	digest, err := taskLaunchManifestDigest(envelope.Manifest)
+	if err != nil || digest != strings.TrimSpace(envelope.ManifestHash) || digest != strings.TrimSpace(envelope.Manifest.ManifestHash) {
+		return taskLaunchManifest{}, errors.New("approved task manifest snapshot hash mismatch")
+	}
+	if len(envelope.Manifest.Launches) != len(launchSpecs) {
+		return taskLaunchManifest{}, errors.New("approved task manifest launch count mismatch")
+	}
+	for i := range launchSpecs {
+		row := envelope.Manifest.Launches[i]
+		if !strings.EqualFold(strings.TrimSpace(row.RequestedSubagentType), strings.TrimSpace(launchSpecs[i].RequestedSubagentType)) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d target mismatch", i)
+		}
+		if row.ProfileSnapshot == nil {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
+		}
+	}
+	return envelope.Manifest, nil
+}
+
 func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string, call tool.Call) (taskLaunchManifest, error) {
 	parsed, err := parseTaskCallArguments(call.Arguments)
 	if err != nil {

@@ -1703,6 +1703,48 @@ func TestApprovedFinderWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.
 	}
 }
 
+func TestApprovedTaskManifestContractAcceptsAllSupportedSubagents(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+
+	call := tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "Complete independent supported scopes.",
+		"launches": []any{
+			map[string]any{"subagent_type": "finder", "meta_prompt": "Inspect the contract."},
+			map[string]any{"subagent_type": "coder", "meta_prompt": "Implement the contract."},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Design the contract.", "owned_scope": []any{"web/src/variants/contract.tsx"}},
+		},
+	})}
+	parsed, err := parseTaskCallArguments(call.Arguments)
+	if err != nil {
+		t.Fatalf("parse task call: %v", err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, call)
+	if err != nil {
+		t.Fatalf("build task manifest: %v", err)
+	}
+	if len(manifest.Launches) != len(parsed.Launches) {
+		t.Fatalf("manifest launches = %d, want %d", len(manifest.Launches), len(parsed.Launches))
+	}
+	for i, launch := range manifest.Launches {
+		if launch.ModelProfileSnapshot != nil {
+			t.Fatalf("launch %d retained obsolete parent model profile: %#v", i, launch.ModelProfileSnapshot)
+		}
+	}
+	approved, err := json.Marshal(manifest.ApprovedArguments)
+	if err != nil {
+		t.Fatalf("marshal approved manifest: %v", err)
+	}
+	validated, err := parseApprovedTaskLaunchManifest(string(approved), parsed.Launches)
+	if err != nil {
+		t.Fatalf("validate approved task manifest: %v", err)
+	}
+	if len(validated.Launches) != 3 {
+		t.Fatalf("validated launches = %d, want 3", len(validated.Launches))
+	}
+}
+
 func TestPlanSidechatTaskTargetsFinderOnly(t *testing.T) {
 	parent := pebblestore.SessionSnapshot{Metadata: map[string]any{
 		"system_sidechat_kind": agentruntime.SystemSidechatKindPlan,
