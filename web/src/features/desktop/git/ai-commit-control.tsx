@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Bot, Check, ChevronDown, LoaderCircle, Zap } from 'lucide-react'
+import { Bot, Check, ChevronUp, LoaderCircle, Zap } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { fetchWorkspaceActions, type WorkspaceAction } from '../../workspaces/actions/types'
 
@@ -14,6 +14,14 @@ interface AICommitControlProps {
   onGenerate?: () => void
   onActionSelect?: (action: WorkspaceAction | null) => void
   onActionRun?: (action: WorkspaceAction) => void
+}
+
+function actionOptionsPreview(action: WorkspaceAction): string {
+  const options = [...action.arguments]
+  for (const input of action.inputs) {
+    options.push(...input.arguments, `<${input.label}>`)
+  }
+  return options.length > 0 ? options.join(' ') : 'No options'
 }
 
 export function AICommitControl({
@@ -32,7 +40,7 @@ export function AICommitControl({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [request, setRequest] = useState(0)
-  const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 })
+  const [menuPosition, setMenuPosition] = useState({ bottom: 0, right: 0 })
   const rootRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const menuId = useId()
@@ -40,7 +48,10 @@ export function AICommitControl({
   const positionMenu = useCallback(() => {
     const bounds = rootRef.current?.getBoundingClientRect()
     if (!bounds) return
-    setMenuPosition({ top: bounds.bottom + 8, right: Math.max(8, window.innerWidth - bounds.right) })
+    setMenuPosition({
+      bottom: Math.max(8, window.innerHeight - bounds.top + 8),
+      right: Math.max(8, window.innerWidth - bounds.right),
+    })
   }, [])
 
   useEffect(() => {
@@ -126,23 +137,31 @@ export function AICommitControl({
         title={actionsOnly ? 'Run workspace Action' : 'Choose post-commit Action'}
       >
         {actionsOnly ? <><Zap size={14} aria-hidden="true" /><span>Actions</span></> : null}
-        <ChevronDown size={14} aria-hidden="true" />
+        <ChevronUp size={14} aria-hidden="true" />
       </button>
       {open ? createPortal(
-        <div ref={menuRef} id={menuId} role="menu" aria-label={actionsOnly ? 'Workspace Actions' : 'Post-commit Actions'} className="fixed z-50 w-72 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 text-left shadow-2xl" style={{ top: menuPosition.top, right: menuPosition.right }}>
+        <div ref={menuRef} id={menuId} role="menu" aria-label={actionsOnly ? 'Workspace Actions' : 'Post-commit Actions'} className="fixed z-[100] w-72 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 text-left shadow-2xl" style={{ bottom: menuPosition.bottom, right: menuPosition.right }} data-menu-direction="up">
           <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{actionsOnly ? 'Actions' : 'After commit'}</div>
-          {!actionsOnly ? <button type="button" role="menuitemradio" aria-checked={!selectedAction} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" onClick={() => choose(null)}>
-            <span className="grid size-4 place-items-center">{!selectedAction ? <Check size={13} /> : null}</span>
-            <span>No post-commit Action</span>
+          {!actionsOnly ? <button type="button" role="menuitemradio" aria-checked={!selectedAction} className="flex h-9 w-full items-center gap-2 border-t border-[var(--app-border)] px-2 text-xs text-[var(--app-text)] first:border-t-0 hover:bg-[var(--app-surface-hover)]" onClick={() => choose(null)}>
+            <span className="grid size-4 shrink-0 place-items-center">{!selectedAction ? <Check size={13} /> : null}</span>
+            <span className="min-w-0 flex-1 truncate text-left">No post-commit Action</span>
+            <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">None</span>
           </button> : null}
           {loading ? <div className="flex items-center gap-2 px-2 py-3 text-xs text-[var(--app-text-muted)]"><LoaderCircle size={13} className="animate-spin" />Loading Actions…</div> : null}
           {!loading && !error && actions.length === 0 ? <div className="px-2 py-3 text-xs text-[var(--app-text-muted)]">No workspace Actions configured.</div> : null}
-          {actions.map((action) => (
-            <button key={action.id} type="button" role={actionsOnly ? 'menuitem' : 'menuitemradio'} aria-checked={actionsOnly ? undefined : selectedAction?.id === action.id} className="flex w-full items-start gap-2 rounded-lg px-2 py-2 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" onClick={() => choose(action)}>
-              <span className="mt-0.5 grid size-4 shrink-0 place-items-center">{actionsOnly ? <Zap size={13} /> : selectedAction?.id === action.id ? <Check size={13} /> : null}</span>
-              <span className="min-w-0"><strong className="block truncate">{action.name}</strong>{action.description ? <span className="mt-0.5 block line-clamp-2 text-[11px] font-normal text-[var(--app-text-muted)]">{action.description}</span> : null}</span>
-            </button>
-          ))}
+          {actions.length > 0 ? (
+            <div className={cn('border-y border-[var(--app-border)]', actions.length > 5 && 'max-h-[240px] overflow-y-auto [scrollbar-gutter:stable]')} data-action-list-scroll={actions.length > 5 ? 'conditional' : undefined}>
+              {actions.map((action) => (
+                <button key={action.id} type="button" role={actionsOnly ? 'menuitem' : 'menuitemradio'} aria-checked={actionsOnly ? undefined : selectedAction?.id === action.id} className="flex h-12 w-full items-center gap-2 border-b border-[var(--app-border)] px-2 text-xs text-[var(--app-text)] last:border-b-0 hover:bg-[var(--app-surface-hover)]" onClick={() => choose(action)}>
+                  <span className="grid size-4 shrink-0 place-items-center">{actionsOnly ? <Zap size={13} /> : selectedAction?.id === action.id ? <Check size={13} /> : null}</span>
+                  <span className="flex min-w-0 flex-1 flex-col items-start justify-center leading-tight">
+                    <strong className="w-full truncate text-left font-medium">{action.name}</strong>
+                    <span className="mt-1 w-full truncate text-left text-[10px] font-normal text-[var(--app-text-subtle)]" title={actionOptionsPreview(action)}>{actionOptionsPreview(action)}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
           {error ? <div className="px-2 py-2 text-xs text-[var(--app-danger)]" role="alert">{error}<button type="button" className="ml-2 underline" onClick={() => setRequest((current) => current + 1)}>Retry</button></div> : null}
         </div>,
         document.body,
