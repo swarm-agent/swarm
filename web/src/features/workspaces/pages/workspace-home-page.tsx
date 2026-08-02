@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, Sparkles, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -574,6 +574,8 @@ export function WorkspaceHomePage() {
     browserLoading,
     browserError,
     refreshing,
+    personalizing,
+    personalizationMessage,
     draggingWorkspacePath,
     setDraggingWorkspacePath,
     swapWorkspacePositions,
@@ -585,6 +587,7 @@ export function WorkspaceHomePage() {
     createFolder,
     moveWorkspaceToIndex,
     refresh,
+    refreshWorkspaceDefinitions,
     browsePath,
   } = useWorkspaceLauncher()
 
@@ -976,6 +979,18 @@ export function WorkspaceHomePage() {
                   <Settings size={14} />
                   <span className="hidden sm:inline">Settings</span>
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void refreshWorkspaceDefinitions()}
+                  disabled={personalizing || workspaces.length === 0}
+                  className="size-9 rounded-md bg-[var(--app-surface)] p-0 shadow-sm sm:w-auto sm:px-3"
+                  aria-label="Personalize workspaces"
+                  title="Start a fresh Router session for every saved workspace"
+                >
+                  <Sparkles size={14} className={personalizing ? 'animate-pulse' : undefined} />
+                  <span className="hidden sm:inline">{personalizing ? 'Starting…' : 'Personalize'}</span>
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing} className="size-9 rounded-md bg-[var(--app-surface)] p-0 shadow-sm sm:w-auto sm:px-3" aria-label="Refresh workspaces">
                   <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
                   <span className="hidden sm:inline">Refresh</span>
@@ -1001,6 +1016,7 @@ export function WorkspaceHomePage() {
             ) : null}
 
             {!loading && actionError ? <WorkspaceStatus kind="error" title="Workspace action failed" message={actionError} /> : null}
+            {!loading && personalizationMessage ? <WorkspaceStatus kind="success" title="Workspace personalization started" message={personalizationMessage} /> : null}
 
             {!loading && !loadError ? (
               <div className="flex flex-col gap-12">

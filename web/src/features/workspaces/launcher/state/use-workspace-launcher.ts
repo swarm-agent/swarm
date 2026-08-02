@@ -11,6 +11,7 @@ import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-works
 import { selectWorkspace } from '../mutations/select-workspace'
 import { setWorkspaceTheme as setWorkspaceThemeAPI } from '../mutations/set-workspace-theme'
 import { setWorkspaceWorktrees } from '../mutations/set-workspace-worktrees'
+import { refreshWorkspaceDefinitions as refreshWorkspaceDefinitionsAPI } from '../mutations/refresh-workspace-definitions'
 import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../services/discovery-ordering'
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
@@ -45,6 +46,8 @@ interface UseWorkspaceLauncherState {
   currentWorkspacePath: string | null
   loading: boolean
   refreshing: boolean
+  personalizing: boolean
+  personalizationMessage: string | null
   selectingPath: string | null
   savingPath: string | null
   draggingWorkspacePath: string | null
@@ -65,6 +68,7 @@ interface UseWorkspaceLauncherState {
   swapWorkspacePositions: (sourcePath: string, targetPath: string) => Promise<void>
   setDraggingWorkspacePath: (path: string | null) => void
   refresh: (roots?: string[]) => Promise<void>
+  refreshWorkspaceDefinitions: () => Promise<void>
   browsePath: (path: string) => Promise<void>
 }
 
@@ -233,6 +237,8 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null)
   const [loading, setLoading] = useState(autoRefresh)
   const [refreshing, setRefreshing] = useState(false)
+  const [personalizing, setPersonalizing] = useState(false)
+  const [personalizationMessage, setPersonalizationMessage] = useState<string | null>(null)
   const [selectingPath, setSelectingPath] = useState<string | null>(null)
   const [savingPath, setSavingPath] = useState<string | null>(null)
   const [draggingWorkspacePath, setDraggingWorkspacePath] = useState<string | null>(null)
@@ -640,6 +646,35 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [applyDocumentTheme, currentWorkspacePath, globalThemeId, queryClient, workspaces])
 
+  const refreshWorkspaceDefinitions = useCallback(async () => {
+    setPersonalizing(true)
+    setPersonalizationMessage(null)
+    setActionError(null)
+    try {
+      const result = await refreshWorkspaceDefinitionsAPI()
+      setWorkspaces((current) => {
+        const pendingByPath = new Map(result.workspaces.map((workspace) => [workspace.path, workspace]))
+        return current.map((workspace) => {
+          const pending = pendingByPath.get(workspace.path)
+          return pending ? { ...workspace, ...pending } : workspace
+        })
+      })
+      const launchedLabel = `${result.launchedCount} workspace${result.launchedCount === 1 ? '' : 's'}`
+      setPersonalizationMessage(result.failedCount > 0
+        ? `Started Router personalization for ${launchedLabel}; ${result.failedCount} could not start.`
+        : `Started Router personalization for ${launchedLabel}.`)
+      if (result.failedCount > 0) {
+        const firstFailure = result.failures[0]
+        setActionError(firstFailure?.error || 'Some workspace personalization sessions could not start')
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to personalize workspaces')
+      throw err
+    } finally {
+      setPersonalizing(false)
+    }
+  }, [])
+
   const moveWorkspaceToIndex = useCallback(async (path: string, targetIndex: number) => {
     const trimmedPath = path.trim()
     if (trimmedPath === '') {
@@ -716,6 +751,8 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     currentWorkspacePath,
     loading,
     refreshing,
+    personalizing,
+    personalizationMessage,
     selectingPath,
     savingPath,
     draggingWorkspacePath,
@@ -736,6 +773,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     swapWorkspacePositions,
     setDraggingWorkspacePath,
     refresh,
+    refreshWorkspaceDefinitions,
     browsePath,
   }
 }
