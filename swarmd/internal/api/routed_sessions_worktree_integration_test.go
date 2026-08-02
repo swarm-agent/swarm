@@ -64,12 +64,18 @@ func TestAllocateRoutedSessionWorktreeUsesConfiguredPrefixAndBase(t *testing.T) 
 	}
 }
 
-func TestAllocateRoutedSessionWorktreeRejectsDisabledConfig(t *testing.T) {
-	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{config: worktreeruntime.Config{Enabled: false}}}
+func TestAllocateRoutedSessionWorktreeIgnoresObsoleteDisabledConfig(t *testing.T) {
+	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+		config:     worktreeruntime.Config{Enabled: false, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "router"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api", RepoRoot: "/source/repo", BaseBranch: "dev", WorkspaceID: "router-fix-api"},
+	}}
 	server := &Server{worktrees: stub}
-	_, _, err := server.allocateRoutedSessionWorktree(identity.Principal{UserID: "user", AccountScopeID: "account"}, pebblestore.SessionSnapshot{WorkspacePath: "/source/repo"}, "session-1", "Fix API")
-	if err == nil || stub.allocationCalls != 0 {
-		t.Fatalf("disabled config error=%v allocation calls=%d", err, stub.allocationCalls)
+	allocation, _, err := server.allocateRoutedSessionWorktree(identity.Principal{UserID: "user", AccountScopeID: "account"}, pebblestore.SessionSnapshot{WorkspacePath: "/source/repo"}, "session-1", "Fix API")
+	if err != nil {
+		t.Fatalf("allocate routed worktree with obsolete disabled config: %v", err)
+	}
+	if stub.configReadCount != 1 || stub.allocationCalls != 1 || allocation.WorkspacePath != "/managed/router-fix-api" || stub.lastBaseBranch != "dev" || stub.lastBranchName != "router/fix-api" {
+		t.Fatalf("allocation=%+v config reads=%d calls=%d base=%q branch=%q", allocation, stub.configReadCount, stub.allocationCalls, stub.lastBaseBranch, stub.lastBranchName)
 	}
 }
 

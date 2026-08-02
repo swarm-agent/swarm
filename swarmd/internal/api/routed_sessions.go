@@ -589,9 +589,6 @@ func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, can
 	if err != nil {
 		return worktreeruntime.Allocation{}, "", fmt.Errorf("read routed worktree config: %w", err)
 	}
-	if !config.Enabled {
-		return worktreeruntime.Allocation{}, "", errors.New("Router selected a worktree but managed worktrees are disabled for the routed workspace")
-	}
 	branchName, err := worktreeruntime.CanonicalizeRequestedWorktreeName(routerName, config.BranchName)
 	if err != nil {
 		return worktreeruntime.Allocation{}, "", err
