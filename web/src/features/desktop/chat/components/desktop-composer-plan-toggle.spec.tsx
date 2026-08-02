@@ -15,7 +15,7 @@ function render(active: boolean, disabled = false): string {
   )
 }
 
-test('Plan toggle mirrors Worktree on/off semantics and active styling', () => {
+test('Plan toggle can enter Plan once and locks its active styling until planning exits', () => {
   const inactive = render(false)
   const active = render(true)
 
@@ -27,7 +27,8 @@ test('Plan toggle mirrors Worktree on/off semantics and active styling', () => {
 
   assert.match(active, /data-plan-active="true"/)
   assert.match(active, /aria-pressed="true"/)
-  assert.match(active, /Disable plan mode/)
+  assert.match(active, /Plan mode remains active until planning exits/)
+  assert.doesNotMatch(active, /Disable plan mode/)
   assert.match(active, /border-\[var\(--app-border-accent\)\]/)
   assert.match(active, /ring-1 ring-\[var\(--app-border-accent\)\]/)
 })

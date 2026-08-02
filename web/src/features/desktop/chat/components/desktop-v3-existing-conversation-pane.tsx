@@ -113,10 +113,8 @@ import {
 import type { DesktopSlashCommand } from "../services/slash-commands";
 import {
   sessionV3AgentSettingsMutationResponse,
-  sessionV3ModeSettingsMutationResponse,
   sessionV3ModelProfileSettingsMutationResponse,
   updateSessionV3Agent,
-  updateSessionV3Mode,
   updateSessionV3ModelProfile,
   stopSessionV3Run,
 } from "../../session-v3/api";
@@ -1652,7 +1650,6 @@ export function DesktopV3ExistingConversationPane({
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false);
   const [agentModelSaving, setAgentModelSaving] = useState(false);
-  const [modeSaving, setModeSaving] = useState(false);
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<
     string | null
   >(null);
@@ -2127,25 +2124,6 @@ export function DesktopV3ExistingConversationPane({
       return;
     }
     void navigate({ to: "/settings", search: { tab: "auth" } });
-  }
-
-  async function handleModeSelect(nextMode: DesktopSessionMode) {
-    if (!normalizedSessionId || modeSaving || nextMode === mode) return;
-    setModeSaving(true);
-    setSendError(null);
-    try {
-      const response = await updateSessionV3Mode(normalizedSessionId, nextMode);
-      dispatchDesktopV3Cache({
-        type: "mutation.sessionSettingsResult",
-        raw: sessionV3ModeSettingsMutationResponse(response, normalizedSessionId, nextMode),
-      });
-      setMode(normalizeSessionMode(response.mode ?? nextMode));
-      localSettingsDirtyRef.current.mode = false;
-    } catch (error) {
-      if (mountedRef.current) setSendError(error instanceof Error ? error.message : "Failed to switch session mode");
-    } finally {
-      if (mountedRef.current) setModeSaving(false);
-    }
   }
 
   async function handleAgentSelect(nextAgentName: string) {
@@ -2876,10 +2854,8 @@ export function DesktopV3ExistingConversationPane({
             onStop={handleStop}
             onCompact={handleCompact}
             mode={mode}
-            onModeSelect={(nextMode) => { void handleModeSelect(nextMode); }}
             showModePicker
             resolvedSessionControls
-            durableWorktreeActive={Boolean(session?.worktreeEnabled || session?.worktreeRootPath?.trim() || session?.worktreeBranch?.trim() || cacheSession?.worktree_enabled || cacheSession?.worktree_root_path?.trim() || cacheSession?.worktree_branch?.trim())}
             currentAgent={selectedAgent || "Agent"}
             selectedPrimaryAgent={selectedAgent || ""}
             agents={agentState.profiles}
@@ -2920,7 +2896,7 @@ export function DesktopV3ExistingConversationPane({
             needsAuth={needsAuth}
             onOpenAuthSettings={handleOpenAuthSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
-            agentModelControlBusy={agentModelSaving || modeSaving}
+            agentModelControlBusy={agentModelSaving}
             thinking={displayedPreference.thinking}
             thinkingTagsEnabled={thinkingTagsEnabled}
             onThinkingTagsToggle={(enabled) => {

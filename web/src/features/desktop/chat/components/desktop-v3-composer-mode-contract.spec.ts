@@ -2,17 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 
-test('existing Desktop Plan control uses canonical V3 mode mutation and durable projected state', async () => {
+test('existing routed composer keeps Plan visible only while canonical V3 mode remains Plan', async () => {
   const pane = await readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
+  const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
 
-  assert.match(pane, /updateSessionV3Mode\(normalizedSessionId, nextMode\)/)
-  assert.match(pane, /sessionV3ModeSettingsMutationResponse\(response, normalizedSessionId, nextMode\)/)
-  assert.match(pane, /type: "mutation\.sessionSettingsResult"/)
-  assert.match(pane, /setMode\(normalizeSessionMode\(response\.mode \?\? nextMode\)\)/)
-  assert.match(pane, /setSendError\(error instanceof Error \? error\.message : "Failed to switch session mode"\)/)
-  assert.match(pane, /mode=\{mode\}/)
-  assert.match(pane, /onModeSelect=\{\(nextMode\) => \{ void handleModeSelect\(nextMode\); \}\}/)
-  assert.match(pane, /durableWorktreeActive=\{Boolean\(session\?\.worktreeEnabled[\s\S]*cacheSession\?\.worktree_branch/)
+  assert.match(pane, /mode=\{mode\}[\s\S]*showModePicker[\s\S]*resolvedSessionControls/)
+  assert.doesNotMatch(pane, /onModeSelect=\{/)
+  assert.doesNotMatch(pane, /updateSessionV3Mode/)
+  assert.doesNotMatch(pane, /durableWorktreeActive/)
+  assert.match(composer, /resolvedSessionControls && showModePicker && mode === 'plan'/)
+  assert.match(composer, /<DesktopComposerPlanToggle active readOnly/)
 })
 
 test('new routed Desktop labels transition from Waiting to Routing before durable activation', async () => {

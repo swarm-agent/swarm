@@ -8,7 +8,7 @@ export interface DesktopComposerPlanToggleProps {
   className?: string
 }
 
-/** Standalone Plan state control paired with the Worktree control. */
+/** One-way Plan entry control that becomes a locked status indicator once active. */
 export function DesktopComposerPlanToggle({
   active,
   onActiveChange,
@@ -16,17 +16,18 @@ export function DesktopComposerPlanToggle({
   readOnly = false,
   className = '',
 }: DesktopComposerPlanToggleProps) {
-  const label = readOnly
-    ? `Plan mode ${active ? 'enabled' : 'disabled'}`
-    : active ? 'Disable plan mode' : 'Enable plan mode'
+  const locked = readOnly || active
+  const label = active
+    ? 'Plan mode remains active until planning exits'
+    : readOnly ? 'Plan mode disabled' : 'Enable plan mode'
 
   return (
     <button
       type="button"
       onClick={() => {
-        if (!readOnly) onActiveChange?.(!active)
+        if (!locked) onActiveChange?.(true)
       }}
-      disabled={disabled || (!readOnly && !onActiveChange)}
+      disabled={disabled || (!locked && !onActiveChange)}
       aria-label={label}
       aria-pressed={active}
       title={label}

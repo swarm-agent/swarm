@@ -105,7 +105,7 @@ test('Desktop V3 composer exposes only backend-projected media and preserves dur
   assert.match(api, /media\?: DesktopV3MediaReference\[\]/)
 })
 
-test('Desktop V3 composer renders one canonical model bar with Worktree before standalone Plan', async () => {
+test('Desktop V3 composer keeps new-session Worktree before Plan and omits resolved Worktree clutter', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const control = await readFile(new URL('./composer-plan-model-control.tsx', import.meta.url), 'utf8')
   const plan = await readFile(new URL('./desktop-composer-plan-toggle.tsx', import.meta.url), 'utf8')
@@ -115,8 +115,9 @@ test('Desktop V3 composer renders one canonical model bar with Worktree before s
   assert.equal((source.match(/<DesktopComposerActionMenu/g) ?? []).length, 1)
   assert.doesNotMatch(source, /ProfileAgentPicker|showFavoriteSelector/)
   assert.match(source, /<DesktopRoutedWorktreePrime[\s\S]*?<DesktopComposerPlanToggle/)
-  assert.match(source, /\(routedNewSession \|\| resolvedSessionControls\) && showModePicker/)
-  assert.match(source, /durableWorktreeActive/)
+  assert.match(source, /routedNewSession && showModePicker/)
+  assert.match(source, /resolvedSessionControls && showModePicker && mode === 'plan'/)
+  assert.doesNotMatch(source, /durableWorktreeActive/)
   assert.match(control, /data-composer-agent-model-control/)
   assert.match(control, /Settings2/)
   assert.doesNotMatch(control, /NotepadText|onPlanToggle|planDisabled/)

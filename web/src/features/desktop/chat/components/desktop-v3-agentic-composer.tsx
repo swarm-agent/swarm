@@ -148,7 +148,6 @@ export interface DesktopV3AgenticComposerProps {
   routedComposerSnapshot?: DesktopV3RoutedComposerSnapshot | null
   routedWorktreeRequested?: boolean
   onRoutedWorktreeRequestedChange?: (requested: boolean) => void
-  durableWorktreeActive?: boolean
   modelStatusLabel?: string
   mediaCapability?: DesktopV3MediaCapability | null
   onUploadAttachment?: (file: File, signal: AbortSignal) => Promise<DesktopV3MediaReference>
@@ -244,7 +243,6 @@ export function DesktopV3AgenticComposer({
   routedComposerSnapshot = null,
   routedWorktreeRequested = false,
   onRoutedWorktreeRequestedChange,
-  durableWorktreeActive = false,
   modelStatusLabel = '',
   mediaCapability = null,
   onUploadAttachment,
@@ -1176,11 +1174,16 @@ export function DesktopV3AgenticComposer({
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
             {routedNewSession && onRoutedWorktreeRequestedChange ? (
               <DesktopRoutedWorktreePrime requested={routedWorktreeRequested} onRequestedChange={onRoutedWorktreeRequestedChange} disabled={composerDisabled || uploadingAttachment} />
-            ) : resolvedSessionControls ? (
-              <DesktopRoutedWorktreePrime requested={durableWorktreeActive} onRequestedChange={() => undefined} readOnly />
             ) : null}
-            {(routedNewSession || resolvedSessionControls) && showModePicker ? (
-              <DesktopComposerPlanToggle active={mode === 'plan'} onActiveChange={(active) => onModeSelect?.(active ? 'plan' : 'auto')} disabled={composerDisabled || agentModelControlBusy || !onModeSelect} />
+            {routedNewSession && showModePicker ? (
+              <DesktopComposerPlanToggle
+                active={mode === 'plan'}
+                onActiveChange={mode === 'plan' ? undefined : () => onModeSelect?.('plan')}
+                disabled={composerDisabled || agentModelControlBusy || !onModeSelect}
+                readOnly={mode === 'plan'}
+              />
+            ) : resolvedSessionControls && showModePicker && mode === 'plan' ? (
+              <DesktopComposerPlanToggle active readOnly />
             ) : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
