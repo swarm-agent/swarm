@@ -97,7 +97,7 @@ func (r *Runner) Start(input RunInput) (RunSnapshot, error) {
 	if !found {
 		return RunSnapshot{}, fmt.Errorf("action %q not found", strings.TrimSpace(input.ActionID))
 	}
-	entrypoint, err := resolveActionEntrypoint(scope.WorkspacePath, action.Entrypoint)
+	entrypoint, err := resolveActionEntrypoint(scope.RuntimePath, action.Entrypoint)
 	if err != nil {
 		return RunSnapshot{}, err
 	}
@@ -211,7 +211,7 @@ func (r *Runner) Wait(timeout time.Duration) bool {
 func (r *Runner) execute(ctx context.Context, run *actionRun, entrypoint string, argv []string) {
 	defer r.wg.Done()
 	cmd := exec.Command(entrypoint, argv...)
-	cmd.Dir = run.scope.WorkspacePath
+	cmd.Dir = run.scope.RuntimePath
 	cmd.Stdin = nil
 	cmd.Stdout = run.output
 	cmd.Stderr = run.output

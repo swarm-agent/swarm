@@ -19,6 +19,7 @@ type Scope struct {
 	AccountScopeID string
 	WorkspaceID    string
 	WorkspacePath  string
+	RuntimePath    string
 }
 
 type CreateInput struct {
@@ -173,8 +174,12 @@ func normalizeScope(scope Scope) (Scope, error) {
 	scope.AccountScopeID = strings.TrimSpace(scope.AccountScopeID)
 	scope.WorkspaceID = strings.TrimSpace(scope.WorkspaceID)
 	scope.WorkspacePath = strings.TrimSpace(scope.WorkspacePath)
+	scope.RuntimePath = strings.TrimSpace(scope.RuntimePath)
 	if scope.AccountScopeID == "" || scope.WorkspaceID == "" || scope.WorkspacePath == "" {
 		return Scope{}, errors.New("canonical account-owned workspace scope is required")
+	}
+	if scope.RuntimePath == "" {
+		scope.RuntimePath = scope.WorkspacePath
 	}
 	return scope, nil
 }

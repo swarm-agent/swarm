@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	actionruntime "swarm/packages/swarmd/internal/action"
@@ -135,10 +136,87 @@ func (s *Server) resolveWorkspaceActionScope(r *http.Request, rawPath string) (a
 	if err != nil {
 		return actionruntime.Scope{}, err
 	}
-	if !workspaceScope.Matched || strings.TrimSpace(workspaceScope.WorkspaceID) == "" || strings.TrimSpace(workspaceScope.WorkspacePath) == "" {
+	if workspaceScope.Matched && strings.TrimSpace(workspaceScope.WorkspaceID) != "" && strings.TrimSpace(workspaceScope.WorkspacePath) != "" {
+		return actionruntime.Scope{AccountScopeID: principal.AccountScopeID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspaceScope.WorkspacePath}, nil
+	}
+	return s.resolveWorkspaceActionBindingScope(principal, workspaceScope.ResolvedPath)
+}
+
+func (s *Server) resolveWorkspaceActionBindingScope(principal identity.Principal, runtimePath string) (actionruntime.Scope, error) {
+	runtimePath = strings.TrimSpace(runtimePath)
+	if runtimePath == "" || s.sessions == nil || s.topology == nil {
 		return actionruntime.Scope{}, errAccountOwnedWorkspacePathRequired
 	}
-	return actionruntime.Scope{AccountScopeID: principal.AccountScopeID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspaceScope.WorkspacePath}, nil
+	sessions, err := s.sessions.ListSessionsForAccountPath(principal.AccountScopeID, runtimePath, 1000)
+	if err != nil {
+		return actionruntime.Scope{}, err
+	}
+	var canonical actionruntime.Scope
+	for _, session := range sessions {
+		if strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
+			continue
+		}
+		binding, found, err := s.workspaceActionSessionBinding(principal, session)
+		if err != nil {
+			return actionruntime.Scope{}, err
+		}
+		if !found || !strings.EqualFold(strings.TrimSpace(binding.State), pebblestore.TopologyWorkspaceBindingStateBound) ||
+			(strings.TrimSpace(binding.UserID) != "" && strings.TrimSpace(binding.UserID) != strings.TrimSpace(principal.UserID)) ||
+			strings.TrimSpace(binding.SourceWorkspaceID) == "" || strings.TrimSpace(binding.SourceWorkspacePath) == "" {
+			continue
+		}
+		entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, binding.SourceWorkspaceID)
+		if err != nil {
+			return actionruntime.Scope{}, err
+		}
+		if !found || entry.WorkspaceGeneration != binding.SourceWorkspaceGeneration ||
+			filepath.Clean(strings.TrimSpace(entry.Path)) != filepath.Clean(strings.TrimSpace(binding.SourceWorkspacePath)) {
+			continue
+		}
+		candidate := actionruntime.Scope{AccountScopeID: principal.AccountScopeID, WorkspaceID: entry.WorkspaceID, WorkspacePath: entry.Path, RuntimePath: runtimePath}
+		if canonical.WorkspaceID != "" && (canonical.WorkspaceID != candidate.WorkspaceID || filepath.Clean(canonical.WorkspacePath) != filepath.Clean(candidate.WorkspacePath)) {
+			return actionruntime.Scope{}, errors.New("worktree resolves to multiple canonical workspaces")
+		}
+		canonical = candidate
+	}
+	if canonical.WorkspaceID == "" {
+		return actionruntime.Scope{}, errAccountOwnedWorkspacePathRequired
+	}
+	return canonical, nil
+}
+
+func (s *Server) workspaceActionSessionBinding(principal identity.Principal, session pebblestore.SessionSnapshot) (pebblestore.TopologyWorkspaceBindingRecord, bool, error) {
+	seen := make(map[string]struct{}, 8)
+	for depth := 0; depth < 100; depth++ {
+		if strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+		}
+		sessionID := strings.TrimSpace(session.ID)
+		if sessionID == "" {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+		}
+		if _, exists := seen[sessionID]; exists {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("worktree session lineage contains a cycle")
+		}
+		seen[sessionID] = struct{}{}
+		bindingID := firstNonEmpty(
+			strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_workspace_binding_id")),
+			strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "local_workspace_binding_id")),
+		)
+		if bindingID != "" {
+			return s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, bindingID)
+		}
+		parentSessionID := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "parent_session_id"))
+		if parentSessionID == "" {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+		}
+		parent, found, err := s.sessions.GetSession(parentSessionID)
+		if err != nil || !found {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
+		}
+		session = parent
+	}
+	return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("worktree session lineage exceeds the supported depth")
 }
 
 func workspaceActionScopeStatus(err error) int {
