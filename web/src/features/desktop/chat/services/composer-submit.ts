@@ -1,6 +1,6 @@
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from './slash-commands'
 
-export type DesktopComposerSubmitResult = 'submitted' | 'stopped' | 'task-queued' | 'task-queue-failed'
+export type DesktopComposerSubmitResult = 'submitted' | 'stopped' | 'background-router-started' | 'background-router-failed'
 
 export interface SubmitDesktopComposerInput<TAttachment = never> {
   draft: string
@@ -12,22 +12,22 @@ export interface SubmitDesktopComposerInput<TAttachment = never> {
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
 
-export function desktopComposerTaskCommand(draft: string): DesktopSlashCommand | null {
+export function desktopComposerBackgroundRouterCommand(draft: string): DesktopSlashCommand | null {
   const exactMatch = buildDesktopSlashPaletteState(draft).exactMatch
-  return exactMatch?.action.kind === 'queue-ai-task' ? exactMatch : null
+  return exactMatch?.action.kind === 'start-background-router-session' ? exactMatch : null
 }
 
 export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopComposerInput<TAttachment>): Promise<DesktopComposerSubmitResult> {
-  const taskCommand = desktopComposerTaskCommand(input.draft)
+  const backgroundRouterCommand = desktopComposerBackgroundRouterCommand(input.draft)
 
-  if (taskCommand) {
-    if (!input.onSlashCommand) return 'task-queue-failed'
+  if (backgroundRouterCommand) {
+    if (!input.onSlashCommand) return 'background-router-failed'
     try {
-      await input.onSlashCommand(taskCommand, input.draft)
+      await input.onSlashCommand(backgroundRouterCommand, input.draft)
       input.clear()
-      return 'task-queued'
+      return 'background-router-started'
     } catch {
-      return 'task-queue-failed'
+      return 'background-router-failed'
     }
   }
 

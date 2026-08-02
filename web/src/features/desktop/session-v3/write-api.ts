@@ -101,6 +101,17 @@ export interface DesktopV3RoutedSessionStartRequest {
   staging_ids?: string[]
 }
 
+export interface DesktopV3BackgroundRouterSessionStartRequest {
+  input: string
+  client_request_id: string
+  idempotency_key?: string
+  agent_name?: string
+  metadata?: Record<string, unknown>
+  plan_mode_requested: boolean
+  media?: DesktopV3RoutedSessionMediaRequest[]
+  staging_ids?: string[]
+}
+
 export interface DesktopV3RoutedSessionIdentity {
   session_id: string
   title: string
@@ -255,6 +266,45 @@ export async function postDesktopV3RoutedSessionStart(
     ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),
   }
   const payload = await requestJson<unknown>('/v3/sessions:routed', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': clientRequestId,
+    },
+    body: JSON.stringify(request),
+  })
+  return normalizeDesktopV3RoutedSessionStartResponse(payload)
+}
+
+export async function postDesktopV3BackgroundRouterSessionStart(
+  input: DesktopV3BackgroundRouterSessionStartRequest,
+): Promise<DesktopV3RoutedSessionStartResponse> {
+  const userInput = input.input.trim()
+  const clientRequestId = input.client_request_id.trim()
+  const idempotencyKey = input.idempotency_key?.trim() || clientRequestId
+  if (!userInput) throw new Error('Desktop V3 background Router session requires input')
+  if (!clientRequestId) throw new Error('Desktop V3 background Router session requires client_request_id')
+  if (idempotencyKey !== clientRequestId) {
+    throw new Error('Desktop V3 background Router session requires one stable client_request_id/idempotency identity')
+  }
+  if (typeof input.plan_mode_requested !== 'boolean') {
+    throw new Error('Desktop V3 background Router session requires explicit plan_mode_requested intent')
+  }
+  if ((input.media?.length ?? 0) > 0 && (input.staging_ids?.length ?? 0) > 0) {
+    throw new Error('Desktop V3 background Router session accepts media or staging_ids, not both')
+  }
+
+  const request: DesktopV3BackgroundRouterSessionStartRequest = {
+    input: userInput,
+    client_request_id: clientRequestId,
+    idempotency_key: clientRequestId,
+    ...(input.agent_name?.trim() ? { agent_name: input.agent_name.trim() } : {}),
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+    plan_mode_requested: input.plan_mode_requested,
+    ...(input.media?.length ? { media: input.media } : {}),
+    ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),
+  }
+  const payload = await requestJson<unknown>('/v3/sessions:background-router', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

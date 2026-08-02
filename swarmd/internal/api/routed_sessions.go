@@ -413,7 +413,12 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	sessionID := stableSessionsV3PrimarySessionID(principal, "routed:"+clientRequestID)
+	backgroundRouterRequest := isBackgroundRouterSessionRequest(r)
+	sessionIDScope := "routed:"
+	if backgroundRouterRequest {
+		sessionIDScope = "background-router:"
+	}
+	sessionID := stableSessionsV3PrimarySessionID(principal, sessionIDScope+clientRequestID)
 	if replay, found, replayErr := s.routedSessionReplay(principal, sessionID, clientRequestID, requestHash); replayErr != nil {
 		writeRoutedSessionError(w, replayErr)
 		return
@@ -480,6 +485,12 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	candidate.Metadata["managed_worktree_requested"] = managedWorktreeAllowed
 	candidate.Metadata["plan_mode_requested"] = planModeRequested
 	candidate.Metadata["routed_worktree_requested"] = managedWorktreeAllowed && decision.Result.Worktree
+	if backgroundRouterRequest {
+		candidate.Metadata["background"] = true
+		candidate.Metadata["launch_mode"] = "background"
+		candidate.Metadata["background_router_session"] = true
+		candidate.Metadata["owner_transport"] = "background_router_api"
+	}
 
 	var worktreeAllocation worktreeruntime.Allocation
 	worktreeCommitted := false

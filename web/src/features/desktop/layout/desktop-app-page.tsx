@@ -21,7 +21,6 @@ import { WorkspaceTodoModal } from '../../workspaces/todos/components/workspace-
 import type { WorkspaceTodoItem, WorkspaceTodoOwnerKind, WorkspaceTodoSummary } from '../../workspaces/todos/types'
 import {
   createEmptyWorkspaceTodoSummary,
-  createWorkspaceAITask,
   createWorkspaceTodo,
   deleteAllWorkspaceTodos,
   deleteDoneWorkspaceTodos,
@@ -67,7 +66,7 @@ import { sessionWorkspaceBindingId } from '../services/session-workspace'
 import type { DesktopV3SessionView, SessionCreateMutationResponse, SessionMessageMutationResponse, V3SessionRunIntent, V3SessionRunState } from '../state/desktop-v3-cache-types'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
-import { normalizeDesktopV3RoutedSessionStartResponse, type DesktopV3RoutedSessionStartResponse } from '../session-v3/write-api'
+import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart, type DesktopV3RoutedSessionStartResponse } from '../session-v3/write-api'
 import { isDesktopV3NavigationHiddenRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
@@ -3714,41 +3713,25 @@ export function DesktopAppPage() {
         if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName)
         return
       }
-      case 'queue-ai-task': {
+      case 'start-background-router-session': {
         const { request, mode } = parseDesktopTaskCommand(draft)
         if (!request) {
           const error = new Error('Enter a task request after /task.')
           setDesktopToast({ message: error.message, tone: 'error' })
           throw error
         }
-        const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || topWorkspacePath
-        if (!workspacePath) {
-          const error = new Error('Select a workspace before queuing a task.')
-          setDesktopToast({ message: error.message, tone: 'error' })
-          throw error
-        }
-        const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
         try {
-          const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, mode, routeSessionId ?? undefined)
-          dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
-          setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
-          setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
-          if (result.item.managedSessionId || result.item.aiState === 'in_progress') {
-            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} started.`, tone: 'info' })
-          } else if (result.item.aiState === 'completed') {
-            aiTaskTerminalToastRef.current.add(result.item.id)
-            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} completed.`, tone: 'success' })
-          } else if (result.item.aiState === 'failed') {
-            aiTaskTerminalToastRef.current.add(result.item.id)
-            setDesktopToast({ message: result.item.aiError || 'Swarm could not start the task.', tone: 'error' })
-          } else if (result.item.aiState === 'cancelled') {
-            aiTaskTerminalToastRef.current.add(result.item.id)
-            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} was cancelled.`, tone: 'info' })
-          } else {
-            setDesktopToast({ message: result.item.aiState === 'preparing' ? 'Swarm is preparing the queued task.' : 'Task queued for Swarm.', tone: 'info' })
-          }
+          const result = await postDesktopV3BackgroundRouterSessionStart({
+            input: request,
+            client_request_id: clientRequestId,
+            agent_name: 'swarm',
+            metadata: { source: 'desktop-v3-task-command' },
+            plan_mode_requested: mode === 'plan',
+          })
+          setDesktopToast({ message: `${result.title} started in the background.`, tone: 'info' })
         } catch (error) {
-          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to queue task', tone: 'error' })
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
           throw error
         }
         return
@@ -4152,33 +4135,23 @@ export function DesktopAppPage() {
     }
   }, [backgroundTaskBusy, mobileCreationPage, navigate, routeWorkspaceSlug])
 
-  const handleQueueBackgroundTask = useCallback(async (submittedRequest = backgroundTaskRequest) => {
+  const handleStartBackgroundRouterSession = useCallback(async (submittedRequest = backgroundTaskRequest) => {
     const request = submittedRequest.trim()
-    const workspacePath = routeWorkspace?.path.trim() ?? ''
-    if (!request || !workspacePath || backgroundTaskBusy) return
+    if (!request || backgroundTaskBusy) return
     setBackgroundTaskBusy(true)
     setBackgroundTaskError(null)
-    const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
     try {
-      const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, 'auto')
-      dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
-      setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
-      setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
-      if (result.item.aiState === 'failed') {
-        setBackgroundTaskError(result.item.aiError || 'Swarm could not start the task.')
-        return
-      }
-      if (result.item.aiState === 'completed' || result.item.aiState === 'cancelled') {
-        aiTaskTerminalToastRef.current.add(result.item.id)
-      }
+      const result = await postDesktopV3BackgroundRouterSessionStart({
+        input: request,
+        client_request_id: clientRequestId,
+        agent_name: 'swarm',
+        metadata: { source: 'desktop-v3-background-task-form' },
+        plan_mode_requested: false,
+      })
       setBackgroundTaskOpen(false)
       setBackgroundTaskRequest('')
-      const taskTitle = result.item.aiDisplayTitle || result.item.text || 'Task'
-      setDesktopToast(result.item.aiState === 'completed'
-        ? { message: `${taskTitle} completed.`, tone: 'success' }
-        : result.item.aiState === 'cancelled'
-          ? { message: `${taskTitle} was cancelled.`, tone: 'info' }
-          : { message: result.item.aiState === 'in_progress' ? `${taskTitle} started.` : 'Task queued for Swarm.', tone: 'info' })
+      setDesktopToast({ message: `${result.title} started in the background.`, tone: 'success' })
       if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
         void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
@@ -4187,7 +4160,7 @@ export function DesktopAppPage() {
     } finally {
       setBackgroundTaskBusy(false)
     }
-  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspace?.path, routeWorkspaceSlug])
+  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspaceSlug])
 
   const openRouteWorkspaceWorktree = useCallback(() => {
     if (!routeWorkspace?.path) return
@@ -4831,7 +4804,7 @@ export function DesktopAppPage() {
             busy={backgroundTaskBusy}
             error={backgroundTaskError}
             onRequestChange={setBackgroundTaskRequest}
-            onSubmit={(request) => { void handleQueueBackgroundTask(request) }}
+            onSubmit={(request) => { void handleStartBackgroundRouterSession(request) }}
             onClose={closeBackgroundTaskModal}
           />
         ) : mobileCreationPage === 'worktree' && routeWorkspace ? (
@@ -5178,7 +5151,7 @@ export function DesktopAppPage() {
           busy={backgroundTaskBusy}
           error={backgroundTaskError}
           onRequestChange={setBackgroundTaskRequest}
-          onSubmit={() => { void handleQueueBackgroundTask() }}
+          onSubmit={() => { void handleStartBackgroundRouterSession() }}
           onClose={closeBackgroundTaskModal}
         />
       ) : null}

@@ -8,7 +8,7 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
-import { desktopComposerTaskCommand, submitDesktopComposer } from '../services/composer-submit'
+import { desktopComposerBackgroundRouterCommand, submitDesktopComposer } from '../services/composer-submit'
 import {
   DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
   DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES,
@@ -640,8 +640,8 @@ export function DesktopV3AgenticComposer({
       : primedTaskMode === 'action'
         ? `/task ${visibleDraft}`
         : visibleDraft
-    const submittedTaskCommand = desktopComposerTaskCommand(submittedDraft)
-    if (routedNewSession && submittedTaskCommand) {
+    const submittedBackgroundRouterCommand = desktopComposerBackgroundRouterCommand(submittedDraft)
+    if (routedNewSession && submittedBackgroundRouterCommand) {
       await submitDesktopComposer({
         draft: submittedDraft,
         canStop,
@@ -706,7 +706,7 @@ export function DesktopV3AgenticComposer({
 
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
-    if (command.action.kind === 'queue-ai-task') {
+    if (command.action.kind === 'start-background-router-session') {
       if (routedNewSession) {
         void handleSubmitClick()
         return
@@ -779,9 +779,9 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'queue-ai-task')) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session')) {
         event.preventDefault()
-        if (slashPalette.exactMatch?.action.kind === 'queue-ai-task') {
+        if (slashPalette.exactMatch?.action.kind === 'start-background-router-session') {
           void handleSubmitClick()
           return
         }

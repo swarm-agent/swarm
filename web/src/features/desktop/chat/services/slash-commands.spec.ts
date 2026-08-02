@@ -63,7 +63,7 @@ function testTaskCommandAcceptsFullArguments(): void {
   const task = getDesktopSlashCommands().find((command) => command.id === 'task')
   assert(Boolean(task), 'expected /task command to exist')
   assert(task?.state === 'ready', 'expected /task command to be ready')
-  assert((task?.action as DesktopSlashCommandAction | undefined)?.kind === 'queue-ai-task', 'expected /task to queue an AI task')
+  assert((task?.action as DesktopSlashCommandAction | undefined)?.kind === 'start-background-router-session', 'expected /task to start a background Router session')
 
   const palette = buildDesktopSlashPaletteState('/task fix the sidebar now')
   assert(palette.exactMatch?.id === 'task', 'expected /task arguments to preserve the exact command match')

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { desktopComposerTaskCommand, submitDesktopComposer } from './composer-submit'
+import { desktopComposerBackgroundRouterCommand, submitDesktopComposer } from './composer-submit'
 
 function deferred() {
   let resolve!: () => void
@@ -14,9 +14,9 @@ function deferred() {
 
 test('pending routed-session drafts classify every exact /task form for normal command dispatch', () => {
   for (const draft of ['/task X', ' /TASK plan X', '/task', '/task plan']) {
-    assert.equal(desktopComposerTaskCommand(draft)?.action.kind, 'queue-ai-task', draft)
+    assert.equal(desktopComposerBackgroundRouterCommand(draft)?.action.kind, 'start-background-router-session', draft)
   }
-  assert.equal(desktopComposerTaskCommand('X'), null)
+  assert.equal(desktopComposerBackgroundRouterCommand('X'), null)
 })
 
 test('exact /task with arguments takes precedence over stopping and clears only after queue success', async () => {
@@ -35,11 +35,11 @@ test('exact /task with arguments takes precedence over stopping and clears only 
   })
 
   await Promise.resolve()
-  assert.deepEqual(calls, ['queue-ai-task:/task keep the active run intact'])
+  assert.deepEqual(calls, ['start-background-router-session:/task keep the active run intact'])
 
   queued.resolve()
-  assert.equal(await submission, 'task-queued')
-  assert.deepEqual(calls, ['queue-ai-task:/task keep the active run intact', 'clear'])
+  assert.equal(await submission, 'background-router-started')
+  assert.deepEqual(calls, ['start-background-router-session:/task keep the active run intact', 'clear'])
 })
 
 test('rejected /task retains the draft and never submits or stops', async () => {
@@ -56,7 +56,7 @@ test('rejected /task retains the draft and never submits or stops', async () => 
     },
   })
 
-  assert.equal(result, 'task-queue-failed')
+  assert.equal(result, 'background-router-failed')
   assert.deepEqual(calls, ['queue'])
 })
 
@@ -75,7 +75,7 @@ test('bare /task forms retain the draft and never fall through to ordinary stop 
       },
     })
 
-    assert.equal(result, 'task-queue-failed')
+    assert.equal(result, 'background-router-failed')
     assert.deepEqual(calls, [`queue:${draft}`])
   }
 })

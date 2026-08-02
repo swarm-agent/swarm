@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   normalizeDesktopV3RoutedSessionStartResponse,
+  postDesktopV3BackgroundRouterSessionStart,
   postDesktopV3RoutedSessionStart,
 } from './write-api'
 
@@ -116,6 +117,45 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
   ]) {
     assert.equal(Object.hasOwn(body, forbidden), false, `request must not preselect ${forbidden}`)
   }
+})
+
+test('background Router start uses its dedicated endpoint without exposing worktree disablement', async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), init })
+    return new Response(JSON.stringify(routedResponse({
+      starting_mode: 'auto',
+      session: { ...(routedResponse().session as Record<string, unknown>), mode: 'auto' },
+    })), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  try {
+    await postDesktopV3BackgroundRouterSessionStart({
+      input: '  Implement in the background  ',
+      client_request_id: 'desktop-background-router:stable-1',
+      agent_name: ' swarm ',
+      metadata: { source: 'desktop-v3-task-command' },
+      plan_mode_requested: false,
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.url, '/v3/sessions:background-router')
+  const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>
+  assert.deepEqual(body, {
+    input: 'Implement in the background',
+    client_request_id: 'desktop-background-router:stable-1',
+    idempotency_key: 'desktop-background-router:stable-1',
+    agent_name: 'swarm',
+    metadata: { source: 'desktop-v3-task-command' },
+    plan_mode_requested: false,
+  })
+  assert.equal(Object.hasOwn(body, 'managed_worktree_requested'), false)
 })
 
 test('routed start accepts staging IDs without inventing route selections', async () => {

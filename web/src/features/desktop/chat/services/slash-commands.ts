@@ -15,7 +15,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
   | { kind: 'new-session' }
-  | { kind: 'queue-ai-task' }
+  | { kind: 'start-background-router-session' }
   | { kind: 'prime-worktree' }
   | { kind: 'show-help' }
 
@@ -110,11 +110,11 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'task',
     command: '/task',
     aliases: [],
-    hint: 'Queue a durable AI task for Swarm',
-    actionLabel: 'Queue AI Task',
+    hint: 'Start a background Router session',
+    actionLabel: 'Start Background Router Session',
     tips: ['/task <request> (auto)', '/task plan <request>', 'The task opens a managed worktree session'],
     state: 'ready',
-    action: { kind: 'queue-ai-task' },
+    action: { kind: 'start-background-router-session' },
   },
   {
     id: 'agents',
