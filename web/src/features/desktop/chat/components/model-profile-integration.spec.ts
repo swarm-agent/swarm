@@ -7,8 +7,9 @@ const newSessionSource = readFileSync(new URL('./desktop-v3-new-session-pane.tsx
 const existingSessionSource = readFileSync(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
 const controlSource = readFileSync(new URL('./agent-model-control.tsx', import.meta.url), 'utf8')
 
-test('provider onboarding refreshes the canonical profile query while skip remains profile-free', () => {
+test('provider onboarding refreshes direct Swarm settings and generic profile queries while skip remains profile-free', () => {
   assert.match(onboardingSource, /queryKey: modelProfilesQueryOptions\(\)\.queryKey/)
+  assert.match(onboardingSource, /queryKey: \['swarm-model-settings'\]/)
   assert.match(onboardingSource, /Skip for now/)
   assert.doesNotMatch(onboardingSource, /createModelProfile|\/v2\/agent-model-profiles/)
 })
@@ -58,4 +59,8 @@ test('agent setup removes profile management while preserving direct model persi
   assert.match(controlSource, /title="Plan model"/)
   assert.match(controlSource, /saveSystemAgentSettings/)
   assert.match(controlSource, /saveSwarmModelSettings/)
+  assert.match(controlSource, /action: \{ provider: action\.provider/)
+  assert.doesNotMatch(controlSource, /createModelProfile\(action|updateModelProfile\(currentAction|actionFavoriteId|planFavoriteId/)
+  assert.match(newSessionSource, /input\.agentName\.trim\(\)\.toLowerCase\(\) === 'swarm'/)
+  assert.match(existingSessionSource, /input\.agentName\.trim\(\)\.toLowerCase\(\) === 'swarm'/)
 })

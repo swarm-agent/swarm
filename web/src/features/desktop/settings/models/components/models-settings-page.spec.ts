@@ -42,7 +42,7 @@ test('model options collapse context variants into one flat favorite editor choi
 })
 
 test('Models page uses canonical queries, mutations, invalidation, and explicit errors', () => {
-  assert.match(source, /Manage flat favorites and assign Default\/Action plus optional Plan for Swarm/)
+  assert.match(source, /configure Swarm’s Action and Plan models directly/)
   assert.match(source, /modelOptionsQueryOptions\(\)/)
   assert.match(source, /modelProfilesQueryOptions\(\)/)
   assert.match(source, /createModelProfile/)
@@ -53,6 +53,9 @@ test('Models page uses canonical queries, mutations, invalidation, and explicit 
   assert.match(source, /invalidateModelProfiles\(queryClient\)/)
   assert.match(source, /getSwarmModelSettings/)
   assert.match(source, /saveSwarmModelSettings/)
+  assert.match(source, /action=\{settings\.action\}/)
+  assert.match(source, /plan=\{settings\.plan\}/)
+  assert.doesNotMatch(source, /actionFavoriteId|planFavoriteId|planEnabled/)
   assert.match(source, /role="alert"/)
 })
 

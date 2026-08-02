@@ -353,7 +353,7 @@ export function DesktopV3AgenticComposer({
   const openAgentSetup = useCallback(() => {
     setAgentSetupOpenSignal((current) => current + 1)
   }, [])
-  const showFavoriteSelector = resolvedSessionControls || routedNewSession
+  const showFavoriteSelector = (resolvedSessionControls || routedNewSession) && selectedPrimaryAgent.trim().toLowerCase() !== 'swarm'
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft

@@ -4,72 +4,33 @@ import { readFileSync } from 'node:fs'
 import { buildSwarmModelAssignmentSaveInput } from './swarm-model-assignment-settings'
 
 const source = readFileSync(new URL('./swarm-model-assignment-settings.tsx', import.meta.url), 'utf8')
-const favoriteIds = ['favorite-action', 'favorite-plan']
+const action = { provider: 'codex', model: 'gpt-action', thinking: 'high', serviceTier: 'fast', contextMode: '' }
+const plan = { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', serviceTier: '', contextMode: 'large' }
 
-test('Action assignment is always required and must reference an available flat favorite', () => {
-  assert.deepEqual(buildSwarmModelAssignmentSaveInput({
-    favoriteIds,
-    actionFavoriteId: '',
-    planEnabled: false,
-  }), { value: null, error: 'Choose an Action favorite.' })
-
-  assert.deepEqual(buildSwarmModelAssignmentSaveInput({
-    favoriteIds,
-    actionFavoriteId: 'missing',
-    planEnabled: false,
-  }), { value: null, error: 'Choose an Action favorite.' })
+test('Action and Plan each require a direct model selection', () => {
+  assert.deepEqual(buildSwarmModelAssignmentSaveInput({ action: { ...action, provider: '' }, plan }), {
+    value: null, error: 'Choose provider, model, and thinking for Action.',
+  })
+  assert.deepEqual(buildSwarmModelAssignmentSaveInput({ action, plan: { ...plan, thinking: '' } }), {
+    value: null, error: 'Choose provider, model, and thinking for Plan.',
+  })
 })
 
-test('disabled Plan omits its assignment from the save contract', () => {
+test('direct selections are normalized independently', () => {
   assert.deepEqual(buildSwarmModelAssignmentSaveInput({
-    favoriteIds,
-    actionFavoriteId: ' favorite-action ',
-    planEnabled: false,
-    planFavoriteId: 'favorite-plan',
+    action: { ...action, provider: ' codex ', model: ' gpt-action ' },
+    plan: { ...plan, contextMode: ' LARGE ' },
   }), {
-    value: { actionFavoriteId: 'favorite-action', planEnabled: false },
+    value: { action, plan },
     error: null,
   })
 })
 
-test('enabled Plan requires an available favorite and may reuse Action', () => {
-  assert.deepEqual(buildSwarmModelAssignmentSaveInput({
-    favoriteIds,
-    actionFavoriteId: 'favorite-action',
-    planEnabled: true,
-  }), { value: null, error: 'Choose a Plan favorite.' })
-
-  assert.deepEqual(buildSwarmModelAssignmentSaveInput({
-    favoriteIds,
-    actionFavoriteId: 'favorite-action',
-    planEnabled: true,
-    planFavoriteId: 'favorite-action',
-  }), {
-    value: { actionFavoriteId: 'favorite-action', planEnabled: true, planFavoriteId: 'favorite-action' },
-    error: null,
-  })
-
-  assert.deepEqual(buildSwarmModelAssignmentSaveInput({
-    favoriteIds,
-    actionFavoriteId: 'favorite-action',
-    planEnabled: true,
-    planFavoriteId: 'favorite-plan',
-  }), {
-    value: {
-      actionFavoriteId: 'favorite-action',
-      planEnabled: true,
-      planFavoriteId: 'favorite-plan',
-    },
-    error: null,
-  })
-})
-
-test('component exposes one pure-prop save seam and explicit Action and Plan controls', () => {
+test('component exposes direct Action and Plan editors without favorite assignment controls', () => {
   assert.match(source, /onSave: \(input: SwarmModelAssignmentSaveInput\) => void/)
-  assert.match(source, />\s*Action <span/)
-  assert.match(source, />Enable Plan assignment</)
-  assert.match(source, />\s*Plan <span/)
-  assert.match(source, /Plan may reuse Action or select another flat favorite/)
-  assert.doesNotMatch(source, /disabled=\{favorite\.id === draftActionFavoriteId\}/)
+  assert.match(source, /label="Action model"/)
+  assert.match(source, /label="Plan model"/)
+  assert.match(source, /do not create or assign model favorites/)
+  assert.doesNotMatch(source, /actionFavoriteId|planFavoriteId|planEnabled|Choose an Action favorite|Enable Plan assignment/)
   assert.doesNotMatch(source, /requestJson|useQuery|useMutation/)
 })

@@ -4,51 +4,54 @@ import { getSwarmModelSettings } from './get-model-settings'
 import { saveSwarmModelSettings } from '../mutations/save-model-settings'
 
 const originalFetch = globalThis.fetch
+const action = { provider: 'codex', model: 'gpt-action', thinking: 'high', service_tier: 'fast', context_mode: '' }
+const plan = { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', service_tier: 'fast', context_mode: 'large' }
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
-test('GET maps required Action and enabled Plan favorite assignments', async () => {
+test('GET maps direct Action and Plan selections', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     ok: true,
-    model_settings: { action_favorite_id: 'mp_action', plan_enabled: true, plan_favorite_id: 'mp_plan', updated_at: 42 },
+    model_settings: { action, plan, updated_at: 42 },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })
   assert.deepEqual(await getSwarmModelSettings(), {
-    actionFavoriteId: 'mp_action', planEnabled: true, planFavoriteId: 'mp_plan', updatedAt: 42,
+    action: { provider: 'codex', model: 'gpt-action', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+    plan: { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', serviceTier: 'fast', contextMode: 'large' },
+    updatedAt: 42,
   })
 })
 
-test('GET rejects malformed or contradictory canonical settings', async () => {
+test('GET rejects missing or malformed direct selections', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
-    ok: true, model_settings: { action_favorite_id: 'mp_action', plan_enabled: true, updated_at: 42 },
+    ok: true, model_settings: { action, updated_at: 42 },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-  await assert.rejects(getSwarmModelSettings(), /plan_favorite_id/)
+  await assert.rejects(getSwarmModelSettings(), /missing plan/)
 })
 
-test('PUT sends the canonical assignment payload and parses the response', async () => {
+test('PUT sends direct Action and Plan payloads and parses the response', async () => {
   let request: RequestInit | undefined
   globalThis.fetch = async (_input, init) => {
     request = init
-    return new Response(JSON.stringify({
-      ok: true, model_settings: { action_favorite_id: 'mp_action', plan_enabled: false, updated_at: 43 },
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    return new Response(JSON.stringify({ ok: true, model_settings: { action, plan, updated_at: 43 } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })
   }
-  assert.deepEqual(await saveSwarmModelSettings({ actionFavoriteId: ' mp_action ', planEnabled: false }), {
-    actionFavoriteId: 'mp_action', planEnabled: false, updatedAt: 43,
+  await saveSwarmModelSettings({
+    action: { provider: ' codex ', model: ' gpt-action ', thinking: ' high ', serviceTier: ' fast ', contextMode: '' },
+    plan: { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', serviceTier: 'fast', contextMode: ' LARGE ' },
   })
   assert.equal(request?.method, 'PUT')
-  assert.deepEqual(JSON.parse(String(request?.body)), { action_favorite_id: 'mp_action', plan_enabled: false })
+  assert.deepEqual(JSON.parse(String(request?.body)), { action, plan })
 })
 
-test('PUT validates assignments before making a request and surfaces server errors', async () => {
+test('PUT validates both selections before making a request', async () => {
   let called = false
-  globalThis.fetch = async () => {
-    called = true
-    return new Response(JSON.stringify({ error: 'favorite missing' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
-  }
-  await assert.rejects(saveSwarmModelSettings({ actionFavoriteId: 'mp_action', planEnabled: true }), /Plan favorite is required/)
-  await assert.rejects(saveSwarmModelSettings({ actionFavoriteId: 'mp_action', planEnabled: false, planFavoriteId: 'mp_plan' }), /must be omitted/)
+  globalThis.fetch = async () => { called = true; throw new Error('unexpected') }
+  await assert.rejects(saveSwarmModelSettings({
+    action: { provider: '', model: 'gpt-action', thinking: 'high', serviceTier: '', contextMode: '' },
+    plan: { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', serviceTier: '', contextMode: '' },
+  }), /Action provider, model, and thinking are required/)
   assert.equal(called, false)
-  await assert.rejects(saveSwarmModelSettings({ actionFavoriteId: 'mp_action', planEnabled: false }), /favorite missing/)
 })

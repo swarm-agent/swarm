@@ -1,12 +1,14 @@
+import type { ModelProfileSelectionRecord } from '../../../chat/types/chat'
+
+export type SwarmModelSelection = ModelProfileSelectionRecord
+
 export interface SwarmModelSettings {
-  actionFavoriteId: string
-  planEnabled: boolean
-  planFavoriteId?: string
+  action: SwarmModelSelection
+  plan: SwarmModelSelection
   updatedAt: number
 }
 
 export interface SwarmModelSettingsInput {
-  actionFavoriteId: string
-  planEnabled: boolean
-  planFavoriteId?: string
+  action: SwarmModelSelection
+  plan: SwarmModelSelection
 }

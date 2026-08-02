@@ -72,10 +72,13 @@ test('resolved selector preserves explicit loading, busy, and error states', () 
   assert.match(source, /setLocalError\(cause instanceof Error/)
 })
 
-test('existing and pending composers expose the flat favorite selector and share full agent setup', () => {
+test('non-Swarm composers retain the flat favorite selector while Swarm uses direct model setup', () => {
   assert.match(existingConversationSource, /resolvedSessionControls/)
+  assert.match(composerSource, /showFavoriteSelector = \(resolvedSessionControls \|\| routedNewSession\) && selectedPrimaryAgent\.trim\(\)\.toLowerCase\(\) !== 'swarm'/)
   assert.equal((composerSource.match(/showFavoriteSelector \?/g) ?? []).length, 2)
   assert.match(composerSource, /onOpenAgentSetup=\{openAgentSetup\}/)
   assert.match(composerSource, /<AgentModelControl/)
-  assert.match(readFileSync(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8'), /onModelProfileSelect=\{setSwarmActionFavorite\}/)
+  const pendingSource = readFileSync(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
+  assert.match(pendingSource, /actionModel = swarmModelSettingsQuery\.data\?\.action/)
+  assert.doesNotMatch(pendingSource, /setSwarmActionFavorite|onModelProfileSelect=/)
 })

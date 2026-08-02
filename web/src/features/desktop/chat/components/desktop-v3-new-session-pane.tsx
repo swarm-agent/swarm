@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
@@ -6,8 +6,6 @@ import type { DesktopSlashCommand } from '../services/slash-commands'
 import { agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
 import { createModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from '../queries/model-profile-queries'
 import { getSwarmModelSettings } from '../../settings/swarm/queries/get-model-settings'
-import { saveSwarmModelSettings } from '../../settings/swarm/mutations/save-model-settings'
-import type { SwarmModelSettings } from '../../settings/swarm/types/model-settings'
 import { swarmModelSettingsQueryKey } from '../../settings/models/components/models-settings-page'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { modelOptionKey } from '../services/model-options'
@@ -66,11 +64,8 @@ export function DesktopV3NewSessionPane({
   })
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const modelProfiles = modelProfilesQuery.data?.profiles ?? []
-  const actionFavoriteId = swarmModelSettingsQuery.data?.actionFavoriteId ?? modelProfilesQuery.data?.defaultProfileId ?? ''
-  const actionFavorite = useMemo(() => modelProfiles.find((profile) => profile.profileId === actionFavoriteId) ?? null, [actionFavoriteId, modelProfiles])
-  const activeModelProfile = actionFavorite
-    ? { source: 'saved' as const, profileId: actionFavorite.profileId, name: actionFavorite.name }
-    : { source: 'agent-default' as const, profileId: '', name: 'Swarm action model' }
+  const actionModel = swarmModelSettingsQuery.data?.action ?? null
+  const activeModelProfile = { source: 'agent-default' as const, profileId: '', name: 'Swarm action model' }
   const stagedAttachmentsRef = useRef<DesktopComposerStagedAttachment[]>([])
   const stagedAttachmentHistoryRef = useRef<DesktopComposerStagedAttachment[]>([])
   const removedStagedAttachmentIdsRef = useRef(new Set<string>())
@@ -168,32 +163,14 @@ export function DesktopV3NewSessionPane({
     return () => { cancelled = true }
   }, [controller, routedState])
 
-  async function setSwarmActionFavorite(profileId: string) {
-    const normalized = profileId.trim()
-    if (!normalized || agentModelSaving) return
-    setAgentModelSaving(true)
-    setLocalError(null)
-    try {
-      const current = swarmModelSettingsQuery.data ?? await getSwarmModelSettings()
-      const saved = await saveSwarmModelSettings({
-        actionFavoriteId: normalized,
-        planEnabled: current.planEnabled,
-        ...(current.planFavoriteId ? { planFavoriteId: current.planFavoriteId } : {}),
-      })
-      queryClient.setQueryData<SwarmModelSettings>(swarmModelSettingsQueryKey, saved)
-    } catch (cause) {
-      setLocalError(cause instanceof Error ? cause.message : 'Failed to switch Swarm action model.')
-      throw cause
-    } finally {
-      setAgentModelSaving(false)
-    }
-  }
-
   async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
     if (agentModelSaving) return
     setAgentModelSaving(true)
     setLocalError(null)
     try {
+      if (input.agentName.trim().toLowerCase() === 'swarm') {
+        throw new Error('Configure Swarm Action and Plan models directly in agent setup.')
+      }
       let profileId = input.profileId.trim()
       if (input.persistence === 'create' || input.persistence === 'create-copy') {
         const profile = await createModelProfile(input.modelProfile)
@@ -206,13 +183,6 @@ export function DesktopV3NewSessionPane({
       }
       if (input.makeDefault) await setDefaultModelProfile(profileId)
       await invalidateModelProfiles(queryClient)
-      const current = swarmModelSettingsQuery.data ?? await getSwarmModelSettings()
-      const saved = await saveSwarmModelSettings({
-        actionFavoriteId: profileId,
-        planEnabled: current.planEnabled,
-        ...(current.planFavoriteId ? { planFavoriteId: current.planFavoriteId } : {}),
-      })
-      queryClient.setQueryData<SwarmModelSettings>(swarmModelSettingsQueryKey, saved)
     } catch (cause) {
       setLocalError(cause instanceof Error ? cause.message : 'Failed to update Swarm agent setup.')
       throw cause
@@ -346,14 +316,13 @@ export function DesktopV3NewSessionPane({
           agents={agentStateQuery.data?.profiles ?? []}
           modelProfiles={modelProfiles}
           activeModelProfile={activeModelProfile}
-          onModelProfileSelect={setSwarmActionFavorite}
           modelProfilesLoading={modelProfilesQuery.isPending || swarmModelSettingsQuery.isPending}
           modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : swarmModelSettingsQuery.error instanceof Error ? swarmModelSettingsQuery.error.message : null}
           modelOptions={modelOptionsQuery.data ?? []}
-          selectedModelKey={actionFavorite ? modelOptionKey(actionFavorite.provider, actionFavorite.model, actionFavorite.contextMode) : ''}
-          selectedServiceTier={actionFavorite?.serviceTier ?? ''}
-          thinking={actionFavorite?.thinking ?? ''}
-          modelControlDetail={actionFavorite ? `${actionFavorite.provider}/${actionFavorite.model}` : 'Swarm action model'}
+          selectedModelKey={actionModel ? modelOptionKey(actionModel.provider, actionModel.model, actionModel.contextMode) : ''}
+          selectedServiceTier={actionModel?.serviceTier ?? ''}
+          thinking={actionModel?.thinking ?? ''}
+          modelControlDetail={actionModel ? `${actionModel.provider}/${actionModel.model}` : 'Swarm action model'}
           onConfirmAgentSettings={handleConfirmAgentSettings}
           agentModelControlBusy={agentModelSaving}
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}

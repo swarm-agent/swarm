@@ -108,14 +108,14 @@ export function ModelsSettingsPage() {
   const loadErrors = [
     optionsQuery.error ? `Model choices are unavailable: ${errorMessage(optionsQuery.error, 'request failed')}` : '',
     profilesQuery.error ? `Model favorites are unavailable: ${errorMessage(profilesQuery.error, 'request failed')}` : '',
-    settingsQuery.error ? `Swarm assignments are unavailable: ${errorMessage(settingsQuery.error, 'request failed')}` : '',
+    settingsQuery.error ? `Swarm models are unavailable: ${errorMessage(settingsQuery.error, 'request failed')}` : '',
   ].filter(Boolean)
   const favoriteError = favoritesMutation.error
     ? errorMessage(favoritesMutation.error, 'The model favorite request failed.')
-    : loadErrors.filter((message) => !message.startsWith('Swarm assignments')).join(' ')
+    : loadErrors.filter((message) => !message.startsWith('Swarm models')).join(' ')
   const assignmentError = settingsMutation.error
-    ? errorMessage(settingsMutation.error, 'The Swarm assignment request failed.')
-    : loadErrors.filter((message) => message.startsWith('Swarm assignments')).join(' ')
+    ? errorMessage(settingsMutation.error, 'The Swarm model request failed.')
+    : loadErrors.filter((message) => message.startsWith('Swarm models')).join(' ')
   const settings = settingsQuery.data
   const busy = profilesQuery.isPending || optionsQuery.isPending || favoritesMutation.isPending
 
@@ -132,7 +132,7 @@ export function ModelsSettingsPage() {
         </div>
         <div>
           <h2 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">Models</h2>
-          <p className="text-sm text-[var(--app-text-muted)]">Manage flat favorites and assign Default/Action plus optional Plan for Swarm.</p>
+          <p className="text-sm text-[var(--app-text-muted)]">Manage reusable favorites and configure Swarm’s Action and Plan models directly.</p>
         </div>
       </header>
 
@@ -153,18 +153,17 @@ export function ModelsSettingsPage() {
       <Card className="p-5">
         {settings ? (
           <SwarmModelAssignmentSettings
-            favorites={favorites}
-            actionFavoriteId={settings.actionFavoriteId}
-            planEnabled={settings.planEnabled}
-            planFavoriteId={settings.planFavoriteId}
+            modelOptions={modelOptions}
+            action={settings.action}
+            plan={settings.plan}
             saving={settingsMutation.isPending}
             error={assignmentError || null}
             onSave={saveAssignments}
           />
         ) : (
           <section aria-labelledby="swarm-model-assignments-title" className="space-y-3">
-            <h2 id="swarm-model-assignments-title" className="text-lg font-semibold text-[var(--app-text)]">Swarm model assignments</h2>
-            {assignmentError ? <div role="alert" className="text-sm text-[var(--app-danger)]">{assignmentError}</div> : <p className="text-sm text-[var(--app-text-muted)]">Loading assignments…</p>}
+            <h2 id="swarm-model-assignments-title" className="text-lg font-semibold text-[var(--app-text)]">Swarm models</h2>
+            {assignmentError ? <div role="alert" className="text-sm text-[var(--app-danger)]">{assignmentError}</div> : <p className="text-sm text-[var(--app-text-muted)]">Loading Swarm models…</p>}
           </section>
         )}
       </Card>

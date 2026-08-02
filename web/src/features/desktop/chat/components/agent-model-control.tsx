@@ -8,7 +8,6 @@ import { uiSettingsQueryOptions } from '../../../queries/query-options'
 import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
 import { normalizeCoderAgentSettings, normalizeCompactAgentSettings, normalizeDesignerAgentSettings, normalizeFinderAgentSettings, normalizeRouterAgentSettings } from '../../settings/swarm/types/swarm-settings'
 import { displayAgentName } from '../services/agent-display'
-import { createModelProfile, invalidateModelProfiles, updateModelProfile } from '../queries/model-profile-queries'
 import { getSwarmModelSettings } from '../../settings/swarm/queries/get-model-settings'
 import { saveSwarmModelSettings } from '../../settings/swarm/mutations/save-model-settings'
 import type { SwarmModelSettings } from '../../settings/swarm/types/model-settings'
@@ -186,17 +185,6 @@ function buildPatch(single: ModelDraft, modelOptions: ModelOptionRecord[]): Agen
   }
 }
 
-function draftFromModelProfile(profile: ModelProfileRecord | null, fallback: ModelDraft): ModelDraft {
-  if (!profile) return fallback
-  return {
-    provider: profile.provider,
-    model: profile.model,
-    thinking: profile.thinking,
-    serviceTier: profile.serviceTier,
-    contextMode: profile.contextMode,
-  }
-}
-
 function modelProfileInput(name: string, draft: ModelDraft, modelOptions: ModelOptionRecord[]): ModelProfileInput {
   const patch = buildPatch(draft, modelOptions)
   return {
@@ -349,12 +337,8 @@ export function AgentModelControl({
   function initializeDrafts(profile: AgentProfileRecord | null) {
     const fallback = modelDraftForProfile(profile)
     const settings = swarmModelSettingsQuery.data
-    const actionProfile = modelProfiles.find((candidate) => candidate.profileId === settings?.actionFavoriteId) ?? null
-    const planProfile = settings?.planEnabled
-      ? modelProfiles.find((candidate) => candidate.profileId === settings.planFavoriteId) ?? null
-      : null
-    const action = draftFromModelProfile(actionProfile, fallback)
-    const plan = draftFromModelProfile(planProfile, action)
+    const action = settings?.action ?? fallback
+    const plan = settings?.plan ?? action
     setSingleDraft(fallback)
     setActionDraft(action)
     setPlanDraft(plan)
@@ -412,20 +396,13 @@ export function AgentModelControl({
   }
 
   async function saveSwarmModels() {
-    const actionInput = validateDraft('Swarm Action', actionDraft)
-    const planInput = validateDraft('Swarm Plan', planDraft)
-    const current = swarmModelSettingsQuery.data ?? await getSwarmModelSettings()
-    const currentAction = modelProfiles.find((profile) => profile.profileId === current.actionFavoriteId) ?? null
-    const currentPlan = current.planEnabled ? modelProfiles.find((profile) => profile.profileId === current.planFavoriteId) ?? null : null
-    const action = currentAction
-      ? await updateModelProfile(currentAction.profileId, { ...actionInput, name: currentAction.name })
-      : await createModelProfile(actionInput)
-    const plan = currentPlan && currentPlan.profileId !== action.profileId
-      ? await updateModelProfile(currentPlan.profileId, { ...planInput, name: currentPlan.name })
-      : await createModelProfile(planInput)
-    const saved = await saveSwarmModelSettings({ actionFavoriteId: action.profileId, planEnabled: true, planFavoriteId: plan.profileId })
+    const action = validateDraft('Swarm Action', actionDraft)
+    const plan = validateDraft('Swarm Plan', planDraft)
+    const saved = await saveSwarmModelSettings({
+      action: { provider: action.provider, model: action.model, thinking: action.thinking, serviceTier: action.serviceTier, contextMode: action.contextMode },
+      plan: { provider: plan.provider, model: plan.model, thinking: plan.thinking, serviceTier: plan.serviceTier, contextMode: plan.contextMode },
+    })
     queryClient.setQueryData<SwarmModelSettings>(['swarm-model-settings'], saved)
-    await invalidateModelProfiles(queryClient)
   }
 
   async function confirm() {
