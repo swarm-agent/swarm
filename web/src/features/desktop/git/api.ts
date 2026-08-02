@@ -1,5 +1,5 @@
 import { requestJson } from '../../../app/api'
-import type { GitRealtimeResponse, GitSnapshot, GitStatusResponse } from './types'
+import type { GitCommitSuggestionResponse, GitRealtimeResponse, GitSnapshot, GitStatusResponse } from './types'
 
 function normalizeGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
   return {
@@ -51,6 +51,24 @@ export function startGitRealtime(workspacePath: string, sessionId = '', watchTok
     .finally(() => { gitRealtimeRequests.delete(endpoint) })
   gitRealtimeRequests.set(endpoint, request)
   return request
+}
+
+export async function suggestWorkspaceCommitMessage(input: {
+  workspacePath: string
+  cwd?: string
+  sessionId?: string
+}): Promise<GitCommitSuggestionResponse> {
+  const params = new URLSearchParams()
+  if (input.sessionId?.trim()) params.set('session_id', input.sessionId.trim())
+  const endpoint = `/v1/workspace/git/commit/suggestion${params.size > 0 ? `?${params.toString()}` : ''}`
+  return requestJson<GitCommitSuggestionResponse>(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workspace_path: input.workspacePath,
+      cwd: input.cwd ?? input.workspacePath,
+    }),
+  })
 }
 
 export async function commitWorkspaceChanges(input: {

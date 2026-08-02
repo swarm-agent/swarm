@@ -6,6 +6,11 @@ interface DesktopWorkspaceActionPanelProps {
   workspacePath: string
   action: WorkspaceAction
   autoLaunch?: boolean
+  initialRun?: WorkspaceActionRun | null
+  initialValues?: Record<string, string>
+  onRunChange?: (run: WorkspaceActionRun) => void
+  autoCloseOnSuccess?: boolean
+  contextNotice?: string
   onClose: () => void
 }
 
@@ -17,15 +22,25 @@ function invocationPreview(action: WorkspaceAction): string {
   return parts.join(' ')
 }
 
-export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch = false, onClose }: DesktopWorkspaceActionPanelProps) {
-  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue])))
-  const [run, setRun] = useState<WorkspaceActionRun | null>(null)
+export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch = false, initialRun = null, initialValues, onRunChange, autoCloseOnSuccess = true, contextNotice = '', onClose }: DesktopWorkspaceActionPanelProps) {
+  const [values, setValues] = useState<Record<string, string>>(() => initialValues ?? Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue])))
+  const [run, setRun] = useState<WorkspaceActionRun | null>(initialRun)
   const [error, setError] = useState('')
   const [launching, setLaunching] = useState(false)
   const [successNotice, setSuccessNotice] = useState('')
   const outputRef = useRef<HTMLPreElement | null>(null)
   const autoLaunchStartedRef = useRef(false)
+  const onRunChangeRef = useRef(onRunChange)
   const missingRequired = useMemo(() => action.inputs.some((input) => input.required && !(values[input.id] ?? '').trim()), [action.inputs, values])
+
+  useEffect(() => {
+    onRunChangeRef.current = onRunChange
+  }, [onRunChange])
+
+  useEffect(() => {
+    if (!initialRun) return
+    setRun((current) => current?.id === initialRun.id && current.status === initialRun.status && current.output === initialRun.output ? current : initialRun)
+  }, [initialRun])
 
   useEffect(() => {
     if (!run || run.status !== 'running') return
@@ -34,6 +49,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
       void fetchWorkspaceActionRun(workspacePath, run.id, controller.signal)
         .then((next) => {
           setRun(next)
+          onRunChangeRef.current?.(next)
           setError('')
           if (next.status === 'succeeded') setSuccessNotice(`${next.actionName} completed successfully.`)
         })
@@ -48,10 +64,10 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
   }, [run?.id, run?.status, workspacePath])
 
   useEffect(() => {
-    if (run?.status !== 'succeeded') return
+    if (!autoCloseOnSuccess || run?.status !== 'succeeded') return
     const timer = window.setTimeout(onClose, 1800)
     return () => window.clearTimeout(timer)
-  }, [onClose, run?.status])
+  }, [autoCloseOnSuccess, onClose, run?.status])
 
   useEffect(() => {
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
@@ -61,7 +77,9 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     setLaunching(true)
     setError('')
     try {
-      setRun(await startWorkspaceAction(workspacePath, action.id, values))
+      const next = await startWorkspaceAction(workspacePath, action.id, values)
+      setRun(next)
+      onRunChangeRef.current?.(next)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not start Action.')
     } finally {
@@ -79,7 +97,9 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     if (!run) return
     setError('')
     try {
-      setRun(await cancelWorkspaceActionRun(workspacePath, run.id))
+      const next = await cancelWorkspaceActionRun(workspacePath, run.id)
+      setRun(next)
+      onRunChangeRef.current?.(next)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not stop Action.')
     }
@@ -119,9 +139,10 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
             </span>
             {run.status === 'running' ? <button type="button" onClick={() => { void stop() }} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] px-2.5 font-semibold text-[var(--app-text)]"><Square size={12} />Stop</button> : null}
           </div>
+          {contextNotice ? <p className="text-xs text-[var(--app-text-muted)]">{contextNotice}</p> : null}
           {run.output ? <pre ref={outputRef} className="max-h-52 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--app-code-bg,var(--app-bg-alt))] p-3 font-mono text-[11px] leading-5 text-[var(--app-text)]">{run.output}</pre> : <p className="text-xs text-[var(--app-text-muted)]">Waiting for output…</p>}
           {run.outputTruncated ? <p className="text-[11px] text-[var(--app-warning)]">Earlier output was truncated.</p> : null}
-          {run.error ? <p className="text-xs text-[var(--app-danger)]">{run.error}{run.exitCode !== null ? ` (exit ${run.exitCode})` : ''}</p> : null}
+          {run.error ? <p className="text-xs text-[var(--app-danger)]">{contextNotice ? 'The commit succeeded, but the Action failed: ' : ''}{run.error}{run.exitCode !== null ? ` (exit ${run.exitCode})` : ''}</p> : null}
           {error ? <p className="text-xs text-[var(--app-danger)]" role="alert">{error}</p> : null}
           {successNotice ? <div className="rounded-lg border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-3 py-2 text-xs font-medium text-[var(--app-success)]" role="status">{successNotice}</div> : null}
           {run.status !== 'running' && run.status !== 'succeeded' ? <div className="flex justify-end"><button type="button" onClick={onClose} className="h-8 rounded-lg border border-[var(--app-border)] px-3 text-xs font-semibold">Close</button></div> : null}

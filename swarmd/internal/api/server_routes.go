@@ -122,6 +122,7 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/actions/runs/cancel", s.handleWorkspaceActionRunCancel)
 	mux.HandleFunc("/v1/workspace/git/status", s.handleGitStatus)
 	mux.HandleFunc("/v1/workspace/git/commit", s.handleGitCommit)
+	mux.HandleFunc("/v1/workspace/git/commit/suggestion", s.handleGitCommitSuggestion)
 	mux.HandleFunc("/v1/workspace/git/realtime", s.handleGitRealtime)
 	mux.HandleFunc("/v1/workspace/delete", s.handleWorkspaceDelete)
 	mux.HandleFunc("/v1/worktrees", s.handleWorktrees)

@@ -54,6 +54,13 @@ export interface GitStatusResponse {
   status: GitSnapshot
 }
 
+export interface GitCommitSuggestionResponse {
+  ok: boolean
+  workspace_path: string
+  cwd: string
+  message: string
+}
+
 export interface GitRealtimeDiagnostics {
   backend: 'fsnotify' | 'polling' | string
   watch_count: number

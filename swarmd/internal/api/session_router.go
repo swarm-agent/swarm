@@ -26,6 +26,14 @@ type sessionRouterDecision struct {
 	Profile   pebblestore.AgentProfile
 }
 
+// configuredRouterResponse is the result of one non-durable, tool-free call to
+// the account's configured Router model. Callers own their prompt and strict
+// output validation; this bridge owns model resolution and provider invocation.
+type configuredRouterResponse struct {
+	Text    string
+	Profile pebblestore.AgentProfile
+}
+
 // routeSessionOnce invokes the configured hidden Router exactly once. It does not
 // create a session, allocate a worktree, or mutate workspace selection.
 func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Principal, input string, managedWorktreeAllowed bool) (sessionRouterDecision, error) {
@@ -66,7 +74,6 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 		routerContext.Workspaces = []routerruntime.Workspace{{ID: bound.WorkspaceID, Name: bound.WorkspaceName, Definition: bound.Definition}}
 	}
 
-	authorityContext := identity.ContextWithPrincipal(ctx, principal)
 	routerContext.ManagedWorktreeAllowed = managedWorktreeAllowed
 
 	routerRequest := routerruntime.Request{Input: input, Context: routerContext}
@@ -86,9 +93,53 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 		return sessionRouterDecision{}, fmt.Errorf("encode Router result schema: %w", err)
 	}
 
+	// provideriface has no structured-output field shared by every adapter. Keep
+	// the strict schema in system instructions and enforce it again with DecodeResult.
+	instructions := strings.TrimSpace(prompt) + "\nOutput JSON schema (authoritative): " + string(encodedSchema)
+	configuredResponse, err := s.invokeConfiguredRouterOnce(ctx, principal, instructions, input, maxSessionRouterOutputBytes)
+	if err != nil {
+		return sessionRouterDecision{}, err
+	}
+	result, err := routerruntime.DecodeResult(configuredResponse.Text, routerContext)
+	if err != nil {
+		return sessionRouterDecision{}, err
+	}
+
+	selectedWorkspaceID := ""
+	if result.WorkspaceID != nil {
+		selectedWorkspaceID = *result.WorkspaceID
+	}
+	selection, err := s.workspace.ResolveRoutingWorkspaceForPrincipal(principal, workspaceContext, selectedWorkspaceID)
+	if err != nil {
+		return sessionRouterDecision{}, fmt.Errorf("revalidate Router workspace selection: %w", err)
+	}
+	return sessionRouterDecision{Result: result, Workspace: selection, Profile: configuredResponse.Profile}, nil
+}
+
+func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal identity.Principal, instructions, input string, maxOutputBytes int) (configuredRouterResponse, error) {
+	if s == nil || s.providers == nil {
+		return configuredRouterResponse{}, errors.New("provider registry is not configured")
+	}
+	if s.uiSettings == nil {
+		return configuredRouterResponse{}, errors.New("ui settings service is not configured")
+	}
+	if !principal.Valid() {
+		return configuredRouterResponse{}, identity.ErrPrincipalRequired
+	}
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" {
+		return configuredRouterResponse{}, errors.New("Router instructions are required")
+	}
+	if strings.TrimSpace(input) == "" {
+		return configuredRouterResponse{}, errors.New("Router input is required")
+	}
+	if maxOutputBytes <= 0 {
+		return configuredRouterResponse{}, errors.New("Router output byte limit must be positive")
+	}
+
 	uiSettings, err := s.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("read Router model settings: %w", err)
+		return configuredRouterResponse{}, fmt.Errorf("read Router model settings: %w", err)
 	}
 	configured := uiSettings.Agents.Router
 	profile := agentruntime.RouterAgentProfileForParent(pebblestore.AgentProfile{
@@ -97,38 +148,36 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	providerID := modelruntime.NormalizeProviderID(profile.Provider)
 	modelID := strings.TrimSpace(profile.Model)
 	if providerID == "" || modelID == "" {
-		return sessionRouterDecision{}, errors.New("Router provider and model must be configured")
+		return configuredRouterResponse{}, errors.New("Router provider and model must be configured")
 	}
 	if s.model == nil {
-		return sessionRouterDecision{}, errors.New("model service is not configured")
+		return configuredRouterResponse{}, errors.New("model service is not configured")
 	}
 	resolvedModel, err := s.model.ResolvePreference(pebblestore.ModelPreference{
 		Provider: providerID, Model: modelID, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier,
 	})
 	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("resolve Router model %q/%q: %w", providerID, modelID, err)
+		return configuredRouterResponse{}, fmt.Errorf("resolve Router model %q/%q: %w", providerID, modelID, err)
 	}
 	if !resolvedModel.CatalogPresent {
-		return sessionRouterDecision{}, fmt.Errorf("Router model catalog record for provider %q model %q is unavailable", providerID, modelID)
+		return configuredRouterResponse{}, fmt.Errorf("Router model catalog record for provider %q model %q is unavailable", providerID, modelID)
 	}
 	catalogLookup, err := s.model.GetCatalog(providerID, modelID)
 	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("read Router model catalog for provider %q model %q: %w", providerID, modelID, err)
+		return configuredRouterResponse{}, fmt.Errorf("read Router model catalog for provider %q model %q: %w", providerID, modelID, err)
 	}
 	if !catalogLookup.Found {
-		return sessionRouterDecision{}, fmt.Errorf("Router model catalog record for provider %q model %q is unavailable", providerID, modelID)
+		return configuredRouterResponse{}, fmt.Errorf("Router model catalog record for provider %q model %q is unavailable", providerID, modelID)
 	}
 	if profile.ToolContract == nil || len(profile.ToolContract.Tools) != 0 {
-		return sessionRouterDecision{}, errors.New("compiled Router profile must be tool-free")
+		return configuredRouterResponse{}, errors.New("compiled Router profile must be tool-free")
 	}
 	runner, ok := s.providers.GetRunner(providerID)
 	if !ok || runner == nil {
-		return sessionRouterDecision{}, fmt.Errorf("Router provider %q is not available", providerID)
+		return configuredRouterResponse{}, fmt.Errorf("Router provider %q is not available", providerID)
 	}
 
-	// provideriface has no structured-output field shared by every adapter. Keep
-	// the strict schema in system instructions and enforce it again with DecodeResult.
-	instructions := strings.TrimSpace(prompt) + "\nOutput JSON schema (authoritative): " + string(encodedSchema)
+	authorityContext := identity.ContextWithPrincipal(ctx, principal)
 	response, err := runner.CreateResponse(authorityContext, provideriface.Request{
 		Model:        resolvedModel.Preference.Model,
 		Thinking:     resolvedModel.Preference.Thinking,
@@ -143,30 +192,17 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 		ToolChoice: "none",
 	})
 	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("Router provider response: %w", err)
+		return configuredRouterResponse{}, fmt.Errorf("Router provider response: %w", err)
 	}
 	if len(response.FunctionCalls) != 0 || response.RestartTurn {
-		return sessionRouterDecision{}, errors.New("Router provider requested a tool or another turn")
+		return configuredRouterResponse{}, errors.New("Router provider requested a tool or another turn")
 	}
-	if len(response.Text) > maxSessionRouterOutputBytes {
-		return sessionRouterDecision{}, fmt.Errorf("Router provider output exceeds %d bytes", maxSessionRouterOutputBytes)
+	if len(response.Text) > maxOutputBytes {
+		return configuredRouterResponse{}, fmt.Errorf("Router provider output exceeds %d bytes", maxOutputBytes)
 	}
 	raw := strings.TrimSpace(response.Text)
 	if raw == "" {
-		return sessionRouterDecision{}, errors.New("Router provider returned empty output")
+		return configuredRouterResponse{}, errors.New("Router provider returned empty output")
 	}
-	result, err := routerruntime.DecodeResult(raw, routerContext)
-	if err != nil {
-		return sessionRouterDecision{}, err
-	}
-
-	selectedWorkspaceID := ""
-	if result.WorkspaceID != nil {
-		selectedWorkspaceID = *result.WorkspaceID
-	}
-	selection, err := s.workspace.ResolveRoutingWorkspaceForPrincipal(principal, workspaceContext, selectedWorkspaceID)
-	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("revalidate Router workspace selection: %w", err)
-	}
-	return sessionRouterDecision{Result: result, Workspace: selection, Profile: profile}, nil
+	return configuredRouterResponse{Text: raw, Profile: profile}, nil
 }

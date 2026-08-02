@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 
-import { commitWorkspaceChanges, fetchGitStatus, startGitRealtime } from './api'
+import { commitWorkspaceChanges, fetchGitStatus, startGitRealtime, suggestWorkspaceCommitMessage } from './api'
 
 const originalFetch = globalThis.fetch
 
@@ -60,6 +60,34 @@ test('startGitRealtime coalesces duplicate in-flight cache-hit requests', async 
     status: { workspace_path: '/workspace/project', has_git: true, clean: true, files: [] },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   await Promise.all([first, second])
+})
+
+test('suggestWorkspaceCommitMessage posts repository identity without browser-supplied diff text', async () => {
+  let capturedInput: RequestInfo | URL | undefined
+  let capturedInit: RequestInit | undefined
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedInput = input
+    capturedInit = init
+    return new Response(JSON.stringify({
+      ok: true,
+      workspace_path: '/workspace/project',
+      cwd: '/workspace/project',
+      message: 'feat: add AI commit message suggestions',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+
+  const response = await suggestWorkspaceCommitMessage({
+    workspacePath: '/workspace/project',
+    sessionId: 'session-1',
+  })
+
+  assert.equal(response.message, 'feat: add AI commit message suggestions')
+  assert.equal(capturedInput, '/v1/workspace/git/commit/suggestion?session_id=session-1')
+  assert.equal(capturedInit?.method, 'POST')
+  assert.deepEqual(JSON.parse(String(capturedInit?.body)), {
+    workspace_path: '/workspace/project',
+    cwd: '/workspace/project',
+  })
 })
 
 test('commitWorkspaceChanges posts exact manual commit request to git commit API', async () => {
