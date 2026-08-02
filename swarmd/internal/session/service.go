@@ -110,6 +110,34 @@ func (s *Service) BeginExecutionEpoch(input pebblestore.BeginExecutionEpochInput
 	return s.store.BeginExecutionEpoch(input)
 }
 
+func (s *Service) ClaimExecutionEpochRecovery(sessionID, epochID, ownerRunID string, now int64) (pebblestore.ExecutionEpochRecovery, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpochRecovery{}, false, errors.New("session service is not configured")
+	}
+	return s.store.ClaimExecutionEpochRecovery(sessionID, epochID, ownerRunID, now)
+}
+
+func (s *Service) GetExecutionEpochRecovery(sessionID, epochID string) (pebblestore.ExecutionEpochRecovery, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpochRecovery{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetExecutionEpochRecovery(sessionID, epochID)
+}
+
+func (s *Service) UpdateExecutionEpochRecoveryPhase(sessionID, epochID, ownerRunID, phase, reason string, now int64) (pebblestore.ExecutionEpochRecovery, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpochRecovery{}, errors.New("session service is not configured")
+	}
+	return s.store.UpdateExecutionEpochRecoveryPhase(sessionID, epochID, ownerRunID, phase, reason, now)
+}
+
+func (s *Service) FinishExecutionEpochRecovery(sessionID, epochID, ownerRunID, status, outcome string, now int64) (pebblestore.ExecutionEpochRecovery, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.ExecutionEpochRecovery{}, errors.New("session service is not configured")
+	}
+	return s.store.FinishExecutionEpochRecovery(sessionID, epochID, ownerRunID, status, outcome, now)
+}
+
 func (s *Service) PutSessionMediaAsset(input pebblestore.PutSessionMediaAssetInput) (pebblestore.SessionMediaAsset, bool, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.SessionMediaAsset{}, false, errors.New("session service is not configured")

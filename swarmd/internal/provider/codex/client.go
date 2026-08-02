@@ -135,7 +135,8 @@ func codexTransportContextFromContext(ctx context.Context) codexTransportContext
 }
 
 type cachedWebsocketSession struct {
-	mu                    sync.Mutex
+	lockOnce              sync.Once
+	mu                    chan struct{}
 	conn                  *websocket.Conn
 	lastPayload           map[string]any
 	lastRequestProperties map[string]any
@@ -399,13 +400,15 @@ func (c *Client) LongSessionSnapshot() map[string]any {
 	var open, payloadBytes, requestBytes, outputBytes, inputItems int64
 	detail := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
-		entry.session.mu.Lock()
+		if err := lockCachedWebsocketSession(context.Background(), entry.session); err != nil {
+			continue
+		}
 		entryOpen := entry.session.conn != nil
 		entryPayloadBytes := estimatedJSONBytes(entry.session.lastPayload)
 		entryRequestBytes := estimatedJSONBytes(entry.session.lastRequestProperties)
 		entryOutputBytes := estimatedJSONBytes(entry.session.lastOutput)
 		entryInputItems := int64(entry.session.lastInputLen)
-		entry.session.mu.Unlock()
+		unlockCachedWebsocketSession(entry.session)
 		if entryOpen {
 			open++
 		}
@@ -489,6 +492,30 @@ func (c *Client) cachedWebsocketSession(sessionID string) *cachedWebsocketSessio
 	session := &cachedWebsocketSession{}
 	c.wsSessions[sessionID] = session
 	return session
+}
+
+func lockCachedWebsocketSession(ctx context.Context, session *cachedWebsocketSession) error {
+	if session == nil {
+		return nil
+	}
+	session.lockOnce.Do(func() {
+		session.mu = make(chan struct{}, 1)
+		session.mu <- struct{}{}
+	})
+	provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityLockWaiting)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-session.mu:
+		provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityLockAcquired)
+		return nil
+	}
+}
+
+func unlockCachedWebsocketSession(session *cachedWebsocketSession) {
+	if session != nil {
+		session.mu <- struct{}{}
+	}
 }
 
 func resetCachedWebsocketChainLocked(session *cachedWebsocketSession) {
@@ -1597,8 +1624,10 @@ func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) 
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
 	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
+	if err := lockCachedWebsocketSession(ctx, session); err != nil {
+		return nil, nil, 0, err
+	}
+	defer unlockCachedWebsocketSession(session)
 	if strings.TrimSpace(session.lastResponseID) == "" || !codexWebsocketRequestPropertiesMatch(session.lastRequestProperties, properties) {
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
@@ -1647,14 +1676,15 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	headers := buildCodexTransportHeaders(record, transportContext)
 	session := c.cachedWebsocketSession(cacheKey)
 	if session != nil {
-		session.mu.Lock()
-		defer session.mu.Unlock()
+		if err := lockCachedWebsocketSession(ctx, session); err != nil {
+			return nil, 0, err
+		}
+		defer unlockCachedWebsocketSession(session)
 	}
 	conn, websocketReused, err := prepareCachedWebsocketSessionLocked(session, transportContext, freshContext, payloadPrepared, requestPayload)
 	if err != nil {
 		return nil, 0, err
 	}
-	initialConnection := !websocketReused
 	if conn == nil {
 		var failureBody map[string]any
 		var status int
@@ -1688,32 +1718,35 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	}
 
 	idleTimeout := c.effectiveWebsocketIdleTimeout()
-	writeMessage := func(activeConn *websocket.Conn, encoded []byte, initialConnection bool) error {
+	writeMessage := func(activeConn *websocket.Conn, encoded []byte) error {
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
 		activeConn.SetReadLimit(maxCodexResponseBodyBytes)
-		if initialConnection {
-			if err := activeConn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
-				return fmt.Errorf("set initial websocket request deadline: %w", err)
-			}
+		writeDeadline := time.Now().Add(websocketWriteTimeout)
+		if deadline, ok := ctx.Deadline(); ok && deadline.Before(writeDeadline) {
+			writeDeadline = deadline
 		}
+		if err := activeConn.SetWriteDeadline(writeDeadline); err != nil {
+			return fmt.Errorf("set websocket request deadline: %w", err)
+		}
+		stopCancelWatch := watchCodexWebsocketCancel(ctx, activeConn)
+		defer stopCancelWatch()
 		if err := activeConn.WriteMessage(websocket.TextMessage, encoded); err != nil {
 			if ctxErr := contextErr(ctx); ctxErr != nil {
 				return ctxErr
 			}
 			return fmt.Errorf("send websocket request: %w", err)
 		}
-		if initialConnection {
-			if err := activeConn.SetWriteDeadline(time.Time{}); err != nil {
-				return fmt.Errorf("clear initial websocket request deadline: %w", err)
-			}
+		if err := activeConn.SetWriteDeadline(time.Time{}); err != nil {
+			return fmt.Errorf("clear websocket request deadline: %w", err)
 		}
+		provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityRequestSent)
 		return nil
 	}
 	providerdiagnostics.RecordContext(ctx, codexOutboundShapeEvent("websocket_request_shape", transportContext, sendPayload, asString(sendPayload["previous_response_id"]) != "", websocketReused))
 	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
-	if err := writeMessage(conn, websocketPayload, initialConnection); err != nil {
+	if err := writeMessage(conn, websocketPayload); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
@@ -1739,14 +1772,13 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 				return failureBody, status, nil
 			}
 			session.conn = conn
-			initialConnection = true
 			sendPayload = cloneMapAny(requestPayload)
 			websocketPayload, err = buildCodexWebsocketPayload(sendPayload)
 			if err != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, err
 			}
-			if retryErr := writeMessage(conn, websocketPayload, initialConnection); retryErr != nil {
+			if retryErr := writeMessage(conn, websocketPayload); retryErr != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, retryErr
 			}
@@ -1783,6 +1815,7 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			}
 			return nil, 0, fmt.Errorf("read websocket response: %w", err)
 		}
+		provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityResponseRead)
 		if messageType != websocket.TextMessage {
 			if messageType == websocket.BinaryMessage {
 				if session != nil {

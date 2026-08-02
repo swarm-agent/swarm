@@ -108,6 +108,46 @@ type SessionMediaPayload struct {
 	Bytes        []byte `json:"-"`
 }
 
+// AttemptActivityPhase identifies provider work that proves a continuation is
+// still making progress. Providers may report finer-grained phases without
+// changing the orchestration watchdog contract.
+type AttemptActivityPhase string
+
+const (
+	AttemptActivityStarted      AttemptActivityPhase = "started"
+	AttemptActivityLockWaiting  AttemptActivityPhase = "lock_waiting"
+	AttemptActivityLockAcquired AttemptActivityPhase = "lock_acquired"
+	AttemptActivityRequestSent  AttemptActivityPhase = "request_sent"
+	AttemptActivityResponseRead AttemptActivityPhase = "response_read"
+	AttemptActivityStreamEvent  AttemptActivityPhase = "stream_event"
+)
+
+type attemptActivityReporterKey struct{}
+
+// WithAttemptActivityReporter installs the orchestration-owned liveness hook
+// used by provider adapters. The hook must be non-blocking.
+func WithAttemptActivityReporter(ctx context.Context, report func(AttemptActivityPhase)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if report == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, attemptActivityReporterKey{}, report)
+}
+
+// ReportAttemptActivity records provider progress when a watchdog reporter is
+// present. Calls are intentionally a no-op outside supervised continuations.
+func ReportAttemptActivity(ctx context.Context, phase AttemptActivityPhase) {
+	if ctx == nil {
+		return
+	}
+	report, _ := ctx.Value(attemptActivityReporterKey{}).(func(AttemptActivityPhase))
+	if report != nil {
+		report(phase)
+	}
+}
+
 type Request struct {
 	// SessionID is the stable durable Swarm session identity used for
 	// diagnostics/storage. Providers must not treat it as a cache/session

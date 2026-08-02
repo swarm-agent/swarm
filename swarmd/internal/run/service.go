@@ -1909,7 +1909,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		// Keep request properties stable across one provider tool loop so native
 		// continuation and prompt caching can reuse the growing prefix.
 		stepRequest = stepRequest.WithRuntimeContext(providerID, runtimeContextAt)
-		response, err := providerRunner.CreateResponseStreaming(runnerCtx, stepRequest, func(event provideriface.StreamEvent) {
+		if options.ApplySessionMutation != nil {
+			runnerCtx = withProviderAttemptObserver(runnerCtx, &durableProviderAttemptObserver{
+				sessionID: sessionID,
+				runID:     runID,
+				principal: options.Principal,
+				apply:     options.ApplySessionMutation,
+			})
+		}
+		response, err := runProviderAttempt(runnerCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
 			if ctx.Err() != nil {
 				return
 			}

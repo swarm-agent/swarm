@@ -49,6 +49,13 @@ const (
 	sessionV3TitleGenerationTimeout           = 20 * time.Second
 	sessionV3TitleFinalWordsMin               = 0
 	sessionV3TitleFinalWordsMax               = 5
+	sessionV3StaleRecoveryMinInactivity       = 2 * time.Minute
+	sessionV3StaleRecoveryConfirmInterval     = 10 * time.Second
+	sessionV3StaleRecoveryScanInterval        = 30 * time.Second
+	sessionV3StaleRecoveryScanLimit           = 100
+	sessionV3StaleRecoveryCooldown            = 15 * time.Minute
+	sessionV3StaleRecoveryMinUtilization      = 85.0
+	sessionV3StaleRecoveryMaxUtilization      = 99.0
 	sessionV3HandoffDefaultTailMessages       = 24
 	sessionV3HandoffDefaultToolOutputChars    = 1200
 	sessionV3HandoffDefaultTotalChars         = 60000
@@ -68,12 +75,14 @@ type sessionV3ExecutorJob struct {
 	ParentSessionID string
 	ResumeContext   bool
 	enqueuedAt      time.Time
+	activity        *sessionV3RunActivity
 }
 
 type sessionV3ExecutorRunState struct {
 	cancel   context.CancelFunc
 	canceled bool
 	reason   string
+	job      sessionV3ExecutorJob
 }
 
 func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64) pebblestore.V3SessionRunIntent {
@@ -107,10 +116,12 @@ type sessionV3Executor struct {
 	reasoningDeltaFlushMaxDelay  time.Duration
 	durableProgressWriterForTest sessionV3DurableProgressWriter
 
-	mu              sync.Mutex
-	inFlightRuns    map[string]bool
-	activeBySession map[string]string
-	runStates       map[string]*sessionV3ExecutorRunState
+	mu               sync.Mutex
+	inFlightRuns     map[string]bool
+	activeBySession  map[string]string
+	runStates        map[string]*sessionV3ExecutorRunState
+	recoveryConfirm  map[string]int64
+	recoveryCooldown map[string]int64
 }
 
 func newSessionV3Executor(server *Server) *sessionV3Executor {
@@ -130,8 +141,11 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 		inFlightRuns:                make(map[string]bool),
 		activeBySession:             make(map[string]string),
 		runStates:                   make(map[string]*sessionV3ExecutorRunState),
+		recoveryConfirm:             make(map[string]int64),
+		recoveryCooldown:            make(map[string]int64),
 	}
 	exec.recoverDurableRuns(ctx)
+	exec.startStaleRecoveryBackstop(ctx)
 	return exec
 }
 
@@ -165,6 +179,9 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if job.enqueuedAt.IsZero() {
 		job.enqueuedAt = time.Now()
 	}
+	if job.activity == nil {
+		job.activity = newSessionV3RunActivity()
+	}
 	if job.SessionID == "" || job.RunID == "" {
 		return false
 	}
@@ -193,6 +210,7 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if e.runStates[runKey] == nil {
 		e.runStates[runKey] = &sessionV3ExecutorRunState{}
 	}
+	e.runStates[runKey].job = job
 	e.mu.Unlock()
 
 	go e.run(ctx, job)
@@ -204,6 +222,7 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 	e.mu.Lock()
 	delete(e.inFlightRuns, runKey)
 	delete(e.runStates, runKey)
+	delete(e.recoveryConfirm, runKey)
 	if e.activeBySession[job.SessionID] == job.RunID {
 		delete(e.activeBySession, job.SessionID)
 	}
@@ -514,6 +533,9 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		}
 	}
 	response, err := e.assistantResponse(runCtx, job)
+	if errors.Is(err, errSessionV3StaleProviderAttempt) {
+		response, job, err = e.staleCompactedAssistantResponse(runCtx, job, err)
+	}
 	if err != nil {
 		if !e.isRunCanceled(job) {
 			if sessionV3IsContextOverflowDiagnostic(err.Error()) {
@@ -2417,7 +2439,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		streamState := newSessionV3ProviderStreamState(e, job, sink, step)
 		providerStart := time.Now()
 		var firstEventOnce sync.Once
-		response, providerErr := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
+		response, providerErr := e.runStaleSupervisedProviderAttempt(ctx, job, runner, req, func(event provideriface.StreamEvent) {
 			firstEventOnce.Do(func() {
 				pebblestore.ObserveExecutionEpochFirstEvent(providerStart)
 				if recorder := e.server.longSessionDiagnostics; recorder != nil {
@@ -2588,10 +2610,17 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		restartAfterTools := false
 		permissionWaited := false
 		for _, call := range response.FunctionCalls {
+			if job.activity != nil {
+				job.activity.toolActive.Store(true)
+			}
 			if identicalCount, key := identicalCalls.Observe(call); identicalCount >= sessionV3ProviderIdenticalToolCallLimit {
 				return sessionV3ProviderLoopResult{}, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
 			}
 			result, err := toolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: strings.TrimSpace(call.CallID), Name: strings.TrimSpace(call.Name), Arguments: strings.TrimSpace(call.Arguments), Metadata: cloneSessionsV3Metadata(call.Metadata)})
+			if job.activity != nil {
+				job.activity.toolActive.Store(false)
+				job.activity.touch()
+			}
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
 			}
