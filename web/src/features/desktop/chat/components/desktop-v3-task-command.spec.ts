@@ -2,13 +2,11 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-test('/task submit is intercepted before ordinary session creation', async () => {
+test('/task in an existing session uses the durable task command path', async () => {
   const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
-  const pane = await readFile(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
   const submitService = await readFile(new URL('../services/composer-submit.ts', import.meta.url), 'utf8')
   const app = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
 
-  assert.match(composer, /const submitNormally = \(\) => submitDesktopComposer\(\{/)
   assert.match(composer, /slashPalette\.exactMatch\?\.action\.kind === 'queue-ai-task'[\s\S]*?void handleSubmitClick\(\)/)
   assert.match(composer, /onClick=\{handleSubmitClick\}/)
   assert.ok(submitService.indexOf('if (taskCommand)') < submitService.indexOf('if (input.canStop)'))
@@ -16,8 +14,6 @@ test('/task submit is intercepted before ordinary session creation', async () =>
   assert.doesNotMatch(submitService, /hasArguments && .*action\.kind === 'queue-ai-task'/)
   assert.match(submitService, /await input\.onSlashCommand\(taskCommand, input\.draft\)[\s\S]*?input\.clear\(\)/)
   assert.match(submitService, /catch \{\s*return 'task-queue-failed'\s*\}/)
-  assert.match(composer, /const submittedTaskCommand = desktopComposerTaskCommand\(submittedDraft\)[\s\S]*?if \(routedNewSession && submittedTaskCommand\) \{[\s\S]*?await submitNormally\(\)[\s\S]*?return[\s\S]*?\}[\s\S]*?if \(routedNewSession && onRoutedSubmit\)/)
-  assert.match(pane, /onSubmit=\{handleSubmit\}/)
   assert.match(app, /replace\(\/\^\\\/task\(\?:\\s\+\|\$\)\/i, ''\)\.trim\(\)/)
   assert.match(app, /const idempotencyKey = globalThis\.crypto/)
   assert.match(app, /createWorkspaceAITask\(workspacePath, request, idempotencyKey, mode, routeSessionId \?\? undefined\)/)
@@ -39,6 +35,19 @@ test('/task submit is intercepted before ordinary session creation', async () =>
   assert.match(app, /lifecycle\.aiState === 'failed'/)
   assert.match(app, /lifecycle\.aiState === 'cancelled'/)
   assert.match(app, /Enter a task request after \/task\./)
+})
+
+test('/task in a pending routed session remains the router prompt', async () => {
+  const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const pane = await readFile(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
+
+  assert.doesNotMatch(composer, /desktopComposerTaskCommand/)
+  assert.doesNotMatch(composer, /routedNewSession && submittedTaskCommand/)
+  assert.match(composer, /if \(routedNewSession && onRoutedSubmit\) \{[\s\S]*?prompt: submittedDraft[\s\S]*?onRoutedSubmit\(routedSnapshot\)/)
+  assert.match(composer, /command\.action\.kind === 'queue-ai-task'[\s\S]*?if \(routedNewSession\) \{[\s\S]*?void handleSubmitClick\(\)/)
+  assert.match(pane, /onSubmit=\{\(\) => undefined\}/)
+  assert.match(pane, /onRoutedSubmit=\{handleSubmit\}/)
+  assert.match(pane, /const routedPrompt = stripDesktopRoutedWorktreeDirective\(prompt\)[\s\S]*?prompt: routedPrompt[\s\S]*?controller\.submit\(\{/)
 })
 
 test('/task uses the authenticated workspace todo API', async () => {

@@ -8,7 +8,7 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
-import { desktopComposerTaskCommand, submitDesktopComposer } from '../services/composer-submit'
+import { submitDesktopComposer } from '../services/composer-submit'
 import {
   DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
   DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES,
@@ -640,20 +640,6 @@ export function DesktopV3AgenticComposer({
       : primedTaskMode === 'action'
         ? `/task ${visibleDraft}`
         : visibleDraft
-    const submitNormally = () => submitDesktopComposer({
-      draft: submittedDraft,
-      canStop,
-      clear: clearComposerForSubmit,
-      attachments,
-      onSubmit,
-      onStop,
-      onSlashCommand,
-    })
-    const submittedTaskCommand = desktopComposerTaskCommand(submittedDraft)
-    if (routedNewSession && submittedTaskCommand) {
-      await submitNormally()
-      return
-    }
     if (routedNewSession && onRoutedSubmit) {
       routedSubmissionRef.current = true
       const routedSnapshot = {
@@ -682,7 +668,15 @@ export function DesktopV3AgenticComposer({
       })
       return
     }
-    await submitNormally()
+    await submitDesktopComposer({
+      draft: submittedDraft,
+      canStop,
+      clear: clearComposerForSubmit,
+      attachments,
+      onSubmit,
+      onStop,
+      onSlashCommand,
+    })
   }, [attachments, canStop, clearComposerForSubmit, dictationComposer, mode, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
@@ -700,6 +694,10 @@ export function DesktopV3AgenticComposer({
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
     if (command.action.kind === 'queue-ai-task') {
+      if (routedNewSession) {
+        void handleSubmitClick()
+        return
+      }
       void Promise.resolve(onSlashCommand?.(command, draft))
         .then(() => onDraftChange(''))
         .catch(() => {
@@ -731,7 +729,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
+  }, [currentAgent, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
