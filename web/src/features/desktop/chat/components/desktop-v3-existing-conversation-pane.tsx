@@ -79,6 +79,10 @@ import {
   type DesktopSessionMode,
 } from "../../settings/swarm/types/swarm-settings";
 import { saveThinkingTagsSetting } from "../../settings/swarm/mutations/save-thinking-tags-setting";
+import { getSwarmModelSettings } from "../../settings/swarm/queries/get-model-settings";
+import { saveSwarmModelSettings } from "../../settings/swarm/mutations/save-model-settings";
+import type { SwarmModelSettings } from "../../settings/swarm/types/model-settings";
+import { swarmModelSettingsQueryKey } from "../../settings/models/components/models-settings-page";
 import {
   formatContextWindow,
   effectiveContextWindow,
@@ -1528,6 +1532,11 @@ export function DesktopV3ExistingConversationPane({
   const agentStateQuery = useQuery(agentStateQueryOptions());
   const modelOptionsQuery = useQuery(modelOptionsQueryOptions());
   const modelProfilesQuery = useQuery(modelProfilesQueryOptions());
+  const swarmModelSettingsQuery = useQuery({
+    queryKey: swarmModelSettingsQueryKey,
+    queryFn: ({ signal }: { signal?: AbortSignal }) => getSwarmModelSettings(signal),
+    staleTime: 30_000,
+  });
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions());
   const authCredentialsQuery = useQuery({
     queryKey: ["auth-credentials", "desktop-composer"],
@@ -1696,7 +1705,15 @@ export function DesktopV3ExistingConversationPane({
     [cachedAgentModelPolicy],
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
-  const activeModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const sessionActiveModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const actionFavoriteId = swarmModelSettingsQuery.data?.actionFavoriteId ?? modelProfileState.defaultProfileId;
+  const actionFavorite = useMemo(
+    () => modelProfileState.profiles.find((profile) => profile.profileId === actionFavoriteId) ?? null,
+    [actionFavoriteId, modelProfileState.profiles],
+  );
+  const composerActiveModelProfile = actionFavorite
+    ? { source: 'saved' as const, profileId: actionFavorite.profileId, name: actionFavorite.name }
+    : sessionActiveModelProfile;
   const resolvedModelProfile = useMemo(
     () => modelProfileFromMetadata(sessionMetadata, mode),
     [mode, sessionMetadata],
@@ -2854,9 +2871,9 @@ export function DesktopV3ExistingConversationPane({
             selectedPrimaryAgent={selectedAgent || ""}
             agents={agentState.profiles}
             modelProfiles={modelProfileState.profiles}
-            activeModelProfile={activeModelProfile}
-            modelProfilesLoading={modelProfilesQuery.isLoading}
-            modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : null}
+            activeModelProfile={composerActiveModelProfile}
+            modelProfilesLoading={modelProfilesQuery.isLoading || swarmModelSettingsQuery.isPending}
+            modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : swarmModelSettingsQuery.error instanceof Error ? swarmModelSettingsQuery.error.message : null}
             onModelProfileSetDefault={async (profileId) => {
               await setDefaultModelProfile(profileId);
               await invalidateModelProfiles(queryClient);
@@ -2868,7 +2885,7 @@ export function DesktopV3ExistingConversationPane({
             onModelProfileDelete={async (profileId) => {
               await deleteModelProfile(profileId);
               await invalidateModelProfiles(queryClient);
-              if (activeModelProfile.profileId === profileId) {
+              if (sessionActiveModelProfile.profileId === profileId) {
                 const remaining = modelProfileState.profiles.filter((profile) => profile.profileId !== profileId);
                 const replacement = remaining.find((profile) => profile.isDefault) ?? remaining[0];
                 const response = await updateSessionV3ModelProfile(normalizedSessionId, replacement ? { kind: 'saved', profileId: replacement.profileId } : { kind: 'agent-default' });
@@ -2881,12 +2898,15 @@ export function DesktopV3ExistingConversationPane({
               setAgentModelSaving(true);
               setSendError(null);
               try {
-                const response = await updateSessionV3ModelProfile(normalizedSessionId, { kind: 'saved', profileId });
-                dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId) });
-                const next = preferenceFromModelProfile(profile, mode, profile.updatedAt);
-                if (next) setPreference(next);
+                const current = swarmModelSettingsQuery.data ?? await getSwarmModelSettings();
+                const saved = await saveSwarmModelSettings({
+                  actionFavoriteId: profileId,
+                  planEnabled: current.planEnabled,
+                  ...(current.planFavoriteId ? { planFavoriteId: current.planFavoriteId } : {}),
+                });
+                queryClient.setQueryData<SwarmModelSettings>(swarmModelSettingsQueryKey, saved);
               } catch (error) {
-                setSendError(error instanceof Error ? error.message : 'Failed to switch model profile');
+                setSendError(error instanceof Error ? error.message : 'Failed to switch Swarm action model');
                 throw error;
               } finally {
                 setAgentModelSaving(false);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, LoaderCircle } from 'lucide-react'
+import { Check, ChevronDown, LoaderCircle, Settings2 } from 'lucide-react'
 import type { ActiveModelProfileState, ModelProfileRecord, ModelProfileSelectionRecord } from '../types/chat'
 
 interface ProfileAgentPickerProps {
@@ -13,6 +13,7 @@ interface ProfileAgentPickerProps {
   compact?: boolean
   modelDetail?: string
   onProfileSelect?: (profileId: string) => void | Promise<void>
+  onOpenAgentSetup?: () => void
 }
 
 const GUTTER = 8
@@ -38,7 +39,7 @@ export function profileTriggerDisplay(input: {
     : null
   const profileLabel = activeProfile?.source === 'temporary'
     ? activeProfile.name || 'Temporary favorite'
-    : savedProfile?.name || activeProfile?.name || (activeProfile?.source === 'agent-default' ? 'Agent default' : 'Resolved favorite')
+    : savedProfile?.name || activeProfile?.name || (activeProfile?.source === 'agent-default' ? 'Swarm action model' : 'Resolved favorite')
   const modelLabel = input.modelDetail.trim() || (savedProfile ? selectionLabel(savedProfile) : 'Resolved model unavailable')
   return {
     profileLabel,
@@ -57,6 +58,7 @@ export function ProfileAgentPicker({
   compact = false,
   modelDetail = '',
   onProfileSelect,
+  onOpenAgentSetup,
 }: ProfileAgentPickerProps) {
   const [open, setOpen] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
@@ -151,18 +153,25 @@ export function ProfileAgentPicker({
             </div>
           )}
         </div>
-        {busy && !loading ? <div className="flex shrink-0 items-center gap-2 border-t border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={13} className="animate-spin" />Applying favorite…</div> : null}
+        {busy && !loading ? <div className="flex shrink-0 items-center gap-2 border-t border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-text-muted)]" role="status"><LoaderCircle size={13} className="animate-spin" />Pending model change…</div> : null}
         {error || localError ? <div role="alert" className="shrink-0 border-t border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{localError || error}</div> : null}
+        {onOpenAgentSetup ? <button type="button" onClick={() => { setOpen(false); onOpenAgentSetup() }} className="flex shrink-0 items-center gap-2 border-t border-[var(--app-border)] px-3 py-2.5 text-left text-xs font-semibold text-[var(--app-text)] transition hover:bg-[var(--app-surface-hover)]">
+          <Settings2 size={14} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
+          Open agent setup
+        </button> : null}
       </div>
     </div>, document.body) : null
 
   return <div className="inline-flex min-w-0 items-center">
-    <button ref={triggerRef} type="button" disabled={disabled} aria-expanded={open} aria-haspopup="menu" aria-label={`Session favorite: ${triggerDisplay.combinedLabel}`} title={triggerDisplay.combinedLabel} onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
+    <button ref={triggerRef} type="button" disabled={disabled} aria-expanded={open} aria-haspopup="menu" aria-label={`Swarm action model: ${busy ? 'Pending model change' : triggerDisplay.combinedLabel}`} title={triggerDisplay.combinedLabel} onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
       if (!open) pointerRef.current = event.detail > 0 ? { x: event.clientX, y: event.clientY } : null
       setOpen((value) => !value)
     }} className="inline-flex min-h-9 min-w-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] disabled:opacity-50">
       {busy ? <LoaderCircle size={14} className="shrink-0 animate-spin" aria-hidden="true" /> : null}
+      {busy ? <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)]" role="status">Pending</span> : null}
       <span className={`min-w-0 truncate text-[11px] ${compact ? 'max-w-[240px]' : 'max-w-[420px]'}`}>
+        <span className="font-semibold text-[var(--app-text)]">Swarm</span>
+        <span aria-hidden="true" className="text-[var(--app-text-subtle)]"> · </span>
         <span className="font-medium text-[var(--app-text-muted)]">{triggerDisplay.profileLabel}</span>
         <span aria-hidden="true" className="text-[var(--app-text-subtle)]"> · </span>
         <span data-testid="selected-model-detail" className="text-[var(--app-text-subtle)]">{triggerDisplay.modelLabel}</span>

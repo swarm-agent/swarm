@@ -197,7 +197,7 @@ export interface DesktopV3AgenticComposerProps {
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
   focusSignal?: number
   workspacePath?: string
-  /** Neutral pre-route composer: hides all mode, agent, and model authority controls. */
+  /** Pre-route composer state; agent/model controls remain visible before the first send. */
   routedNewSession?: boolean
 }
 
@@ -356,6 +356,7 @@ export function DesktopV3AgenticComposer({
   const openAgentSetup = useCallback(() => {
     setAgentSetupOpenSignal((current) => current + 1)
   }, [])
+  const showFavoriteSelector = resolvedSessionControls || routedNewSession
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft
@@ -1181,10 +1182,10 @@ export function DesktopV3AgenticComposer({
             ) : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : !routedNewSession && showModePicker ? (
-                  resolvedSessionControls
-                    ? <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} />
-                    : renderComposerControl(openAgentSetup, false)
+                {primedTaskMode ? taskModeIndicator() : showFavoriteSelector ? (
+                  <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onOpenAgentSetup={openAgentSetup} />
+                ) : showModePicker ? (
+                  renderComposerControl(openAgentSetup, false)
                 ) : executionLabel && !routedNewSession ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
@@ -1208,10 +1209,10 @@ export function DesktopV3AgenticComposer({
             </div>
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : !routedNewSession && showModePicker ? (
-                  resolvedSessionControls
-                    ? <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} />
-                    : renderComposerControl(openAgentSetup, false)
+                {primedTaskMode ? taskModeIndicator() : showFavoriteSelector ? (
+                  <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} compact modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onOpenAgentSetup={openAgentSetup} />
+                ) : showModePicker ? (
+                  renderComposerControl(openAgentSetup, false)
                 ) : !routedNewSession ? (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
                 ) : null}
@@ -1227,7 +1228,7 @@ export function DesktopV3AgenticComposer({
           </div>
         </div>
       </div>
-      {!routedNewSession && !resolvedSessionControls ? <AgentModelControl
+      <AgentModelControl
         currentAgent={currentAgent}
         selectedPrimaryAgent={selectedPrimaryAgent}
         agents={selectableAgents}
@@ -1250,7 +1251,7 @@ export function DesktopV3AgenticComposer({
         activeModelProfile={activeModelProfile}
         busy={agentModelControlBusy}
         showTrigger={false}
-      /> : null}
+      />
     </div>
   )
 }

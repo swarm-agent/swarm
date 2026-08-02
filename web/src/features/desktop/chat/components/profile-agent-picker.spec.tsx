@@ -49,7 +49,7 @@ test('resolved session favorite trigger falls back to canonical flat favorite fi
   assert.equal(display.modelLabel, 'openai/gpt-5.6-codex · thinking high · fast')
 })
 
-test('resolved selector exposes one flat saved-favorite list and no management or agent switching', () => {
+test('resolved selector exposes one flat saved-favorite list plus the restored agent setup entry', () => {
   assert.match(source, /Session favorite/)
   assert.match(source, /aria-label="Saved favorites"/)
   assert.match(source, /onProfileSelect\?:/)
@@ -57,21 +57,25 @@ test('resolved selector exposes one flat saved-favorite list and no management o
   assert.match(source, /activeProfile\?\.source === 'saved'.*activeProfile\.profileId === profileId/)
   assert.match(source, /role="menuitemradio"/)
   assert.match(source, /No permitted saved favorites/)
-  assert.doesNotMatch(source, /onAgentSelect|Agent setup|Add profile|Edit profile|Delete profile|onSetDefault|onReorderProfiles/)
+  assert.match(source, /Open agent setup/)
+  assert.match(source, /onOpenAgentSetup/)
+  assert.doesNotMatch(source, /onAgentSelect|Add profile|Edit profile|Delete profile|onSetDefault|onReorderProfiles/)
   assert.doesNotMatch(source, /modelMode|\.single|\.plan|\.auto|Single|Split|Plan \$|Action \$/)
 })
 
 test('resolved selector preserves explicit loading, busy, and error states', () => {
   assert.match(source, /Loading favorites…/)
-  assert.match(source, /Applying favorite…/)
+  assert.match(source, /Pending model change…/)
+  assert.match(source, />Pending</)
   assert.match(source, /role="alert"/)
   assert.match(source, /aria-busy=\{busy \|\| loading\}/)
   assert.match(source, /setLocalError\(cause instanceof Error/)
 })
 
-test('existing conversation opts into resolved-only controls while new-session call site remains untouched', () => {
+test('existing and pending composers expose the flat favorite selector and share full agent setup', () => {
   assert.match(existingConversationSource, /resolvedSessionControls/)
-  assert.equal((composerSource.match(/resolvedSessionControls\n\s+\? <ProfileAgentPicker/g) ?? []).length, 2)
-  assert.match(composerSource, /\{!resolvedSessionControls \? <AgentModelControl/)
-  assert.doesNotMatch(readFileSync(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8'), /resolvedSessionControls/)
+  assert.equal((composerSource.match(/showFavoriteSelector \?/g) ?? []).length, 2)
+  assert.match(composerSource, /onOpenAgentSetup=\{openAgentSetup\}/)
+  assert.match(composerSource, /<AgentModelControl/)
+  assert.match(readFileSync(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8'), /onModelProfileSelect=\{setSwarmActionFavorite\}/)
 })
