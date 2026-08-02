@@ -3756,6 +3756,7 @@ export function DesktopAppPage() {
       case 'show-help':
         setDesktopToast({ message: 'Slash commands: use ↑/↓ to choose, Enter to run, Tab to insert.', tone: 'info' })
         return
+      case 'prime-worktree':
       case 'open-model-picker':
       case 'toggle-thinking':
       case 'compact-session':

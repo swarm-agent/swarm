@@ -49,11 +49,18 @@ export function restoreDesktopRoutedWorktreeIntent(
 }
 
 /**
- * Adds only boolean UI intent to routed metadata. Operation identity remains owned
- * by the routed-start controller, so this helper cannot create a second request.
+ * Recognizes only the explicit `/worktree` composer directive. Ordinary prose
+ * never changes routing intent, even when it mentions worktrees.
  */
 export function desktopRoutedMessageRequestsWorktree(message: string): boolean {
-  return /(^|[^\p{L}\p{N}_])worktree(?=$|[^\p{L}\p{N}_])/iu.test(message)
+  return /^\s*\/worktree(?:\s|$)/i.test(message)
+}
+
+/** Removes the explicit routing directive while preserving the user's actual prompt. */
+export function stripDesktopRoutedWorktreeDirective(message: string): string {
+  return desktopRoutedMessageRequestsWorktree(message)
+    ? message.replace(/^\s*\/worktree(?:\s+|$)/i, '').trimStart()
+    : message
 }
 
 export function resolveDesktopRoutedWorktreeIntent(

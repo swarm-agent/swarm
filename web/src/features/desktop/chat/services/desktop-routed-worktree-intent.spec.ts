@@ -10,6 +10,7 @@ import {
   resolveDesktopRoutedWorktreeIntent,
   restoreDesktopRoutedWorktreeIntent,
   setDesktopRoutedWorktreeIntent,
+  stripDesktopRoutedWorktreeDirective,
   toggleDesktopRoutedWorktreeIntent,
 } from './desktop-routed-worktree-intent'
 
@@ -44,15 +45,24 @@ test('routed worktree intent captures and restores the exact pre-submit value', 
   )
 })
 
-test('standalone worktree keyword activates intent without partial-word false positives', () => {
-  for (const message of ['use a worktree', 'WORKTREE please', 'worktree-based session']) {
+test('only a leading /worktree directive activates routed worktree intent', () => {
+  for (const message of ['/worktree fix the sidebar', '  /WORKTREE\nfix the sidebar']) {
     assert.equal(desktopRoutedMessageRequestsWorktree(message), true, message)
     assert.deepEqual(resolveDesktopRoutedWorktreeIntent(createDesktopRoutedWorktreeIntent(false), message), { requested: true })
   }
-  for (const message of ['worktrees please', 'myworktree', 'current workspace']) {
+  for (const message of ['use a worktree', 'worktree please', 'worktrees please', 'myworktree', 'fix /worktree handling']) {
     assert.equal(desktopRoutedMessageRequestsWorktree(message), false, message)
+    assert.deepEqual(resolveDesktopRoutedWorktreeIntent(createDesktopRoutedWorktreeIntent(false), message), { requested: false })
   }
   assert.deepEqual(resolveDesktopRoutedWorktreeIntent(createDesktopRoutedWorktreeIntent(true), 'current workspace'), { requested: true })
+})
+
+test('/worktree is removed as a routing directive without rewriting ordinary prompts', () => {
+  assert.equal(stripDesktopRoutedWorktreeDirective('/worktree fix the sidebar'), 'fix the sidebar')
+  assert.equal(stripDesktopRoutedWorktreeDirective('  /WORKTREE\nfix the sidebar'), 'fix the sidebar')
+  assert.equal(stripDesktopRoutedWorktreeDirective('/worktree'), '')
+  assert.equal(stripDesktopRoutedWorktreeDirective('please fix /worktree handling'), 'please fix /worktree handling')
+  assert.equal(stripDesktopRoutedWorktreeDirective('use a worktree'), 'use a worktree')
 })
 
 test('metadata encoding carries only boolean intent and creates no operation identity', () => {

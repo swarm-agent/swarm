@@ -347,7 +347,10 @@ export function DesktopV3AgenticComposer({
     [selectableAgents, subagents],
   )
   const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft), [draft])
-  const slashCommands = useMemo(() => slashPalette.matches.filter((command) => command.state === 'ready'), [slashPalette.matches])
+  const slashCommands = useMemo(
+    () => slashPalette.matches.filter((command) => command.state === 'ready' && (command.action.kind !== 'prime-worktree' || routedNewSession)),
+    [routedNewSession, slashPalette.matches],
+  )
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
@@ -713,6 +716,11 @@ export function DesktopV3AgenticComposer({
         onThinkingTagsToggle(!thinkingTagsEnabled)
       }
       onDraftChange('')
+      return
+    }
+    if (command.action.kind === 'prime-worktree') {
+      if (routedNewSession) onRoutedWorktreeRequestedChange?.(true)
+      if (!slashPalette.hasArguments) onDraftChange('')
       return
     }
     void onSlashCommand?.(command, draft)

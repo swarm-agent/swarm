@@ -29,7 +29,7 @@ export function DesktopRoutedWorktreePrime({
       title={label}
       data-testid="desktop-routed-worktree-prime"
       data-worktree-requested={requested ? 'true' : 'false'}
-      className={`inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg border-0 bg-transparent p-2 text-[var(--app-text-muted)] transition-all hover:-translate-y-0.5 hover:text-[var(--app-text)] hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none ${requested ? 'bg-[var(--app-surface-hover)] text-[var(--app-text)]' : ''} ${className}`}
+      className={`inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg border bg-transparent p-2 text-[var(--app-text-muted)] transition-all hover:-translate-y-0.5 hover:text-[var(--app-text)] hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none ${requested ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-hover)] text-[var(--app-text)] ring-1 ring-[var(--app-border-accent)]' : 'border-transparent'} ${className}`}
     >
       <GitFork size={15} strokeWidth={requested ? 2.25 : 1.75} aria-hidden="true" />
     </button>

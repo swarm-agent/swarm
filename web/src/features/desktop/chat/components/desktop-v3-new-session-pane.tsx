@@ -32,6 +32,7 @@ import {
   encodeDesktopRoutedWorktreeIntentMetadata,
   resolveDesktopRoutedWorktreeIntent,
   setDesktopRoutedWorktreeIntent,
+  stripDesktopRoutedWorktreeDirective,
 } from '../services/desktop-routed-worktree-intent'
 
 export interface DesktopV3NewSessionPaneProps {
@@ -231,9 +232,13 @@ export function DesktopV3NewSessionPane({
         createDesktopRoutedWorktreeIntent(snapshot.worktreePrimed),
         prompt,
       )
+      const routedPrompt = stripDesktopRoutedWorktreeDirective(prompt)
+      if (!routedPrompt) {
+        throw new Error('Enter a prompt after /worktree.')
+      }
       const captured = createDesktopV3RoutedComposerSnapshot({
         ...snapshot,
-        prompt,
+        prompt: routedPrompt,
         attachments: snapshot.attachments,
         worktreePrimed: resolvedWorktreeIntent.requested,
       })
