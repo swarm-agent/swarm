@@ -194,6 +194,7 @@ export interface DesktopV3AgenticComposerProps {
   workspacePath?: string
   /** Pre-route composer state; agent/model controls remain visible before the first send. */
   routedNewSession?: boolean
+  slashCommandContext?: 'existing-session' | 'new-session'
 }
 
 export const DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME = "mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5";
@@ -288,6 +289,7 @@ export function DesktopV3AgenticComposer({
   focusSignal = 0,
   workspacePath = '',
   routedNewSession = false,
+  slashCommandContext = 'existing-session',
 }: DesktopV3AgenticComposerProps) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const composerRootRef = useRef<HTMLDivElement | null>(null)
@@ -340,9 +342,11 @@ export function DesktopV3AgenticComposer({
   )
   const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft), [draft])
   const slashCommands = useMemo(
-    () => slashPalette.matches.filter((command) => command.state === 'ready'),
-    [slashPalette.matches],
+    () => slashPalette.matches.filter((command) => command.state === 'ready'
+      && (slashCommandContext !== 'new-session' || command.action.kind !== 'new-session')),
+    [slashCommandContext, slashPalette.matches],
   )
+  const newSessionCommandBlocked = slashCommandContext === 'new-session' && /^\s*\/new(?:\s|$)/i.test(draft)
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
@@ -780,7 +784,7 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session')) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session')) {
         event.preventDefault()
         if (slashPalette.exactMatch?.action.kind === 'start-background-router-session') {
           void handleSubmitClick()
@@ -793,9 +797,10 @@ export function DesktopV3AgenticComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
+      if (newSessionCommandBlocked) return
       if (canSubmit || attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
     }
-  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
+  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, newSessionCommandBlocked, onDraftChange, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
@@ -1076,8 +1081,12 @@ export function DesktopV3AgenticComposer({
         ) : null}
         {mentionPaletteIsActive ? (
           <DesktopMentionPanel matches={mentionPaletteMatches} selectedIndex={mentionSelectionIndex} onHover={setMentionSelectionIndex} onSelect={handleMentionInsert} />
+        ) : newSessionCommandBlocked ? (
+          <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]" role="status">
+            You’re already starting a new session. Remove <span className="font-mono">/new</span> and type your request here.
+          </div>
         ) : slashPalette.active ? (
-          <DesktopSlashCommandPanel palette={slashPalette as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
+          <DesktopSlashCommandPanel palette={{ ...slashPalette, matches: slashCommands } as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
         ) : null}
         <div className="relative min-w-0 overflow-visible rounded-2xl border border-[var(--app-border)]/40 bg-[var(--app-bg-alt)] shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300 ease-out focus-within:border-transparent focus-within:ring-2 focus-within:ring-[var(--app-border-accent)]/60 focus-within:shadow-[0_8px_24px_rgba(0,0,0,0.06),0_0_12px_rgba(59,130,246,0.1)]">
           <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5" data-composer-input-row>

@@ -70,16 +70,20 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   return { workspaceSlug, sessionId }
 }
 
-function validateSettingsSearch(search: Record<string, unknown>): { tab?: string; returnSessionId?: string; agentSetup?: string; agent?: string } {
+function validateSettingsSearch(search: Record<string, unknown>): { tab?: string; returnSessionId?: string; agentSetup?: string; agent?: string; newWorktree?: string; newPlan?: string } {
   const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
   const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
   const agentSetup = typeof search.agentSetup === 'string' ? search.agentSetup.trim() : ''
   const agent = typeof search.agent === 'string' ? search.agent.trim() : ''
+  const newWorktree = typeof search.newWorktree === 'string' ? search.newWorktree.trim() : ''
+  const newPlan = typeof search.newPlan === 'string' ? search.newPlan.trim() : ''
   return {
     ...(tab ? { tab } : {}),
     ...(returnSessionId ? { returnSessionId } : {}),
     ...(agentSetup ? { agentSetup } : {}),
     ...(agent ? { agent } : {}),
+    ...(newWorktree ? { newWorktree } : {}),
+    ...(newPlan ? { newPlan } : {}),
   }
 }
 

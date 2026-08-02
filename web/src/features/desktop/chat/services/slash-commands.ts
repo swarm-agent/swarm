@@ -14,7 +14,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-plan-modal' }
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
-  | { kind: 'new-session' }
+  | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
   | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
 
@@ -42,6 +42,11 @@ export type DesktopTaskMode = 'plan' | 'auto'
 export interface DesktopTaskCommandRequest {
   request: string
   mode: DesktopTaskMode
+}
+
+export interface DesktopNewSessionCommandRequest {
+  worktreeRequested: boolean
+  planModeRequested: boolean
 }
 
 const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
@@ -89,11 +94,41 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'new',
     command: '/new',
     aliases: [],
-    hint: 'Start a new session in this workspace',
-    actionLabel: 'Start New Session',
-    tips: ['/new', 'Clear the current selection', 'Start a fresh conversation in this workspace'],
+    hint: 'Start a fresh session in this workspace',
+    actionLabel: 'New Session',
+    tips: ['/new', 'Open the Router composer with its default chips'],
     state: 'ready',
-    action: { kind: 'new-session' },
+    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: false },
+  },
+  {
+    id: 'new-worktree',
+    command: '/new worktree',
+    aliases: [],
+    hint: 'Start fresh with the Worktree chip on',
+    actionLabel: 'New + Worktree',
+    tips: ['/new worktree', 'Prime a new Router session in a managed worktree'],
+    state: 'ready',
+    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: false },
+  },
+  {
+    id: 'new-plan',
+    command: '/new plan',
+    aliases: [],
+    hint: 'Start fresh with the Plan chip on',
+    actionLabel: 'New + Plan',
+    tips: ['/new plan', 'Prime a new Router session in plan mode'],
+    state: 'ready',
+    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: true },
+  },
+  {
+    id: 'new-wp',
+    command: '/new wp',
+    aliases: [],
+    hint: 'Start fresh with Worktree and Plan on',
+    actionLabel: 'New + Both',
+    tips: ['/new wp', 'Prime both the Worktree and Plan chips'],
+    state: 'ready',
+    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: true },
   },
   {
     id: 'task',
@@ -275,6 +310,25 @@ export function getDesktopSlashCommands(): DesktopSlashCommand[] {
   return DESKTOP_SLASH_COMMANDS.slice()
 }
 
+export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionCommandRequest | null {
+  const match = input.trim().match(/^\/new(?:\s+([\s\S]*))?$/i)
+  if (!match) return null
+
+  const directive = (match[1] ?? '').trim().toLowerCase()
+  switch (directive) {
+    case '':
+      return { worktreeRequested: false, planModeRequested: false }
+    case 'worktree':
+      return { worktreeRequested: true, planModeRequested: false }
+    case 'plan':
+      return { worktreeRequested: false, planModeRequested: true }
+    case 'wp':
+      return { worktreeRequested: true, planModeRequested: true }
+    default:
+      return null
+  }
+}
+
 export function parseDesktopTaskCommand(input: string): DesktopTaskCommandRequest {
   const taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
   if (!taskBody) {
@@ -304,11 +358,14 @@ export function buildDesktopSlashPaletteState(input: string): DesktopSlashPalett
   const parts = trimmedBody === '' ? [] : trimmedBody.split(/\s+/)
   const query = normalizeSlashToken(parts[0] ?? '')
   const hasArguments = parts.length > 1
+  const fullQuery = normalizeSlashToken(trimmedBody)
   const exactMatch = query === ''
     ? null
-    : DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(query)) ?? null
+    : DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(fullQuery))
+      ?? DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(query))
+      ?? null
 
-  const matches = (hasArguments && exactMatch
+  const matches = (hasArguments && exactMatch && commandTokens(exactMatch).includes(fullQuery)
     ? [exactMatch]
     : DESKTOP_SLASH_COMMANDS
         .filter((command) => commandMatchRank(command, query) > 0)

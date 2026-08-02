@@ -1,4 +1,4 @@
-import { getDesktopSlashCommands, buildDesktopSlashPaletteState, parseDesktopTaskCommand } from './slash-commands'
+import { getDesktopSlashCommands, buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
 import type { DesktopSlashCommandAction } from './slash-commands'
 
 function assert(condition: boolean, message: string): void {
@@ -58,6 +58,32 @@ function testWorktreeCommandIsRetiredAndWorktreesRemains(): void {
   assert(palette.matches.length === 0, 'expected /worktree not to be suggested')
 }
 
+function testNewSessionCommandVariantsPrimeRouterChips(): void {
+  const commands = getDesktopSlashCommands()
+  const expected = [
+    ['/new', false, false],
+    ['/new worktree', true, false],
+    ['/new plan', false, true],
+    ['/new wp', true, true],
+  ] as const
+
+  for (const [commandText, worktreeRequested, planModeRequested] of expected) {
+    const command = commands.find((candidate) => candidate.command === commandText)
+    assert(Boolean(command), `expected ${commandText} to be listed`)
+    assert(command?.action.kind === 'new-session', `expected ${commandText} to open a new session`)
+    if (command?.action.kind === 'new-session') {
+      assert(command.action.worktreeRequested === worktreeRequested, `expected ${commandText} worktree priming to match`)
+      assert(command.action.planModeRequested === planModeRequested, `expected ${commandText} plan priming to match`)
+    }
+    assert(buildDesktopSlashPaletteState(commandText).exactMatch?.command === commandText, `expected ${commandText} to resolve exactly`)
+    const parsed = parseDesktopNewSessionCommand(commandText)
+    assert(parsed?.worktreeRequested === worktreeRequested, `expected ${commandText} parser worktree priming to match`)
+    assert(parsed?.planModeRequested === planModeRequested, `expected ${commandText} parser plan priming to match`)
+  }
+
+  assert(parseDesktopNewSessionCommand('/new something-else') === null, 'expected unknown /new directives to be rejected')
+}
+
 function testTaskCommandAcceptsFullArguments(): void {
   const task = getDesktopSlashCommands().find((command) => command.id === 'task')
   assert(Boolean(task), 'expected /task command to exist')
@@ -108,6 +134,7 @@ function main(): void {
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testWorktreeCommandIsRetiredAndWorktreesRemains()
+  testNewSessionCommandVariantsPrimeRouterChips()
   testTaskCommandAcceptsFullArguments()
   testTaskCommandParsesModeDirective()
   testRetiredCommandsAreNotSuggested()

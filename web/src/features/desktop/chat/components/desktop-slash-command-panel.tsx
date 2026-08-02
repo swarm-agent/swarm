@@ -20,6 +20,9 @@ function commandIcon(command: DesktopSlashCommand): LucideIcon {
     case 'workspace':
       return FolderOpen
     case 'new':
+    case 'new-worktree':
+    case 'new-plan':
+    case 'new-wp':
       return Plus
     case 'agents':
       return Bot

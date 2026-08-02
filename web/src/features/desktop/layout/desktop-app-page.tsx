@@ -2550,8 +2550,10 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
 export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown }
+  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newWorktree?: unknown; newPlan?: unknown }
   const requestedAgentSetup = search.agentSetup === '1'
+  const requestedNewWorktree = search.newWorktree === '1'
+  const requestedNewPlan = search.newPlan === '1'
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
@@ -3432,11 +3434,22 @@ export function DesktopAppPage() {
     })
   }, [navigate, workspaceSlugByPath])
 
-  const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
+  const handleStartNewSessionInWorkspace = useCallback((
+    wsPath: string,
+    wsName: string,
+    options: { worktreeRequested?: boolean; planModeRequested?: boolean } = {},
+  ) => {
     dispatchDesktopV3Cache(selectSession(undefined))
-    handleOpenWorkspace(wsPath, wsName)
+    setMobileSidebarOpen(false)
+    const workspaceSlug = workspaceSlugByPath.get(wsPath)
+      ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
+    const search = {
+      ...(options.worktreeRequested ? { newWorktree: '1' } : {}),
+      ...(options.planModeRequested ? { newPlan: '1' } : {}),
+    }
+    void navigate({ to: '/$workspaceSlug', params: { workspaceSlug }, search })
     setComposerFocusSignal((current) => current + 1)
-  }, [handleOpenWorkspace])
+  }, [navigate, workspaceSlugByPath])
 
   const handleRoutedSessionResolved = useCallback(async (result: DesktopV3RoutedStartResult, sourceWorkspacePath: string): Promise<void> => {
     const expectedWorkspacePath = sourceWorkspacePath.trim()
@@ -3723,10 +3736,14 @@ export function DesktopAppPage() {
         setDesktopToast({ message: 'Desktop shortcuts differ from TUI keybindings. Open Settings → Shortcuts for the Desktop list.', tone: 'info' })
         return
       case 'new-session': {
-        const session = routeSessionId ? sessionById.get(routeSessionId) : null
+        if (!routeSessionId) {
+          setDesktopToast({ message: 'You’re already starting a new session—just type your request in the chat.', tone: 'info' })
+          return
+        }
+        const session = sessionById.get(routeSessionId)
         const workspacePath = session?.workspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = session?.workspaceName || selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
-        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName)
+        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName, action)
         return
       }
       case 'start-background-router-session': {
@@ -5021,6 +5038,8 @@ export function DesktopAppPage() {
             workspace={routeWorkspace}
             onRoutedSessionResolved={(result) => handleRoutedSessionResolved(result, routeWorkspace.path)}
             composerFocusSignal={composerFocusSignal}
+            initialWorktreeRequested={requestedNewWorktree}
+            initialPlanModeRequested={requestedNewPlan}
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
           />
