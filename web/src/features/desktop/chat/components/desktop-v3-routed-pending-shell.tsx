@@ -1,4 +1,4 @@
-import { Bot, LoaderCircle, RotateCcw, TriangleAlert } from 'lucide-react'
+import { Bot, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
 
@@ -71,12 +71,16 @@ export function DesktopV3RoutedPendingShell({
             </div>
           </div>
           <span className={cn(
-            'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium',
+            'inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium',
             routing
-              ? 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'
-              : 'border-[var(--app-danger)]/30 bg-[var(--app-danger)]/10 text-[var(--app-danger)]',
+              ? 'text-[var(--app-text-muted)]'
+              : 'rounded-md border border-[var(--app-danger)]/30 bg-[var(--app-danger)]/10 px-2 py-1 text-[var(--app-danger)]',
           )}>
-            {routing ? <LoaderCircle className="animate-spin motion-reduce:animate-none" size={12} aria-hidden="true" /> : <TriangleAlert size={12} aria-hidden="true" />}
+            {routing ? (
+              <span className="size-1.5 rounded-full bg-current animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+            ) : (
+              <TriangleAlert size={12} aria-hidden="true" />
+            )}
             {routing ? 'Routing' : 'Not routed'}
           </span>
         </div>
@@ -96,7 +100,11 @@ export function DesktopV3RoutedPendingShell({
                 'mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em]',
                 routing ? 'text-[var(--app-text-subtle)]' : 'text-[var(--app-danger)]',
               )}>
-                {routing ? <LoaderCircle className="animate-spin motion-reduce:animate-none" size={12} aria-hidden="true" /> : <TriangleAlert size={12} aria-hidden="true" />}
+                {routing ? (
+                  <span className="size-1.5 rounded-full bg-current animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                ) : (
+                  <TriangleAlert size={12} aria-hidden="true" />
+                )}
                 {routing ? 'Routing' : 'Routing failed'}
               </div>
               <div className="text-[var(--app-text-muted)]">
