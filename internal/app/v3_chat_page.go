@@ -193,10 +193,6 @@ func (a *App) handleV3ChatCommand() {
 	if raw == "" {
 		return
 	}
-	if a.shouldSendTaskCommandAsDraftPrompt(raw) {
-		a.v3Chat.Send(raw)
-		return
-	}
 	a.executeCommand(raw)
 	if a.route != "v3chat" || a.v3Chat == nil {
 		return
