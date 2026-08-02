@@ -151,12 +151,12 @@ test('routed draft defaults to current workspace while preserving explicit local
   assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {
     phase: 'draft',
     prompt: 'draft',
-    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: false },
+    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: false, planModeRequested: false },
   })
   assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), {
     phase: 'worktree-primed',
     prompt: 'primed',
-    snapshot: { prompt: 'primed', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: true },
+    snapshot: { prompt: 'primed', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: true, planModeRequested: false },
   })
   assert.equal('sessionId' in createDesktopV3RoutedDraftState(), false)
   assert.equal('workspace' in createDesktopV3RoutedWorktreePrimedState(), false)
@@ -169,6 +169,7 @@ test('routed operation persists one stable transport identity across reload', ()
     selectedAction: { id: 'action-1', arguments: ['--exact', ' value '] },
     selectedSkill: { canonicalName: 'skill/example', scope: 'workspace' },
     worktreePrimed: true,
+    planModeRequested: true,
   })
   const operation = createDesktopV3RoutedStartOperation({
     snapshot,
@@ -180,6 +181,7 @@ test('routed operation persists one stable transport identity across reload', ()
   assert.deepEqual(operation.snapshot, snapshot)
   assert.equal(operation.request.input, 'route this')
   assert.equal(operation.request.managed_worktree_requested, true)
+  assert.equal(operation.request.plan_mode_requested, true)
   assert.equal(operation.request.agent_name, 'swarm')
   assert.equal(operation.request.client_request_id, `desktop-v3-routed:${operation.operationId}`)
   assert.equal(operation.request.idempotency_key, operation.request.client_request_id)
@@ -205,14 +207,14 @@ test('routed worktree prime carries explicit request authority without mutating 
   const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'route me', worktreePrimed: true })
   assert.equal(desktopV3RoutedRequestInput(snapshot), 'route me')
   assert.equal(createDesktopV3RoutedStartOperation({ snapshot }).request.managed_worktree_requested, true)
-  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'selectedAction', 'selectedSkill', 'worktreePrimed'])
+  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'selectedAction', 'selectedSkill', 'worktreePrimed', 'planModeRequested'])
 })
 
 test('routed operation omits optional authority fields when the caller supplies no value', () => {
   const operation = createDesktopV3RoutedStartOperation({ prompt: 'route me' })
 
   assert.deepEqual(Object.keys(operation.request).sort(), [
-    'client_request_id', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata',
+    'client_request_id', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata', 'plan_mode_requested',
   ])
 })
 

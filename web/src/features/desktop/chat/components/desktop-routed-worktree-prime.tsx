@@ -4,6 +4,7 @@ export interface DesktopRoutedWorktreePrimeProps {
   requested: boolean
   onRequestedChange: (requested: boolean) => void
   disabled?: boolean
+  readOnly?: boolean
   className?: string
 }
 
@@ -15,15 +16,21 @@ export function DesktopRoutedWorktreePrime({
   requested,
   onRequestedChange,
   disabled = false,
+  readOnly = false,
   className = '',
 }: DesktopRoutedWorktreePrimeProps) {
-  const label = requested ? 'Disable managed worktree' : 'Use managed worktree'
+  const label = readOnly
+    ? `Managed worktree ${requested ? 'active' : 'inactive'}`
+    : requested ? 'Disable managed worktree' : 'Use managed worktree'
 
   return (
     <button
       type="button"
-      onClick={() => onRequestedChange(!requested)}
+      onClick={() => {
+        if (!readOnly) onRequestedChange(!requested)
+      }}
       disabled={disabled}
+      aria-readonly={readOnly || undefined}
       aria-label={label}
       aria-pressed={requested}
       title={label}

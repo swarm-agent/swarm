@@ -26,7 +26,6 @@ import {
   normalizeMentionSubagents,
 } from '../services/subagent-mentions'
 import { AgentModelControl, type AgentModelControlConfirmInput } from './agent-model-control'
-import { ProfileAgentPicker } from './profile-agent-picker'
 import { ComposerPlanModelControl } from './composer-plan-model-control'
 import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
@@ -35,6 +34,7 @@ import { DesktopWorkspaceActionPanel } from './desktop-workspace-action-panel'
 import type { WorkspaceAction } from '../../../workspaces/actions/types'
 import type { WorkspaceSkill } from '../services/workspace-skills'
 import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
+import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -148,6 +148,8 @@ export interface DesktopV3AgenticComposerProps {
   routedComposerSnapshot?: DesktopV3RoutedComposerSnapshot | null
   routedWorktreeRequested?: boolean
   onRoutedWorktreeRequestedChange?: (requested: boolean) => void
+  durableWorktreeActive?: boolean
+  modelStatusLabel?: string
   mediaCapability?: DesktopV3MediaCapability | null
   onUploadAttachment?: (file: File, signal: AbortSignal) => Promise<DesktopV3MediaReference>
   onStop?: () => void | Promise<void>
@@ -161,9 +163,6 @@ export interface DesktopV3AgenticComposerProps {
   agents?: AgentProfileRecord[]
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
-  onModelProfileSelect?: (profileId: string) => void | Promise<void>
-  modelProfilesLoading?: boolean
-  modelProfilesError?: string | null
   onUseAgentModelDefault?: () => void | Promise<void>
   modelOptions?: ModelOptionRecord[]
   selectedModelKey?: string
@@ -245,6 +244,8 @@ export function DesktopV3AgenticComposer({
   routedComposerSnapshot = null,
   routedWorktreeRequested = false,
   onRoutedWorktreeRequestedChange,
+  durableWorktreeActive = false,
+  modelStatusLabel = '',
   mediaCapability = null,
   onUploadAttachment,
   onStop,
@@ -258,9 +259,6 @@ export function DesktopV3AgenticComposer({
   agents = [],
   modelProfiles = [],
   activeModelProfile,
-  onModelProfileSelect,
-  modelProfilesLoading = false,
-  modelProfilesError = null,
   onUseAgentModelDefault: _onUseAgentModelDefault,
   modelOptions = [],
   selectedModelKey = '',
@@ -353,7 +351,6 @@ export function DesktopV3AgenticComposer({
   const openAgentSetup = useCallback(() => {
     setAgentSetupOpenSignal((current) => current + 1)
   }, [])
-  const showFavoriteSelector = (resolvedSessionControls || routedNewSession) && selectedPrimaryAgent.trim().toLowerCase() !== 'swarm'
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft
@@ -653,6 +650,7 @@ export function DesktopV3AgenticComposer({
         selectedAction: selectedWorkspaceAction,
         selectedSkill: selectedWorkspaceSkill,
         worktreePrimed: routedWorktreeRequested,
+        planModeRequested: mode === 'plan',
       }
       let routedSubmit: Promise<DesktopV3RoutedNewSessionState>
       try {
@@ -681,7 +679,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
+  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, mode, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -973,18 +971,15 @@ export function DesktopV3AgenticComposer({
     </button>
   ) : null
 
-  const planToggle = () => onModeSelect?.(mode === 'plan' ? 'auto' : 'plan')
   const renderComposerControl = (openPicker: () => void, open: boolean) => <ComposerPlanModelControl
-    mode={mode}
     provider={selectedModel?.provider}
     model={selectedModel?.model}
     thinking={selectedThinking}
     serviceTier={selectedServiceTier}
-    planDisabled={composerDisabled || agentModelControlBusy || !onModeSelect}
-    pickerDisabled={composerDisabled || agentModelControlBusy}
+    statusLabel={modelStatusLabel}
+    disabled={composerDisabled || agentModelControlBusy}
     open={open}
-    onPlanToggle={planToggle}
-    onPickerOpen={openPicker}
+    onOpen={openPicker}
   />
 
   const visibleComposerError = error && error !== dismissedComposerError ? error : null
@@ -1181,12 +1176,15 @@ export function DesktopV3AgenticComposer({
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
             {routedNewSession && onRoutedWorktreeRequestedChange ? (
               <DesktopRoutedWorktreePrime requested={routedWorktreeRequested} onRequestedChange={onRoutedWorktreeRequestedChange} disabled={composerDisabled || uploadingAttachment} />
+            ) : resolvedSessionControls ? (
+              <DesktopRoutedWorktreePrime requested={durableWorktreeActive} onRequestedChange={() => undefined} readOnly />
+            ) : null}
+            {(routedNewSession || resolvedSessionControls) && showModePicker ? (
+              <DesktopComposerPlanToggle active={mode === 'plan'} onActiveChange={(active) => onModeSelect?.(active ? 'plan' : 'auto')} disabled={composerDisabled || agentModelControlBusy || !onModeSelect} />
             ) : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : showFavoriteSelector ? (
-                  <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onOpenAgentSetup={openAgentSetup} />
-                ) : showModePicker ? (
+                {primedTaskMode ? taskModeIndicator() : (resolvedSessionControls || routedNewSession) ? (
                   renderComposerControl(openAgentSetup, false)
                 ) : executionLabel && !routedNewSession ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
@@ -1211,9 +1209,7 @@ export function DesktopV3AgenticComposer({
             </div>
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : showFavoriteSelector ? (
-                  <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} compact modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onOpenAgentSetup={openAgentSetup} />
-                ) : showModePicker ? (
+                {primedTaskMode ? taskModeIndicator() : (resolvedSessionControls || routedNewSession) ? (
                   renderComposerControl(openAgentSetup, false)
                 ) : !routedNewSession ? (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>

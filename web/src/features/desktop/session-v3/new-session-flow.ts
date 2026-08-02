@@ -478,6 +478,7 @@ export interface DesktopV3RoutedComposerSnapshot {
   selectedAction: unknown | null
   selectedSkill: unknown | null
   worktreePrimed: boolean
+  planModeRequested: boolean
 }
 
 export interface DesktopV3RoutedDraftState {
@@ -499,6 +500,7 @@ export interface DesktopV3RoutedStartRequest {
   agent_name?: string
   metadata?: Record<string, unknown>
   managed_worktree_requested: boolean
+  plan_mode_requested: boolean
   media?: DesktopV3RoutedMediaInput[]
 }
 
@@ -567,6 +569,7 @@ export interface CreateDesktopV3RoutedStartOperationInput {
   selectedAction?: unknown | null
   selectedSkill?: unknown | null
   worktreePrimed?: boolean
+  planModeRequested?: boolean
   /** Reserved before media staging so uploads and the routed start share one identity. */
   identity?: DesktopV3RoutedOperationIdentity
 }
@@ -603,6 +606,7 @@ export function createDesktopV3RoutedComposerSnapshot(
       ? null
       : cloneRoutedComposerSelection(input.selectedSkill),
     worktreePrimed: input.worktreePrimed === true,
+    planModeRequested: input.planModeRequested === true,
   }
 }
 
@@ -657,6 +661,7 @@ export function createDesktopV3RoutedStartOperation(
     selectedAction: input.selectedAction,
     selectedSkill: input.selectedSkill,
     worktreePrimed: input.worktreePrimed,
+    planModeRequested: input.planModeRequested,
   })
   const requestInput = desktopV3RoutedRequestInput(snapshot)
   const identity = input.identity ?? createDesktopV3RoutedOperationIdentity()
@@ -677,6 +682,7 @@ export function createDesktopV3RoutedStartOperation(
       ...(input.agentName?.trim() ? { agent_name: input.agentName.trim() } : {}),
       metadata: input.metadata ? { ...input.metadata } : undefined,
       managed_worktree_requested: snapshot.worktreePrimed,
+      plan_mode_requested: snapshot.planModeRequested,
       media: normalizedRoutedMedia(snapshot.attachments),
     },
   }
@@ -692,6 +698,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
   if (request.idempotency_key !== request.client_request_id) return false
   if (typeof request.managed_worktree_requested !== 'boolean' || request.managed_worktree_requested !== snapshot.worktreePrimed) return false
+  if (typeof request.plan_mode_requested !== 'boolean' || request.plan_mode_requested !== snapshot.planModeRequested) return false
   if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
   if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
   if (request.input !== desktopV3RoutedRequestInput(snapshot)) return false
@@ -702,7 +709,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
 function isStoredDesktopV3RoutedComposerSnapshot(value: unknown): value is DesktopV3RoutedComposerSnapshot {
   if (!value || typeof value !== 'object') return false
   const snapshot = value as Partial<DesktopV3RoutedComposerSnapshot>
-  if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean') return false
+  if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean' || typeof snapshot.planModeRequested !== 'boolean') return false
   if (!Array.isArray(snapshot.attachments) || snapshot.attachments.some((item) => !item?.staging_id?.trim())) return false
   if (snapshot.selectedAction === undefined || snapshot.selectedSkill === undefined) return false
   return true

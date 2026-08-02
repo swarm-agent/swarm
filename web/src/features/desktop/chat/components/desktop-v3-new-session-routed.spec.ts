@@ -50,6 +50,7 @@ test('routed pending and failure stay local and retry the persisted controller i
   assert.match(paneSource, /stagedAttachmentsRef\.current = visibleAttachments/)
   assert.match(paneSource, /setDraft\(routedState\.snapshot\.prompt\)/)
   assert.match(paneSource, /setWorktreeIntent\(createDesktopRoutedWorktreeIntent\(routedState\.snapshot\.worktreePrimed\)\)/)
+  assert.match(paneSource, /setMode\(routedState\.snapshot\.planModeRequested \? 'plan' : 'auto'\)/)
   assert.match(paneSource, /setRestoredSnapshot\(routedState\.snapshot\)/)
   assert.match(paneSource, /routedState\.phase === 'draft'/)
   assert.match(paneSource, /createDesktopV3RoutedComposerSnapshot\(\{/)
@@ -57,6 +58,7 @@ test('routed pending and failure stay local and retry the persisted controller i
   assert.match(composerSource, /selectedAction: selectedWorkspaceAction/)
   assert.match(composerSource, /selectedSkill: selectedWorkspaceSkill/)
   assert.match(composerSource, /worktreePrimed: routedWorktreeRequested/)
+  assert.match(composerSource, /planModeRequested: mode === 'plan'/)
   assert.match(composerSource, /setSelectedWorkspaceAction\(\(routedComposerSnapshot\.selectedAction as WorkspaceAction \| null\) \?\? null\)/)
   assert.match(composerSource, /setSelectedWorkspaceSkill\(\(routedComposerSnapshot\.selectedSkill as WorkspaceSkill \| null\) \?\? null\)/)
   assert.match(composerSource, /routedTextFiles = files\.filter\(isComposerTextFile\)/)
@@ -66,14 +68,14 @@ test('routed pending and failure stay local and retry the persisted controller i
   assert.match(paneSource, /routedNewSession/)
 })
 
-test('routed new-chat composer exposes no manual setup, model, or Plan mode authority', async () => {
+test('routed new-chat composer exposes explicit Worktree and Plan intent with a waiting model bar', async () => {
   const source = await readFile(composerURL, 'utf8')
 
   assert.match(source, /routedNewSession\?: boolean/)
-  assert.match(source, /!routedNewSession && showModePicker/)
-  assert.match(source, /!routedNewSession && !resolvedSessionControls \? <AgentModelControl/)
+  assert.match(source, /\(routedNewSession \|\| resolvedSessionControls\) && showModePicker/)
+  assert.match(source, /<DesktopComposerPlanToggle active=\{mode === 'plan'\}/)
   assert.match(source, /onAttach=\{routedNewSession \? \(onRoutedStageAttachments/)
   assert.match(source, /<DesktopRoutedWorktreePrime requested=\{routedWorktreeRequested\}/)
-  assert.match(source, /if \(!routedNewSession\) openAgentSetup\(currentAgent\)/)
+  assert.match(source, /statusLabel=\{modelStatusLabel\}/)
   assert.doesNotMatch(source, /Attachments will be available after routed staging is connected/)
 })

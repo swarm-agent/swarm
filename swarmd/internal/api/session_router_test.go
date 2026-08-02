@@ -43,7 +43,7 @@ func (r *sessionRouterRecordingRunner) CreateResponseStreaming(_ context.Context
 }
 
 func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Implement routing","mode":"plan"}`}}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Implement routing"}`}}
 	server, principal, entries := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Go API workspace"}})
 
 	decision, err := server.routeSessionOnce(context.Background(), principal, "implement the Router bridge", false)
@@ -57,7 +57,7 @@ func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(
 	if !ok || !reflect.DeepEqual(providerPrincipal, principal) {
 		t.Fatalf("provider principal = %+v, ok=%v; want %+v", providerPrincipal, ok, principal)
 	}
-	if decision.Result.Mode != "plan" || decision.Workspace.WorkspaceID != entries[0].WorkspaceID || decision.Workspace.WorkspacePath != "/workspace/sole" {
+	if decision.Result.Title != "Implement routing" || decision.Workspace.WorkspaceID != entries[0].WorkspaceID || decision.Workspace.WorkspacePath != "/workspace/sole" {
 		t.Fatalf("decision = %+v", decision)
 	}
 	if decision.Profile.Name != "system-router" || decision.Profile.Provider != "recording" || decision.Profile.Model != "router-model" || decision.Profile.Thinking != "high" || decision.Profile.AutoServiceTier != "priority" {
@@ -78,8 +78,8 @@ func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(
 	if request.ToolChoice != "none" || len(request.Tools) != 0 || request.ToolInvoker != nil {
 		t.Fatalf("Router provider request exposed tools: %+v", request)
 	}
-	if !strings.Contains(request.Instructions, `"plan"`) || !strings.Contains(request.Instructions, `"additionalProperties":false`) || !strings.Contains(request.Instructions, entries[0].WorkspaceID) {
-		t.Fatalf("Router instructions missing enabled Plan/schema/bound workspace: %s", request.Instructions)
+	if strings.Contains(strings.ToLower(request.Instructions), `"mode"`) || strings.Contains(strings.ToLower(request.Instructions), `"plan"`) || !strings.Contains(request.Instructions, `"additionalProperties":false`) || !strings.Contains(request.Instructions, entries[0].WorkspaceID) {
+		t.Fatalf("Router instructions leaked mode authority or omitted schema/bound workspace: %s", request.Instructions)
 	}
 	if strings.Contains(request.Instructions, "worktree") {
 		t.Fatalf("unauthorized Router instructions include worktree contract: %s", request.Instructions)
@@ -96,7 +96,7 @@ func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(
 func TestSessionRouterOnceAttachesSelectedCatalogAcrossConfiguredProviders(t *testing.T) {
 	for _, providerID := range []string{"anthropic", "codex", "fireworks", "google", "openai", "openrouter"} {
 		t.Run(providerID, func(t *testing.T) {
-			runner := &sessionRouterRecordingRunner{id: providerID, response: provideriface.Response{Text: `{"title":"Implement routing","mode":"auto"}`}}
+			runner := &sessionRouterRecordingRunner{id: providerID, response: provideriface.Response{Text: `{"title":"Implement routing"}`}}
 			server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 
 			if _, err := server.routeSessionOnce(context.Background(), principal, "route this", false); err != nil {
@@ -111,7 +111,7 @@ func TestSessionRouterOnceAttachesSelectedCatalogAcrossConfiguredProviders(t *te
 }
 
 func TestSessionRouterOnceUsesCatalogTranslationForConfiguredCodexModel(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "codex", response: provideriface.Response{Text: `{"title":"Implement routing","mode":"auto"}`}}
+	runner := &sessionRouterRecordingRunner{id: "codex", response: provideriface.Response{Text: `{"title":"Implement routing"}`}}
 	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 	settings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
@@ -135,7 +135,7 @@ func TestSessionRouterOnceUsesCatalogTranslationForConfiguredCodexModel(t *testi
 }
 
 func TestSessionRouterOnceRejectsUnresolvedConfiguredModelBeforeProvider(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected","mode":"auto"}`}}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected"}`}}
 	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 	settings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
@@ -155,13 +155,13 @@ func TestSessionRouterOnceRejectsUnresolvedConfiguredModelBeforeProvider(t *test
 	}
 }
 
-func TestSessionRouterOnceOffersPlanAndMultipleWorkspaces(t *testing.T) {
+func TestSessionRouterOnceOffersWorktreeAndMultipleWorkspaces(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording"}
 	server, principal, entries := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{
 		{"/workspace/alpha", "Alpha", "Frontend workspace"},
 		{"/workspace/beta", "Beta", "Backend workspace"},
 	})
-	runner.response.Text = `{"title":"Fix backend","mode":"auto","workspace_id":"` + entries[1].WorkspaceID + `","worktree":true,"worktree_name":"backend-fix"}`
+	runner.response.Text = `{"title":"Fix backend","workspace_id":"` + entries[1].WorkspaceID + `","worktree":true,"worktree_name":"backend-fix"}`
 
 	decision, err := server.routeSessionOnce(context.Background(), principal, "fix the backend", true)
 	if err != nil {
@@ -177,8 +177,8 @@ func TestSessionRouterOnceOffersPlanAndMultipleWorkspaces(t *testing.T) {
 	if !strings.Contains(instructions, "explicitly authorized a managed worktree") || !strings.Contains(instructions, `"worktree_name"`) {
 		t.Fatalf("authorized Router instructions omitted worktree naming contract: %s", instructions)
 	}
-	if !strings.Contains(instructions, `"plan"`) || !strings.Contains(instructions, entries[0].WorkspaceID) || !strings.Contains(instructions, entries[1].WorkspaceID) {
-		t.Fatalf("Plan or workspace choices encoded incorrectly: %s", instructions)
+	if strings.Contains(strings.ToLower(instructions), `"mode"`) || strings.Contains(strings.ToLower(instructions), `"plan"`) || !strings.Contains(instructions, entries[0].WorkspaceID) || !strings.Contains(instructions, entries[1].WorkspaceID) {
+		t.Fatalf("mode authority leaked or workspace choices encoded incorrectly: %s", instructions)
 	}
 }
 
@@ -197,7 +197,7 @@ func TestSessionRouterOnceReturnsProviderErrorWithoutRetryOrFallback(t *testing.
 }
 
 func TestSessionRouterOnceRejectsZeroWorkspacesBeforeProvider(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected","mode":"auto"}`}}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected"}`}}
 	server, principal, _ := newSessionRouterTestServer(t, runner, nil)
 
 	if _, err := server.routeSessionOnce(context.Background(), principal, "route this", false); !errors.Is(err, workspace.ErrNoRoutableWorkspaces) {

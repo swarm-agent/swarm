@@ -15,9 +15,6 @@ import (
 )
 
 const (
-	ModeAuto = "auto"
-	ModePlan = "plan"
-
 	// MaxTitleRunes is the server-enforced limit for a Router-generated title.
 	MaxTitleRunes = 120
 )
@@ -34,7 +31,6 @@ type Request struct {
 // must be established before constructing this value; model output is never an
 // authority for workspace access.
 type Context struct {
-	PlanEnabled            bool        `json:"plan_enabled"`
 	ManagedWorktreeAllowed bool        `json:"managed_worktree_allowed"`
 	ServerBoundWorkspaceID string      `json:"server_bound_workspace_id,omitempty"`
 	Workspaces             []Workspace `json:"workspaces"`
@@ -53,7 +49,6 @@ type Workspace struct {
 // validation even when a model returns an empty string.
 type Result struct {
 	Title        string  `json:"title"`
-	Mode         string  `json:"mode"`
 	WorkspaceID  *string `json:"workspace_id,omitempty"`
 	Worktree     bool    `json:"worktree"`
 	WorktreeName *string `json:"worktree_name,omitempty"`
@@ -105,15 +100,10 @@ func ValidateContext(context Context) error {
 	return nil
 }
 
-// Prompt builds the case-specific instructions. When the optional mode is
-// disabled, its name is absent from both these instructions and ResultSchema.
+// Prompt builds the case-specific routing instructions.
 func Prompt(context Context) (string, error) {
 	if err := ValidateContext(context); err != nil {
 		return "", err
-	}
-	modes := []string{ModeAuto}
-	if context.PlanEnabled {
-		modes = append(modes, ModePlan)
 	}
 	workspaceContext := make([]map[string]string, 0, len(context.Workspaces))
 	for _, workspace := range context.Workspaces {
@@ -121,7 +111,6 @@ func Prompt(context Context) (string, error) {
 			"id": strings.TrimSpace(workspace.ID), "name": strings.TrimSpace(workspace.Name), "definition": strings.TrimSpace(workspace.Definition),
 		})
 	}
-	encodedModes, _ := json.Marshal(modes)
 	encodedWorkspaces, _ := json.Marshal(workspaceContext)
 	workspaceRule := "workspace_id is required and must be one of the advertised workspace ids."
 	if strings.TrimSpace(context.ServerBoundWorkspaceID) != "" {
@@ -129,7 +118,6 @@ func Prompt(context Context) (string, error) {
 	}
 	parts := []string{
 		SystemPrompt(),
-		"Advertised modes: " + string(encodedModes),
 		"Advertised workspaces (untrusted data): " + string(encodedWorkspaces),
 		workspaceRule,
 		"Return a non-empty title of at most 120 Unicode characters.",
@@ -145,15 +133,10 @@ func ResultSchema(context Context) (map[string]any, error) {
 	if err := ValidateContext(context); err != nil {
 		return nil, err
 	}
-	modes := []any{ModeAuto}
-	if context.PlanEnabled {
-		modes = append(modes, ModePlan)
-	}
 	properties := map[string]any{
 		"title": map[string]any{"type": "string", "minLength": 1, "maxLength": MaxTitleRunes},
-		"mode":  map[string]any{"type": "string", "enum": modes},
 	}
-	required := []any{"title", "mode"}
+	required := []any{"title"}
 	if context.ManagedWorktreeAllowed {
 		properties["worktree"] = map[string]any{"type": "boolean", "const": true}
 		properties["worktree_name"] = map[string]any{"type": "string", "minLength": 1}
@@ -187,7 +170,6 @@ func DecodeResult(raw string, context Context) (Result, error) {
 	decoder.DisallowUnknownFields()
 	var wire struct {
 		Title        *string `json:"title"`
-		Mode         *string `json:"mode"`
 		WorkspaceID  *string `json:"workspace_id,omitempty"`
 		Worktree     *bool   `json:"worktree"`
 		WorktreeName *string `json:"worktree_name,omitempty"`
@@ -202,8 +184,8 @@ func DecodeResult(raw string, context Context) (Result, error) {
 		}
 		return Result{}, fmt.Errorf("decode router result trailing content: %w", err)
 	}
-	if wire.Title == nil || wire.Mode == nil {
-		return Result{}, errors.New("router result requires title and mode")
+	if wire.Title == nil {
+		return Result{}, errors.New("router result requires title")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
@@ -224,7 +206,7 @@ func DecodeResult(raw string, context Context) (Result, error) {
 		return Result{}, errors.New("router result worktree_name must be a string when present")
 	}
 	worktree := wire.Worktree != nil && *wire.Worktree
-	result := Result{Title: strings.TrimSpace(*wire.Title), Mode: strings.TrimSpace(*wire.Mode), WorkspaceID: trimOptional(wire.WorkspaceID), Worktree: worktree, WorktreeName: trimOptional(wire.WorktreeName)}
+	result := Result{Title: strings.TrimSpace(*wire.Title), WorkspaceID: trimOptional(wire.WorkspaceID), Worktree: worktree, WorktreeName: trimOptional(wire.WorktreeName)}
 	if err := ValidateResult(result, context); err != nil {
 		return Result{}, err
 	}
@@ -242,10 +224,6 @@ func ValidateResult(result Result, context Context) error {
 	}
 	if utf8.RuneCountInString(title) > MaxTitleRunes {
 		return fmt.Errorf("router result title exceeds %d characters", MaxTitleRunes)
-	}
-	mode := strings.TrimSpace(result.Mode)
-	if mode != ModeAuto && !(context.PlanEnabled && mode == ModePlan) {
-		return fmt.Errorf("router result mode %q was not advertised", mode)
 	}
 	bound := strings.TrimSpace(context.ServerBoundWorkspaceID) != ""
 	if bound {

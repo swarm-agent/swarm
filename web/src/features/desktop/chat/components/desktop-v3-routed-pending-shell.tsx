@@ -81,7 +81,7 @@ export function DesktopV3RoutedPendingShell({
             ) : (
               <TriangleAlert size={12} aria-hidden="true" />
             )}
-            {routing ? 'Routing' : 'Not routed'}
+            {routing ? 'Routing…' : 'Not routed'}
           </span>
         </div>
       </header>
@@ -105,7 +105,7 @@ export function DesktopV3RoutedPendingShell({
                 ) : (
                   <TriangleAlert size={12} aria-hidden="true" />
                 )}
-                {routing ? 'Routing' : 'Routing failed'}
+                {routing ? 'Routing…' : 'Routing failed'}
               </div>
               <div className="text-[var(--app-text-muted)]">
                 {routing

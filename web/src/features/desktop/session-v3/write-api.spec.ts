@@ -83,6 +83,7 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
       agent_name: ' swarm ',
       metadata: { source: 'desktop-v3' },
       managed_worktree_requested: true,
+      plan_mode_requested: true,
       media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
     })
     assert.equal(response.session_id, 'session-routed')
@@ -105,6 +106,7 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
     agent_name: 'swarm',
     metadata: { source: 'desktop-v3' },
     managed_worktree_requested: true,
+    plan_mode_requested: true,
     media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
   })
   for (const forbidden of [
@@ -131,6 +133,7 @@ test('routed start accepts staging IDs without inventing route selections', asyn
       input: 'Replay this',
       client_request_id: 'desktop-routed:stable-2',
       managed_worktree_requested: false,
+      plan_mode_requested: false,
       staging_ids: ['staged-2'],
     })
     assert.equal(response.replayed, true)
@@ -163,6 +166,7 @@ test('routed start rejects conflicting idempotency identities before transport',
       client_request_id: 'desktop-routed:one',
       idempotency_key: 'desktop-routed:two',
       managed_worktree_requested: false,
+      plan_mode_requested: false,
     }),
     /one stable client_request_id\/idempotency identity/,
   )

@@ -110,7 +110,7 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	}
 	modelService := modelruntime.NewService(pebblestore.NewModelStore(store), events, modelruntime.NewCatalogService(catalogStore))
 
-	router := &sessionRouterRecordingRunner{id: "openai", response: provideriface.Response{Text: `{"title":"Inspect staged image","mode":"auto"}`}}
+	router := &sessionRouterRecordingRunner{id: "openai", response: provideriface.Response{Text: `{"title":"Inspect staged image"}`}}
 	runner := &routedMediaTestRunner{sessionRouterRecordingRunner: router, declaration: provideriface.MediaAdapterDeclaration{
 		AdapterID: provideriface.MediaAdapterIDOpenAIResponsesV1, ProviderID: "openai", ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses,
 		CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey, CredentialFingerprint: "credential-fingerprint",
@@ -185,7 +185,7 @@ func (f *routedMediaTestFixture) postWithWorktreeIntent(t *testing.T, account, r
 	for key, value := range media {
 		item[key] = value
 	}
-	body, err := json.Marshal(map[string]any{"input": "inspect this image", "client_request_id": requestID, "managed_worktree_requested": managedWorktreeRequested, "media": []any{item}})
+	body, err := json.Marshal(map[string]any{"input": "inspect this image", "client_request_id": requestID, "managed_worktree_requested": managedWorktreeRequested, "plan_mode_requested": false, "media": []any{item}})
 	if err != nil {
 		t.Fatalf("marshal routed request: %v", err)
 	}
@@ -284,18 +284,6 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 		}
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
 		fixture.assertNoRoutedSession(t, "workspace-failure")
-	})
-
-	t.Run("mode failure abandons staging", func(t *testing.T) {
-		fixture := newRoutedMediaTestFixture(t)
-		staged := fixture.stage(t, fixture.principal.AccountScopeID, "mode-failure")
-		fixture.runner.response.Text = `{"title":"Plan denied","mode":"plan"}`
-		response := fixture.post(t, fixture.principal.AccountScopeID, "mode-failure", staged.ID, nil)
-		if response.Code != http.StatusBadRequest {
-			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-		}
-		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
-		fixture.assertNoRoutedSession(t, "mode-failure")
 	})
 
 	t.Run("capability failure abandons staging before materialization", func(t *testing.T) {

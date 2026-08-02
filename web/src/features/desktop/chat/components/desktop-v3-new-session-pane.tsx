@@ -86,6 +86,7 @@ export function DesktopV3NewSessionPane({
   const [routedState, setRoutedState] = useState<DesktopV3RoutedNewSessionState>(() => controller.getState())
   const initialControllerState = controller.getState()
   const [draft, setDraft] = useState(() => initialControllerState.snapshot.prompt)
+  const [mode, setMode] = useState<'auto' | 'plan'>(() => initialControllerState.snapshot.planModeRequested ? 'plan' : 'auto')
   const initialStagedAttachments = initialControllerState.phase === 'failed'
     ? initialControllerState.snapshot.attachments.map((attachment, index) => ({
         id: `restored:${index}:${attachment.staging_id}`,
@@ -131,6 +132,7 @@ export function DesktopV3NewSessionPane({
       stagedAttachmentsRef.current = visibleAttachments
       setStagedAttachments(visibleAttachments)
       setDraft(routedState.snapshot.prompt)
+      setMode(routedState.snapshot.planModeRequested ? 'plan' : 'auto')
       setWorktreeIntent(createDesktopRoutedWorktreeIntent(routedState.snapshot.worktreePrimed))
       setRestoredSnapshot(routedState.snapshot)
       return
@@ -152,6 +154,7 @@ export function DesktopV3NewSessionPane({
         if (cancelled) return
         setStagedAttachments([])
         setRestoredSnapshot(null)
+        setMode('auto')
         setWorktreeIntent(createDesktopRoutedWorktreeIntent())
       })
       .catch((error) => {
@@ -261,6 +264,7 @@ export function DesktopV3NewSessionPane({
     stagedAttachmentsRef.current = visibleAttachments
     setStagedAttachments(visibleAttachments)
     setDraft(current.snapshot.prompt)
+    setMode(current.snapshot.planModeRequested ? 'plan' : 'auto')
     setWorktreeIntent(createDesktopRoutedWorktreeIntent(current.snapshot.worktreePrimed))
     setRestoredSnapshot(current.snapshot)
     void controller.retry()
@@ -308,6 +312,8 @@ export function DesktopV3NewSessionPane({
           })}
           routedComposerSnapshot={restoredSnapshot}
           routedWorktreeRequested={worktreeIntent.requested}
+          mode={mode}
+          onModeSelect={routedState.phase === 'failed' ? undefined : setMode}
           onRoutedWorktreeRequestedChange={routedState.phase === 'failed' ? undefined : (requested) => {
             setWorktreeIntent((current) => setDesktopRoutedWorktreeIntent(current, requested))
           }}
@@ -316,13 +322,12 @@ export function DesktopV3NewSessionPane({
           agents={agentStateQuery.data?.profiles ?? []}
           modelProfiles={modelProfiles}
           activeModelProfile={activeModelProfile}
-          modelProfilesLoading={modelProfilesQuery.isPending || swarmModelSettingsQuery.isPending}
-          modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : swarmModelSettingsQuery.error instanceof Error ? swarmModelSettingsQuery.error.message : null}
           modelOptions={modelOptionsQuery.data ?? []}
           selectedModelKey={actionModel ? modelOptionKey(actionModel.provider, actionModel.model, actionModel.contextMode) : ''}
           selectedServiceTier={actionModel?.serviceTier ?? ''}
           thinking={actionModel?.thinking ?? ''}
           modelControlDetail={actionModel ? `${actionModel.provider}/${actionModel.model}` : 'Swarm action model'}
+          modelStatusLabel="Waiting…"
           onConfirmAgentSettings={handleConfirmAgentSettings}
           agentModelControlBusy={agentModelSaving}
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}

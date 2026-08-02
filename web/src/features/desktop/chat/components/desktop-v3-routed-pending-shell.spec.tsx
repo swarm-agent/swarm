@@ -50,7 +50,7 @@ test('fast unresolved routing still renders the same local message without autho
 
   assert.equal((markup.match(/Fast route/g) ?? []).length, 1)
   assert.match(markup, /New chat/)
-  assert.match(markup, />Routing</)
+  assert.match(markup, />Routing…</)
   assert.doesNotMatch(markup, /Choosing setup/)
 })
 

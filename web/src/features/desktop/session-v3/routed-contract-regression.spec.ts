@@ -49,6 +49,7 @@ test('routed contract exposes only local composer intent before canonical resolu
     selectedAction: { id: 'action-1' },
     selectedSkill: { canonicalName: 'skill-1' },
     worktreePrimed: true,
+    planModeRequested: true,
   })
   const operation = createDesktopV3RoutedStartOperation({
     snapshot,
@@ -56,7 +57,7 @@ test('routed contract exposes only local composer intent before canonical resolu
   })
 
   assert.deepEqual(Object.keys(operation.request).sort(), [
-    'client_request_id', 'idempotency_key', 'input', 'media', 'metadata',
+    'client_request_id', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata', 'plan_mode_requested',
   ])
   for (const forbidden of [
     'session_id', 'workspace_path', 'workspace_binding_id', 'title', 'mode',
@@ -65,7 +66,9 @@ test('routed contract exposes only local composer intent before canonical resolu
     assert.equal(Object.hasOwn(operation.request, forbidden), false, `routed request must not preselect ${forbidden}`)
   }
   assert.equal('sessionId' in createDesktopV3RoutedDraftState(snapshot.prompt, snapshot), false)
-  assert.equal(operation.request.input, 'Implement the routed change\n\nUse a managed worktree for this session.')
+  assert.equal(operation.request.input, 'Implement the routed change')
+  assert.equal(operation.request.managed_worktree_requested, true)
+  assert.equal(operation.request.plan_mode_requested, true)
 })
 
 test('routed pending shell remains local and failure restores exact controls for one-id retry', async () => {
@@ -78,6 +81,7 @@ test('routed pending shell remains local and failure restores exact controls for
       selectedAction: { id: 'action-2', arguments: ['--exact'] },
       selectedSkill: { canonicalName: 'skill-2' },
       worktreePrimed: true,
+      planModeRequested: true,
     })
     const controller = new DesktopV3RoutedNewSessionController(async (request) => {
       requests.push(request.client_request_id)
@@ -116,7 +120,7 @@ test('new-session pane keeps resolved authority behind pending shell until activ
   const source = await readFile(new URL('../chat/components/desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /const pendingState = routedState\.phase === 'resolved' \? 'routing' : routedState\.phase/)
-  assert.match(source, /routedState\.phase === 'failed'[\s\S]*setDraft\(routedState\.snapshot\.prompt\)[\s\S]*setWorktreeIntent\(createDesktopRoutedWorktreeIntent\(routedState\.snapshot\.worktreePrimed\)\)[\s\S]*setRestoredSnapshot\(routedState\.snapshot\)/)
+  assert.match(source, /routedState\.phase === 'failed'[\s\S]*setDraft\(routedState\.snapshot\.prompt\)[\s\S]*setMode\(routedState\.snapshot\.planModeRequested \? 'plan' : 'auto'\)[\s\S]*setWorktreeIntent\(createDesktopRoutedWorktreeIntent\(routedState\.snapshot\.worktreePrimed\)\)[\s\S]*setRestoredSnapshot\(routedState\.snapshot\)/)
   assert.match(source, /routedState\.phase !== 'resolved'[\s\S]*resolvedCallbackRef\.current\(routedState\.result\)/)
   assert.match(source, /showComposer = routedState\.phase === 'draft' \|\| routedState\.phase === 'worktree-primed' \|\| routedState\.phase === 'failed'/)
   assert.doesNotMatch(source, /dispatchDesktopV3Cache|selectSession|ensureSessionConnected|navigate\(/)

@@ -96,6 +96,7 @@ export interface DesktopV3RoutedSessionStartRequest {
   agent_name?: string
   metadata?: Record<string, unknown>
   managed_worktree_requested: boolean
+  plan_mode_requested: boolean
   media?: DesktopV3RoutedSessionMediaRequest[]
   staging_ids?: string[]
 }
@@ -235,6 +236,9 @@ export async function postDesktopV3RoutedSessionStart(
   if (typeof input.managed_worktree_requested !== 'boolean') {
     throw new Error('Desktop V3 routed start requires explicit managed_worktree_requested intent')
   }
+  if (typeof input.plan_mode_requested !== 'boolean') {
+    throw new Error('Desktop V3 routed start requires explicit plan_mode_requested intent')
+  }
   if ((input.media?.length ?? 0) > 0 && (input.staging_ids?.length ?? 0) > 0) {
     throw new Error('Desktop V3 routed start accepts media or staging_ids, not both')
   }
@@ -246,6 +250,7 @@ export async function postDesktopV3RoutedSessionStart(
     ...(input.agent_name?.trim() ? { agent_name: input.agent_name.trim() } : {}),
     ...(input.metadata ? { metadata: input.metadata } : {}),
     managed_worktree_requested: input.managed_worktree_requested,
+    plan_mode_requested: input.plan_mode_requested,
     ...(input.media?.length ? { media: input.media } : {}),
     ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),
   }

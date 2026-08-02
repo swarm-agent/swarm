@@ -73,4 +73,14 @@ func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
 	if first == secondHash {
 		t.Fatal("request hash did not bind routed input")
 	}
+	planRequested := true
+	second = base
+	second.PlanModeRequested = &planRequested
+	planHash, err := routedSessionRequestHash(second, "request", nil)
+	if err != nil {
+		t.Fatalf("Plan hash: %v", err)
+	}
+	if first == planHash {
+		t.Fatal("request hash did not bind plan_mode_requested")
+	}
 }

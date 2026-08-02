@@ -39,6 +39,7 @@ type routedSessionStartRequest struct {
 	AgentName                string                      `json:"agent_name,omitempty"`
 	Metadata                 map[string]any              `json:"metadata,omitempty"`
 	ManagedWorktreeRequested *bool                       `json:"managed_worktree_requested"`
+	PlanModeRequested        *bool                       `json:"plan_mode_requested"`
 	Media                    []routedSessionMediaRequest `json:"media,omitempty"`
 	StagingIDs               []string                    `json:"staging_ids,omitempty"`
 }
@@ -391,6 +392,10 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, errors.New("managed_worktree_requested is required"))
 		return
 	}
+	if req.PlanModeRequested == nil {
+		writeError(w, http.StatusBadRequest, errors.New("plan_mode_requested is required"))
+		return
+	}
 	if req.Input == "" {
 		writeError(w, http.StatusBadRequest, errors.New("routed session input is required"))
 		return
@@ -424,6 +429,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	}
 
 	managedWorktreeAllowed := *req.ManagedWorktreeRequested
+	planModeRequested := *req.PlanModeRequested
 	decision, err := s.routeSessionOnce(r.Context(), principal, req.Input, managedWorktreeAllowed)
 	if err != nil {
 		writeRoutedSessionError(w, err)
@@ -440,9 +446,12 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeRoutedSessionError(w, err)
 		return
 	}
-	mode := sessionruntime.NormalizeMode(decision.Result.Mode)
+	mode := sessionruntime.ModeAuto
+	if planModeRequested {
+		mode = sessionruntime.ModePlan
+	}
 	if modelProfile != nil && mode == sessionruntime.ModePlan && modelProfile.Plan == nil {
-		writeRoutedSessionError(w, errors.New("Router selected Plan but the account default has Plan disabled"))
+		writeRoutedSessionError(w, errors.New("Plan was requested but the account default has Plan disabled"))
 		return
 	}
 	candidate := pebblestore.SessionSnapshot{ID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: decision.Workspace.WorkspacePath, WorkspaceName: decision.Workspace.WorkspaceName, Title: strings.TrimSpace(decision.Result.Title), Mode: mode, ModelProfile: modelProfile, CreatedAt: now, UpdatedAt: now}
@@ -469,6 +478,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
 	candidate.Metadata["managed_worktree_requested"] = managedWorktreeAllowed
+	candidate.Metadata["plan_mode_requested"] = planModeRequested
 	candidate.Metadata["routed_worktree_requested"] = managedWorktreeAllowed && decision.Result.Worktree
 
 	var worktreeAllocation worktreeruntime.Allocation
@@ -688,9 +698,10 @@ func routedSessionRequestHash(req routedSessionStartRequest, clientRequestID str
 	raw, err := json.Marshal(struct {
 		Input, ClientRequestID, AgentName string
 		ManagedWorktreeRequested          *bool
+		PlanModeRequested                 *bool
 		Metadata                          map[string]any
 		Media                             []routedSessionMediaRequest
-	}{req.Input, clientRequestID, req.AgentName, req.ManagedWorktreeRequested, cloneSessionsV3Metadata(req.Metadata), media})
+	}{req.Input, clientRequestID, req.AgentName, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media})
 	if err != nil {
 		return "", err
 	}

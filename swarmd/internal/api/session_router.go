@@ -67,7 +67,6 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	}
 
 	authorityContext := identity.ContextWithPrincipal(ctx, principal)
-	routerContext.PlanEnabled = true
 	routerContext.ManagedWorktreeAllowed = managedWorktreeAllowed
 
 	routerRequest := routerruntime.Request{Input: input, Context: routerContext}

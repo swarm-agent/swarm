@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func boundContext(plan bool) Context {
-	return Context{PlanEnabled: plan, ServerBoundWorkspaceID: "ws-1", Workspaces: []Workspace{{ID: "ws-1", Name: "Core", Definition: "untrusted"}}}
+func boundContext() Context {
+	return Context{ServerBoundWorkspaceID: "ws-1", Workspaces: []Workspace{{ID: "ws-1", Name: "Core", Definition: "untrusted"}}}
 }
 
-func multipleContext(plan bool) Context {
-	return Context{PlanEnabled: plan, Workspaces: []Workspace{{ID: "ws-1", Name: "Core"}, {ID: "ws-2", Name: "Web"}}}
+func multipleContext() Context {
+	return Context{Workspaces: []Workspace{{ID: "ws-1", Name: "Core"}, {ID: "ws-2", Name: "Web"}}}
 }
 
 func withManagedWorktree(context Context) Context {
@@ -19,24 +19,24 @@ func withManagedWorktree(context Context) Context {
 	return context
 }
 
-func TestPromptAndSchemaOmitDisabledPlan(t *testing.T) {
-	prompt, err := Prompt(boundContext(false))
+func TestPromptAndSchemaContainNoModeChoice(t *testing.T) {
+	prompt, err := Prompt(boundContext())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(prompt, ModePlan) || !strings.Contains(prompt, `["auto"]`) {
-		t.Fatalf("disabled mode leaked into prompt: %s", prompt)
+	if strings.Contains(strings.ToLower(prompt), "mode") || strings.Contains(prompt, "plan") || strings.Contains(prompt, "auto") {
+		t.Fatalf("mode authority leaked into prompt: %s", prompt)
 	}
 	if strings.Contains(prompt, "worktree") {
 		t.Fatalf("unauthorized worktree instructions leaked into prompt: %s", prompt)
 	}
-	schema, err := ResultSchema(boundContext(false))
+	schema, err := ResultSchema(boundContext())
 	if err != nil {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(schema)
-	if strings.Contains(string(encoded), ModePlan) {
-		t.Fatalf("disabled mode leaked into schema: %s", encoded)
+	if strings.Contains(strings.ToLower(string(encoded)), "mode") || strings.Contains(string(encoded), "plan") || strings.Contains(string(encoded), "auto") {
+		t.Fatalf("mode authority leaked into schema: %s", encoded)
 	}
 	properties := schema["properties"].(map[string]any)
 	if _, ok := properties["workspace_id"]; ok {
@@ -54,12 +54,12 @@ func TestPromptAndSchemaOmitDisabledPlan(t *testing.T) {
 }
 
 func TestPromptAndSchemaAdvertiseConditionalChoices(t *testing.T) {
-	context := withManagedWorktree(multipleContext(true))
+	context := withManagedWorktree(multipleContext())
 	prompt, err := Prompt(context)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{ModeAuto, ModePlan, "workspace_id is required", "ws-1", "ws-2"} {
+	for _, want := range []string{"workspace_id is required", "ws-1", "ws-2"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
 		}
@@ -82,11 +82,11 @@ func TestPromptAndSchemaAdvertiseConditionalChoices(t *testing.T) {
 
 func TestDecodeResultStrictAndContextual(t *testing.T) {
 	name := "router-core"
-	got, err := DecodeResult(`{"title":" Route work ","mode":"plan","workspace_id":"ws-2","worktree":true,"worktree_name":" router-core "}`, withManagedWorktree(multipleContext(true)))
+	got, err := DecodeResult(`{"title":" Route work ","workspace_id":"ws-2","worktree":true,"worktree_name":" router-core "}`, withManagedWorktree(multipleContext()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title != "Route work" || got.Mode != ModePlan || got.WorkspaceID == nil || *got.WorkspaceID != "ws-2" || got.WorktreeName == nil || *got.WorktreeName != name {
+	if got.Title != "Route work" || got.WorkspaceID == nil || *got.WorkspaceID != "ws-2" || got.WorktreeName == nil || *got.WorktreeName != name {
 		t.Fatalf("decoded result = %+v", got)
 	}
 
@@ -95,19 +95,18 @@ func TestDecodeResultStrictAndContextual(t *testing.T) {
 		raw  string
 		ctx  Context
 	}{
-		{"unknown field", `{"title":"x","mode":"auto","worktree":false,"escape":true}`, boundContext(false)},
-		{"trailing object", `{"title":"x","mode":"auto","worktree":false}{}`, boundContext(false)},
-		{"missing required", `{"title":"x"}`, boundContext(false)},
-		{"disabled plan", `{"title":"x","mode":"plan","worktree":false}`, boundContext(false)},
-		{"mode is case sensitive", `{"title":"x","mode":"AUTO","worktree":false}`, boundContext(false)},
-		{"bound workspace id", `{"title":"x","mode":"auto","workspace_id":"ws-1","worktree":false}`, boundContext(false)},
-		{"null bound workspace id", `{"title":"x","mode":"auto","workspace_id":null,"worktree":false}`, boundContext(false)},
-		{"missing workspace id", `{"title":"x","mode":"auto","worktree":false}`, multipleContext(false)},
-		{"unadvertised workspace", `{"title":"x","mode":"auto","workspace_id":"ws-x","worktree":false}`, multipleContext(false)},
-		{"unauthorized worktree", `{"title":"x","mode":"auto","worktree":true,"worktree_name":"x"}`, boundContext(false)},
-		{"authorized missing worktree name", `{"title":"x","mode":"auto","worktree":true}`, withManagedWorktree(boundContext(false))},
-		{"empty title", `{"title":" ","mode":"auto","worktree":false}`, boundContext(false)},
-		{"long title", `{"title":"` + strings.Repeat("x", MaxTitleRunes+1) + `","mode":"auto","worktree":false}`, boundContext(false)},
+		{"mode is forbidden", `{"title":"x","mode":"plan"}`, boundContext()},
+		{"unknown field", `{"title":"x","escape":true}`, boundContext()},
+		{"trailing object", `{"title":"x"}{}`, boundContext()},
+		{"missing required", `{}`, boundContext()},
+		{"bound workspace id", `{"title":"x","workspace_id":"ws-1"}`, boundContext()},
+		{"null bound workspace id", `{"title":"x","workspace_id":null}`, boundContext()},
+		{"missing workspace id", `{"title":"x"}`, multipleContext()},
+		{"unadvertised workspace", `{"title":"x","workspace_id":"ws-x"}`, multipleContext()},
+		{"unauthorized worktree", `{"title":"x","worktree":true,"worktree_name":"x"}`, boundContext()},
+		{"authorized missing worktree name", `{"title":"x","worktree":true}`, withManagedWorktree(boundContext())},
+		{"empty title", `{"title":" "}`, boundContext()},
+		{"long title", `{"title":"` + strings.Repeat("x", MaxTitleRunes+1) + `"}`, boundContext()},
 	}
 	for _, test := range bad {
 		t.Run(test.name, func(t *testing.T) {
@@ -130,7 +129,7 @@ func TestValidateContextRequiresUnambiguousWorkspaceShape(t *testing.T) {
 			t.Fatalf("ValidateContext(%+v) succeeded", context)
 		}
 	}
-	if err := ValidateRequest(Request{Input: " ", Context: boundContext(false)}); err == nil {
+	if err := ValidateRequest(Request{Input: " ", Context: boundContext()}); err == nil {
 		t.Fatal("empty request input accepted")
 	}
 }

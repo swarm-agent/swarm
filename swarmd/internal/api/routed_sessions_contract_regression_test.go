@@ -18,7 +18,7 @@ import (
 // route, and failed media/worktree preparation leaves no replayable authority.
 func TestRoutedSessionContractRegression(t *testing.T) {
 	t.Run("client cannot supply pre-session route authority", func(t *testing.T) {
-		runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router title","mode":"auto"}`}}
+		runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router title"}`}}
 		server, _, principal := newRoutedSessionAtomicityServer(t, runner, false, true)
 
 		for _, forbidden := range []string{
@@ -28,7 +28,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 			`"preference":{"provider":"client","model":"client-model","thinking":"high"}`,
 			`"model_profile":{"action":{"provider":"client","model":"client-model"}}`,
 		} {
-			body := `{"input":"route this","client_request_id":"forbidden-authority","managed_worktree_requested":false,` + forbidden + `}`
+			body := `{"input":"route this","client_request_id":"forbidden-authority","managed_worktree_requested":false,"plan_mode_requested":false,` + forbidden + `}`
 			response := postRoutedSessionRawContractRequest(t, server, principal, body)
 			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unknown field") {
 				t.Fatalf("forbidden authority %s status=%d body=%s", forbidden, response.Code, response.Body.String())
@@ -37,45 +37,53 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		if runner.createCalls != 0 || runner.streamingCalls != 0 {
 			t.Fatalf("client route authority reached Router: create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
 		}
+		missingPlan := postRoutedSessionRawContractRequest(t, server, principal, `{"input":"route this","client_request_id":"missing-plan","managed_worktree_requested":false}`)
+		if missingPlan.Code != http.StatusBadRequest || !strings.Contains(missingPlan.Body.String(), "plan_mode_requested is required") {
+			t.Fatalf("missing Plan intent status=%d body=%s", missingPlan.Code, missingPlan.Body.String())
+		}
 	})
 
-	t.Run("Router owns title mode and workspace while disabled Plan fails closed", func(t *testing.T) {
-		planRunner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Plan","mode":"plan"}`}}
-		planServer, planSessions, principal := newRoutedSessionAtomicityServer(t, planRunner, false, true)
-		const deniedRequestID = "router-plan-disabled-contract"
-		denied := postRoutedSessionAtomicityRequest(t, planServer, principal, map[string]any{
-			"input": "plan this work", "client_request_id": deniedRequestID,
-		})
-		if denied.Code != http.StatusBadRequest || !strings.Contains(denied.Body.String(), "was not advertised") {
-			t.Fatalf("disabled Plan status=%d body=%s", denied.Code, denied.Body.String())
+	t.Run("explicit Plan intent owns mode while Router owns title and workspace", func(t *testing.T) {
+		tests := []struct {
+			name          string
+			planRequested bool
+			wantMode      string
+		}{
+			{name: "Auto", planRequested: false, wantMode: "auto"},
+			{name: "Plan", planRequested: true, wantMode: "plan"},
 		}
-		assertNoRoutedSessionDurableAuthority(t, planSessions, principal, stableSessionsV3PrimarySessionID(principal, "routed:"+deniedRequestID), deniedRequestID)
-
-		autoRunner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical Title","mode":"auto"}`}}
-		autoServer, autoSessions, autoPrincipal := newRoutedSessionAtomicityServer(t, autoRunner, false, true)
-		created := postRoutedSessionAtomicityRequest(t, autoServer, autoPrincipal, map[string]any{
-			"input": "implement this work", "client_request_id": "router-canonical-contract",
-		})
-		if created.Code != http.StatusOK {
-			t.Fatalf("canonical routed start status=%d body=%s", created.Code, created.Body.String())
-		}
-		response := decodeRoutedSessionAtomicityResponse(t, created)
-		stored, ok, err := autoSessions.GetSession(response.SessionID)
-		if err != nil || !ok {
-			t.Fatalf("canonical routed session exists=%t err=%v", ok, err)
-		}
-		if stored.Title != "Router Canonical Title" || stored.Mode != "auto" || stored.WorkspaceName != "Routed Workspace" || stored.WorkspacePath == "" {
-			t.Fatalf("Router authority was not canonical: %+v", stored)
-		}
-		if autoRunner.createCalls != 1 || autoRunner.streamingCalls != 0 {
-			t.Fatalf("Router calls create=%d streaming=%d", autoRunner.createCalls, autoRunner.streamingCalls)
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical Title"}`}}
+				server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
+				created := postRoutedSessionAtomicityRequest(t, server, principal, map[string]any{
+					"input": "implement this work", "client_request_id": "router-canonical-" + strings.ToLower(test.name), "plan_mode_requested": test.planRequested,
+				})
+				if created.Code != http.StatusOK {
+					t.Fatalf("canonical routed start status=%d body=%s", created.Code, created.Body.String())
+				}
+				response := decodeRoutedSessionAtomicityResponse(t, created)
+				if response.StartingMode != test.wantMode {
+					t.Fatalf("starting_mode=%q want %q", response.StartingMode, test.wantMode)
+				}
+				stored, ok, err := sessions.GetSession(response.SessionID)
+				if err != nil || !ok {
+					t.Fatalf("canonical routed session exists=%t err=%v", ok, err)
+				}
+				if stored.Title != "Router Canonical Title" || stored.Mode != test.wantMode || stored.WorkspaceName != "Routed Workspace" || stored.WorkspacePath == "" {
+					t.Fatalf("routed authority was not canonical: %+v", stored)
+				}
+				if runner.createCalls != 1 || runner.streamingCalls != 0 {
+					t.Fatalf("Router calls create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
+				}
+			})
 		}
 	})
 
 	t.Run("media commit failure rolls back the allocated worktree and cannot replay", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
 		name := "Contract Worktree"
-		fixture.runner.response.Text = `{"title":"Worktree contract","mode":"auto","worktree":true,"worktree_name":"` + name + `"}`
+		fixture.runner.response.Text = `{"title":"Worktree contract","worktree":true,"worktree_name":"` + name + `"}`
 		managedPath := t.TempDir()
 		worktrees := &routedContractRollbackWorktree{routedWorktreeServiceStub: routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
 			config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent/<id>"},

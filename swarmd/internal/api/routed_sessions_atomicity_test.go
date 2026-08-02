@@ -37,10 +37,9 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 		breakCapabilities bool
 		wantRouterCalls   int
 	}{
-		{name: "workspace failure", workspaceEnabled: false, routerResponse: `{"title":"unused","mode":"auto"}`, wantRouterCalls: 0},
+		{name: "workspace failure", workspaceEnabled: false, routerResponse: `{"title":"unused"}`, wantRouterCalls: 0},
 		{name: "Router failure", workspaceEnabled: true, routerErr: errors.New("Router unavailable"), wantRouterCalls: 1},
-		{name: "mode failure", workspaceEnabled: true, routerResponse: `{"title":"Plan is disabled","mode":"plan"}`, wantRouterCalls: 1},
-		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check","mode":"auto"}`, breakCapabilities: true, wantRouterCalls: 1},
+		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check"}`, breakCapabilities: true, wantRouterCalls: 1},
 	}
 
 	for _, test := range tests {
@@ -71,7 +70,7 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 }
 
 func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Owned Title","mode":"auto"}`}}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Owned Title"}`}}
 	server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, false, true)
 	const requestID = "atomic-routed-start"
 	requestBody := map[string]any{
@@ -84,7 +83,7 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 		t.Fatalf("first routed start status=%d body=%s", first.Code, first.Body.String())
 	}
 	firstResponse := decodeRoutedSessionAtomicityResponse(t, first)
-	if !firstResponse.OK || firstResponse.Replayed || firstResponse.SessionID == "" {
+	if !firstResponse.OK || firstResponse.Replayed || firstResponse.SessionID == "" || firstResponse.StartingMode != sessionruntime.ModeAuto {
 		t.Fatalf("first routed response = %+v", firstResponse)
 	}
 	if runner.createCalls != 1 || runner.streamingCalls != 0 {
@@ -161,6 +160,19 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	}
 	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
 
+	planConflictBody := map[string]any{
+		"input": "create the routed session", "client_request_id": requestID,
+		"metadata": map[string]any{"source": "desktop"}, "plan_mode_requested": true,
+	}
+	planConflict := postRoutedSessionAtomicityRequest(t, server, principal, planConflictBody)
+	if planConflict.Code != http.StatusConflict {
+		t.Fatalf("Plan intent conflict status=%d body=%s", planConflict.Code, planConflict.Body.String())
+	}
+	if runner.createCalls != 1 {
+		t.Fatalf("Plan intent conflict called Router %d times, want once", runner.createCalls)
+	}
+	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
+
 	conflictBody := map[string]any{
 		"input": "different payload", "client_request_id": requestID,
 		"metadata": map[string]any{"source": "desktop"},
@@ -183,6 +195,7 @@ type routedSessionAtomicityResponse struct {
 	Projection   sessionruntime.SessionProjection     `json:"projection"`
 	FirstMessage pebblestore.MessageSnapshot          `json:"first_message"`
 	Mutation     sessionruntime.SessionMutationResult `json:"mutation"`
+	StartingMode string                               `json:"starting_mode"`
 	Replayed     bool                                 `json:"replayed"`
 }
 
@@ -199,6 +212,9 @@ func postRoutedSessionAtomicityRequest(t *testing.T, server *Server, principal i
 	t.Helper()
 	if _, ok := body["managed_worktree_requested"]; !ok {
 		body["managed_worktree_requested"] = false
+	}
+	if _, ok := body["plan_mode_requested"]; !ok {
+		body["plan_mode_requested"] = false
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

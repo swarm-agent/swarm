@@ -5,11 +5,12 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
 
-function render(requested: boolean, disabled = false): string {
+function render(requested: boolean, disabled = false, readOnly = false): string {
   return renderToStaticMarkup(
     <DesktopRoutedWorktreePrime
       requested={requested}
       disabled={disabled}
+      readOnly={readOnly}
       onRequestedChange={() => undefined}
     />,
   )
@@ -38,4 +39,13 @@ test('worktree prime toggled presentation remains boolean and can be disabled', 
   assert.match(markup, /border-\[var\(--app-border-accent\)\]/)
   assert.match(markup, /ring-1 ring-\[var\(--app-border-accent\)\]/)
   assert.doesNotMatch(markup, /branch|worktree name|workspace path|agent\//i)
+})
+
+test('durable worktree state stays visibly active and read-only after creation', () => {
+  const markup = render(true, false, true)
+
+  assert.match(markup, /data-worktree-requested="true"/)
+  assert.match(markup, /aria-readonly="true"/)
+  assert.match(markup, /Managed worktree active/)
+  assert.match(markup, /border-\[var\(--app-border-accent\)\]/)
 })
