@@ -171,6 +171,11 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("migrate model profiles to flat favorites: %w", err)
 	}
+	if _, err := pebblestore.RunAgentModelSettingsMigration(store); err != nil {
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("migrate unified agent model settings: %w", err)
+	}
 	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
 		_ = store.Close()

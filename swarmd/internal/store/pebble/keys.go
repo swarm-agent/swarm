@@ -16,6 +16,7 @@ const (
 	KeyAuthCredentialTagPrefix                     = "auth/index/auth_tag/"
 	KeyUISettingsDefault                           = "ui/settings/default"
 	KeyUISettingsAccountPrefix                     = "ui/settings_by_account/"
+	KeyAgentModelSettingsAccountPrefix             = "agent_model_settings/by_account/"
 	KeyUIChatSettingsDefault                       = "ui/chat_settings/default"
 	KeyIdentityPrefix                              = "identity/"
 	KeyIdentityUserPrefix                          = "identity/user/"
@@ -1067,6 +1068,10 @@ func RunPermissionPrefix(sessionID, runID string) string {
 
 func KeyUISettingsForAccount(accountScopeID string) string {
 	return KeyUISettingsAccountPrefix + keyPart(accountScopeID)
+}
+
+func KeyAgentModelSettingsForAccount(accountScopeID string) string {
+	return KeyAgentModelSettingsAccountPrefix + keyPart(accountScopeID)
 }
 
 func KeyNotification(swarmID, notificationID string) string {

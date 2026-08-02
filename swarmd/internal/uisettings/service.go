@@ -95,21 +95,6 @@ type ToolSettings struct {
 	Image ToolImageSettings `json:"image,omitempty"`
 }
 
-type CompactAgentSettings struct {
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Thinking    string `json:"thinking,omitempty"`
-	ServiceTier string `json:"service_tier,omitempty"`
-}
-
-type AgentSettings struct {
-	Compact  CompactAgentSettings `json:"compact,omitempty"`
-	Finder   CompactAgentSettings `json:"finder,omitempty"`
-	Coder    CompactAgentSettings `json:"coder,omitempty"`
-	Designer CompactAgentSettings `json:"designer,omitempty"`
-	Router   CompactAgentSettings `json:"router,omitempty"`
-}
-
 type UISettings struct {
 	Theme     ThemeSettings    `json:"theme,omitempty"`
 	Input     InputSettings    `json:"input,omitempty"`
@@ -117,7 +102,7 @@ type UISettings struct {
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
 	Tools     ToolSettings     `json:"tools,omitempty"`
-	Agents    AgentSettings    `json:"agents,omitempty"`
+	Agents    AgentSettings    `json:"-"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
@@ -172,7 +157,6 @@ func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UIS
 		Swarming: swarmingRecordFromSettings(settings.Swarming),
 		Swarm:    swarmRecordFromSettings(settings.Swarm),
 		Tools:    toolRecordFromSettings(settings.Tools),
-		Agents:   agentRecordFromSettings(settings.Agents),
 	})
 	if err != nil {
 		return UISettings{}, fmt.Errorf("persist ui settings: %w", err)
@@ -243,38 +227,6 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		Tools: ToolSettings{
 			Image: ToolImageSettings{
 				DefaultModel: strings.TrimSpace(record.Tools.Image.DefaultModel),
-			},
-		},
-		Agents: AgentSettings{
-			Compact: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Compact.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Compact.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier)),
-			},
-			Finder: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Finder.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Finder.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Finder.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Finder.ServiceTier)),
-			},
-			Coder: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Coder.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Coder.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Coder.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Coder.ServiceTier)),
-			},
-			Designer: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Designer.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Designer.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Designer.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Designer.ServiceTier)),
-			},
-			Router: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Router.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Router.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Router.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Router.ServiceTier)),
 			},
 		},
 		UpdatedAt: record.UpdatedAt,
@@ -363,41 +315,6 @@ func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRe
 	return &pebblestore.UIToolSettingsRecord{
 		Image: pebblestore.UIToolImageSettingsRecord{
 			DefaultModel: strings.TrimSpace(settings.Image.DefaultModel),
-		},
-	}
-}
-
-func agentRecordFromSettings(settings AgentSettings) *pebblestore.UIAgentSettingsRecord {
-	return &pebblestore.UIAgentSettingsRecord{
-		Compact: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Compact.Provider)),
-			Model:       strings.TrimSpace(settings.Compact.Model),
-			Thinking:    strings.TrimSpace(settings.Compact.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Compact.ServiceTier)),
-		},
-		Finder: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Finder.Provider)),
-			Model:       strings.TrimSpace(settings.Finder.Model),
-			Thinking:    strings.TrimSpace(settings.Finder.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Finder.ServiceTier)),
-		},
-		Coder: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Coder.Provider)),
-			Model:       strings.TrimSpace(settings.Coder.Model),
-			Thinking:    strings.TrimSpace(settings.Coder.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Coder.ServiceTier)),
-		},
-		Designer: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Designer.Provider)),
-			Model:       strings.TrimSpace(settings.Designer.Model),
-			Thinking:    strings.TrimSpace(settings.Designer.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Designer.ServiceTier)),
-		},
-		Router: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Router.Provider)),
-			Model:       strings.TrimSpace(settings.Router.Model),
-			Thinking:    strings.TrimSpace(settings.Router.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Router.ServiceTier)),
 		},
 	}
 }

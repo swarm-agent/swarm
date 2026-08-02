@@ -40,6 +40,33 @@ func (s *SwarmModeSettingsStore) GetForAccount(accountScopeID string) (SwarmMode
 		return SwarmModeSettingsRecord{}, false, ErrSwarmModeStoreNotConfigured
 	}
 
+	if payload, found, err := s.store.GetBytes(KeyAgentModelSettingsForAccount(accountScopeID)); err != nil {
+		return SwarmModeSettingsRecord{}, false, err
+	} else if found {
+		var unified AgentModelSettingsRecord
+		if err := decodeStrictJSON(payload, &unified); err != nil {
+			return SwarmModeSettingsRecord{}, false, err
+		}
+		unified = normalizeAgentModelSettingsRecord(unified)
+		if unified.AccountScopeID != NormalizeAgentModelAccountScopeID(accountScopeID) {
+			return SwarmModeSettingsRecord{}, false, ErrAgentModelSettingsAccountMismatch
+		}
+		if err := ValidateAgentModelAssignment(unified.Swarm.Action); err != nil {
+			return SwarmModeSettingsRecord{}, false, err
+		}
+		if err := ValidateAgentModelAssignment(unified.Swarm.Plan); err != nil {
+			return SwarmModeSettingsRecord{}, false, err
+		}
+		return SwarmModeSettingsRecord{
+			AccountScopeID: unified.AccountScopeID,
+			Action:         modelProfileSelectionFromAgentModelAssignment(unified.Swarm.Action),
+			Plan:           modelProfileSelectionFromAgentModelAssignment(unified.Swarm.Plan),
+			UpdatedAt:      unified.UpdatedAt,
+		}, true, nil
+	}
+
+	// The legacy key remains readable only so pre-startup callers and the ordered
+	// startup migration can fail closed instead of silently losing old data.
 	payload, ok, err := s.store.GetBytes(swarmModeSettingsKeyForAccount(accountScopeID))
 	if err != nil || !ok {
 		return SwarmModeSettingsRecord{}, ok, err
@@ -66,10 +93,31 @@ func (s *SwarmModeSettingsStore) PutForAccount(record SwarmModeSettingsRecord) (
 	if err := validateSwarmModeSettingsRecord(record); err != nil {
 		return SwarmModeSettingsRecord{}, err
 	}
-	if err := s.store.PutJSON(swarmModeSettingsKeyForAccount(record.AccountScopeID), record); err != nil {
+	settings := NewAgentModelSettingsStore(s.store)
+	stored, err := settings.UpdateSwarmForAccount(
+		record.AccountScopeID,
+		agentModelAssignmentFromModelProfileSelection(record.Action),
+		agentModelAssignmentFromModelProfileSelection(record.Plan),
+		record.UpdatedAt,
+	)
+	if errors.Is(err, ErrAgentModelSettingsNotFound) {
+		// Transitional callers can still initialize Action/Plan before cp-2 moves
+		// system-agent writes to the dedicated service. Startup migration owns this
+		// legacy key and removes it in the same synced batch as canonical creation.
+		if err := s.store.PutJSON(swarmModeSettingsKeyForAccount(record.AccountScopeID), record); err != nil {
+			return SwarmModeSettingsRecord{}, err
+		}
+		return record, nil
+	}
+	if err != nil {
 		return SwarmModeSettingsRecord{}, err
 	}
-	return record, nil
+	return SwarmModeSettingsRecord{
+		AccountScopeID: stored.AccountScopeID,
+		Action:         modelProfileSelectionFromAgentModelAssignment(stored.Swarm.Action),
+		Plan:           modelProfileSelectionFromAgentModelAssignment(stored.Swarm.Plan),
+		UpdatedAt:      stored.UpdatedAt,
+	}, nil
 }
 
 func normalizeSwarmModeSettingsRecord(record SwarmModeSettingsRecord) SwarmModeSettingsRecord {
@@ -110,4 +158,18 @@ func validSwarmModelSelection(selection ModelProfileSelection) bool {
 
 func swarmModeSettingsKeyForAccount(accountScopeID string) string {
 	return swarmModeSettingsAccountPrefix + keyPart(accountScopeID)
+}
+
+func agentModelAssignmentFromModelProfileSelection(selection ModelProfileSelection) AgentModelAssignment {
+	return AgentModelAssignment{
+		Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking,
+		ServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode,
+	}
+}
+
+func modelProfileSelectionFromAgentModelAssignment(assignment AgentModelAssignment) ModelProfileSelection {
+	return ModelProfileSelection{
+		Provider: assignment.Provider, Model: assignment.Model, Thinking: assignment.Thinking,
+		ServiceTier: assignment.ServiceTier, ContextMode: assignment.ContextMode,
+	}
 }

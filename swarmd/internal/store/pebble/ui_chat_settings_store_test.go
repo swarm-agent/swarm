@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -118,6 +119,20 @@ func TestUISettingsStoreCanPersistThinkingTagsDisabled(t *testing.T) {
 	}
 	if stored.Chat.ThinkingTags {
 		t.Fatal("stored thinking tags = true after explicit disable, want false")
+	}
+}
+
+func TestUISettingsRecordSchemaOmitsAgentModels(t *testing.T) {
+	payload, err := json.Marshal(DefaultUISettingsRecord())
+	if err != nil {
+		t.Fatalf("marshal defaults: %v", err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		t.Fatalf("decode defaults: %v", err)
+	}
+	if _, found := object["agents"]; found {
+		t.Fatalf("UI settings schema still persists agents: %s", payload)
 	}
 }
 
