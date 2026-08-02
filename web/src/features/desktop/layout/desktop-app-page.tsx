@@ -2594,7 +2594,8 @@ export function DesktopAppPage() {
   const [gitCommitMessage, setGitCommitMessage] = useState('')
   const gitCommitMessageInputRef = useRef<HTMLInputElement | null>(null)
   const [gitCommitBusy, setGitCommitBusy] = useState(false)
-  const [gitCommitGenerating, setGitCommitGenerating] = useState(false)
+  const [gitAICommitPhase, setGitAICommitPhase] = useState<'generating' | 'committing' | null>(null)
+  const gitAICommitRunningRef = useRef(false)
   const [gitCommitError, setGitCommitError] = useState<string | null>(null)
   const [gitCommitAction, setGitCommitAction] = useState<WorkspaceAction | null>(null)
   const [gitCommitActionInputs, setGitCommitActionInputs] = useState<Record<string, string>>({})
@@ -4313,43 +4314,77 @@ export function DesktopAppPage() {
     setGitCommitActionInputs(action ? Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue])) : {})
   }
 
-  const handleGitCommitSuggestion = async (modal: GitCommitModalState) => {
-    if (gitCommitBusy || gitCommitGenerating) return
-    setGitCommitGenerating(true)
-    setGitCommitError(null)
+  const gitCommitActionMissingInputs = Boolean(gitCommitAction?.inputs.some((input) => input.required && !(gitCommitActionInputs[input.id] ?? '').trim()))
+
+  const handleAICommit = async (input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>) => {
+    if (gitCommitBusy || gitAICommitRunningRef.current) return
+    const selectedAction = gitCommitAction?.workspacePath === input.workspacePath ? gitCommitAction : null
+    if (selectedAction?.inputs.some((actionInput) => actionInput.required && !(gitCommitActionInputs[actionInput.id] ?? '').trim())) {
+      setDesktopToast({ message: 'Fill every required post-commit Action input before running AI Commit.', tone: 'error' })
+      return
+    }
+
+    gitAICommitRunningRef.current = true
+    if (gitCommitAction && !selectedAction) selectGitCommitAction(null)
+
+    const selectedActionInputs = selectedAction ? { ...gitCommitActionInputs } : {}
+    setGitAICommitPhase('generating')
+    setDesktopToast({ message: 'AI Commit is generating a commit message. Please wait…', tone: 'info' })
     try {
-      const response = await suggestWorkspaceCommitMessage({
-        workspacePath: modal.workspacePath,
-        sessionId: modal.sessionId,
+      const suggestion = await suggestWorkspaceCommitMessage({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
       })
-      setGitCommitMessage(response.message)
-      window.requestAnimationFrame(() => {
-        gitCommitMessageInputRef.current?.focus()
-        gitCommitMessageInputRef.current?.select()
+      setGitAICommitPhase('committing')
+      setDesktopToast({ message: `AI Commit is committing “${suggestion.message}”. Please wait…`, tone: 'info' })
+      await commitWorkspaceChanges({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
+        message: suggestion.message,
+        all: true,
       })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+
+      let actionLaunchError = ''
+      if (selectedAction) {
+        try {
+          const run = await startWorkspaceAction(selectedAction.workspacePath, selectedAction.id, selectedActionInputs)
+          setGitCommitActionPresentation({ workspacePath: selectedAction.workspacePath, action: selectedAction, run, committedMessage: suggestion.message })
+        } catch (actionError) {
+          actionLaunchError = actionError instanceof Error ? actionError.message : String(actionError)
+        }
+      }
+
+      if (actionLaunchError) {
+        setDesktopToast({ message: `Changes committed with “${suggestion.message}”, but the post-commit Action could not start: ${actionLaunchError}`, tone: 'error' })
+      } else {
+        setDesktopToast({ message: selectedAction ? `Changes committed with “${suggestion.message}”. ${selectedAction.name} started.` : `Changes committed with “${suggestion.message}”.`, tone: 'success' })
+      }
     } catch (error) {
-      setGitCommitError(error instanceof Error ? error.message : String(error))
+      setDesktopToast({ message: `AI Commit failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
-      setGitCommitGenerating(false)
+      gitAICommitRunningRef.current = false
+      setGitAICommitPhase(null)
     }
   }
 
-  const openGitCommitReview = (modal: GitCommitModalState, generate: boolean) => {
+  const openGitCommitReview = (modal: GitCommitModalState) => {
+    if (gitAICommitRunningRef.current) return
     setGitCommitMessage('')
     setGitCommitError(null)
     setGitCommitIntegrate(false)
     setGitCommitArchive(false)
     if (gitCommitAction && gitCommitAction.workspacePath !== modal.workspacePath) selectGitCommitAction(null)
     setGitCommitModal(modal)
-    if (generate) void handleGitCommitSuggestion(modal)
   }
-
-  const gitCommitActionMissingInputs = Boolean(gitCommitAction?.inputs.some((input) => input.required && !(gitCommitActionInputs[input.id] ?? '').trim()))
 
   const handleGitCommit = async () => {
     const modal = gitCommitModal
     const message = gitCommitMessage.trim()
-    if (!modal || gitCommitBusy || gitCommitGenerating || !message || gitCommitActionMissingInputs) return
+    if (!modal || gitCommitBusy || !message || gitCommitActionMissingInputs) return
 
     setGitCommitBusy(true)
     setGitCommitError(null)
@@ -4483,8 +4518,8 @@ export function DesktopAppPage() {
       </div>
       {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? (
         <div className="mt-3 grid shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)] gap-2" data-plan-git-commit>
-          <button type="button" className="min-h-9 rounded-lg border border-[var(--app-border)] px-2 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" disabled={gitCommitBusy || gitCommitGenerating} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) }, false)}>Commit…</button>
-          <AICommitControl compact workspacePath={selectedGitWorkspacePath} selectedAction={gitCommitAction} generating={gitCommitGenerating} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) }, true)} />
+          <button type="button" className="min-h-9 rounded-lg border border-[var(--app-border)] px-2 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })}>Commit…</button>
+          <AICommitControl compact workspacePath={selectedGitWorkspacePath} selectedAction={gitCommitAction} phase={gitAICommitPhase} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }) }} />
         </div>
       ) : null}
       {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <button type="button" className="mt-2 inline-flex w-full shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]" data-plan-git-integrate onClick={() => { setGitIntegrateArchive(false); setGitIntegrateError(null); setGitIntegrateModal({ sessionId: selectedGitSessionId, workspacePath: activeSessionTargetWorkspacePath, worktreeBranch: activeSessionReviewCandidate.worktree_branch || gitSnapshot?.branch || 'worktree', targetBranch: activeSessionReviewCandidate.target_branch || activeSessionTargetBranch }) }}><GitMerge size={12} />Integrate into {activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}…</button> : null}
@@ -5274,19 +5309,16 @@ export function DesktopAppPage() {
           <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void handleGitCommit() }}>
             <div><div className="text-sm font-semibold text-[var(--app-text)]">Commit all changes</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">This explicitly stages and commits all {gitCommitModal.files.length} shown files, including untracked files.</div></div>
             <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
-            <div className="grid gap-2">
-              <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input ref={gitCommitMessageInputRef} autoFocus={!gitCommitGenerating} value={gitCommitMessage} disabled={gitCommitBusy} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none disabled:opacity-60" /></label>
-              <div className="flex justify-end"><AICommitControl workspacePath={gitCommitModal.workspacePath} selectedAction={gitCommitAction} generating={gitCommitGenerating} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { void handleGitCommitSuggestion(gitCommitModal) }} /></div>
-            </div>
+            <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input ref={gitCommitMessageInputRef} autoFocus value={gitCommitMessage} disabled={gitCommitBusy} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none disabled:opacity-60" /></label>
             {gitCommitAction ? <section className="grid gap-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3" aria-label={`Post-commit Action: ${gitCommitAction.name}`}>
-              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="text-xs font-semibold text-[var(--app-text)]">After commit: {gitCommitAction.name}</div>{gitCommitAction.description ? <p className="mt-0.5 text-[11px] text-[var(--app-text-subtle)]">{gitCommitAction.description}</p> : null}</div><button type="button" className="shrink-0 text-xs text-[var(--app-primary)] underline" disabled={gitCommitBusy || gitCommitGenerating} onClick={() => selectGitCommitAction(null)}>Clear</button></div>
-              {gitCommitAction.inputs.map((input) => <label key={input.id} className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>{input.label}{input.required ? ' *' : ''}</span>{input.description ? <span className="text-[11px] text-[var(--app-text-subtle)]">{input.description}</span> : null}<input type={input.kind === 'secret' ? 'password' : 'text'} value={gitCommitActionInputs[input.id] ?? ''} placeholder={input.placeholder} disabled={gitCommitBusy || gitCommitGenerating} required={input.required} onChange={(event) => setGitCommitActionInputs((current) => ({ ...current, [input.id]: event.target.value }))} className="h-9 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] outline-none disabled:opacity-60" /></label>)}
+              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="text-xs font-semibold text-[var(--app-text)]">After commit: {gitCommitAction.name}</div>{gitCommitAction.description ? <p className="mt-0.5 text-[11px] text-[var(--app-text-subtle)]">{gitCommitAction.description}</p> : null}</div><button type="button" className="shrink-0 text-xs text-[var(--app-primary)] underline" disabled={gitCommitBusy} onClick={() => selectGitCommitAction(null)}>Clear</button></div>
+              {gitCommitAction.inputs.map((input) => <label key={input.id} className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>{input.label}{input.required ? ' *' : ''}</span>{input.description ? <span className="text-[11px] text-[var(--app-text-subtle)]">{input.description}</span> : null}<input type={input.kind === 'secret' ? 'password' : 'text'} value={gitCommitActionInputs[input.id] ?? ''} placeholder={input.placeholder} disabled={gitCommitBusy} required={input.required} onChange={(event) => setGitCommitActionInputs((current) => ({ ...current, [input.id]: event.target.value }))} className="h-9 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-sm text-[var(--app-text)] outline-none disabled:opacity-60" /></label>)}
               {gitCommitActionMissingInputs ? <p className="text-[11px] text-[var(--app-warning)]" role="alert">Fill every required Action input before committing.</p> : null}
             </section> : null}
             {gitCommitModal.worktree && gitCommitModal.canIntegrate ? <div className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs"><label className="flex items-start gap-2 text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitCommitIntegrate} disabled={gitCommitBusy} onChange={(event) => { const checked = event.target.checked; setGitCommitIntegrate(checked); if (!checked) setGitCommitArchive(false) }} /><span><strong>Integrate into {gitCommitModal.targetBranch || 'target branch'}</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">After the commit succeeds, safely apply this worktree’s missing commit stack to the target checkout.</span></span></label><label className={cn('flex items-start gap-2', gitCommitIntegrate ? 'text-[var(--app-text)]' : 'text-[var(--app-text-subtle)]')}><input type="checkbox" className="mt-0.5" checked={gitCommitArchive} disabled={gitCommitBusy || !gitCommitIntegrate} onChange={(event) => setGitCommitArchive(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after the backend verifies integration succeeded.</span></span></label></div> : null}
             {!gitCommitModal.worktree && gitCommitModal.sessionId ? <label className="flex items-start gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitCommitArchive} disabled={gitCommitBusy} onChange={(event) => setGitCommitArchive(event.target.checked)} /><span><strong>Archive session after commit</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Archives this chat only after the commit succeeds.</span></span></label> : null}
             {gitCommitError ? <div className="text-xs text-[var(--app-warning)]" role="alert">{gitCommitError}</div> : null}
-            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy || gitCommitGenerating} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || gitCommitGenerating || !gitCommitMessage.trim() || gitCommitActionMissingInputs}>{gitCommitBusy ? gitCommitIntegrate ? 'Committing and integrating…' : 'Committing…' : gitCommitGenerating ? 'Generating message…' : gitCommitIntegrate ? 'Commit and integrate' : 'Commit all changes'}</Button></div>
+            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim() || gitCommitActionMissingInputs}>{gitCommitBusy ? gitCommitIntegrate ? 'Committing and integrating…' : 'Committing…' : gitCommitIntegrate ? 'Commit and integrate' : 'Commit all changes'}</Button></div>
           </form>
         </DialogPanel>
       </Dialog> : null}
@@ -5309,10 +5341,10 @@ export function DesktopAppPage() {
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
         onCommit={(files) => {
           if (!gitPanel || files.length === 0) return
-          openGitCommitReview({ workspacePath: gitPanel.workspacePath, sessionId: '', files }, false)
+          openGitCommitReview({ workspacePath: gitPanel.workspacePath, sessionId: '', files })
           setGitPanel(null)
         }}
-        aiCommitControl={gitPanel && topWorkspaceGitSnapshot?.files.length ? <AICommitControl workspacePath={gitPanel.workspacePath} selectedAction={gitCommitAction} generating={gitCommitGenerating} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { openGitCommitReview({ workspacePath: gitPanel.workspacePath, sessionId: '', files: topWorkspaceGitSnapshot?.files ?? [] }, true); setGitPanel(null) }} /> : null}
+        aiCommitControl={gitPanel && topWorkspaceGitSnapshot?.files.length ? <AICommitControl workspacePath={gitPanel.workspacePath} selectedAction={gitCommitAction} phase={gitAICommitPhase} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { void handleAICommit({ workspacePath: gitPanel.workspacePath, sessionId: '' }); setGitPanel(null) }} /> : null}
         onClose={closeGitPanel}
       />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}

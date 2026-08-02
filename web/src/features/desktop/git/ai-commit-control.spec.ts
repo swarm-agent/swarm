@@ -10,7 +10,7 @@ test('AI Commit split control exposes generation and an accessible post-commit A
 
   assert.match(source, /data-ai-commit-control/)
   assert.match(source, /onClick=\{onGenerate\}/)
-  assert.match(source, /generating \? 'Generating…' :/)
+  assert.match(source, /phase === 'generating' \? 'Generating…' : phase === 'committing' \? 'Committing…' :/)
   assert.match(source, /aria-haspopup="menu"/)
   assert.match(source, /aria-expanded=\{open\}/)
   assert.match(source, /role="menu" aria-label="Post-commit Actions"/)
@@ -32,17 +32,35 @@ test('both Desktop commit entry points place AI Commit beside manual Commit', as
   assert.match(source.slice(overlayStart, overlayEnd), /aiCommitControl=\{[\s\S]*<AICommitControl/)
 })
 
-test('AI generation populates and focuses the editable message without committing', async () => {
+test('AI Commit runs suggestion and commit in the background without opening the review modal', async () => {
   const source = await readFile(pageURL, 'utf8')
-  const suggestionStart = source.indexOf('const handleGitCommitSuggestion = async')
-  const suggestionEnd = source.indexOf('const openGitCommitReview', suggestionStart)
-  const suggestion = source.slice(suggestionStart, suggestionEnd)
+  const workflowStart = source.indexOf('const handleAICommit = async')
+  const workflowEnd = source.indexOf('const openGitCommitReview', workflowStart)
+  const workflow = source.slice(workflowStart, workflowEnd)
 
-  assert.match(suggestion, /await suggestWorkspaceCommitMessage/)
-  assert.match(suggestion, /setGitCommitMessage\(response\.message\)/)
-  assert.match(suggestion, /gitCommitMessageInputRef\.current\?\.focus\(\)/)
-  assert.doesNotMatch(suggestion, /commitWorkspaceChanges/)
-  assert.match(source, /disabled=\{gitCommitBusy \|\| gitCommitGenerating \|\| !gitCommitMessage\.trim\(\) \|\| gitCommitActionMissingInputs\}/)
+  assert.match(workflow, /await suggestWorkspaceCommitMessage/)
+  assert.match(workflow, /setGitAICommitPhase\('committing'\)/)
+  assert.match(workflow, /await commitWorkspaceChanges/)
+  assert.ok(workflow.indexOf('await suggestWorkspaceCommitMessage') < workflow.indexOf('await commitWorkspaceChanges'))
+  assert.doesNotMatch(workflow, /setGitCommitModal/)
+  assert.doesNotMatch(workflow, /setGitCommitMessage/)
+  assert.doesNotMatch(source, /openGitCommitReview\([^\n]*, true\)/)
+})
+
+test('AI Commit blocks duplicate clicks and reports progress, success, and failure', async () => {
+  const source = await readFile(pageURL, 'utf8')
+  const workflowStart = source.indexOf('const handleAICommit = async')
+  const workflowEnd = source.indexOf('const openGitCommitReview', workflowStart)
+  const workflow = source.slice(workflowStart, workflowEnd)
+
+  assert.match(workflow, /gitAICommitRunningRef\.current/)
+  assert.match(workflow, /setGitAICommitPhase\('generating'\)/)
+  assert.match(workflow, /setDesktopToast\(\{ message: 'AI Commit is generating a commit message\. Please wait…'/)
+  assert.match(workflow, /setDesktopToast\(\{ message: `AI Commit is committing/)
+  assert.match(workflow, /Changes committed with/)
+  assert.match(workflow, /AI Commit failed:/)
+  assert.match(workflow, /finally \{[\s\S]*gitAICommitRunningRef\.current = false[\s\S]*setGitAICommitPhase\(null\)/)
+  assert.match(source, /phase=\{gitAICommitPhase\}/)
 })
 
 test('selected Action inputs render in commit review and required values block commit', async () => {

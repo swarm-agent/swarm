@@ -6,7 +6,7 @@ import { fetchWorkspaceActions, type WorkspaceAction } from '../../workspaces/ac
 interface AICommitControlProps {
   workspacePath: string
   selectedAction: WorkspaceAction | null
-  generating?: boolean
+  phase?: 'generating' | 'committing' | null
   disabled?: boolean
   compact?: boolean
   onGenerate: () => void
@@ -16,7 +16,7 @@ interface AICommitControlProps {
 export function AICommitControl({
   workspacePath,
   selectedAction,
-  generating = false,
+  phase = null,
   disabled = false,
   compact = false,
   onGenerate,
@@ -75,18 +75,18 @@ export function AICommitControl({
           'inline-flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-l-lg border border-r-0 border-[var(--app-primary)] px-2.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:cursor-not-allowed disabled:opacity-60',
           compact ? 'flex-1' : '',
         )}
-        disabled={disabled || generating}
+        disabled={disabled || phase !== null}
         onClick={onGenerate}
-        aria-label={selectedAction ? `Generate AI commit message, then run ${selectedAction.name}` : 'Generate AI commit message'}
-        title={selectedAction ? `AI Commit · then ${selectedAction.name}` : 'Generate a reviewable commit message'}
+        aria-label={phase === 'generating' ? 'AI Commit is generating a message' : phase === 'committing' ? 'AI Commit is committing changes' : selectedAction ? `Generate and commit changes, then run ${selectedAction.name}` : 'Generate a message and commit changes'}
+        title={phase ? 'AI Commit is running; wait for it to finish' : selectedAction ? `AI Commit · then ${selectedAction.name}` : 'Generate a message and commit all changes'}
       >
-        {generating ? <LoaderCircle size={14} className="shrink-0 animate-spin" aria-hidden="true" /> : <Bot size={14} className="shrink-0" aria-hidden="true" />}
-        <span className="truncate">{generating ? 'Generating…' : selectedAction ? `AI Commit · ${selectedAction.name}` : 'AI Commit'}</span>
+        {phase ? <LoaderCircle size={14} className="shrink-0 animate-spin" aria-hidden="true" /> : <Bot size={14} className="shrink-0" aria-hidden="true" />}
+        <span className="truncate">{phase === 'generating' ? 'Generating…' : phase === 'committing' ? 'Committing…' : selectedAction ? `AI Commit · ${selectedAction.name}` : 'AI Commit'}</span>
       </button>
       <button
         type="button"
         className="grid min-h-9 w-9 shrink-0 place-items-center rounded-r-lg border border-[var(--app-primary)] text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={disabled || generating}
+        disabled={disabled || phase !== null}
         onClick={() => setOpen((current) => !current)}
         aria-label="Choose post-commit Action"
         aria-haspopup="menu"
