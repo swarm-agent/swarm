@@ -30,6 +30,9 @@ func TestPromptAndSchemaContainNoModeChoice(t *testing.T) {
 	if strings.Contains(prompt, "worktree") {
 		t.Fatalf("unauthorized worktree instructions leaked into prompt: %s", prompt)
 	}
+	if !strings.Contains(prompt, "Prefer a concise 3-5 word title") || !strings.Contains(prompt, "guidance rather than a hard word-count restriction") {
+		t.Fatalf("prompt does not express the advisory 3-5 word title preference: %s", prompt)
+	}
 	schema, err := ResultSchema(boundContext())
 	if err != nil {
 		t.Fatal(err)
