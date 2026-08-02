@@ -1240,6 +1240,9 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	if resources.Tasks {
 		out = append(out, "tasks")
 	}
+	if resources.Auth {
+		out = append(out, "auth")
+	}
 	if resources.ActivePlan {
 		out = append(out, "active_plan")
 	}

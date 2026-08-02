@@ -44,6 +44,7 @@ type sessionsV3SyncStreamEvent struct {
 	Notification        *pebblestore.NotificationRecord   `json:"notification,omitempty"`
 	NotificationSummary *pebblestore.NotificationSummary  `json:"notification_summary,omitempty"`
 	AITask              *sessionsV3AITaskLifecyclePayload `json:"task,omitempty"`
+	Auth                *sessionsV3AuthResourcePayload    `json:"auth,omitempty"`
 }
 
 func newSessionsV3SyncStreamEvent(record sessionruntime.RealtimeOutboxRecord) sessionsV3SyncStreamEvent {
@@ -249,6 +250,14 @@ func (s *Server) handleSessionsV3SyncStream(w http.ResponseWriter, r *http.Reque
 					event.AITask = &payload
 					visible = append(visible, event)
 				}
+			}
+			continue
+		}
+		if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType {
+			if payload, ok := sessionsV3AuthResourcePayloadFromRecord(record); ok && req.Resources.Auth && payload.AccountScopeID == principal.AccountScopeID {
+				event := newSessionsV3SyncStreamEvent(record)
+				event.Auth = &payload
+				visible = append(visible, event)
 			}
 			continue
 		}

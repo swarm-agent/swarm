@@ -42,6 +42,7 @@ export interface SyncResources {
   notifications?: boolean
   notification_summary?: boolean
   tasks?: boolean
+  auth?: boolean
 }
 
 export interface KnownSessionState {
@@ -413,6 +414,7 @@ export interface SyncStreamEvent {
   event: V3SessionEvent
   projection: V3SessionProjection
   task?: DesktopAITaskLifecycleWire
+  auth?: RealtimeMessage['auth']
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
 }
@@ -519,6 +521,7 @@ export type RealtimeKind =
   | 'live.patch'
   | 'notification.resource.updated'
   | 'task.lifecycle.updated'
+  | 'auth.credentials.updated'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
@@ -544,6 +547,13 @@ export interface RealtimeMessage {
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
   task?: DesktopAITaskLifecycleWire
+  auth?: {
+    account_scope_id: string
+    event_type: string
+    provider?: string
+    recorded_at: number
+    event_sequence: number
+  }
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection

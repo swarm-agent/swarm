@@ -293,6 +293,9 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
 	}
+	if authSvc != nil {
+		authSvc.SetCredentialChangePublisher(server.publishAuthCredentialV3Realtime)
+	}
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
