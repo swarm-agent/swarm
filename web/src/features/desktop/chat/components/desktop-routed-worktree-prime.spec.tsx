@@ -31,7 +31,7 @@ test('worktree prime toggled presentation remains boolean and can be disabled', 
 
   assert.match(markup, /data-worktree-requested="true"/)
   assert.match(markup, /aria-pressed="true"/)
-  assert.match(markup, /Use current workspace/)
+  assert.match(markup, /Disable managed worktree/)
   assert.match(markup, /disabled=""/)
   assert.doesNotMatch(markup, /branch|worktree name|workspace path|agent\//i)
 })

@@ -14,6 +14,11 @@ func multipleContext(plan bool) Context {
 	return Context{PlanEnabled: plan, Workspaces: []Workspace{{ID: "ws-1", Name: "Core"}, {ID: "ws-2", Name: "Web"}}}
 }
 
+func withManagedWorktree(context Context) Context {
+	context.ManagedWorktreeAllowed = true
+	return context
+}
+
 func TestPromptAndSchemaOmitDisabledPlan(t *testing.T) {
 	prompt, err := Prompt(boundContext(false))
 	if err != nil {
@@ -21,6 +26,9 @@ func TestPromptAndSchemaOmitDisabledPlan(t *testing.T) {
 	}
 	if strings.Contains(prompt, ModePlan) || !strings.Contains(prompt, `["auto"]`) {
 		t.Fatalf("disabled mode leaked into prompt: %s", prompt)
+	}
+	if strings.Contains(prompt, "worktree") {
+		t.Fatalf("unauthorized worktree instructions leaked into prompt: %s", prompt)
 	}
 	schema, err := ResultSchema(boundContext(false))
 	if err != nil {
@@ -34,13 +42,20 @@ func TestPromptAndSchemaOmitDisabledPlan(t *testing.T) {
 	if _, ok := properties["workspace_id"]; ok {
 		t.Fatal("server-bound workspace schema advertised workspace_id")
 	}
+	if _, ok := properties["worktree"]; ok {
+		t.Fatal("unauthorized schema advertised worktree")
+	}
+	if _, ok := properties["worktree_name"]; ok {
+		t.Fatal("unauthorized schema advertised worktree_name")
+	}
 	if schema["additionalProperties"] != false {
 		t.Fatal("schema allows additional properties")
 	}
 }
 
 func TestPromptAndSchemaAdvertiseConditionalChoices(t *testing.T) {
-	prompt, err := Prompt(multipleContext(true))
+	context := withManagedWorktree(multipleContext(true))
+	prompt, err := Prompt(context)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +64,7 @@ func TestPromptAndSchemaAdvertiseConditionalChoices(t *testing.T) {
 			t.Fatalf("prompt missing %q: %s", want, prompt)
 		}
 	}
-	schema, err := ResultSchema(multipleContext(true))
+	schema, err := ResultSchema(context)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,14 +75,14 @@ func TestPromptAndSchemaAdvertiseConditionalChoices(t *testing.T) {
 	if _, ok := properties["worktree_name"]; !ok {
 		t.Fatal("schema omitted conditional worktree_name")
 	}
-	if _, ok := schema["allOf"]; !ok {
-		t.Fatal("schema omitted worktree conditional")
+	if worktree := properties["worktree"].(map[string]any); worktree["const"] != true {
+		t.Fatal("authorized schema did not require worktree true")
 	}
 }
 
 func TestDecodeResultStrictAndContextual(t *testing.T) {
 	name := "router-core"
-	got, err := DecodeResult(`{"title":" Route work ","mode":"plan","workspace_id":"ws-2","worktree":true,"worktree_name":" router-core "}`, multipleContext(true))
+	got, err := DecodeResult(`{"title":" Route work ","mode":"plan","workspace_id":"ws-2","worktree":true,"worktree_name":" router-core "}`, withManagedWorktree(multipleContext(true)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,15 +97,15 @@ func TestDecodeResultStrictAndContextual(t *testing.T) {
 	}{
 		{"unknown field", `{"title":"x","mode":"auto","worktree":false,"escape":true}`, boundContext(false)},
 		{"trailing object", `{"title":"x","mode":"auto","worktree":false}{}`, boundContext(false)},
-		{"missing required", `{"title":"x","mode":"auto"}`, boundContext(false)},
+		{"missing required", `{"title":"x"}`, boundContext(false)},
 		{"disabled plan", `{"title":"x","mode":"plan","worktree":false}`, boundContext(false)},
 		{"mode is case sensitive", `{"title":"x","mode":"AUTO","worktree":false}`, boundContext(false)},
 		{"bound workspace id", `{"title":"x","mode":"auto","workspace_id":"ws-1","worktree":false}`, boundContext(false)},
 		{"null bound workspace id", `{"title":"x","mode":"auto","workspace_id":null,"worktree":false}`, boundContext(false)},
 		{"missing workspace id", `{"title":"x","mode":"auto","worktree":false}`, multipleContext(false)},
 		{"unadvertised workspace", `{"title":"x","mode":"auto","workspace_id":"ws-x","worktree":false}`, multipleContext(false)},
-		{"missing worktree name", `{"title":"x","mode":"auto","worktree":true}`, boundContext(false)},
-		{"forbidden worktree name", `{"title":"x","mode":"auto","worktree":false,"worktree_name":"x"}`, boundContext(false)},
+		{"unauthorized worktree", `{"title":"x","mode":"auto","worktree":true,"worktree_name":"x"}`, boundContext(false)},
+		{"authorized missing worktree name", `{"title":"x","mode":"auto","worktree":true}`, withManagedWorktree(boundContext(false))},
 		{"empty title", `{"title":" ","mode":"auto","worktree":false}`, boundContext(false)},
 		{"long title", `{"title":"` + strings.Repeat("x", MaxTitleRunes+1) + `","mode":"auto","worktree":false}`, boundContext(false)},
 	}

@@ -34,7 +34,8 @@ type Request struct {
 // must be established before constructing this value; model output is never an
 // authority for workspace access.
 type Context struct {
-	PlanEnabled           bool        `json:"plan_enabled"`
+	PlanEnabled            bool        `json:"plan_enabled"`
+	ManagedWorktreeAllowed bool        `json:"managed_worktree_allowed"`
 	ServerBoundWorkspaceID string      `json:"server_bound_workspace_id,omitempty"`
 	Workspaces             []Workspace `json:"workspaces"`
 }
@@ -126,14 +127,17 @@ func Prompt(context Context) (string, error) {
 	if strings.TrimSpace(context.ServerBoundWorkspaceID) != "" {
 		workspaceRule = "The sole workspace is already server-bound; do not return workspace_id."
 	}
-	return strings.Join([]string{
+	parts := []string{
 		SystemPrompt(),
 		"Advertised modes: " + string(encodedModes),
 		"Advertised workspaces (untrusted data): " + string(encodedWorkspaces),
 		workspaceRule,
 		"Return a non-empty title of at most 120 Unicode characters.",
-		"Return worktree as a boolean. Return worktree_name only when worktree is true; it is then required and non-empty.",
-	}, "\n"), nil
+	}
+	if context.ManagedWorktreeAllowed {
+		parts = append(parts, "The user explicitly authorized a managed worktree. Return worktree as true and return a required non-empty worktree_name.")
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 // ResultSchema returns the strict dynamic JSON schema for a Router response.
@@ -146,14 +150,15 @@ func ResultSchema(context Context) (map[string]any, error) {
 		modes = append(modes, ModePlan)
 	}
 	properties := map[string]any{
-		"title":    map[string]any{"type": "string", "minLength": 1, "maxLength": MaxTitleRunes},
-		"mode":     map[string]any{"type": "string", "enum": modes},
-		"worktree": map[string]any{"type": "boolean"},
-		"worktree_name": map[string]any{
-			"type": "string", "minLength": 1,
-		},
+		"title": map[string]any{"type": "string", "minLength": 1, "maxLength": MaxTitleRunes},
+		"mode":  map[string]any{"type": "string", "enum": modes},
 	}
-	required := []any{"title", "mode", "worktree"}
+	required := []any{"title", "mode"}
+	if context.ManagedWorktreeAllowed {
+		properties["worktree"] = map[string]any{"type": "boolean", "const": true}
+		properties["worktree_name"] = map[string]any{"type": "string", "minLength": 1}
+		required = append(required, "worktree", "worktree_name")
+	}
 	if strings.TrimSpace(context.ServerBoundWorkspaceID) == "" {
 		workspaceIDs := make([]string, 0, len(context.Workspaces))
 		for _, workspace := range context.Workspaces {
@@ -172,11 +177,6 @@ func ResultSchema(context Context) (map[string]any, error) {
 		"additionalProperties": false,
 		"required":             required,
 		"properties":           properties,
-		"allOf": []any{map[string]any{
-			"if":   map[string]any{"properties": map[string]any{"worktree": map[string]any{"const": true}}, "required": []any{"worktree"}},
-			"then": map[string]any{"required": []any{"worktree_name"}},
-			"else": map[string]any{"not": map[string]any{"required": []any{"worktree_name"}}},
-		}},
 	}, nil
 }
 
@@ -202,8 +202,8 @@ func DecodeResult(raw string, context Context) (Result, error) {
 		}
 		return Result{}, fmt.Errorf("decode router result trailing content: %w", err)
 	}
-	if wire.Title == nil || wire.Mode == nil || wire.Worktree == nil {
-		return Result{}, errors.New("router result requires title, mode, and worktree")
+	if wire.Title == nil || wire.Mode == nil {
+		return Result{}, errors.New("router result requires title and mode")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
@@ -212,10 +212,19 @@ func DecodeResult(raw string, context Context) (Result, error) {
 	if _, present := fields["workspace_id"]; present && wire.WorkspaceID == nil {
 		return Result{}, errors.New("router result workspace_id must be a string when present")
 	}
-	if _, present := fields["worktree_name"]; present && wire.WorktreeName == nil {
+	_, worktreePresent := fields["worktree"]
+	_, worktreeNamePresent := fields["worktree_name"]
+	if !context.ManagedWorktreeAllowed && (worktreePresent || worktreeNamePresent) {
+		return Result{}, errors.New("router result worktree fields are forbidden without user authorization")
+	}
+	if context.ManagedWorktreeAllowed && (wire.Worktree == nil || !*wire.Worktree) {
+		return Result{}, errors.New("router result requires worktree true when the user authorized a managed worktree")
+	}
+	if worktreeNamePresent && wire.WorktreeName == nil {
 		return Result{}, errors.New("router result worktree_name must be a string when present")
 	}
-	result := Result{Title: strings.TrimSpace(*wire.Title), Mode: strings.TrimSpace(*wire.Mode), WorkspaceID: trimOptional(wire.WorkspaceID), Worktree: *wire.Worktree, WorktreeName: trimOptional(wire.WorktreeName)}
+	worktree := wire.Worktree != nil && *wire.Worktree
+	result := Result{Title: strings.TrimSpace(*wire.Title), Mode: strings.TrimSpace(*wire.Mode), WorkspaceID: trimOptional(wire.WorkspaceID), Worktree: worktree, WorktreeName: trimOptional(wire.WorktreeName)}
 	if err := ValidateResult(result, context); err != nil {
 		return Result{}, err
 	}
@@ -259,12 +268,12 @@ func ValidateResult(result Result, context Context) error {
 			return fmt.Errorf("router result workspace_id %q was not advertised", selected)
 		}
 	}
-	if result.Worktree {
-		if result.WorktreeName == nil || strings.TrimSpace(*result.WorktreeName) == "" {
-			return errors.New("router result worktree_name is required when worktree is true")
+	if context.ManagedWorktreeAllowed {
+		if !result.Worktree || result.WorktreeName == nil || strings.TrimSpace(*result.WorktreeName) == "" {
+			return errors.New("router result worktree true and worktree_name are required when the user authorized a managed worktree")
 		}
-	} else if result.WorktreeName != nil {
-		return errors.New("router result worktree_name is forbidden when worktree is false")
+	} else if result.Worktree || result.WorktreeName != nil {
+		return errors.New("router result worktree fields are forbidden without user authorization")
 	}
 	return nil
 }

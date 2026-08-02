@@ -197,6 +197,9 @@ func decodeRoutedSessionAtomicityResponse(t *testing.T, recorder *httptest.Respo
 
 func postRoutedSessionAtomicityRequest(t *testing.T, server *Server, principal identity.Principal, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
+	if _, ok := body["managed_worktree_requested"]; !ok {
+		body["managed_worktree_requested"] = false
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("encode routed request: %v", err)
@@ -346,4 +349,3 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	server.SetSwarmStore(swarmStore)
 	return server, sessionService, principal
 }
-

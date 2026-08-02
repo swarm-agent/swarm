@@ -27,7 +27,7 @@ type sessionRouterDecision struct {
 
 // routeSessionOnce invokes the configured hidden Router exactly once. It does not
 // create a session, allocate a worktree, or mutate workspace selection.
-func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Principal, input string) (sessionRouterDecision, error) {
+func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Principal, input string, managedWorktreeAllowed bool) (sessionRouterDecision, error) {
 	if s == nil || s.workspace == nil {
 		return sessionRouterDecision{}, errors.New("workspace service is not configured")
 	}
@@ -74,6 +74,7 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 		return sessionRouterDecision{}, fmt.Errorf("read Swarm mode settings for Router: %w", err)
 	}
 	routerContext.PlanEnabled = swarmSettings.PlanEnabled
+	routerContext.ManagedWorktreeAllowed = managedWorktreeAllowed
 
 	routerRequest := routerruntime.Request{Input: input, Context: routerContext}
 	if err := routerruntime.ValidateRequest(routerRequest); err != nil {
@@ -116,12 +117,12 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	// the strict schema in system instructions and enforce it again with DecodeResult.
 	instructions := strings.TrimSpace(prompt) + "\nOutput JSON schema (authoritative): " + string(encodedSchema)
 	response, err := runner.CreateResponse(authorityContext, provideriface.Request{
-		Model:       strings.TrimSpace(profile.Model),
-		Thinking:    strings.TrimSpace(profile.Thinking),
-		ServiceTier: strings.TrimSpace(profile.AutoServiceTier),
+		Model:        strings.TrimSpace(profile.Model),
+		Thinking:     strings.TrimSpace(profile.Thinking),
+		ServiceTier:  strings.TrimSpace(profile.AutoServiceTier),
 		Instructions: instructions,
 		Input: []map[string]any{{
-			"role": "user",
+			"role":    "user",
 			"content": []map[string]any{{"type": "input_text", "text": input}},
 		}},
 		Tools:      []provideriface.ToolDefinition{},

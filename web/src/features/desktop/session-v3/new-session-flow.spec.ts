@@ -147,11 +147,11 @@ function makeRoutedResult(sessionId: string) {
   }
 }
 
-test('routed draft defaults to managed worktree while preserving explicit local composer state', () => {
+test('routed draft defaults to current workspace while preserving explicit local composer state', () => {
   assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {
     phase: 'draft',
     prompt: 'draft',
-    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: true },
+    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: false },
   })
   assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), {
     phase: 'worktree-primed',
@@ -178,7 +178,8 @@ test('routed operation persists one stable transport identity across reload', ()
 
   assert.equal(operation.version, 1)
   assert.deepEqual(operation.snapshot, snapshot)
-  assert.equal(operation.request.input, 'route this\n\nUse a managed worktree for this session.')
+  assert.equal(operation.request.input, 'route this')
+  assert.equal(operation.request.managed_worktree_requested, true)
   assert.equal(operation.request.agent_name, 'swarm')
   assert.equal(operation.request.client_request_id, `desktop-v3-routed:${operation.operationId}`)
   assert.equal(operation.request.idempotency_key, operation.request.client_request_id)
@@ -200,9 +201,10 @@ test('routed operation persists one stable transport identity across reload', ()
   }
 }))
 
-test('routed worktree prime affects only Router input and never introduces a name field', () => {
+test('routed worktree prime carries explicit request authority without mutating user input or introducing a name field', () => {
   const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'route me', worktreePrimed: true })
-  assert.equal(desktopV3RoutedRequestInput(snapshot), 'route me\n\nUse a managed worktree for this session.')
+  assert.equal(desktopV3RoutedRequestInput(snapshot), 'route me')
+  assert.equal(createDesktopV3RoutedStartOperation({ snapshot }).request.managed_worktree_requested, true)
   assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'selectedAction', 'selectedSkill', 'worktreePrimed'])
 })
 
@@ -210,7 +212,7 @@ test('routed operation omits optional authority fields when the caller supplies 
   const operation = createDesktopV3RoutedStartOperation({ prompt: 'route me' })
 
   assert.deepEqual(Object.keys(operation.request).sort(), [
-    'client_request_id', 'idempotency_key', 'input', 'media', 'metadata',
+    'client_request_id', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata',
   ])
 })
 
@@ -333,7 +335,8 @@ test('routed failure restores the exact composer snapshot and retries the same o
     assert.match(failed.error, /network ambiguous/)
     assert.deepEqual(failed.snapshot, snapshot)
     assert.equal(failed.prompt, snapshot.prompt)
-    assert.equal(failed.operation.request.input, `${snapshot.prompt.trim()}\n\nUse a managed worktree for this session.`)
+    assert.equal(failed.operation.request.input, snapshot.prompt.trim())
+    assert.equal(failed.operation.request.managed_worktree_requested, true)
     assert.deepEqual(failed.operation.request.media, snapshot.attachments)
   }
   const resolved = await controller.retry()

@@ -95,6 +95,7 @@ export interface DesktopV3RoutedSessionStartRequest {
   idempotency_key?: string
   agent_name?: string
   metadata?: Record<string, unknown>
+  managed_worktree_requested: boolean
   media?: DesktopV3RoutedSessionMediaRequest[]
   staging_ids?: string[]
 }
@@ -231,6 +232,9 @@ export async function postDesktopV3RoutedSessionStart(
   if (idempotencyKey !== clientRequestId) {
     throw new Error('Desktop V3 routed start requires one stable client_request_id/idempotency identity')
   }
+  if (typeof input.managed_worktree_requested !== 'boolean') {
+    throw new Error('Desktop V3 routed start requires explicit managed_worktree_requested intent')
+  }
   if ((input.media?.length ?? 0) > 0 && (input.staging_ids?.length ?? 0) > 0) {
     throw new Error('Desktop V3 routed start accepts media or staging_ids, not both')
   }
@@ -241,6 +245,7 @@ export async function postDesktopV3RoutedSessionStart(
     idempotency_key: clientRequestId,
     ...(input.agent_name?.trim() ? { agent_name: input.agent_name.trim() } : {}),
     ...(input.metadata ? { metadata: input.metadata } : {}),
+    managed_worktree_requested: input.managed_worktree_requested,
     ...(input.media?.length ? { media: input.media } : {}),
     ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),
   }

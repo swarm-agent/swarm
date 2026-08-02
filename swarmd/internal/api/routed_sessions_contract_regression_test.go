@@ -18,7 +18,7 @@ import (
 // route, and failed media/worktree preparation leaves no replayable authority.
 func TestRoutedSessionContractRegression(t *testing.T) {
 	t.Run("client cannot supply pre-session route authority", func(t *testing.T) {
-		runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router title","mode":"auto","worktree":false}`}}
+		runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router title","mode":"auto"}`}}
 		server, _, principal := newRoutedSessionAtomicityServer(t, runner, false, true)
 
 		for _, forbidden := range []string{
@@ -28,7 +28,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 			`"preference":{"provider":"client","model":"client-model","thinking":"high"}`,
 			`"model_profile":{"action":{"provider":"client","model":"client-model"}}`,
 		} {
-			body := `{"input":"route this","client_request_id":"forbidden-authority",` + forbidden + `}`
+			body := `{"input":"route this","client_request_id":"forbidden-authority","managed_worktree_requested":false,` + forbidden + `}`
 			response := postRoutedSessionRawContractRequest(t, server, principal, body)
 			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unknown field") {
 				t.Fatalf("forbidden authority %s status=%d body=%s", forbidden, response.Code, response.Body.String())
@@ -40,7 +40,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 	})
 
 	t.Run("Router owns title mode and workspace while disabled Plan fails closed", func(t *testing.T) {
-		planRunner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Plan","mode":"plan","worktree":false}`}}
+		planRunner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Plan","mode":"plan"}`}}
 		planServer, planSessions, principal := newRoutedSessionAtomicityServer(t, planRunner, false, true)
 		const deniedRequestID = "router-plan-disabled-contract"
 		denied := postRoutedSessionAtomicityRequest(t, planServer, principal, map[string]any{
@@ -51,7 +51,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		}
 		assertNoRoutedSessionDurableAuthority(t, planSessions, principal, stableSessionsV3PrimarySessionID(principal, "routed:"+deniedRequestID), deniedRequestID)
 
-		autoRunner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical Title","mode":"auto","worktree":false}`}}
+		autoRunner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical Title","mode":"auto"}`}}
 		autoServer, autoSessions, autoPrincipal := newRoutedSessionAtomicityServer(t, autoRunner, false, true)
 		created := postRoutedSessionAtomicityRequest(t, autoServer, autoPrincipal, map[string]any{
 			"input": "implement this work", "client_request_id": "router-canonical-contract",
@@ -88,7 +88,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		})
 		defer restore()
 
-		response := fixture.post(t, fixture.principal.AccountScopeID, "contract-rollback", staged.ID, map[string]string{"modality": "image", "file_type": "png"})
+		response := fixture.postWithWorktreeIntent(t, fixture.principal.AccountScopeID, "contract-rollback", staged.ID, map[string]string{"modality": "image", "file_type": "png"}, true)
 		if response.Code == http.StatusOK || !strings.Contains(response.Body.String(), "injected routed contract commit failure") {
 			t.Fatalf("failed routed transaction status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -101,7 +101,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 			t.Fatalf("Router calls=%d, want one", fixture.runner.createCalls)
 		}
 
-		replay := fixture.post(t, fixture.principal.AccountScopeID, "contract-rollback", staged.ID, map[string]string{"modality": "image", "file_type": "png"})
+		replay := fixture.postWithWorktreeIntent(t, fixture.principal.AccountScopeID, "contract-rollback", staged.ID, map[string]string{"modality": "image", "file_type": "png"}, true)
 		if replay.Code == http.StatusOK {
 			t.Fatalf("failed routed authority replayed as success: %s", replay.Body.String())
 		}

@@ -173,12 +173,16 @@ func (f *routedMediaTestFixture) stage(t *testing.T, account, key string, option
 }
 
 func (f *routedMediaTestFixture) post(t *testing.T, account, requestID, stagingID string, media map[string]string) *httptest.ResponseRecorder {
+	return f.postWithWorktreeIntent(t, account, requestID, stagingID, media, false)
+}
+
+func (f *routedMediaTestFixture) postWithWorktreeIntent(t *testing.T, account, requestID, stagingID string, media map[string]string, managedWorktreeRequested bool) *httptest.ResponseRecorder {
 	t.Helper()
 	item := map[string]string{"staging_id": stagingID}
 	for key, value := range media {
 		item[key] = value
 	}
-	body, err := json.Marshal(map[string]any{"input": "inspect this image", "client_request_id": requestID, "media": []any{item}})
+	body, err := json.Marshal(map[string]any{"input": "inspect this image", "client_request_id": requestID, "managed_worktree_requested": managedWorktreeRequested, "media": []any{item}})
 	if err != nil {
 		t.Fatalf("marshal routed request: %v", err)
 	}
@@ -260,7 +264,9 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "router-failure")
 		fixture.runner.err = errors.New("router unavailable")
 		response := fixture.post(t, fixture.principal.AccountScopeID, "router-failure", staged.ID, nil)
-		if response.Code != http.StatusBadRequest { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
 		fixture.assertNoRoutedSession(t, "router-failure")
 	})
@@ -270,7 +276,9 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "workspace-failure")
 		fixture.server.workspace = nil
 		response := fixture.post(t, fixture.principal.AccountScopeID, "workspace-failure", staged.ID, nil)
-		if response.Code != http.StatusBadRequest { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
 		fixture.assertNoRoutedSession(t, "workspace-failure")
 	})
@@ -280,7 +288,9 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "mode-failure")
 		fixture.runner.response.Text = `{"title":"Plan denied","mode":"plan","worktree":false}`
 		response := fixture.post(t, fixture.principal.AccountScopeID, "mode-failure", staged.ID, nil)
-		if response.Code != http.StatusBadRequest { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
 		fixture.assertNoRoutedSession(t, "mode-failure")
 	})
@@ -289,7 +299,9 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 		fixture := newRoutedMediaTestFixture(t)
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "capability-failure")
 		response := fixture.post(t, fixture.principal.AccountScopeID, "capability-failure", staged.ID, map[string]string{"modality": "audio"})
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "not admitted") { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "not admitted") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
 		fixture.assertNoRoutedSession(t, "capability-failure")
 	})
@@ -297,9 +309,13 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 	t.Run("integrity failure abandons staging before materialization", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "integrity-failure")
-		if err := fixture.store.PutBytes(pebblestore.KeyMediaStagingBlob(fixture.principal.AccountScopeID, staged.ID), []byte("corrupt")); err != nil { t.Fatalf("corrupt staging blob: %v", err) }
+		if err := fixture.store.PutBytes(pebblestore.KeyMediaStagingBlob(fixture.principal.AccountScopeID, staged.ID), []byte("corrupt")); err != nil {
+			t.Fatalf("corrupt staging blob: %v", err)
+		}
 		response := fixture.post(t, fixture.principal.AccountScopeID, "integrity-failure", staged.ID, nil)
-		if response.Code != http.StatusBadRequest { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
 		fixture.assertNoRoutedSession(t, "integrity-failure")
 		if _, _, err := fixture.staging.Read(fixture.principal.AccountScopeID, staged.ID, time.Now().UnixMilli()); err == nil {
@@ -313,7 +329,9 @@ func TestRoutedSessionStagedMediaForeignExpiredAndBoundIDsFailClosed(t *testing.
 		fixture := newRoutedMediaTestFixture(t)
 		foreign := fixture.stage(t, "foreign-account", "foreign")
 		response := fixture.post(t, fixture.principal.AccountScopeID, "foreign", foreign.ID, nil)
-		if response.Code != http.StatusBadRequest { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		assertRoutedMediaStagingState(t, fixture, "foreign-account", foreign.ID, pebblestore.MediaStagingStateStaged)
 		fixture.assertNoRoutedSession(t, "foreign")
 	})
@@ -322,7 +340,9 @@ func TestRoutedSessionStagedMediaForeignExpiredAndBoundIDsFailClosed(t *testing.
 		fixture := newRoutedMediaTestFixture(t)
 		expired := fixture.stage(t, fixture.principal.AccountScopeID, "expired", func(input *pebblestore.PutMediaStagingInput) { input.NowUnixMs = 1; input.TTL = time.Second })
 		response := fixture.post(t, fixture.principal.AccountScopeID, "expired", expired.ID, nil)
-		if response.Code != http.StatusConflict { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusConflict {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, expired.ID, pebblestore.MediaStagingStateDeleted)
 		fixture.assertNoRoutedSession(t, "expired")
 	})
@@ -330,11 +350,17 @@ func TestRoutedSessionStagedMediaForeignExpiredAndBoundIDsFailClosed(t *testing.
 	t.Run("already bound", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
 		bound := fixture.stage(t, fixture.principal.AccountScopeID, "bound")
-		if _, _, err := fixture.staging.Bind(pebblestore.BindMediaStagingInput{AccountScopeID: fixture.principal.AccountScopeID, SessionID: "other-session", Bindings: []pebblestore.MediaStagingBinding{{StagingID: bound.ID, AuthorityAssetID: "other-asset", DigestSHA256: bound.DigestSHA256}}}); err != nil { t.Fatalf("pre-bind staging: %v", err) }
+		if _, _, err := fixture.staging.Bind(pebblestore.BindMediaStagingInput{AccountScopeID: fixture.principal.AccountScopeID, SessionID: "other-session", Bindings: []pebblestore.MediaStagingBinding{{StagingID: bound.ID, AuthorityAssetID: "other-asset", DigestSHA256: bound.DigestSHA256}}}); err != nil {
+			t.Fatalf("pre-bind staging: %v", err)
+		}
 		response := fixture.post(t, fixture.principal.AccountScopeID, "bound", bound.ID, nil)
-		if response.Code != http.StatusConflict { t.Fatalf("status=%d body=%s", response.Code, response.Body.String()) }
+		if response.Code != http.StatusConflict {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 		stored, found, err := fixture.staging.Get(fixture.principal.AccountScopeID, bound.ID)
-		if err != nil || !found || stored.State != pebblestore.MediaStagingStateBound || stored.BoundSessionID != "other-session" || stored.AuthorityAssetID != "other-asset" { t.Fatalf("bound record changed found=%t err=%v record=%+v", found, err, stored) }
+		if err != nil || !found || stored.State != pebblestore.MediaStagingStateBound || stored.BoundSessionID != "other-session" || stored.AuthorityAssetID != "other-asset" {
+			t.Fatalf("bound record changed found=%t err=%v record=%+v", found, err, stored)
+		}
 		fixture.assertNoRoutedSession(t, "bound")
 	})
 }

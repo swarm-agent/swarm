@@ -17,7 +17,7 @@ export function DesktopRoutedWorktreePrime({
   disabled = false,
   className = '',
 }: DesktopRoutedWorktreePrimeProps) {
-  const label = requested ? 'Use current workspace' : 'Use managed worktree'
+  const label = requested ? 'Disable managed worktree' : 'Use managed worktree'
 
   return (
     <button

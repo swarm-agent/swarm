@@ -5,7 +5,9 @@ import {
   DESKTOP_ROUTED_MANAGED_WORKTREE_REQUESTED_METADATA_KEY,
   captureDesktopRoutedWorktreeIntent,
   createDesktopRoutedWorktreeIntent,
+  desktopRoutedMessageRequestsWorktree,
   encodeDesktopRoutedWorktreeIntentMetadata,
+  resolveDesktopRoutedWorktreeIntent,
   restoreDesktopRoutedWorktreeIntent,
   setDesktopRoutedWorktreeIntent,
   toggleDesktopRoutedWorktreeIntent,
@@ -15,10 +17,10 @@ test('routed worktree intent is framework-neutral boolean state', () => {
   const initial = createDesktopRoutedWorktreeIntent()
   const currentWorkspace = toggleDesktopRoutedWorktreeIntent(initial)
 
-  assert.deepEqual(initial, { requested: true })
-  assert.deepEqual(currentWorkspace, { requested: false })
+  assert.deepEqual(initial, { requested: false })
+  assert.deepEqual(currentWorkspace, { requested: true })
   assert.deepEqual(toggleDesktopRoutedWorktreeIntent(currentWorkspace), initial)
-  assert.deepEqual(setDesktopRoutedWorktreeIntent(currentWorkspace, true), initial)
+  assert.deepEqual(setDesktopRoutedWorktreeIntent(currentWorkspace, false), initial)
   assert.deepEqual(Object.keys(currentWorkspace), ['requested'])
   assert.throws(
     () => createDesktopRoutedWorktreeIntent('named-worktree' as never),
@@ -40,6 +42,17 @@ test('routed worktree intent captures and restores the exact pre-submit value', 
     () => restoreDesktopRoutedWorktreeIntent({ version: 2, requested: true } as never),
     /snapshot is invalid/,
   )
+})
+
+test('standalone worktree keyword activates intent without partial-word false positives', () => {
+  for (const message of ['use a worktree', 'WORKTREE please', 'worktree-based session']) {
+    assert.equal(desktopRoutedMessageRequestsWorktree(message), true, message)
+    assert.deepEqual(resolveDesktopRoutedWorktreeIntent(createDesktopRoutedWorktreeIntent(false), message), { requested: true })
+  }
+  for (const message of ['worktrees please', 'myworktree', 'current workspace']) {
+    assert.equal(desktopRoutedMessageRequestsWorktree(message), false, message)
+  }
+  assert.deepEqual(resolveDesktopRoutedWorktreeIntent(createDesktopRoutedWorktreeIntent(true), 'current workspace'), { requested: true })
 })
 
 test('metadata encoding carries only boolean intent and creates no operation identity', () => {

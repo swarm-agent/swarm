@@ -30,6 +30,7 @@ import { DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS } from '../../session-v3/media
 import {
   createDesktopRoutedWorktreeIntent,
   encodeDesktopRoutedWorktreeIntentMetadata,
+  resolveDesktopRoutedWorktreeIntent,
   setDesktopRoutedWorktreeIntent,
 } from '../services/desktop-routed-worktree-intent'
 
@@ -226,11 +227,15 @@ export function DesktopV3NewSessionPane({
         throw new Error('Routed Desktop start is not editable in its current state')
       }
 
+      const resolvedWorktreeIntent = resolveDesktopRoutedWorktreeIntent(
+        createDesktopRoutedWorktreeIntent(snapshot.worktreePrimed),
+        prompt,
+      )
       const captured = createDesktopV3RoutedComposerSnapshot({
         ...snapshot,
         prompt,
         attachments: snapshot.attachments,
-        worktreePrimed: snapshot.worktreePrimed,
+        worktreePrimed: resolvedWorktreeIntent.requested,
       })
       if (routedState.phase !== 'failed' && captured.attachments.length !== stagedAttachmentsRef.current.length) {
         throw new Error('Routed composer staged attachment state changed before submit')

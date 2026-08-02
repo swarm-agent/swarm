@@ -498,6 +498,7 @@ export interface DesktopV3RoutedStartRequest {
   idempotency_key: string
   agent_name?: string
   metadata?: Record<string, unknown>
+  managed_worktree_requested: boolean
   media?: DesktopV3RoutedMediaInput[]
 }
 
@@ -601,7 +602,7 @@ export function createDesktopV3RoutedComposerSnapshot(
     selectedSkill: input.selectedSkill === undefined || input.selectedSkill === null
       ? null
       : cloneRoutedComposerSelection(input.selectedSkill),
-    worktreePrimed: input.worktreePrimed !== false,
+    worktreePrimed: input.worktreePrimed === true,
   }
 }
 
@@ -638,9 +639,7 @@ export function createDesktopV3RoutedOperationIdentity(): DesktopV3RoutedOperati
 export function desktopV3RoutedRequestInput(snapshot: DesktopV3RoutedComposerSnapshot): string {
   const prompt = snapshot.prompt.trim()
   if (!prompt) throw new Error('Routed Desktop start requires a prompt')
-  return snapshot.worktreePrimed
-    ? `${prompt}\n\nUse a managed worktree for this session.`
-    : prompt
+  return prompt
 }
 
 export function createDesktopV3RoutedStartOperation(
@@ -677,6 +676,7 @@ export function createDesktopV3RoutedStartOperation(
       idempotency_key: clientRequestID,
       ...(input.agentName?.trim() ? { agent_name: input.agentName.trim() } : {}),
       metadata: input.metadata ? { ...input.metadata } : undefined,
+      managed_worktree_requested: snapshot.worktreePrimed,
       media: normalizedRoutedMedia(snapshot.attachments),
     },
   }
@@ -691,6 +691,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   const request = operation.request
   if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
   if (request.idempotency_key !== request.client_request_id) return false
+  if (typeof request.managed_worktree_requested !== 'boolean' || request.managed_worktree_requested !== snapshot.worktreePrimed) return false
   if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
   if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
   if (request.input !== desktopV3RoutedRequestInput(snapshot)) return false

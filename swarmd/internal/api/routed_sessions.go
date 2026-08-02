@@ -33,13 +33,14 @@ type routedSessionMediaRequest struct {
 }
 
 type routedSessionStartRequest struct {
-	Input           string                      `json:"input"`
-	ClientRequestID string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey  string                      `json:"idempotency_key,omitempty"`
-	AgentName       string                      `json:"agent_name,omitempty"`
-	Metadata        map[string]any              `json:"metadata,omitempty"`
-	Media           []routedSessionMediaRequest `json:"media,omitempty"`
-	StagingIDs      []string                    `json:"staging_ids,omitempty"`
+	Input                    string                      `json:"input"`
+	ClientRequestID          string                      `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                      `json:"idempotency_key,omitempty"`
+	AgentName                string                      `json:"agent_name,omitempty"`
+	Metadata                 map[string]any              `json:"metadata,omitempty"`
+	ManagedWorktreeRequested *bool                       `json:"managed_worktree_requested"`
+	Media                    []routedSessionMediaRequest `json:"media,omitempty"`
+	StagingIDs               []string                    `json:"staging_ids,omitempty"`
 }
 
 type routedSessionStartResult struct {
@@ -386,6 +387,10 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}()
+	if req.ManagedWorktreeRequested == nil {
+		writeError(w, http.StatusBadRequest, errors.New("managed_worktree_requested is required"))
+		return
+	}
 	if req.Input == "" {
 		writeError(w, http.StatusBadRequest, errors.New("routed session input is required"))
 		return
@@ -418,7 +423,8 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	decision, err := s.routeSessionOnce(r.Context(), principal, req.Input)
+	managedWorktreeAllowed := *req.ManagedWorktreeRequested
+	decision, err := s.routeSessionOnce(r.Context(), principal, req.Input, managedWorktreeAllowed)
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return
@@ -462,7 +468,8 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	candidate.Metadata = createRequest.Metadata
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
-	candidate.Metadata["routed_worktree_requested"] = decision.Result.Worktree
+	candidate.Metadata["managed_worktree_requested"] = managedWorktreeAllowed
+	candidate.Metadata["routed_worktree_requested"] = managedWorktreeAllowed && decision.Result.Worktree
 
 	var worktreeAllocation worktreeruntime.Allocation
 	worktreeCommitted := false
@@ -474,7 +481,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 			log.Printf("routed session worktree rollback failed session_id=%q path=%q branch=%q err=%v", sessionID, worktreeAllocation.WorkspacePath, worktreeAllocation.BranchName, rollbackErr)
 		}
 	}()
-	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, decision.Result.Worktree, decision.Result.WorktreeName)
+	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, managedWorktreeAllowed, decision.Result.Worktree, decision.Result.WorktreeName)
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return
@@ -556,14 +563,17 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (s *Server) applyRoutedSessionWorktreeDecision(candidate *pebblestore.SessionSnapshot, principal identity.Principal, sessionID string, requested bool, routerName *string) (worktreeruntime.Allocation, error) {
+func (s *Server) applyRoutedSessionWorktreeDecision(candidate *pebblestore.SessionSnapshot, principal identity.Principal, sessionID string, managedWorktreeAllowed, requested bool, routerName *string) (worktreeruntime.Allocation, error) {
 	if candidate == nil {
 		return worktreeruntime.Allocation{}, errors.New("routed session candidate is required")
 	}
 	if candidate.Metadata == nil {
 		candidate.Metadata = make(map[string]any)
 	}
-	if !requested {
+	if requested && !managedWorktreeAllowed {
+		return worktreeruntime.Allocation{}, errors.New("Router requested a managed worktree without user authorization")
+	}
+	if !managedWorktreeAllowed || !requested {
 		candidate.Metadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(candidate.WorkspacePath)
 		candidate.Metadata["swarm_v3_source_workspace_name"] = strings.TrimSpace(candidate.WorkspaceName)
 		candidate.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(candidate.WorkspacePath)
@@ -677,9 +687,10 @@ func normalizeRoutedSessionMedia(req routedSessionStartRequest) ([]routedSession
 func routedSessionRequestHash(req routedSessionStartRequest, clientRequestID string, media []routedSessionMediaRequest) (string, error) {
 	raw, err := json.Marshal(struct {
 		Input, ClientRequestID, AgentName string
-		Metadata map[string]any
-		Media []routedSessionMediaRequest
-	}{req.Input, clientRequestID, req.AgentName, cloneSessionsV3Metadata(req.Metadata), media})
+		ManagedWorktreeRequested          *bool
+		Metadata                          map[string]any
+		Media                             []routedSessionMediaRequest
+	}{req.Input, clientRequestID, req.AgentName, req.ManagedWorktreeRequested, cloneSessionsV3Metadata(req.Metadata), media})
 	if err != nil {
 		return "", err
 	}

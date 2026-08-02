@@ -14,8 +14,8 @@ function requireBoolean(value: boolean, context: string): boolean {
   return value
 }
 
-/** Managed worktrees are the app default; callers pass false only for an explicit current-workspace override. */
-export function createDesktopRoutedWorktreeIntent(requested = true): DesktopRoutedWorktreeIntent {
+/** Managed worktrees require explicit user-originated composer intent. */
+export function createDesktopRoutedWorktreeIntent(requested = false): DesktopRoutedWorktreeIntent {
   return { requested: requireBoolean(requested, 'Desktop routed worktree intent') }
 }
 
@@ -52,6 +52,17 @@ export function restoreDesktopRoutedWorktreeIntent(
  * Adds only boolean UI intent to routed metadata. Operation identity remains owned
  * by the routed-start controller, so this helper cannot create a second request.
  */
+export function desktopRoutedMessageRequestsWorktree(message: string): boolean {
+  return /(^|[^\p{L}\p{N}_])worktree(?=$|[^\p{L}\p{N}_])/iu.test(message)
+}
+
+export function resolveDesktopRoutedWorktreeIntent(
+  current: DesktopRoutedWorktreeIntent,
+  message: string,
+): DesktopRoutedWorktreeIntent {
+  return { requested: current.requested || desktopRoutedMessageRequestsWorktree(message) }
+}
+
 export function encodeDesktopRoutedWorktreeIntentMetadata(
   current: DesktopRoutedWorktreeIntent,
   metadata: Readonly<Record<string, unknown>> = {},

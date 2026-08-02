@@ -130,7 +130,7 @@ func TestApplyRoutedSessionWorktreeDecisionOnAllocatesAndAppliesCandidate(t *tes
 	server := &Server{worktrees: stub}
 	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
 	routerName := "Fix API"
-	allocation, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", true, &routerName)
+	allocation, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", true, true, &routerName)
 	if err != nil {
 		t.Fatalf("on decision: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestApplyRoutedSessionWorktreeDecisionRequiresRouterName(t *testing.T) {
 	stub := &routedWorktreeServiceStub{}
 	server := &Server{worktrees: stub}
 	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo"}
-	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", true, nil); err == nil {
+	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", true, true, nil); err == nil {
 		t.Fatal("expected missing Router name to fail")
 	}
 	if stub.configReadCount != 0 || stub.allocationCalls != 0 {
@@ -151,11 +151,24 @@ func TestApplyRoutedSessionWorktreeDecisionRequiresRouterName(t *testing.T) {
 	}
 }
 
+func TestApplyRoutedSessionWorktreeDecisionRejectsUnauthorizedRouterRequest(t *testing.T) {
+	stub := &routedWorktreeServiceStub{}
+	server := &Server{worktrees: stub}
+	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
+	routerName := "Unauthorized"
+	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", false, true, &routerName); err == nil {
+		t.Fatal("expected unauthorized Router worktree request to fail")
+	}
+	if stub.configReadCount != 0 || stub.allocationCalls != 0 || candidate.WorktreeEnabled {
+		t.Fatalf("unauthorized decision config=%d allocation=%d candidate=%+v", stub.configReadCount, stub.allocationCalls, candidate)
+	}
+}
+
 func TestApplyRoutedSessionWorktreeDecisionOffDoesNotAllocate(t *testing.T) {
 	stub := &routedWorktreeServiceStub{}
 	server := &Server{worktrees: stub}
 	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
-	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", false, nil); err != nil {
+	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", false, false, nil); err != nil {
 		t.Fatalf("off decision: %v", err)
 	}
 	if stub.configReadCount != 0 || stub.allocationCalls != 0 || candidate.WorktreeEnabled {
