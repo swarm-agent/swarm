@@ -365,6 +365,34 @@ func TestV3ChatHomeProfileUsesCanonicalCreateAndFooterHandoff(t *testing.T) {
 	}
 }
 
+func TestV3ChatDraftTaskCommandIsPreservedAsFirstPrompt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	runtime := v3chat.NewRuntime(testAPIWithToken(server.URL), v3chat.NewStore(), nil)
+	if err := runtime.PrimeNewSession(v3chat.NewSessionRequest{Create: client.SessionCreateOptions{Mode: "auto"}}); err != nil {
+		t.Fatal(err)
+	}
+	page := v3chat.NewPage(runtime, v3chat.PageStyles{})
+	app := &App{home: ui.NewHomePage(model.EmptyHome()), v3Chat: page, route: "v3chat"}
+
+	for _, char := range "/task plan preserve this request" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, char, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if got := page.ConsumeCommand(); got != "/task plan preserve this request" {
+		t.Fatalf("consumed command = %q", got)
+	}
+	if !app.shouldSendTaskCommandAsDraftPrompt("/task plan preserve this request") {
+		t.Fatal("draft /task plan was routed as an app command")
+	}
+
+	runtime.Store().Dispatch(v3chat.HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "existing-session"}}})
+	if app.shouldSendTaskCommandAsDraftPrompt("/task preserve this request") {
+		t.Fatal("existing-session /task was treated as a draft prompt")
+	}
+}
+
 func TestV3ChatDraftSelectionsReuseHomepagePlanAutoProjection(t *testing.T) {
 	profile := model.ActiveModelProfile{Source: "saved", ProfileID: "profile-1", Name: "Focused work", ModelMode: "split"}
 	home := ui.NewHomePage(model.HomeModel{

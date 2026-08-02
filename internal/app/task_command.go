@@ -20,6 +20,15 @@ func parseTaskCommand(args []string) (request, mode string) {
 	return strings.TrimSpace(strings.Join(args, " ")), mode
 }
 
+func isTaskCommand(raw string) bool {
+	fields := strings.Fields(strings.TrimSpace(strings.TrimPrefix(raw, "/")))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "task")
+}
+
+func (a *App) shouldSendTaskCommandAsDraftPrompt(raw string) bool {
+	return a.v3ChatDraftActive() && isTaskCommand(raw)
+}
+
 func (a *App) handleTaskCommand(args []string) {
 	a.home.ClearCommandOverlay()
 	request, mode := parseTaskCommand(args)
