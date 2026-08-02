@@ -44,8 +44,8 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	if s.providers == nil {
 		return sessionRouterDecision{}, errors.New("provider registry is not configured")
 	}
-	if s.uiSettings == nil {
-		return sessionRouterDecision{}, errors.New("ui settings service is not configured")
+	if s.agentModelSettings == nil {
+		return sessionRouterDecision{}, errors.New("agent model settings service is not configured")
 	}
 	if !principal.Valid() {
 		return sessionRouterDecision{}, identity.ErrPrincipalRequired
@@ -147,8 +147,8 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 	if s == nil || s.providers == nil {
 		return configuredRouterResponse{}, errors.New("provider registry is not configured")
 	}
-	if s.uiSettings == nil {
-		return configuredRouterResponse{}, errors.New("ui settings service is not configured")
+	if s.agentModelSettings == nil {
+		return configuredRouterResponse{}, errors.New("agent model settings service is not configured")
 	}
 	if !principal.Valid() {
 		return configuredRouterResponse{}, identity.ErrPrincipalRequired
@@ -167,7 +167,7 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 	if s.model == nil || s.agents == nil {
 		return configuredRouterResponse{}, errors.New("Router model and agent services are not configured")
 	}
-	resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.uiSettings, principal.AccountScopeID, agentruntime.RouterAgentID, "")
+	resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, principal.AccountScopeID, agentruntime.RouterAgentID, "")
 	if err != nil {
 		return configuredRouterResponse{}, err
 	}

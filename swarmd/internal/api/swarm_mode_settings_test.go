@@ -59,6 +59,14 @@ func TestAgentModelSettingsHTTPMissingRecordRequiresPrincipalAndSupportedMethod(
 	agentModelSettingsHTTP(t, emptyServer, principal, http.MethodGet, "", http.StatusNotFound)
 	agentModelSettingsHTTP(t, server, identity.Principal{}, http.MethodGet, "", http.StatusUnauthorized)
 	agentModelSettingsHTTP(t, server, principal, http.MethodPut, `{}`, http.StatusMethodNotAllowed)
+
+	oldRoute := httptest.NewRequest(http.MethodGet, "/v1/swarm/model-settings", nil)
+	oldRoute = oldRoute.WithContext(identity.ContextWithPrincipal(oldRoute.Context(), principal))
+	oldRouteResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(oldRouteResponse, oldRoute)
+	if oldRouteResponse.Code != http.StatusNotFound {
+		t.Fatalf("legacy agent model settings route = %d, want %d", oldRouteResponse.Code, http.StatusNotFound)
+	}
 }
 
 func openAgentModelSettingsHTTPTest(t *testing.T) (*Server, identity.Principal) {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -55,7 +56,14 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	server = NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	server.SetUISettingsService(uiSettingsSvc)
-	runSvc.SetUISettingsService(uiSettingsSvc)
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	agentSettings := testAgentModelSettingsRecord(testPrincipal().AccountScopeID)
+	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil {
+		t.Fatalf("seed canonical agent model settings: %v", err)
+	}
+	agentSettingsSvc := agentmodelsettings.NewService(agentSettingsStore)
+	server.SetAgentModelSettingsService(agentSettingsSvc)
+	runSvc.SetAgentModelSettingsService(agentSettingsSvc)
 	server.v3SessionExecutor = nil
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)

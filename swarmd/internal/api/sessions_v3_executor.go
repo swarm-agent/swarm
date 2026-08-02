@@ -1407,10 +1407,10 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 }
 
 func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.SessionSnapshot, promptContext string, principal identity.Principal) (string, error) {
-	if e == nil || e.server == nil || e.server.providers == nil || e.server.model == nil || e.server.agents == nil {
-		return "", errors.New("Compact provider, model, and agent services are not configured")
+	if e == nil || e.server == nil || e.server.providers == nil || e.server.model == nil || e.server.agents == nil || e.server.agentModelSettings == nil {
+		return "", errors.New("Compact provider, model, agent, and agent model settings services are not configured")
 	}
-	resolvedCompact, compactProfile, err := compactruntime.ResolvePreference(e.server.model, e.server.agents, e.server.uiSettings, principal.AccountScopeID, session.Preference)
+	resolvedCompact, compactProfile, err := compactruntime.ResolvePreference(e.server.model, e.server.agents, e.server.agentModelSettings, principal.AccountScopeID, session.Preference)
 	if err != nil {
 		return "", err
 	}

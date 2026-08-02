@@ -9,13 +9,13 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -139,12 +139,12 @@ func TestSessionRouterOnceAttachesSelectedCatalogAcrossConfiguredProviders(t *te
 func TestSessionRouterOnceUsesCatalogTranslationForConfiguredCodexModel(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "codex", response: provideriface.Response{Text: `{"title":"Implement routing"}`}}
 	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
-	settings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
+	settings, err := server.agentModelSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
-		t.Fatalf("get Router UI settings: %v", err)
+		t.Fatalf("get canonical Router settings: %v", err)
 	}
-	settings.Agents.Router.ServiceTier = "fast"
-	if _, err := server.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+	settings.SystemAgents.Router.ServiceTier = "fast"
+	if _, err := server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), principal), pebblestore.SystemAgentRouter, settings.SystemAgents.Router); err != nil {
 		t.Fatalf("set Router fast tier: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestSessionRouterOnceUsesCatalogTranslationForConfiguredCodexModel(t *testi
 	}
 	request := runner.requests[0]
 	if request.ServiceTier != "fast" {
-		t.Fatalf("Router Swarm service tier = %q, want fast", request.ServiceTier)
+		t.Fatalf("Router service tier = %q, want fast", request.ServiceTier)
 	}
 	if got := codex.ToRequest(request).ServiceTier; got != "priority" {
 		t.Fatalf("Codex Router service tier = %q, want catalog-mapped priority", got)
@@ -163,12 +163,12 @@ func TestSessionRouterOnceUsesCatalogTranslationForConfiguredCodexModel(t *testi
 func TestSessionRouterOnceRejectsUnresolvedConfiguredModelBeforeProvider(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected"}`}}
 	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
-	settings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
+	settings, err := server.agentModelSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
-		t.Fatalf("get Router UI settings: %v", err)
+		t.Fatalf("get canonical Router settings: %v", err)
 	}
-	settings.Agents.Router.Model = "missing-router-model"
-	if _, err := server.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+	settings.SystemAgents.Router.Model = "missing-router-model"
+	if _, err := server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), principal), pebblestore.SystemAgentRouter, settings.SystemAgents.Router); err != nil {
 		t.Fatalf("set missing Router model: %v", err)
 	}
 
@@ -279,17 +279,18 @@ func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunn
 		entries = append(entries, entry)
 	}
 
-	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
-	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{
-		Provider: runner.id, Model: "router-model", Thinking: "high", ServiceTier: "priority",
-	}}}); err != nil {
-		t.Fatalf("set Router UI settings: %v", err)
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	agentSettings := testAgentModelSettingsRecord(principal.AccountScopeID)
+	agentSettings.SystemAgents.Router = pebblestore.AgentModelAssignment{Provider: runner.id, Model: "router-model", Thinking: "high", ServiceTier: "priority"}
+	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil {
+		t.Fatalf("set canonical Router settings: %v", err)
 	}
+	agentSettingsService := agentmodelsettings.NewService(agentSettingsStore)
 	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	if err := agents.EnsureDefaults(); err != nil {
 		t.Fatalf("ensure compiled agent defaults: %v", err)
 	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
-	return &Server{workspace: workspace.NewService(workspaceStore), providers: providers, uiSettings: uiSettings, model: modelService, agents: agents}, principal, entries
+	return &Server{workspace: workspace.NewService(workspaceStore), providers: providers, agentModelSettings: agentSettingsService, model: modelService, agents: agents}, principal, entries
 }

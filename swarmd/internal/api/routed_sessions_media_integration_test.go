@@ -26,7 +26,6 @@ import (
 	"swarm/packages/swarmd/internal/stream"
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
-	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -128,11 +127,6 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 		t.Fatalf("configure canonical agent model settings: %v", err)
 	}
 	server.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
-	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
-	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{Provider: "openai", Model: "router-model", Thinking: "low"}}}); err != nil {
-		t.Fatalf("configure Router: %v", err)
-	}
-	server.SetUISettingsService(uiSettings)
 
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)

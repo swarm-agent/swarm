@@ -24,7 +24,6 @@ import (
 	"swarm/packages/swarmd/internal/stream"
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
-	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -340,11 +339,6 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 		t.Fatalf("configure canonical agent model settings: %v", err)
 	}
 	server.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
-	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
-	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{Provider: "recording", Model: "router-model", Thinking: "medium"}}}); err != nil {
-		t.Fatalf("configure Router model: %v", err)
-	}
-	server.SetUISettingsService(uiSettings)
 
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)

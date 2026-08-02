@@ -34,7 +34,7 @@ func (s *Server) launchWorkspaceDefinitionJob(principal identity.Principal, entr
 	if s == nil {
 		return errors.New("workspace definition analysis is not configured")
 	}
-	if s.runner == nil || s.sessions == nil || s.uiSettings == nil || s.v3SessionExecutor == nil {
+	if s.runner == nil || s.sessions == nil || s.agentModelSettings == nil || s.v3SessionExecutor == nil {
 		return errors.New("workspace definition analysis is not configured")
 	}
 	if !s.beginActiveRun() {
@@ -57,12 +57,12 @@ func (s *Server) runWorkspaceDefinitionJob(ctx context.Context, principal identi
 		s.failWorkspaceDefinition(principal, entry, 0, err)
 		return
 	}
-	settings, err := s.uiSettings.GetForAccount(principal.AccountScopeID)
+	settings, err := s.agentModelSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
 		s.failWorkspaceDefinition(principal, entry, 0, fmt.Errorf("read Router settings: %w", err))
 		return
 	}
-	router := settings.Agents.Router
+	router := settings.SystemAgents.Router
 	if strings.TrimSpace(router.Provider) == "" || strings.TrimSpace(router.Model) == "" || strings.TrimSpace(router.Thinking) == "" {
 		s.failWorkspaceDefinition(principal, entry, 0, errors.New("Router provider, model, and thinking level are not configured"))
 		return

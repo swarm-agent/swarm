@@ -187,16 +187,22 @@ func (s *Server) publicAgentProfiles(accountScopeID string, profiles []pebblesto
 	if err != nil {
 		return nil, err
 	}
-	systemSettings := map[string]pebblestore.AgentProfile{}
-	if s.uiSettings != nil {
-		settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID))
-		if settingsErr != nil {
-			return nil, settingsErr
-		}
-		systemSettings[agentruntime.CompactAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Compact.Provider, Model: settings.Agents.Compact.Model, Thinking: settings.Agents.Compact.Thinking, AutoServiceTier: settings.Agents.Compact.ServiceTier}
-		systemSettings[agentruntime.FinderAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Finder.Provider, Model: settings.Agents.Finder.Model, Thinking: settings.Agents.Finder.Thinking, AutoServiceTier: settings.Agents.Finder.ServiceTier}
-		systemSettings[agentruntime.CoderAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Coder.Provider, Model: settings.Agents.Coder.Model, Thinking: settings.Agents.Coder.Thinking, AutoServiceTier: settings.Agents.Coder.ServiceTier}
-		systemSettings[agentruntime.DesignerAgentID] = pebblestore.AgentProfile{Provider: settings.Agents.Designer.Provider, Model: settings.Agents.Designer.Model, Thinking: settings.Agents.Designer.Thinking, AutoServiceTier: settings.Agents.Designer.ServiceTier}
+	if s.agentModelSettings == nil {
+		return nil, errors.New("agent model settings service not configured")
+	}
+	settings, err := s.agentModelSettings.GetForAccount(strings.TrimSpace(accountScopeID))
+	if err != nil {
+		return nil, err
+	}
+	profile := func(assignment pebblestore.AgentModelAssignment) pebblestore.AgentProfile {
+		return pebblestore.AgentProfile{Provider: assignment.Provider, Model: assignment.Model, Thinking: assignment.Thinking, AutoServiceTier: assignment.ServiceTier, ContextMode: assignment.ContextMode}
+	}
+	systemSettings := map[string]pebblestore.AgentProfile{
+		agentruntime.CompactAgentID:  profile(settings.SystemAgents.Compact),
+		agentruntime.FinderAgentID:   profile(settings.SystemAgents.Finder),
+		agentruntime.CoderAgentID:    profile(settings.SystemAgents.Coder),
+		agentruntime.DesignerAgentID: profile(settings.SystemAgents.Designer),
+		agentruntime.RouterAgentID:   profile(settings.SystemAgents.Router),
 	}
 	for _, id := range registry.UserVisibleIDs() {
 		context := systemSettings[id]
