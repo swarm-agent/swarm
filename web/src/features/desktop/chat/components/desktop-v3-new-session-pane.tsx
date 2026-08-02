@@ -313,14 +313,9 @@ export function DesktopV3NewSessionPane({
       <DesktopV3RoutedPendingShell
         state={pendingState}
         pendingPrompt={routedState.prompt}
+        error={routedState.phase === 'failed' ? routedState.error : undefined}
         onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
       />
-
-      {routedState.phase === 'failed' ? (
-        <p className="shrink-0 px-4 pb-3 text-center text-sm text-[var(--app-danger)]" role="alert">
-          {routedState.error}
-        </p>
-      ) : null}
 
       {showComposer ? (
         <DesktopV3AgenticComposer

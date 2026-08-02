@@ -711,7 +711,7 @@ export type SessionCacheRecord =
       discoveredAt?: number
     }
 
-export type MessageListCacheSource = 'network'
+export type MessageListCacheSource = 'network' | 'mutation'
 
 export interface MessageListCache {
   items: MessageSnapshot[]

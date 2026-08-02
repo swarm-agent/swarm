@@ -1699,7 +1699,7 @@ export function upsertCommittedMessage(
     oldestLoadedSeq: minPositiveSeq(nextItems),
     hydratedAt: list.hydratedAt,
     tailHydratedAt: list.tailHydratedAt,
-    source: 'network',
+    source: list.source === 'mutation' || !isHydratedTranscript(list) ? 'mutation' : 'network',
   })
   removeCommittedPendingForSession(state, sessionId, [message])
   finalizeLiveRunForCommittedMessage(state, sessionId, message, sourceRunId, sourceRunStatus)
@@ -2014,17 +2014,28 @@ function replaceMessagesForSession(
 ): void {
   const sessionRecord = state.sessionsById[sessionId]
   const session = sessionRecord?.kind === 'full' ? sessionRecord.session : undefined
+  const existing = state.messagesBySession[sessionId]
+  const incomingIDs = new Set(messages.map((message) => message.id))
+  const incomingSeqs = new Set(messages.map(messageGlobalSeqKey))
+  const retainedCanonical = existing?.source === 'mutation'
+    ? existing.items.filter((message) => !incomingIDs.has(message.id) && !incomingSeqs.has(messageGlobalSeqKey(message)))
+    : []
+  const reconciledMessages = [...messages, ...retainedCanonical]
+  const fullyReconciledMutation = existing?.source === 'mutation' && retainedCanonical.length === 0
   delete state.evictedTranscriptsBySession?.[sessionId]
-  state.messagesBySession[sessionId] = buildMessageListCache(messages, {
+  state.messagesBySession[sessionId] = buildMessageListCache(reconciledMessages, {
     knownTail: { limit: messages.length, cursor: '' },
-    sourceMessageCount: session?.message_count,
-    sourceLastMessageAt: session?.last_message_at,
-    sourceProjectionHighWatermarkSeq: state.projectionsBySession[sessionId]?.projection_high_watermark_seq,
-    oldestLoadedSeq: minPositiveSeq(messages),
+    sourceMessageCount: Math.max(session?.message_count ?? 0, existing?.sourceMessageCount ?? 0, reconciledMessages.length),
+    sourceLastMessageAt: Math.max(session?.last_message_at ?? 0, existing?.sourceLastMessageAt ?? 0, ...reconciledMessages.map((message) => message.created_at)),
+    sourceProjectionHighWatermarkSeq: Math.max(
+      state.projectionsBySession[sessionId]?.projection_high_watermark_seq ?? 0,
+      existing?.sourceProjectionHighWatermarkSeq ?? 0,
+    ),
+    oldestLoadedSeq: minPositiveSeq(reconciledMessages),
     hydratedAt: Date.now(),
     tailHydratedAt: Date.now(),
     lastAccessedAt: Date.now(),
-    source: 'network',
+    source: fullyReconciledMutation ? 'network' : existing?.source ?? 'network',
   })
   removeCommittedPendingForSession(state, sessionId, messages)
 }

@@ -1,4 +1,4 @@
-import { Bot, LoaderCircle, RotateCcw } from 'lucide-react'
+import { Bot, LoaderCircle, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
 
@@ -7,27 +7,9 @@ export type DesktopV3RoutedPendingShellState = 'draft' | 'worktree-primed' | 'ro
 export interface DesktopV3RoutedPendingShellProps {
   state: DesktopV3RoutedPendingShellState
   pendingPrompt?: string
+  error?: string
   onRetry?: () => void
   className?: string
-}
-
-const PRESENTATION: Record<DesktopV3RoutedPendingShellState, { heading: string; detail: string }> = {
-  draft: {
-    heading: 'Swarm',
-    detail: 'What would you like to work on?',
-  },
-  'worktree-primed': {
-    heading: 'Preparing your chat',
-    detail: 'Your message is ready. Swarm will choose the setup when you send it.',
-  },
-  routing: {
-    heading: 'Choosing setup',
-    detail: 'Swarm is selecting the right setup for this chat.',
-  },
-  failed: {
-    heading: 'Setup not chosen',
-    detail: 'Your message is still here. Try choosing a setup again.',
-  },
 }
 
 /**
@@ -38,13 +20,39 @@ const PRESENTATION: Record<DesktopV3RoutedPendingShellState, { heading: string; 
 export function DesktopV3RoutedPendingShell({
   state,
   pendingPrompt = '',
+  error = '',
   onRetry,
   className,
 }: DesktopV3RoutedPendingShellProps) {
-  const presentation = PRESENTATION[state]
   const prompt = pendingPrompt.trim()
-  const pending = state === 'worktree-primed' || state === 'routing'
-  const showPrompt = state !== 'draft' && Boolean(prompt)
+  const submitted = (state === 'routing' || state === 'failed') && Boolean(prompt)
+  const routing = state === 'routing'
+
+  if (!submitted) {
+    return (
+      <section
+        className={cn('flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]', className)}
+        data-testid="desktop-v3-routed-pending-shell"
+        data-pending-state={state}
+        data-local-only="true"
+      >
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-8 sm:px-6">
+          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center text-center">
+            <span
+              className="mb-4 grid size-11 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm"
+              aria-hidden="true"
+            >
+              <Bot size={20} />
+            </span>
+            <h1 className="text-lg font-semibold text-[var(--app-text)]">Swarm</h1>
+            <p className="mt-1 max-w-md text-sm leading-6 text-[var(--app-text-muted)]">
+              What would you like to work on?
+            </p>
+          </div>
+        </div>
+      </section>
+    )
+  }
 
   return (
     <section
@@ -52,43 +60,63 @@ export function DesktopV3RoutedPendingShell({
       data-testid="desktop-v3-routed-pending-shell"
       data-pending-state={state}
       data-local-only="true"
-      aria-busy={pending || undefined}
-      aria-disabled={pending || undefined}
+      aria-busy={routing || undefined}
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-8 sm:px-6">
-        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-8">
-          <div className="flex flex-col items-center text-center">
-            <span
-              className="mb-4 grid size-11 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm"
-              aria-hidden="true"
-            >
-              {pending ? <LoaderCircle className="animate-spin motion-reduce:animate-none" size={20} /> : <Bot size={20} />}
-            </span>
-            <h1 className="text-lg font-semibold text-[var(--app-text)]">{presentation.heading}</h1>
-            <p className="mt-1 max-w-md text-sm leading-6 text-[var(--app-text-muted)]">{presentation.detail}</p>
+      <header className="shrink-0 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-4 py-3 sm:px-6" data-testid="desktop-v3-pending-chat-header">
+        <div className="mx-auto flex w-full max-w-[70rem] items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-[var(--app-text)]">New chat</div>
+            <div className="text-xs text-[var(--app-text-muted)]">
+              {routing ? 'Pending setup' : 'Setup needs attention'}
+            </div>
+          </div>
+          <span className={cn(
+            'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium',
+            routing
+              ? 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]'
+              : 'border-[var(--app-danger)]/30 bg-[var(--app-danger)]/10 text-[var(--app-danger)]',
+          )}>
+            {routing ? <LoaderCircle className="animate-spin motion-reduce:animate-none" size={12} aria-hidden="true" /> : <TriangleAlert size={12} aria-hidden="true" />}
+            {routing ? 'Routing' : 'Not routed'}
+          </span>
+        </div>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto py-6">
+        <div className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
+          <div className="flex justify-end" data-testid="desktop-v3-local-pending-prompt">
+            <div className="max-w-[70%] whitespace-pre-wrap break-words rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
+              {prompt}
+            </div>
           </div>
 
-          {showPrompt ? (
-            <div className="flex justify-end" data-testid="desktop-v3-local-pending-prompt">
-              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)]">
-                {prompt}
+          <div className="flex justify-start" data-testid="desktop-v3-routing-status" role={routing ? 'status' : 'alert'}>
+            <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)]">
+              <div className={cn(
+                'mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em]',
+                routing ? 'text-[var(--app-text-subtle)]' : 'text-[var(--app-danger)]',
+              )}>
+                {routing ? <LoaderCircle className="animate-spin motion-reduce:animate-none" size={12} aria-hidden="true" /> : <TriangleAlert size={12} aria-hidden="true" />}
+                {routing ? 'Routing' : 'Routing failed'}
               </div>
+              <div className="text-[var(--app-text-muted)]">
+                {routing
+                  ? 'Choosing the setup for this chat…'
+                  : error.trim() || 'Your message is still here. Try routing it again.'}
+              </div>
+              {!routing ? (
+                <button
+                  type="button"
+                  className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-sm font-medium text-[var(--app-text)] shadow-sm transition-colors hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={onRetry}
+                  disabled={!onRetry}
+                >
+                  <RotateCcw size={14} aria-hidden="true" />
+                  Try again
+                </button>
+              ) : null}
             </div>
-          ) : null}
-
-          {state === 'failed' ? (
-            <div className="flex justify-center">
-              <button
-                type="button"
-                className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-sm font-medium text-[var(--app-text)] shadow-sm transition-colors hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={onRetry}
-                disabled={!onRetry}
-              >
-                <RotateCcw size={14} aria-hidden="true" />
-                Try again
-              </button>
-            </div>
-          ) : null}
+          </div>
         </div>
       </div>
     </section>

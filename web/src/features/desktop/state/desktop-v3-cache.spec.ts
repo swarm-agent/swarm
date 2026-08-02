@@ -983,6 +983,32 @@ test('hydrate explicit empty message list is authoritative when messages are in 
   assert.deepEqual(state.messagesBySession[sessionB.id].items, [])
 })
 
+test('routed first message survives an empty route-triggered hydrate and reconciles without duplication', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionB.id] = { kind: 'full', session: { ...sessionB, message_count: 1 }, needsHydrate: false }
+  state.projectionsBySession[sessionB.id] = { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 }
+  upsertCommittedMessage(state, sessionB.id, messageB1)
+
+  assert.equal(state.messagesBySession[sessionB.id].source, 'mutation')
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...sessionB, message_count: 1 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+    messages_by_session: { [sessionB.id]: [] },
+  }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), [messageB1.id])
+  assert.equal(state.messagesBySession[sessionB.id].source, 'mutation')
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...sessionB, message_count: 1 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+    messages_by_session: { [sessionB.id]: [messageB1] },
+  }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), [messageB1.id])
+  assert.equal(state.messagesBySession[sessionB.id].source, 'network')
+})
+
 test('metadata-only hydrate validates subset but ignores empty message payload when messages are out of scope', () => {
   const state = bootstrappedState()
   applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
