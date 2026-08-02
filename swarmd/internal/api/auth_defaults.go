@@ -73,15 +73,9 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
 		}
 	}
-	planModel := strings.TrimSpace(providerDefaults.PlanModel)
-	planThinking := strings.TrimSpace(providerDefaults.PlanThinking)
-	if planModel == "" || planThinking == "" {
-		planModel = providerDefaults.AutoModel
-		planThinking = providerDefaults.AutoThinking
-	}
 	settingsInput := modelprofile.SwarmSettingsInput{
 		Action: pebblestore.ModelProfileSelection{Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking},
-		Plan:   pebblestore.ModelProfileSelection{Provider: providerID, Model: planModel, Thinking: planThinking},
+		Plan:   pebblestore.ModelProfileSelection{Provider: providerID, Model: providerDefaults.PlanModel, Thinking: providerDefaults.PlanThinking},
 	}
 	if _, err := s.swarmModelSettings.Put(ctx, settingsInput); err != nil {
 		return nil, fmt.Errorf("set onboarding Swarm model settings: %w", err)
@@ -279,10 +273,20 @@ func (s *Server) snapshotRecommendedOnboardingDefaults(providerID string, requir
 	if planErr != nil {
 		return defaults.ProviderDefaults{}, false, fmt.Errorf("read onboarding Plan recommendation: %w", planErr)
 	}
-	if planOK {
-		planRec := recommendationForRole(plan["plan"], "plan")
-		providerDefaults.PlanModel = strings.TrimSpace(plan["plan"].Model)
-		providerDefaults.PlanThinking = recommendedThinking(planRec, "")
+	if !planOK {
+		if required {
+			return defaults.ProviderDefaults{}, false, fmt.Errorf("missing required direct Plan recommendation for provider %q", providerID)
+		}
+		return defaults.ProviderDefaults{}, false, nil
+	}
+	planRec := recommendationForRole(plan["plan"], "plan")
+	providerDefaults.PlanModel = strings.TrimSpace(plan["plan"].Model)
+	providerDefaults.PlanThinking = recommendedThinking(planRec, "")
+	if providerDefaults.PlanModel == "" || providerDefaults.PlanThinking == "" {
+		if required {
+			return defaults.ProviderDefaults{}, false, fmt.Errorf("incomplete required direct Plan recommendation for provider %q", providerID)
+		}
+		return defaults.ProviderDefaults{}, false, nil
 	}
 	return providerDefaults, true, nil
 }

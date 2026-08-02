@@ -32,22 +32,17 @@ func TestSwarmModeSettingsStoreRoundTripsDirectSelections(t *testing.T) {
 	}
 }
 
-func TestSwarmModeSettingsStoreMigratesLegacyFavoriteReferences(t *testing.T) {
+func TestSwarmModeSettingsStoreRejectsFavoriteReferencesInsteadOfResolvingProfiles(t *testing.T) {
 	store := openSwarmModeSettingsTestStore(t)
-	for _, record := range []ModelProfileRecord{
-		{ProfileID: "action", AccountScopeID: "account", Name: "Action", Provider: "codex", Model: "action-model", Thinking: "high"},
-		{ProfileID: "plan", AccountScopeID: "account", Name: "Plan", Provider: "openai", Model: "plan-model", Thinking: "xhigh"},
-	} {
-		if _, err := NewModelProfileStore(store).PutForAccount(record); err != nil {
-			t.Fatalf("put favorite: %v", err)
-		}
+	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account"), map[string]any{
+		"account_scope_id":   "account",
+		"action_favorite_id": "action",
+		"plan_favorite_id":   "plan",
+	}); err != nil {
+		t.Fatalf("put favorite references: %v", err)
 	}
-	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account"), legacySwarmModeSettingsRecord{AccountScopeID: "account", ActionFavoriteID: "action", PlanEnabled: true, PlanFavoriteID: "plan", UpdatedAt: 7}); err != nil {
-		t.Fatalf("put legacy settings: %v", err)
-	}
-	got, found, err := NewSwarmModeSettingsStore(store).GetForAccount("account")
-	if err != nil || !found || got.Action.Model != "action-model" || got.Plan.Model != "plan-model" || got.UpdatedAt != 7 {
-		t.Fatalf("migrated settings = (%+v, %v, %v)", got, found, err)
+	if _, found, err := NewSwarmModeSettingsStore(store).GetForAccount("account"); !found || !errors.Is(err, ErrSwarmModeActionRequired) {
+		t.Fatalf("GetForAccount() found=%v error=%v, want true and %v", found, err, ErrSwarmModeActionRequired)
 	}
 }
 

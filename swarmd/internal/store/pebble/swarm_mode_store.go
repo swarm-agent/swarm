@@ -52,22 +52,6 @@ func (s *SwarmModeSettingsStore) GetForAccount(accountScopeID string) (SwarmMode
 	if record.AccountScopeID != "" && record.AccountScopeID != accountScopeID {
 		return SwarmModeSettingsRecord{}, false, ErrSwarmModeAccountScopeIDMismatch
 	}
-	if !validSwarmModelSelection(record.Action) {
-		var legacy legacySwarmModeSettingsRecord
-		if err := json.Unmarshal(payload, &legacy); err != nil {
-			return SwarmModeSettingsRecord{}, false, err
-		}
-		if strings.TrimSpace(legacy.AccountScopeID) != accountScopeID {
-			return SwarmModeSettingsRecord{}, false, ErrSwarmModeAccountScopeIDMismatch
-		}
-		if strings.TrimSpace(legacy.ActionFavoriteID) != "" {
-			migrated, migrateErr := s.migrateLegacyFavoriteSettings(legacy)
-			if migrateErr != nil {
-				return SwarmModeSettingsRecord{}, false, migrateErr
-			}
-			record = migrated
-		}
-	}
 	if err := validateSwarmModeSettingsRecord(record); err != nil {
 		return SwarmModeSettingsRecord{}, false, err
 	}
@@ -109,48 +93,6 @@ func validateSwarmModeSettingsRecord(record SwarmModeSettingsRecord) error {
 		return ErrSwarmModePlanRequired
 	}
 	return nil
-}
-
-type legacySwarmModeSettingsRecord struct {
-	AccountScopeID   string `json:"account_scope_id"`
-	ActionFavoriteID string `json:"action_favorite_id"`
-	PlanEnabled      bool   `json:"plan_enabled"`
-	PlanFavoriteID   string `json:"plan_favorite_id,omitempty"`
-	UpdatedAt        int64  `json:"updated_at"`
-}
-
-func (s *SwarmModeSettingsStore) migrateLegacyFavoriteSettings(record legacySwarmModeSettingsRecord) (SwarmModeSettingsRecord, error) {
-	record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
-	record.ActionFavoriteID = strings.TrimSpace(record.ActionFavoriteID)
-	record.PlanFavoriteID = strings.TrimSpace(record.PlanFavoriteID)
-	var action ModelProfileRecord
-	found, err := s.store.GetJSON(KeyModelProfileForAccount(record.AccountScopeID, record.ActionFavoriteID), &action)
-	if err != nil || !found {
-		if err != nil {
-			return SwarmModeSettingsRecord{}, err
-		}
-		return SwarmModeSettingsRecord{}, errors.New("legacy Swarm Action favorite is missing")
-	}
-	plan := action
-	if record.PlanEnabled {
-		if record.PlanFavoriteID == "" {
-			return SwarmModeSettingsRecord{}, errors.New("legacy Swarm Plan favorite id is missing")
-		}
-		found, err = s.store.GetJSON(KeyModelProfileForAccount(record.AccountScopeID, record.PlanFavoriteID), &plan)
-		if err != nil || !found {
-			if err != nil {
-				return SwarmModeSettingsRecord{}, err
-			}
-			return SwarmModeSettingsRecord{}, errors.New("legacy Swarm Plan favorite is missing")
-		}
-	}
-	migrated := SwarmModeSettingsRecord{
-		AccountScopeID: record.AccountScopeID,
-		Action: ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking, ServiceTier: action.ServiceTier, ContextMode: action.ContextMode},
-		Plan: ModelProfileSelection{Provider: plan.Provider, Model: plan.Model, Thinking: plan.Thinking, ServiceTier: plan.ServiceTier, ContextMode: plan.ContextMode},
-		UpdatedAt: record.UpdatedAt,
-	}
-	return s.PutForAccount(migrated)
 }
 
 func normalizeSwarmModelSelection(selection ModelProfileSelection) ModelProfileSelection {

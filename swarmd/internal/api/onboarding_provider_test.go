@@ -254,26 +254,35 @@ func TestOnboardingProviderDefaultsReuseMatchingActionFavoriteIdempotently(t *te
 	}
 }
 
-func TestOnboardingProviderCredentialDisablesPlanWithoutDistinctValidRecommendation(t *testing.T) {
-	server, principal := newOnboardingProviderCredentialTestServerWithCatalogRecords(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"}, onboardingProviderRecommendationRecords("openai", false))
+func TestOnboardingProviderCredentialRequiresCompleteDirectPlanRecommendation(t *testing.T) {
+	tests := []struct {
+		name    string
+		records []pebblestore.ModelCatalogRecord
+		wantErr string
+	}{
+		{name: "missing", records: onboardingProviderRecommendationRecords("openai", false), wantErr: "missing required direct Plan recommendation"},
+		{name: "incomplete", records: append(onboardingProviderRecommendationRecords("openai", false), pebblestore.ModelCatalogRecord{Provider: "openai", Model: "snapshot-plan-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "plan"}}, Source: "test"}), wantErr: "incomplete required direct Plan recommendation"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, principal := newOnboardingProviderCredentialTestServerWithCatalogRecords(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"}, test.records)
 
-	if _, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-test-valid"}); err != nil {
-		t.Fatalf("accept onboarding provider credential: %v", err)
-	}
-	ctx := identity.ContextWithPrincipal(context.Background(), principal)
-	state, err := server.modelProfiles.ListState(ctx)
-	if err != nil {
-		t.Fatalf("list onboarding favorites: %v", err)
-	}
-	if len(state.Profiles) != 0 || state.DefaultProfileID != "" {
-		t.Fatalf("onboarding created Action-only favorite = %+v", state)
-	}
-	settings, err := server.swarmModelSettings.Get(ctx)
-	if err != nil {
-		t.Fatalf("get onboarding Swarm mode settings: %v", err)
-	}
-	if settings.Action.Model != "snapshot-main-model" || settings.Plan.Model != settings.Action.Model || settings.Plan.Thinking != settings.Action.Thinking {
-		t.Fatalf("onboarding direct Action/Plan settings = %+v", settings)
+			_, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-test-valid"})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want %q", err, test.wantErr)
+			}
+			credentials, listErr := server.auth.ListCredentialsForAccount(principal.AccountScopeID, "", "", 200)
+			if listErr != nil {
+				t.Fatalf("list credentials: %v", listErr)
+			}
+			if credentials.Total != 0 {
+				t.Fatalf("invalid Plan recommendation persisted credentials: %+v", credentials)
+			}
+			ctx := identity.ContextWithPrincipal(context.Background(), principal)
+			if _, settingsErr := server.swarmModelSettings.Get(ctx); !errors.Is(settingsErr, modelprofile.ErrSwarmModeSettingsNotFound) {
+				t.Fatalf("Swarm settings error = %v, want not found", settingsErr)
+			}
+		})
 	}
 }
 
