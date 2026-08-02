@@ -56,21 +56,17 @@ export interface DesktopV3ModelProfileSelectionWire {
 export interface DesktopV3ModelProfileChoiceWire {
   use_account_default?: true
   saved_profile_id?: string
-  temporary?: {
+  temporary?: DesktopV3ModelProfileSelectionWire & {
     name?: string
-    model_mode: 'single' | 'split'
-    single?: DesktopV3ModelProfileSelectionWire
-    plan?: DesktopV3ModelProfileSelectionWire
-    auto?: DesktopV3ModelProfileSelectionWire
   }
   use_agent_default?: true
 }
 
-function modelProfileSelectionWire(value: ModelProfileSelectionRecord | null): DesktopV3ModelProfileSelectionWire | undefined {
-  return value ? {
+function modelProfileSelectionWire(value: ModelProfileSelectionRecord): DesktopV3ModelProfileSelectionWire {
+  return {
     provider: value.provider.trim(), model: value.model.trim(), thinking: value.thinking.trim(),
     service_tier: value.serviceTier.trim() || undefined, context_mode: value.contextMode.trim() || undefined,
-  } : undefined
+  }
 }
 
 export function desktopV3ModelProfileChoiceWire(choice: ModelProfileChoice): DesktopV3ModelProfileChoiceWire {
@@ -80,8 +76,8 @@ export function desktopV3ModelProfileChoiceWire(choice: ModelProfileChoice): Des
     case 'agent-default': return { use_agent_default: true }
     case 'temporary': return {
       temporary: {
-        name: choice.profile.name.trim() || 'Temporary', model_mode: choice.profile.modelMode,
-        single: modelProfileSelectionWire(choice.profile.single), plan: modelProfileSelectionWire(choice.profile.plan), auto: modelProfileSelectionWire(choice.profile.auto),
+        name: choice.profile.name.trim() || 'Temporary',
+        ...modelProfileSelectionWire(choice.profile),
       },
     }
   }

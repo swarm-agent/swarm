@@ -716,7 +716,7 @@ export function DesktopV3AgenticComposer({
     }
     void onSlashCommand?.(command, draft)
     if (command.action.kind === 'open-model-picker') {
-      if (!routedNewSession) openAgentSetup(currentAgent)
+      if (!routedNewSession) openAgentSetup()
       onDraftChange('')
       return
     }

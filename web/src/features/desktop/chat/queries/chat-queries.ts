@@ -550,15 +550,6 @@ type AgentStateWire = {
       provider?: string;
       model?: string;
       thinking?: string;
-      model_mode?: string;
-      plan_provider?: string;
-      plan_model?: string;
-      plan_thinking?: string;
-      plan_service_tier?: string;
-      auto_provider?: string;
-      auto_model?: string;
-      auto_thinking?: string;
-      auto_service_tier?: string;
       prompt?: string;
       runtime_mode?: string;
       default_session_mode?: string;
@@ -594,15 +585,6 @@ type RestoreAgentDefaultsWire = {
     provider?: string;
     model?: string;
     thinking?: string;
-    model_mode?: string;
-    plan_provider?: string;
-    plan_model?: string;
-    plan_thinking?: string;
-    plan_service_tier?: string;
-    auto_provider?: string;
-    auto_model?: string;
-    auto_thinking?: string;
-    auto_service_tier?: string;
     prompt?: string;
     runtime_mode?: string;
     default_session_mode?: string;
@@ -1531,15 +1513,6 @@ function mapAgentStateResponse(response: AgentStateWire): AgentStateRecord {
           provider: String(profile.provider ?? "").trim(),
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
-          modelMode: String(profile.model_mode ?? "").trim() === "split" ? "split" : "single",
-          planProvider: String(profile.plan_provider ?? "").trim(),
-          planModel: String(profile.plan_model ?? "").trim(),
-          planThinking: String(profile.plan_thinking ?? "").trim(),
-          planServiceTier: String(profile.plan_service_tier ?? "").trim(),
-          autoProvider: String(profile.auto_provider ?? "").trim(),
-          autoModel: String(profile.auto_model ?? "").trim(),
-          autoThinking: String(profile.auto_thinking ?? "").trim(),
-          autoServiceTier: String(profile.auto_service_tier ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
           runtimeMode: (() => {
             const raw = String(profile.runtime_mode ?? "")
@@ -1691,15 +1664,6 @@ function mapAgentDefaultsState(
           provider: String(profile.provider ?? "").trim(),
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
-          modelMode: String(profile.model_mode ?? "").trim() === "split" ? "split" : "single",
-          planProvider: String(profile.plan_provider ?? "").trim(),
-          planModel: String(profile.plan_model ?? "").trim(),
-          planThinking: String(profile.plan_thinking ?? "").trim(),
-          planServiceTier: String(profile.plan_service_tier ?? "").trim(),
-          autoProvider: String(profile.auto_provider ?? "").trim(),
-          autoModel: String(profile.auto_model ?? "").trim(),
-          autoThinking: String(profile.auto_thinking ?? "").trim(),
-          autoServiceTier: String(profile.auto_service_tier ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
           runtimeMode: (() => {
             const raw = String(profile.runtime_mode ?? "")

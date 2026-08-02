@@ -3,7 +3,6 @@ import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
-import { requestJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -11,7 +10,7 @@ import { cn } from '../../../lib/cn'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopNotificationCenterRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -35,7 +34,7 @@ import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-re
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { normalizeDefaultNewSessionMode, normalizeSidebarHideInactiveHours, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { normalizeSidebarHideInactiveHours, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
@@ -2728,7 +2727,6 @@ export function DesktopAppPage() {
     staleTime: 30_000,
   })
   const agentStateQuery = useQuery(agentStateQueryOptions())
-  const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const modelProfilesQuery = useQuery(modelProfilesQueryOptions())
   const draftPreferenceQuery = useQuery(draftModelQueryOptions())
   useEffect(() => {
@@ -3227,7 +3225,7 @@ export function DesktopAppPage() {
     const defaultModelProfilePreference = defaultModelProfile
       ? preferenceFromModelProfile(defaultModelProfile, 'auto', defaultModelProfile.updatedAt)
       : null
-    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent, 'auto')
+    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent)
     const preference = defaultModelProfilePreference ?? (agentModel.locked
       ? {
           provider: agentModel.provider,
@@ -4714,18 +4712,7 @@ export function DesktopAppPage() {
                       className={SIDEBAR_ACTION_BUTTON_CLASS}
                       onClick={() => {
                         if (topWorkspace && topWorkspacePath) {
-                          openWorktreeSessionModal({
-                            workspace: topWorkspace,
-                            workspaceSlug: topWorkspaceSlug || workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel }),
-                            routeOptions: buildDesktopChatRouteOptions({
-                              hostSwarmName: swarmName,
-                              workspacePath: topWorkspace.path,
-                              workspaceName: topWorkspace.workspaceName,
-                              topologyRoutes: topWorkspace.topologyRoutes,
-                              localWorkspaceBindingId: topWorkspace.localWorkspaceBindingId,
-                              hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-                            }),
-                          })
+                          openRouteWorkspaceWorktree()
                         }
                       }}
                       disabled={!topWorkspace}

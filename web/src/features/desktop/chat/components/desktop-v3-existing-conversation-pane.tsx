@@ -1682,14 +1682,14 @@ export function DesktopV3ExistingConversationPane({
     renderedMessages.pendingUser.length > 0 ||
     renderedMessages.liveRuns.length > 0;
   const sessionAgentModelLock = useMemo(
-    () => resolveDesktopV3SessionAgentModelLock(sessionMetadata, mode),
-    [mode, sessionMetadata],
+    () => resolveDesktopV3SessionAgentModelLock(sessionMetadata),
+    [sessionMetadata],
   );
   const selectedAgentModelLock = useMemo(
     () =>
       sessionAgentModelLock
-      ?? resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
-    [agentState.profiles, mode, selectedAgent, sessionAgentModelLock],
+      ?? resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent),
+    [agentState.profiles, selectedAgent, sessionAgentModelLock],
   );
   const lockedPolicyPreference = useMemo(
     () => policyLockedPreference(cachedAgentModelPolicy),
@@ -2135,8 +2135,8 @@ export function DesktopV3ExistingConversationPane({
       });
       setSelectedAgent(normalizedAgentName);
       localSettingsDirtyRef.current.agent = false;
-      const nextLock = resolveDesktopV3SessionAgentModelLock(agentResponse.metadata, mode)
-        ?? resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode);
+      const nextLock = resolveDesktopV3SessionAgentModelLock(agentResponse.metadata)
+        ?? resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName);
       if (nextLock.locked) {
         setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions));
       }

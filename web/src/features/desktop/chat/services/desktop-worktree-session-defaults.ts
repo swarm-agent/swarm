@@ -47,7 +47,7 @@ export function resolveDesktopWorktreeSessionDefaults(input: {
     throw new Error(`Desktop agent settings did not return the resolved primary agent ${JSON.stringify(agentName)}.`)
   }
   const mode = input.explicitMode ?? agentProfile.defaultSessionMode ?? input.globalDefaultMode
-  const agentModelLock = resolveDesktopV3AgentModelLock(input.agentState.profiles, agentName, mode)
+  const agentModelLock = resolveDesktopV3AgentModelLock(input.agentState.profiles, agentName)
 
   if (agentName.toLowerCase() !== 'swarm' && agentModelLock.locked) {
     return {

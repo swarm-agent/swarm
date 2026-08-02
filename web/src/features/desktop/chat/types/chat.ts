@@ -325,15 +325,6 @@ export interface AgentProfileRecord {
   provider: string;
   model: string;
   thinking: string;
-  modelMode: "single" | "split";
-  planProvider: string;
-  planModel: string;
-  planThinking: string;
-  planServiceTier: string;
-  autoProvider: string;
-  autoModel: string;
-  autoThinking: string;
-  autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   defaultSessionMode: DesktopSessionMode;
