@@ -10,6 +10,6 @@ test('agent model control no longer emits removed split agent fields', () => {
 
 test('compiled system model settings still hydrate and persist service tier on their dedicated settings path', () => {
   assert.match(source, /function modelDraftForProfile[\s\S]*compactSettings\.service_tier[\s\S]*coderSettings\.service_tier[\s\S]*designerSettings\.service_tier[\s\S]*routerSettings\.service_tier[\s\S]*finderSettings\.service_tier/)
-  assert.match(source, /service_tier: singleDraft\.serviceTier\.trim\(\)/)
+  assert.match(source, /service_tier: agentPatch\.serviceTier/)
   assert.match(source, /showServiceTier/)
 })

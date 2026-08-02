@@ -162,9 +162,6 @@ export interface DesktopV3AgenticComposerProps {
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
   onModelProfileSelect?: (profileId: string) => void | Promise<void>
-  onModelProfileSetDefault?: (profileId: string) => void | Promise<void>
-  onModelProfileDelete?: (profileId: string) => void | Promise<void>
-  onModelProfileReorder?: (profileIds: string[]) => void | Promise<void>
   modelProfilesLoading?: boolean
   modelProfilesError?: string | null
   onUseAgentModelDefault?: () => void | Promise<void>
@@ -262,9 +259,6 @@ export function DesktopV3AgenticComposer({
   modelProfiles = [],
   activeModelProfile,
   onModelProfileSelect,
-  onModelProfileSetDefault,
-  onModelProfileDelete,
-  onModelProfileReorder,
   modelProfilesLoading = false,
   modelProfilesError = null,
   onUseAgentModelDefault: _onUseAgentModelDefault,
@@ -1252,9 +1246,6 @@ export function DesktopV3AgenticComposer({
         initialAgentName={agentSettingsInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
-        onSetDefaultModelProfile={onModelProfileSetDefault}
-        onDeleteModelProfile={onModelProfileDelete}
-        onReorderModelProfiles={onModelProfileReorder}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}
         busy={agentModelControlBusy}

@@ -8,8 +8,10 @@ test('flat favorite editor keeps provider, model, thinking, and service tier tog
   assert.match(source, /grid-cols-\[minmax\(130px,0\.7fr\)_minmax\(220px,1\.4fr\)_minmax\(130px,0\.7fr\)_minmax\(130px,0\.7fr\)\][\s\S]*label="Provider"[\s\S]*label="Model"[\s\S]*label="Thinking"[\s\S]*label="Service tier"/)
 })
 
-test('thinking options remain catalog driven without split editors', () => {
+test('thinking options remain catalog driven for direct model editors', () => {
   assert.match(source, /const thinkingOptions = thinkingOptionsForOption\(selectedOption\)/)
   assert.match(source, /thinking: normalizeDraftThinking\(current\.provider, model, modelOptions, current\.thinking\)/)
-  assert.doesNotMatch(source, /ThinkingSlider|Plan agent model|Action agent model|planDraft|autoDraft/)
+  assert.match(source, /title="Action model"/)
+  assert.match(source, /title="Plan model"/)
+  assert.doesNotMatch(source, /ThinkingSlider|Plan agent model|Action agent model|autoDraft/)
 })

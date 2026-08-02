@@ -96,7 +96,7 @@ import {
   preferenceFromModelProfile,
   preferenceFromModelProfileMetadata,
 } from "../services/model-profiles";
-import { createModelProfile, deleteModelProfile, invalidateModelProfiles, reorderModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
+import { createModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
 import {
   preferenceFromAgentModelLock,
   resolveDesktopV3AgentModelLock,
@@ -2874,24 +2874,6 @@ export function DesktopV3ExistingConversationPane({
             activeModelProfile={composerActiveModelProfile}
             modelProfilesLoading={modelProfilesQuery.isLoading || swarmModelSettingsQuery.isPending}
             modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : swarmModelSettingsQuery.error instanceof Error ? swarmModelSettingsQuery.error.message : null}
-            onModelProfileSetDefault={async (profileId) => {
-              await setDefaultModelProfile(profileId);
-              await invalidateModelProfiles(queryClient);
-            }}
-            onModelProfileReorder={async (profileIds) => {
-              await reorderModelProfiles(profileIds);
-              await invalidateModelProfiles(queryClient);
-            }}
-            onModelProfileDelete={async (profileId) => {
-              await deleteModelProfile(profileId);
-              await invalidateModelProfiles(queryClient);
-              if (sessionActiveModelProfile.profileId === profileId) {
-                const remaining = modelProfileState.profiles.filter((profile) => profile.profileId !== profileId);
-                const replacement = remaining.find((profile) => profile.isDefault) ?? remaining[0];
-                const response = await updateSessionV3ModelProfile(normalizedSessionId, replacement ? { kind: 'saved', profileId: replacement.profileId } : { kind: 'agent-default' });
-                dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId) });
-              }
-            }}
             onModelProfileSelect={async (profileId) => {
               const profile = modelProfileState.profiles.find((candidate) => candidate.profileId === profileId);
               if (!profile) return;
