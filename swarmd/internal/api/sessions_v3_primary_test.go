@@ -6250,7 +6250,9 @@ func TestSessionsV3PlanFreshContextBoundarySummaryMarksWaitingReviewAsPostHandof
 	for _, want := range []string{
 		"Post-handoff conversation: the checkpoint is already terminal and its handoff has already been emitted.",
 		"Interpret the current user message as a new conversation turn.",
-		"Do not continue, complete, or re-complete the checkpoint",
+		"Praise, agreement, commentary, questions, and non-deliverable guidance remain conversational",
+		"do not continue, complete, re-complete, or otherwise mutate the checkpoint merely to acknowledge them",
+		"If the message explicitly requests changes or new work, classify that request against the active plan instead of dismissing it as acknowledgment.",
 	} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("post-handoff summary missing %q: %s", want, summary)
@@ -6410,7 +6412,7 @@ func TestSessionsV3UserMessageRebindsRefinedCheckpointFromCompletedRun(t *testin
 	}
 }
 
-func TestSessionsV3UserMessageReactivatesPausedCheckpointForAgentDecision(t *testing.T) {
+func TestSessionsV3DirectionChangingUserMessageReactivatesPausedCheckpointForAgentRestartDecision(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "paused-message-reactivate-create", "paused message reactivate")
 	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-paused-message", "Plan: paused message", "## Plan: paused message", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
@@ -6421,7 +6423,7 @@ func TestSessionsV3UserMessageReactivatesPausedCheckpointForAgentDecision(t *tes
 	if err != nil {
 		t.Fatalf("save paused plan: %v", err)
 	}
-	result, enqueueJob, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, sessionsV3MessageRequest{ClientRequestID: "paused-message-reactivate", IdempotencyKey: "paused-message-reactivate", Role: "user", Content: "continue"})
+	result, enqueueJob, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, sessionsV3MessageRequest{ClientRequestID: "paused-message-reactivate", IdempotencyKey: "paused-message-reactivate", Role: "user", Content: "Stop that direction and replace it with an admin dashboard."})
 	if err != nil || enqueueJob == nil || result.RunIntent == nil {
 		t.Fatalf("accept paused message: job=%#v result=%#v err=%v", enqueueJob, result, err)
 	}
@@ -6434,7 +6436,7 @@ func TestSessionsV3UserMessageReactivatesPausedCheckpointForAgentDecision(t *tes
 		t.Fatalf("get reactivated plan: ok=%t err=%v plan=%#v", ok, err, active)
 	}
 	checkpoint := active.Document.Checkpoints[0]
-	if active.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateInProgress || checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.RunID == "" || checkpoint.RunID == "old-run" || checkpoint.AttemptID != "cp-1:attempt-2" || len(checkpoint.Attempts) != 2 || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusPaused || checkpoint.Attempts[1].Status != sessionruntime.PlanCheckpointStatusInProgress {
+	if active.Document.ExecutionState.Status != sessionruntime.PlanExecutionStateInProgress || checkpoint.Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.RunID == "" || checkpoint.RunID == "old-run" || checkpoint.AttemptID != "cp-1:attempt-2" || len(checkpoint.Attempts) != 2 || checkpoint.Attempts[0].Status != sessionruntime.PlanCheckpointStatusPaused || checkpoint.Attempts[1].Status != sessionruntime.PlanCheckpointStatusInProgress || checkpoint.Objective != "Finish the work" {
 		t.Fatalf("reactivated paused plan = %#v", active.Document)
 	}
 	intent, ok, err := sessionSvc.GetSessionActiveRunIntent(created.ID)

@@ -3245,7 +3245,7 @@ func sessionV3PlanFreshContextBoundarySummary(plan pebblestore.SessionPlanSnapsh
 	if doc.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(doc.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
 		lines = append(lines,
 			"Post-handoff conversation: the checkpoint is already terminal and its handoff has already been emitted.",
-			"Interpret the current user message as a new conversation turn. Do not continue, complete, or re-complete the checkpoint merely to acknowledge praise, agreement, commentary, a question, or guidance.",
+			"Interpret the current user message as a new conversation turn. Praise, agreement, commentary, questions, and non-deliverable guidance remain conversational: do not continue, complete, re-complete, or otherwise mutate the checkpoint merely to acknowledge them. If the message explicitly requests changes or new work, classify that request against the active plan instead of dismissing it as acknowledgment.",
 		)
 	}
 	if title := strings.TrimSpace(firstNonEmptyString(doc.Title, plan.Title)); title != "" {

@@ -60,6 +60,7 @@ import type {
   DesktopSessionPlanCheckpointRecommendation,
   TaskChildCardActions,
   TaskToolRow,
+  ModelProfileInput,
 } from "../types/chat";
 import {
   getDesktopSessionStopTarget,
@@ -91,12 +92,11 @@ import {
   normalizeProviderID,
 } from "../services/model-options";
 import {
-  activeModelProfileFromMetadata,
   modelProfileFromMetadata,
   preferenceFromModelProfile,
   preferenceFromModelProfileMetadata,
 } from "../services/model-profiles";
-import { createModelProfile, deleteModelProfile, invalidateModelProfiles, reorderModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
+import { createModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
 import {
   preferenceFromAgentModelLock,
   resolveDesktopV3AgentModelLock,
@@ -1705,15 +1705,11 @@ export function DesktopV3ExistingConversationPane({
     [cachedAgentModelPolicy],
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
-  const sessionActiveModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
   const actionFavoriteId = swarmModelSettingsQuery.data?.actionFavoriteId ?? modelProfileState.defaultProfileId;
-  const actionFavorite = useMemo(
-    () => modelProfileState.profiles.find((profile) => profile.profileId === actionFavoriteId) ?? null,
-    [actionFavoriteId, modelProfileState.profiles],
-  );
-  const composerActiveModelProfile = actionFavorite
+  const actionFavorite = useMemo(() => modelProfileState.profiles.find((profile) => profile.profileId === actionFavoriteId) ?? null, [actionFavoriteId, modelProfileState.profiles]);
+  const activeModelProfile = actionFavorite
     ? { source: 'saved' as const, profileId: actionFavorite.profileId, name: actionFavorite.name }
-    : sessionActiveModelProfile;
+    : { source: 'agent-default' as const, profileId: '', name: 'Action favorite' };
   const resolvedModelProfile = useMemo(
     () => modelProfileFromMetadata(sessionMetadata, mode),
     [mode, sessionMetadata],
@@ -2161,6 +2157,33 @@ export function DesktopV3ExistingConversationPane({
       if (mountedRef.current) setSendError(error instanceof Error ? error.message : "Failed to switch agent");
       throw error;
     }
+  }
+
+  async function setSwarmActionFavorite(profileId: string) {
+    const normalized = profileId.trim();
+    if (!normalized || agentModelSaving) return;
+    setAgentModelSaving(true);
+    setSendError(null);
+    try {
+      const current = swarmModelSettingsQuery.data ?? await getSwarmModelSettings();
+      const saved = await saveSwarmModelSettings({
+        actionFavoriteId: normalized,
+        planEnabled: current.planEnabled,
+        ...(current.planFavoriteId ? { planFavoriteId: current.planFavoriteId } : {}),
+      });
+      queryClient.setQueryData<SwarmModelSettings>(swarmModelSettingsQueryKey, saved);
+    } catch (error) {
+      if (mountedRef.current) setSendError(error instanceof Error ? error.message : 'Failed to save the Action favorite');
+      throw error;
+    } finally {
+      if (mountedRef.current) setAgentModelSaving(false);
+    }
+  }
+
+  async function createActionFavorite(input: ModelProfileInput): Promise<string> {
+    const created = await createModelProfile(input);
+    await invalidateModelProfiles(queryClient);
+    return created.profileId;
   }
 
   async function handleConfirmAgentSettings(
@@ -2871,47 +2894,11 @@ export function DesktopV3ExistingConversationPane({
             selectedPrimaryAgent={selectedAgent || ""}
             agents={agentState.profiles}
             modelProfiles={modelProfileState.profiles}
-            activeModelProfile={composerActiveModelProfile}
+            activeModelProfile={activeModelProfile}
             modelProfilesLoading={modelProfilesQuery.isLoading || swarmModelSettingsQuery.isPending}
             modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : swarmModelSettingsQuery.error instanceof Error ? swarmModelSettingsQuery.error.message : null}
-            onModelProfileSetDefault={async (profileId) => {
-              await setDefaultModelProfile(profileId);
-              await invalidateModelProfiles(queryClient);
-            }}
-            onModelProfileReorder={async (profileIds) => {
-              await reorderModelProfiles(profileIds);
-              await invalidateModelProfiles(queryClient);
-            }}
-            onModelProfileDelete={async (profileId) => {
-              await deleteModelProfile(profileId);
-              await invalidateModelProfiles(queryClient);
-              if (sessionActiveModelProfile.profileId === profileId) {
-                const remaining = modelProfileState.profiles.filter((profile) => profile.profileId !== profileId);
-                const replacement = remaining.find((profile) => profile.isDefault) ?? remaining[0];
-                const response = await updateSessionV3ModelProfile(normalizedSessionId, replacement ? { kind: 'saved', profileId: replacement.profileId } : { kind: 'agent-default' });
-                dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId) });
-              }
-            }}
-            onModelProfileSelect={async (profileId) => {
-              const profile = modelProfileState.profiles.find((candidate) => candidate.profileId === profileId);
-              if (!profile) return;
-              setAgentModelSaving(true);
-              setSendError(null);
-              try {
-                const current = swarmModelSettingsQuery.data ?? await getSwarmModelSettings();
-                const saved = await saveSwarmModelSettings({
-                  actionFavoriteId: profileId,
-                  planEnabled: current.planEnabled,
-                  ...(current.planFavoriteId ? { planFavoriteId: current.planFavoriteId } : {}),
-                });
-                queryClient.setQueryData<SwarmModelSettings>(swarmModelSettingsQueryKey, saved);
-              } catch (error) {
-                setSendError(error instanceof Error ? error.message : 'Failed to switch Swarm action model');
-                throw error;
-              } finally {
-                setAgentModelSaving(false);
-              }
-            }}
+            onModelProfileSelect={setSwarmActionFavorite}
+            onModelFavoriteCreate={createActionFavorite}
             onUseAgentModelDefault={async () => {
               setAgentModelSaving(true);
               setSendError(null);
