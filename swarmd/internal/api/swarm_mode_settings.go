@@ -10,20 +10,18 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// SwarmModeSettingsPath is the canonical account-scoped Swarm model-mode endpoint.
+// SwarmModeSettingsPath is the canonical account-scoped direct Swarm model endpoint.
 const SwarmModeSettingsPath = "/v1/swarm/model-settings"
 
 type swarmModeSettingsRequest struct {
-	ActionFavoriteID string `json:"action_favorite_id"`
-	PlanEnabled      bool   `json:"plan_enabled"`
-	PlanFavoriteID   string `json:"plan_favorite_id,omitempty"`
+	Action pebblestore.ModelProfileSelection `json:"action"`
+	Plan   pebblestore.ModelProfileSelection `json:"plan"`
 }
 
 type swarmModeSettingsResponse struct {
-	ActionFavoriteID string `json:"action_favorite_id"`
-	PlanEnabled      bool   `json:"plan_enabled"`
-	PlanFavoriteID   string `json:"plan_favorite_id,omitempty"`
-	UpdatedAt        int64  `json:"updated_at"`
+	Action    pebblestore.ModelProfileSelection `json:"action"`
+	Plan      pebblestore.ModelProfileSelection `json:"plan"`
+	UpdatedAt int64                             `json:"updated_at"`
 }
 
 func (s *Server) handleSwarmModeSettings(w http.ResponseWriter, r *http.Request) {
@@ -34,7 +32,7 @@ func (s *Server) handleSwarmModeSettings(w http.ResponseWriter, r *http.Request)
 
 	switch r.Method {
 	case http.MethodGet:
-		settings, err := s.swarmProfiles.Get(ctx)
+		settings, err := s.swarmModelSettings.Get(ctx)
 		if err != nil {
 			writeSwarmModeSettingsError(w, err)
 			return
@@ -49,10 +47,9 @@ func (s *Server) handleSwarmModeSettings(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		settings, err := s.swarmProfiles.Put(ctx, modelprofile.SwarmSettingsInput{
-			ActionFavoriteID: req.ActionFavoriteID,
-			PlanEnabled:      req.PlanEnabled,
-			PlanFavoriteID:   req.PlanFavoriteID,
+		settings, err := s.swarmModelSettings.Put(ctx, modelprofile.SwarmSettingsInput{
+			Action: req.Action,
+			Plan:   req.Plan,
 		})
 		if err != nil {
 			writeSwarmModeSettingsError(w, err)
@@ -68,7 +65,7 @@ func (s *Server) handleSwarmModeSettings(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) swarmModeSettingsContext(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
-	if s == nil || s.swarmProfiles == nil {
+	if s == nil || s.swarmModelSettings == nil {
 		writeError(w, http.StatusInternalServerError, modelprofile.ErrNotConfigured)
 		return nil, false
 	}
@@ -82,10 +79,9 @@ func (s *Server) swarmModeSettingsContext(w http.ResponseWriter, r *http.Request
 
 func swarmModeSettingsFromRecord(settings modelprofile.SwarmSettings) swarmModeSettingsResponse {
 	return swarmModeSettingsResponse{
-		ActionFavoriteID: settings.ActionFavoriteID,
-		PlanEnabled:      settings.PlanEnabled,
-		PlanFavoriteID:   settings.PlanFavoriteID,
-		UpdatedAt:        settings.UpdatedAt,
+		Action:    settings.Action,
+		Plan:      settings.Plan,
+		UpdatedAt: settings.UpdatedAt,
 	}
 }
 
@@ -95,11 +91,9 @@ func writeSwarmModeSettingsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, err)
 	case errors.Is(err, modelprofile.ErrSwarmModeSettingsNotFound):
 		writeError(w, http.StatusNotFound, err)
-	case errors.Is(err, modelprofile.ErrSwarmActionFavoriteNotFound),
-		errors.Is(err, modelprofile.ErrSwarmPlanFavoriteNotFound):
-		writeError(w, http.StatusConflict, err)
-	case errors.Is(err, pebblestore.ErrSwarmModeActionFavoriteIDRequired),
-		errors.Is(err, modelprofile.ErrSwarmPlanConfigurationContradictory):
+	case errors.Is(err, pebblestore.ErrSwarmModeActionRequired),
+		errors.Is(err, pebblestore.ErrSwarmModePlanRequired),
+		errors.Is(err, modelprofile.ErrSwarmSelectionInvalid):
 		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, modelprofile.ErrNotConfigured),
 		errors.Is(err, pebblestore.ErrSwarmModeStoreNotConfigured):

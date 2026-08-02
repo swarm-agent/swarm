@@ -147,7 +147,7 @@ func RunModelProfileFlatMigration(store *Store) (ModelProfileFlatMigrationResult
 			if haveOrder && startOrder <= lastOrder {
 				startOrder = lastOrder + 1
 			}
-			favorites, actionID, planID, err := flattenLegacyModelProfile(legacy, startOrder)
+			favorites, actionID, _, err := flattenLegacyModelProfile(legacy, startOrder)
 			if err != nil {
 				return result, fmt.Errorf("migrate legacy model profile %q for account %q: %w", legacy.ProfileID, accountScopeID, err)
 			}
@@ -170,9 +170,22 @@ func RunModelProfileFlatMigration(store *Store) (ModelProfileFlatMigrationResult
 				}
 				defaultFound = true
 				defaults[accountScopeID] = actionID
+				actionSelection := legacy.Auto
+				if actionSelection == nil {
+					actionSelection = legacy.Single
+				}
+				planSelection := legacy.Plan
+				if planSelection == nil {
+					planSelection = actionSelection
+				}
+				if actionSelection == nil || planSelection == nil {
+					return result, fmt.Errorf("legacy default %q for account %q has no Action/Plan selections", legacyDefaultID, accountScopeID)
+				}
 				modeSettings[accountScopeID] = SwarmModeSettingsRecord{
-					AccountScopeID: accountScopeID, ActionFavoriteID: actionID,
-					PlanEnabled: planID != "", PlanFavoriteID: planID, UpdatedAt: legacy.UpdatedAt,
+					AccountScopeID: accountScopeID,
+					Action:         modelProfileSelectionFromLegacy(*actionSelection),
+					Plan:           modelProfileSelectionFromLegacy(*planSelection),
+					UpdatedAt:      legacy.UpdatedAt,
 				}
 			}
 		}
@@ -241,6 +254,13 @@ func RunModelProfileFlatMigration(store *Store) (ModelProfileFlatMigrationResult
 	}
 	result.Applied = true
 	return result, nil
+}
+
+func modelProfileSelectionFromLegacy(selection legacyModelProfileSelection) ModelProfileSelection {
+	return ModelProfileSelection{
+		Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking,
+		ServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode,
+	}
 }
 
 func scanLegacyModelProfileRows(store *Store) ([]legacyModelProfileRow, []string, error) {

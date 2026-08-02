@@ -11,7 +11,7 @@ import (
 
 func TestRoutedSessionCoordinatorRejectsBeforeRouter(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording"}
-	server, principal, _ := newSessionRouterTestServer(t, runner, false, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
+	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 
 	tests := []struct {
 		name string

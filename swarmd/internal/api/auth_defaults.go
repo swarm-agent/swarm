@@ -16,24 +16,25 @@ import (
 )
 
 // hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount has one job:
-// after a provider credential has been verified and activated, create the
-// account's built-in agents already hydrated with verified snapshot defaults.
+// after a provider credential has been verified and activated, initialize the
+// account's direct Swarm models and compiled subagent settings from verified defaults.
 func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
-	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.modelProfiles == nil || s.swarmProfiles == nil || s.uiSettings == nil {
+	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.swarmModelSettings == nil || s.uiSettings == nil {
 		return nil, errors.New("onboarding provider hydration is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
 		return nil, errors.New("account scope ID is required")
 	}
-	state, err := s.agents.ListStateForAccount(accountScopeID, 1)
-	if err != nil {
-		return nil, fmt.Errorf("read onboarding agent state: %w", err)
-	}
-	if len(state.Profiles) != 0 {
-		// This initializer belongs only to the first credential path. Existing
-		// accounts keep their established Swarm and subagent preferences.
+	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{
+		Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(userID), AccountScopeID: accountScopeID,
+	})
+	if _, settingsErr := s.swarmModelSettings.Get(ctx); settingsErr == nil {
 		return nil, nil
+	} else if !errors.Is(settingsErr, modelprofile.ErrSwarmModeSettingsNotFound) &&
+		!errors.Is(settingsErr, pebblestore.ErrSwarmModeActionRequired) &&
+		!errors.Is(settingsErr, pebblestore.ErrSwarmModePlanRequired) {
+		return nil, fmt.Errorf("read onboarding Swarm model settings: %w", settingsErr)
 	}
 
 	providerID, providerDefaults, ok, err := s.resolveOnboardingModelProvider(activatedProvider)
@@ -47,9 +48,6 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 	if err != nil {
 		return nil, fmt.Errorf("read onboarding system-agent model settings: %w", err)
 	}
-	if hasConfiguredOnboardingSubagentSettings(settings.Agents) {
-		return nil, nil
-	}
 	_, event, err := s.model.SetPreferenceForAccount(accountScopeID, userID, providerID, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking)
 	if err != nil {
 		return nil, fmt.Errorf("set global model default: %w", err)
@@ -58,7 +56,7 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 	if err != nil {
 		return nil, fmt.Errorf("create hydrated agent defaults: %w", err)
 	}
-	{
+	if !hasConfiguredOnboardingSubagentSettings(settings.Agents) {
 		recommended, ok, recommendationsErr := s.recommendedOnboardingSubagentSettings(providerID)
 		if recommendationsErr != nil {
 			return nil, recommendationsErr
@@ -75,55 +73,18 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
 		}
 	}
-	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{
-		Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(userID), AccountScopeID: accountScopeID,
-	})
-	favoriteState, err := s.modelProfiles.ListState(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read onboarding favorites: %w", err)
+	planModel := strings.TrimSpace(providerDefaults.PlanModel)
+	planThinking := strings.TrimSpace(providerDefaults.PlanThinking)
+	if planModel == "" || planThinking == "" {
+		planModel = providerDefaults.AutoModel
+		planThinking = providerDefaults.AutoThinking
 	}
-	actionFavorite, found := findOnboardingFavorite(favoriteState.Profiles, providerID, providerDefaults.AutoModel, providerDefaults.AutoThinking)
-	createdIDs := make([]string, 0, 2)
-	rollbackCreatedFavorites := func() {
-		for i := len(createdIDs) - 1; i >= 0; i-- {
-			_, _ = s.modelProfiles.Delete(ctx, createdIDs[i])
-		}
+	settingsInput := modelprofile.SwarmSettingsInput{
+		Action: pebblestore.ModelProfileSelection{Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking},
+		Plan:   pebblestore.ModelProfileSelection{Provider: providerID, Model: planModel, Thinking: planThinking},
 	}
-	if !found {
-		input := modelprofile.Input{Name: "Swarm Action", Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking}
-		if len(favoriteState.Profiles) == 0 {
-			actionFavorite, _, err = s.modelProfiles.CreateFirstForAccount(accountScopeID, input)
-		} else {
-			actionFavorite, err = s.modelProfiles.Create(ctx, input)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("create onboarding Action favorite: %w", err)
-		}
-		if strings.TrimSpace(actionFavorite.ProfileID) == "" {
-			return nil, errors.New("create onboarding Action favorite: account changed during initialization")
-		}
-		createdIDs = append(createdIDs, actionFavorite.ProfileID)
-	}
-	settingsInput := modelprofile.SwarmSettingsInput{ActionFavoriteID: actionFavorite.ProfileID}
-	if validDistinctOnboardingPlanFavorite(providerDefaults, actionFavorite) {
-		planFavorite, planFound := findOnboardingFavorite(favoriteState.Profiles, providerID, providerDefaults.PlanModel, providerDefaults.PlanThinking)
-		if !planFound {
-			var createErr error
-			planFavorite, createErr = s.modelProfiles.Create(ctx, modelprofile.Input{
-				Name: "Swarm Plan", Provider: providerID, Model: providerDefaults.PlanModel, Thinking: providerDefaults.PlanThinking,
-			})
-			if createErr != nil {
-				rollbackCreatedFavorites()
-				return nil, fmt.Errorf("create onboarding Plan favorite: %w", createErr)
-			}
-			createdIDs = append(createdIDs, planFavorite.ProfileID)
-		}
-		settingsInput.PlanEnabled = true
-		settingsInput.PlanFavoriteID = planFavorite.ProfileID
-	}
-	if _, err := s.swarmProfiles.Put(ctx, settingsInput); err != nil {
-		rollbackCreatedFavorites()
-		return nil, fmt.Errorf("set onboarding Swarm mode settings: %w", err)
+	if _, err := s.swarmModelSettings.Put(ctx, settingsInput); err != nil {
+		return nil, fmt.Errorf("set onboarding Swarm model settings: %w", err)
 	}
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
@@ -289,30 +250,6 @@ func (s *Server) resolveOnboardingModelProvider(preferredProvider string) (provi
 		return providerDefaults.ProviderID, providerDefaults, true, nil
 	}
 	return "", defaults.ProviderDefaults{}, false, nil
-}
-
-func findOnboardingFavorite(favorites []modelprofile.Profile, provider, modelID, thinking string) (modelprofile.Profile, bool) {
-	provider = strings.TrimSpace(provider)
-	modelID = strings.TrimSpace(modelID)
-	thinking = strings.TrimSpace(thinking)
-	for _, favorite := range favorites {
-		if strings.EqualFold(strings.TrimSpace(favorite.Provider), provider) &&
-			strings.TrimSpace(favorite.Model) == modelID && strings.TrimSpace(favorite.Thinking) == thinking {
-			return favorite, true
-		}
-	}
-	return modelprofile.Profile{}, false
-}
-
-func validDistinctOnboardingPlanFavorite(providerDefaults defaults.ProviderDefaults, action modelprofile.Profile) bool {
-	planModel := strings.TrimSpace(providerDefaults.PlanModel)
-	planThinking := strings.TrimSpace(providerDefaults.PlanThinking)
-	if planModel == "" || planThinking == "" {
-		return false
-	}
-	return !strings.EqualFold(strings.TrimSpace(providerDefaults.ProviderID), strings.TrimSpace(action.Provider)) ||
-		planModel != strings.TrimSpace(action.Model) ||
-		planThinking != strings.TrimSpace(action.Thinking)
 }
 
 func (s *Server) snapshotRecommendedOnboardingDefaults(providerID string, required bool) (defaults.ProviderDefaults, bool, error) {

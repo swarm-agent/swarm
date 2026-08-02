@@ -10,7 +10,6 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
-	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
@@ -45,7 +44,7 @@ func (r *sessionRouterRecordingRunner) CreateResponseStreaming(_ context.Context
 
 func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Implement routing","mode":"plan"}`}}
-	server, principal, entries := newSessionRouterTestServer(t, runner, true, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Go API workspace"}})
+	server, principal, entries := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Go API workspace"}})
 
 	decision, err := server.routeSessionOnce(context.Background(), principal, "implement the Router bridge", false)
 	if err != nil {
@@ -98,7 +97,7 @@ func TestSessionRouterOnceAttachesSelectedCatalogAcrossConfiguredProviders(t *te
 	for _, providerID := range []string{"anthropic", "codex", "fireworks", "google", "openai", "openrouter"} {
 		t.Run(providerID, func(t *testing.T) {
 			runner := &sessionRouterRecordingRunner{id: providerID, response: provideriface.Response{Text: `{"title":"Implement routing","mode":"auto"}`}}
-			server, principal, _ := newSessionRouterTestServer(t, runner, false, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
+			server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 
 			if _, err := server.routeSessionOnce(context.Background(), principal, "route this", false); err != nil {
 				t.Fatalf("route session once: %v", err)
@@ -113,7 +112,7 @@ func TestSessionRouterOnceAttachesSelectedCatalogAcrossConfiguredProviders(t *te
 
 func TestSessionRouterOnceUsesCatalogTranslationForConfiguredCodexModel(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "codex", response: provideriface.Response{Text: `{"title":"Implement routing","mode":"auto"}`}}
-	server, principal, _ := newSessionRouterTestServer(t, runner, false, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
+	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 	settings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
 		t.Fatalf("get Router UI settings: %v", err)
@@ -137,7 +136,7 @@ func TestSessionRouterOnceUsesCatalogTranslationForConfiguredCodexModel(t *testi
 
 func TestSessionRouterOnceRejectsUnresolvedConfiguredModelBeforeProvider(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected","mode":"auto"}`}}
-	server, principal, _ := newSessionRouterTestServer(t, runner, false, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
+	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 	settings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
 		t.Fatalf("get Router UI settings: %v", err)
@@ -156,9 +155,9 @@ func TestSessionRouterOnceRejectsUnresolvedConfiguredModelBeforeProvider(t *test
 	}
 }
 
-func TestSessionRouterOnceOffersMultipleWithoutDisabledPlan(t *testing.T) {
+func TestSessionRouterOnceOffersPlanAndMultipleWorkspaces(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording"}
-	server, principal, entries := newSessionRouterTestServer(t, runner, false, []sessionRouterWorkspace{
+	server, principal, entries := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{
 		{"/workspace/alpha", "Alpha", "Frontend workspace"},
 		{"/workspace/beta", "Beta", "Backend workspace"},
 	})
@@ -178,15 +177,15 @@ func TestSessionRouterOnceOffersMultipleWithoutDisabledPlan(t *testing.T) {
 	if !strings.Contains(instructions, "explicitly authorized a managed worktree") || !strings.Contains(instructions, `"worktree_name"`) {
 		t.Fatalf("authorized Router instructions omitted worktree naming contract: %s", instructions)
 	}
-	if strings.Contains(instructions, `"plan"`) || !strings.Contains(instructions, entries[0].WorkspaceID) || !strings.Contains(instructions, entries[1].WorkspaceID) {
-		t.Fatalf("disabled Plan or workspace choices encoded incorrectly: %s", instructions)
+	if !strings.Contains(instructions, `"plan"`) || !strings.Contains(instructions, entries[0].WorkspaceID) || !strings.Contains(instructions, entries[1].WorkspaceID) {
+		t.Fatalf("Plan or workspace choices encoded incorrectly: %s", instructions)
 	}
 }
 
 func TestSessionRouterOnceReturnsProviderErrorWithoutRetryOrFallback(t *testing.T) {
 	providerErr := errors.New("provider unavailable")
 	runner := &sessionRouterRecordingRunner{id: "recording", err: providerErr}
-	server, principal, _ := newSessionRouterTestServer(t, runner, false, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
+	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 
 	_, err := server.routeSessionOnce(context.Background(), principal, "route this", false)
 	if !errors.Is(err, providerErr) {
@@ -199,7 +198,7 @@ func TestSessionRouterOnceReturnsProviderErrorWithoutRetryOrFallback(t *testing.
 
 func TestSessionRouterOnceRejectsZeroWorkspacesBeforeProvider(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected","mode":"auto"}`}}
-	server, principal, _ := newSessionRouterTestServer(t, runner, false, nil)
+	server, principal, _ := newSessionRouterTestServer(t, runner, nil)
 
 	if _, err := server.routeSessionOnce(context.Background(), principal, "route this", false); !errors.Is(err, workspace.ErrNoRoutableWorkspaces) {
 		t.Fatalf("zero workspace error = %v", err)
@@ -215,7 +214,7 @@ type sessionRouterWorkspace struct {
 	definition string
 }
 
-func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunner, planEnabled bool, candidates []sessionRouterWorkspace) (*Server, identity.Principal, []pebblestore.WorkspaceEntry) {
+func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunner, candidates []sessionRouterWorkspace) (*Server, identity.Principal, []pebblestore.WorkspaceEntry) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-router.pebble"))
 	if err != nil {
@@ -254,26 +253,6 @@ func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunn
 		entries = append(entries, entry)
 	}
 
-	favoriteStore := pebblestore.NewModelProfileStore(store)
-	favoriteService := modelprofile.NewService(favoriteStore)
-	authorityContext := identity.ContextWithPrincipal(context.Background(), principal)
-	actionFavorite, err := favoriteService.Create(authorityContext, modelprofile.Input{Name: "Action", Provider: "recording", Model: "action-model", Thinking: "medium"})
-	if err != nil {
-		t.Fatalf("create Action favorite: %v", err)
-	}
-	planFavoriteID := ""
-	if planEnabled {
-		planFavorite, createErr := favoriteService.Create(authorityContext, modelprofile.Input{Name: "Plan", Provider: "recording", Model: "plan-model", Thinking: "high"})
-		if createErr != nil {
-			t.Fatalf("create Plan favorite: %v", createErr)
-		}
-		planFavoriteID = planFavorite.ProfileID
-	}
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), favoriteStore)
-	if _, err := swarmProfiles.Put(authorityContext, modelprofile.SwarmSettingsInput{ActionFavoriteID: actionFavorite.ProfileID, PlanEnabled: planEnabled, PlanFavoriteID: planFavoriteID}); err != nil {
-		t.Fatalf("put Swarm mode settings: %v", err)
-	}
-
 	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{
 		Provider: runner.id, Model: "router-model", Thinking: "high", ServiceTier: "priority",
@@ -282,5 +261,5 @@ func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunn
 	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
-	return &Server{workspace: workspace.NewService(workspaceStore), providers: providers, uiSettings: uiSettings, swarmProfiles: swarmProfiles, model: modelService}, principal, entries
+	return &Server{workspace: workspace.NewService(workspaceStore), providers: providers, uiSettings: uiSettings, model: modelService}, principal, entries
 }

@@ -82,30 +82,20 @@ func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice
 }
 
 func (s *Server) sessionModelProfileSnapshotFromAccountDefault(ctx context.Context, appliedAt int64) (*pebblestore.SessionModelProfileSnapshot, error) {
-	if s.swarmProfiles == nil {
+	if s.swarmModelSettings == nil {
 		return nil, modelprofile.ErrNotConfigured
 	}
-	settings, err := s.swarmProfiles.Get(ctx)
+	settings, err := s.swarmModelSettings.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
-	action, err := s.modelProfiles.Get(ctx, settings.ActionFavoriteID)
-	if err != nil {
-		return nil, err
-	}
-	snapshot := sessionModelProfileSnapshotFromSaved(action, appliedAt)
-	snapshot.UseAccountDefault = true
-	if settings.PlanEnabled {
-		plan, err := s.modelProfiles.Get(ctx, settings.PlanFavoriteID)
-		if err != nil {
-			return nil, err
-		}
-		snapshot.PlanFavoriteID = plan.ProfileID
-		snapshot.PlanFavoriteName = plan.Name
-		selection := sessionModelSelectionFromFlatProfile(plan.Provider, plan.Model, plan.Thinking, plan.ServiceTier, plan.ContextMode)
-		snapshot.Plan = pebblestore.CloneModelProfileSelection(&selection)
-	}
-	return pebblestore.CloneSessionModelProfileSnapshot(snapshot), nil
+	return &pebblestore.SessionModelProfileSnapshot{
+		Source:            pebblestore.SessionModelProfileSourceSwarmSettings,
+		UseAccountDefault: true,
+		Action:            settings.Action,
+		Plan:              pebblestore.CloneModelProfileSelection(&settings.Plan),
+		AppliedAt:         appliedAt,
+	}, nil
 }
 
 func sessionModelProfileSnapshotFromSaved(profile modelprofile.Profile, appliedAt int64) *pebblestore.SessionModelProfileSnapshot {

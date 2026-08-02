@@ -82,8 +82,8 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	if err != nil {
 		t.Fatalf("create Action favorite: %v", err)
 	}
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), favoriteStore)
-	if _, err := swarmProfiles.Put(authorityContext, modelprofile.SwarmSettingsInput{ActionFavoriteID: action.ProfileID}); err != nil {
+	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
+	if _, err := swarmProfiles.Put(authorityContext, modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}, Plan: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}}); err != nil {
 		t.Fatalf("put Swarm settings: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	runService := runruntime.NewService(sessions, modelService, providers, tool.NewRuntime(1), nil, agentService, nil, events)
 	server := NewServer(nil, agentService, modelService, runService, sessions, workspace.NewService(workspaceStore), nil, nil, providers, nil, nil, events, stream.NewHub(events))
 	server.SetModelProfileService(favoriteService)
-	server.SetSwarmProfileService(swarmProfiles)
+	server.SetSwarmModelSettingsService(swarmProfiles)
 	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{Provider: "openai", Model: "router-model", Thinking: "low"}}}); err != nil {
 		t.Fatalf("configure Router: %v", err)

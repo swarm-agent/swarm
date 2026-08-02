@@ -38,9 +38,6 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	if s.uiSettings == nil {
 		return sessionRouterDecision{}, errors.New("ui settings service is not configured")
 	}
-	if s.swarmProfiles == nil {
-		return sessionRouterDecision{}, errors.New("swarm model settings service is not configured")
-	}
 	if !principal.Valid() {
 		return sessionRouterDecision{}, identity.ErrPrincipalRequired
 	}
@@ -70,11 +67,7 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	}
 
 	authorityContext := identity.ContextWithPrincipal(ctx, principal)
-	swarmSettings, err := s.swarmProfiles.Get(authorityContext)
-	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("read Swarm mode settings for Router: %w", err)
-	}
-	routerContext.PlanEnabled = swarmSettings.PlanEnabled
+	routerContext.PlanEnabled = true
 	routerContext.ManagedWorktreeAllowed = managedWorktreeAllowed
 
 	routerRequest := routerruntime.Request{Input: input, Context: routerContext}

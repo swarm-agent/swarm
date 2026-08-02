@@ -15,15 +15,16 @@ import (
 )
 
 const (
-	SessionModelProfileSourceSaved     = "saved"
-	SessionModelProfileSourceTemporary = "temporary"
+	SessionModelProfileSourceSaved         = "saved"
+	SessionModelProfileSourceTemporary     = "temporary"
+	SessionModelProfileSourceSwarmSettings = "swarm_settings"
 )
 
 // SessionModelProfileSnapshot is the immutable model-selection contract bound
 // to a session. Action is always the resolved Action-mode selection. Plan is
 // present only when Plan mode was enabled when the snapshot was captured.
-// Favorite identity is copied into the snapshot so later favorite edits or
-// deletion cannot change the session's source attribution or model choices.
+// Explicit favorite identity is copied when applicable. Swarm defaults instead
+// carry direct Action/Plan selections with source "swarm_settings".
 type SessionModelProfileSnapshot struct {
 	Source             string                 `json:"source"`
 	UseAccountDefault  bool                   `json:"use_account_default,omitempty"`

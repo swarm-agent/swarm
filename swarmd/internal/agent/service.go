@@ -147,32 +147,17 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string) (Defau
 	if err != nil {
 		return DefaultModelHydrationResult{}, err
 	}
-	if hasVersion || len(profiles) != 0 {
+	if len(profiles) > 1 || (len(profiles) == 1 && normalizeName(profiles[0].Name) != SwarmAgentID) {
 		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require an empty agent account")
 	}
 
-	now := time.Now().UnixMilli()
-	seen := make(map[string]struct{}, 1)
-	result := DefaultModelHydrationResult{}
-	for _, profile := range defaultProfiles(now) {
-		name := normalizeName(profile.Name)
-		switch name {
-		case "swarm":
-			result.Agents = append(result.Agents, name)
-		default:
-			continue
-		}
-		profile = pebblestore.NormalizeAgentProfile(profile)
-		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
+	result := DefaultModelHydrationResult{Agents: []string{SwarmAgentID}}
+	// Swarm is a compiled identity. Remove the legacy context-only row when
+	// upgrading an account, then initialize direct model settings separately.
+	if len(profiles) == 1 {
+		if err := s.deleteProfileForAccountLocked(accountScopeID, SwarmAgentID); err != nil {
 			return DefaultModelHydrationResult{}, err
 		}
-		seen[name] = struct{}{}
-	}
-	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
-		return DefaultModelHydrationResult{}, err
-	}
-	if _, ok := seen["swarm"]; !ok {
-		return DefaultModelHydrationResult{}, errors.New("hydrated default agents missing swarm profile")
 	}
 	if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
 		return DefaultModelHydrationResult{}, err
@@ -481,14 +466,9 @@ func (s *Service) cleanupBuiltInCoderForAccountLocked(accountScopeID string) err
 }
 
 func (s *Service) cleanupCompiledSwarmContextForAccountLocked(accountScopeID string) error {
-	stored, ok, err := s.getProfileForAccountLocked(accountScopeID, SwarmAgentID)
-	if err != nil || !ok {
-		return err
-	}
-	context := pebblestore.AgentProfile{
-		Name: SwarmAgentID, Mode: ModePrimary, DefaultSessionMode: stored.DefaultSessionMode, UpdatedAt: stored.UpdatedAt,
-	}
-	return s.putProfileForAccountLocked(accountScopeID, context)
+	// Swarm's runtime/default-session contract is compiled. Persisting an agent
+	// row makes that identity look user-configurable and is no longer necessary.
+	return s.deleteProfileForAccountLocked(accountScopeID, SwarmAgentID)
 }
 
 func defaultFinderPrompt() string {

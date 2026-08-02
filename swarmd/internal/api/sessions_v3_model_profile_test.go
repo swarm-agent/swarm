@@ -24,8 +24,8 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	defer store.Close()
 	favorites := pebblestore.NewModelProfileStore(store)
 	service := modelprofile.NewService(favorites)
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), favorites)
-	server := &Server{modelProfiles: service, swarmProfiles: swarmProfiles}
+	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
+	server := &Server{modelProfiles: service, swarmModelSettings: swarmProfiles}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
 	created, err := service.Create(ctx, modelprofile.Input{Name: "Saved", Provider: "openai", Model: "saved-model", Thinking: "high", ServiceTier: "priority", ContextMode: "full"})
@@ -36,7 +36,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("create plan profile: %v", err)
 	}
-	if _, err := swarmProfiles.Put(ctx, modelprofile.SwarmSettingsInput{ActionFavoriteID: created.ProfileID, PlanEnabled: true, PlanFavoriteID: planFavorite.ProfileID}); err != nil {
+	if _, err := swarmProfiles.Put(ctx, modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: created.Provider, Model: created.Model, Thinking: created.Thinking, ServiceTier: created.ServiceTier, ContextMode: created.ContextMode}, Plan: pebblestore.ModelProfileSelection{Provider: planFavorite.Provider, Model: planFavorite.Model, Thinking: planFavorite.Thinking, ServiceTier: planFavorite.ServiceTier, ContextMode: planFavorite.ContextMode}}); err != nil {
 		t.Fatalf("configure account defaults: %v", err)
 	}
 
@@ -48,7 +48,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("resolve explicit default: %v", err)
 	}
-	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSaved || saved.ActionFavoriteID != created.ProfileID || saved.ActionFavoriteName != "Saved" || !saved.UseAccountDefault || saved.Action.Model != "saved-model" || saved.Action.ServiceTier != "priority" || saved.Action.ContextMode != "full" || saved.PlanFavoriteID != planFavorite.ProfileID || saved.PlanFavoriteName != "Plan" || saved.Plan == nil || saved.Plan.Model != "plan-model" || saved.Plan.Thinking != "xhigh" || saved.AppliedAt != 10 {
+	if saved == nil || saved.Source != pebblestore.SessionModelProfileSourceSwarmSettings || saved.ActionFavoriteID != "" || saved.ActionFavoriteName != "" || !saved.UseAccountDefault || saved.Action.Model != "saved-model" || saved.Action.ServiceTier != "priority" || saved.Action.ContextMode != "full" || saved.PlanFavoriteID != "" || saved.PlanFavoriteName != "" || saved.Plan == nil || saved.Plan.Model != "plan-model" || saved.Plan.Thinking != "xhigh" || saved.AppliedAt != 10 {
 		t.Fatalf("saved default snapshot = %+v", saved)
 	}
 	savedByID, err := server.resolveSessionsV3ModelProfileChoice(ctx, &sessionsV3ModelProfileChoice{SavedProfileID: created.ProfileID}, 11)

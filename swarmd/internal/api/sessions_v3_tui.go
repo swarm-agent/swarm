@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -152,6 +153,9 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 	}
 	now := time.Now().UnixMilli()
 	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
+	if err == nil && req.ModelProfile == nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) {
+		modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
+	}
 	if err != nil {
 		writeModelProfileError(w, err)
 		return

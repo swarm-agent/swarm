@@ -123,24 +123,11 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if err != nil {
 		t.Fatalf("list hydrated agents: %v", err)
 	}
-	if len(agents.Profiles) == 0 {
-		t.Fatal("provider acceptance returned before creating agents")
+	if len(agents.Profiles) != 0 {
+		t.Fatalf("onboarding persisted agent rows for compiled Swarm: %+v", agents.Profiles)
 	}
-	var swarmProfile *pebblestore.AgentProfile
-	for i := range agents.Profiles {
-		if strings.EqualFold(agents.Profiles[i].Name, "swarm") {
-			swarmProfile = &agents.Profiles[i]
-			break
-		}
-	}
-	if swarmProfile == nil {
-		t.Fatalf("hydrated agents missing swarm profile: %+v", agents.Profiles)
-	}
-	if swarmProfile.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || swarmProfile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
-		t.Fatalf("swarm plan/auto runtime defaults not restored: %+v", *swarmProfile)
-	}
-	if len(agents.Profiles) != 1 {
-		t.Fatalf("onboarding persisted unexpected utility agent rows: %+v", agents.Profiles)
+	if agents.ActivePrimary != agentruntime.SwarmAgentID {
+		t.Fatalf("onboarding active primary = %q, want compiled Swarm", agents.ActivePrimary)
 	}
 	pref, err := server.model.GetPreferenceForAccount(principal.AccountScopeID)
 	if err != nil {
@@ -153,34 +140,15 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if err != nil {
 		t.Fatalf("list onboarding model profiles: %v", err)
 	}
-	if len(profileState.Profiles) != 2 {
-		t.Fatalf("onboarding favorites = %+v, want Action and Plan", profileState)
+	if len(profileState.Profiles) != 0 || profileState.DefaultProfileID != "" {
+		t.Fatalf("onboarding created Swarm model favorites: %+v", profileState)
 	}
-	var actionFavorite, planFavorite *modelprofile.Profile
-	for i := range profileState.Profiles {
-		favorite := &profileState.Profiles[i]
-		switch favorite.Name {
-		case "Swarm Action":
-			actionFavorite = favorite
-		case "Swarm Plan":
-			planFavorite = favorite
-		}
-	}
-	if actionFavorite == nil || actionFavorite.Provider != "openai" || actionFavorite.Model != "snapshot-main-model" || actionFavorite.Thinking != "high" {
-		t.Fatalf("onboarding Action favorite = %+v", actionFavorite)
-	}
-	if planFavorite == nil || planFavorite.Provider != "openai" || planFavorite.Model != "snapshot-plan-model" || planFavorite.Thinking != "xhigh" {
-		t.Fatalf("onboarding Plan favorite = %+v", planFavorite)
-	}
-	if profileState.DefaultProfileID != actionFavorite.ProfileID || !actionFavorite.IsDefault || planFavorite.IsDefault {
-		t.Fatalf("onboarding favorite default = %+v", profileState)
-	}
-	swarmSettings, err := server.swarmProfiles.Get(identity.ContextWithPrincipal(context.Background(), principal))
+	swarmSettings, err := server.swarmModelSettings.Get(identity.ContextWithPrincipal(context.Background(), principal))
 	if err != nil {
 		t.Fatalf("get onboarding Swarm mode settings: %v", err)
 	}
-	if swarmSettings.ActionFavoriteID != actionFavorite.ProfileID || !swarmSettings.PlanEnabled || swarmSettings.PlanFavoriteID != planFavorite.ProfileID {
-		t.Fatalf("onboarding Swarm mode settings = %+v", swarmSettings)
+	if swarmSettings.Action.Provider != "openai" || swarmSettings.Action.Model != "snapshot-main-model" || swarmSettings.Action.Thinking != "high" || swarmSettings.Plan.Provider != "openai" || swarmSettings.Plan.Model != "snapshot-plan-model" || swarmSettings.Plan.Thinking != "xhigh" {
+		t.Fatalf("onboarding Swarm model settings = %+v", swarmSettings)
 	}
 	uiSettings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
@@ -241,8 +209,8 @@ func TestOnboardingProviderCredentialPreservesExistingModelProfileAndDefault(t *
 	if err != nil {
 		t.Fatalf("list profiles: %v", err)
 	}
-	if len(state.Profiles) != 3 || state.DefaultProfileID != existing.ProfileID {
-		t.Fatalf("onboarding favorites/default = %+v, want existing default plus Action and Plan", state)
+	if len(state.Profiles) != 1 || state.DefaultProfileID != existing.ProfileID {
+		t.Fatalf("onboarding favorites/default = %+v, want only existing favorite", state)
 	}
 	preserved := false
 	for _, favorite := range state.Profiles {
@@ -274,15 +242,15 @@ func TestOnboardingProviderDefaultsReuseMatchingActionFavoriteIdempotently(t *te
 	if err != nil {
 		t.Fatalf("list onboarding favorites: %v", err)
 	}
-	if len(state.Profiles) != 2 {
-		t.Fatalf("onboarding favorites = %+v, want reused Action plus Plan", state)
+	if len(state.Profiles) != 1 || state.Profiles[0].ProfileID != existing.ProfileID {
+		t.Fatalf("onboarding changed existing favorites = %+v", state)
 	}
-	settings, err := server.swarmProfiles.Get(ctx)
+	settings, err := server.swarmModelSettings.Get(ctx)
 	if err != nil {
 		t.Fatalf("get onboarding settings: %v", err)
 	}
-	if settings.ActionFavoriteID != existing.ProfileID || !settings.PlanEnabled {
-		t.Fatalf("onboarding settings did not reuse matching Action: %+v", settings)
+	if settings.Action.Model != "snapshot-main-model" || settings.Plan.Model != "snapshot-plan-model" {
+		t.Fatalf("onboarding direct settings = %+v", settings)
 	}
 }
 
@@ -297,15 +265,15 @@ func TestOnboardingProviderCredentialDisablesPlanWithoutDistinctValidRecommendat
 	if err != nil {
 		t.Fatalf("list onboarding favorites: %v", err)
 	}
-	if len(state.Profiles) != 1 || state.Profiles[0].Name != "Swarm Action" || state.Profiles[0].Model != "snapshot-main-model" {
-		t.Fatalf("onboarding Action-only favorites = %+v", state)
+	if len(state.Profiles) != 0 || state.DefaultProfileID != "" {
+		t.Fatalf("onboarding created Action-only favorite = %+v", state)
 	}
-	settings, err := server.swarmProfiles.Get(ctx)
+	settings, err := server.swarmModelSettings.Get(ctx)
 	if err != nil {
 		t.Fatalf("get onboarding Swarm mode settings: %v", err)
 	}
-	if settings.ActionFavoriteID != state.Profiles[0].ProfileID || settings.PlanEnabled || settings.PlanFavoriteID != "" {
-		t.Fatalf("onboarding Action-only settings = %+v", settings)
+	if settings.Action.Model != "snapshot-main-model" || settings.Plan.Model != settings.Action.Model || settings.Plan.Thinking != settings.Action.Thinking {
+		t.Fatalf("onboarding direct Action/Plan settings = %+v", settings)
 	}
 }
 
@@ -377,7 +345,7 @@ func TestOnboardingProviderCredentialRequiresSnapshotRecommendationsAndRollsBack
 	if profileErr != nil || len(profiles.Profiles) != 0 || profiles.DefaultProfileID != "" {
 		t.Fatalf("missing recommendations persisted model profile: %+v err=%v", profiles, profileErr)
 	}
-	if _, settingsErr := server.swarmProfiles.Get(identity.ContextWithPrincipal(context.Background(), principal)); !errors.Is(settingsErr, modelprofile.ErrSwarmModeSettingsNotFound) {
+	if _, settingsErr := server.swarmModelSettings.Get(identity.ContextWithPrincipal(context.Background(), principal)); !errors.Is(settingsErr, modelprofile.ErrSwarmModeSettingsNotFound) {
 		t.Fatalf("missing recommendations persisted Swarm settings: %v", settingsErr)
 	}
 }
@@ -484,7 +452,7 @@ func newOnboardingProviderCredentialTestServerWithCatalogRecords(t *testing.T, a
 	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, nil, eventLog, hub)
 	favorites := pebblestore.NewModelProfileStore(store)
 	server.SetModelProfileService(modelprofile.NewService(favorites))
-	server.SetSwarmProfileService(modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), favorites))
+	server.SetSwarmModelSettingsService(modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store)))
 	server.uiSettings = uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_onboarding_test", AccountScopeID: "acct_onboarding_test", AccountScopeSource: identity.AccountScopeSourceServerState}
 	return server, principal

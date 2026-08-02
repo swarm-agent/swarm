@@ -173,12 +173,12 @@ func installSessionsV3FlatSwarmModeSettings(t *testing.T, server *Server, planEn
 			t.Fatalf("put flat favorite %q: %v", favorite.ProfileID, err)
 		}
 	}
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), favorites)
-	server.SetSwarmProfileService(swarmProfiles)
+	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
+	server.SetSwarmModelSettingsService(swarmProfiles)
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
-	input := modelprofile.SwarmSettingsInput{ActionFavoriteID: action.ProfileID, PlanEnabled: planEnabled}
+	input := modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}, Plan: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}}
 	if planEnabled {
-		input.PlanFavoriteID = plan.ProfileID
+		input.Plan = pebblestore.ModelProfileSelection{Provider: plan.Provider, Model: plan.Model, Thinking: plan.Thinking}
 	}
 	if _, err := swarmProfiles.Put(ctx, input); err != nil {
 		t.Fatalf("put flat Swarm mode settings: %v", err)

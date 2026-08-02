@@ -942,9 +942,15 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 			policy.Source = "saved_model_profile"
 		} else if session.ModelProfile.Source == pebblestore.SessionModelProfileSourceTemporary {
 			policy.Source = "temporary_model_profile"
+		} else if session.ModelProfile.Source == pebblestore.SessionModelProfileSourceSwarmSettings {
+			policy.Source = "swarm_settings"
 		}
 		policy.Locked = true
-		policy.Reason = "Session model profile controls the model; clear or replace the session profile to change it."
+		if session.ModelProfile.Source == pebblestore.SessionModelProfileSourceSwarmSettings {
+			policy.Reason = "Swarm Action and Plan settings were captured when the session was created."
+		} else {
+			policy.Reason = "Session model profile controls the model; clear or replace the session profile to change it."
+		}
 		if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) {
 			policy.ProfileID = strings.TrimSpace(session.ModelProfile.PlanFavoriteID)
 			policy.ProfileName = strings.TrimSpace(session.ModelProfile.PlanFavoriteName)

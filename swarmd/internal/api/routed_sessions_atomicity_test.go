@@ -306,20 +306,20 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	if err != nil {
 		t.Fatalf("create Action favorite: %v", err)
 	}
-	planFavoriteID := ""
+	planSelection := pebblestore.ModelProfileSelection{Provider: actionFavorite.Provider, Model: actionFavorite.Model, Thinking: actionFavorite.Thinking}
 	if planEnabled {
 		planFavorite, err := favoriteService.Create(authorityContext, modelprofile.Input{Name: "Plan", Provider: "recording", Model: "plan-model", Thinking: "high"})
 		if err != nil {
 			t.Fatalf("create Plan favorite: %v", err)
 		}
-		planFavoriteID = planFavorite.ProfileID
+		planSelection = pebblestore.ModelProfileSelection{Provider: planFavorite.Provider, Model: planFavorite.Model, Thinking: planFavorite.Thinking}
 	}
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store), favoriteStore)
-	if _, err := swarmProfiles.Put(authorityContext, modelprofile.SwarmSettingsInput{ActionFavoriteID: actionFavorite.ProfileID, PlanEnabled: planEnabled, PlanFavoriteID: planFavoriteID}); err != nil {
+	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
+	if _, err := swarmProfiles.Put(authorityContext, modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: actionFavorite.Provider, Model: actionFavorite.Model, Thinking: actionFavorite.Thinking}, Plan: planSelection}); err != nil {
 		t.Fatalf("configure Swarm model settings: %v", err)
 	}
 	server.SetModelProfileService(favoriteService)
-	server.SetSwarmProfileService(swarmProfiles)
+	server.SetSwarmModelSettingsService(swarmProfiles)
 	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{Provider: "recording", Model: "router-model", Thinking: "medium"}}}); err != nil {
 		t.Fatalf("configure Router model: %v", err)

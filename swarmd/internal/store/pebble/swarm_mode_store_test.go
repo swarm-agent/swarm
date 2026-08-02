@@ -6,155 +6,67 @@ import (
 	"testing"
 )
 
-func TestSwarmModeSettingsStoreMissingAndAccountIsolation(t *testing.T) {
+func TestSwarmModeSettingsStoreRoundTripsDirectSelections(t *testing.T) {
 	store := openSwarmModeSettingsTestStore(t)
 	settings := NewSwarmModeSettingsStore(store)
-
-	if record, found, err := settings.GetForAccount("account-a"); err != nil || found {
-		t.Fatalf("missing GetForAccount() = (%+v, %v, %v), want zero, false, nil", record, found, err)
+	want := SwarmModeSettingsRecord{
+		AccountScopeID: "account-a",
+		Action: ModelProfileSelection{Provider: "Codex", Model: "action", Thinking: "high", ServiceTier: "fast", ContextMode: "full"},
+		Plan: ModelProfileSelection{Provider: "OpenAI", Model: "plan", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "compact"},
+		UpdatedAt: 101,
 	}
-
-	wantA := SwarmModeSettingsRecord{
-		AccountScopeID:   "account-a",
-		ActionFavoriteID: "favorite-action-a",
-		UpdatedAt:        101,
-	}
-	gotA, err := settings.PutForAccount(wantA)
+	stored, err := settings.PutForAccount(want)
 	if err != nil {
-		t.Fatalf("PutForAccount(account-a): %v", err)
+		t.Fatalf("PutForAccount(): %v", err)
 	}
-	if gotA != wantA {
-		t.Fatalf("PutForAccount(account-a) = %+v, want %+v", gotA, wantA)
+	want.Action.Provider, want.Plan.Provider = "codex", "openai"
+	if stored != want {
+		t.Fatalf("PutForAccount() = %+v, want %+v", stored, want)
 	}
-
-	if record, found, err := settings.GetForAccount("account-b"); err != nil || found {
-		t.Fatalf("GetForAccount(account-b) = (%+v, %v, %v), want zero, false, nil", record, found, err)
+	got, found, err := settings.GetForAccount("account-a")
+	if err != nil || !found || got != want {
+		t.Fatalf("GetForAccount() = (%+v, %v, %v), want %+v, true, nil", got, found, err, want)
 	}
-	gotA, found, err := settings.GetForAccount("account-a")
-	if err != nil || !found {
-		t.Fatalf("GetForAccount(account-a) found = %v, err = %v", found, err)
-	}
-	if gotA != wantA {
-		t.Fatalf("GetForAccount(account-a) = %+v, want %+v", gotA, wantA)
+	if _, found, err := settings.GetForAccount("account-b"); err != nil || found {
+		t.Fatalf("isolated GetForAccount() found=%v err=%v", found, err)
 	}
 }
 
-func TestSwarmModeSettingsStoreRoundTripsActionAndOptionalPlan(t *testing.T) {
+func TestSwarmModeSettingsStoreMigratesLegacyFavoriteReferences(t *testing.T) {
 	store := openSwarmModeSettingsTestStore(t)
-	settings := NewSwarmModeSettingsStore(store)
-
-	tests := []struct {
-		name   string
-		record SwarmModeSettingsRecord
-	}{
-		{
-			name: "action only",
-			record: SwarmModeSettingsRecord{
-				AccountScopeID:   "account-action",
-				ActionFavoriteID: "favorite-action",
-				PlanEnabled:      false,
-				UpdatedAt:        201,
-			},
-		},
-		{
-			name: "action and plan",
-			record: SwarmModeSettingsRecord{
-				AccountScopeID:   "account-plan",
-				ActionFavoriteID: "favorite-action",
-				PlanEnabled:      true,
-				PlanFavoriteID:   "favorite-plan",
-				UpdatedAt:        202,
-			},
-		},
+	for _, record := range []ModelProfileRecord{
+		{ProfileID: "action", AccountScopeID: "account", Name: "Action", Provider: "codex", Model: "action-model", Thinking: "high"},
+		{ProfileID: "plan", AccountScopeID: "account", Name: "Plan", Provider: "openai", Model: "plan-model", Thinking: "xhigh"},
+	} {
+		if _, err := NewModelProfileStore(store).PutForAccount(record); err != nil {
+			t.Fatalf("put favorite: %v", err)
+		}
 	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			stored, err := settings.PutForAccount(test.record)
-			if err != nil {
-				t.Fatalf("PutForAccount(): %v", err)
-			}
-			if stored != test.record {
-				t.Fatalf("PutForAccount() = %+v, want %+v", stored, test.record)
-			}
-
-			got, found, err := settings.GetForAccount(test.record.AccountScopeID)
-			if err != nil || !found {
-				t.Fatalf("GetForAccount() found = %v, err = %v", found, err)
-			}
-			if got != test.record {
-				t.Fatalf("GetForAccount() = %+v, want %+v", got, test.record)
-			}
-		})
+	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account"), legacySwarmModeSettingsRecord{AccountScopeID: "account", ActionFavoriteID: "action", PlanEnabled: true, PlanFavoriteID: "plan", UpdatedAt: 7}); err != nil {
+		t.Fatalf("put legacy settings: %v", err)
+	}
+	got, found, err := NewSwarmModeSettingsStore(store).GetForAccount("account")
+	if err != nil || !found || got.Action.Model != "action-model" || got.Plan.Model != "plan-model" || got.UpdatedAt != 7 {
+		t.Fatalf("migrated settings = (%+v, %v, %v)", got, found, err)
 	}
 }
 
-func TestSwarmModeSettingsStoreRejectsInvalidShapes(t *testing.T) {
+func TestSwarmModeSettingsStoreRejectsMissingSelections(t *testing.T) {
 	store := openSwarmModeSettingsTestStore(t)
 	settings := NewSwarmModeSettingsStore(store)
-
+	selection := ModelProfileSelection{Provider: "codex", Model: "gpt", Thinking: "high"}
 	tests := []struct {
-		name   string
 		record SwarmModeSettingsRecord
 		want   error
 	}{
-		{
-			name: "missing account",
-			record: SwarmModeSettingsRecord{
-				ActionFavoriteID: "favorite-action",
-			},
-			want: ErrSwarmModeAccountScopeIDRequired,
-		},
-		{
-			name: "missing action favorite",
-			record: SwarmModeSettingsRecord{
-				AccountScopeID: "account-a",
-			},
-			want: ErrSwarmModeActionFavoriteIDRequired,
-		},
-		{
-			name: "enabled plan missing favorite",
-			record: SwarmModeSettingsRecord{
-				AccountScopeID:   "account-a",
-				ActionFavoriteID: "favorite-action",
-				PlanEnabled:      true,
-			},
-			want: ErrSwarmModePlanFavoriteIDRequired,
-		},
-		{
-			name: "disabled plan has favorite",
-			record: SwarmModeSettingsRecord{
-				AccountScopeID:   "account-a",
-				ActionFavoriteID: "favorite-action",
-				PlanEnabled:      false,
-				PlanFavoriteID:   "favorite-plan",
-			},
-			want: ErrSwarmModePlanFavoriteIDUnexpected,
-		},
+		{record: SwarmModeSettingsRecord{Action: selection, Plan: selection}, want: ErrSwarmModeAccountScopeIDRequired},
+		{record: SwarmModeSettingsRecord{AccountScopeID: "account", Plan: selection}, want: ErrSwarmModeActionRequired},
+		{record: SwarmModeSettingsRecord{AccountScopeID: "account", Action: selection}, want: ErrSwarmModePlanRequired},
 	}
-
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := settings.PutForAccount(test.record); !errors.Is(err, test.want) {
-				t.Fatalf("PutForAccount() error = %v, want %v", err, test.want)
-			}
-		})
-	}
-}
-
-func TestSwarmModeSettingsStoreValidatesAccountIdentityOnRead(t *testing.T) {
-	store := openSwarmModeSettingsTestStore(t)
-	settings := NewSwarmModeSettingsStore(store)
-
-	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account-a"), SwarmModeSettingsRecord{
-		AccountScopeID:   "account-b",
-		ActionFavoriteID: "favorite-action",
-	}); err != nil {
-		t.Fatalf("seed mismatched record: %v", err)
-	}
-
-	if _, found, err := settings.GetForAccount("account-a"); !errors.Is(err, ErrSwarmModeAccountScopeIDMismatch) || found {
-		t.Fatalf("GetForAccount() found = %v, error = %v, want false and %v", found, err, ErrSwarmModeAccountScopeIDMismatch)
+		if _, err := settings.PutForAccount(test.record); !errors.Is(err, test.want) {
+			t.Fatalf("PutForAccount(%+v) error = %v, want %v", test.record, err, test.want)
+		}
 	}
 }
 
@@ -164,10 +76,6 @@ func openSwarmModeSettingsTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Errorf("close store: %v", err)
-		}
-	})
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }

@@ -97,9 +97,15 @@ func ResolveModeTransition(session pebblestore.SessionSnapshot, activeProfile pe
 			policy.Source = "saved_model_profile"
 		case pebblestore.SessionModelProfileSourceTemporary:
 			policy.Source = "temporary_model_profile"
+		case pebblestore.SessionModelProfileSourceSwarmSettings:
+			policy.Source = "swarm_settings"
 		}
 		policy.Locked = true
-		policy.Reason = "Session model profile controls the model; clear or replace the session profile to change it."
+		if session.ModelProfile.Source == pebblestore.SessionModelProfileSourceSwarmSettings {
+			policy.Reason = "Swarm Action and Plan settings were captured when the session was created."
+		} else {
+			policy.Reason = "Session model profile controls the model; clear or replace the session profile to change it."
+		}
 		policy.ProfileSource = strings.TrimSpace(session.ModelProfile.Source)
 		policy.ProfileMode = targetMode
 		if targetMode == sessionruntime.ModePlan {

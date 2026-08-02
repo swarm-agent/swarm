@@ -106,14 +106,14 @@ func TestRunModelProfileFlatMigrationRewritesSingleAndSplitAccounts(t *testing.T
 	if err != nil || !found {
 		t.Fatalf("get single mode settings: found=%v err=%v", found, err)
 	}
-	if want := (SwarmModeSettingsRecord{AccountScopeID: single.AccountScopeID, ActionFavoriteID: "solo", UpdatedAt: 20}); singleMode != want {
+	if want := (SwarmModeSettingsRecord{AccountScopeID: single.AccountScopeID, Action: ModelProfileSelection{Provider: "codex", Model: "single-model", Thinking: "high", ServiceTier: "fast", ContextMode: "full"}, Plan: ModelProfileSelection{Provider: "codex", Model: "single-model", Thinking: "high", ServiceTier: "fast", ContextMode: "full"}, UpdatedAt: 20}); singleMode != want {
 		t.Fatalf("single mode settings = %+v, want %+v", singleMode, want)
 	}
 	splitMode, found, err := modeStore.GetForAccount(split.AccountScopeID)
 	if err != nil || !found {
 		t.Fatalf("get split mode settings: found=%v err=%v", found, err)
 	}
-	if want := (SwarmModeSettingsRecord{AccountScopeID: split.AccountScopeID, ActionFavoriteID: "standard_action", PlanEnabled: true, PlanFavoriteID: "standard_plan", UpdatedAt: 40}); splitMode != want {
+	if want := (SwarmModeSettingsRecord{AccountScopeID: split.AccountScopeID, Action: ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"}, Plan: ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "full"}, UpdatedAt: 40}); splitMode != want {
 		t.Fatalf("split mode settings = %+v, want %+v", splitMode, want)
 	}
 
