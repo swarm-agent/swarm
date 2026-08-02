@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, LoaderCircle, Square, X, Zap } from 'lucide-react'
 import { cancelWorkspaceActionRun, fetchWorkspaceActionRun, startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../../workspaces/actions/types'
 
 interface DesktopWorkspaceActionPanelProps {
   workspacePath: string
   action: WorkspaceAction
+  autoLaunch?: boolean
   onClose: () => void
 }
 
@@ -16,13 +17,14 @@ function invocationPreview(action: WorkspaceAction): string {
   return parts.join(' ')
 }
 
-export function DesktopWorkspaceActionPanel({ workspacePath, action, onClose }: DesktopWorkspaceActionPanelProps) {
+export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch = false, onClose }: DesktopWorkspaceActionPanelProps) {
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue])))
   const [run, setRun] = useState<WorkspaceActionRun | null>(null)
   const [error, setError] = useState('')
   const [launching, setLaunching] = useState(false)
   const [successNotice, setSuccessNotice] = useState('')
   const outputRef = useRef<HTMLPreElement | null>(null)
+  const autoLaunchStartedRef = useRef(false)
   const missingRequired = useMemo(() => action.inputs.some((input) => input.required && !(values[input.id] ?? '').trim()), [action.inputs, values])
 
   useEffect(() => {
@@ -55,7 +57,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, onClose }: 
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
   }, [run?.output])
 
-  const launch = async () => {
+  const launch = useCallback(async () => {
     setLaunching(true)
     setError('')
     try {
@@ -65,7 +67,13 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, onClose }: 
     } finally {
       setLaunching(false)
     }
-  }
+  }, [action.id, values, workspacePath])
+
+  useEffect(() => {
+    if (!autoLaunch || action.inputs.length > 0 || autoLaunchStartedRef.current) return
+    autoLaunchStartedRef.current = true
+    void launch()
+  }, [action.inputs.length, autoLaunch, launch])
 
   const stop = async () => {
     if (!run) return

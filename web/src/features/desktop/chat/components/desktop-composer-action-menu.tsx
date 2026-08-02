@@ -16,7 +16,7 @@ interface DesktopComposerActionMenuProps {
   onCompact?: () => void
   compactDisabled?: boolean
   workspacePath?: string
-  onActionSelect?: (action: WorkspaceAction) => void
+  onActionSelect?: (action: WorkspaceAction, confirmedLaunch: boolean) => void
   onSkillSelect?: (skill: WorkspaceSkill) => void
 }
 
@@ -59,6 +59,7 @@ export function DesktopComposerActionMenu({
   const [deletingItem, setDeletingItem] = useState('')
   const [deleteError, setDeleteError] = useState('')
   const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion | null>(null)
+  const [armedActionId, setArmedActionId] = useState('')
   const [submenuMinHeight, setSubmenuMinHeight] = useState(0)
 
   const closeMenu = useCallback(() => {
@@ -66,6 +67,7 @@ export function DesktopComposerActionMenu({
     setView('root')
     setDeleteError('')
     setPendingDeletion(null)
+    setArmedActionId('')
     setSubmenuMinHeight(0)
   }, [])
 
@@ -96,6 +98,10 @@ export function DesktopComposerActionMenu({
   useEffect(() => {
     if (disabled) closeMenu()
   }, [closeMenu, disabled])
+
+  useEffect(() => {
+    setArmedActionId('')
+  }, [workspacePath])
 
   useEffect(() => {
     if (!open || view !== 'actions' || !workspacePath.trim()) return
@@ -144,6 +150,7 @@ export function DesktopComposerActionMenu({
     setSubmenuMinHeight(nextView === 'skills' || nextView === 'actions' ? (menuRef.current?.getBoundingClientRect().height ?? 0) : 0)
     setDeleteError('')
     setPendingDeletion(null)
+    setArmedActionId('')
     setView(nextView)
   }
 
@@ -151,6 +158,7 @@ export function DesktopComposerActionMenu({
     setView('root')
     setDeleteError('')
     setPendingDeletion(null)
+    setArmedActionId('')
     setSubmenuMinHeight(0)
   }
 
@@ -210,7 +218,26 @@ export function DesktopComposerActionMenu({
   const requestDelete = (deletion: PendingDeletion) => {
     if (deletionPendingRef.current) return
     setDeleteError('')
+    setArmedActionId('')
     setPendingDeletion(deletion)
+  }
+
+  const selectAction = (action: WorkspaceAction) => {
+    setDeleteError('')
+    setPendingDeletion(null)
+    if (action.inputs.length > 0) {
+      setArmedActionId('')
+      closeMenu()
+      onActionSelect?.(action, false)
+      return
+    }
+    if (armedActionId !== action.id) {
+      setArmedActionId(action.id)
+      return
+    }
+    setArmedActionId('')
+    closeMenu()
+    onActionSelect?.(action, true)
   }
 
   const confirmDelete = async () => {
@@ -468,11 +495,12 @@ export function DesktopComposerActionMenu({
                 const pendingKey = `action:${action.id}`
                 const deleting = deletingItem === pendingKey
                 const confirming = pendingDeletion?.kind === 'action' && pendingDeletion.item.id === action.id
+                const armed = armedActionId === action.id
                 return (
                   <div key={action.id}>
                     <div className="group relative flex items-center rounded-lg hover:bg-[var(--app-surface-hover)] focus-within:bg-[var(--app-surface-hover)]">
-                      <button type="button" role="menuitem" onClick={() => { closeMenu(); onActionSelect?.(action) }} disabled={Boolean(deletingItem)} className="flex min-w-0 flex-1 items-center rounded-lg py-2.5 pl-2.5 pr-10 text-left text-sm text-[var(--app-text)] outline-none disabled:cursor-not-allowed disabled:opacity-60">
-                        <span className="min-w-0 flex-1 truncate font-semibold">{action.name}</span>
+                      <button type="button" role="menuitem" onClick={() => selectAction(action)} disabled={Boolean(deletingItem)} aria-label={armed ? `Run ${action.name}?` : action.name} className="flex min-w-0 flex-1 items-center rounded-lg py-2.5 pl-2.5 pr-10 text-left text-sm text-[var(--app-text)] outline-none disabled:cursor-not-allowed disabled:opacity-60">
+                        <span className="min-w-0 flex-1 truncate font-semibold">{armed ? 'Run?' : action.name}</span>
                       </button>
                       <button type="button" aria-label={`Delete Action ${action.name}`} title="Delete Action" disabled={Boolean(deletingItem)} onClick={() => requestDelete({ kind: 'action', item: action })} className="absolute right-1.5 grid h-7 w-7 place-items-center rounded-md text-[var(--app-text-subtle)] opacity-0 transition-opacity hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50">
                         {deleting ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}

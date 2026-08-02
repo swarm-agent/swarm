@@ -70,6 +70,30 @@ test('Desktop V3 composer opens task actions from a borderless plus trigger and 
   assert.doesNotMatch(actions, /createPortal/)
 })
 
+test('Desktop workspace Actions require in-place confirmation before inputless launches', async () => {
+  const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const menu = await readFile(new URL('./desktop-composer-action-menu.tsx', import.meta.url), 'utf8')
+  const panel = await readFile(new URL('./desktop-workspace-action-panel.tsx', import.meta.url), 'utf8')
+
+  const selection = menu.match(/const selectAction[\s\S]*?(?=\n  const confirmDelete)/)?.[0] ?? ''
+  assert.match(selection, /if \(action\.inputs\.length > 0\)[\s\S]*onActionSelect\?\.\(action, false\)/)
+  assert.match(selection, /if \(armedActionId !== action\.id\)[\s\S]*setArmedActionId\(action\.id\)[\s\S]*return/)
+  assert.match(selection, /closeMenu\(\)[\s\S]*onActionSelect\?\.\(action, true\)/)
+  assert.match(menu, /onClick=\{\(\) => selectAction\(action\)\}/)
+  assert.match(menu, /\{armed \? 'Run\?' : action\.name\}/)
+  assert.match(menu, /const requestDelete[\s\S]*setArmedActionId\(''\)[\s\S]*setPendingDeletion\(deletion\)/)
+  assert.match(menu, /const closeMenu[\s\S]*setArmedActionId\(''\)/)
+  assert.match(menu, /const showRootView[\s\S]*setArmedActionId\(''\)/)
+  assert.doesNotMatch(selection, /startWorkspaceAction/)
+
+  assert.match(composer, /onActionSelect=\{handleWorkspaceActionSelect\}/)
+  assert.match(composer, /autoLaunch=\{workspaceActionAutoLaunch\}/)
+  assert.match(composer, /key=\{`\$\{selectedWorkspaceAction\.id\}:\$\{workspaceActionLaunchToken\}`\}/)
+  assert.match(panel, /if \(!autoLaunch \|\| action\.inputs\.length > 0 \|\| autoLaunchStartedRef\.current\) return/)
+  assert.match(panel, /autoLaunchStartedRef\.current = true\s+void launch\(\)/)
+  assert.equal((panel.match(/startWorkspaceAction\(/g) ?? []).length, 1)
+})
+
 test('Desktop V3 composer warnings and errors can be dismissed without a refresh', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
 

@@ -323,6 +323,8 @@ export function DesktopV3AgenticComposer({
   const [fileDropZone, setFileDropZone] = useState<HTMLElement | null>(null)
   const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
   const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
+  const [workspaceActionAutoLaunch, setWorkspaceActionAutoLaunch] = useState(false)
+  const [workspaceActionLaunchToken, setWorkspaceActionLaunchToken] = useState(0)
   const [selectedWorkspaceSkill, setSelectedWorkspaceSkill] = useState<WorkspaceSkill | null>(null)
 
   const effectiveMediaCapability = mediaCapability?.status === 'available' && mediaCapability.capabilities.length > 0
@@ -561,6 +563,7 @@ export function DesktopV3AgenticComposer({
     if (!routedNewSession || !routedComposerSnapshot) return
     routedSubmissionRef.current = false
     setSelectedWorkspaceAction((routedComposerSnapshot.selectedAction as WorkspaceAction | null) ?? null)
+    setWorkspaceActionAutoLaunch(false)
     setSelectedWorkspaceSkill((routedComposerSnapshot.selectedSkill as WorkspaceSkill | null) ?? null)
   }, [routedComposerSnapshot, routedNewSession])
 
@@ -616,6 +619,17 @@ export function DesktopV3AgenticComposer({
       resizeTextareaElement(textarea)
     })
   }, [onRoutedWorktreeRequestedChange, resizeTextareaElement, routedNewSession, stopDictation])
+
+  const handleWorkspaceActionSelect = useCallback((action: WorkspaceAction, confirmedLaunch: boolean) => {
+    setSelectedWorkspaceAction(action)
+    setWorkspaceActionAutoLaunch(confirmedLaunch)
+    setWorkspaceActionLaunchToken((current) => current + 1)
+  }, [])
+
+  const closeWorkspaceActionPanel = useCallback(() => {
+    setSelectedWorkspaceAction(null)
+    setWorkspaceActionAutoLaunch(false)
+  }, [])
 
   const handleSubmitClick = useCallback(async () => {
     if (uploadingAttachment) {
@@ -1035,7 +1049,7 @@ export function DesktopV3AgenticComposer({
       ) : null}
       <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
         {selectedWorkspaceAction && workspacePath.trim() ? (
-          <DesktopWorkspaceActionPanel key={selectedWorkspaceAction.id} workspacePath={workspacePath} action={selectedWorkspaceAction} onClose={() => setSelectedWorkspaceAction(null)} />
+          <DesktopWorkspaceActionPanel key={`${selectedWorkspaceAction.id}:${workspaceActionLaunchToken}`} workspacePath={workspacePath} action={selectedWorkspaceAction} autoLaunch={workspaceActionAutoLaunch} onClose={closeWorkspaceActionPanel} />
         ) : null}
         {visibleComposerError ? (
           <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-danger)]" role="alert">
@@ -1177,7 +1191,7 @@ export function DesktopV3AgenticComposer({
               onCompact={onCompact ? () => { void onCompact(draft) } : undefined}
               compactDisabled={compactDisabled || !onCompact}
               workspacePath={workspacePath}
-              onActionSelect={setSelectedWorkspaceAction}
+              onActionSelect={handleWorkspaceActionSelect}
               onSkillSelect={setSelectedWorkspaceSkill}
             />
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
