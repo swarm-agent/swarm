@@ -42,15 +42,6 @@ type routedSessionStartRequest struct {
 	StagingIDs      []string                    `json:"staging_ids,omitempty"`
 }
 
-func routedSessionWorktreeRequested(metadata map[string]any) (bool, bool) {
-	value, ok := metadata["managed_worktree_requested"]
-	if !ok {
-		return false, false
-	}
-	requested, ok := value.(bool)
-	return requested, ok
-}
-
 type routedSessionStartResult struct {
 	Session    pebblestore.SessionSnapshot
 	Projection sessionruntime.SessionProjection
@@ -271,9 +262,18 @@ func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.Create
 			return "", identity.ErrPrincipalRequired
 		}
 	}
+	config, cfgErr := s.worktrees.GetConfigForPrincipal(principal, createOptions.WorkspacePath)
+	if cfgErr != nil {
+		return "", cfgErr
+	}
 	switch requestedMode {
 	case "", runruntime.RunWorktreeModeInherit:
-		return "", nil
+		if !config.Enabled {
+			return "", nil
+		}
+		return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
+			return s.worktrees.AllocateDetachedWorkspaceForPrincipal(principal, createOptions.WorkspacePath, sessionID)
+		})
 	case runruntime.RunWorktreeModeOff:
 		return "", nil
 	case runruntime.RunWorktreeModeOn:
@@ -418,8 +418,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	worktreeRequested, _ := routedSessionWorktreeRequested(req.Metadata)
-	decision, err := s.routeSessionOnce(r.Context(), principal, req.Input, worktreeRequested)
+	decision, err := s.routeSessionOnce(r.Context(), principal, req.Input)
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return
@@ -463,7 +462,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	candidate.Metadata = createRequest.Metadata
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
-	candidate.Metadata["routed_worktree_requested"] = worktreeRequested
+	candidate.Metadata["routed_worktree_requested"] = decision.Result.Worktree
 
 	var worktreeAllocation worktreeruntime.Allocation
 	worktreeCommitted := false
@@ -590,6 +589,9 @@ func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, can
 	if err != nil {
 		return worktreeruntime.Allocation{}, "", fmt.Errorf("read routed worktree config: %w", err)
 	}
+	if !config.Enabled {
+		return worktreeruntime.Allocation{}, "", errors.New("Router selected a worktree but managed worktrees are disabled for the routed workspace")
+	}
 	branchName, err := worktreeruntime.CanonicalizeRequestedWorktreeName(routerName, config.BranchName)
 	if err != nil {
 		return worktreeruntime.Allocation{}, "", err
@@ -678,8 +680,8 @@ func normalizeRoutedSessionMedia(req routedSessionStartRequest) ([]routedSession
 func routedSessionRequestHash(req routedSessionStartRequest, clientRequestID string, media []routedSessionMediaRequest) (string, error) {
 	raw, err := json.Marshal(struct {
 		Input, ClientRequestID, AgentName string
-		Metadata                          map[string]any
-		Media                             []routedSessionMediaRequest
+		Metadata map[string]any
+		Media []routedSessionMediaRequest
 	}{req.Input, clientRequestID, req.AgentName, cloneSessionsV3Metadata(req.Metadata), media})
 	if err != nil {
 		return "", err

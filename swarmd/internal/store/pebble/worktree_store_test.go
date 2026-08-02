@@ -17,22 +17,22 @@ func newTestWorktreeStore(t *testing.T) *WorktreeStore {
 
 func TestWorktreeStoreAccountConfigIsolation(t *testing.T) {
 	worktrees := newTestWorktreeStore(t)
-	if _, err := worktrees.SetConfigForAccount("account-a", "/tmp/ws", false, "main", "agent-a"); err != nil {
+	if _, err := worktrees.SetConfigForAccount("account-a", "/tmp/ws", true, false, "main", "agent-a"); err != nil {
 		t.Fatalf("set config A: %v", err)
 	}
-	if _, err := worktrees.SetConfigForAccount("account-b", "/tmp/ws", true, "", "agent-b"); err != nil {
+	if _, err := worktrees.SetConfigForAccount("account-b", "/tmp/ws", false, true, "", "agent-b"); err != nil {
 		t.Fatalf("set config B: %v", err)
 	}
 	cfgA, ok, err := worktrees.GetConfigForAccount("account-a", "/tmp/ws")
-	if err != nil || !ok || cfgA.AccountScopeID != "account-a" || cfgA.BranchName != "agent-a" || cfgA.UseCurrentBranch == nil || *cfgA.UseCurrentBranch {
+	if err != nil || !ok || !cfgA.Enabled || cfgA.AccountScopeID != "account-a" || cfgA.BranchName != "agent-a" {
 		t.Fatalf("config A = %+v ok=%v err=%v", cfgA, ok, err)
 	}
 	cfgB, ok, err := worktrees.GetConfigForAccount("account-b", "/tmp/ws")
-	if err != nil || !ok || cfgB.AccountScopeID != "account-b" || cfgB.BranchName != "agent-b" || cfgB.UseCurrentBranch == nil || !*cfgB.UseCurrentBranch {
+	if err != nil || !ok || cfgB.Enabled || cfgB.AccountScopeID != "account-b" || cfgB.BranchName != "agent-b" {
 		t.Fatalf("config B = %+v ok=%v err=%v", cfgB, ok, err)
 	}
 	cfgMissing, ok, err := worktrees.GetConfigForAccount("account-a", "/tmp/other")
-	if err != nil || ok || cfgMissing.UseCurrentBranch == nil || !*cfgMissing.UseCurrentBranch {
+	if err != nil || ok || cfgMissing.Enabled {
 		t.Fatalf("missing config = %+v ok=%v err=%v", cfgMissing, ok, err)
 	}
 	if _, _, err := worktrees.GetConfig("/tmp/ws"); err == nil {

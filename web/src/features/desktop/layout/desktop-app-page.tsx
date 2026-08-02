@@ -1172,6 +1172,7 @@ function buildTemporaryWorkspaceEntry(path: string, workspaceName: string): Work
     updatedAt: 0,
     lastSelectedAt: 0,
     active: true,
+    worktreeEnabled: false,
     gitBranch: '',
     gitHasGit: false,
     gitClean: false,

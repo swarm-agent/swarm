@@ -37,6 +37,7 @@ interface SavedWorkspaceSectionProps
     | 'onOpenWorkspace'
     | 'onEditWorkspace'
     | 'onDeleteWorkspace'
+    | 'onToggleWorktree'
     | 'onMoveWorkspaceToIndex'
     | 'onDraggingWorkspaceChange'
   > {
@@ -61,6 +62,7 @@ export function SavedWorkspaceSection({
   onOpenWorkspace,
   onEditWorkspace,
   onDeleteWorkspace,
+  onToggleWorktree,
   onMoveWorkspaceToIndex,
   onDraggingWorkspaceChange,
   title = 'Saved workspaces',
@@ -108,6 +110,7 @@ export function SavedWorkspaceSection({
               onOpen={onOpenWorkspace}
               onEdit={onEditWorkspace}
               onDelete={onDeleteWorkspace}
+              onToggleWorktree={onToggleWorktree}
               onMoveToIndex={onMoveWorkspaceToIndex}
               onDraggingChange={onDraggingWorkspaceChange}
               density={density}

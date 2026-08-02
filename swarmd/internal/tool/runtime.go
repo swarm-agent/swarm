@@ -6631,6 +6631,7 @@ func (r *Runtime) manageWorktreeResolveWorkspacePath(scope WorkspaceScope, reque
 func (r *Runtime) manageWorktreeConfigMap(cfg manageWorktreeConfig) map[string]any {
 	return map[string]any{
 		"workspace_path":     strings.TrimSpace(cfg.WorkspacePath),
+		"enabled":            cfg.Enabled,
 		"use_current_branch": cfg.UseCurrentBranch,
 		"base_branch":        strings.TrimSpace(cfg.BaseBranch),
 		"branch_name":        normalizeManageWorktreeBranchPrefix(strings.TrimSpace(cfg.BranchName)),

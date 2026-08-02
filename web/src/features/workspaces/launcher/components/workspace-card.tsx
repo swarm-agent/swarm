@@ -13,6 +13,7 @@ import {
 import { formatWorkspaceDirectories } from '../services/workspace-format'
 import { createWorkspaceAccentStyle } from '../services/workspace-theme'
 import type { WorkspaceEntry } from '../types/workspace'
+import { WorkspaceWorktreeToggle } from './workspace-worktree-toggle'
 import { WorkspaceDefinitionStatus } from './workspace-definition-status'
 
 interface WorkspaceCardProps {
@@ -24,6 +25,7 @@ interface WorkspaceCardProps {
   onOpen: (path: string) => void
   onEdit?: (path: string) => void
   onDelete?: (path: string) => void
+  onToggleWorktree?: (path: string, enabled: boolean) => void
   onMoveToIndex?: (path: string, index: number) => void
   onDraggingChange?: (path: string | null) => void
   availableSwarmTargets?: SwarmTarget[]
@@ -39,6 +41,7 @@ export function WorkspaceCard({
   onOpen,
   onEdit,
   onDelete,
+  onToggleWorktree,
   onMoveToIndex,
   onDraggingChange,
   availableSwarmTargets = [],
@@ -116,6 +119,14 @@ export function WorkspaceCard({
             {directories[0] ?? workspace.path}
           </span>
         </div>
+        {onToggleWorktree ? (
+          <WorkspaceWorktreeToggle
+            className="shrink-0"
+            enabled={workspace.worktreeEnabled}
+            busy={busy}
+            onToggle={() => onToggleWorktree(workspace.path, !workspace.worktreeEnabled)}
+          />
+        ) : null}
       </div>
 
       <WorkspaceDefinitionStatus workspace={workspace} compact={density === 'compact'} />

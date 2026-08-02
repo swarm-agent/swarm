@@ -14,7 +14,8 @@ function requireBoolean(value: boolean, context: string): boolean {
   return value
 }
 
-export function createDesktopRoutedWorktreeIntent(requested = false): DesktopRoutedWorktreeIntent {
+/** Managed worktrees are the app default; callers pass false only for an explicit current-workspace override. */
+export function createDesktopRoutedWorktreeIntent(requested = true): DesktopRoutedWorktreeIntent {
   return { requested: requireBoolean(requested, 'Desktop routed worktree intent') }
 }
 

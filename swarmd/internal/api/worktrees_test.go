@@ -162,13 +162,13 @@ func (f *fakeWorktreeService) GetConfigForPrincipal(principal identity.Principal
 	return f.GetConfig(workspacePath)
 }
 
-func (f *fakeWorktreeService) SetConfig(workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error) {
-	f.config = worktreeruntime.Config{WorkspacePath: workspacePath, UseCurrentBranch: useCurrentBranch, BaseBranch: baseBranch, BranchName: branchName}
+func (f *fakeWorktreeService) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error) {
+	f.config = worktreeruntime.Config{WorkspacePath: workspacePath, Enabled: enabled, UseCurrentBranch: useCurrentBranch, BaseBranch: baseBranch, BranchName: branchName}
 	return f.config, nil, nil
 }
 
-func (f *fakeWorktreeService) SetConfigForPrincipal(principal identity.Principal, workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error) {
-	return f.SetConfig(workspacePath, useCurrentBranch, baseBranch, branchName)
+func (f *fakeWorktreeService) SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error) {
+	return f.SetConfig(workspacePath, enabled, useCurrentBranch, baseBranch, branchName)
 }
 
 func (f *fakeWorktreeService) AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error) {
@@ -298,7 +298,7 @@ func newTestWorkspaceService(t *testing.T, path string) (*workspaceruntime.Servi
 func TestHandleWorktreesAllowsNonGitWorkspace(t *testing.T) {
 	workspaceSvc, workspacePath := newTestWorkspaceService(t, t.TempDir())
 	s := &Server{workspace: workspaceSvc, worktrees: &fakeWorktreeService{
-		config:     worktreeruntime.Config{UseCurrentBranch: true},
+		config:     worktreeruntime.Config{Enabled: true},
 		managedErr: fmt.Errorf("resolve git common dir: git rev-parse --git-common-dir: fatal: not a git repository"),
 	}}
 	req := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/worktrees?workspace_path="+workspacePath, nil))
@@ -317,7 +317,7 @@ func TestHandleWorktreesAllowsNonGitWorkspace(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !got.OK || len(got.Managed) != 0 || got.Warning == "" {
+	if !got.OK || got.Worktrees.Enabled || len(got.Managed) != 0 || got.Warning == "" {
 		t.Fatalf("unexpected non-git response: %+v", got)
 	}
 }
@@ -325,7 +325,7 @@ func TestHandleWorktreesAllowsNonGitWorkspace(t *testing.T) {
 func TestHandleWorktreesIncludesManagedInventory(t *testing.T) {
 	workspaceSvc, workspacePath := newTestWorkspaceService(t, t.TempDir())
 	s := &Server{workspace: workspaceSvc, worktrees: &fakeWorktreeService{
-		config:  worktreeruntime.Config{UseCurrentBranch: true},
+		config:  worktreeruntime.Config{Enabled: true},
 		managed: []worktreeruntime.ManagedWorktree{{Path: "/tmp/swarmd/worktrees/ws_abc123", WorkspaceID: "ws_abc123", Exists: true, Managed: true}},
 	}}
 	req := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/worktrees?workspace_path="+workspacePath, nil))

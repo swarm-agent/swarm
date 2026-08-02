@@ -5,6 +5,7 @@ import { Button } from '../../../../../components/ui/button'
 
 interface WorktreeSettingsWire {
   workspace_path?: string
+  enabled?: boolean
   use_current_branch?: boolean
   base_branch?: string
   branch_name?: string
@@ -18,6 +19,7 @@ interface WorktreeSettingsResponseWire {
 
 interface WorktreeSettings {
   workspacePath: string
+  enabled: boolean
   useCurrentBranch: boolean
   baseBranch: string
   branchName: string
@@ -44,6 +46,7 @@ function normalizeBranchPrefix(value: string): string {
 function normalizeSettings(payload?: WorktreeSettingsWire | null): WorktreeSettings {
   return {
     workspacePath: typeof payload?.workspace_path === 'string' ? payload.workspace_path.trim() : '',
+    enabled: Boolean(payload?.enabled),
     useCurrentBranch: payload?.use_current_branch !== false,
     baseBranch: typeof payload?.base_branch === 'string' ? payload.base_branch.trim() : '',
     branchName: typeof payload?.branch_name === 'string' && payload.branch_name.trim() !== '' ? normalizeBranchPrefix(payload.branch_name) : defaultCreatedBranch,
@@ -57,6 +60,7 @@ async function getWorktreeSettings(): Promise<WorktreeSettings> {
 }
 
 async function saveWorktreeSettings(input: {
+  enabled: boolean
   useCurrentBranch: boolean
   baseBranch: string
   branchName: string
@@ -67,6 +71,7 @@ async function saveWorktreeSettings(input: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
+      enabled: input.enabled,
       use_current_branch: input.useCurrentBranch,
       base_branch: input.useCurrentBranch ? '' : input.baseBranch.trim(),
       branch_name: normalizeBranchPrefix(input.branchName),
@@ -81,6 +86,7 @@ export function WorktreeSettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [settings, setSettings] = useState<WorktreeSettings | null>(null)
+  const [enabled, setEnabled] = useState(false)
   const [branchName, setBranchName] = useState(defaultCreatedBranch)
   const [branchSourceMode, setBranchSourceMode] = useState<'current' | 'base'>('current')
   const [baseBranch, setBaseBranch] = useState('')
@@ -96,6 +102,7 @@ export function WorktreeSettingsPage() {
           return
         }
         setSettings(next)
+        setEnabled(next.enabled)
         setBranchName(next.branchName)
         setBranchSourceMode(next.useCurrentBranch ? 'current' : 'base')
         setBaseBranch(next.baseBranch)
@@ -127,15 +134,17 @@ export function WorktreeSettingsPage() {
     setStatus(null)
     try {
       const next = await saveWorktreeSettings({
+        enabled,
         useCurrentBranch: branchSourceMode === 'current',
         baseBranch,
         branchName: createdBranch,
       })
       setSettings(next)
+      setEnabled(next.enabled)
       setBranchName(next.branchName)
       setBranchSourceMode(next.useCurrentBranch ? 'current' : 'base')
       setBaseBranch(next.baseBranch)
-      setStatus(`Saved worktree naming defaults. Created branches will use ${next.branchName}/<id> from ${next.useCurrentBranch ? 'the current branch' : next.baseBranch}.`)
+      setStatus(`Saved worktree settings. Created branch prefix: ${next.branchName}. Worktree branches will be created as ${next.branchName}/<id>. Branch-off source: ${next.useCurrentBranch ? 'current branch' : next.baseBranch}.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save worktree settings')
     } finally {
@@ -147,13 +156,27 @@ export function WorktreeSettingsPage() {
     <div className="flex h-full flex-col">
       <div className="mb-8">
         <h1 className="text-xl font-semibold text-[var(--app-text)]">Worktrees</h1>
-        <p className="mt-1 text-sm text-[var(--app-text-muted)]">Worktree capability is automatic for Git workspaces. Configure only the naming defaults used when a session requests isolation.</p>
+        <p className="mt-1 text-sm text-[var(--app-text-muted)]">Configure isolation settings for concurrent agent runs.</p>
       </div>
 
       {error ? <div className="mb-4 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">{error}</div> : null}
       {status ? <div className="mb-4 rounded-xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-4 py-3 text-sm text-[var(--app-success)]">{status}</div> : null}
 
       <div className="space-y-6">
+        <div className="flex flex-col gap-2">
+          <label className="text-sm font-medium text-[var(--app-text)]">Enable Automatic Worktrees</label>
+          <select
+            value={enabled ? 'on' : 'off'}
+            onChange={(e) => setEnabled(e.target.value === 'on')}
+            disabled={loading || saving}
+            className="w-full max-w-md h-10 px-3 rounded-md bg-[var(--app-surface-subtle)] border border-[var(--app-border)] text-sm text-[var(--app-text)] outline-none transition-colors hover:border-[var(--app-border-strong)] focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)]"
+          >
+            <option value="on">Enabled</option>
+            <option value="off">Disabled</option>
+          </select>
+          <span className="text-xs text-[var(--app-text-muted)] mt-1">Isolate tasks to prevent workspace collisions.</span>
+        </div>
+
         <div className="flex flex-col gap-2">
           <label className="text-sm font-medium text-[var(--app-text)]">Created branch prefix</label>
           <div className="flex items-center w-full max-w-md bg-[var(--app-surface-subtle)] border border-[var(--app-border)] rounded-md focus-within:border-[var(--app-primary)] focus-within:ring-1 focus-within:ring-[var(--app-primary)] transition-colors">

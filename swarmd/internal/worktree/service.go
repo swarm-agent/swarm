@@ -49,6 +49,7 @@ func DetachedWorkspaceFallbackWarning(err error) string {
 
 type Config struct {
 	WorkspacePath    string `json:"workspace_path,omitempty"`
+	Enabled          bool   `json:"enabled"`
 	UseCurrentBranch bool   `json:"use_current_branch"`
 	BaseBranch       string `json:"base_branch,omitempty"`
 	BranchName       string `json:"branch_name,omitempty"`
@@ -175,6 +176,18 @@ func NewService(store *pebblestore.WorktreeStore, workspace *workspaceruntime.Se
 	return &Service{store: store, workspace: workspace, events: events}
 }
 
+func (s *Service) IsEnabled(workspacePath string) (bool, error) {
+	return false, identity.ErrPrincipalRequired
+}
+
+func (s *Service) IsEnabledForPrincipal(principal identity.Principal, workspacePath string) (bool, error) {
+	cfg, err := s.GetConfigForPrincipal(principal, workspacePath)
+	if err != nil {
+		return false, err
+	}
+	return cfg.Enabled, nil
+}
+
 func (s *Service) GetConfig(workspacePath string) (Config, error) {
 	canonical, err := s.resolveWorkspaceConfigPath(workspacePath)
 	if err != nil {
@@ -187,6 +200,7 @@ func (s *Service) GetConfig(workspacePath string) (Config, error) {
 	useCurrentBranch := record.UseCurrentBranch != nil && *record.UseCurrentBranch
 	return Config{
 		WorkspacePath:    canonical,
+		Enabled:          record.Enabled,
 		UseCurrentBranch: useCurrentBranch,
 		BaseBranch:       strings.TrimSpace(record.BaseBranch),
 		BranchName:       normalizeWorktreeBranchPrefix(record.BranchName),
@@ -212,11 +226,11 @@ func (s *Service) GetConfigForPrincipal(principal identity.Principal, workspaceP
 	return configFromRecord(canonical, record), nil
 }
 
-func (s *Service) SetConfig(workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
+func (s *Service) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
 	return Config{}, nil, identity.ErrPrincipalRequired
 }
 
-func (s *Service) SetConfigForPrincipal(principal identity.Principal, workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
+func (s *Service) SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return Config{}, nil, err
 	}
@@ -224,12 +238,13 @@ func (s *Service) SetConfigForPrincipal(principal identity.Principal, workspaceP
 	if err != nil {
 		return Config{}, nil, err
 	}
-	record, err := s.store.SetConfigForAccount(principal.AccountScopeID, canonical, useCurrentBranch, baseBranch, branchName)
+	record, err := s.store.SetConfigForAccount(principal.AccountScopeID, canonical, enabled, useCurrentBranch, baseBranch, branchName)
 	if err != nil {
 		return Config{}, nil, fmt.Errorf("persist worktree config: %w", err)
 	}
 	cfg := Config{
 		WorkspacePath:    canonical,
+		Enabled:          record.Enabled,
 		UseCurrentBranch: record.UseCurrentBranch != nil && *record.UseCurrentBranch,
 		BaseBranch:       strings.TrimSpace(record.BaseBranch),
 		BranchName:       normalizeWorktreeBranchPrefix(record.BranchName),
@@ -868,13 +883,14 @@ func (s *Service) resolveWorkspaceConfigPathForPrincipalOptional(principal ident
 }
 
 func defaultConfigForWorkspace(workspacePath string) Config {
-	return Config{WorkspacePath: workspacePath, UseCurrentBranch: true, BranchName: defaultWorktreeBranchName}
+	return configFromRecord(workspacePath, pebblestore.WorktreeConfigRecord{WorkspacePath: workspacePath})
 }
 
 func configFromRecord(workspacePath string, record pebblestore.WorktreeConfigRecord) Config {
 	useCurrentBranch := record.UseCurrentBranch != nil && *record.UseCurrentBranch
 	return Config{
 		WorkspacePath:    workspacePath,
+		Enabled:          record.Enabled,
 		UseCurrentBranch: useCurrentBranch,
 		BaseBranch:       strings.TrimSpace(record.BaseBranch),
 		BranchName:       normalizeWorktreeBranchPrefix(record.BranchName),

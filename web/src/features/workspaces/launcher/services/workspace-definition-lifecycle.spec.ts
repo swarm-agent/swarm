@@ -38,6 +38,7 @@ function workspace(status: 'pending' | 'completed' | 'failed'): WorkspaceEntry {
     updatedAt: 2,
     lastSelectedAt: 0,
     active: true,
+    worktreeEnabled: false,
     topologyRoutes: [],
     definitionStatus: status,
     definition: status === 'completed' ? 'A durable session backend.' : '',

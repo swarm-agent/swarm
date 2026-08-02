@@ -22,52 +22,53 @@ type Service struct {
 }
 
 type Resolution struct {
-	RequestedPath             string `json:"requested_path"`
-	ResolvedPath              string `json:"resolved_path"`
-	WorkspaceID               string `json:"workspace_id,omitempty"`
-	LocalWorkspaceBindingID   string `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceGeneration       int64  `json:"workspace_generation,omitempty"`
-	WorkspaceState            string `json:"workspace_state,omitempty"`
-	WorkspacePath             string `json:"workspace_path"`
-	WorkspaceName             string `json:"workspace_name"`
-	ThemeID                   string `json:"theme_id,omitempty"`
-	Definition                string `json:"definition,omitempty"`
-	DefinitionStatus          string `json:"definition_status,omitempty"`
-	DefinitionAttemptCount    int    `json:"definition_attempt_count,omitempty"`
-	DefinitionGeneration      int64  `json:"definition_generation,omitempty"`
-	DefinitionError           string `json:"definition_error,omitempty"`
-	DefinitionModelSuggestion string `json:"definition_model_suggestion,omitempty"`
-	DefinitionPendingAt       int64  `json:"definition_pending_at,omitempty"`
-	DefinitionCompletedAt     int64  `json:"definition_completed_at,omitempty"`
-	DefinitionFailedAt        int64  `json:"definition_failed_at,omitempty"`
-	DefinitionUpdatedAt       int64  `json:"definition_updated_at,omitempty"`
+	RequestedPath                    string `json:"requested_path"`
+	ResolvedPath                     string `json:"resolved_path"`
+	WorkspaceID                      string `json:"workspace_id,omitempty"`
+	LocalWorkspaceBindingID          string `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceGeneration              int64  `json:"workspace_generation,omitempty"`
+	WorkspaceState                   string `json:"workspace_state,omitempty"`
+	WorkspacePath                    string `json:"workspace_path"`
+	WorkspaceName                    string `json:"workspace_name"`
+	ThemeID                          string `json:"theme_id,omitempty"`
+	Definition                       string `json:"definition,omitempty"`
+	DefinitionStatus                 string `json:"definition_status,omitempty"`
+	DefinitionAttemptCount           int    `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration             int64  `json:"definition_generation,omitempty"`
+	DefinitionError                  string `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion        string `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt              int64  `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt            int64  `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt               int64  `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt              int64  `json:"definition_updated_at,omitempty"`
 }
 
 type Entry struct {
-	Path                      string   `json:"path"`
-	WorkspaceID               string   `json:"workspace_id,omitempty"`
-	WorkspaceGeneration       int64    `json:"workspace_generation,omitempty"`
-	State                     string   `json:"state,omitempty"`
-	LocalWorkspaceBindingID   string   `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName             string   `json:"workspace_name"`
-	ThemeID                   string   `json:"theme_id,omitempty"`
-	Directories               []string `json:"directories"`
-	IsGitRepo                 bool     `json:"is_git_repo"`
-	SortIndex                 int      `json:"sort_index"`
-	AddedAt                   int64    `json:"added_at"`
-	UpdatedAt                 int64    `json:"updated_at"`
-	LastSelectedAt            int64    `json:"last_selected_at"`
-	Active                    bool     `json:"active"`
-	Definition                string   `json:"definition,omitempty"`
-	DefinitionStatus          string   `json:"definition_status,omitempty"`
-	DefinitionAttemptCount    int      `json:"definition_attempt_count,omitempty"`
-	DefinitionGeneration      int64    `json:"definition_generation,omitempty"`
-	DefinitionError           string   `json:"definition_error,omitempty"`
-	DefinitionModelSuggestion string   `json:"definition_model_suggestion,omitempty"`
-	DefinitionPendingAt       int64    `json:"definition_pending_at,omitempty"`
-	DefinitionCompletedAt     int64    `json:"definition_completed_at,omitempty"`
-	DefinitionFailedAt        int64    `json:"definition_failed_at,omitempty"`
-	DefinitionUpdatedAt       int64    `json:"definition_updated_at,omitempty"`
+	Path                       string   `json:"path"`
+	WorkspaceID                string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration        int64    `json:"workspace_generation,omitempty"`
+	State                      string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID    string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName              string   `json:"workspace_name"`
+	ThemeID                    string   `json:"theme_id,omitempty"`
+	Directories                []string `json:"directories"`
+	IsGitRepo                  bool     `json:"is_git_repo"`
+	SortIndex                  int      `json:"sort_index"`
+	AddedAt                    int64    `json:"added_at"`
+	UpdatedAt                  int64    `json:"updated_at"`
+	LastSelectedAt             int64    `json:"last_selected_at"`
+	Active                     bool     `json:"active"`
+	WorktreeEnabled            bool     `json:"worktree_enabled"`
+	Definition                 string   `json:"definition,omitempty"`
+	DefinitionStatus           string   `json:"definition_status,omitempty"`
+	DefinitionAttemptCount     int      `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration       int64    `json:"definition_generation,omitempty"`
+	DefinitionError            string   `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion  string   `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt        int64    `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt      int64    `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt         int64    `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt        int64    `json:"definition_updated_at,omitempty"`
 }
 
 type Scope struct {
@@ -522,19 +523,20 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 	for _, entry := range entries {
 		isGitRepo, _ := detectWorkspaceSignals(entry.Path)
 		out = append(out, Entry{
-			Path:                      entry.Path,
-			WorkspaceID:               entry.WorkspaceID,
-			WorkspaceGeneration:       entry.WorkspaceGeneration,
-			State:                     entry.State,
-			WorkspaceName:             entry.Name,
-			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
-			Directories:               append([]string(nil), entry.Directories...),
-			IsGitRepo:                 isGitRepo,
-			SortIndex:                 entry.SortIndex,
-			AddedAt:                   entry.AddedAt,
-			UpdatedAt:                 entry.UpdatedAt,
-			LastSelectedAt:            entry.LastSelectedAt,
-			Active:                    false,
+			Path:                entry.Path,
+			WorkspaceID:         entry.WorkspaceID,
+			WorkspaceGeneration: entry.WorkspaceGeneration,
+			State:               entry.State,
+			WorkspaceName:       entry.Name,
+			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
+			Directories:         append([]string(nil), entry.Directories...),
+			IsGitRepo:           isGitRepo,
+			SortIndex:           entry.SortIndex,
+			AddedAt:             entry.AddedAt,
+			UpdatedAt:           entry.UpdatedAt,
+			LastSelectedAt:      entry.LastSelectedAt,
+			Active:              false,
+			WorktreeEnabled:           false,
 			Definition:                entry.Definition,
 			DefinitionStatus:          entry.DefinitionStatus,
 			DefinitionAttemptCount:    entry.DefinitionAttemptCount,
@@ -570,19 +572,20 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			active = true
 		}
 		out = append(out, Entry{
-			Path:                      entry.Path,
-			WorkspaceID:               entry.WorkspaceID,
-			WorkspaceGeneration:       entry.WorkspaceGeneration,
-			State:                     entry.State,
-			WorkspaceName:             entry.Name,
-			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
-			Directories:               append([]string(nil), entry.Directories...),
-			IsGitRepo:                 isGitRepo,
-			SortIndex:                 entry.SortIndex,
-			AddedAt:                   entry.AddedAt,
-			UpdatedAt:                 entry.UpdatedAt,
-			LastSelectedAt:            entry.LastSelectedAt,
-			Active:                    active,
+			Path:                entry.Path,
+			WorkspaceID:         entry.WorkspaceID,
+			WorkspaceGeneration: entry.WorkspaceGeneration,
+			State:               entry.State,
+			WorkspaceName:       entry.Name,
+			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
+			Directories:         append([]string(nil), entry.Directories...),
+			IsGitRepo:           isGitRepo,
+			SortIndex:           entry.SortIndex,
+			AddedAt:             entry.AddedAt,
+			UpdatedAt:           entry.UpdatedAt,
+			LastSelectedAt:      entry.LastSelectedAt,
+			Active:              active,
+			WorktreeEnabled:           false,
 			Definition:                entry.Definition,
 			DefinitionStatus:          entry.DefinitionStatus,
 			DefinitionAttemptCount:    entry.DefinitionAttemptCount,

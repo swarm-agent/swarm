@@ -86,6 +86,42 @@ function patchWorkspace(
   }
 }
 
+export function syncWorkspaceOverviewWorktreeState(queryClient: QueryClient, workspacePath: string, enabled: boolean): void {
+  const normalizedWorkspacePath = normalizeWorkspacePath(workspacePath)
+  if (!normalizedWorkspacePath) {
+    return
+  }
+
+  const queries = queryClient.getQueryCache().findAll({ queryKey: WORKSPACE_OVERVIEW_QUERY_KEY_PREFIX })
+  for (const query of queries) {
+    queryClient.setQueryData<WorkspaceOverviewResponse | undefined>(query.queryKey, (current) => {
+      if (!current) {
+        return current
+      }
+
+      let changed = false
+      const workspaces = current.workspaces.map((workspace) => {
+        if (normalizeWorkspacePath(workspace.path) !== normalizedWorkspacePath || workspace.worktreeEnabled === enabled) {
+          return workspace
+        }
+        changed = true
+        return {
+          ...workspace,
+          worktreeEnabled: enabled,
+        }
+      })
+
+      if (!changed) {
+        return current
+      }
+
+      return {
+        ...current,
+        workspaces,
+      }
+    })
+  }
+}
 
 export function syncWorkspaceOverviewThemeState(queryClient: QueryClient, workspacePath: string, themeId: string): void {
   const normalizedWorkspacePath = normalizeWorkspacePath(workspacePath)
