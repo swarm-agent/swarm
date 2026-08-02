@@ -4518,9 +4518,23 @@ export function DesktopAppPage() {
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
     <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-col overflow-hidden" data-plan-git-layout="protected">
       <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-        <GitBranch size={13} />
-        <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
-        {gitSnapshot?.has_git ? <span>{gitSnapshot.dirty_count}</span> : null}
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <GitBranch size={13} className="shrink-0" />
+          <span className="min-w-0 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
+          {gitSnapshot?.has_git ? <span className="shrink-0">{gitSnapshot.dirty_count}</span> : null}
+        </div>
+        {gitSnapshot?.has_git ? (
+          <div className="ml-auto flex shrink-0 items-center justify-end gap-2 normal-case tracking-normal" data-plan-git-commit>
+            {gitSnapshot.files.length > 0 ? (
+              <>
+                <button type="button" className="grid min-h-9 w-9 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
+                <AICommitControl compact workspacePath={selectedGitWorkspacePath} selectedAction={gitCommitAction} phase={gitAICommitPhase} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }) }} />
+              </>
+            ) : (
+              <AICommitControl actionsOnly workspacePath={selectedGitWorkspacePath} selectedAction={null} disabled={gitCommitBusy} onActionRun={openWorkspaceAction} />
+            )}
+          </div>
+        ) : null}
       </div>
       {activeSessionWorktree ? (
         <div className="mt-2 shrink-0" data-plan-git-session-commits>
@@ -4535,18 +4549,6 @@ export function DesktopAppPage() {
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
           : <div className="mt-2 h-[calc(100%-0.5rem)] overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-file-list>{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
       </div>
-      {gitSnapshot?.has_git ? (
-        <div className="mt-3 flex shrink-0 items-center justify-end gap-2" data-plan-git-commit>
-          {gitSnapshot.files.length > 0 ? (
-            <>
-              <button type="button" className="grid min-h-9 w-9 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
-              <AICommitControl compact workspacePath={selectedGitWorkspacePath} selectedAction={gitCommitAction} phase={gitAICommitPhase} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }) }} />
-            </>
-          ) : (
-            <AICommitControl actionsOnly workspacePath={selectedGitWorkspacePath} selectedAction={null} disabled={gitCommitBusy} onActionRun={openWorkspaceAction} />
-          )}
-        </div>
-      ) : null}
       {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <button type="button" className="mt-2 inline-flex w-full shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]" data-plan-git-integrate onClick={() => { setGitIntegrateArchive(false); setGitIntegrateError(null); setGitIntegrateModal({ sessionId: selectedGitSessionId, workspacePath: activeSessionTargetWorkspacePath, worktreeBranch: activeSessionReviewCandidate.worktree_branch || gitSnapshot?.branch || 'worktree', targetBranch: activeSessionReviewCandidate.target_branch || activeSessionTargetBranch }) }}><GitMerge size={12} />Integrate into {activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}…</button> : null}
     </section>
   ) : null
