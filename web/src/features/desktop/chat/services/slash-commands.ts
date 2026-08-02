@@ -16,7 +16,6 @@ export type DesktopSlashCommandAction =
   | { kind: 'compact-session' }
   | { kind: 'new-session' }
   | { kind: 'start-background-router-session' }
-  | { kind: 'prime-worktree' }
   | { kind: 'show-help' }
 
 export interface DesktopSlashCommand {
@@ -65,16 +64,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/auth', 'Manage provider credentials', 'Use this to set up auth'],
     state: 'ready',
     action: { kind: 'open-settings', tab: 'auth' },
-  },
-  {
-    id: 'worktree',
-    command: '/worktree',
-    aliases: [],
-    hint: 'Start this new chat in a managed worktree',
-    actionLabel: 'Prime Managed Worktree',
-    tips: ['/worktree <prompt>', 'Authorize a managed worktree for this new chat', 'Swarm routes the prompt and chooses the worktree name'],
-    state: 'ready',
-    action: { kind: 'prime-worktree' },
   },
   {
     id: 'worktrees',

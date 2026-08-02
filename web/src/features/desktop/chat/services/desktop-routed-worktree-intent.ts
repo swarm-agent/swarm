@@ -48,28 +48,6 @@ export function restoreDesktopRoutedWorktreeIntent(
   return { requested: snapshot.requested }
 }
 
-/**
- * Recognizes only the explicit `/worktree` composer directive. Ordinary prose
- * never changes routing intent, even when it mentions worktrees.
- */
-export function desktopRoutedMessageRequestsWorktree(message: string): boolean {
-  return /^\s*\/worktree(?:\s|$)/i.test(message)
-}
-
-/** Removes the explicit routing directive while preserving the user's actual prompt. */
-export function stripDesktopRoutedWorktreeDirective(message: string): string {
-  return desktopRoutedMessageRequestsWorktree(message)
-    ? message.replace(/^\s*\/worktree(?:\s+|$)/i, '').trimStart()
-    : message
-}
-
-export function resolveDesktopRoutedWorktreeIntent(
-  current: DesktopRoutedWorktreeIntent,
-  message: string,
-): DesktopRoutedWorktreeIntent {
-  return { requested: current.requested || desktopRoutedMessageRequestsWorktree(message) }
-}
-
 export function encodeDesktopRoutedWorktreeIntentMetadata(
   current: DesktopRoutedWorktreeIntent,
   metadata: Readonly<Record<string, unknown>> = {},

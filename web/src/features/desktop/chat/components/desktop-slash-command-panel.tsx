@@ -15,7 +15,6 @@ function commandIcon(command: DesktopSlashCommand): LucideIcon {
       return Key
     case 'vault':
       return Shield
-    case 'worktree':
     case 'worktrees':
       return GitBranch
     case 'workspace':

@@ -47,16 +47,15 @@ function testMCPCommandIsDeferredAndExaRequiresAPIKey(): void {
   assert(mcp?.tips.every((tip) => !tip.includes('Free Exa MCP search')), 'expected /mcp tips not to advertise free Exa MCP search')
 }
 
-function testWorktreeCommandPrimesRoutedNewChat(): void {
+function testWorktreeCommandIsRetiredAndWorktreesRemains(): void {
   const commands = getDesktopSlashCommands()
-  const worktree = commands.find((command) => command.command === '/worktree')
   const worktrees = commands.find((command) => command.command === '/worktrees')
-  assert((worktree?.action as DesktopSlashCommandAction | undefined)?.kind === 'prime-worktree', 'expected /worktree to prime managed-worktree intent')
+  assert(commands.every((command) => command.command !== '/worktree'), 'expected /worktree command to be absent')
   assert((worktrees?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-quick-settings', 'expected /worktrees to keep opening quick settings')
 
   const palette = buildDesktopSlashPaletteState('/worktree fix the sidebar')
-  assert(palette.exactMatch?.id === 'worktree', 'expected /worktree arguments to preserve the exact command match')
-  assert(palette.hasArguments === true, 'expected /worktree prompt text to be recognized as arguments')
+  assert(palette.exactMatch === null, 'expected /worktree not to resolve to a desktop command')
+  assert(palette.matches.length === 0, 'expected /worktree not to be suggested')
 }
 
 function testTaskCommandAcceptsFullArguments(): void {
@@ -108,7 +107,7 @@ function main(): void {
   testCodexOpensUsageWithoutChangingModels()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
-  testWorktreeCommandPrimesRoutedNewChat()
+  testWorktreeCommandIsRetiredAndWorktreesRemains()
   testTaskCommandAcceptsFullArguments()
   testTaskCommandParsesModeDirective()
   testRetiredCommandsAreNotSuggested()
