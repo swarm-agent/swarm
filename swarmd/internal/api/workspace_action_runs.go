@@ -9,6 +9,7 @@ import (
 
 	actionruntime "swarm/packages/swarmd/internal/action"
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type workspaceActionRunRequest struct {
