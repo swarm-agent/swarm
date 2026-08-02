@@ -12,9 +12,10 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-test('pending routed-session drafts classify /task for normal command dispatch', () => {
-  assert.equal(desktopComposerTaskCommand('/task X')?.action.kind, 'queue-ai-task')
-  assert.equal(desktopComposerTaskCommand(' /TASK plan X')?.action.kind, 'queue-ai-task')
+test('pending routed-session drafts classify every exact /task form for normal command dispatch', () => {
+  for (const draft of ['/task X', ' /TASK plan X', '/task', '/task plan']) {
+    assert.equal(desktopComposerTaskCommand(draft)?.action.kind, 'queue-ai-task', draft)
+  }
   assert.equal(desktopComposerTaskCommand('X'), null)
 })
 
@@ -59,20 +60,22 @@ test('rejected /task retains the draft and never submits or stops', async () => 
   assert.deepEqual(calls, ['queue'])
 })
 
-test('bare /task never falls through to ordinary stop handling', async () => {
-  const calls: string[] = []
-  const result = await submitDesktopComposer({
-    draft: '/task',
-    canStop: true,
-    clear: () => { calls.push('clear') },
-    onSubmit: () => { calls.push('submit') },
-    onStop: () => { calls.push('stop') },
-    onSlashCommand: async () => {
-      calls.push('queue')
-      throw new Error('task request is required')
-    },
-  })
+test('bare /task forms retain the draft and never fall through to ordinary stop handling', async () => {
+  for (const draft of ['/task', '/task plan']) {
+    const calls: string[] = []
+    const result = await submitDesktopComposer({
+      draft,
+      canStop: true,
+      clear: () => { calls.push('clear') },
+      onSubmit: () => { calls.push('submit') },
+      onStop: () => { calls.push('stop') },
+      onSlashCommand: async (_command, submittedDraft) => {
+        calls.push(`queue:${submittedDraft}`)
+        throw new Error('task request is required')
+      },
+    })
 
-  assert.equal(result, 'task-queue-failed')
-  assert.deepEqual(calls, ['queue'])
+    assert.equal(result, 'task-queue-failed')
+    assert.deepEqual(calls, [`queue:${draft}`])
+  }
 })

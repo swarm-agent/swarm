@@ -8,7 +8,7 @@ import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settin
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
 import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
-import { submitDesktopComposer } from '../services/composer-submit'
+import { desktopComposerTaskCommand, submitDesktopComposer } from '../services/composer-submit'
 import {
   DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
   DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES,
@@ -640,6 +640,19 @@ export function DesktopV3AgenticComposer({
       : primedTaskMode === 'action'
         ? `/task ${visibleDraft}`
         : visibleDraft
+    const submittedTaskCommand = desktopComposerTaskCommand(submittedDraft)
+    if (routedNewSession && submittedTaskCommand) {
+      await submitDesktopComposer({
+        draft: submittedDraft,
+        canStop,
+        clear: clearComposerForSubmit,
+        attachments,
+        onSubmit,
+        onStop,
+        onSlashCommand,
+      })
+      return
+    }
     if (routedNewSession && onRoutedSubmit) {
       routedSubmissionRef.current = true
       const routedSnapshot = {

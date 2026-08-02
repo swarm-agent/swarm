@@ -37,12 +37,17 @@ test('/task in an existing session uses the durable task command path', async ()
   assert.match(app, /Enter a task request after \/task\./)
 })
 
-test('/task in a pending routed session remains the router prompt', async () => {
+test('/task in a pending routed session uses background task precedence', async () => {
   const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const pane = await readFile(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
 
-  assert.doesNotMatch(composer, /desktopComposerTaskCommand/)
-  assert.doesNotMatch(composer, /routedNewSession && submittedTaskCommand/)
+  assert.match(composer, /const submittedTaskCommand = desktopComposerTaskCommand\(submittedDraft\)/)
+  const taskPrecedence = composer.indexOf('if (routedNewSession && submittedTaskCommand)')
+  const routedSubmit = composer.indexOf('if (routedNewSession && onRoutedSubmit)')
+  assert.ok(taskPrecedence >= 0 && taskPrecedence < routedSubmit)
+  const pendingTaskCase = composer.slice(taskPrecedence, routedSubmit)
+  assert.match(pendingTaskCase, /await submitDesktopComposer\(\{[\s\S]*?onSlashCommand,[\s\S]*?\}\)/)
+  assert.doesNotMatch(pendingTaskCase, /onRoutedSubmit/)
   assert.match(composer, /if \(routedNewSession && onRoutedSubmit\) \{[\s\S]*?prompt: submittedDraft[\s\S]*?onRoutedSubmit\(routedSnapshot\)/)
   assert.match(composer, /command\.action\.kind === 'queue-ai-task'[\s\S]*?if \(routedNewSession\) \{[\s\S]*?void handleSubmitClick\(\)/)
   assert.match(pane, /onSubmit=\{\(\) => undefined\}/)
