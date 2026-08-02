@@ -39,7 +39,7 @@ import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
-import { createDesktopV3NewSessionOperation, startNewDesktopV3Session, type DesktopV3RoutedStartResult } from '../session-v3/new-session-flow'
+import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, startNewDesktopV3Session, type DesktopV3RoutedStartResult } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
@@ -2614,6 +2614,7 @@ export function DesktopAppPage() {
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+  const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
@@ -3439,6 +3440,12 @@ export function DesktopAppPage() {
     wsName: string,
     options: { worktreeRequested?: boolean; planModeRequested?: boolean } = {},
   ) => {
+    // An explicit New Session gesture is an abandonment boundary, not an
+    // interrupted-start retry. Drop persisted retry identity and force a fresh
+    // pane even when navigation targets the workspace URL already on screen.
+    clearDesktopV3RoutedStartOperation()
+    routedActivationGenerationRef.current += 1
+    setNewSessionEpoch((current) => current + 1)
     dispatchDesktopV3Cache(selectSession(undefined))
     setMobileSidebarOpen(false)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
@@ -5036,7 +5043,7 @@ export function DesktopAppPage() {
           </div>
         ) : routeWorkspace?.path ? (
           <DesktopV3NewSessionPane
-            key={`new:${routeWorkspace.path}`}
+            key={`new:${routeWorkspace.path}:${newSessionEpoch}`}
             workspace={routeWorkspace}
             onRoutedSessionResolved={(result) => handleRoutedSessionResolved(result, routeWorkspace.path)}
             composerFocusSignal={composerFocusSignal}

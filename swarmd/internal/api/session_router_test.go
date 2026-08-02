@@ -93,6 +93,31 @@ func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(
 	}
 }
 
+func TestSessionRouterOnceAcceptsSingleCompleteJSONFence(t *testing.T) {
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: "```json\n{\"title\":\"Implement routing\"}\n```"}}
+	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Go API workspace"}})
+
+	decision, err := server.routeSessionOnce(context.Background(), principal, "implement the Router bridge", false)
+	if err != nil {
+		t.Fatalf("route fenced session once: %v", err)
+	}
+	if decision.Result.Title != "Implement routing" {
+		t.Fatalf("fenced Router decision = %+v", decision)
+	}
+}
+
+func TestNormalizeConfiguredRouterResultRejectsPartialOrCommentaryFences(t *testing.T) {
+	for _, raw := range []string{
+		"```json\n{\"title\":\"x\"}",
+		"commentary\n```json\n{\"title\":\"x\"}\n```",
+		"```json\n{\"title\":\"x\"}\n```\ncommentary",
+	} {
+		if got := normalizeConfiguredRouterJSONResponse(raw); got != strings.TrimSpace(raw) {
+			t.Fatalf("normalized non-exact fence %q to %q", raw, got)
+		}
+	}
+}
+
 func TestSessionRouterOnceAttachesSelectedCatalogAcrossConfiguredProviders(t *testing.T) {
 	for _, providerID := range []string{"anthropic", "codex", "fireworks", "google", "openai", "openrouter"} {
 		t.Run(providerID, func(t *testing.T) {

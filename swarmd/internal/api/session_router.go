@@ -100,7 +100,7 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	if err != nil {
 		return sessionRouterDecision{}, err
 	}
-	result, err := routerruntime.DecodeResult(configuredResponse.Text, routerContext)
+	result, err := routerruntime.DecodeResult(normalizeConfiguredRouterJSONResponse(configuredResponse.Text), routerContext)
 	if err != nil {
 		return sessionRouterDecision{}, err
 	}
@@ -114,6 +114,32 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 		return sessionRouterDecision{}, fmt.Errorf("revalidate Router workspace selection: %w", err)
 	}
 	return sessionRouterDecision{Result: result, Workspace: selection, Profile: configuredResponse.Profile}, nil
+}
+
+// normalizeConfiguredRouterJSONResponse removes only one complete JSON Markdown fence.
+// Some otherwise-valid configured Router responses wrap schema-conforming JSON
+// despite explicit instructions. Each caller's strict decoder remains authoritative
+// for the enclosed object, unknown fields, and trailing JSON content.
+func normalizeConfiguredRouterJSONResponse(raw string) string {
+	raw = strings.TrimSpace(raw)
+	openingEnd := strings.IndexByte(raw, '\n')
+	if openingEnd < 0 {
+		return raw
+	}
+	opener := strings.TrimSpace(raw[:openingEnd])
+	if opener != "```" && !strings.EqualFold(opener, "```json") {
+		return raw
+	}
+	bodyAndClosing := raw[openingEnd+1:]
+	closingStart := strings.LastIndexByte(bodyAndClosing, '\n')
+	if closingStart < 0 || strings.TrimSpace(bodyAndClosing[closingStart+1:]) != "```" {
+		return raw
+	}
+	body := strings.TrimSpace(bodyAndClosing[:closingStart])
+	if body == "" {
+		return raw
+	}
+	return body
 }
 
 func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal identity.Principal, instructions, input string, maxOutputBytes int) (configuredRouterResponse, error) {

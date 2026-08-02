@@ -102,9 +102,13 @@ test('starting a new session requests focus for the pending composer', async () 
   const handler = source.slice(handlerStart, handlerEnd)
 
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handler, /clearDesktopV3RoutedStartOperation\(\)/)
+  assert.match(handler, /routedActivationGenerationRef\.current \+= 1/)
+  assert.match(handler, /setNewSessionEpoch\(\(current\) => current \+ 1\)/)
   assert.match(handler, /dispatchDesktopV3Cache\(selectSession\(undefined\)\)/)
-  assert.match(handler, /handleOpenWorkspace\(wsPath, wsName\)/)
+  assert.match(handler, /navigate\(\{ to: '\/\$workspaceSlug'/)
   assert.match(handler, /setComposerFocusSignal\(\(current\) => current \+ 1\)/)
+  assert.match(source, /key=\{`new:\$\{routeWorkspace\.path\}:\$\{newSessionEpoch\}`\}/)
 })
 
 test('app-level new-chat wiring has no local pending authority or generic mode command', async () => {

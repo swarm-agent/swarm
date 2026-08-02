@@ -23,18 +23,40 @@ func TestDecodeWorkspaceGitCommitSuggestionStrict(t *testing.T) {
 		t.Fatalf("message = %q", message)
 	}
 	for name, raw := range map[string]string{
-		"empty":         `{"message":"   "}`,
-		"unknown":       `{"message":"ok","extra":true}`,
-		"trailing":      `{"message":"ok"} {}`,
-		"multiline":     `{"message":"feat: first\nsecond"}`,
-		"missing":       `{}`,
-		"bare markdown": "```json\n{\"message\":\"ok\"}\n```",
+		"empty":     `{"message":"   "}`,
+		"unknown":   `{"message":"ok","extra":true}`,
+		"trailing":  `{"message":"ok"} {}`,
+		"multiline": `{"message":"feat: first\nsecond"}`,
+		"missing":   `{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeWorkspaceGitCommitSuggestion(raw); err == nil {
 				t.Fatalf("expected strict decode failure for %q", raw)
 			}
 		})
+	}
+}
+
+func TestDecodeWorkspaceGitCommitSuggestionAcceptsSingleCompleteJSONFence(t *testing.T) {
+	raw := "```json\n{\"message\":\"feat: add AI commit suggestions\"}\n```"
+	message, err := decodeConfiguredRouterGitCommitSuggestion(raw)
+	if err != nil {
+		t.Fatalf("decode fenced suggestion: %v", err)
+	}
+	if message != "feat: add AI commit suggestions" {
+		t.Fatalf("message = %q", message)
+	}
+}
+
+func TestDecodeWorkspaceGitCommitSuggestionRejectsPartialOrCommentaryFences(t *testing.T) {
+	for _, raw := range []string{
+		"```json\n{\"message\":\"ok\"}",
+		"commentary\n```json\n{\"message\":\"ok\"}\n```",
+		"```json\n{\"message\":\"ok\"}\n```\ncommentary",
+	} {
+		if _, err := decodeConfiguredRouterGitCommitSuggestion(raw); err == nil {
+			t.Fatalf("expected fenced suggestion failure for %q", raw)
+		}
 	}
 }
 
