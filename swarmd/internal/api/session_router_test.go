@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/provider/codex"
@@ -284,7 +285,11 @@ func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunn
 	}}}); err != nil {
 		t.Fatalf("set Router UI settings: %v", err)
 	}
+	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
+	if err := agents.EnsureDefaults(); err != nil {
+		t.Fatalf("ensure compiled agent defaults: %v", err)
+	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
-	return &Server{workspace: workspace.NewService(workspaceStore), providers: providers, uiSettings: uiSettings, model: modelService}, principal, entries
+	return &Server{workspace: workspace.NewService(workspaceStore), providers: providers, uiSettings: uiSettings, model: modelService, agents: agents}, principal, entries
 }

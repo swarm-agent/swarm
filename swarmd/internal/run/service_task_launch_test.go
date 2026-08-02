@@ -642,7 +642,7 @@ func TestApprovedFinderInheritsParentWorktreeScopeWithoutAllocation(t *testing.T
 	}
 }
 
-func TestDesignerResolvesUtilityModelAndExplicitAccountOverride(t *testing.T) {
+func TestDesignerResolvesConfiguredAccountModel(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
@@ -652,17 +652,17 @@ func TestDesignerResolvesUtilityModelAndExplicitAccountOverride(t *testing.T) {
 
 	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
 	if err != nil || virtual || source != "" {
-		t.Fatalf("resolve Designer default: virtual=%t source=%q err=%v", virtual, source, err)
+		t.Fatalf("resolve configured Designer: virtual=%t source=%q err=%v", virtual, source, err)
 	}
-	if profile.Name != agentruntime.DesignerAgentID || profile.Provider != "codex" || profile.Model == "" || profile.Thinking == "" {
-		t.Fatalf("Designer utility default = %+v", profile)
+	if profile.Name != agentruntime.DesignerAgentID || profile.Provider != "codex" || profile.Model != "gpt-5.4" || profile.Thinking != "high" || profile.AutoServiceTier != "" {
+		t.Fatalf("configured Designer profile = %+v", profile)
 	}
 
 	settings, err := svc.uiSettings.GetForAccount(parent.AccountScopeID)
 	if err != nil {
 		t.Fatalf("read Designer settings: %v", err)
 	}
-	settings.Agents.Designer = uisettings.CompactAgentSettings{Provider: "codex", Model: profile.Model, Thinking: "medium", ServiceTier: "priority"}
+	settings.Agents.Designer = uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}
 	if _, err := svc.uiSettings.SetForAccount(parent.AccountScopeID, settings); err != nil {
 		t.Fatalf("save Designer override: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestDesignerResolvesUtilityModelAndExplicitAccountOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve Designer override: %v", err)
 	}
-	if overridden.Model != profile.Model || overridden.Thinking != "medium" || overridden.AutoServiceTier != "priority" {
+	if overridden.Model != profile.Model || overridden.Thinking != "medium" || overridden.AutoServiceTier != "" {
 		t.Fatalf("Designer explicit override = %+v, default=%+v", overridden, profile)
 	}
 }
@@ -1542,11 +1542,11 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	if !slices.Equal(manifest.Launches[0].OwnedScope, []string{"."}) {
 		t.Fatalf("Coder manifest owned scope = %#v, want canonical whole-worktree scope", manifest.Launches[0].OwnedScope)
 	}
-	if manifest.Launches[0].ProfileSnapshot.Provider != "parent-provider" || manifest.Launches[0].ProfileSnapshot.Model != "parent-model" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "" {
-		t.Fatalf("Coder did not inherit the immutable parent Action preference: %#v", manifest.Launches[0])
+	if manifest.Launches[0].ProfileSnapshot.Provider != "codex" || manifest.Launches[0].ProfileSnapshot.Model != "gpt-5.4" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "" {
+		t.Fatalf("Coder did not use the configured account model: %#v", manifest.Launches[0])
 	}
-	if manifest.Launches[0].ModelProfileSnapshot == nil || manifest.Launches[0].ModelProfileSnapshot.Action.Model != "parent-model" || manifest.Launches[0].ModelProfileSnapshot.Plan == nil || manifest.Launches[0].ModelProfileSnapshot.Plan.Model != "parent-plan-model" {
-		t.Fatalf("Coder manifest omitted the complete immutable parent model profile: %#v", manifest.Launches[0])
+	if manifest.Launches[0].ModelProfileSnapshot != nil {
+		t.Fatalf("Coder inherited the parent model profile: %#v", manifest.Launches[0].ModelProfileSnapshot)
 	}
 	coderTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
 	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
@@ -1586,7 +1586,7 @@ func bindTaskInheritanceModelProfile(t *testing.T, svc *Service, sessionID strin
 	return *updated.Session
 }
 
-func TestTaskChildInheritsImmutableModelProfileForAuthoritativeMode(t *testing.T) {
+func TestFinderTaskChildUsesConfiguredModelInsteadOfParentModelProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent := bindTaskInheritanceModelProfile(t, svc, parentSessionID)
@@ -1595,26 +1595,15 @@ func TestTaskChildInheritsImmutableModelProfileForAuthoritativeMode(t *testing.T
 	if err != nil {
 		t.Fatalf("prepare plan child: %v", err)
 	}
-	if launch.ChildSession.ModelProfile == nil || launch.ChildSession.ModelProfile == parent.ModelProfile || launch.ChildSession.ModelProfile.Plan == parent.ModelProfile.Plan {
-		t.Fatalf("child model profile was not deeply cloned: parent=%#v child=%#v", parent.ModelProfile, launch.ChildSession.ModelProfile)
+	if launch.ChildSession.ModelProfile != nil {
+		t.Fatalf("Finder child inherited parent model profile: %#v", launch.ChildSession.ModelProfile)
 	}
-	if launch.ChildSession.Preference.Provider != "parent-plan-provider" || launch.ChildSession.Preference.Model != "parent-plan-model" {
-		t.Fatalf("plan child preference = %#v", launch.ChildSession.Preference)
-	}
-	launch.ChildSession.ModelProfile.Plan.Model = "mutated-child-plan"
-	if parent.ModelProfile.Plan.Model != "parent-plan-model" {
-		t.Fatalf("child Plan mutation aliased parent snapshot: %#v", parent.ModelProfile)
-	}
-
-	planDisabled := parent
-	planDisabled.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(parent.ModelProfile)
-	planDisabled.ModelProfile.Plan = nil
-	if _, err := svc.prepareDelegatedSubagentLaunch(planDisabled, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 2, RequestedSubagent: "finder", MetaPrompt: "reject disabled plan"}, "disabled plan", "", nil); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
-		t.Fatalf("Plan-disabled child error = %v", err)
+	if launch.ChildSession.Preference.Provider != "codex" || launch.ChildSession.Preference.Model != "gpt-5.4" || launch.ChildSession.Preference.Thinking != "high" || launch.ChildSession.Preference.ServiceTier != "" {
+		t.Fatalf("Finder child preference = %#v, want configured account model", launch.ChildSession.Preference)
 	}
 }
 
-func TestTaskManifestBindsCompleteImmutableModelProfile(t *testing.T) {
+func TestFinderTaskManifestOmitsParentModelProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
@@ -1622,21 +1611,18 @@ func TestTaskManifestBindsCompleteImmutableModelProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build manifest: %v", err)
 	}
-	if len(manifest.Launches) != 1 || manifest.Launches[0].ModelProfileSnapshot == nil || manifest.Launches[0].ModelProfileSnapshot.ActionFavoriteID != "test-action" || manifest.Launches[0].ModelProfileSnapshot.Plan == nil || manifest.Launches[0].ModelProfileSnapshot.PlanFavoriteID != "test-plan" {
-		t.Fatalf("manifest model snapshot = %#v", manifest.Launches)
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("manifest launches = %#v", manifest.Launches)
 	}
-	first := manifest.ManifestHash
-	originalProfile := pebblestore.CloneSessionModelProfileSnapshot(manifest.Launches[0].ModelProfileSnapshot)
-	manifest.Launches[0].ModelProfileSnapshot.Plan.Model = "tampered-plan"
-	second, err := taskLaunchManifestDigest(manifest)
-	if err != nil {
-		t.Fatal(err)
+	launch := manifest.Launches[0]
+	if launch.ModelProfileSnapshot != nil {
+		t.Fatalf("Finder manifest inherited parent model profile: %#v", launch.ModelProfileSnapshot)
 	}
-	if first == second {
-		t.Fatal("task manifest digest did not bind complete model profile")
+	if launch.SubagentProvider != "codex" || launch.SubagentModel != "gpt-5.4" || launch.SubagentThinking != "high" || launch.SubagentServiceTier != "" {
+		t.Fatalf("Finder manifest preference = %#v, want configured account model", launch)
 	}
-	if equalSessionModelProfiles(manifest.Launches[0].ModelProfileSnapshot, originalProfile) {
-		t.Fatal("task manifest model-profile tamper was not detectable")
+	if manifest.ManifestHash == "" || manifest.ApprovedArguments == nil {
+		t.Fatalf("Finder manifest binding missing: %#v", manifest)
 	}
 }
 
@@ -1647,7 +1633,7 @@ func TestCoderLaunchUsesConfiguredModelInsteadOfParentActionModel(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read Coder settings: %v", err)
 	}
-	settings.Agents.Coder = uisettings.CompactAgentSettings{Provider: "codex", Model: "configured-coder-model", Thinking: "medium", ServiceTier: "priority"}
+	settings.Agents.Coder = uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}
 	if _, err := svc.uiSettings.SetForAccount("test-account", settings); err != nil {
 		t.Fatalf("save Coder settings: %v", err)
 	}
@@ -1660,7 +1646,7 @@ func TestCoderLaunchUsesConfiguredModelInsteadOfParentActionModel(t *testing.T) 
 		t.Fatalf("compiled Coder manifest = %#v", manifest.Launches)
 	}
 	launch := manifest.Launches[0]
-	if launch.SubagentProvider != "codex" || launch.SubagentModel != "configured-coder-model" || launch.SubagentThinking != "medium" || launch.SubagentServiceTier != "priority" {
+	if launch.SubagentProvider != "codex" || launch.SubagentModel != "gpt-5.4" || launch.SubagentThinking != "medium" || launch.SubagentServiceTier != "" {
 		t.Fatalf("compiled Coder model = %#v, want configured Coder settings", launch)
 	}
 	if launch.ModelProfileSnapshot != nil {
@@ -1830,7 +1816,15 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		t.Fatalf("set account model preference: %v", err)
 	}
 	service := NewService(sessions, models, nil, tool.NewRuntime(1), nil, agents, nil, events)
-	service.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
+	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	configured := uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}
+	if _, err := uiSettings.SetForAccount("test-account", uisettings.UISettings{Agents: uisettings.AgentSettings{
+		Compact: configured, Finder: configured, Coder: configured, Designer: configured, Router: configured,
+	}}); err != nil {
+		cleanup()
+		t.Fatalf("configure system-agent models: %v", err)
+	}
+	service.SetUISettingsService(uiSettings)
 	return service, parent.ID, cleanup
 }
 

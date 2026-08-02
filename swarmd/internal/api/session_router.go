@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -163,28 +164,15 @@ func (s *Server) invokeConfiguredRouterOnce(ctx context.Context, principal ident
 		return configuredRouterResponse{}, errors.New("Router output byte limit must be positive")
 	}
 
-	uiSettings, err := s.uiSettings.GetForAccount(principal.AccountScopeID)
+	if s.model == nil || s.agents == nil {
+		return configuredRouterResponse{}, errors.New("Router model and agent services are not configured")
+	}
+	resolvedModel, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.uiSettings, principal.AccountScopeID, agentruntime.RouterAgentID, "")
 	if err != nil {
-		return configuredRouterResponse{}, fmt.Errorf("read Router model settings: %w", err)
+		return configuredRouterResponse{}, err
 	}
-	configured := uiSettings.Agents.Router
-	profile := agentruntime.RouterAgentProfileForParent(pebblestore.AgentProfile{
-		Provider: configured.Provider, Model: configured.Model, Thinking: configured.Thinking, AutoServiceTier: configured.ServiceTier,
-	})
-	providerID := modelruntime.NormalizeProviderID(profile.Provider)
-	modelID := strings.TrimSpace(profile.Model)
-	if providerID == "" || modelID == "" {
-		return configuredRouterResponse{}, errors.New("Router provider and model must be configured")
-	}
-	if s.model == nil {
-		return configuredRouterResponse{}, errors.New("model service is not configured")
-	}
-	resolvedModel, err := s.model.ResolvePreference(pebblestore.ModelPreference{
-		Provider: providerID, Model: modelID, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier,
-	})
-	if err != nil {
-		return configuredRouterResponse{}, fmt.Errorf("resolve Router model %q/%q: %w", providerID, modelID, err)
-	}
+	providerID := modelruntime.NormalizeProviderID(resolvedModel.Preference.Provider)
+	modelID := strings.TrimSpace(resolvedModel.Preference.Model)
 	if !resolvedModel.CatalogPresent {
 		return configuredRouterResponse{}, fmt.Errorf("Router model catalog record for provider %q model %q is unavailable", providerID, modelID)
 	}

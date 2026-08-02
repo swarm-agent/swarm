@@ -13,6 +13,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
 	"swarm/packages/swarmd/internal/permission"
@@ -20,7 +21,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
-	"swarm/packages/swarmd/internal/uisettings"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -504,17 +504,6 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childMode := effectiveTaskChildMode(sessionMode)
 	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
-	modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
-	if parentSession.ModelProfile != nil && !isCoderTarget {
-		modelProfile, err = inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
-		if err != nil {
-			return taskLaunchPrepared{}, fmt.Errorf("task child model profile: %w", err)
-		}
-		preference, err = manageSessionsDeployModelProfilePreference(modelProfile, childMode)
-		if err != nil {
-			return taskLaunchPrepared{}, fmt.Errorf("task child model preference: %w", err)
-		}
-	}
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
 	childWorkspacePath := strings.TrimSpace(parentSession.WorkspacePath)
@@ -620,7 +609,6 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		Title:                   childTitle,
 		Mode:                    childMode,
 		Preference:              preference,
-		ModelProfile:            modelProfile,
 		Metadata:                childMetadata,
 		CreatedAt:               nowMS,
 		UpdatedAt:               nowMS,
@@ -3841,63 +3829,15 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 		return pebblestore.AgentProfile{}, errors.New("saved agent service is not configured")
 	}
 	if agentruntime.IsFinderAgentName(nameOrPurpose) || agentruntime.IsDesignerAgentName(nameOrPurpose) {
-		agentLabel := agentruntime.FinderAgentName
 		agentID := agentruntime.FinderAgentID
 		if agentruntime.IsDesignerAgentName(nameOrPurpose) {
-			agentLabel = agentruntime.DesignerAgentName
 			agentID = agentruntime.DesignerAgentID
 		}
 		if s.model == nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("%s model service is not configured", agentLabel)
+			return pebblestore.AgentProfile{}, errors.New("system-agent model service is not configured")
 		}
-		preference, err := s.model.GetPreferenceForAccount(strings.TrimSpace(accountScopeID))
-		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("read %s model preference: %w", agentLabel, err)
-		}
-		providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
-		override := uisettings.CompactAgentSettings{}
-		if s.uiSettings != nil {
-			if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); settingsErr == nil {
-				if agentID == agentruntime.DesignerAgentID {
-					override = settings.Agents.Designer
-				} else {
-					override = settings.Agents.Finder
-				}
-			}
-		}
-		if override.Provider != "" {
-			providerID = strings.ToLower(strings.TrimSpace(override.Provider))
-		}
-		if providerID == "" {
-			return pebblestore.AgentProfile{}, fmt.Errorf("%s utility provider is empty", agentLabel)
-		}
-		_, _, utility, ok, err := s.model.RecommendedCatalogDefaults(providerID)
-		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("resolve %s utility recommendation: %w", agentLabel, err)
-		}
-		if !ok || strings.TrimSpace(utility.Model) == "" {
-			return pebblestore.AgentProfile{}, fmt.Errorf("%s utility recommendation for provider %q is unavailable", agentLabel, providerID)
-		}
-		modelName := strings.TrimSpace(override.Model)
-		if modelName == "" {
-			modelName = strings.TrimSpace(utility.Model)
-		}
-		thinking := strings.TrimSpace(override.Thinking)
-		for _, recommendation := range utility.Recommendations {
-			if thinking == "" && strings.EqualFold(strings.TrimSpace(recommendation.Role), "utility") {
-				thinking = strings.TrimSpace(recommendation.Thinking)
-				break
-			}
-		}
-		resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Provider: providerID, Model: modelName, Thinking: thinking, ContextMode: preference.ContextMode})
-		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("resolve %s utility preference: %w", agentLabel, err)
-		}
-		serviceTier := strings.TrimSpace(override.ServiceTier)
-		if serviceTier == "" {
-			serviceTier = strings.TrimSpace(preference.ServiceTier)
-		}
-		return s.agents.ResolveSystemAgent(agentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking, AutoServiceTier: serviceTier})
+		_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.uiSettings, accountScopeID, agentID, "")
+		return profile, err
 	}
 	if strings.TrimSpace(accountScopeID) != "" {
 		return s.agents.ResolveSubagentForAccount(accountScopeID, nameOrPurpose)
