@@ -6237,6 +6237,27 @@ func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(
 	}
 }
 
+func TestSessionsV3PlanFreshContextBoundarySummaryMarksWaitingReviewAsPostHandoff(t *testing.T) {
+	plan := pebblestore.SessionPlanSnapshot{Title: "Completed plan", Document: &pebblestore.SessionPlanDocument{
+		ExecutionState: &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID: "followup-2", Title: "Approved routing", Status: sessionruntime.PlanCheckpointStatusCompleted,
+			Report: "Routing treatment handed off.",
+		}},
+	}}
+
+	summary := sessionV3PlanFreshContextBoundarySummary(plan, "followup-2", "")
+	for _, want := range []string{
+		"Post-handoff conversation: the checkpoint is already terminal and its handoff has already been emitted.",
+		"Interpret the current user message as a new conversation turn.",
+		"Do not continue, complete, or re-complete the checkpoint",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("post-handoff summary missing %q: %s", want, summary)
+		}
+	}
+}
+
 func TestSessionsV3ProviderPostCheckpointFollowupUsesNativeContinuation(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	providers := registry.New()

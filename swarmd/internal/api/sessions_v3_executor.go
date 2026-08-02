@@ -3242,6 +3242,12 @@ func sessionV3PlanFreshContextBoundarySummary(plan pebblestore.SessionPlanSnapsh
 	}
 	doc := plan.Document
 	lines := []string{"Automatic checkpoint fresh-context boundary."}
+	if doc.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(doc.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
+		lines = append(lines,
+			"Post-handoff conversation: the checkpoint is already terminal and its handoff has already been emitted.",
+			"Interpret the current user message as a new conversation turn. Do not continue, complete, or re-complete the checkpoint merely to acknowledge praise, agreement, commentary, a question, or guidance.",
+		)
+	}
 	if title := strings.TrimSpace(firstNonEmptyString(doc.Title, plan.Title)); title != "" {
 		lines = append(lines, "Plan: "+title)
 	}
