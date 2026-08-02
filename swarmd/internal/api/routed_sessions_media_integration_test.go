@@ -102,12 +102,15 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	if err := catalogStore.SetRecord(catalogRecord); err != nil {
 		t.Fatalf("seed media catalog record: %v", err)
 	}
+	if err := catalogStore.SetRecord(pebblestore.ModelCatalogRecord{Provider: "openai", Model: "router-model", ThinkingOptions: []string{"low"}}); err != nil {
+		t.Fatalf("seed Router model catalog record: %v", err)
+	}
 	if err := catalogStore.SetMeta(catalogMeta); err != nil {
 		t.Fatalf("seed media catalog meta: %v", err)
 	}
 	modelService := modelruntime.NewService(pebblestore.NewModelStore(store), events, modelruntime.NewCatalogService(catalogStore))
 
-	router := &sessionRouterRecordingRunner{id: "openai", response: provideriface.Response{Text: `{"title":"Inspect staged image","mode":"auto","worktree":false}`}}
+	router := &sessionRouterRecordingRunner{id: "openai", response: provideriface.Response{Text: `{"title":"Inspect staged image","mode":"auto"}`}}
 	runner := &routedMediaTestRunner{sessionRouterRecordingRunner: router, declaration: provideriface.MediaAdapterDeclaration{
 		AdapterID: provideriface.MediaAdapterIDOpenAIResponsesV1, ProviderID: "openai", ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses,
 		CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey, CredentialFingerprint: "credential-fingerprint",
@@ -286,7 +289,7 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 	t.Run("mode failure abandons staging", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "mode-failure")
-		fixture.runner.response.Text = `{"title":"Plan denied","mode":"plan","worktree":false}`
+		fixture.runner.response.Text = `{"title":"Plan denied","mode":"plan"}`
 		response := fixture.post(t, fixture.principal.AccountScopeID, "mode-failure", staged.ID, nil)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())

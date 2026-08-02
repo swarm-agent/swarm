@@ -9,6 +9,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	modelruntime "swarm/packages/swarmd/internal/model"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	routerruntime "swarm/packages/swarmd/internal/router"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -101,9 +102,29 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	profile := agentruntime.RouterAgentProfileForParent(pebblestore.AgentProfile{
 		Provider: configured.Provider, Model: configured.Model, Thinking: configured.Thinking, AutoServiceTier: configured.ServiceTier,
 	})
-	providerID := strings.ToLower(strings.TrimSpace(profile.Provider))
-	if providerID == "" || strings.TrimSpace(profile.Model) == "" {
+	providerID := modelruntime.NormalizeProviderID(profile.Provider)
+	modelID := strings.TrimSpace(profile.Model)
+	if providerID == "" || modelID == "" {
 		return sessionRouterDecision{}, errors.New("Router provider and model must be configured")
+	}
+	if s.model == nil {
+		return sessionRouterDecision{}, errors.New("model service is not configured")
+	}
+	resolvedModel, err := s.model.ResolvePreference(pebblestore.ModelPreference{
+		Provider: providerID, Model: modelID, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier,
+	})
+	if err != nil {
+		return sessionRouterDecision{}, fmt.Errorf("resolve Router model %q/%q: %w", providerID, modelID, err)
+	}
+	if !resolvedModel.CatalogPresent {
+		return sessionRouterDecision{}, fmt.Errorf("Router model catalog record for provider %q model %q is unavailable", providerID, modelID)
+	}
+	catalogLookup, err := s.model.GetCatalog(providerID, modelID)
+	if err != nil {
+		return sessionRouterDecision{}, fmt.Errorf("read Router model catalog for provider %q model %q: %w", providerID, modelID, err)
+	}
+	if !catalogLookup.Found {
+		return sessionRouterDecision{}, fmt.Errorf("Router model catalog record for provider %q model %q is unavailable", providerID, modelID)
 	}
 	if profile.ToolContract == nil || len(profile.ToolContract.Tools) != 0 {
 		return sessionRouterDecision{}, errors.New("compiled Router profile must be tool-free")
@@ -117,9 +138,10 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	// the strict schema in system instructions and enforce it again with DecodeResult.
 	instructions := strings.TrimSpace(prompt) + "\nOutput JSON schema (authoritative): " + string(encodedSchema)
 	response, err := runner.CreateResponse(authorityContext, provideriface.Request{
-		Model:        strings.TrimSpace(profile.Model),
-		Thinking:     strings.TrimSpace(profile.Thinking),
-		ServiceTier:  strings.TrimSpace(profile.AutoServiceTier),
+		Model:        resolvedModel.Preference.Model,
+		Thinking:     resolvedModel.Preference.Thinking,
+		ServiceTier:  resolvedModel.Preference.ServiceTier,
+		ModelCatalog: catalogLookup.Record,
 		Instructions: instructions,
 		Input: []map[string]any{{
 			"role":    "user",

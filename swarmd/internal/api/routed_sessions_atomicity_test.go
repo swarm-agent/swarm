@@ -37,10 +37,10 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 		breakCapabilities bool
 		wantRouterCalls   int
 	}{
-		{name: "workspace failure", workspaceEnabled: false, routerResponse: `{"title":"unused","mode":"auto","worktree":false}`, wantRouterCalls: 0},
+		{name: "workspace failure", workspaceEnabled: false, routerResponse: `{"title":"unused","mode":"auto"}`, wantRouterCalls: 0},
 		{name: "Router failure", workspaceEnabled: true, routerErr: errors.New("Router unavailable"), wantRouterCalls: 1},
-		{name: "mode failure", workspaceEnabled: true, routerResponse: `{"title":"Plan is disabled","mode":"plan","worktree":false}`, wantRouterCalls: 1},
-		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check","mode":"auto","worktree":false}`, breakCapabilities: true, wantRouterCalls: 1},
+		{name: "mode failure", workspaceEnabled: true, routerResponse: `{"title":"Plan is disabled","mode":"plan"}`, wantRouterCalls: 1},
+		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check","mode":"auto"}`, breakCapabilities: true, wantRouterCalls: 1},
 	}
 
 	for _, test := range tests {
@@ -71,7 +71,7 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 }
 
 func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Owned Title","mode":"auto","worktree":false}`}}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Owned Title","mode":"auto"}`}}
 	server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, false, true)
 	const requestID = "atomic-routed-start"
 	requestBody := map[string]any{
@@ -265,7 +265,11 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "routed-user", AccountScopeID: "routed-account", AccountScopeSource: identity.AccountScopeSourceServerState}
 
 	sessionService := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	modelService := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	catalogStore := pebblestore.NewModelCatalogStore(store)
+	if err := catalogStore.SetRecord(pebblestore.ModelCatalogRecord{Provider: routerRunner.id, Model: "router-model", ThinkingOptions: []string{"high"}, ServiceTiers: []string{"priority"}}); err != nil {
+		t.Fatalf("seed Router model catalog: %v", err)
+	}
+	modelService := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, modelruntime.NewCatalogService(catalogStore))
 	permissionService := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
 	permissionService.SetSessionResolver(sessionService)
 	agentService := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
