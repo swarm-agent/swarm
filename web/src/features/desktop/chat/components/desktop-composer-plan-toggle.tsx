@@ -5,27 +5,29 @@ export interface DesktopComposerPlanToggleProps {
   onActiveChange?: (active: boolean) => void
   disabled?: boolean
   readOnly?: boolean
+  allowDisable?: boolean
   className?: string
 }
 
-/** One-way Plan entry control that becomes a locked status indicator once active. */
+/** Plan entry control that only allows opt-out when its pending-session owner explicitly permits it. */
 export function DesktopComposerPlanToggle({
   active,
   onActiveChange,
   disabled = false,
   readOnly = false,
+  allowDisable = false,
   className = '',
 }: DesktopComposerPlanToggleProps) {
-  const locked = readOnly || active
+  const locked = readOnly || (active && !allowDisable)
   const label = active
-    ? 'Plan mode remains active until planning exits'
+    ? allowDisable && !readOnly ? 'Disable plan mode' : 'Plan mode remains active until planning exits'
     : readOnly ? 'Plan mode disabled' : 'Enable plan mode'
 
   return (
     <button
       type="button"
       onClick={() => {
-        if (!locked) onActiveChange?.(true)
+        if (!locked) onActiveChange?.(!active)
       }}
       disabled={disabled || (!locked && !onActiveChange)}
       aria-label={label}

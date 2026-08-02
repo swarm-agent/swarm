@@ -1205,9 +1205,9 @@ export function DesktopV3AgenticComposer({
             {routedNewSession && showModePicker ? (
               <DesktopComposerPlanToggle
                 active={mode === 'plan'}
-                onActiveChange={mode === 'plan' ? undefined : () => onModeSelect?.('plan')}
+                onActiveChange={(active) => onModeSelect?.(active ? 'plan' : 'auto')}
                 disabled={composerDisabled || agentModelControlBusy || !onModeSelect}
-                readOnly={mode === 'plan'}
+                allowDisable
               />
             ) : resolvedSessionControls && showModePicker && mode === 'plan' ? (
               <DesktopComposerPlanToggle active readOnly />

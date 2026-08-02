@@ -5,11 +5,12 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
 
-function render(active: boolean, disabled = false): string {
+function render(active: boolean, disabled = false, allowDisable = false): string {
   return renderToStaticMarkup(
     <DesktopComposerPlanToggle
       active={active}
       disabled={disabled}
+      allowDisable={allowDisable}
       onActiveChange={() => undefined}
     />,
   )
@@ -31,6 +32,14 @@ test('Plan toggle can enter Plan once and locks its active styling until plannin
   assert.doesNotMatch(active, /Disable plan mode/)
   assert.match(active, /border-\[var\(--app-border-accent\)\]/)
   assert.match(active, /ring-1 ring-\[var\(--app-border-accent\)\]/)
+})
+
+test('Plan toggle can expose pending-session opt-out without changing the active-session default', () => {
+  const pending = render(true, false, true)
+
+  assert.match(pending, /data-plan-active="true"/)
+  assert.match(pending, /Disable plan mode/)
+  assert.doesNotMatch(pending, /disabled=""/)
 })
 
 test('Plan toggle exposes disabled mutation state without faking a selection', () => {

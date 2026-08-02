@@ -73,8 +73,8 @@ test('routed new-chat composer exposes explicit Worktree and Plan intent with a 
 
   assert.match(source, /routedNewSession\?: boolean/)
   assert.match(source, /routedNewSession && showModePicker/)
-  assert.match(source, /<DesktopComposerPlanToggle[\s\S]*active=\{mode === 'plan'\}[\s\S]*readOnly=\{mode === 'plan'\}/)
-  assert.match(source, /resolvedSessionControls && showModePicker && mode === 'plan'/)
+  assert.match(source, /<DesktopComposerPlanToggle[\s\S]*active=\{mode === 'plan'\}[\s\S]*onActiveChange=\{\(active\) => onModeSelect\?\.\(active \? 'plan' : 'auto'\)\}[\s\S]*allowDisable/)
+  assert.match(source, /resolvedSessionControls && showModePicker && mode === 'plan'[\s\S]*<DesktopComposerPlanToggle active readOnly/)
   assert.match(source, /onAttach=\{routedNewSession \? \(onRoutedStageAttachments/)
   assert.match(source, /<DesktopRoutedWorktreePrime requested=\{routedWorktreeRequested\}/)
   assert.match(source, /statusLabel=\{modelStatusLabel\}/)
