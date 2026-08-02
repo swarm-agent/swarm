@@ -383,19 +383,19 @@ func TestUpsertUpdatesFlatModelFields(t *testing.T) {
 	svc, _ := newTestService(t)
 	enabled := true
 	created, _, _, err := svc.Upsert(UpsertInput{
-		Name:               "model-probe",
-		Mode:               ModeSubagent,
-		Description:        "model probe",
-		Provider:           "codex",
-		Model:              "gpt-5.4-mini",
-		Thinking:           "medium",
-		ProviderSet:        true,
-		ModelSet:           true,
-		ThinkingSet:        true,
-		Prompt:             "Probe model settings.",
-		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
-		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
-		Enabled:            &enabled,
+		Name:         "model-probe",
+		Mode:         ModeSubagent,
+		Description:  "model probe",
+		Provider:     "codex",
+		Model:        "gpt-5.4-mini",
+		Thinking:     "medium",
+		ProviderSet:  true,
+		ModelSet:     true,
+		ThinkingSet:  true,
+		Prompt:       "Probe model settings.",
+		RuntimeMode:  pebblestore.AgentRuntimeModeRead,
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:      &enabled,
 	})
 	if err != nil {
 		t.Fatalf("create flat profile: %v", err)
@@ -405,18 +405,18 @@ func TestUpsertUpdatesFlatModelFields(t *testing.T) {
 	}
 
 	updated, _, _, err := svc.Upsert(UpsertInput{
-		Name:               "model-probe",
-		Mode:               ModeSubagent,
-		Provider:           "codex",
-		Model:              "gpt-5.4",
-		Thinking:           "low",
-		Prompt:             "Probe model settings.",
-		RuntimeMode:        pebblestore.AgentRuntimeModeRead,
-		ToolContract:       &pebblestore.AgentToolContract{Preset: "read_only"},
-		Enabled:            &enabled,
-		ProviderSet:        true,
-		ModelSet:           true,
-		ThinkingSet:        true,
+		Name:         "model-probe",
+		Mode:         ModeSubagent,
+		Provider:     "codex",
+		Model:        "gpt-5.4",
+		Thinking:     "low",
+		Prompt:       "Probe model settings.",
+		RuntimeMode:  pebblestore.AgentRuntimeModeRead,
+		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"},
+		Enabled:      &enabled,
+		ProviderSet:  true,
+		ModelSet:     true,
+		ThinkingSet:  true,
 	})
 	if err != nil {
 		t.Fatalf("update flat profile: %v", err)

@@ -11,9 +11,9 @@ func TestSwarmModeSettingsStoreRoundTripsDirectSelections(t *testing.T) {
 	settings := NewSwarmModeSettingsStore(store)
 	want := SwarmModeSettingsRecord{
 		AccountScopeID: "account-a",
-		Action: ModelProfileSelection{Provider: "Codex", Model: "action", Thinking: "high", ServiceTier: "fast", ContextMode: "full"},
-		Plan: ModelProfileSelection{Provider: "OpenAI", Model: "plan", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "compact"},
-		UpdatedAt: 101,
+		Action:         ModelProfileSelection{Provider: "Codex", Model: "action", Thinking: "high", ServiceTier: "fast", ContextMode: "full"},
+		Plan:           ModelProfileSelection{Provider: "OpenAI", Model: "plan", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "compact"},
+		UpdatedAt:      101,
 	}
 	stored, err := settings.PutForAccount(want)
 	if err != nil {

@@ -34,28 +34,28 @@ const (
 )
 
 type WorkspaceEntry struct {
-	AccountScopeID             string   `json:"account_scope_id,omitempty"`
-	WorkspaceID                string   `json:"workspace_id"`
-	WorkspaceGeneration        int64    `json:"workspace_generation"`
-	State                      string   `json:"state,omitempty"`
-	Path                       string   `json:"path"`
-	Name                       string   `json:"name"`
-	ThemeID                    string   `json:"theme_id,omitempty"`
-	Directories                []string `json:"directories,omitempty"`
-	SortIndex                  int      `json:"sort_index,omitempty"`
-	AddedAt                    int64    `json:"added_at"`
-	UpdatedAt                  int64    `json:"updated_at"`
-	LastSelectedAt             int64    `json:"last_selected_at"`
-	Definition                 string   `json:"definition,omitempty"`
-	DefinitionStatus           string   `json:"definition_status,omitempty"`
-	DefinitionAttemptCount     int      `json:"definition_attempt_count,omitempty"`
-	DefinitionGeneration       int64    `json:"definition_generation,omitempty"`
-	DefinitionError            string   `json:"definition_error,omitempty"`
-	DefinitionModelSuggestion  string   `json:"definition_model_suggestion,omitempty"`
-	DefinitionPendingAt        int64    `json:"definition_pending_at,omitempty"`
-	DefinitionCompletedAt      int64    `json:"definition_completed_at,omitempty"`
-	DefinitionFailedAt         int64    `json:"definition_failed_at,omitempty"`
-	DefinitionUpdatedAt        int64    `json:"definition_updated_at,omitempty"`
+	AccountScopeID            string   `json:"account_scope_id,omitempty"`
+	WorkspaceID               string   `json:"workspace_id"`
+	WorkspaceGeneration       int64    `json:"workspace_generation"`
+	State                     string   `json:"state,omitempty"`
+	Path                      string   `json:"path"`
+	Name                      string   `json:"name"`
+	ThemeID                   string   `json:"theme_id,omitempty"`
+	Directories               []string `json:"directories,omitempty"`
+	SortIndex                 int      `json:"sort_index,omitempty"`
+	AddedAt                   int64    `json:"added_at"`
+	UpdatedAt                 int64    `json:"updated_at"`
+	LastSelectedAt            int64    `json:"last_selected_at"`
+	Definition                string   `json:"definition,omitempty"`
+	DefinitionStatus          string   `json:"definition_status,omitempty"`
+	DefinitionAttemptCount    int      `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration      int64    `json:"definition_generation,omitempty"`
+	DefinitionError           string   `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion string   `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt       int64    `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt     int64    `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt        int64    `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt       int64    `json:"definition_updated_at,omitempty"`
 }
 
 type WorkspaceStore struct {

@@ -29,12 +29,12 @@ const (
 )
 
 var (
-	ErrMediaStagingNotFound       = errors.New("media staging record not found")
-	ErrMediaStagingAccountDenied  = errors.New("media staging account scope denied")
-	ErrMediaStagingConflict       = errors.New("media staging idempotency conflict")
-	ErrMediaStagingNotConsumable  = errors.New("media staging record is not consumable")
-	ErrMediaStagingAlreadyBound   = errors.New("bound media staging record cannot be deleted")
-	ErrMediaStagingIntegrity      = errors.New("media staging content integrity check failed")
+	ErrMediaStagingNotFound      = errors.New("media staging record not found")
+	ErrMediaStagingAccountDenied = errors.New("media staging account scope denied")
+	ErrMediaStagingConflict      = errors.New("media staging idempotency conflict")
+	ErrMediaStagingNotConsumable = errors.New("media staging record is not consumable")
+	ErrMediaStagingAlreadyBound  = errors.New("bound media staging record cannot be deleted")
+	ErrMediaStagingIntegrity     = errors.New("media staging content integrity check failed")
 )
 
 type MediaStagingState string
@@ -69,7 +69,7 @@ type MediaStagingRecord struct {
 
 type PutMediaStagingInput struct {
 	AccountScopeID   string
-	IdempotencyKey  string
+	IdempotencyKey   string
 	DeclaredMIMEType string
 	FileName         string
 	TTL              time.Duration
@@ -278,11 +278,11 @@ func (s *MediaStagingStore) Put(input PutMediaStagingInput) (MediaStagingRecord,
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	for key, value := range map[string][]byte{
-		KeyMediaStagingRecord(input.AccountScopeID, stagingID): metadata,
-		KeyMediaStagingBlob(input.AccountScopeID, stagingID): payload,
-		KeyMediaStagingOwner(stagingID): []byte(input.AccountScopeID),
+		KeyMediaStagingRecord(input.AccountScopeID, stagingID):                 metadata,
+		KeyMediaStagingBlob(input.AccountScopeID, stagingID):                   payload,
+		KeyMediaStagingOwner(stagingID):                                        []byte(input.AccountScopeID),
 		keyMediaStagingIdempotency(input.AccountScopeID, input.IdempotencyKey): idempotency,
-		keyMediaStagingExpiry(record.ExpiresAt, stagingID): []byte(input.AccountScopeID),
+		keyMediaStagingExpiry(record.ExpiresAt, stagingID):                     []byte(input.AccountScopeID),
 	} {
 		if err := batch.Set([]byte(key), value, nil); err != nil {
 			return MediaStagingRecord{}, false, err

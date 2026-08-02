@@ -43,7 +43,7 @@ func TestSessionsV3WorktreeProjectionUsesDurableSnapshotFacts(t *testing.T) {
 		WorktreeBaseBranch: "dev",
 		WorktreeBranch:     "agent/final-worktree-1",
 		Metadata: map[string]any{
-			"routed_worktree_name":             "final-worktree-1",
+			"routed_worktree_name":            "final-worktree-1",
 			"swarm_v3_source_workspace_path":  "/source/workspace",
 			"swarm_v3_runtime_workspace_path": "/managed/final-worktree",
 		},

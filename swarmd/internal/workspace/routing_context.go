@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	maxRoutingWorkspaces          = 200
-	maxRoutingWorkspaceIDBytes    = 256
-	maxRoutingWorkspaceNameBytes  = 512
-	maxRoutingDefinitionBytes     = 12 << 10
+	maxRoutingWorkspaces         = 200
+	maxRoutingWorkspaceIDBytes   = 256
+	maxRoutingWorkspaceNameBytes = 512
+	maxRoutingDefinitionBytes    = 12 << 10
 )
 
 var (
@@ -199,6 +199,6 @@ func routingSnapshotForEntry(accountScopeID string, entry pebblestore.WorkspaceE
 	}
 	return routingWorkspaceSnapshot{
 		selection: selection,
-		offer: RoutingWorkspace{WorkspaceID: workspaceID, Name: name, Definition: definition},
+		offer:     RoutingWorkspace{WorkspaceID: workspaceID, Name: name, Definition: definition},
 	}, true
 }

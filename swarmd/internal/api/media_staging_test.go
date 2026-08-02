@@ -147,7 +147,7 @@ func TestMediaStagingHTTPBoundsExpiredAndBoundFailClosed(t *testing.T) {
 		response *httptest.ResponseRecorder
 		want     int
 	}{
-		"missing key": {stageMediaRequest(t, handler, "account", "", "image/png", mediaStagingAPIPNG), http.StatusBadRequest},
+		"missing key":  {stageMediaRequest(t, handler, "account", "", "image/png", mediaStagingAPIPNG), http.StatusBadRequest},
 		"missing MIME": {stageMediaRequest(t, handler, "account", "mime", "", mediaStagingAPIPNG), http.StatusUnsupportedMediaType},
 		"spoofed MIME": {stageMediaRequest(t, handler, "account", "spoof", "image/jpeg", mediaStagingAPIPNG), http.StatusUnsupportedMediaType},
 	} {

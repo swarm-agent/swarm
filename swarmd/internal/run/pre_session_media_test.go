@@ -53,11 +53,23 @@ func TestPreparePreSessionMediaBindingsFailsClosedOnContractAuthority(t *testing
 		{name: "missing snapshot", mutate: func(c *provideriface.SessionMediaContract) { c.SnapshotID = ""; rehashPreSessionContract(c) }},
 		{name: "missing credential", mutate: func(c *provideriface.SessionMediaContract) { c.CredentialFingerprint = ""; rehashPreSessionContract(c) }},
 		{name: "denied execution mode", mutate: func(c *provideriface.SessionMediaContract) { c.ExecutionMode = "read"; rehashPreSessionContract(c) }},
-		{name: "denial reasons", mutate: func(c *provideriface.SessionMediaContract) { c.DenialReasons = []string{"denied"}; rehashPreSessionContract(c) }},
-		{name: "session mismatch", mutate: func(c *provideriface.SessionMediaContract) { c.SessionScope = "another-session"; rehashPreSessionContract(c) }},
+		{name: "denial reasons", mutate: func(c *provideriface.SessionMediaContract) {
+			c.DenialReasons = []string{"denied"}
+			rehashPreSessionContract(c)
+		}},
+		{name: "session mismatch", mutate: func(c *provideriface.SessionMediaContract) {
+			c.SessionScope = "another-session"
+			rehashPreSessionContract(c)
+		}},
 		{name: "workspace mismatch", mutate: func(c *provideriface.SessionMediaContract) { c.WorkspaceScope = "/other"; rehashPreSessionContract(c) }},
-		{name: "no allowed capabilities", mutate: func(c *provideriface.SessionMediaContract) { c.Capabilities[0].State = provideriface.MediaCapabilityStateDenied; rehashPreSessionContract(c) }},
-		{name: "incomplete allowed capability", mutate: func(c *provideriface.SessionMediaContract) { c.Capabilities[0].ContentTypes = nil; rehashPreSessionContract(c) }},
+		{name: "no allowed capabilities", mutate: func(c *provideriface.SessionMediaContract) {
+			c.Capabilities[0].State = provideriface.MediaCapabilityStateDenied
+			rehashPreSessionContract(c)
+		}},
+		{name: "incomplete allowed capability", mutate: func(c *provideriface.SessionMediaContract) {
+			c.Capabilities[0].ContentTypes = nil
+			rehashPreSessionContract(c)
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -77,19 +89,54 @@ func TestPreparePreSessionMediaBindingsRejectsStagedMetadataAndLimits(t *testing
 	baseContract := testPreSessionMediaContract()
 	base := testPreSessionStagedMedia("stage-1", strings.Repeat("a", 64), 512)
 	tests := []struct {
-		name    string
+		name     string
 		contract func() provideriface.SessionMediaContract
-		staged  []PreSessionMediaStagedMetadata
+		staged   []PreSessionMediaStagedMetadata
 	}{
-		{name: "account ownership mismatch", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata { item := base; item.AccountScopeID = "other"; return []PreSessionMediaStagedMetadata{item} }()},
-		{name: "declared detected mismatch", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata { item := base; item.DeclaredMIMEType = "image/jpeg"; return []PreSessionMediaStagedMetadata{item} }()},
-		{name: "unsupported MIME", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata { item := base; item.DeclaredMIMEType = "image/jpeg"; item.DetectedMIMEType = "image/jpeg"; return []PreSessionMediaStagedMetadata{item} }()},
-		{name: "invalid digest", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata { item := base; item.DigestSHA256 = "not-a-digest"; return []PreSessionMediaStagedMetadata{item} }()},
-		{name: "empty size", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata { item := base; item.Size = 0; return []PreSessionMediaStagedMetadata{item} }()},
-		{name: "per item bytes", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata { item := base; item.Size = 1025; return []PreSessionMediaStagedMetadata{item} }()},
+		{name: "account ownership mismatch", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata {
+			item := base
+			item.AccountScopeID = "other"
+			return []PreSessionMediaStagedMetadata{item}
+		}()},
+		{name: "declared detected mismatch", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata {
+			item := base
+			item.DeclaredMIMEType = "image/jpeg"
+			return []PreSessionMediaStagedMetadata{item}
+		}()},
+		{name: "unsupported MIME", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata {
+			item := base
+			item.DeclaredMIMEType = "image/jpeg"
+			item.DetectedMIMEType = "image/jpeg"
+			return []PreSessionMediaStagedMetadata{item}
+		}()},
+		{name: "invalid digest", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata {
+			item := base
+			item.DigestSHA256 = "not-a-digest"
+			return []PreSessionMediaStagedMetadata{item}
+		}()},
+		{name: "empty size", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata {
+			item := base
+			item.Size = 0
+			return []PreSessionMediaStagedMetadata{item}
+		}()},
+		{name: "per item bytes", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: func() []PreSessionMediaStagedMetadata {
+			item := base
+			item.Size = 1025
+			return []PreSessionMediaStagedMetadata{item}
+		}()},
 		{name: "duplicate staging id", contract: func() provideriface.SessionMediaContract { return baseContract }, staged: []PreSessionMediaStagedMetadata{base, base}},
-		{name: "per modality count", contract: func() provideriface.SessionMediaContract { c := baseContract; c.Capabilities[0].MaxCount = 1; rehashPreSessionContract(&c); return c }, staged: []PreSessionMediaStagedMetadata{base, testPreSessionStagedMedia("stage-2", strings.Repeat("b", 64), 512)}},
-		{name: "denied semantics", contract: func() provideriface.SessionMediaContract { c := baseContract; c.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsClientProcessed; rehashPreSessionContract(&c); return c }, staged: []PreSessionMediaStagedMetadata{base}},
+		{name: "per modality count", contract: func() provideriface.SessionMediaContract {
+			c := baseContract
+			c.Capabilities[0].MaxCount = 1
+			rehashPreSessionContract(&c)
+			return c
+		}, staged: []PreSessionMediaStagedMetadata{base, testPreSessionStagedMedia("stage-2", strings.Repeat("b", 64), 512)}},
+		{name: "denied semantics", contract: func() provideriface.SessionMediaContract {
+			c := baseContract
+			c.Capabilities[0].Semantics = pebblestore.ModelCatalogMediaSemanticsClientProcessed
+			rehashPreSessionContract(&c)
+			return c
+		}, staged: []PreSessionMediaStagedMetadata{base}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -134,8 +181,8 @@ func TestPreparePreSessionMediaBindingsEnforcesAggregateBounds(t *testing.T) {
 func testPreSessionMediaContract() provideriface.SessionMediaContract {
 	contract := provideriface.SessionMediaContract{
 		Version: SessionMediaContractVersion, ProviderID: "openai", Model: "gpt-vision",
-		ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses,
-		CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey,
+		ProviderSurface:       provideriface.MediaProviderSurfaceOpenAIResponses,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceOpenAIAPIKey,
 		CredentialFingerprint: "credential-fingerprint", AdapterID: provideriface.MediaAdapterIDOpenAIResponsesV1,
 		SnapshotID: "snapshot", SnapshotVersion: "v1", SnapshotSource: "live",
 		ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "session",

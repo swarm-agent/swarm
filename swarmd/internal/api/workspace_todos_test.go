@@ -118,11 +118,11 @@ func TestWorkspaceTodosAcceptsWorktreeOriginForCanonicalWorkspaceTask(t *testing
 		Source:             pebblestore.SessionModelProfileSourceSaved,
 		ActionFavoriteID:   "action-favorite",
 		ActionFavoriteName: "Action",
-		Action:              pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model"},
+		Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model"},
 		PlanFavoriteID:     "plan-favorite",
 		PlanFavoriteName:   "Plan",
-		Plan:                &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model"},
-		AppliedAt:           42,
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model"},
+		AppliedAt:          42,
 	}
 	origin, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		UserID:         testPrincipal().UserID,

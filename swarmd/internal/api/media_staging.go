@@ -23,15 +23,15 @@ const (
 )
 
 type mediaStagingHTTPRecord struct {
-	ID               string                          `json:"id"`
+	ID               string                        `json:"id"`
 	Status           pebblestore.MediaStagingState `json:"status"`
-	Consumable       bool                            `json:"consumable"`
-	DeclaredMIMEType string                          `json:"declared_mime_type"`
-	DetectedMIMEType string                          `json:"detected_mime_type"`
-	FileName         string                          `json:"file_name,omitempty"`
-	Size             int64                           `json:"size"`
-	CreatedAt         int64                           `json:"created_at"`
-	ExpiresAt         int64                           `json:"expires_at"`
+	Consumable       bool                          `json:"consumable"`
+	DeclaredMIMEType string                        `json:"declared_mime_type"`
+	DetectedMIMEType string                        `json:"detected_mime_type"`
+	FileName         string                        `json:"file_name,omitempty"`
+	Size             int64                         `json:"size"`
+	CreatedAt        int64                         `json:"created_at"`
+	ExpiresAt        int64                         `json:"expires_at"`
 }
 
 func (s *Server) handleMediaStagingCollection(w http.ResponseWriter, r *http.Request) {

@@ -16,7 +16,7 @@ func TestV3RealtimeOutboxMembershipProjectsDurableWorktreeFacts(t *testing.T) {
 		WorktreeBaseBranch: "dev",
 		WorktreeBranch:     "agent/final-worktree-1",
 		Metadata: map[string]any{
-			"routed_worktree_name":            "final-worktree-1",
+			"routed_worktree_name":           "final-worktree-1",
 			"swarm_v3_source_workspace_path": "/source/workspace",
 		},
 	}

@@ -580,8 +580,8 @@ func TestSessionV3CancelRunDoesNotMutateUnrelatedPlanOwnership(t *testing.T) {
 func TestResolveSessionV3EffectivePreferenceUsesImmutableModeSelection(t *testing.T) {
 	profile := &pebblestore.SessionModelProfileSnapshot{
 		AppliedAt: 77,
-		Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model", Thinking: "high", ServiceTier: "priority", ContextMode: "1m"},
-		Plan:   &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"},
+		Action:    pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model", Thinking: "high", ServiceTier: "priority", ContextMode: "1m"},
+		Plan:      &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"},
 	}
 	for _, test := range []struct {
 		mode string

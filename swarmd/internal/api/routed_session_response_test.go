@@ -34,15 +34,15 @@ func TestBuildSessionsV3RoutedStartResponseProjectsDurableAuthority(t *testing.T
 		WorktreeBaseBranch: "dev",
 		WorktreeBranch:     "agent/routed",
 		Metadata: map[string]any{
-			"workspace_id":                        "worktree-id",
-			"swarm_v3_workspace_binding_id":       "binding-id",
-			"swarm_v3_source_workspace_id":        "source-id",
-			"swarm_v3_source_workspace_name":      "source-name",
-			"swarm_v3_source_workspace_path":      "/source/workspace",
-			"swarm_v3_runtime_workspace_path":     "/runtime/worktree",
-			"swarm_v3_runtime_swarm_id":           "runtime-swarm",
-			"swarm_v3_authority_host_swarm_id":    "host-swarm",
-			"routed_worktree_name":                 "routed-final-1",
+			"workspace_id":                     "worktree-id",
+			"swarm_v3_workspace_binding_id":    "binding-id",
+			"swarm_v3_source_workspace_id":     "source-id",
+			"swarm_v3_source_workspace_name":   "source-name",
+			"swarm_v3_source_workspace_path":   "/source/workspace",
+			"swarm_v3_runtime_workspace_path":  "/runtime/worktree",
+			"swarm_v3_runtime_swarm_id":        "runtime-swarm",
+			"swarm_v3_authority_host_swarm_id": "host-swarm",
+			"routed_worktree_name":             "routed-final-1",
 		},
 	}
 	message := pebblestore.MessageSnapshot{ID: "message-1", SessionID: session.ID, Role: "user", Content: "first prompt", CreatedAt: 101}
@@ -101,7 +101,7 @@ func TestSessionsV3SessionIdentityReportsOnlyPersistedWorktreeFacts(t *testing.T
 		Metadata: map[string]any{
 			"swarm_v3_source_workspace_path":  "/source/workspace",
 			"swarm_v3_runtime_workspace_path": "/runtime/workspace",
-			"routed_worktree_name":             "phantom",
+			"routed_worktree_name":            "phantom",
 		},
 	})
 	if err != nil {

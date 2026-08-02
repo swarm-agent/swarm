@@ -227,7 +227,7 @@ func TestSessionsV3ModelProfileMutationCommitsCurrentSlotAndRealtimeOutbox(t *te
 		t.Fatalf("model mutation status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var response struct {
-		Preference     pebblestore.ModelPreference            `json:"preference"`
+		Preference     pebblestore.ModelPreference             `json:"preference"`
 		ModelProfile   pebblestore.SessionModelProfileSnapshot `json:"model_profile"`
 		Mutation       sessionruntime.SessionMutationResult    `json:"mutation"`
 		RealtimeOutbox *pebblestore.V3RealtimeOutboxRecord     `json:"realtime_outbox"`
@@ -241,7 +241,7 @@ func TestSessionsV3ModelProfileMutationCommitsCurrentSlotAndRealtimeOutbox(t *te
 	var eventPayload struct {
 		ModelProfile     pebblestore.SessionModelProfileSnapshot `json:"model_profile"`
 		Preference       pebblestore.ModelPreference             `json:"preference"`
-		AgentModelPolicy sessionsV3AgentModelPolicy               `json:"agent_model_policy"`
+		AgentModelPolicy sessionsV3AgentModelPolicy              `json:"agent_model_policy"`
 	}
 	if err := json.Unmarshal(response.Mutation.Event.Payload, &eventPayload); err != nil {
 		t.Fatalf("decode model mutation event: %v", err)

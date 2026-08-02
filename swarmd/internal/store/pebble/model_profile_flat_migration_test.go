@@ -52,13 +52,13 @@ func TestRunModelProfileFlatMigrationRewritesSingleAndSplitAccounts(t *testing.T
 	store := openModelProfileFlatMigrationTestStore(t)
 	single := legacyModelProfileRecord{
 		ProfileID: "solo", AccountScopeID: "account-single", Name: "Solo", ModelMode: "single",
-		Single: migrationSelection("codex", "single-model", "high", "fast", "full"),
+		Single:    migrationSelection("codex", "single-model", "high", "fast", "full"),
 		CreatedAt: 10, UpdatedAt: 20, SortOrder: 7,
 	}
 	split := legacyModelProfileRecord{
 		ProfileID: "standard", AccountScopeID: "account-split", Name: "Standard", ModelMode: "split",
-		Plan: migrationSelection("codex", "plan-model", "xhigh", "fast", "full"),
-		Auto: migrationSelection("openai", "action-model", "medium", "flex", "compact"),
+		Plan:      migrationSelection("codex", "plan-model", "xhigh", "fast", "full"),
+		Auto:      migrationSelection("openai", "action-model", "medium", "flex", "compact"),
 		CreatedAt: 30, UpdatedAt: 40, SortOrder: 11,
 	}
 	seedLegacyModelProfile(t, store, single)

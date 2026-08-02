@@ -12,21 +12,21 @@ import (
 // session. Paths and binding facts come from the stored session snapshot rather
 // than from a route request or mutable topology lookup.
 type sessionsV3SessionIdentity struct {
-	SessionID              string `json:"session_id"`
-	Title                  string `json:"title"`
-	WorkspaceID            string `json:"workspace_id,omitempty"`
-	WorkspaceBindingID     string `json:"workspace_binding_id,omitempty"`
-	SourceWorkspaceID      string `json:"source_workspace_id,omitempty"`
-	SourceWorkspaceName    string `json:"source_workspace_name"`
-	SourceWorkspacePath    string `json:"source_workspace_path"`
-	RuntimeWorkspacePath   string `json:"runtime_workspace_path"`
-	RuntimeSwarmID         string `json:"runtime_swarm_id,omitempty"`
-	AuthorityHostSwarmID   string `json:"authority_host_swarm_id,omitempty"`
-	WorktreeEnabled        bool   `json:"worktree_enabled"`
-	RequestedWorktreeName  string `json:"requested_worktree_name,omitempty"`
-	WorktreeRootPath       string `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch     string `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch         string `json:"worktree_branch,omitempty"`
+	SessionID             string `json:"session_id"`
+	Title                 string `json:"title"`
+	WorkspaceID           string `json:"workspace_id,omitempty"`
+	WorkspaceBindingID    string `json:"workspace_binding_id,omitempty"`
+	SourceWorkspaceID     string `json:"source_workspace_id,omitempty"`
+	SourceWorkspaceName   string `json:"source_workspace_name"`
+	SourceWorkspacePath   string `json:"source_workspace_path"`
+	RuntimeWorkspacePath  string `json:"runtime_workspace_path"`
+	RuntimeSwarmID        string `json:"runtime_swarm_id,omitempty"`
+	AuthorityHostSwarmID  string `json:"authority_host_swarm_id,omitempty"`
+	WorktreeEnabled       bool   `json:"worktree_enabled"`
+	RequestedWorktreeName string `json:"requested_worktree_name,omitempty"`
+	WorktreeRootPath      string `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch    string `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch        string `json:"worktree_branch,omitempty"`
 }
 
 // sessionsV3RoutedStartResponse is the immediate response contract for a
@@ -64,21 +64,21 @@ func sessionsV3SessionIdentityFromSnapshot(session pebblestore.SessionSnapshot) 
 		requestedWorktreeName = sessionsV3MetadataString(session.Metadata, "routed_worktree_name")
 	}
 	return sessionsV3SessionIdentity{
-		SessionID:            strings.TrimSpace(session.ID),
-		Title:                strings.TrimSpace(session.Title),
-		WorkspaceID:          sessionsV3MetadataString(session.Metadata, "workspace_id"),
-		WorkspaceBindingID:   firstNonEmpty(sessionsV3MetadataString(session.Metadata, "swarm_v3_workspace_binding_id"), sessionsV3MetadataString(session.Metadata, "local_workspace_binding_id")),
-		SourceWorkspaceID:    sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_id"),
-		SourceWorkspaceName:  firstNonEmpty(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_name"), strings.TrimSpace(session.WorkspaceName)),
-		SourceWorkspacePath:  sourcePath,
-		RuntimeWorkspacePath: runtimePath,
-		RuntimeSwarmID:       sessionsV3MetadataString(session.Metadata, "swarm_v3_runtime_swarm_id"),
-		AuthorityHostSwarmID: sessionsV3MetadataString(session.Metadata, "swarm_v3_authority_host_swarm_id"),
-		WorktreeEnabled:        session.WorktreeEnabled,
+		SessionID:             strings.TrimSpace(session.ID),
+		Title:                 strings.TrimSpace(session.Title),
+		WorkspaceID:           sessionsV3MetadataString(session.Metadata, "workspace_id"),
+		WorkspaceBindingID:    firstNonEmpty(sessionsV3MetadataString(session.Metadata, "swarm_v3_workspace_binding_id"), sessionsV3MetadataString(session.Metadata, "local_workspace_binding_id")),
+		SourceWorkspaceID:     sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_id"),
+		SourceWorkspaceName:   firstNonEmpty(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_name"), strings.TrimSpace(session.WorkspaceName)),
+		SourceWorkspacePath:   sourcePath,
+		RuntimeWorkspacePath:  runtimePath,
+		RuntimeSwarmID:        sessionsV3MetadataString(session.Metadata, "swarm_v3_runtime_swarm_id"),
+		AuthorityHostSwarmID:  sessionsV3MetadataString(session.Metadata, "swarm_v3_authority_host_swarm_id"),
+		WorktreeEnabled:       session.WorktreeEnabled,
 		RequestedWorktreeName: requestedWorktreeName,
-		WorktreeRootPath:       strings.TrimSpace(session.WorktreeRootPath),
-		WorktreeBaseBranch:     strings.TrimSpace(session.WorktreeBaseBranch),
-		WorktreeBranch:         strings.TrimSpace(session.WorktreeBranch),
+		WorktreeRootPath:      strings.TrimSpace(session.WorktreeRootPath),
+		WorktreeBaseBranch:    strings.TrimSpace(session.WorktreeBaseBranch),
+		WorktreeBranch:        strings.TrimSpace(session.WorktreeBranch),
 	}, nil
 }
 
