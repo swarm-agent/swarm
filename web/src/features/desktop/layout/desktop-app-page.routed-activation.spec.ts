@@ -95,6 +95,18 @@ test('routed activation owns navigation rollback and suppresses stale failure to
   assert.doesNotMatch(handler, /void navigate\(/)
 })
 
+test('starting a new session requests focus for the pending composer', async () => {
+  const source = await readDesktopAppPage()
+  const handlerStart = source.indexOf('const handleStartNewSessionInWorkspace = useCallback')
+  const handlerEnd = source.indexOf('const handleRoutedSessionResolved', handlerStart)
+  const handler = source.slice(handlerStart, handlerEnd)
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handler, /dispatchDesktopV3Cache\(selectSession\(undefined\)\)/)
+  assert.match(handler, /handleOpenWorkspace\(wsPath, wsName\)/)
+  assert.match(handler, /setComposerFocusSignal\(\(current\) => current \+ 1\)/)
+})
+
 test('app-level new-chat wiring has no local pending authority or generic mode command', async () => {
   const source = await readDesktopAppPage()
 

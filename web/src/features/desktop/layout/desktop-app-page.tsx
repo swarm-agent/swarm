@@ -3419,6 +3419,7 @@ export function DesktopAppPage() {
   const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
     dispatchDesktopV3Cache(selectSession(undefined))
     handleOpenWorkspace(wsPath, wsName)
+    setComposerFocusSignal((current) => current + 1)
   }, [handleOpenWorkspace])
 
   const handleRoutedSessionResolved = useCallback(async (result: DesktopV3RoutedStartResult, sourceWorkspacePath: string): Promise<void> => {
