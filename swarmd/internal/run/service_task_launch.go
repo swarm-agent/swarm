@@ -1643,58 +1643,28 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
 		return profile, false, "", err
 	}
-	parentProfile, err := sessionV3AgentProfileFromMetadataMap(parentSession.Metadata)
+	sourceName := strings.TrimSpace(mapString(parentSession.Metadata, "agent_name"))
+	if parentProfile, err := sessionV3AgentProfileFromMetadataMap(parentSession.Metadata); err == nil && sourceName == "" {
+		sourceName = strings.TrimSpace(parentProfile.Name)
+	}
+	if s.uiSettings == nil {
+		return pebblestore.AgentProfile{}, true, sourceName, errors.New("Coder model settings are not configured")
+	}
+	settings, err := s.uiSettings.GetForAccount(strings.TrimSpace(parentSession.AccountScopeID))
 	if err != nil {
-		sourceName := strings.TrimSpace(mapString(parentSession.Metadata, "agent_name"))
-		if sourceName == "" {
-			return pebblestore.AgentProfile{}, true, "", fmt.Errorf("Coder requires trusted parent agent profile snapshot: %w", err)
-		}
-		parentProfile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent)
-		if err != nil {
-			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder cannot resolve trusted parent agent %q: %w", sourceName, err)
-		}
+		return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("read Coder model settings: %w", err)
 	}
-	sourceName := strings.TrimSpace(parentProfile.Name)
-	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, parentProfile, childMode)
-	if parentSession.ModelProfile != nil {
-		modelProfile, profileErr := inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
-		if profileErr != nil {
-			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder parent model profile: %w", profileErr)
-		}
-		preference, profileErr = manageSessionsDeployModelProfilePreference(modelProfile, childMode)
-		if profileErr != nil {
-			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder parent model preference: %w", profileErr)
-		}
-	} else if strings.EqualFold(sourceName, agentruntime.SwarmAgentID) {
-		return pebblestore.AgentProfile{}, true, sourceName, errors.New("Coder launch from Swarm requires the parent immutable model profile")
-	}
-	provider := strings.TrimSpace(preference.Provider)
-	modelName := strings.TrimSpace(preference.Model)
-	thinking := strings.TrimSpace(preference.Thinking)
-	serviceTier := strings.TrimSpace(preference.ServiceTier)
-	if parentSession.ModelProfile == nil && s.uiSettings != nil {
-		if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(parentSession.AccountScopeID)); settingsErr == nil {
-			override := settings.Agents.Coder
-			if strings.TrimSpace(override.Provider) != "" {
-				provider = strings.TrimSpace(override.Provider)
-			}
-			if strings.TrimSpace(override.Model) != "" {
-				modelName = strings.TrimSpace(override.Model)
-			}
-			if strings.TrimSpace(override.Thinking) != "" {
-				thinking = strings.TrimSpace(override.Thinking)
-			}
-			if strings.TrimSpace(override.ServiceTier) != "" {
-				serviceTier = strings.TrimSpace(override.ServiceTier)
-			}
-		}
+	configured := settings.Agents.Coder
+	provider := strings.TrimSpace(configured.Provider)
+	modelName := strings.TrimSpace(configured.Model)
+	if provider == "" || modelName == "" {
+		return pebblestore.AgentProfile{}, true, sourceName, errors.New("Coder provider and model settings are required")
 	}
 	profile, err := s.agents.ResolveSystemAgent(agentruntime.CoderAgentID, pebblestore.AgentProfile{
 		Provider:        provider,
 		Model:           modelName,
-		Thinking:        thinking,
-		AutoServiceTier: serviceTier,
-		ContextMode:     strings.TrimSpace(preference.ContextMode),
+		Thinking:        strings.TrimSpace(configured.Thinking),
+		AutoServiceTier: strings.TrimSpace(configured.ServiceTier),
 	})
 	if err != nil {
 		return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("resolve compiled Coder: %w", err)
@@ -1798,7 +1768,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
 		var profileErr error
-		if parentSession.ModelProfile != nil {
+		if parentSession.ModelProfile != nil && !agentruntime.IsCoderAgentName(requested) {
 			modelProfile, profileErr = inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
 			if profileErr != nil {
 				return taskLaunchManifest{}, fmt.Errorf("task launches[%d] model profile: %w", i, profileErr)

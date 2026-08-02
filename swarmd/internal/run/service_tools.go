@@ -502,9 +502,10 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 
 	childMode := effectiveTaskChildMode(sessionMode)
+	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 	modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
-	if parentSession.ModelProfile != nil {
+	if parentSession.ModelProfile != nil && !isCoderTarget {
 		modelProfile, err = inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
 		if err != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task child model profile: %w", err)
@@ -525,7 +526,6 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
-	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
 	isDesignerTarget := agentruntime.IsDesignerAgentName(requestedSubagent)
 	childMetadata := map[string]any{
 		"workspace_id":       worktreeruntime.WorkspaceIdentityForSession(childSessionID),
@@ -3201,7 +3201,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if row.ProfileSnapshot == nil {
 				return "", fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
 			}
-			if (row.ModelProfileSnapshot == nil) != (parentSession.ModelProfile == nil) || !equalSessionModelProfiles(row.ModelProfileSnapshot, parentSession.ModelProfile) {
+			expectedModelProfile := parentSession.ModelProfile
+			if agentruntime.IsCoderAgentName(launchSpecs[i].RequestedSubagentType) {
+				expectedModelProfile = nil
+			}
+			if !equalSessionModelProfiles(row.ModelProfileSnapshot, expectedModelProfile) {
 				return "", fmt.Errorf("approved task manifest launch %d model profile snapshot mismatch", i)
 			}
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)

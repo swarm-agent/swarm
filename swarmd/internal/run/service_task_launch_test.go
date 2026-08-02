@@ -1640,18 +1640,31 @@ func TestTaskManifestBindsCompleteImmutableModelProfile(t *testing.T) {
 	}
 }
 
-func TestCoderLaunchDoesNotRequirePersistedProfile(t *testing.T) {
+func TestCoderLaunchUsesConfiguredModelInsteadOfParentActionModel(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
-	if _, ok, err := svc.agents.GetProfileForAccount("test-account", "coder"); err != nil || ok {
-		t.Fatalf("persisted Coder profile ok=%v err=%v, want absent", ok, err)
+	settings, err := svc.uiSettings.GetForAccount("test-account")
+	if err != nil {
+		t.Fatalf("read Coder settings: %v", err)
 	}
+	settings.Agents.Coder = uisettings.CompactAgentSettings{Provider: "codex", Model: "configured-coder-model", Thinking: "medium", ServiceTier: "priority"}
+	if _, err := svc.uiSettings.SetForAccount("test-account", settings); err != nil {
+		t.Fatalf("save Coder settings: %v", err)
+	}
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
 	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"coder","meta_prompt":"y"}`})
 	if err != nil {
 		t.Fatalf("build compiled Coder manifest: %v", err)
 	}
 	if len(manifest.Launches) != 1 || manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CoderAgentID || !manifest.Launches[0].ParentCopy {
 		t.Fatalf("compiled Coder manifest = %#v", manifest.Launches)
+	}
+	launch := manifest.Launches[0]
+	if launch.SubagentProvider != "codex" || launch.SubagentModel != "configured-coder-model" || launch.SubagentThinking != "medium" || launch.SubagentServiceTier != "priority" {
+		t.Fatalf("compiled Coder model = %#v, want configured Coder settings", launch)
+	}
+	if launch.ModelProfileSnapshot != nil {
+		t.Fatalf("compiled Coder inherited parent Action/Plan model profile: %#v", launch.ModelProfileSnapshot)
 	}
 }
 
