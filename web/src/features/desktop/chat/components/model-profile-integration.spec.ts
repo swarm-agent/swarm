@@ -55,8 +55,8 @@ test('new-session composer resolves the active chosen profile when mode changes'
 
 test('agent setup removes profile management while preserving direct model persistence', () => {
   assert.doesNotMatch(controlSource, /Saved profiles|Profile settings|onSetDefaultModelProfile|Continue for this chat only|Save as new/)
-  assert.match(controlSource, /title="Action model"/)
-  assert.match(controlSource, /title="Plan model"/)
+  assert.match(controlSource, /title="Default Model"/)
+  assert.match(controlSource, /title="Plan Model"/)
   assert.match(controlSource, /saveSystemAgentSettings/)
   assert.match(controlSource, /saveSwarmModelSettings/)
   assert.match(controlSource, /action: \{ provider: action\.provider/)

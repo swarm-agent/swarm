@@ -11,7 +11,7 @@ test('flat favorite editor keeps provider, model, thinking, and service tier tog
 test('thinking options remain catalog driven for direct model editors', () => {
   assert.match(source, /const thinkingOptions = thinkingOptionsForOption\(selectedOption\)/)
   assert.match(source, /thinking: normalizeDraftThinking\(current\.provider, model, modelOptions, current\.thinking\)/)
-  assert.match(source, /title="Action model"/)
-  assert.match(source, /title="Plan model"/)
+  assert.match(source, /title="Default Model"/)
+  assert.match(source, /title="Plan Model"/)
   assert.doesNotMatch(source, /ThinkingSlider|Plan agent model|Action agent model|autoDraft/)
 })

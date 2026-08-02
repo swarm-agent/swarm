@@ -6,8 +6,8 @@ const source = readFileSync(new URL('./agent-model-control.tsx', import.meta.url
 
 test('agent setup configures agents directly without profile management', () => {
   assert.doesNotMatch(source, /Saved profiles|Profile settings|aria-label="Saved model profiles"/)
-  assert.match(source, /title="Action model"/)
-  assert.match(source, /title="Plan model"/)
+  assert.match(source, /title="Default Model"/)
+  assert.match(source, /title="Plan Model"/)
   assert.match(source, /Configure this system agent’s model directly/)
   assert.match(source, /label="Provider"[\s\S]*label="Model"[\s\S]*label="Thinking"[\s\S]*label="Service tier"/)
   assert.doesNotMatch(source, /Make account default|Continue for this chat only|Save as new/)
