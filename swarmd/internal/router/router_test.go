@@ -11,7 +11,7 @@ func boundContext(plan bool) Context {
 }
 
 func multipleContext(plan bool) Context {
-	return Context{PlanEnabled: plan, Workspaces: []Workspace{{ID: "ws-1", Name: "Core"}, {ID: "ws-2", Name: "Web"}}}
+	return Context{PlanEnabled: plan, WorktreeRequested: true, Workspaces: []Workspace{{ID: "ws-1", Name: "Core"}, {ID: "ws-2", Name: "Web"}}}
 }
 
 func TestPromptAndSchemaOmitDisabledPlan(t *testing.T) {
@@ -54,6 +54,9 @@ func TestPromptAndSchemaAdvertiseConditionalChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	properties := schema["properties"].(map[string]any)
+	if worktree := properties["worktree"].(map[string]any); worktree["const"] != true {
+		t.Fatalf("schema did not lock worktree to per-session intent: %+v", worktree)
+	}
 	if _, ok := properties["workspace_id"]; !ok {
 		t.Fatal("multiple-workspace schema omitted workspace_id")
 	}
@@ -89,8 +92,9 @@ func TestDecodeResultStrictAndContextual(t *testing.T) {
 		{"null bound workspace id", `{"title":"x","mode":"auto","workspace_id":null,"worktree":false}`, boundContext(false)},
 		{"missing workspace id", `{"title":"x","mode":"auto","worktree":false}`, multipleContext(false)},
 		{"unadvertised workspace", `{"title":"x","mode":"auto","workspace_id":"ws-x","worktree":false}`, multipleContext(false)},
-		{"missing worktree name", `{"title":"x","mode":"auto","worktree":true}`, boundContext(false)},
+		{"missing worktree name", `{"title":"x","mode":"auto","workspace_id":"ws-1","worktree":true}`, multipleContext(false)},
 		{"forbidden worktree name", `{"title":"x","mode":"auto","worktree":false,"worktree_name":"x"}`, boundContext(false)},
+		{"worktree intent mismatch", `{"title":"x","mode":"auto","workspace_id":"ws-1","worktree":false}`, multipleContext(false)},
 		{"empty title", `{"title":" ","mode":"auto","worktree":false}`, boundContext(false)},
 		{"long title", `{"title":"` + strings.Repeat("x", MaxTitleRunes+1) + `","mode":"auto","worktree":false}`, boundContext(false)},
 	}

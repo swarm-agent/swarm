@@ -45,7 +45,7 @@ func TestSessionRouterOnceUsesConfiguredToolFreeProviderAndServerBoundWorkspace(
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Implement routing","mode":"plan","worktree":false}`}}
 	server, principal, entries := newSessionRouterTestServer(t, runner, true, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Go API workspace"}})
 
-	decision, err := server.routeSessionOnce(context.Background(), principal, "implement the Router bridge")
+	decision, err := server.routeSessionOnce(context.Background(), principal, "implement the Router bridge", false)
 	if err != nil {
 		t.Fatalf("route session once: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSessionRouterOnceOffersMultipleWithoutDisabledPlan(t *testing.T) {
 	})
 	runner.response.Text = `{"title":"Fix backend","mode":"auto","workspace_id":"` + entries[1].WorkspaceID + `","worktree":true,"worktree_name":"backend-fix"}`
 
-	decision, err := server.routeSessionOnce(context.Background(), principal, "fix the backend")
+	decision, err := server.routeSessionOnce(context.Background(), principal, "fix the backend", true)
 	if err != nil {
 		t.Fatalf("route session once: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSessionRouterOnceReturnsProviderErrorWithoutRetryOrFallback(t *testing.
 	runner := &sessionRouterRecordingRunner{id: "recording", err: providerErr}
 	server, principal, _ := newSessionRouterTestServer(t, runner, false, []sessionRouterWorkspace{{"/workspace/sole", "Sole", "Sole workspace"}})
 
-	_, err := server.routeSessionOnce(context.Background(), principal, "route this")
+	_, err := server.routeSessionOnce(context.Background(), principal, "route this", false)
 	if !errors.Is(err, providerErr) {
 		t.Fatalf("route error = %v, want provider error", err)
 	}
@@ -127,7 +127,7 @@ func TestSessionRouterOnceRejectsZeroWorkspacesBeforeProvider(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Unexpected","mode":"auto","worktree":false}`}}
 	server, principal, _ := newSessionRouterTestServer(t, runner, false, nil)
 
-	if _, err := server.routeSessionOnce(context.Background(), principal, "route this"); !errors.Is(err, workspace.ErrNoRoutableWorkspaces) {
+	if _, err := server.routeSessionOnce(context.Background(), principal, "route this", false); !errors.Is(err, workspace.ErrNoRoutableWorkspaces) {
 		t.Fatalf("zero workspace error = %v", err)
 	}
 	if runner.createCalls != 0 || runner.streamingCalls != 0 {

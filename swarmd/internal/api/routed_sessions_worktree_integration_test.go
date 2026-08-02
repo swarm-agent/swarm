@@ -48,7 +48,7 @@ func (s *routedWorktreeServiceStub) AllocateDetachedWorkspaceRequestedForPrincip
 
 func TestAllocateRoutedSessionWorktreeUsesConfiguredPrefixAndBase(t *testing.T) {
 	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-		config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "router/<id>"},
+		config:     worktreeruntime.Config{UseCurrentBranch: false, BaseBranch: "dev", BranchName: "router/<id>"},
 		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api", RepoRoot: "/source/repo", BaseBranch: "dev", BranchName: "router/fix-api", WorkspaceID: "router-fix-api"},
 	}}
 	server := &Server{worktrees: stub}
@@ -64,12 +64,15 @@ func TestAllocateRoutedSessionWorktreeUsesConfiguredPrefixAndBase(t *testing.T) 
 	}
 }
 
-func TestAllocateRoutedSessionWorktreeRejectsDisabledConfig(t *testing.T) {
-	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{config: worktreeruntime.Config{Enabled: false}}}
+func TestAllocateRoutedSessionWorktreeUsesAutomaticCapability(t *testing.T) {
+	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+		config:     worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/fix-api", RepoRoot: "/source/repo", BranchName: "agent/fix-api", WorkspaceID: "fix-api"},
+	}}
 	server := &Server{worktrees: stub}
-	_, _, err := server.allocateRoutedSessionWorktree(identity.Principal{UserID: "user", AccountScopeID: "account"}, pebblestore.SessionSnapshot{WorkspacePath: "/source/repo"}, "session-1", "Fix API")
-	if err == nil || stub.allocationCalls != 0 {
-		t.Fatalf("disabled config error=%v allocation calls=%d", err, stub.allocationCalls)
+	allocation, _, err := server.allocateRoutedSessionWorktree(identity.Principal{UserID: "user", AccountScopeID: "account"}, pebblestore.SessionSnapshot{WorkspacePath: "/source/repo"}, "session-1", "Fix API")
+	if err != nil || stub.allocationCalls != 1 || allocation.WorkspacePath != "/managed/fix-api" {
+		t.Fatalf("automatic worktree capability failed allocation: error=%v allocation=%+v calls=%d", err, allocation, stub.allocationCalls)
 	}
 }
 
@@ -90,7 +93,7 @@ func TestAllocateRoutedSessionWorktreeRetriesOnlyOneTypedConflict(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			stub := &routedWorktreeServiceStub{
 				fakeWorktreeService: fakeWorktreeService{
-					config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "router"},
+					config:     worktreeruntime.Config{UseCurrentBranch: true, BranchName: "router"},
 					allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/retry", RepoRoot: "/source/repo", BranchName: test.wantBranch, WorkspaceID: "retry"},
 				},
 				allocationErrs: test.errs,
@@ -118,7 +121,7 @@ func TestAllocateRoutedSessionWorktreeRetriesOnlyOneTypedConflict(t *testing.T) 
 
 func TestApplyRoutedSessionWorktreeDecisionOnAllocatesAndAppliesCandidate(t *testing.T) {
 	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-		config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "router"},
+		config:     worktreeruntime.Config{UseCurrentBranch: false, BaseBranch: "dev", BranchName: "router"},
 		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api", RepoRoot: "/source/repo", BaseBranch: "dev", WorkspaceID: "router-fix-api"},
 	}}
 	server := &Server{worktrees: stub}

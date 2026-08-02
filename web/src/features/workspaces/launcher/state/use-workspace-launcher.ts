@@ -10,9 +10,7 @@ import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/
 import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-workspace'
 import { selectWorkspace } from '../mutations/select-workspace'
 import { setWorkspaceTheme as setWorkspaceThemeAPI } from '../mutations/set-workspace-theme'
-import { setWorkspaceWorktrees } from '../mutations/set-workspace-worktrees'
 import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../services/discovery-ordering'
-import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
 import { listWorkspaces } from '../queries/list-workspaces'
 import { uiSettingsQueryKey, uiSettingsQueryOptions, workspaceOverviewQueryKey, workspaceOverviewQueryOptions } from '../../../queries/query-options'
@@ -57,7 +55,6 @@ interface UseWorkspaceLauncherState {
   useFolderTemporarily: (path: string) => Promise<WorkspaceResolution>
   deleteWorkspace: (path: string) => Promise<void>
   unlinkWorkspaceDirectory: (workspacePath: string, directoryPath: string) => Promise<void>
-  setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<WorkspaceResolution>
   createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
@@ -96,21 +93,6 @@ function resolveEffectiveThemeId(
   }
 
   return globalThemeId.trim().toLowerCase() || ''
-}
-
-function patchWorkspaceWorktreeEnabled(workspaces: WorkspaceEntry[], path: string, enabled: boolean): WorkspaceEntry[] {
-  let changed = false
-  const next = workspaces.map((workspace) => {
-    if (workspace.path !== path || workspace.worktreeEnabled === enabled) {
-      return workspace
-    }
-    changed = true
-    return {
-      ...workspace,
-      worktreeEnabled: enabled,
-    }
-  })
-  return changed ? next : workspaces
 }
 
 function topologyRouteArraysEqual(left: WorkspaceOverviewTopologyRoute[], right: WorkspaceOverviewTopologyRoute[]): boolean {
@@ -173,7 +155,6 @@ function workspacesEqual(left: WorkspaceEntry[], right: WorkspaceEntry[]): boole
       || leftWorkspace.updatedAt !== rightWorkspace.updatedAt
       || leftWorkspace.lastSelectedAt !== rightWorkspace.lastSelectedAt
       || leftWorkspace.active !== rightWorkspace.active
-      || leftWorkspace.worktreeEnabled !== rightWorkspace.worktreeEnabled
       || leftWorkspace.gitBranch !== rightWorkspace.gitBranch
       || leftWorkspace.gitHasGit !== rightWorkspace.gitHasGit
       || leftWorkspace.gitClean !== rightWorkspace.gitClean
@@ -573,36 +554,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [refresh])
 
-  const updateWorkspaceWorktreeEnabled = useCallback(async (path: string, enabled: boolean) => {
-    const trimmedPath = path.trim()
-    if (trimmedPath === '') {
-      return
-    }
-
-    const previousEnabled = workspaces.find((workspace) => workspace.path === trimmedPath)?.worktreeEnabled
-    const applyOptimisticState = (nextEnabled: boolean) => {
-      setWorkspaces((current) => patchWorkspaceWorktreeEnabled(current, trimmedPath, nextEnabled))
-      syncWorkspaceOverviewWorktreeState(queryClient, trimmedPath, nextEnabled)
-    }
-
-    setSavingPath(trimmedPath)
-    setActionError(null)
-    try {
-      applyOptimisticState(enabled)
-      const resolvedEnabled = await setWorkspaceWorktrees(trimmedPath, enabled)
-      applyOptimisticState(resolvedEnabled)
-      void queryClient.invalidateQueries({ queryKey: ['workspace-overview'] })
-    } catch (err) {
-      if (typeof previousEnabled === 'boolean') {
-        applyOptimisticState(previousEnabled)
-      }
-      setActionError(err instanceof Error ? err.message : 'Failed to update worktree setting')
-      throw err
-    } finally {
-      setSavingPath(null)
-    }
-  }, [queryClient, workspaces])
-
   const updateWorkspaceTheme = useCallback(async (path: string, themeId: string) => {
     const trimmedPath = path.trim()
     const normalizedThemeId = themeId.trim().toLowerCase() === 'inherit' ? '' : themeId.trim().toLowerCase()
@@ -728,7 +679,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     useFolderTemporarily,
     deleteWorkspace,
     unlinkWorkspaceDirectory: removeWorkspaceDirectory,
-    setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,
     createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,

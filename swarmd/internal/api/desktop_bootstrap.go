@@ -61,20 +61,6 @@ type workspaceOverviewTopologyRoute struct {
 	UnavailableReason    string                               `json:"unavailable_reason,omitempty"`
 }
 
-func (s *Server) applyWorkspaceWorktreeStatus(principal identity.Principal, entries []workspace.Entry) ([]workspace.Entry, error) {
-	if len(entries) == 0 || s.worktrees == nil {
-		return entries, nil
-	}
-	for i := range entries {
-		config, err := s.worktrees.GetConfigForPrincipal(principal, entries[i].Path)
-		if err != nil {
-			return nil, err
-		}
-		entries[i].WorktreeEnabled = config.Enabled
-	}
-	return entries, nil
-}
-
 type workspaceOverviewResponse struct {
 	OK               bool                         `json:"ok"`
 	CurrentWorkspace *workspace.Resolution        `json:"current_workspace,omitempty"`
@@ -136,11 +122,6 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 	}
 
 	workspaces, err := s.workspace.ListKnownForPrincipal(principal, workspaceLimit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	workspaces, err = s.applyWorkspaceWorktreeStatus(principal, workspaces)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

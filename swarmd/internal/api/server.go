@@ -28,8 +28,8 @@ import (
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	"swarm/packages/swarmd/internal/longsessiondiag"
-	"swarm/packages/swarmd/internal/mediastaging"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
+	"swarm/packages/swarmd/internal/mediastaging"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
@@ -230,8 +230,8 @@ type notificationService interface {
 type worktreeService interface {
 	GetConfig(workspacePath string) (worktreeruntime.Config, error)
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
-	SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
-	SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
+	SetConfig(workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
+	SetConfigForPrincipal(principal identity.Principal, workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
 	AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceForPrincipal(principal identity.Principal, workspacePath, nameSeed string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
@@ -788,10 +788,8 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// A workspace does not need to be a Git repository to host a session.
-			// Report worktrees as effectively disabled so ordinary TUI session
-			// creation stays in the selected directory without requesting an
-			// allocation that cannot exist.
-			config.Enabled = false
+			// Keep ordinary session creation available while reporting why managed
+			// worktree allocation is unavailable for this workspace.
 			managed = []worktreeruntime.ManagedWorktree{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -803,7 +801,6 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req struct {
 			WorkspacePath    string  `json:"workspace_path"`
-			Enabled          *bool   `json:"enabled"`
 			UseCurrentBranch *bool   `json:"use_current_branch"`
 			BaseBranch       string  `json:"base_branch"`
 			BranchName       *string `json:"branch_name"`
@@ -825,10 +822,6 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		enabled := current.Enabled
-		if req.Enabled != nil {
-			enabled = *req.Enabled
-		}
 		baseBranch := strings.TrimSpace(req.BaseBranch)
 		useCurrentBranch := current.UseCurrentBranch
 		if req.UseCurrentBranch != nil {
@@ -843,7 +836,7 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 		if req.BranchName != nil {
 			branchName = strings.TrimSpace(*req.BranchName)
 		}
-		config, event, err := s.worktrees.SetConfigForPrincipal(principal, workspacePath, enabled, useCurrentBranch, baseBranch, branchName)
+		config, event, err := s.worktrees.SetConfigForPrincipal(principal, workspacePath, useCurrentBranch, baseBranch, branchName)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -1708,11 +1701,6 @@ func (s *Server) handleWorkspaceList(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 	entries, err := s.workspace.ListKnownForPrincipal(principal, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	entries, err = s.applyWorkspaceWorktreeStatus(principal, entries)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

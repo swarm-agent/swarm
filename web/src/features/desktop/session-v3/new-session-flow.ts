@@ -601,7 +601,7 @@ export function createDesktopV3RoutedComposerSnapshot(
     selectedSkill: input.selectedSkill === undefined || input.selectedSkill === null
       ? null
       : cloneRoutedComposerSelection(input.selectedSkill),
-    worktreePrimed: input.worktreePrimed !== false,
+    worktreePrimed: input.worktreePrimed === true,
   }
 }
 

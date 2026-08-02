@@ -15,7 +15,6 @@ const legacyDefaultWorktreeBaseBranch = "main"
 type WorktreeConfigRecord struct {
 	AccountScopeID   string `json:"account_scope_id,omitempty"`
 	WorkspacePath    string `json:"workspace_path,omitempty"`
-	Enabled          bool   `json:"enabled"`
 	UseCurrentBranch *bool  `json:"use_current_branch,omitempty"`
 	BaseBranch       string `json:"base_branch,omitempty"`
 	BranchName       string `json:"branch_name,omitempty"`
@@ -60,7 +59,7 @@ func (s *WorktreeStore) GetConfigLegacy(workspacePath string) (WorktreeConfigRec
 	return normalizeWorktreeConfigRecord(record), true, nil
 }
 
-func (s *WorktreeStore) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (WorktreeConfigRecord, error) {
+func (s *WorktreeStore) SetConfig(workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (WorktreeConfigRecord, error) {
 	return WorktreeConfigRecord{}, errors.New("legacy global worktree config is disabled; account scope is required")
 }
 
@@ -92,7 +91,7 @@ func (s *WorktreeStore) GetConfigForAccount(accountScopeID, workspacePath string
 	return normalizeWorktreeConfigRecord(record), true, nil
 }
 
-func (s *WorktreeStore) SetConfigForAccount(accountScopeID, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (WorktreeConfigRecord, error) {
+func (s *WorktreeStore) SetConfigForAccount(accountScopeID, workspacePath string, useCurrentBranch bool, baseBranch, branchName string) (WorktreeConfigRecord, error) {
 	if s == nil || s.store == nil {
 		return WorktreeConfigRecord{}, errors.New("worktree store is not configured")
 	}
@@ -107,7 +106,6 @@ func (s *WorktreeStore) SetConfigForAccount(accountScopeID, workspacePath string
 	record := WorktreeConfigRecord{
 		AccountScopeID:   accountScopeID,
 		WorkspacePath:    workspacePath,
-		Enabled:          enabled,
 		UseCurrentBranch: boolPtr(useCurrentBranch),
 		BaseBranch:       normalizeWorktreeBaseBranch(baseBranch, useCurrentBranch),
 		BranchName:       normalizeStoredWorktreeBranchName(branchName),
@@ -195,7 +193,6 @@ func (s *WorktreeStore) MigrateLegacyGlobalConfigForAccount(accountScopeID strin
 
 func defaultWorktreeConfigRecord() WorktreeConfigRecord {
 	return WorktreeConfigRecord{
-		Enabled:          false,
 		UseCurrentBranch: boolPtr(true),
 		BaseBranch:       "",
 		BranchName:       "",

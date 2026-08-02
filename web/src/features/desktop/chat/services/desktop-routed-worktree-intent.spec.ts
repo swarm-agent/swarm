@@ -13,13 +13,13 @@ import {
 
 test('routed worktree intent is framework-neutral boolean state', () => {
   const initial = createDesktopRoutedWorktreeIntent()
-  const currentWorkspace = toggleDesktopRoutedWorktreeIntent(initial)
+  const primed = toggleDesktopRoutedWorktreeIntent(initial)
 
-  assert.deepEqual(initial, { requested: true })
-  assert.deepEqual(currentWorkspace, { requested: false })
-  assert.deepEqual(toggleDesktopRoutedWorktreeIntent(currentWorkspace), initial)
-  assert.deepEqual(setDesktopRoutedWorktreeIntent(currentWorkspace, true), initial)
-  assert.deepEqual(Object.keys(currentWorkspace), ['requested'])
+  assert.deepEqual(initial, { requested: false })
+  assert.deepEqual(primed, { requested: true })
+  assert.deepEqual(toggleDesktopRoutedWorktreeIntent(primed), initial)
+  assert.deepEqual(setDesktopRoutedWorktreeIntent(primed, false), initial)
+  assert.deepEqual(Object.keys(primed), ['requested'])
   assert.throws(
     () => createDesktopRoutedWorktreeIntent('named-worktree' as never),
     /must be boolean/,

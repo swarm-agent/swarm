@@ -26,7 +26,6 @@ export interface WorkspaceLauncherIterationProps {
   onUseFolderTemporarily: (path: string) => void
   onEditWorkspace: (path: string) => void
   onDeleteWorkspace: (path: string) => void
-  onToggleWorktree: (path: string, enabled: boolean) => void
   onSetDefaultWorkspace: (path: string | null) => void
   onSaveDiscovered: (entry: WorkspaceDiscoverEntry) => void
   onBrowsePath: (path: string) => void

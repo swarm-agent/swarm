@@ -30,7 +30,6 @@ export interface WorkspaceEntry extends OptionalWorkspaceDefinitionFields {
   updatedAt: number
   lastSelectedAt: number
   active: boolean
-  worktreeEnabled: boolean
   gitBranch?: string
   gitHasGit?: boolean
   gitClean?: boolean
@@ -126,7 +125,6 @@ export interface WorkspaceEntryWire extends WorkspaceDefinitionWire {
   updated_at: number
   last_selected_at: number
   active: boolean
-  worktree_enabled: boolean
   git_branch?: string
   git_has_git?: boolean
   git_clean?: boolean
@@ -213,7 +211,6 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
     updatedAt: entry.updated_at,
     lastSelectedAt: entry.last_selected_at,
     active: entry.active,
-    worktreeEnabled: entry.worktree_enabled,
     gitBranch: String(entry.git_branch ?? '').trim(),
     gitHasGit: Boolean(entry.git_has_git),
     gitClean: Boolean(entry.git_clean),

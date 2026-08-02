@@ -147,11 +147,11 @@ function makeRoutedResult(sessionId: string) {
   }
 }
 
-test('routed draft defaults to managed worktree while preserving explicit local composer state', () => {
+test('routed draft and worktree-primed state contain only exact local composer state', () => {
   assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {
     phase: 'draft',
     prompt: 'draft',
-    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: true },
+    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: false },
   })
   assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), {
     phase: 'worktree-primed',

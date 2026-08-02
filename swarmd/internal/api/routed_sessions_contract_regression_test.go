@@ -78,7 +78,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		fixture.runner.response.Text = `{"title":"Worktree contract","mode":"auto","worktree":true,"worktree_name":"` + name + `"}`
 		managedPath := t.TempDir()
 		worktrees := &routedContractRollbackWorktree{routedWorktreeServiceStub: routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-			config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent/<id>"},
+			config:     worktreeruntime.Config{UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent/<id>"},
 			allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, RepoRoot: managedPath, BaseBranch: "dev", BranchName: "agent/contract-worktree", WorkspaceID: "contract-worktree"},
 		}}}
 		fixture.server.SetWorktreeService(worktrees)

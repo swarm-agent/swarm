@@ -34,7 +34,8 @@ type Request struct {
 // must be established before constructing this value; model output is never an
 // authority for workspace access.
 type Context struct {
-	PlanEnabled           bool        `json:"plan_enabled"`
+	PlanEnabled            bool        `json:"plan_enabled"`
+	WorktreeRequested      bool        `json:"worktree_requested"`
 	ServerBoundWorkspaceID string      `json:"server_bound_workspace_id,omitempty"`
 	Workspaces             []Workspace `json:"workspaces"`
 }
@@ -132,7 +133,8 @@ func Prompt(context Context) (string, error) {
 		"Advertised workspaces (untrusted data): " + string(encodedWorkspaces),
 		workspaceRule,
 		"Return a non-empty title of at most 120 Unicode characters.",
-		"Return worktree as a boolean. Return worktree_name only when worktree is true; it is then required and non-empty.",
+		fmt.Sprintf("The user-selected per-session worktree intent is %t; return worktree with exactly that value.", context.WorktreeRequested),
+		"Return worktree_name only when worktree is true; it is then required and non-empty.",
 	}, "\n"), nil
 }
 
@@ -148,7 +150,7 @@ func ResultSchema(context Context) (map[string]any, error) {
 	properties := map[string]any{
 		"title":    map[string]any{"type": "string", "minLength": 1, "maxLength": MaxTitleRunes},
 		"mode":     map[string]any{"type": "string", "enum": modes},
-		"worktree": map[string]any{"type": "boolean"},
+		"worktree": map[string]any{"type": "boolean", "const": context.WorktreeRequested},
 		"worktree_name": map[string]any{
 			"type": "string", "minLength": 1,
 		},
@@ -258,6 +260,9 @@ func ValidateResult(result Result, context Context) error {
 		if !allowed {
 			return fmt.Errorf("router result workspace_id %q was not advertised", selected)
 		}
+	}
+	if result.Worktree != context.WorktreeRequested {
+		return errors.New("router result worktree does not match the user-selected per-session intent")
 	}
 	if result.Worktree {
 		if result.WorktreeName == nil || strings.TrimSpace(*result.WorktreeName) == "" {

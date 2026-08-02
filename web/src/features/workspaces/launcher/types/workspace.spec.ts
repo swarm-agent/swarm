@@ -23,7 +23,6 @@ test('workspace DTO mapping preserves CP4 identity fields', () => {
     updated_at: 20,
     last_selected_at: 30,
     active: true,
-    worktree_enabled: false,
   })
 
   assert.equal(workspace.workspaceId, 'ws_123')

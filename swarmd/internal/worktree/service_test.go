@@ -643,8 +643,8 @@ func TestGetConfigForPrincipalAllowsUnmatchedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConfigForPrincipal: %v", err)
 	}
-	if cfg.Enabled {
-		t.Fatalf("Enabled = true, want false for unmatched directory")
+	if !cfg.UseCurrentBranch {
+		t.Fatal("unmatched directory did not receive automatic current-branch defaults")
 	}
 	if cfg.WorkspacePath != unmatched {
 		t.Fatalf("WorkspacePath = %q, want %q", cfg.WorkspacePath, unmatched)
@@ -662,7 +662,7 @@ func TestSetConfigForPrincipalRequiresAccountOwnedWorkspace(t *testing.T) {
 	svc := NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, nil)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
 
-	if _, _, err := svc.SetConfigForPrincipal(principal, t.TempDir(), true, true, "", ""); err == nil || !strings.Contains(err.Error(), errAccountOwnedWorkspaceRequired.Error()) {
+	if _, _, err := svc.SetConfigForPrincipal(principal, t.TempDir(), true, "", ""); err == nil || !strings.Contains(err.Error(), errAccountOwnedWorkspaceRequired.Error()) {
 		t.Fatalf("SetConfigForPrincipal error = %v, want %v", err, errAccountOwnedWorkspaceRequired)
 	}
 }
