@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { submitDesktopComposer } from './composer-submit'
+import { desktopComposerTaskCommand, submitDesktopComposer } from './composer-submit'
 
 function deferred() {
   let resolve!: () => void
@@ -11,6 +11,12 @@ function deferred() {
   })
   return { promise, resolve, reject }
 }
+
+test('pending routed-session drafts classify /task for normal command dispatch', () => {
+  assert.equal(desktopComposerTaskCommand('/task X')?.action.kind, 'queue-ai-task')
+  assert.equal(desktopComposerTaskCommand(' /TASK plan X')?.action.kind, 'queue-ai-task')
+  assert.equal(desktopComposerTaskCommand('X'), null)
+})
 
 test('exact /task with arguments takes precedence over stopping and clears only after queue success', async () => {
   const queued = deferred()

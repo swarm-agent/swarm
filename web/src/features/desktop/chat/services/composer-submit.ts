@@ -12,11 +12,13 @@ export interface SubmitDesktopComposerInput<TAttachment = never> {
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
 
+export function desktopComposerTaskCommand(draft: string): DesktopSlashCommand | null {
+  const exactMatch = buildDesktopSlashPaletteState(draft).exactMatch
+  return exactMatch?.action.kind === 'queue-ai-task' ? exactMatch : null
+}
+
 export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopComposerInput<TAttachment>): Promise<DesktopComposerSubmitResult> {
-  const submittedPalette = buildDesktopSlashPaletteState(input.draft)
-  const taskCommand = submittedPalette.exactMatch?.action.kind === 'queue-ai-task'
-    ? submittedPalette.exactMatch
-    : null
+  const taskCommand = desktopComposerTaskCommand(input.draft)
 
   if (taskCommand) {
     if (!input.onSlashCommand) return 'task-queue-failed'
