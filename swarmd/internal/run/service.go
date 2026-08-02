@@ -17,6 +17,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	compactruntime "swarm/packages/swarmd/internal/compact"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -112,6 +113,7 @@ type Service struct {
 	discovery                 *discovery.Service
 	workspace                 *workspaceruntime.Service
 	uiSettings                *uisettings.Service
+	agentModelSettings        *agentmodelsettings.Service
 	worktrees                 worktreeService
 	events                    *pebblestore.EventLog
 	eventPublish              func(pebblestore.EventEnvelope)
@@ -654,6 +656,12 @@ func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 func (s *Service) SetModelProfileService(modelProfileSvc *modelprofile.Service) {
 	if s != nil {
 		s.modelProfiles = modelProfileSvc
+	}
+}
+
+func (s *Service) SetAgentModelSettingsService(settingsSvc *agentmodelsettings.Service) {
+	if s != nil {
+		s.agentModelSettings = settingsSvc
 	}
 }
 
@@ -3153,7 +3161,7 @@ func (s *Service) resolveCompactPreference(accountScopeID string, basePreference
 	if s == nil {
 		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("run service is not configured")
 	}
-	return compactruntime.ResolvePreference(s.model, s.agents, s.uiSettings, accountScopeID, basePreference)
+	return compactruntime.ResolvePreference(s.model, s.agents, s.agentModelSettings, accountScopeID, basePreference)
 }
 
 func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, _ string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {

@@ -16,7 +16,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/todo"
-	"swarm/packages/swarmd/internal/uisettings"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -172,12 +171,8 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	svc.providers = registry.New()
 	svc.providers.RegisterRunner(runner)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account", SessionID: "origin-session", AccountScopeSource: identity.AccountScopeSourceSession}
-	settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
-	if err != nil {
-		t.Fatalf("read Compact settings: %v", err)
-	}
-	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "fast"}
-	if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), principal)
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCompact, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "fast"}); err != nil {
 		t.Fatalf("set Compact settings: %v", err)
 	}
 	preparation, err := svc.PrepareAITaskMetadata(context.Background(), "task-1", "preserve this exact request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
@@ -275,13 +270,9 @@ func TestPrepareAITaskMetadataAttachesSelectedCatalogForEveryRunnableModelProvid
 			runner := &principalCapturingAITaskRunner{id: providerID}
 			svc.providers = registry.New()
 			svc.providers.RegisterRunner(runner)
-			principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account-" + providerID}
-			settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
-			if err != nil {
-				t.Fatalf("read Compact settings: %v", err)
-			}
-			settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: providerID, Model: utility.Model, Thinking: thinking}
-			if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+			principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
+			settingsCtx := identity.ContextWithPrincipal(context.Background(), principal)
+			if _, err = svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCompact, pebblestore.AgentModelAssignment{Provider: providerID, Model: utility.Model, Thinking: thinking}); err != nil {
 				t.Fatalf("set Compact settings: %v", err)
 			}
 
@@ -307,16 +298,12 @@ func TestPrepareAITaskMetadataRejectsMissingSelectedModelCatalogBeforeDispatch(t
 	svc.providers = registry.New()
 	svc.providers.RegisterRunner(runner)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
-	settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
-	if err != nil {
-		t.Fatalf("read Compact settings: %v", err)
-	}
-	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "codex", Model: "missing-compact-model", Thinking: "medium", ServiceTier: "fast"}
-	if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), principal)
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCompact, pebblestore.AgentModelAssignment{Provider: "codex", Model: "missing-compact-model", Thinking: "medium", ServiceTier: "fast"}); err != nil {
 		t.Fatalf("set Compact settings: %v", err)
 	}
 
-	_, err = svc.PrepareAITaskMetadata(context.Background(), "task-missing-catalog", "request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
+	_, err := svc.PrepareAITaskMetadata(context.Background(), "task-missing-catalog", "request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
 	if err == nil || !strings.Contains(err.Error(), `Compact model catalog record for provider "codex" model "missing-compact-model" is unavailable`) {
 		t.Fatalf("missing catalog error = %v", err)
 	}

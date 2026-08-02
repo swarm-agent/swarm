@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
@@ -17,7 +18,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
-	"swarm/packages/swarmd/internal/uisettings"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -658,12 +658,8 @@ func TestDesignerResolvesConfiguredAccountModel(t *testing.T) {
 		t.Fatalf("configured Designer profile = %+v", profile)
 	}
 
-	settings, err := svc.uiSettings.GetForAccount(parent.AccountScopeID)
-	if err != nil {
-		t.Fatalf("read Designer settings: %v", err)
-	}
-	settings.Agents.Designer = uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}
-	if _, err := svc.uiSettings.SetForAccount(parent.AccountScopeID, settings); err != nil {
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID})
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentDesigner, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}); err != nil {
 		t.Fatalf("save Designer override: %v", err)
 	}
 	overridden, _, _, err := svc.resolveTaskLaunchProfile(parent, agentruntime.DesignerAgentID)
@@ -1629,12 +1625,8 @@ func TestFinderTaskManifestOmitsParentModelProfile(t *testing.T) {
 func TestCoderLaunchUsesConfiguredModelInsteadOfParentActionModel(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
-	settings, err := svc.uiSettings.GetForAccount("test-account")
-	if err != nil {
-		t.Fatalf("read Coder settings: %v", err)
-	}
-	settings.Agents.Coder = uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}
-	if _, err := svc.uiSettings.SetForAccount("test-account", settings); err != nil {
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"})
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCoder, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}); err != nil {
 		t.Fatalf("save Coder settings: %v", err)
 	}
 	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
@@ -1858,15 +1850,19 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		t.Fatalf("set account model preference: %v", err)
 	}
 	service := NewService(sessions, models, nil, tool.NewRuntime(1), nil, agents, nil, events)
-	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
-	configured := uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}
-	if _, err := uiSettings.SetForAccount("test-account", uisettings.UISettings{Agents: uisettings.AgentSettings{
-		Compact: configured, Finder: configured, Coder: configured, Designer: configured, Router: configured,
-	}}); err != nil {
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	configured := pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}
+	if _, err := agentSettingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
+		AccountScopeID: "test-account",
+		Swarm:          pebblestore.SwarmAgentModelAssignments{Action: configured, Plan: configured},
+		SystemAgents: pebblestore.SystemAgentModelAssignments{
+			Compact: configured, Finder: configured, Coder: configured, Designer: configured, Router: configured,
+		},
+	}); err != nil {
 		cleanup()
 		t.Fatalf("configure system-agent models: %v", err)
 	}
-	service.SetUISettingsService(uiSettings)
+	service.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
 	return service, parent.ID, cleanup
 }
 

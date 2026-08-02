@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/uisettings"
 )
 
 func TestFinalSessionTitleUsesEmitter(t *testing.T) {
@@ -39,23 +39,24 @@ func TestFinalSessionTitleUsesEmitter(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("resolve Compact utility model: ok=%t err=%v", ok, err)
 	}
-	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
-	settings, err := uiSettings.Get()
-	if err != nil {
-		t.Fatalf("read Compact settings: %v", err)
-	}
-	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "codex", Model: utility.Model, Thinking: utility.DefaultThinking}
-	if _, err := uiSettings.Set(settings); err != nil {
+	configured := pebblestore.AgentModelAssignment{Provider: "codex", Model: utility.Model, Thinking: utility.DefaultThinking}
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	if _, err := agentSettingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
+		AccountScopeID: "account-title",
+		Swarm:          pebblestore.SwarmAgentModelAssignments{Action: configured, Plan: configured},
+		SystemAgents:   pebblestore.SystemAgentModelAssignments{Compact: configured, Finder: configured, Coder: configured, Designer: configured, Router: configured},
+	}); err != nil {
 		t.Fatalf("set Compact settings: %v", err)
 	}
 	providers := registry.New()
 	providers.RegisterRunner(staticTitleRunner{text: "Final title"})
-	svc := &Service{sessions: sessions, events: eventLog, providers: providers, model: models, agents: agents, uiSettings: uiSettings}
+	svc := &Service{sessions: sessions, events: eventLog, providers: providers, model: models, agents: agents, agentModelSettings: agentmodelsettings.NewService(agentSettingsStore)}
 	preference := pebblestore.ModelPreference{Provider: "codex", Model: utility.Model, Thinking: utility.DefaultThinking}
 
 	if _, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		SessionID:     "session-title",
-		Title:         "New Session",
+		SessionID:      "session-title",
+		AccountScopeID: "account-title",
+		Title:          "New Session",
 		WorkspacePath: "/workspace",
 		WorkspaceName: "workspace",
 		Preference:    &preference,

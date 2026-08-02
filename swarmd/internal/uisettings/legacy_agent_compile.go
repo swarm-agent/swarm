@@ -1,9 +1,8 @@
 package uisettings
 
 // CompactAgentSettings and AgentSettings are temporary compile-only shapes for
-// legacy runtime consumers that are moved to agentmodelsettings in checkpoint 2.
-// They are deliberately absent from the UI service/store wire and persistence
-// schema; UISettings.Agents is ignored by JSON and SetForAccount.
+// API-local projection fixtures that still consume UISettings.Agents. They are
+// absent from the UI service/store wire and persistence schema.
 type CompactAgentSettings struct {
 	Provider    string
 	Model       string

@@ -38,10 +38,20 @@ func (s *Service) Get(ctx context.Context) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	return s.GetForAccount(principal.AccountScopeID)
+}
+
+// GetForAccount is the account-scoped read used after the caller has already
+// established the durable account authority.
+func (s *Service) GetForAccount(accountScopeID string) (Settings, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return Settings{}, pebblestore.ErrAgentModelSettingsAccountRequired
+	}
 	if s == nil || s.store == nil {
 		return Settings{}, ErrNotConfigured
 	}
-	settings, found, err := s.store.GetForAccount(strings.TrimSpace(principal.AccountScopeID))
+	settings, found, err := s.store.GetForAccount(accountScopeID)
 	if err != nil {
 		return Settings{}, err
 	}

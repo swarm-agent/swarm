@@ -1651,7 +1651,7 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 	if s.model == nil {
 		return pebblestore.AgentProfile{}, true, sourceName, errors.New("system-agent model service is not configured")
 	}
-	_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.uiSettings, parentSession.AccountScopeID, agentruntime.CoderAgentID, "")
+	_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, parentSession.AccountScopeID, agentruntime.CoderAgentID, "")
 	if err != nil {
 		return pebblestore.AgentProfile{}, true, sourceName, err
 	}

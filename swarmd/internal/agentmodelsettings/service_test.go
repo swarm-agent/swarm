@@ -40,6 +40,10 @@ func TestServiceUsesPrincipalAndTargetedAssignments(t *testing.T) {
 	if err != nil || got.AccountScopeID != "account" || got.SystemAgents.Router.Model != "router" || got.UpdatedAt != 123 {
 		t.Fatalf("Get() = (%+v, %v)", got, err)
 	}
+	accountGot, err := svc.GetForAccount(" account ")
+	if err != nil || accountGot != got {
+		t.Fatalf("GetForAccount() = (%+v, %v), want %+v", accountGot, err, got)
+	}
 	if _, err := svc.Get(context.Background()); !errors.Is(err, identity.ErrPrincipalRequired) {
 		t.Fatalf("Get() without principal error = %v", err)
 	}

@@ -6,31 +6,33 @@ import (
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/model"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/uisettings"
 )
 
 // ResolveSystemAgent is the canonical model-selection path for compiled agents
 // configured during onboarding. Agent identity and tools remain compiled, while
-// provider/model/thinking/service-tier always come from account-scoped UI state.
+// provider/model/thinking/service-tier always come from canonical account-scoped
+// agent-model settings.
 func ResolveSystemAgent(
 	modelService *model.Service,
 	agentService *agentruntime.Service,
-	settingsService *uisettings.Service,
+	settingsAuthority any,
 	accountScopeID string,
 	agentID string,
 	contextMode string,
 ) (model.ResolvedPreference, pebblestore.AgentProfile, error) {
+	settingsService, ok := settingsAuthority.(*agentmodelsettings.Service)
 	if modelService == nil || agentService == nil || settingsService == nil {
-		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("system-agent model, agent, and settings services are not configured")
+		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("system-agent model, agent, and canonical agent-model settings services are not configured")
 	}
 
 	canonicalID, ok := agentruntime.CanonicalSystemAgentID(agentID)
 	if !ok {
 		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("unknown compiled system agent %q", strings.TrimSpace(agentID))
 	}
-	settings, err := settingsService.GetForAccount(strings.TrimSpace(accountScopeID))
+	settings, err := settingsService.GetForAccount(accountScopeID)
 	if err != nil {
 		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, fmt.Errorf("read %s model settings: %w", systemAgentLabel(canonicalID), err)
 	}
@@ -67,20 +69,20 @@ func ResolveSystemAgent(
 	return resolved, profile, nil
 }
 
-func configuredAgentSettingsForID(settings uisettings.UISettings, agentID string) (uisettings.CompactAgentSettings, bool) {
+func configuredAgentSettingsForID(settings agentmodelsettings.Settings, agentID string) (agentmodelsettings.Assignment, bool) {
 	switch agentID {
 	case agentruntime.CompactAgentID:
-		return settings.Agents.Compact, true
+		return settings.SystemAgents.Compact, true
 	case agentruntime.FinderAgentID:
-		return settings.Agents.Finder, true
+		return settings.SystemAgents.Finder, true
 	case agentruntime.CoderAgentID:
-		return settings.Agents.Coder, true
+		return settings.SystemAgents.Coder, true
 	case agentruntime.DesignerAgentID:
-		return settings.Agents.Designer, true
+		return settings.SystemAgents.Designer, true
 	case agentruntime.RouterAgentID:
-		return settings.Agents.Router, true
+		return settings.SystemAgents.Router, true
 	default:
-		return uisettings.CompactAgentSettings{}, false
+		return agentmodelsettings.Assignment{}, false
 	}
 }
 

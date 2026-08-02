@@ -3787,10 +3787,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	return string(encoded), nil
 }
 
-func (s *Service) resolveTaskSubagent(nameOrPurpose string) (pebblestore.AgentProfile, error) {
-	return s.resolveTaskSubagentForAccount("", nameOrPurpose)
-}
-
 func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
 	nameOrPurpose = strings.TrimSpace(nameOrPurpose)
 	if nameOrPurpose == "" {
@@ -3807,7 +3803,7 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 		if s.model == nil {
 			return pebblestore.AgentProfile{}, errors.New("system-agent model service is not configured")
 		}
-		_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.uiSettings, accountScopeID, agentID, "")
+		_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, accountScopeID, agentID, "")
 		return profile, err
 	}
 	if strings.TrimSpace(accountScopeID) != "" {

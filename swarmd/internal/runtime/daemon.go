@@ -19,6 +19,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
@@ -283,6 +284,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		voice.NewWhisperLocalAdapter(),
 	)
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	agentModelSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	agentModelSettingsSvc := agentmodelsettings.NewService(agentModelSettingsStore)
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	planLifecycleSvc := sessionruntime.NewPlanLifecycleService(sessionSvc)
 	planLifecycleSvc.SetApplySessionMutation(sessionSvc.ApplySessionMutation)
@@ -377,11 +380,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
 	modelProfileStore := pebblestore.NewModelProfileStore(store)
 	modelProfileSvc := modelprofile.NewService(modelProfileStore)
-	swarmModeSettingsSvc := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetModelProfileService(modelProfileSvc)
 	runSvc.SetWorkspaceService(workspaceSvc)
 	runSvc.SetUISettingsService(uiSettingsSvc)
+	runSvc.SetAgentModelSettingsService(agentModelSettingsSvc)
 	runSvc.SetWorktreeService(worktreeSvc)
 	runSvc.SetEventPublisher(hub.Publish)
 
@@ -451,7 +454,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetModelProfileService(modelProfileSvc)
-	apiServer.SetSwarmModelSettingsService(swarmModeSettingsSvc)
+	apiServer.SetAgentModelSettingsService(agentModelSettingsSvc, agentModelSettingsStore)
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
