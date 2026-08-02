@@ -80,10 +80,6 @@ function agentMode(profile: AgentProfileRecord): string {
   return (profile.mode || 'primary').trim().toLowerCase()
 }
 
-function agentLabel(profile: AgentProfileRecord): string {
-  return displayAgentName(profile.name)
-}
-
 function modelBehaviorLabel(_profile: AgentProfileRecord | null): string {
   return 'Single model'
 }
@@ -302,28 +298,28 @@ export function AgentModelControl({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const initializedOpenRef = useRef(false)
-  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && (!isCompiledSystemAgent(agent.name) || agent.name === SWARM_AGENT_NAME)), compactProfile, finderProfile, coderProfile, designerProfile, routerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile, routerProfile])
+  const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && !isCompiledSystemAgent(agent.name)), compactProfile, finderProfile, coderProfile, designerProfile, routerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile, routerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
-  const [draftAgentName, setDraftAgentName] = useState(activeProfile?.name ?? selectedPrimaryAgent)
-  const draftProfile = selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
+  const [draftAgentName, setDraftAgentName] = useState(SWARM_AGENT_NAME)
+  const draftProfile = draftAgentName === SWARM_AGENT_NAME ? null : selectableAgents.find((agent) => agent.name === draftAgentName) ?? activeProfile
   const [singleDraft, setSingleDraft] = useState<ModelDraft>(() => modelDraftForProfile(activeProfile))
   const [actionDraft, setActionDraft] = useState<ModelDraft>(() => modelDraftForProfile(activeProfile))
   const [planDraft, setPlanDraft] = useState<ModelDraft>(() => modelDraftForProfile(activeProfile))
   const [editingProfileId, setEditingProfileId] = useState('')
   const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
   const agentSections = useMemo(() => {
-    const swarmProfile = selectableAgents.find((agent) => agent.name === SWARM_AGENT_NAME)
+    const item = (profile: AgentProfileRecord) => ({ name: profile.name, profile })
     const primaryProfiles = selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name))
     const sections = [
-      { label: 'Agents', profiles: [...(swarmProfile ? [swarmProfile] : []), ...primaryProfiles] },
-      { label: 'Subagents', profiles: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isCompiledSystemAgent(agent.name)) },
-      { label: 'System agents', profiles: selectableAgents.filter((agent) => isCompiledSystemAgent(agent.name) && agent.name !== SWARM_AGENT_NAME) },
-      { label: 'Other agents', profiles: selectableAgents.filter((agent) => {
+      { label: 'Agents', items: [{ name: SWARM_AGENT_NAME, profile: null }, ...primaryProfiles.map(item)] },
+      { label: 'Subagents', items: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isCompiledSystemAgent(agent.name)).map(item) },
+      { label: 'System agents', items: selectableAgents.filter((agent) => isCompiledSystemAgent(agent.name)).map(item) },
+      { label: 'Other agents', items: selectableAgents.filter((agent) => {
         const profileMode = agentMode(agent)
         return profileMode !== 'primary' && profileMode !== 'subagent' && !isCompiledSystemAgent(agent.name)
-      }) },
+      }).map(item) },
     ]
-    return sections.filter((section) => section.profiles.length > 0)
+    return sections.filter((section) => section.items.length > 0)
   }, [selectableAgents])
   const selectedModelLabel = selectedModel
     ? `${selectedModel.provider}/${displayModelName(selectedModel.provider, selectedModel.model, selectedModel.contextMode)}`
@@ -355,19 +351,19 @@ export function AgentModelControl({
       return
     }
     if (initializedOpenRef.current) return
-    const profile = selectableAgents.find((agent) => agent.name === initialAgentName)
-      ?? selectableAgents.find((agent) => agent.name === SWARM_AGENT_NAME)
-      ?? selectableAgents.find((agent) => agent.name === selectedPrimaryAgent)
-      ?? activeProfile
-    if (profile?.name === SWARM_AGENT_NAME && swarmModelSettingsQuery.isPending) return
+    const requestedAgentName = initialAgentName.trim()
+    const requestedProfile = selectableAgents.find((agent) => agent.name === requestedAgentName) ?? null
+    const agentName = requestedAgentName === SWARM_AGENT_NAME || requestedProfile ? requestedAgentName : SWARM_AGENT_NAME
+    const profile = agentName === SWARM_AGENT_NAME ? null : requestedProfile
+    if (agentName === SWARM_AGENT_NAME && swarmModelSettingsQuery.isPending) return
     initializedOpenRef.current = true
-    setDraftAgentName(profile?.name ?? selectedPrimaryAgent)
+    setDraftAgentName(agentName)
     initializeDrafts(profile)
     setError(null)
-  }, [activeModelProfile, activeProfile, initialAgentName, modelProfiles, open, selectableAgents, selectedPrimaryAgent, swarmModelSettingsQuery.data])
+  }, [activeModelProfile, initialAgentName, modelProfiles, open, selectableAgents, swarmModelSettingsQuery.data, swarmModelSettingsQuery.isPending])
 
-  function chooseAgent(profile: AgentProfileRecord) {
-    setDraftAgentName(profile.name)
+  function chooseAgent(name: string, profile: AgentProfileRecord | null) {
+    setDraftAgentName(name)
     initializeDrafts(profile)
     setError(null)
   }
@@ -408,13 +404,13 @@ export function AgentModelControl({
 
   async function confirm() {
     const profile = draftProfile
-    if (!profile || saving || busy) return
+    if ((draftAgentName !== SWARM_AGENT_NAME && !profile) || saving || busy) return
     setSaving(true)
     setError(null)
     try {
-      if (profile.name === SWARM_AGENT_NAME) {
+      if (draftAgentName === SWARM_AGENT_NAME) {
         await saveSwarmModels()
-      } else if (isSystemUtility(profile.name)) {
+      } else if (profile && isSystemUtility(profile.name)) {
         const agentPatch = validateDraft(`${displayAgentName(profile.name)} model`, singleDraft)
         const saved = await saveSystemAgentSettings({
           current: uiSettings,
@@ -427,7 +423,7 @@ export function AgentModelControl({
           },
         })
         queryClient.setQueryData(uiSettingsQueryOptions().queryKey, saved)
-      } else {
+      } else if (profile) {
         const input = validateDraft(`${displayAgentName(profile.name)} model`, singleDraft)
         await onConfirmAgentSettings?.({
           agentName: profile.name,
@@ -451,7 +447,7 @@ export function AgentModelControl({
         <div className="flex flex-col gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:px-5 sm:py-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
-            <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{draftProfile ? agentLabel(draftProfile) : displayAgentName(currentAgent) || 'Agent'}</div>
+            <div className="mt-1 truncate text-sm font-semibold text-[var(--app-text)]">{displayAgentName(draftAgentName) || 'Agent'}</div>
             <div className="mt-1 text-[11px] text-[var(--app-text-muted)]">Configure each agent directly. System-agent models are not saved profiles.</div>
           </div>
           <div className="grid w-full shrink-0 grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center">
@@ -475,9 +471,9 @@ export function AgentModelControl({
                 <section key={section.label}>
                   <div className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">{section.label}</div>
                   <div className="grid gap-1 min-[480px]:grid-cols-2 min-[900px]:grid-cols-1">
-                    {section.profiles.map((profile) => {
-                      const selected = profile.name === draftAgentName
-                      return <button key={profile.name} type="button" onClick={() => chooseAgent(profile)} aria-pressed={selected} className={`group flex w-full items-center rounded-lg border px-2.5 py-2 text-left text-xs transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}><span className="min-w-0 flex-1 truncate font-semibold">{agentLabel(profile)}</span></button>
+                    {section.items.map(({ name, profile }) => {
+                      const selected = name === draftAgentName
+                      return <button key={name} type="button" onClick={() => chooseAgent(name, profile)} aria-pressed={selected} className={`group flex w-full items-center rounded-lg border px-2.5 py-2 text-left text-xs transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}><span className="min-w-0 flex-1 truncate font-semibold">{displayAgentName(name)}</span></button>
                     })}
                   </div>
                 </section>
@@ -486,7 +482,7 @@ export function AgentModelControl({
           </aside>
 
           <section aria-label="Agent model settings" className="min-h-0 p-4 min-[900px]:overflow-y-auto min-[900px]:p-5">
-            {draftProfile?.name === SWARM_AGENT_NAME ? (
+            {draftAgentName === SWARM_AGENT_NAME ? (
               <div className="grid gap-4">
                 <ModelDraftEditor title="Default Model" draft={actionDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setActionDraft, provider)} onModelChange={(model) => updateModel(setActionDraft, model)} onThinkingChange={(thinking) => setActionDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setActionDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
                 <ModelDraftEditor title="Plan Model" draft={planDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setPlanDraft, provider)} onModelChange={(model) => updateModel(setPlanDraft, model)} onThinkingChange={(thinking) => setPlanDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setPlanDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
@@ -514,8 +510,8 @@ export function AgentModelControl({
 
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-5 sm:py-4">
           <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
-          <button type="button" disabled={busy || saving || !draftProfile} onClick={() => { void confirm() }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
-            {saving || busy ? 'Saving…' : `Save ${draftProfile?.name === SWARM_AGENT_NAME ? 'Swarm models' : `${draftProfile ? displayAgentName(draftProfile.name) : 'agent'} model`}`}
+          <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm() }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
+            {saving || busy ? 'Saving…' : `Save ${draftAgentName === SWARM_AGENT_NAME ? 'Swarm models' : `${draftProfile ? displayAgentName(draftProfile.name) : 'agent'} model`}`}
           </button>
         </div>
       </div>
