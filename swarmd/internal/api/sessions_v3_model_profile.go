@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelprofile"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -82,20 +83,29 @@ func (s *Server) resolveSessionsV3ModelProfileChoice(ctx context.Context, choice
 }
 
 func (s *Server) sessionModelProfileSnapshotFromAccountDefault(ctx context.Context, appliedAt int64) (*pebblestore.SessionModelProfileSnapshot, error) {
-	if s.swarmModelSettings == nil {
-		return nil, modelprofile.ErrNotConfigured
+	if s.agentModelSettings == nil {
+		return nil, agentmodelsettings.ErrNotConfigured
 	}
-	settings, err := s.swarmModelSettings.Get(ctx)
+	settings, err := s.agentModelSettings.Get(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &pebblestore.SessionModelProfileSnapshot{
 		Source:            pebblestore.SessionModelProfileSourceSwarmSettings,
 		UseAccountDefault: true,
-		Action:            settings.Action,
-		Plan:              pebblestore.CloneModelProfileSelection(&settings.Plan),
+		Action:            agentModelAssignmentSelection(settings.Swarm.Action),
+		Plan:              cloneAgentModelAssignmentSelection(settings.Swarm.Plan),
 		AppliedAt:         appliedAt,
 	}, nil
+}
+
+func agentModelAssignmentSelection(assignment pebblestore.AgentModelAssignment) pebblestore.ModelProfileSelection {
+	return sessionModelSelectionFromFlatProfile(assignment.Provider, assignment.Model, assignment.Thinking, assignment.ServiceTier, assignment.ContextMode)
+}
+
+func cloneAgentModelAssignmentSelection(assignment pebblestore.AgentModelAssignment) *pebblestore.ModelProfileSelection {
+	selection := agentModelAssignmentSelection(assignment)
+	return &selection
 }
 
 func sessionModelProfileSnapshotFromSaved(profile modelprofile.Profile, appliedAt int64) *pebblestore.SessionModelProfileSnapshot {

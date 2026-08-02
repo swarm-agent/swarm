@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelprofile"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -24,8 +25,8 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	defer store.Close()
 	favorites := pebblestore.NewModelProfileStore(store)
 	service := modelprofile.NewService(favorites)
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
-	server := &Server{modelProfiles: service, swarmModelSettings: swarmProfiles}
+	agentModelSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	server := &Server{modelProfiles: service, agentModelSettings: agentmodelsettings.NewService(agentModelSettingsStore)}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
 	created, err := service.Create(ctx, modelprofile.Input{Name: "Saved", Provider: "openai", Model: "saved-model", Thinking: "high", ServiceTier: "priority", ContextMode: "full"})
@@ -36,7 +37,12 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	if err != nil {
 		t.Fatalf("create plan profile: %v", err)
 	}
-	if _, err := swarmProfiles.Put(ctx, modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: created.Provider, Model: created.Model, Thinking: created.Thinking, ServiceTier: created.ServiceTier, ContextMode: created.ContextMode}, Plan: pebblestore.ModelProfileSelection{Provider: planFavorite.Provider, Model: planFavorite.Model, Thinking: planFavorite.Thinking, ServiceTier: planFavorite.ServiceTier, ContextMode: planFavorite.ContextMode}}); err != nil {
+	defaultRecord := testAgentModelSettingsRecord(principal.AccountScopeID)
+	defaultRecord.Swarm = pebblestore.SwarmAgentModelAssignments{
+		Action: pebblestore.AgentModelAssignment{Provider: created.Provider, Model: created.Model, Thinking: created.Thinking, ServiceTier: created.ServiceTier, ContextMode: created.ContextMode},
+		Plan: pebblestore.AgentModelAssignment{Provider: planFavorite.Provider, Model: planFavorite.Model, Thinking: planFavorite.Thinking, ServiceTier: planFavorite.ServiceTier, ContextMode: planFavorite.ContextMode},
+	}
+	if _, err := agentModelSettingsStore.PutForAccount(defaultRecord); err != nil {
 		t.Fatalf("configure account defaults: %v", err)
 	}
 

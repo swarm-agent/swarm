@@ -13,6 +13,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/mediastaging"
 	modelruntime "swarm/packages/swarmd/internal/model"
@@ -78,15 +79,10 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	favoriteStore := pebblestore.NewModelProfileStore(store)
 	favoriteService := modelprofile.NewService(favoriteStore)
 	authorityContext := identity.ContextWithPrincipal(context.Background(), principal)
-	action, err := favoriteService.Create(authorityContext, modelprofile.Input{Name: "Action", Provider: "openai", Model: "gpt-media", Thinking: "medium"})
+	_, err = favoriteService.Create(authorityContext, modelprofile.Input{Name: "Action", Provider: "openai", Model: "gpt-media", Thinking: "medium"})
 	if err != nil {
 		t.Fatalf("create Action favorite: %v", err)
 	}
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
-	if _, err := swarmProfiles.Put(authorityContext, modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}, Plan: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}}); err != nil {
-		t.Fatalf("put Swarm settings: %v", err)
-	}
-
 	agentService := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	if err := agentService.EnsureDefaultsForAccount(principal.AccountScopeID); err != nil {
 		t.Fatalf("ensure account agent defaults: %v", err)
@@ -123,7 +119,15 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	runService := runruntime.NewService(sessions, modelService, providers, tool.NewRuntime(1), nil, agentService, nil, events)
 	server := NewServer(nil, agentService, modelService, runService, sessions, workspace.NewService(workspaceStore), nil, nil, providers, nil, nil, events, stream.NewHub(events))
 	server.SetModelProfileService(favoriteService)
-	server.SetSwarmModelSettingsService(swarmProfiles)
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	agentSettings := testAgentModelSettingsRecord(principal.AccountScopeID)
+	agentSettings.Swarm.Action = pebblestore.AgentModelAssignment{Provider: "openai", Model: "gpt-media", Thinking: "medium"}
+	agentSettings.Swarm.Plan = agentSettings.Swarm.Action
+	agentSettings.SystemAgents.Router = pebblestore.AgentModelAssignment{Provider: "openai", Model: "router-model", Thinking: "low"}
+	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil {
+		t.Fatalf("configure canonical agent model settings: %v", err)
+	}
+	server.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
 	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{Provider: "openai", Model: "router-model", Thinking: "low"}}}); err != nil {
 		t.Fatalf("configure Router: %v", err)

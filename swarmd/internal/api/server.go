@@ -22,6 +22,7 @@ import (
 
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -87,7 +88,8 @@ type Server struct {
 	agents                      *agentruntime.Service
 	model                       *model.Service
 	modelProfiles               *modelprofile.Service
-	swarmModelSettings          *modelprofile.SwarmService
+	agentModelSettings          *agentmodelsettings.Service
+	agentModelSettingsStore     *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
 	runner                      runService
 	runStreams                  *runControlAllocator
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
@@ -349,11 +351,16 @@ func (s *Server) SetModelProfileService(service *modelprofile.Service) {
 	s.modelProfiles = service
 }
 
-func (s *Server) SetSwarmModelSettingsService(service *modelprofile.SwarmService) {
+// SetAgentModelSettingsService injects the canonical authenticated service.
+// Startup also supplies its store for the one complete-record onboarding write.
+func (s *Server) SetAgentModelSettingsService(service *agentmodelsettings.Service, stores ...*pebblestore.AgentModelSettingsStore) {
 	if s == nil {
 		return
 	}
-	s.swarmModelSettings = service
+	s.agentModelSettings = service
+	if len(stores) != 0 {
+		s.agentModelSettingsStore = stores[0]
+	}
 }
 
 func (s *Server) SetWebPushService(service *webpush.Service) {
@@ -3320,7 +3327,6 @@ type uiSettingsPatchPresence struct {
 	Swarming  *uiSwarmingSettingsPatchPresence `json:"swarming"`
 	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
 	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
-	Agents    *uiAgentSettingsPatchPresence    `json:"agents"`
 	UpdatedAt *int64                           `json:"updated_at"`
 }
 
@@ -3370,21 +3376,6 @@ type uiToolImageSettingsPatchPresence struct {
 
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
-}
-
-type uiCompactAgentSettingsPatchPresence struct {
-	Provider    *string `json:"provider"`
-	Model       *string `json:"model"`
-	Thinking    *string `json:"thinking"`
-	ServiceTier *string `json:"service_tier"`
-}
-
-type uiAgentSettingsPatchPresence struct {
-	Compact  *uiCompactAgentSettingsPatchPresence `json:"compact"`
-	Finder   *uiCompactAgentSettingsPatchPresence `json:"finder"`
-	Coder    *uiCompactAgentSettingsPatchPresence `json:"coder"`
-	Designer *uiCompactAgentSettingsPatchPresence `json:"designer"`
-	Router   *uiCompactAgentSettingsPatchPresence `json:"router"`
 }
 
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
@@ -3469,76 +3460,6 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
 		}
 	}
-	if raw.Agents != nil && raw.Agents.Compact != nil {
-		if raw.Agents.Compact.Provider != nil {
-			settings.Agents.Compact.Provider = patch.Agents.Compact.Provider
-		}
-		if raw.Agents.Compact.Model != nil {
-			settings.Agents.Compact.Model = patch.Agents.Compact.Model
-		}
-		if raw.Agents.Compact.Thinking != nil {
-			settings.Agents.Compact.Thinking = patch.Agents.Compact.Thinking
-		}
-		if raw.Agents.Compact.ServiceTier != nil {
-			settings.Agents.Compact.ServiceTier = patch.Agents.Compact.ServiceTier
-		}
-	}
-	if raw.Agents != nil && raw.Agents.Finder != nil {
-		if raw.Agents.Finder.Provider != nil {
-			settings.Agents.Finder.Provider = patch.Agents.Finder.Provider
-		}
-		if raw.Agents.Finder.Model != nil {
-			settings.Agents.Finder.Model = patch.Agents.Finder.Model
-		}
-		if raw.Agents.Finder.Thinking != nil {
-			settings.Agents.Finder.Thinking = patch.Agents.Finder.Thinking
-		}
-		if raw.Agents.Finder.ServiceTier != nil {
-			settings.Agents.Finder.ServiceTier = patch.Agents.Finder.ServiceTier
-		}
-	}
-	if raw.Agents != nil && raw.Agents.Coder != nil {
-		if raw.Agents.Coder.Provider != nil {
-			settings.Agents.Coder.Provider = patch.Agents.Coder.Provider
-		}
-		if raw.Agents.Coder.Model != nil {
-			settings.Agents.Coder.Model = patch.Agents.Coder.Model
-		}
-		if raw.Agents.Coder.Thinking != nil {
-			settings.Agents.Coder.Thinking = patch.Agents.Coder.Thinking
-		}
-		if raw.Agents.Coder.ServiceTier != nil {
-			settings.Agents.Coder.ServiceTier = patch.Agents.Coder.ServiceTier
-		}
-	}
-	if raw.Agents != nil && raw.Agents.Designer != nil {
-		if raw.Agents.Designer.Provider != nil {
-			settings.Agents.Designer.Provider = patch.Agents.Designer.Provider
-		}
-		if raw.Agents.Designer.Model != nil {
-			settings.Agents.Designer.Model = patch.Agents.Designer.Model
-		}
-		if raw.Agents.Designer.Thinking != nil {
-			settings.Agents.Designer.Thinking = patch.Agents.Designer.Thinking
-		}
-		if raw.Agents.Designer.ServiceTier != nil {
-			settings.Agents.Designer.ServiceTier = patch.Agents.Designer.ServiceTier
-		}
-	}
-	if raw.Agents != nil && raw.Agents.Router != nil {
-		if raw.Agents.Router.Provider != nil {
-			settings.Agents.Router.Provider = patch.Agents.Router.Provider
-		}
-		if raw.Agents.Router.Model != nil {
-			settings.Agents.Router.Model = patch.Agents.Router.Model
-		}
-		if raw.Agents.Router.Thinking != nil {
-			settings.Agents.Router.Thinking = patch.Agents.Router.Thinking
-		}
-		if raw.Agents.Router.ServiceTier != nil {
-			settings.Agents.Router.ServiceTier = patch.Agents.Router.ServiceTier
-		}
-	}
 	return settings
 }
 
@@ -3569,13 +3490,13 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = r.Body.Close()
-		var patch uisettings.UISettings
-		if err := decodeJSONBytes(body, &patch); err != nil {
+		var raw uiSettingsPatchPresence
+		if err := decodeJSONBytes(body, &raw); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		var raw uiSettingsPatchPresence
-		if err := json.Unmarshal(body, &raw); err != nil {
+		var patch uisettings.UISettings
+		if err := json.Unmarshal(body, &patch); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}

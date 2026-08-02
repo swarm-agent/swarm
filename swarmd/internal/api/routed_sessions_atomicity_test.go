@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -330,12 +331,15 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 		}
 		planSelection = pebblestore.ModelProfileSelection{Provider: planFavorite.Provider, Model: planFavorite.Model, Thinking: planFavorite.Thinking}
 	}
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
-	if _, err := swarmProfiles.Put(authorityContext, modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: actionFavorite.Provider, Model: actionFavorite.Model, Thinking: actionFavorite.Thinking}, Plan: planSelection}); err != nil {
-		t.Fatalf("configure Swarm model settings: %v", err)
-	}
 	server.SetModelProfileService(favoriteService)
-	server.SetSwarmModelSettingsService(swarmProfiles)
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	agentSettings := testAgentModelSettingsRecord(principal.AccountScopeID)
+	agentSettings.Swarm.Action = pebblestore.AgentModelAssignment{Provider: actionFavorite.Provider, Model: actionFavorite.Model, Thinking: actionFavorite.Thinking}
+	agentSettings.Swarm.Plan = pebblestore.AgentModelAssignment{Provider: planSelection.Provider, Model: planSelection.Model, Thinking: planSelection.Thinking}
+	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil {
+		t.Fatalf("configure canonical agent model settings: %v", err)
+	}
+	server.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
 	uiSettings := uisettings.NewService(pebblestore.NewUISettingsStore(store))
 	if _, err := uiSettings.SetForAccount(principal.AccountScopeID, uisettings.UISettings{Agents: uisettings.AgentSettings{Router: uisettings.CompactAgentSettings{Provider: "recording", Model: "router-model", Thinking: "medium"}}}); err != nil {
 		t.Fatalf("configure Router model: %v", err)

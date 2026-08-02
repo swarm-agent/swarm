@@ -15,7 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 )
 
-func TestUISettingsPostPersistsDesignerModelSettings(t *testing.T) {
+func TestUISettingsPostRejectsAgentModelSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-designer-api.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -36,27 +36,12 @@ func TestUISettingsPostPersistsDesignerModelSettings(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var response uisettings.UISettings
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Agents.Designer.Provider != "openai" || response.Agents.Designer.Model != "utility-model" || response.Agents.Designer.Thinking != "medium" || response.Agents.Designer.ServiceTier != "priority" {
-		t.Fatalf("response Designer settings = %#v", response.Agents.Designer)
-	}
-	stored, err := settingsSvc.Get()
-	if err != nil {
-		t.Fatalf("reload settings: %v", err)
-	}
-	if stored.Agents.Designer != response.Agents.Designer {
-		t.Fatalf("stored Designer settings = %#v, want %#v", stored.Agents.Designer, response.Agents.Designer)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
-func TestUISettingsPostPersistsRouterModelSettings(t *testing.T) {
+func TestUISettingsPostRejectsRouterModelSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-router-api.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -77,27 +62,12 @@ func TestUISettingsPostPersistsRouterModelSettings(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var response uisettings.UISettings
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Agents.Router.Provider != "openai" || response.Agents.Router.Model != "router-model" || response.Agents.Router.Thinking != "medium" || response.Agents.Router.ServiceTier != "priority" {
-		t.Fatalf("response Router settings = %#v", response.Agents.Router)
-	}
-	stored, err := settingsSvc.Get()
-	if err != nil {
-		t.Fatalf("reload settings: %v", err)
-	}
-	if stored.Agents.Router != response.Agents.Router {
-		t.Fatalf("stored Router settings = %#v, want %#v", stored.Agents.Router, response.Agents.Router)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
-func TestUISettingsPostPersistsCoderModelSettings(t *testing.T) {
+func TestUISettingsPostRejectsCoderModelSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-coder-api.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -118,23 +88,8 @@ func TestUISettingsPostPersistsCoderModelSettings(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var response uisettings.UISettings
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Agents.Coder.Provider != "codex" || response.Agents.Coder.Model != "gpt-5.6" || response.Agents.Coder.Thinking != "high" || response.Agents.Coder.ServiceTier != "priority" {
-		t.Fatalf("response Coder settings = %#v", response.Agents.Coder)
-	}
-	stored, err := settingsSvc.Get()
-	if err != nil {
-		t.Fatalf("reload settings: %v", err)
-	}
-	if stored.Agents.Coder != response.Agents.Coder {
-		t.Fatalf("stored Coder settings = %#v, want %#v", stored.Agents.Coder, response.Agents.Coder)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 

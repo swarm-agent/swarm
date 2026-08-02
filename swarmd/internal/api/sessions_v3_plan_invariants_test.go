@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/modelprofile"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -173,16 +171,18 @@ func installSessionsV3FlatSwarmModeSettings(t *testing.T, server *Server, planEn
 			t.Fatalf("put flat favorite %q: %v", favorite.ProfileID, err)
 		}
 	}
-	swarmProfiles := modelprofile.NewSwarmService(pebblestore.NewSwarmModeSettingsStore(store))
-	server.SetSwarmModelSettingsService(swarmProfiles)
-	ctx := identity.ContextWithPrincipal(context.Background(), principal)
-	input := modelprofile.SwarmSettingsInput{Action: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}, Plan: pebblestore.ModelProfileSelection{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}}
+	planAssignment := pebblestore.AgentModelAssignment{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}
 	if planEnabled {
-		input.Plan = pebblestore.ModelProfileSelection{Provider: plan.Provider, Model: plan.Model, Thinking: plan.Thinking}
+		planAssignment = pebblestore.AgentModelAssignment{Provider: plan.Provider, Model: plan.Model, Thinking: plan.Thinking}
 	}
-	if _, err := swarmProfiles.Put(ctx, input); err != nil {
-		t.Fatalf("put flat Swarm mode settings: %v", err)
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	agentSettings := testAgentModelSettingsRecord(principal.AccountScopeID)
+	agentSettings.Swarm.Action = pebblestore.AgentModelAssignment{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking}
+	agentSettings.Swarm.Plan = planAssignment
+	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil {
+		t.Fatalf("put canonical agent model settings: %v", err)
 	}
+	server.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
 	return action, plan
 }
 
