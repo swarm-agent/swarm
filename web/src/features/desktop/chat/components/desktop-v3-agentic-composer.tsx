@@ -642,7 +642,7 @@ export function DesktopV3AgenticComposer({
         : visibleDraft
     const submittedBackgroundRouterCommand = desktopComposerBackgroundRouterCommand(submittedDraft)
     if (routedNewSession && submittedBackgroundRouterCommand) {
-      await submitDesktopComposer({
+      void submitDesktopComposer({
         draft: submittedDraft,
         canStop,
         clear: clearComposerForSubmit,
@@ -681,7 +681,7 @@ export function DesktopV3AgenticComposer({
       })
       return
     }
-    await submitDesktopComposer({
+    void submitDesktopComposer({
       draft: submittedDraft,
       canStop,
       clear: clearComposerForSubmit,
@@ -707,15 +707,7 @@ export function DesktopV3AgenticComposer({
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
     if (command.action.kind === 'start-background-router-session') {
-      if (routedNewSession) {
-        void handleSubmitClick()
-        return
-      }
-      void Promise.resolve(onSlashCommand?.(command, draft))
-        .then(() => onDraftChange(''))
-        .catch(() => {
-          // The owning pane surfaces the error and the task request stays editable.
-        })
+      void handleSubmitClick()
       return
     }
     if (command.action.kind === 'toggle-thinking') {

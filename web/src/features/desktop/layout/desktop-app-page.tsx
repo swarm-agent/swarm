@@ -2572,7 +2572,6 @@ export function DesktopAppPage() {
   const [mobilePreviousSessionsOpen, setMobilePreviousSessionsOpen] = useState(false)
   const [backgroundTaskOpen, setBackgroundTaskOpen] = useState(false)
   const [backgroundTaskRequest, setBackgroundTaskRequest] = useState('')
-  const [backgroundTaskBusy, setBackgroundTaskBusy] = useState(false)
   const [backgroundTaskError, setBackgroundTaskError] = useState<string | null>(null)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -3721,19 +3720,23 @@ export function DesktopAppPage() {
           throw error
         }
         const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+        let launch: ReturnType<typeof postDesktopV3BackgroundRouterSessionStart>
         try {
-          const result = await postDesktopV3BackgroundRouterSessionStart({
+          launch = postDesktopV3BackgroundRouterSessionStart({
             input: request,
             client_request_id: clientRequestId,
             agent_name: 'swarm',
             metadata: { source: 'desktop-v3-task-command' },
             plan_mode_requested: mode === 'plan',
           })
-          setDesktopToast({ message: `${result.title} started in the background.`, tone: 'info' })
         } catch (error) {
           setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
           throw error
         }
+        setDesktopToast({ message: 'Background Router task sent.', tone: 'success' })
+        void launch.catch((error) => {
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
+        })
         return
       }
       case 'show-help':
@@ -4127,40 +4130,43 @@ export function DesktopAppPage() {
   }, [navigate, routeWorkspaceSlug])
 
   const closeBackgroundTaskModal = useCallback(() => {
-    if (backgroundTaskBusy) return
     setBackgroundTaskOpen(false)
     setBackgroundTaskError(null)
     if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
     }
-  }, [backgroundTaskBusy, mobileCreationPage, navigate, routeWorkspaceSlug])
+  }, [mobileCreationPage, navigate, routeWorkspaceSlug])
 
-  const handleStartBackgroundRouterSession = useCallback(async (submittedRequest = backgroundTaskRequest) => {
+  const handleStartBackgroundRouterSession = useCallback((submittedRequest = backgroundTaskRequest) => {
     const request = submittedRequest.trim()
-    if (!request || backgroundTaskBusy) return
-    setBackgroundTaskBusy(true)
+    if (!request) return
     setBackgroundTaskError(null)
     const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+    let launch: ReturnType<typeof postDesktopV3BackgroundRouterSessionStart>
     try {
-      const result = await postDesktopV3BackgroundRouterSessionStart({
+      launch = postDesktopV3BackgroundRouterSessionStart({
         input: request,
         client_request_id: clientRequestId,
         agent_name: 'swarm',
         metadata: { source: 'desktop-v3-background-task-form' },
         plan_mode_requested: false,
       })
-      setBackgroundTaskOpen(false)
-      setBackgroundTaskRequest('')
-      setDesktopToast({ message: `${result.title} started in the background.`, tone: 'success' })
-      if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
-        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
-      }
     } catch (error) {
-      setBackgroundTaskError(error instanceof Error ? error.message : 'Failed to start task')
-    } finally {
-      setBackgroundTaskBusy(false)
+      const message = error instanceof Error ? error.message : 'Failed to start background Router session'
+      setBackgroundTaskError(message)
+      setDesktopToast({ message, tone: 'error' })
+      return
     }
-  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspaceSlug])
+    setBackgroundTaskOpen(false)
+    setBackgroundTaskRequest('')
+    setDesktopToast({ message: 'Background Router task sent.', tone: 'success' })
+    if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+    }
+    void launch.catch((error) => {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
+    })
+  }, [backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspaceSlug])
 
   const openRouteWorkspaceWorktree = useCallback(() => {
     if (!routeWorkspace?.path) return
@@ -4801,7 +4807,7 @@ export function DesktopAppPage() {
             presentation="page"
             workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
             request={backgroundTaskRequest}
-            busy={backgroundTaskBusy}
+            busy={false}
             error={backgroundTaskError}
             onRequestChange={setBackgroundTaskRequest}
             onSubmit={(request) => { void handleStartBackgroundRouterSession(request) }}
@@ -5148,7 +5154,7 @@ export function DesktopAppPage() {
           presentation="dialog"
           workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
           request={backgroundTaskRequest}
-          busy={backgroundTaskBusy}
+          busy={false}
           error={backgroundTaskError}
           onRequestChange={setBackgroundTaskRequest}
           onSubmit={() => { void handleStartBackgroundRouterSession() }}

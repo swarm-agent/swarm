@@ -1,4 +1,4 @@
-import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from './slash-commands'
+import { buildDesktopSlashPaletteState, parseDesktopTaskCommand, type DesktopSlashCommand } from './slash-commands'
 
 export type DesktopComposerSubmitResult = 'submitted' | 'stopped' | 'background-router-started' | 'background-router-failed'
 
@@ -22,13 +22,18 @@ export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopCom
 
   if (backgroundRouterCommand) {
     if (!input.onSlashCommand) return 'background-router-failed'
+    let dispatch: void | Promise<void>
     try {
-      await input.onSlashCommand(backgroundRouterCommand, input.draft)
-      input.clear()
-      return 'background-router-started'
+      dispatch = input.onSlashCommand(backgroundRouterCommand, input.draft)
     } catch {
       return 'background-router-failed'
     }
+    void Promise.resolve(dispatch).catch(() => {
+      // The owning pane reports background launch failures through its toast.
+    })
+    if (!parseDesktopTaskCommand(input.draft).request) return 'background-router-failed'
+    input.clear()
+    return 'background-router-started'
   }
 
   if (input.canStop) {
