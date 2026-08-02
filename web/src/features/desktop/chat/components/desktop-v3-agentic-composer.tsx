@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
-import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
+import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
@@ -162,7 +162,9 @@ export interface DesktopV3AgenticComposerProps {
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
   onModelProfileSelect?: (profileId: string) => void | Promise<void>
-  onModelFavoriteCreate?: (input: ModelProfileInput) => string | Promise<string>
+  onModelProfileSetDefault?: (profileId: string) => void | Promise<void>
+  onModelProfileDelete?: (profileId: string) => void | Promise<void>
+  onModelProfileReorder?: (profileIds: string[]) => void | Promise<void>
   modelProfilesLoading?: boolean
   modelProfilesError?: string | null
   onUseAgentModelDefault?: () => void | Promise<void>
@@ -195,7 +197,7 @@ export interface DesktopV3AgenticComposerProps {
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
   focusSignal?: number
   workspacePath?: string
-  /** Neutral pre-route composer: hides all mode, agent, and model authority controls. */
+  /** Pre-route composer state; agent/model controls remain visible before the first send. */
   routedNewSession?: boolean
 }
 
@@ -260,7 +262,9 @@ export function DesktopV3AgenticComposer({
   modelProfiles = [],
   activeModelProfile,
   onModelProfileSelect,
-  onModelFavoriteCreate,
+  onModelProfileSetDefault,
+  onModelProfileDelete,
+  onModelProfileReorder,
   modelProfilesLoading = false,
   modelProfilesError = null,
   onUseAgentModelDefault: _onUseAgentModelDefault,
@@ -1187,7 +1191,7 @@ export function DesktopV3AgenticComposer({
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showFavoriteSelector ? (
-                  <ProfileAgentPicker profiles={modelProfiles} modelOptions={modelOptions} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onFavoriteCreate={onModelFavoriteCreate} />
+                  <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onOpenAgentSetup={openAgentSetup} />
                 ) : showModePicker ? (
                   renderComposerControl(openAgentSetup, false)
                 ) : executionLabel && !routedNewSession ? (
@@ -1214,7 +1218,7 @@ export function DesktopV3AgenticComposer({
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : showFavoriteSelector ? (
-                  <ProfileAgentPicker profiles={modelProfiles} modelOptions={modelOptions} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} compact modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onFavoriteCreate={onModelFavoriteCreate} />
+                  <ProfileAgentPicker profiles={modelProfiles} activeProfile={activeModelProfile} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled} compact modelDetail={modelControlDetail} onProfileSelect={onModelProfileSelect} onOpenAgentSetup={openAgentSetup} />
                 ) : showModePicker ? (
                   renderComposerControl(openAgentSetup, false)
                 ) : !routedNewSession ? (
@@ -1232,7 +1236,7 @@ export function DesktopV3AgenticComposer({
           </div>
         </div>
       </div>
-      {!routedNewSession && !resolvedSessionControls ? <AgentModelControl
+      <AgentModelControl
         currentAgent={currentAgent}
         selectedPrimaryAgent={selectedPrimaryAgent}
         agents={selectableAgents}
@@ -1248,11 +1252,14 @@ export function DesktopV3AgenticComposer({
         initialAgentName={agentSettingsInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
+        onSetDefaultModelProfile={onModelProfileSetDefault}
+        onDeleteModelProfile={onModelProfileDelete}
+        onReorderModelProfiles={onModelProfileReorder}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}
         busy={agentModelControlBusy}
         showTrigger={false}
-      /> : null}
+      />
     </div>
   )
 }
