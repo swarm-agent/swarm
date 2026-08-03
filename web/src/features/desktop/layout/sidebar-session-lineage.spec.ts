@@ -113,7 +113,7 @@ test('session lineage keeps real background children background-targeted from di
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'background', assignmentLabel: null })
 })
 
-test('background sessions prefer resolved route label over target metadata', () => {
+test('background session info exposes lineage activity without target-label presentation data', () => {
   const session = makeSession({
     id: 'background-session',
     metadata: {
@@ -151,7 +151,7 @@ test('background sessions prefer resolved route label over target metadata', () 
     },
   })
 
-  assert.deepEqual(sessionBackgroundInfo(session, 'Remote Swarm'), { active: true, badge: 'background', targetLabel: 'Remote Swarm' })
+  assert.deepEqual(sessionBackgroundInfo(session), { active: true })
 })
 
 test('session lineage keeps real subagent children labeled as subagents', () => {

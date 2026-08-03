@@ -10,8 +10,6 @@ export interface SidebarSessionChildDescriptor {
 
 export interface SidebarSessionBackgroundInfo {
   active: boolean
-  badge: string
-  targetLabel: string
 }
 
 function normalizeMetadataRecord(value: unknown): Record<string, unknown> | null {
@@ -79,20 +77,13 @@ function sessionActiveRunIntent(runIntent: DesktopRunIntentRecord | null | undef
   return status === 'pending_executor' || status === 'running' ? runIntent ?? null : null
 }
 
-export function sessionBackgroundInfo(session: DesktopSessionRecord, fallbackTargetLabel = ''): SidebarSessionBackgroundInfo | null {
+export function sessionBackgroundInfo(session: DesktopSessionRecord): SidebarSessionBackgroundInfo | null {
   const metadata = normalizeMetadataRecord(session.metadata)
   if (!sessionHasBackgroundLineage(metadata)) {
     return null
   }
   return {
     active: Boolean(sessionActiveRunIntent(session.runIntent)),
-    badge: 'background',
-    targetLabel: firstNonEmpty(
-      fallbackTargetLabel,
-      metadataString(metadata, 'swarm_target_name'),
-      metadataString(metadata, 'target_display_name'),
-      'host',
-    ),
   }
 }
 

@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -41,7 +41,7 @@ import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-sessi
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, startNewDesktopV3Session, type DesktopV3RoutedStartResult } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
-import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
@@ -1393,15 +1393,6 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
   return `${days} day${days === 1 ? '' : 's'}`
 }
 
-function sessionOriginLabel(session: DesktopSessionRecord, routeOptions: DesktopChatRoute[], fallbackSwarmName: string): string {
-  const route = resolveDesktopChatRouteFromSession(session, routeOptions, null)
-  if (route?.label.trim()) {
-    return route.label.trim()
-  }
-  const normalizedFallback = fallbackSwarmName.trim()
-  return normalizedFallback || 'host'
-}
-
 function sessionCommitSummary(session: DesktopSessionRecord): string {
   const count = Number(session.gitCommitCount ?? 0)
   if (!session.gitCommitDetected || count <= 0) {
@@ -1588,24 +1579,8 @@ function sessionPlanCheckpointCounts(session: DesktopSessionRecord): { activeInd
   }
 }
 
-function sessionWorkspaceLabel(session: DesktopSessionRecord): string {
-  return session.workspaceName?.trim() || fallbackWorkspaceNameFromPath(session.workspacePath || '') || 'Workspace'
-}
-
 function sessionBranchLabel(session: DesktopSessionRecord): string {
   return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || ''
-}
-
-function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
-  const seen = new Set<string>()
-  return [sessionWorkspaceLabel(session), sessionBranchLabel(session)]
-    .filter((value) => {
-      const normalized = value.trim().toLowerCase()
-      if (!normalized || seen.has(normalized)) return false
-      seen.add(normalized)
-      return true
-    })
-    .join(' · ')
 }
 
 function sessionIsActive(session: DesktopSessionRecord): boolean {
@@ -1943,8 +1918,6 @@ interface SessionRowProps {
   active: boolean
   now: number
   session: DesktopSessionRecord
-  fallbackSwarmName: string
-  routeOptions: DesktopChatRoute[]
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   depth?: number
   childLabel?: string | null
@@ -1967,12 +1940,11 @@ interface SessionRowProps {
   onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
-  const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
-  const backgroundInfo = sessionBackgroundInfo(session, originLabel)
+  const backgroundInfo = sessionBackgroundInfo(session)
   const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
   const rowType = sessionSidebarRowType(session)
   const isPlanRow = rowType === 'plan_session'
@@ -1984,7 +1956,10 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
   const hasAgentChildren = agentSummary.total > 0
-  const metadataLabel = sessionRowMetadataLabel(session)
+  const branchLabel = sessionBranchLabel(session)
+  const showWorktreeBranchChip = session.worktreeEnabled && Boolean(branchLabel)
+  const showTaskChip = Boolean(backgroundInfo)
+  const showActivePlan = session.mode === 'plan' && sessionHasCanonicalActiveRun(session)
   const relativeActivityLabel = sessionStatusDetail(session, now)
   const hasPendingPermission = sessionHasPendingPermission(session)
   const pendingPermissionAlertActive = hasPendingPermission && !active
@@ -2039,8 +2014,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     document.addEventListener('pointerdown', handlePointerDownOutside, true)
     return () => document.removeEventListener('pointerdown', handlePointerDownOutside, true)
   }, [actionsOpen, closeActionMenu])
-  const hasDetailsRowContent = Boolean(backgroundInfo)
-  const showDetailsRow = !isPlanRow && hasDetailsRowContent
   const pinned = sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)
   const pinDisabled = pendingAction !== null || !sessionAllowsManualSidebarPin(session)
   const archiveDisabled = pendingAction !== null
@@ -2239,7 +2212,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
         actionsOpen ? 'z-30' : null,
       )}
-      title={tooltip || metadataLabel}
+      title={tooltip || branchLabel}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -2319,7 +2292,28 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         </span>
       </div>
       <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-        <span className="min-w-0 truncate">{metadataLabel}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {showWorktreeBranchChip ? (
+            <span
+              className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-4 text-[var(--app-text-muted)]"
+              title={`Worktree branch: ${branchLabel}`}
+            >
+              <GitBranch size={10} className="shrink-0" aria-hidden="true" />
+              <span className="truncate">{branchLabel}</span>
+            </span>
+          ) : branchLabel ? <span className="min-w-0 truncate">{branchLabel}</span> : null}
+          {showTaskChip ? (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-4 text-[var(--app-text-muted)]"
+              title="Task session"
+              aria-label="Task session"
+            >
+              <ListTodo size={10} aria-hidden="true" />
+              <span>Task</span>
+            </span>
+          ) : null}
+          {showActivePlan ? <NotepadText size={11} className="shrink-0 text-[var(--app-primary)]" title="Active Plan" aria-label="Active Plan" /> : null}
+        </span>
         <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
           {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
         </span>
@@ -2344,18 +2338,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         </div>
       ) : null}
 
-      {showDetailsRow ? (
-        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
-            {backgroundInfo ? (
-              <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-none text-[var(--app-text-muted)]">
-                {backgroundInfo.badge}
-              </span>
-            ) : null}
-            {backgroundInfo?.targetLabel ? <span className="truncate">{backgroundInfo.targetLabel}</span> : null}
-          </div>
-        </div>
-      ) : null}
     </Link>
   )
 })
@@ -2365,8 +2347,6 @@ interface RenderSidebarSessionGroupsInput {
   presentation?: 'desktop' | 'mobile'
   routeSessionId: string
   now: number
-  fallbackSwarmName: string
-  routeOptions: DesktopChatRoute[]
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
   agentSummaries: Map<string, SessionAgentSummary>
@@ -2517,8 +2497,6 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             active={input.routeSessionId === node.session.id}
             now={input.now}
             session={node.session}
-            fallbackSwarmName={input.fallbackSwarmName}
-            routeOptions={input.routeOptions}
             workspaceSlug={input.workspaceSlug}
             depth={node.depth}
             childLabel={node.label}
@@ -4238,8 +4216,6 @@ export function DesktopAppPage() {
     presentation: 'mobile',
     routeSessionId,
     now: sidebarNow,
-    fallbackSwarmName: swarmName,
-    routeOptions: globalSessionRouteOptions,
     workspaceSlug: globalSessionWorkspaceSlug,
     expandedAgentSessions,
     agentSummaries: sidebarAgentSummaries,
@@ -4871,8 +4847,6 @@ export function DesktopAppPage() {
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
                     now: sidebarNow,
-                    fallbackSwarmName: swarmName,
-                    routeOptions: globalSessionRouteOptions,
                     workspaceSlug: globalSessionWorkspaceSlug,
                     expandedAgentSessions,
                     agentSummaries: sidebarAgentSummaries,

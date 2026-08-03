@@ -206,6 +206,26 @@ test('workspace dropdown rows create chats without icons and the standalone mess
   assert.doesNotMatch(dropdownSource, /handleWorkspaceSelect|menuitemradio|aria-checked|event\.stopPropagation\(\)/)
 })
 
+test('sidebar card row two renders branch, Task, and canonically active Plan indicators without a third row', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const rowStart = source.indexOf('const SessionRow = memo')
+  const rowEnd = source.indexOf('interface RenderSidebarSessionGroupsInput', rowStart)
+  const rowSource = source.slice(rowStart, rowEnd)
+
+  assert.ok(rowStart >= 0 && rowEnd > rowStart)
+  assert.match(rowSource, /const branchLabel = sessionBranchLabel\(session\)/)
+  assert.match(rowSource, /const showWorktreeBranchChip = session\.worktreeEnabled && Boolean\(branchLabel\)/)
+  assert.match(rowSource, /showWorktreeBranchChip \? \([\s\S]*title=\{`Worktree branch: \$\{branchLabel\}`\}[\s\S]*<GitBranch[\s\S]*\{branchLabel\}/)
+  assert.match(rowSource, /\) : branchLabel \? <span className="min-w-0 truncate">\{branchLabel\}<\/span> : null/)
+  assert.doesNotMatch(rowSource, /sessionWorkspaceLabel|sessionRowMetadataLabel|workspaceName/)
+  assert.match(rowSource, /const showTaskChip = Boolean\(backgroundInfo\)/)
+  assert.match(rowSource, /title="Task session"[\s\S]*aria-label="Task session"[\s\S]*<ListTodo[\s\S]*<span>Task<\/span>/)
+  assert.match(rowSource, /const showActivePlan = session\.mode === 'plan' && sessionHasCanonicalActiveRun\(session\)/)
+  assert.match(rowSource, /<NotepadText[^>]*title="Active Plan"[^>]*aria-label="Active Plan"/)
+  assert.doesNotMatch(rowSource, /showDetailsRow|backgroundInfo\.badge|backgroundInfo\?\.targetLabel|>background</)
+  assert.doesNotMatch(rowSource, /fallbackSwarmName|routeOptions|sessionOriginLabel/)
+})
+
 test('sidebar cards use explicit selection mode without hover-driven checkboxes or navigation', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const rowStart = source.indexOf('const SessionRow = memo')
