@@ -31,6 +31,34 @@ func TestParseNewCommandForms(t *testing.T) {
 	}
 }
 
+func TestParseCommitCommand(t *testing.T) {
+	tests := []struct {
+		input string
+		want  CommitCommand
+	}{
+		{"/commit ship the TUI command", CommitCommand{Message: "ship the TUI command"}},
+		{" /COMMIT  keep ai in this longer message ", CommitCommand{Message: "keep ai in this longer message"}},
+		{"/commit ai", CommitCommand{AI: true}},
+		{"/commit AI", CommitCommand{AI: true}},
+	}
+	for _, test := range tests {
+		got, matched, err := ParseCommitCommand(test.input)
+		if err != nil || !matched || got != test.want {
+			t.Errorf("ParseCommitCommand(%q) = %#v, %v, %v; want %#v, true, nil", test.input, got, matched, err, test.want)
+		}
+	}
+	for _, input := range []string{"/commit", "/commit   "} {
+		if _, matched, err := ParseCommitCommand(input); !matched || err == nil || err.Error() != "usage: /commit <message>|ai" {
+			t.Errorf("ParseCommitCommand(%q) = matched=%v err=%v", input, matched, err)
+		}
+	}
+	for _, input := range []string{"/committed message", "/compact", "commit message"} {
+		if _, matched, err := ParseCommitCommand(input); matched || err != nil {
+			t.Errorf("ParseCommitCommand(%q) unexpectedly matched: err=%v", input, err)
+		}
+	}
+}
+
 func TestParseWorktreeCommandIsLocalAndDoesNotCaptureWorktrees(t *testing.T) {
 	for _, input := range []string{"/worktree on", "/wt on"} {
 		got, matched, err := ParseWorktreeCommand(input)

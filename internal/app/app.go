@@ -67,7 +67,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/codex", Hint: "Show Codex account usage and reset credits", QuickTips: []string{"/codex", "/codex refresh"}},
-		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
+		{Command: "/commit", Hint: "Commit all changes with a message, or use AI to generate one", QuickTips: []string{"/commit <message>", "/commit ai"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
@@ -2151,7 +2151,7 @@ func (a *App) executeCommand(raw string) {
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus("unknown command: /compact")
 	case "commit":
-		a.handleCommitCommand(args)
+		a.handleCommitCommand(raw)
 	case "codex":
 		a.handleCodexCommand(args)
 	case "workspace":
@@ -2223,7 +2223,8 @@ func (a *App) showHelp() {
 		"/plan   (show or close the existing session plan)",
 		"/task <request>   (queue a durable AI task in automatic mode)",
 		"/task plan <request>   (queue a durable AI task in plan mode)",
-		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
+		"/commit <message>   (stage all changes and commit with the supplied message)",
+		"/commit ai   (generate a commit message with the existing AI Commit workflow, then commit)",
 		"/git   (show authoritative Git status for the active workspace)",
 		"/codex [refresh]   (Codex account usage and reset credits)",
 		"/workspace   (open workspace manager)",
@@ -2714,92 +2715,101 @@ func (a *App) handleCompactCommand(args []string) {
 	a.home.SetStatus("compacting session context")
 }
 
-func (a *App) handleCommitCommand(args []string) {
+func (a *App) handleCommitCommand(raw string) {
 	a.home.ClearCommandOverlay()
-	if a.route != "chat" || a.chat == nil {
-		a.home.SetStatus("commit command is available in chat: /commit [instructions]")
+	command, matched, err := v3chat.ParseCommitCommand(raw)
+	if !matched {
+		return
+	}
+	if err != nil {
+		a.setCommitCommandStatus(err.Error(), true)
+		return
+	}
+	if a.route != "v3chat" || a.v3Chat == nil {
+		a.setCommitCommandStatus("commit command is available in V3 chat: /commit <message>|ai", true)
 		return
 	}
 	if a.api == nil {
-		a.home.SetStatus("/commit failed: api client is not configured")
+		a.setCommitCommandStatus("/commit failed: api client is not configured", true)
 		return
 	}
-	parentSessionID := strings.TrimSpace(a.chat.SessionID())
-	if parentSessionID == "" {
-		a.home.SetStatus("/commit failed: session id is unavailable")
+	sessionID := strings.TrimSpace(a.v3Chat.SessionID())
+	if sessionID == "" {
+		a.setCommitCommandStatus("/commit failed: session id is unavailable", true)
+		return
+	}
+	workspacePath := strings.TrimSpace(a.activeContextPath())
+	if workspacePath == "" {
+		a.setCommitCommandStatus("/commit failed: workspace path is unavailable", true)
 		return
 	}
 
-	instructions := strings.TrimSpace(strings.Join(args, " "))
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	status := "committing changes..."
+	if command.AI {
+		status = "generating AI commit message..."
+	}
+	a.setCommitCommandStatus(status, false)
+	go a.runCommitCommand(command, workspacePath, sessionID)
+}
+
+func (a *App) runCommitCommand(command v3chat.CommitCommand, workspacePath, sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
-	parentSummary, err := a.loadSessionSummary(ctx, parentSessionID)
+	message := command.Message
+	if command.AI {
+		suggestion, err := a.api.SuggestWorkspaceCommitMessage(ctx, workspacePath, sessionID)
+		if err != nil {
+			a.finishCommitCommand("", fmt.Errorf("generate AI commit message: %w", err))
+			return
+		}
+		message = strings.TrimSpace(suggestion.Message)
+		if message == "" {
+			a.finishCommitCommand("", errors.New("AI commit message is empty"))
+			return
+		}
+	}
+	response, err := a.api.CommitWorkspaceChanges(ctx, workspacePath, message, sessionID)
 	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/commit failed: load parent session: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("/commit failed: load parent session: %v", err))
+		a.finishCommitCommand("", err)
 		return
 	}
-	a.upsertHomeSessionSummary(parentSummary)
+	success := "committed changes"
+	if summary := strings.TrimSpace(response.Summary); summary != "" {
+		success = summary
+	}
+	a.finishCommitCommand(success, nil)
+}
 
-	childSummary, err := a.createBackgroundCommitSession(ctx, parentSessionID, parentSummary, instructions)
-	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/commit failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("/commit failed: %v", err))
+func (a *App) setCommitCommandStatus(status string, failed bool) {
+	if a == nil {
 		return
 	}
-	launch, err := a.startBackgroundCommitRun(ctx, childSummary, instructions)
+	if a.home != nil {
+		a.home.SetStatus(status)
+	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetStatus(status)
+	}
+	if failed {
+		a.showToast(ui.ToastError, status)
+	}
+}
+
+func (a *App) finishCommitCommand(status string, err error) {
 	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/commit failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("/commit failed: %v", err))
+		status = fmt.Sprintf("/commit failed: %v", err)
+		a.setCommitCommandStatus(status, true)
+	} else {
+		a.setCommitCommandStatus(status, false)
+		a.showToast(ui.ToastSuccess, status)
+	}
+	if a == nil {
 		return
 	}
-
-	execCtx := a.commitExecutionContext(childSummary)
-	launchRecord := model.BackgroundSessionSummary{
-		ChildSessionID:      strings.TrimSpace(childSummary.ID),
-		ParentSessionID:     parentSessionID,
-		ParentTitle:         strings.TrimSpace(parentSummary.Title),
-		ChildTitle:          strings.TrimSpace(childSummary.Title),
-		TargetKind:          "background",
-		TargetName:          commitBackgroundAgentName,
-		Status:              "running",
-		PendingPermissions:  0,
-		WorkspacePath:       strings.TrimSpace(execCtx.WorkspacePath),
-		WorkspaceName:       strings.TrimSpace(childSummary.WorkspaceName),
-		CWD:                 strings.TrimSpace(execCtx.CWD),
-		WorktreeMode:        strings.TrimSpace(execCtx.WorktreeMode),
-		WorktreeRootPath:    strings.TrimSpace(execCtx.WorktreeRootPath),
-		WorktreeBranch:      strings.TrimSpace(execCtx.WorktreeBranch),
-		WorktreeBaseBranch:  strings.TrimSpace(execCtx.WorktreeBaseBranch),
-		LaunchMode:          "background",
-		Instructions:        instructions,
-		Background:          true,
-		StartedAtUnixMS:     time.Now().UnixMilli(),
-		LastUpdatedAtUnixMS: time.Now().UnixMilli(),
+	if a.screen != nil {
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptGitStatusReady))
 	}
-	childSummary.Metadata = mergeMetadataMaps(childSummary.Metadata, map[string]any{
-		"launch_mode": "background",
-		"background":  true,
-		"target_kind": launchRecord.TargetKind,
-		"target_name": launchRecord.TargetName,
-	})
-	a.setBackgroundSessionSummary(launchRecord)
-	a.upsertHomeSessionSummary(childSummary)
-	a.updateHomeSessionLifecycle(childSummary.ID, client.SessionLifecycleSnapshot{
-		SessionID:      childSummary.ID,
-		RunID:          strings.TrimSpace(launch.RunID),
-		Active:         true,
-		Phase:          "running",
-		UpdatedAt:      time.Now().UnixMilli(),
-		StartedAt:      time.Now().UnixMilli(),
-		OwnerTransport: strings.TrimSpace(launch.OwnerTransport),
-	})
-	a.refreshBackgroundSessions()
-
-	status := fmt.Sprintf("background /commit launched: %s", emptyFallback(strings.TrimSpace(childSummary.Title), childSummary.ID))
-	a.home.SetStatus(status)
-	a.chat.SetStatus(status)
-	a.chat.ShowToast(ui.ToastSuccess, status)
+	a.requestV3ChatRender()
 }
 
 const tuiRetiredSessionAPIMessage = "TUI v1/v2 session APIs are retired; use a v3 session"

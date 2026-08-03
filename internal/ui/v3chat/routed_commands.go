@@ -51,6 +51,29 @@ type WorktreeCommand struct {
 	Enabled bool
 }
 
+// CommitCommand describes a manual commit message or the explicit AI Commit
+// form backed by the existing suggestion and commit APIs.
+type CommitCommand struct {
+	Message string
+	AI      bool
+}
+
+// ParseCommitCommand recognizes /commit <message> and exactly /commit ai.
+func ParseCommitCommand(input string) (CommitCommand, bool, error) {
+	command, argument := splitCommandWord(input)
+	if !strings.EqualFold(command, "/commit") {
+		return CommitCommand{}, false, nil
+	}
+	argument = strings.TrimSpace(argument)
+	if argument == "" {
+		return CommitCommand{}, true, fmt.Errorf("usage: /commit <message>|ai")
+	}
+	if strings.EqualFold(argument, "ai") {
+		return CommitCommand{AI: true}, true, nil
+	}
+	return CommitCommand{Message: argument}, true, nil
+}
+
 // ParseWorktreeCommand recognizes only the local singular command and /wt
 // shorthand; /worktrees remains available to the unrelated settings flow.
 func ParseWorktreeCommand(input string) (WorktreeCommand, bool, error) {
