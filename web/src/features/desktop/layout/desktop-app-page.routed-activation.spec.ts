@@ -34,6 +34,25 @@ test('routed new-chat activation only publishes a validated canonical result', a
   assert.doesNotMatch(activation, /selectAndHydrateDesktopV3Session/)
 })
 
+test('slash new dispatch starts from an existing session and preserves the already-new route guard', async () => {
+  const source = await readDesktopAppPage()
+  const startHandlerStart = source.indexOf('const handleStartNewSessionInWorkspace = useCallback')
+  const startHandlerEnd = source.indexOf('const handleRoutedSessionResolved', startHandlerStart)
+  const startHandler = source.slice(startHandlerStart, startHandlerEnd)
+  const slashHandlerStart = source.indexOf('const handleSlashCommand = useCallback')
+  const slashHandlerEnd = source.indexOf('const latestNeedsApprovalSession', slashHandlerStart)
+  const slashHandler = source.slice(slashHandlerStart, slashHandlerEnd)
+
+  assert.match(startHandler, /const nextIntent = \{[\s\S]*prompt: options\.prompt\?\.trim\(\) \?\? ''[\s\S]*worktreeRequested: options\.worktreeRequested === true/)
+  assert.match(startHandler, /setNewSessionIntent\(nextIntent\)[\s\S]*dispatchDesktopV3Cache\(selectSession\(undefined\)\)[\s\S]*navigate\(\{ to: '\/\$workspaceSlug'/)
+  assert.equal((startHandler.match(/navigate\(\{/g) ?? []).length, 1)
+  assert.match(slashHandler, /if \(!routeSessionId\) \{[\s\S]*already starting a new session[\s\S]*return/)
+  assert.match(slashHandler, /const parsed = parseDesktopNewSessionCommand\(draft\)/)
+  assert.match(slashHandler, /const session = sessionById\.get\(routeSessionId\)/)
+  assert.doesNotMatch(slashHandler, /topWorkspace\?\.path/)
+  assert.match(slashHandler, /handleStartNewSessionInWorkspace\(workspacePath, workspaceName, parsed\)/)
+})
+
 test('routed activation derives URL identity from the returned source workspace and ignores stale completions', async () => {
   const source = await readDesktopAppPage()
   const handlerStart = source.indexOf('const handleRoutedSessionResolved = useCallback')

@@ -99,6 +99,16 @@ function testNewSessionCommandVariantsPrimeRouterChips(): void {
   }
 }
 
+function testNewWpForwardsOnlyItsPromptToRouter(): void {
+  const input = '  /NEW   wp   Keep WP in the prompt\nwith exact body text  '
+  const parsed = parseDesktopNewSessionCommand(input)
+
+  assert(parsed?.prompt === 'Keep WP in the prompt\nwith exact body text', 'expected /new wp to remove only its command prefix')
+  assert(parsed?.worktreeRequested === true, 'expected /new wp to preserve managed-worktree intent')
+  assert(parsed?.planModeRequested === true, 'expected /new wp to preserve plan-mode intent')
+  assert(buildDesktopSlashPaletteState(input).exactMatch?.id === 'new-wp', 'expected /new wp prompt input to dispatch the compound command')
+}
+
 function testTaskCommandAcceptsFullArguments(): void {
   const commands = getDesktopSlashCommands()
   const task = commands.find((command) => command.id === 'task')
@@ -160,6 +170,7 @@ function main(): void {
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testWorktreeCommandIsRetiredAndWorktreesRemains()
   testNewSessionCommandVariantsPrimeRouterChips()
+  testNewWpForwardsOnlyItsPromptToRouter()
   testTaskCommandAcceptsFullArguments()
   testTaskCommandParsesModeDirective()
   testRetiredCommandsAreNotSuggested()

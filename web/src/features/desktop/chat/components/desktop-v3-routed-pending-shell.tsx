@@ -3,9 +3,11 @@ import { Bot, RotateCcw, TriangleAlert } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 
 export type DesktopV3RoutedPendingShellState = 'draft' | 'worktree-primed' | 'routing' | 'failed'
+export type DesktopV3PendingStartPath = 'session' | 'router'
 
 export interface DesktopV3RoutedPendingShellProps {
   state: DesktopV3RoutedPendingShellState
+  startPath?: DesktopV3PendingStartPath
   pendingPrompt?: string
   error?: string
   onRetry?: () => void
@@ -19,6 +21,7 @@ export interface DesktopV3RoutedPendingShellProps {
  */
 export function DesktopV3RoutedPendingShell({
   state,
+  startPath = 'router',
   pendingPrompt = '',
   error = '',
   onRetry,
@@ -27,6 +30,20 @@ export function DesktopV3RoutedPendingShell({
   const prompt = pendingPrompt.trim()
   const submitted = (state === 'routing' || state === 'failed') && Boolean(prompt)
   const routing = state === 'routing'
+  const routerPath = startPath === 'router'
+  const pendingTitle = routerPath ? 'New worktree chat' : 'New chat'
+  const pendingSubtitle = routing
+    ? (routerPath ? 'Router setup' : 'Starting session')
+    : (routerPath ? 'Router needs attention' : 'Start needs attention')
+  const pendingBadge = routing
+    ? (routerPath ? 'Routing…' : 'Starting…')
+    : (routerPath ? 'Not routed' : 'Not started')
+  const statusLabel = routing
+    ? (routerPath ? 'Routing…' : 'Starting…')
+    : (routerPath ? 'Router failed' : 'Start failed')
+  const statusDetail = routing
+    ? (routerPath ? 'Router is choosing the setup for this worktree chat…' : 'Creating and starting this chat…')
+    : error.trim() || (routerPath ? 'Your message is still here. Try Router again.' : 'Your message is still here. Try starting it again.')
 
   if (!submitted) {
     return (
@@ -60,15 +77,14 @@ export function DesktopV3RoutedPendingShell({
       data-testid="desktop-v3-routed-pending-shell"
       data-pending-state={state}
       data-local-only="true"
+      data-start-path={startPath}
       aria-busy={routing || undefined}
     >
       <header className="shrink-0 border-b border-[var(--app-border)] bg-[var(--app-bg)] px-4 py-3 sm:px-6" data-testid="desktop-v3-pending-chat-header">
         <div className="mx-auto flex w-full max-w-[70rem] items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-[var(--app-text)]">New chat</div>
-            <div className="text-xs text-[var(--app-text-muted)]">
-              {routing ? 'Pending setup' : 'Setup needs attention'}
-            </div>
+            <div className="truncate text-sm font-semibold text-[var(--app-text)]">{pendingTitle}</div>
+            <div className="text-xs text-[var(--app-text-muted)]">{pendingSubtitle}</div>
           </div>
           <span className={cn(
             'inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium',
@@ -81,7 +97,7 @@ export function DesktopV3RoutedPendingShell({
             ) : (
               <TriangleAlert size={12} aria-hidden="true" />
             )}
-            {routing ? 'Routing…' : 'Not routed'}
+            {pendingBadge}
           </span>
         </div>
       </header>
@@ -105,13 +121,9 @@ export function DesktopV3RoutedPendingShell({
                 ) : (
                   <TriangleAlert size={12} aria-hidden="true" />
                 )}
-                {routing ? 'Routing…' : 'Routing failed'}
+                {statusLabel}
               </div>
-              <div className="text-[var(--app-text-muted)]">
-                {routing
-                  ? 'Choosing the setup for this chat…'
-                  : error.trim() || 'Your message is still here. Try routing it again.'}
-              </div>
+              <div className="text-[var(--app-text-muted)]">{statusDetail}</div>
               {!routing ? (
                 <button
                   type="button"

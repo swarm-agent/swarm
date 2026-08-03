@@ -3442,25 +3442,26 @@ export function DesktopAppPage() {
     wsName: string,
     options: { prompt?: string; worktreeRequested?: boolean; planModeRequested?: boolean } = {},
   ) => {
+    const nextIntent = {
+      workspacePath: wsPath,
+      prompt: options.prompt?.trim() ?? '',
+      worktreeRequested: options.worktreeRequested === true,
+      planModeRequested: options.planModeRequested === true,
+    }
     // An explicit New Session gesture is an abandonment boundary, not an
     // interrupted-start retry. Drop persisted retry identity and force a fresh
     // pane even when navigation targets the workspace URL already on screen.
     clearDesktopV3RoutedStartOperation()
     routedActivationGenerationRef.current += 1
     setNewSessionEpoch((current) => current + 1)
-    setNewSessionIntent({
-      workspacePath: wsPath,
-      prompt: options.prompt?.trim() ?? '',
-      worktreeRequested: options.worktreeRequested === true,
-      planModeRequested: options.planModeRequested === true,
-    })
+    setNewSessionIntent(nextIntent)
     dispatchDesktopV3Cache(selectSession(undefined))
     setMobileSidebarOpen(false)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
       ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
     const search = {
-      ...(options.worktreeRequested ? { newWorktree: '1' } : {}),
-      ...(options.planModeRequested ? { newPlan: '1' } : {}),
+      ...(nextIntent.worktreeRequested ? { newWorktree: '1' } : {}),
+      ...(nextIntent.planModeRequested ? { newPlan: '1' } : {}),
     }
     void navigate({ to: '/$workspaceSlug', params: { workspaceSlug }, search })
     setComposerFocusSignal((current) => current + 1)

@@ -5,10 +5,16 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { DesktopV3RoutedPendingShell } from './desktop-v3-routed-pending-shell'
 
-function render(state: Parameters<typeof DesktopV3RoutedPendingShell>[0]['state'], pendingPrompt = '', error = ''): string {
+function render(
+  state: Parameters<typeof DesktopV3RoutedPendingShell>[0]['state'],
+  pendingPrompt = '',
+  error = '',
+  startPath: Parameters<typeof DesktopV3RoutedPendingShell>[0]['startPath'] = 'router',
+): string {
   return renderToStaticMarkup(
     <DesktopV3RoutedPendingShell
       state={state}
+      startPath={startPath}
       pendingPrompt={pendingPrompt}
       error={error}
       onRetry={state === 'failed' ? () => undefined : undefined}
@@ -32,12 +38,13 @@ test('routing immediately shows a pending chat header, first user message, and s
   assert.match(markup, /data-pending-state="routing"/)
   assert.match(markup, /data-local-only="true"/)
   assert.match(markup, /data-testid="desktop-v3-pending-chat-header"/)
-  assert.match(markup, />New chat</)
-  assert.match(markup, />Pending setup</)
+  assert.match(markup, /data-start-path="router"/)
+  assert.match(markup, />New worktree chat</)
+  assert.match(markup, />Router setup</)
   assert.match(markup, /data-testid="desktop-v3-local-pending-prompt"/)
   assert.match(markup, /Route this prompt safely/)
   assert.match(markup, /data-testid="desktop-v3-routing-status"/)
-  assert.ok(markup.indexOf('Route this prompt safely') < markup.indexOf('Choosing the setup for this chat'))
+  assert.ok(markup.indexOf('Route this prompt safely') < markup.indexOf('Router is choosing the setup for this worktree chat'))
   assert.match(markup, /aria-busy="true"/)
   assert.match(markup, /animate-pulse/)
   assert.doesNotMatch(markup, /animate-spin|rounded-full border px-/)
@@ -45,11 +52,22 @@ test('routing immediately shows a pending chat header, first user message, and s
   assert.doesNotMatch(markup, /model|favorite|workspace|branch|Action|Plan/)
 })
 
+test('normal session start never renders Router presentation', () => {
+  const markup = render('routing', 'Start this directly', '', 'session')
+
+  assert.match(markup, /data-start-path="session"/)
+  assert.match(markup, />New chat</)
+  assert.match(markup, />Starting session</)
+  assert.match(markup, />Starting…</)
+  assert.match(markup, /Creating and starting this chat/)
+  assert.doesNotMatch(markup, /Router|Routing|worktree/)
+})
+
 test('fast unresolved routing still renders the same local message without authoritative details', () => {
   const markup = render('routing', 'Fast route')
 
   assert.equal((markup.match(/Fast route/g) ?? []).length, 1)
-  assert.match(markup, /New chat/)
+  assert.match(markup, /New worktree chat/)
   assert.match(markup, />Routing…</)
   assert.doesNotMatch(markup, /Choosing setup/)
 })
@@ -58,9 +76,9 @@ test('failure preserves the message in the same chat and offers retry beside the
   const markup = render('failed', 'Keep my prompt', 'Router is unavailable')
 
   assert.match(markup, /data-pending-state="failed"/)
-  assert.match(markup, /Setup needs attention/)
+  assert.match(markup, /Router needs attention/)
   assert.match(markup, /Keep my prompt/)
-  assert.match(markup, /Routing failed/)
+  assert.match(markup, /Router failed/)
   assert.match(markup, /Router is unavailable/)
   assert.match(markup, /<button[^>]*>.*Try again.*<\/button>/)
   assert.doesNotMatch(markup, /aria-busy/)

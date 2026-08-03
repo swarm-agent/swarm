@@ -87,6 +87,16 @@ export function DesktopV3NewSessionPane({
       }
       return result
     })
+    const commandPrompt = initialPrompt.trim()
+    if (routedController.getState().phase === 'draft' && commandPrompt) {
+      const snapshot = createDesktopV3RoutedComposerSnapshot({
+        prompt: commandPrompt,
+        worktreePrimed: initialWorktreeRequested,
+        planModeRequested: initialPlanModeRequested,
+      })
+      if (initialWorktreeRequested) routedController.primeWorktree(commandPrompt, snapshot)
+      else routedController.startDraft(commandPrompt, snapshot)
+    }
     return routedController
   })
   const [routedState, setRoutedState] = useState<DesktopV3RoutedNewSessionState>(() => controller.getState())
@@ -284,8 +294,12 @@ export function DesktopV3NewSessionPane({
     void controller.retry()
   }
 
-  const pendingState = routedState.phase === 'resolved' ? 'routing' : routedState.phase
-  const showComposer = routedState.phase === 'draft' || routedState.phase === 'worktree-primed' || routedState.phase === 'failed'
+  const initialCommandStarting = Boolean(initialCommandPrompt)
+    && !initialPromptSubmittedRef.current
+    && (routedState.phase === 'draft' || routedState.phase === 'worktree-primed')
+  const pendingState = routedState.phase === 'resolved' || initialCommandStarting ? 'routing' : routedState.phase
+  const showComposer = !initialCommandStarting
+    && (routedState.phase === 'draft' || routedState.phase === 'worktree-primed' || routedState.phase === 'failed')
 
   return (
     <div
@@ -300,6 +314,7 @@ export function DesktopV3NewSessionPane({
 
       <DesktopV3RoutedPendingShell
         state={pendingState}
+        startPath={routedState.snapshot.worktreePrimed ? 'router' : 'session'}
         pendingPrompt={routedState.prompt}
         error={routedState.phase === 'failed' ? routedState.error : undefined}
         onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
