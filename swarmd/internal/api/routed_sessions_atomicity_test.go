@@ -35,11 +35,12 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 		routerResponse    string
 		routerErr         error
 		breakCapabilities bool
+		managedWorktree   bool
 		wantRouterCalls   int
 	}{
 		{name: "workspace failure", workspaceEnabled: false, routerResponse: `{"title":"unused"}`, wantRouterCalls: 0},
-		{name: "Router failure", workspaceEnabled: true, routerErr: errors.New("Router unavailable"), wantRouterCalls: 1},
-		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check"}`, breakCapabilities: true, wantRouterCalls: 1},
+		{name: "Router failure", workspaceEnabled: true, routerErr: errors.New("Router unavailable"), managedWorktree: true, wantRouterCalls: 1},
+		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check","worktree_name":"capability-check"}`, breakCapabilities: true, managedWorktree: true, wantRouterCalls: 1},
 	}
 
 	for _, test := range tests {
@@ -54,7 +55,7 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 
 			const requestID = "failed-routed-start"
 			recorder := postRoutedSessionAtomicityRequest(t, server, principal, map[string]any{
-				"input": "route this request", "client_request_id": requestID,
+				"input": "route this request", "client_request_id": requestID, "managed_worktree_requested": test.managedWorktree,
 			})
 			if recorder.Code == http.StatusOK {
 				t.Fatalf("failure returned success: %s", recorder.Body.String())
@@ -70,7 +71,7 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 }
 
 func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Owned Title"}`}}
+	runner := &sessionRouterRecordingRunner{id: "recording", err: errors.New("Router must not be called for plain starts")}
 	server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, false, true)
 	const requestID = "atomic-routed-start"
 	requestBody := map[string]any{
@@ -86,21 +87,24 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if !firstResponse.OK || firstResponse.Replayed || firstResponse.SessionID == "" || firstResponse.StartingMode != sessionruntime.ModeAuto {
 		t.Fatalf("first routed response = %+v", firstResponse)
 	}
-	if runner.createCalls != 1 || runner.streamingCalls != 0 {
-		t.Fatalf("first Router calls create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
+	if runner.createCalls != 0 || runner.streamingCalls != 0 {
+		t.Fatalf("plain start reached Router: create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
 	}
 
 	stored, ok, err := sessions.GetSession(firstResponse.SessionID)
 	if err != nil || !ok {
 		t.Fatalf("durable session exists=%t err=%v", ok, err)
 	}
-	if stored.Title != "Router Owned Title" || stored.Mode != sessionruntime.ModeAuto || stored.WorkspacePath == "" {
+	if stored.Title != sessionV3TitleDefault || stored.Mode != sessionruntime.ModeAuto || stored.WorkspacePath == "" {
 		t.Fatalf("durable routed session = %+v", stored)
 	}
-	if stored.Metadata["title_source"] != routedSessionTitleSourceRouter || stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false {
-		t.Fatalf("Router title ownership metadata = %+v", stored.Metadata)
+	if stored.Metadata["title_locked"] != false || stored.Metadata["title_pending"] != true || stored.Metadata["title_source"] != nil {
+		t.Fatalf("plain asynchronous title metadata = %+v", stored.Metadata)
 	}
-	if firstResponse.Session.ID != stored.ID || firstResponse.Session.Title != stored.Title || firstResponse.Session.Metadata["title_source"] != routedSessionTitleSourceRouter {
+	if stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" || stored.Metadata["swarm_v3_source_workspace_path"] == "" {
+		t.Fatalf("plain workspace authority = %+v", stored.Metadata)
+	}
+	if firstResponse.Session.ID != stored.ID || firstResponse.Session.Title != stored.Title || firstResponse.Session.Metadata["title_pending"] != true {
 		t.Fatalf("response session is not canonical: response=%+v durable=%+v", firstResponse.Session, stored)
 	}
 
@@ -155,8 +159,8 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if !replayResponse.Replayed || replayResponse.SessionID != stored.ID || replayResponse.FirstMessage.ID != messages[0].ID || !replayResponse.Mutation.Replayed {
 		t.Fatalf("replay response = %+v", replayResponse)
 	}
-	if runner.createCalls != 1 {
-		t.Fatalf("exact replay called Router %d times, want once", runner.createCalls)
+	if runner.createCalls != 0 {
+		t.Fatalf("exact replay called Router %d times, want zero", runner.createCalls)
 	}
 	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
 
@@ -168,8 +172,8 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if planConflict.Code != http.StatusConflict {
 		t.Fatalf("Plan intent conflict status=%d body=%s", planConflict.Code, planConflict.Body.String())
 	}
-	if runner.createCalls != 1 {
-		t.Fatalf("Plan intent conflict called Router %d times, want once", runner.createCalls)
+	if runner.createCalls != 0 {
+		t.Fatalf("Plan intent conflict called Router %d times, want zero", runner.createCalls)
 	}
 	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
 
@@ -181,8 +185,8 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("payload conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
-	if runner.createCalls != 1 {
-		t.Fatalf("payload conflict called Router %d times, want once", runner.createCalls)
+	if runner.createCalls != 0 {
+		t.Fatalf("payload conflict called Router %d times, want zero", runner.createCalls)
 	}
 	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
 }
@@ -210,6 +214,7 @@ func decodeRoutedSessionAtomicityResponse(t *testing.T, recorder *httptest.Respo
 
 func postRoutedSessionAtomicityRequest(t *testing.T, server *Server, principal identity.Principal, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
+	addRoutedSessionTestAuthority(body)
 	if _, ok := body["managed_worktree_requested"]; !ok {
 		body["managed_worktree_requested"] = false
 	}
@@ -226,6 +231,21 @@ func postRoutedSessionAtomicityRequest(t *testing.T, server *Server, principal i
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	return recorder
+}
+
+func addRoutedSessionTestAuthority(body map[string]any) {
+	if _, ok := body["workspace_binding_id"]; !ok {
+		body["workspace_binding_id"] = "routed-binding"
+	}
+	if _, ok := body["swarm_id"]; !ok {
+		body["swarm_id"] = "local-swarm"
+	}
+	if _, ok := body["target_kind"]; !ok {
+		body["target_kind"] = "host"
+	}
+	if _, ok := body["target_relationship"]; !ok {
+		body["target_relationship"] = "self"
+	}
 }
 
 func assertNoRoutedSessionDurableAuthority(t *testing.T, sessions *sessionruntime.Service, principal identity.Principal, sessionID, requestID string) {
@@ -282,8 +302,15 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 
 	sessionService := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
 	catalogStore := pebblestore.NewModelCatalogStore(store)
-	if err := catalogStore.SetRecord(pebblestore.ModelCatalogRecord{Provider: routerRunner.id, Model: "router-model", ThinkingOptions: []string{"high"}, ServiceTiers: []string{"priority"}}); err != nil {
-		t.Fatalf("seed Router model catalog: %v", err)
+	for _, record := range []pebblestore.ModelCatalogRecord{
+		{Provider: routerRunner.id, Model: "router-model", ThinkingOptions: []string{"high"}, ServiceTiers: []string{"priority"}},
+		{Provider: "recording", Model: "action-model", ThinkingOptions: []string{"low", "medium", "high"}},
+		{Provider: "recording", Model: "plan-model", ThinkingOptions: []string{"high"}},
+		{Provider: "compact", Model: "compact-model", ThinkingOptions: []string{"low"}},
+	} {
+		if err := catalogStore.SetRecord(record); err != nil {
+			t.Fatalf("seed routed model catalog: %v", err)
+		}
 	}
 	modelService := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, modelruntime.NewCatalogService(catalogStore))
 	permissionService := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
@@ -335,6 +362,7 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	agentSettings := testAgentModelSettingsRecord(principal.AccountScopeID)
 	agentSettings.Swarm.Action = pebblestore.AgentModelAssignment{Provider: actionFavorite.Provider, Model: actionFavorite.Model, Thinking: actionFavorite.Thinking}
 	agentSettings.Swarm.Plan = pebblestore.AgentModelAssignment{Provider: planSelection.Provider, Model: planSelection.Model, Thinking: planSelection.Thinking}
+	agentSettings.SystemAgents.Router = pebblestore.AgentModelAssignment{Provider: routerRunner.id, Model: "router-model", Thinking: "high", ServiceTier: "priority"}
 	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil {
 		t.Fatalf("configure canonical agent model settings: %v", err)
 	}

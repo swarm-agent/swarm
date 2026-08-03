@@ -24,6 +24,7 @@ type sessionRouterRecordingRunner struct {
 	err            error
 	createCalls    int
 	streamingCalls int
+	allowStreaming bool
 	requests       []provideriface.Request
 	contexts       []context.Context
 }
@@ -35,8 +36,13 @@ func (r *sessionRouterRecordingRunner) CreateResponse(ctx context.Context, reque
 	r.contexts = append(r.contexts, ctx)
 	return r.response, r.err
 }
-func (r *sessionRouterRecordingRunner) CreateResponseStreaming(_ context.Context, _ provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
+func (r *sessionRouterRecordingRunner) CreateResponseStreaming(ctx context.Context, request provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.streamingCalls++
+	if r.allowStreaming {
+		r.requests = append(r.requests, request)
+		r.contexts = append(r.contexts, ctx)
+		return r.response, r.err
+	}
 	return provideriface.Response{}, errors.New("streaming must not be used by Router")
 }
 

@@ -105,7 +105,7 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	}
 	modelService := modelruntime.NewService(pebblestore.NewModelStore(store), events, modelruntime.NewCatalogService(catalogStore))
 
-	router := &sessionRouterRecordingRunner{id: "openai", response: provideriface.Response{Text: `{"title":"Inspect staged image"}`}}
+	router := &sessionRouterRecordingRunner{id: "openai", response: provideriface.Response{Text: `{"title":"Inspect staged image","worktree_name":"inspect-staged-image"}`}}
 	runner := &routedMediaTestRunner{sessionRouterRecordingRunner: router, declaration: provideriface.MediaAdapterDeclaration{
 		AdapterID: provideriface.MediaAdapterIDOpenAIResponsesV1, ProviderID: "openai", ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses,
 		CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey, CredentialFingerprint: "credential-fingerprint",
@@ -183,7 +183,8 @@ func (f *routedMediaTestFixture) postWithWorktreeIntent(t *testing.T, account, r
 	for key, value := range media {
 		item[key] = value
 	}
-	body, err := json.Marshal(map[string]any{"input": "inspect this image", "client_request_id": requestID, "managed_worktree_requested": managedWorktreeRequested, "plan_mode_requested": false, "media": []any{item}})
+	payload := map[string]any{"input": "inspect this image", "client_request_id": requestID, "managed_worktree_requested": managedWorktreeRequested, "plan_mode_requested": false, "media": []any{item}, "workspace_binding_id": "binding-routed", "swarm_id": "local-swarm", "target_kind": "host", "target_relationship": "self"}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal routed request: %v", err)
 	}
@@ -254,7 +255,7 @@ func TestRoutedSessionStagedMediaBindsDurablyAndReplayIsStable(t *testing.T) {
 	asset, _, assetErr := fixture.sessions.ReadSessionMediaAsset(fixture.principal.AccountScopeID, body.SessionID, reference.AssetID)
 	assetCount := 0
 	countErr := fixture.store.IteratePrefix(pebblestore.SessionMediaAssetPrefix(fixture.principal.AccountScopeID, body.SessionID), 10, func(string, []byte) error { assetCount++; return nil })
-	if err != nil || assetErr != nil || countErr != nil || len(messages) != 1 || assetCount != 1 || asset.ReferenceCount != 1 || fixture.runner.createCalls != 1 {
+	if err != nil || assetErr != nil || countErr != nil || len(messages) != 1 || assetCount != 1 || asset.ReferenceCount != 1 || fixture.runner.createCalls != 0 {
 		t.Fatalf("replay duplicated authority messages=%d assets=%d asset=%+v router_calls=%d errors=%v/%v/%v", len(messages), assetCount, asset, fixture.runner.createCalls, err, assetErr, countErr)
 	}
 }
@@ -264,7 +265,7 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 		fixture := newRoutedMediaTestFixture(t)
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "router-failure")
 		fixture.runner.err = errors.New("router unavailable")
-		response := fixture.post(t, fixture.principal.AccountScopeID, "router-failure", staged.ID, nil)
+		response := fixture.postWithWorktreeIntent(t, fixture.principal.AccountScopeID, "router-failure", staged.ID, nil, true)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
@@ -275,7 +276,7 @@ func TestRoutedSessionStagedMediaFailuresArePreMutationAndSafelyCleaned(t *testi
 	t.Run("workspace failure abandons staging", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
 		staged := fixture.stage(t, fixture.principal.AccountScopeID, "workspace-failure")
-		fixture.server.workspace = nil
+		fixture.server.topology = nil
 		response := fixture.post(t, fixture.principal.AccountScopeID, "workspace-failure", staged.ID, nil)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())

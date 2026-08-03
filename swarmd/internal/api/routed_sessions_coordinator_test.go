@@ -59,14 +59,16 @@ func TestNormalizeRoutedSessionMediaCanonicalizesAndBounds(t *testing.T) {
 }
 
 func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
-	base := routedSessionStartRequest{Input: "route this", AgentName: "swarm", Metadata: map[string]any{"source": "desktop"}}
-	first, err := routedSessionRequestHash(base, sessionsV3PrimaryBinding{}, "request", nil)
+	plain := false
+	base := routedSessionStartRequest{Input: "route this", AgentName: "swarm", Metadata: map[string]any{"source": "desktop"}, ManagedWorktreeRequested: &plain, WorkspacePath: "/source", HostWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime", WorkspaceBindingID: "binding", SwarmID: "runtime", TargetKind: "host", TargetRelationship: "self"}
+	binding := sessionsV3PrimaryBinding{RuntimeSwarmID: "runtime", WorkspaceBindingID: "binding", SourceWorkspaceID: "workspace", SourceWorkspaceGeneration: 2, SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime", PlacementGeneration: 3, BindingGeneration: 4}
+	first, err := routedSessionRequestHash(base, binding, "request", nil)
 	if err != nil {
 		t.Fatalf("first hash: %v", err)
 	}
 	second := base
 	second.Input = "route something else"
-	secondHash, err := routedSessionRequestHash(second, sessionsV3PrimaryBinding{}, "request", nil)
+	secondHash, err := routedSessionRequestHash(second, binding, "request", nil)
 	if err != nil {
 		t.Fatalf("second hash: %v", err)
 	}
@@ -76,18 +78,48 @@ func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
 	planRequested := true
 	second = base
 	second.PlanModeRequested = &planRequested
-	planHash, err := routedSessionRequestHash(second, sessionsV3PrimaryBinding{}, "request", nil)
+	planHash, err := routedSessionRequestHash(second, binding, "request", nil)
 	if err != nil {
 		t.Fatalf("Plan hash: %v", err)
 	}
 	if first == planHash {
 		t.Fatal("request hash did not bind plan_mode_requested")
 	}
-	bindingHash, err := routedSessionRequestHash(base, sessionsV3PrimaryBinding{WorkspaceBindingID: "binding", RuntimeSwarmID: "runtime", SourceWorkspaceID: "workspace", SourceWorkspaceGeneration: 2, BindingGeneration: 3, PlacementGeneration: 4}, "request", nil)
+	changedBinding := binding
+	changedBinding.WorkspaceBindingID = "other-binding"
+	bindingHash, err := routedSessionRequestHash(base, changedBinding, "request", nil)
 	if err != nil {
 		t.Fatalf("binding hash: %v", err)
 	}
 	if first == bindingHash {
 		t.Fatal("request hash did not bind canonical workspace authority")
+	}
+	worktree := true
+	second = base
+	second.ManagedWorktreeRequested = &worktree
+	worktreeHash, err := routedSessionRequestHash(second, binding, "request", nil)
+	if err != nil {
+		t.Fatalf("worktree hash: %v", err)
+	}
+	if first == worktreeHash {
+		t.Fatal("request hash did not bind managed worktree intent")
+	}
+	changedRequestPath := base
+	changedRequestPath.WorkspacePath = "/other-source"
+	pathHash, err := routedSessionRequestHash(changedRequestPath, binding, "request", nil)
+	if err != nil {
+		t.Fatalf("path hash: %v", err)
+	}
+	if first == pathHash {
+		t.Fatal("request hash did not bind source workspace path")
+	}
+	changedRequestSwarm := base
+	changedRequestSwarm.SwarmID = "other-runtime"
+	swarmHash, err := routedSessionRequestHash(changedRequestSwarm, binding, "request", nil)
+	if err != nil {
+		t.Fatalf("swarm hash: %v", err)
+	}
+	if first == swarmHash {
+		t.Fatal("request hash did not bind runtime swarm authority")
 	}
 }
