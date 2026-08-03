@@ -245,10 +245,11 @@ func currentHomeAgentModeCapability(page *HomePage) string {
 	return homeAgentModeCapability(page.model, page.sessionMode)
 }
 
+// CanCycleSessionMode reports whether the home composer can prime Plan intent.
+// Home has no durable session yet, so Router remains authoritative for the
+// eventual agent, model, workspace, and worktree selected at routed start.
 func (p *HomePage) CanCycleSessionMode() bool {
-	return p != nil && p.model.ActiveAgentExitPlanMode &&
-		strings.TrimSpace(p.model.PlanModelProvider) != "" && strings.TrimSpace(p.model.PlanModelName) != "" &&
-		strings.TrimSpace(p.model.AutoModelProvider) != "" && strings.TrimSpace(p.model.AutoModelName) != ""
+	return p != nil
 }
 
 func (p *HomePage) SetVoiceInputState(state VoiceInputState) {
