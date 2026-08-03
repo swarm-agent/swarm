@@ -346,6 +346,24 @@ func (p *Page) Status() string {
 	return p.status
 }
 
+// SetInput replaces the local composer value without creating or mutating a
+// durable session. App command dispatch uses this when opening a bare primer.
+func (p *Page) SetInput(value string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.input = []rune(value)
+	if len(p.input) > maxComposerRunes {
+		p.input = p.input[:maxComposerRunes]
+	}
+	p.cursor = len(p.input)
+	p.pasteBuffer = nil
+	p.syncCommandPaletteSelectionLocked()
+	p.resetCommandPaletteOptionSelectionLocked()
+	p.mu.Unlock()
+}
+
 func (p *Page) InputValue() string {
 	if p == nil {
 		return ""
@@ -521,6 +539,89 @@ func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) bool {
 		return true
 	}
 	return false
+}
+
+// PrimeRoutedDraft opens the local Router primer. It deliberately leaves
+// workspace, branch, title, mode, and model authority unset until Router
+// returns a canonical response.
+func (p *Page) PrimeRoutedDraft(draft RoutedDraft) error {
+	if p == nil || p.runtime == nil {
+		return fmt.Errorf("v3 chat runtime is not configured")
+	}
+	if err := p.runtime.PrimeRoutedDraft(draft); err != nil {
+		return err
+	}
+	p.SetInput(draft.Prompt)
+	p.SetStatus("Waiting...")
+	return nil
+}
+
+// OpenRoutedNew applies one parsed /new command. Bare commands leave an
+// editable primer; prompt forms begin routing immediately.
+func (p *Page) OpenRoutedNew(command NewCommand, agentName string, metadata map[string]any) error {
+	if err := p.PrimeRoutedDraft(RoutedDraft{
+		Prompt:                   command.Prompt,
+		PlanModeRequested:        command.PlanModeRequested,
+		ManagedWorktreeRequested: command.ManagedWorktreeRequested,
+		AgentName:                strings.TrimSpace(agentName),
+		Metadata:                 cloneAnyMap(metadata),
+	}); err != nil {
+		return err
+	}
+	if strings.TrimSpace(command.Prompt) != "" {
+		p.ClearInput()
+		p.StartRoutedDraft()
+	}
+	return nil
+}
+
+// StartRoutedDraft submits the primed local intent asynchronously.
+func (p *Page) StartRoutedDraft() {
+	if p == nil || p.runtime == nil {
+		return
+	}
+	p.setBusy("Routing...", true)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := p.runtime.StartRoutedDraft(ctx)
+		p.finishAsync("", err)
+	}()
+}
+
+// RetryRoutedDraft retries the same failed operation identity.
+func (p *Page) RetryRoutedDraft() {
+	if p == nil || p.runtime == nil {
+		return
+	}
+	p.setBusy("Routing...", true)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := p.runtime.RetryRoutedDraft(ctx)
+		p.finishAsync("", err)
+	}()
+}
+
+// ApplyWorktreeCommand changes only the ready local primer flag.
+func (p *Page) ApplyWorktreeCommand(input string) (bool, error) {
+	command, matched, err := ParseWorktreeCommand(input)
+	if !matched || err != nil {
+		return matched, err
+	}
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return true, fmt.Errorf("v3 chat runtime is not configured")
+	}
+	state := p.runtime.Store().Snapshot()
+	draft, ok := SelectRoutedDraft(state)
+	if !ok {
+		return true, fmt.Errorf("worktree priming is available only for a new session draft")
+	}
+	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, draft.PlanModeRequested, command.Enabled); err != nil {
+		return true, err
+	}
+	p.SetStatus("Worktree: " + map[bool]string{true: "on", false: "off"}[command.Enabled])
+	return true, nil
 }
 
 func (p *Page) OpenNew(request NewSessionRequest) {
@@ -727,6 +828,21 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			return PageActionCommand
 		}
 		if text != "" && !p.busy {
+			if p.runtime != nil && p.runtime.Store() != nil {
+				state := p.runtime.Store().Snapshot()
+				if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status == RoutedDraftReady {
+					if err := p.runtime.UpdateRoutedDraftIntent(text, draft.PlanModeRequested, draft.ManagedWorktreeRequested); err != nil {
+						p.errText = err.Error()
+						break
+					}
+					p.input = nil
+					p.cursor = 0
+					p.follow = true
+					p.scroll = 0
+					go p.StartRoutedDraft()
+					break
+				}
+			}
 			p.input = nil
 			p.cursor = 0
 			p.follow = true
@@ -946,37 +1062,24 @@ func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
 }
 
 func (p *Page) cycleModeLocked() {
-	if p.runtime == nil || p.busy {
+	if p.runtime == nil || p.busy || p.runtime.Store() == nil {
 		return
 	}
 	state := p.runtime.Store().Snapshot()
-	next := "plan"
-	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
-		next = "auto"
-	}
-	if strings.TrimSpace(state.Session.ID) == "" {
-		if err := p.runtime.SetDraftMode(next); err != nil {
-			p.errText = err.Error()
-			p.status = ""
-			return
-		}
-		p.errText = ""
-		p.status = "Plan: " + map[bool]string{true: "on", false: "off"}[next == "plan"]
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || strings.TrimSpace(state.Session.ID) != "" || draft.Status != RoutedDraftReady {
+		p.errText = "Plan toggle is available only for a new session draft"
+		p.status = ""
 		return
 	}
-	p.busy = true
-	p.status = "switching Plan " + map[bool]string{true: "on", false: "off"}[next == "plan"] + "…"
+	next := !draft.PlanModeRequested
+	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, next, draft.ManagedWorktreeRequested); err != nil {
+		p.errText = err.Error()
+		p.status = ""
+		return
+	}
 	p.errText = ""
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		resolved, err := p.runtime.SetMode(ctx, next)
-		if err != nil {
-			p.finishAsync("", err)
-			return
-		}
-		p.finishAsync("Plan: "+map[bool]string{true: "on", false: "off"}[strings.EqualFold(resolved.Mode, "plan")], nil)
-	}()
+	p.status = "Plan: " + map[bool]string{true: "on", false: "off"}[next]
 }
 
 func (p *Page) openModelPickerLocked() {
@@ -1462,7 +1565,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	}
 	title := strings.TrimSpace(SelectTitle(state))
 	if title == "" {
-		title = "New V3 session"
+		if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
+			title = "Waiting..."
+		} else {
+			title = "New V3 session"
+		}
 	}
 	workspaceName := strings.TrimSpace(state.Session.WorkspaceName)
 	_, stale, reason := SelectReconnect(state)
@@ -1476,6 +1583,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if stale {
 		statusLine = "stale • Ctrl-R to rehydrate • " + reason
 		statusStyle = styles.Warning
+	} else if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
+		statusLine = routedDraftStatusLine(draft)
+		if draft.Status == RoutedDraftFailed {
+			statusStyle = styles.Error
+		}
 	} else {
 		switch composerNoticeKind(status) {
 		case "stop":
@@ -1978,18 +2090,34 @@ func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, sta
 	modelState := SelectModel(state)
 	usage := SelectUsage(state)
 	displayedMode := "off"
+	planToggle := true
+	worktreeRequested := false
 	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
 		displayedMode = "on"
 	}
+	if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status != RoutedDraftResolved {
+		worktreeRequested = draft.ManagedWorktreeRequested
+		if draft.PlanModeRequested {
+			displayedMode = "on"
+		} else {
+			displayedMode = "off"
+		}
+	}
+	localRoutedDraft := false
+	if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved && strings.TrimSpace(state.Session.ID) == "" {
+		localRoutedDraft = true
+	}
 	footerState := footerbar.State{
-		RouteLabel:     strings.TrimSpace(routeLabel),
-		DisplayedMode:  displayedMode,
-		Agent:          "swarm",
-		ModelLabel:     displayModelLabel(modelState.Preference),
-		Thinking:       strings.TrimSpace(modelState.Preference.Thinking),
-		ServiceTier:    strings.TrimSpace(modelState.Preference.ServiceTier),
-		PlanToggle:     true,
-		RightFacts:     conversationContextFacts(usage, modelState.ContextWindow),
+		RouteLabel:        strings.TrimSpace(routeLabel),
+		DisplayedMode:     displayedMode,
+		Agent:             "swarm",
+		ModelLabel:        displayModelLabel(modelState.Preference),
+		Thinking:          strings.TrimSpace(modelState.Preference.Thinking),
+		ServiceTier:       strings.TrimSpace(modelState.Preference.ServiceTier),
+		PlanToggle:        planToggle,
+		WorktreeRequested: worktreeRequested,
+		HideAgentModel:    localRoutedDraft,
+		RightFacts:        conversationContextFacts(usage, modelState.ContextWindow),
 	}
 	footerbar.Draw(screen, footerbar.Styles{Border: p.styles.Border, Accent: p.styles.Accent, Secondary: p.styles.Secondary, Text: p.styles.Text}, rect, footerState, func(target footerbar.Rect, token footerbar.Token) {
 		if token.Action == "open-agents-modal" {
@@ -1998,6 +2126,21 @@ func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, sta
 			p.mu.Unlock()
 		}
 	})
+}
+
+func routedDraftStatusLine(draft RoutedDraft) string {
+	switch draft.Status {
+	case RoutedDraftRouting:
+		return "Routing..."
+	case RoutedDraftFailed:
+		message := strings.TrimSpace(draft.Error)
+		if message == "" {
+			message = "Router start failed"
+		}
+		return message + " • retry the same request"
+	default:
+		return "Waiting..."
+	}
 }
 
 func conversationContextFacts(usage UsageState, fallbackWindow int) []string {
@@ -2312,7 +2455,19 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		selectedPermissionID = pendingPermissions[permissionIndex].ID
 	}
 
-	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2)
+	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2+4)
+	if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
+		if strings.TrimSpace(draft.Prompt) != "" {
+			rows = append(rows, p.renderUserRows("routed-draft:"+draft.ClientRequestID, draft.Prompt, width, styles)...)
+		}
+		flags := []string{"Plan: " + map[bool]string{true: "on", false: "off"}[draft.PlanModeRequested], "Worktree: " + map[bool]string{true: "on", false: "off"}[draft.ManagedWorktreeRequested]}
+		statusStyle := styles.Muted
+		if draft.Status == RoutedDraftFailed {
+			statusStyle = styles.Error
+		}
+		rows = append(rows, renderRow{text: routedDraftStatusLine(draft), style: statusStyle})
+		rows = append(rows, renderRow{text: strings.Join(flags, " • "), style: styles.Muted}, renderRow{text: "", style: styles.Text})
+	}
 	boundedPermissionID, boundedPermissionMaxScroll := "", 0
 	copyBlockBaseIndex := 0
 	for _, item := range items {

@@ -442,6 +442,7 @@ func (p *HomePage) homeFooterState() FooterState {
 		Thinking:          strings.TrimSpace(thinking),
 		ServiceTier:       strings.TrimSpace(serviceTier),
 		PlanToggle:        true,
+		WorktreeRequested: p.WorktreeRequested(),
 		RightFacts:        p.homeFooterRightFacts(),
 		StatusLine:        strings.TrimSpace(p.statusLine),
 		StatusStyle:       p.homeStatusStyle(p.statusLine),

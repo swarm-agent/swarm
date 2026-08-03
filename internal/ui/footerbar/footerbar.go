@@ -25,6 +25,8 @@ type State struct {
 	Thinking          string
 	ServiceTier       string
 	PlanToggle        bool
+	WorktreeRequested bool
+	HideAgentModel    bool
 	RightFacts        []string
 	StatusLine        string
 	StatusStyle       tcell.Style
@@ -80,7 +82,13 @@ func Tokens(styles Styles, state State) []Token {
 	} else {
 		tokens = append(tokens, Token{Text: modeText, Style: modeStyle})
 	}
-	return append(tokens, Token{Text: AgentModelUnit(state), Style: metaStyle, Action: "open-agents-modal", Shrink: true})
+	if state.WorktreeRequested {
+		tokens = append(tokens, Token{Text: "Worktree", Style: modeStyle})
+	}
+	if !state.HideAgentModel {
+		tokens = append(tokens, Token{Text: AgentModelUnit(state), Style: metaStyle, Action: "open-agents-modal", Shrink: true})
+	}
+	return tokens
 }
 
 func AgentModelUnit(state State) string {

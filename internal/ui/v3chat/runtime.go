@@ -75,13 +75,16 @@ func (r *Runtime) PrimeRoutedDraft(draft RoutedDraft) error {
 		return errors.New("v3 chat transport is not configured")
 	}
 	draft.Prompt = strings.TrimSpace(draft.Prompt)
-	if draft.Prompt == "" {
-		return errors.New("v3 routed draft prompt is required")
-	}
-	if strings.TrimSpace(draft.ClientRequestID) == "" {
-		draft.ClientRequestID = "tui-v3-routed:" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if draft.Prompt != "" {
+		if strings.TrimSpace(draft.ClientRequestID) == "" {
+			draft.ClientRequestID = "tui-v3-routed:" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		} else {
+			draft.ClientRequestID = strings.TrimSpace(draft.ClientRequestID)
+		}
 	} else {
-		draft.ClientRequestID = strings.TrimSpace(draft.ClientRequestID)
+		// A bare /new opens a purely local primer. Allocate the stable request
+		// identity only after the user supplies a prompt for submission.
+		draft.ClientRequestID = ""
 	}
 	r.mu.Lock()
 	r.primedCreate = nil
@@ -103,6 +106,13 @@ func (r *Runtime) StartRoutedDraft(ctx context.Context) (client.RoutedSessionV3S
 	draft, ok := SelectRoutedDraft(state)
 	if !ok {
 		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft is not primed")
+	}
+	if strings.TrimSpace(draft.Prompt) == "" {
+		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft prompt is required")
+	}
+	if strings.TrimSpace(draft.ClientRequestID) == "" {
+		draft.ClientRequestID = "tui-v3-routed:" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		r.store.Dispatch(PrimeRoutedDraftAction{Draft: draft})
 	}
 	if draft.Status == RoutedDraftRouting {
 		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft is already routing")
@@ -139,6 +149,28 @@ func (r *Runtime) StartRoutedDraft(ctx context.Context) (client.RoutedSessionV3S
 		return client.RoutedSessionV3StartResponse{}, fmt.Errorf("connect routed v3 session: %w", err)
 	}
 	return response, nil
+}
+
+// UpdateRoutedDraftIntent changes only an uncommitted local primer. A routing,
+// failed, resolved, or durable session keeps the submitted operation immutable.
+func (r *Runtime) UpdateRoutedDraftIntent(prompt string, planModeRequested, managedWorktreeRequested bool) error {
+	if r == nil || r.store == nil {
+		return errors.New("v3 routed draft is not primed")
+	}
+	state := r.store.Snapshot()
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || strings.TrimSpace(state.Session.ID) != "" || draft.Status != RoutedDraftReady {
+		return errors.New("v3 routed draft is not editable")
+	}
+	draft.Prompt = strings.TrimSpace(prompt)
+	draft.PlanModeRequested = planModeRequested
+	draft.ManagedWorktreeRequested = managedWorktreeRequested
+	if draft.Prompt == "" {
+		draft.ClientRequestID = ""
+	}
+	r.store.Dispatch(PrimeRoutedDraftAction{Draft: draft})
+	r.signalWake()
+	return nil
 }
 
 func (r *Runtime) RetryRoutedDraft(ctx context.Context) (client.RoutedSessionV3StartResponse, error) {

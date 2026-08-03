@@ -140,7 +140,7 @@ func NewHomePage(m model.HomeModel) *HomePage {
 		theme:        NordTheme(),
 		keybinds:     NewDefaultKeyBindings(),
 		model:        m,
-		statusLine:   "",
+		statusLine:   "Waiting...",
 		sessionMode:  "auto",
 		swarmName:    "Local",
 		promptCursor: 0,

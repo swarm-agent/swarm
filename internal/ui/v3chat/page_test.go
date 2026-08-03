@@ -1788,106 +1788,111 @@ func TestExitPlanModeCanonicalEventUpdatesRenderedFooterPolicy(t *testing.T) {
 	}
 }
 
-func TestShiftTabCyclesPrimedDraftModeAndEffectiveFooterLocally(t *testing.T) {
+func TestShiftTabCyclesRoutedPrimerPlanFlagLocally(t *testing.T) {
 	transport := &fakeTransport{}
 	runtime := NewRuntime(transport, nil, nil)
-	autoPreference := client.ModelPreference{Provider: "openrouter", Model: "auto-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "auto-context"}
-	planPreference := client.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high", ServiceTier: "fast", ContextMode: "1m"}
-	if err := runtime.PrimeNewSession(NewSessionRequest{
-		Create: client.SessionCreateOptions{
-			Title:              "New Session",
-			WorkspacePath:      "/workspace",
-			WorkspaceBindingID: "binding",
-			Mode:               "auto",
-			Preference:         autoPreference,
-			Metadata:           map[string]any{"source": "home"},
-		},
-		DraftModeSelections: map[string]DraftModeSelection{
-			"auto": {
-				Preference: autoPreference, ContextWindow: 180000,
-				AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Automatic", ProfileSource: "saved", Preference: autoPreference, ContextWindow: 180000},
-			},
-			"plan": {
-				Preference: planPreference, ContextWindow: 1050000,
-				AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Planning", ProfileSource: "saved", Preference: planPreference, ContextWindow: 1050000},
-			},
-		},
-	}); err != nil {
+	if err := runtime.PrimeRoutedDraft(RoutedDraft{ManagedWorktreeRequested: true}); err != nil {
 		t.Fatal(err)
 	}
 	page := NewPage(runtime, testPageStyles())
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
-	defer screen.Fini()
-	screen.SetSize(100, 18)
-	page.Draw(screen)
-	screen.Show()
-	if footer := simulationRow(screen, 100, 17); !strings.Contains(footer, "[Automatic · auto-model · medium · flex]") || strings.Contains(footer, "Planning") {
-		t.Fatalf("initial auto draft footer = %q", footer)
-	}
-
 	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
 	state := runtime.Store().Snapshot()
-	if state.Session.ID != "" || state.Session.Mode != "plan" || state.Model.Preference != planPreference || state.Model.ProfileName != "Planning" || state.Model.ContextWindow != 1050000 {
-		t.Fatalf("Shift+Tab plan draft state = %#v", state)
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || state.Session.ID != "" || !draft.PlanModeRequested || !draft.ManagedWorktreeRequested {
+		t.Fatalf("Shift+Tab routed draft state = %#v", state)
 	}
 	if got := page.Status(); got != "Plan: on" {
-		t.Fatalf("plan draft mode status = %q", got)
+		t.Fatalf("plan draft status = %q", got)
 	}
-	page.Draw(screen)
-	screen.Show()
-	if footer := simulationRow(screen, 100, 17); !strings.Contains(footer, "[Planning · gpt-5.4 (fast,1m) · high · fast]") || !strings.Contains(footer, "ctx 100%") || strings.Contains(footer, "auto-model") {
-		t.Fatalf("plan draft footer = %q", footer)
-	}
-
 	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
-	state = runtime.Store().Snapshot()
-	if state.Session.Mode != "auto" || state.Model.Preference != autoPreference || state.Model.ProfileName != "Automatic" || state.Model.ContextWindow != 180000 {
-		t.Fatalf("Shift+Tab auto draft state = %#v", state)
-	}
-	if got := page.Status(); got != "Plan: off" {
-		t.Fatalf("auto draft mode status = %q", got)
-	}
-	page.Draw(screen)
-	screen.Show()
-	if footer := simulationRow(screen, 100, 17); !strings.Contains(footer, "[Automatic · auto-model · medium · flex]") || strings.Contains(footer, "Planning") || strings.Contains(footer, "gpt-5.4") {
-		t.Fatalf("auto draft footer after round trip = %q", footer)
+	draft, _ = SelectRoutedDraft(runtime.Store().Snapshot())
+	if draft.PlanModeRequested || !draft.ManagedWorktreeRequested {
+		t.Fatalf("Shift+Tab routed draft round trip = %#v", draft)
 	}
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
 	if len(transport.calls) != 0 || len(transport.createRequests) != 0 || transport.modeRequest != "" {
-		t.Fatalf("Shift+Tab persisted or mutated draft: calls=%#v creates=%#v mode=%q", transport.calls, transport.createRequests, transport.modeRequest)
+		t.Fatalf("Shift+Tab persisted draft: calls=%#v creates=%#v mode=%q", transport.calls, transport.createRequests, transport.modeRequest)
 	}
 }
 
-func TestShiftTabCyclesModeThroughBackendResolvedState(t *testing.T) {
-	transport := &fakeTransport{mode: client.SessionV3ModeResult{
-		Mode:             "plan",
-		Preference:       client.ModelPreference{Provider: "codex", Model: "plan-model"},
-		AgentModelPolicy: client.SessionV3AgentModelPolicy{ProfileName: "Planning", ProfileSource: "saved"},
-	}}
+func TestShiftTabDoesNotMutateDurableSessionMode(t *testing.T) {
+	transport := &fakeTransport{mode: client.SessionV3ModeResult{Mode: "plan"}}
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Mode: "auto"}, Preference: client.ModelPreference{Provider: "codex", Model: "auto-model"}}})
 	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
 	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if store.Snapshot().Session.Mode == "plan" {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
 	state := store.Snapshot()
-	if state.Session.Mode != "plan" || state.Model.Preference.Model != "plan-model" || state.Model.ProfileName != "Planning" {
-		t.Fatalf("Shift+Tab did not commit backend-resolved plan/model state: %#v", state)
+	if state.Session.Mode != "auto" {
+		t.Fatalf("Shift+Tab mutated durable session mode: %#v", state)
 	}
 	transport.mu.Lock()
 	modeRequest := transport.modeRequest
 	transport.mu.Unlock()
-	if modeRequest != "plan" {
-		t.Fatalf("mode request = %q, want plan", modeRequest)
+	if modeRequest != "" {
+		t.Fatalf("durable Shift+Tab mode request = %q", modeRequest)
+	}
+	if got := page.Status(); !strings.Contains(got, "new session draft") {
+		t.Fatalf("durable Shift+Tab status = %q", got)
+	}
+}
+
+func TestWorktreeCommandUpdatesOnlyReadyRoutedPrimer(t *testing.T) {
+	runtime := NewRuntime(&fakeTransport{}, nil, nil)
+	if err := runtime.PrimeRoutedDraft(RoutedDraft{}); err != nil {
+		t.Fatal(err)
+	}
+	page := NewPage(runtime, testPageStyles())
+	matched, err := page.ApplyWorktreeCommand("/wt on")
+	if err != nil || !matched {
+		t.Fatalf("apply /wt on = matched=%v err=%v", matched, err)
+	}
+	draft, _ := SelectRoutedDraft(runtime.Store().Snapshot())
+	if !draft.ManagedWorktreeRequested || draft.PlanModeRequested || draft.ClientRequestID != "" {
+		t.Fatalf("worktree primer = %#v", draft)
+	}
+	matched, err = page.ApplyWorktreeCommand("/worktrees")
+	if err != nil || matched {
+		t.Fatalf("/worktrees captured = matched=%v err=%v", matched, err)
+	}
+}
+
+func TestRoutedDraftRowsKeepPromptStatusFlagsAndRetryGuidanceLocal(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(PrimeRoutedDraftAction{Draft: RoutedDraft{Prompt: "route this", PlanModeRequested: true, ManagedWorktreeRequested: true}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	rows := page.renderRows(store.Snapshot(), 80, testPageStyles())
+	joined := ""
+	for _, row := range rows {
+		joined += row.text + "\n"
+	}
+	for _, want := range []string{"route this", "Waiting...", "Plan: on", "Worktree: on"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("ready routed rows missing %q:\n%s", want, joined)
+		}
+	}
+	store.Dispatch(RoutedDraftRoutingAction{})
+	rows = page.renderRows(store.Snapshot(), 80, testPageStyles())
+	joined = ""
+	for _, row := range rows {
+		joined += row.text + "\n"
+	}
+	if !strings.Contains(joined, "Routing...") || !strings.Contains(joined, "route this") {
+		t.Fatalf("routing rows lost local prompt/status:\n%s", joined)
+	}
+	store.Dispatch(RoutedDraftFailedAction{Error: "router unavailable"})
+	rows = page.renderRows(store.Snapshot(), 80, testPageStyles())
+	joined = ""
+	for _, row := range rows {
+		joined += row.text + "\n"
+	}
+	for _, want := range []string{"route this", "router unavailable", "retry the same request"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("failed routed rows missing %q:\n%s", want, joined)
+		}
+	}
+	if state := store.Snapshot(); state.Session.ID != "" || state.Session.Title != "" || state.Session.WorkspaceName != "" {
+		t.Fatalf("local draft invented canonical authority: %#v", state.Session)
 	}
 }
 

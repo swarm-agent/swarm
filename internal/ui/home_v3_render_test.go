@@ -36,7 +36,7 @@ func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"Talk to Swarm", "Ctrl+X sessions • / for commands"} {
+	for _, want := range []string{"Talk to Swarm", "Waiting...", "Ctrl+X sessions • / for commands"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("homepage missing %q:\n%s", want, text)
 		}
@@ -45,6 +45,27 @@ func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("homepage retained obsolete hero treatment %q:\n%s", unwanted, text)
 		}
+	}
+}
+
+func TestHomepageWorktreePrimerKeepsWorkspaceRowAndShowsFlag(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+	page := NewHomePage(model.HomeModel{ActiveAgent: "swarm", ModelName: "model", Workspaces: []model.Workspace{{Name: "Alpha", Path: "/workspace/alpha", Active: true}}})
+	page.SetWorktreeRequested(true)
+	page.Draw(screen)
+	text := dumpHomeTestScreen(screen, 100, 30)
+	for _, want := range []string{"Alpha", "Worktree"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("worktree primer missing %q:\n%s", want, text)
+		}
+	}
+	if len(page.topBarTargets) == 0 {
+		t.Fatal("worktree primer removed top-bar mouse targets")
 	}
 }
 

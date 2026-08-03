@@ -34,6 +34,17 @@ func TestWorkspaceSelectorFiltersAndActivates(t *testing.T) {
 	}
 }
 
+func TestFirstRegisteredWorkspaceIsInitialSelection(t *testing.T) {
+	page := NewHomePage(model.HomeModel{Workspaces: []model.Workspace{{Name: "first", Path: "/work/first"}, {Name: "second", Path: "/work/second"}}})
+	if got := page.activeWorkspaceIndex(); got != 0 {
+		t.Fatalf("initial workspace index = %d, want 0", got)
+	}
+	state := page.HomepageState()
+	if state.SelectedWorkspace.Name != "first" || state.SelectedWorkspace.Path != "/work/first" {
+		t.Fatalf("initial workspace = %#v", state.SelectedWorkspace)
+	}
+}
+
 func TestWorkspaceSelectorCancelClearsState(t *testing.T) {
 	page := NewHomePage(testHomeModel())
 	page.SetWorkspaceModalIntent("select", "")

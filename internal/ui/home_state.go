@@ -137,6 +137,9 @@ func (p *HomePage) activeWorkspaceIndex() int {
 			return i
 		}
 	}
+	if len(p.model.Workspaces) > 0 {
+		return 0
+	}
 	return -1
 }
 
