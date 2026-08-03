@@ -6,16 +6,10 @@ import {
   DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS,
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
-  normalizeDesignerAgentSettings,
-  normalizeFinderAgentSettings,
-  normalizeRouterAgentSettings,
   normalizeSessionMode,
   normalizeSidebarHideInactiveHours,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
-  withDesignerAgentSettings,
-  withFinderAgentSettings,
-  withRouterAgentSettings,
   withSidebarHideInactiveHours,
   type UISettingsWire,
 } from './swarm-settings'
@@ -63,34 +57,14 @@ test('follow-up checkpoint policy default normalizes missing and unknown values 
   assert.equal(normalizeSwarmSettings({}).followupCheckpointPolicyDefault, 'auto_start')
 })
 
-test('Finder priority normalizes and persists through its canonical settings path', () => {
-  const current: UISettingsWire = { agents: { finder: { provider: 'codex', model: 'gpt-5.4', thinking: 'high' } } }
-  const saved = withFinderAgentSettings(current, { provider: 'CODEX', model: 'gpt-5.4', thinking: 'high', service_tier: 'PRIORITY' })
-  assert.equal(normalizeFinderAgentSettings(saved).service_tier, 'priority')
-})
-
-test('Designer settings normalize and persist through the immutable system-agent path', () => {
-  const current: UISettingsWire = { agents: { finder: { provider: 'anthropic', model: 'claude' } } }
-  const saved = withDesignerAgentSettings(current, { provider: 'CODEX', model: 'gpt-5.4-mini', thinking: 'medium', service_tier: 'PRIORITY' })
-  assert.deepEqual(normalizeDesignerAgentSettings(saved), {
-    provider: 'codex',
-    model: 'gpt-5.4-mini',
-    thinking: 'medium',
-    service_tier: 'priority',
-  })
-  assert.equal(saved.agents?.finder?.model, 'claude')
-})
-
-test('Router settings normalize and persist through the existing system-agent settings path', () => {
-  const current: UISettingsWire = { agents: { finder: { provider: 'anthropic', model: 'claude' } } }
-  const saved = withRouterAgentSettings(current, { provider: 'OPENAI', model: 'router-model', thinking: 'medium', service_tier: 'PRIORITY' })
-  assert.deepEqual(normalizeRouterAgentSettings(saved), {
-    provider: 'openai',
-    model: 'router-model',
-    thinking: 'medium',
-    service_tier: 'priority',
-  })
-  assert.equal(saved.agents?.finder?.model, 'claude')
+test('UI settings contract remains presentation, device, and tool scoped', () => {
+  const settings: UISettingsWire = {
+    theme: { active_id: 'tide' },
+    chat: { thinking_tags: true },
+    swarm: { name: 'Local' },
+    tools: { image: { default_model: 'image-model' } },
+  }
+  assert.deepEqual(Object.keys(settings).sort(), ['chat', 'swarm', 'theme', 'tools'])
 })
 
 test('follow-up checkpoint policy default preserves ask-first aliases', () => {

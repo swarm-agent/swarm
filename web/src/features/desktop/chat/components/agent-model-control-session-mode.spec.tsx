@@ -16,7 +16,7 @@ test('plan remains a composer lifecycle toggle rather than a favorite bundle mod
 test('agent setup exposes direct Swarm mode models without session-mode profile controls', () => {
   assert.match(settingsSource, /title="Default Model"/)
   assert.match(settingsSource, /title="Plan Model"/)
-  assert.match(settingsSource, /saveSystemAgentSettings/)
+  assert.match(settingsSource, /saveSystemAgentModelSettings/)
   assert.doesNotMatch(settingsSource, /Saved profiles|Profile settings|Make account default/)
   assert.doesNotMatch(settingsSource, /mode\s*===\s*['"]plan['"]|mode\s*===\s*['"]auto['"]/)
 })

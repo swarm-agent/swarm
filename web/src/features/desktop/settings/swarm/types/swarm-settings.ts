@@ -28,21 +28,6 @@ export interface UIToolSettingsWire {
   image?: UIToolImageSettingsWire
 }
 
-export interface UICompactAgentSettingsWire {
-  provider?: string
-  model?: string
-  thinking?: string
-  service_tier?: string
-}
-
-export interface UIAgentSettingsWire {
-  compact?: UICompactAgentSettingsWire
-  finder?: UICompactAgentSettingsWire
-  coder?: UICompactAgentSettingsWire
-  designer?: UICompactAgentSettingsWire
-  router?: UICompactAgentSettingsWire
-}
-
 export type DesktopSessionMode = 'auto' | 'plan'
 export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 
@@ -70,7 +55,6 @@ export interface UISettingsWire {
   swarming?: UISwarmingSettingsWire
   swarm?: UISwarmSettingsWire
   tools?: UIToolSettingsWire
-  agents?: UIAgentSettingsWire
   updated_at?: number
 }
 
@@ -215,126 +199,6 @@ export function withThinkingTagsEnabled(current: UISettingsWire, enabled: boolea
     chat: {
       ...(current.chat ?? {}),
       thinking_tags: enabled,
-    },
-  }
-}
-
-export function normalizeCompactAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
-  return {
-    provider: typeof payload?.agents?.compact?.provider === 'string' ? payload.agents.compact.provider.trim().toLowerCase() : '',
-    model: typeof payload?.agents?.compact?.model === 'string' ? payload.agents.compact.model.trim() : '',
-    thinking: typeof payload?.agents?.compact?.thinking === 'string' ? payload.agents.compact.thinking.trim() : '',
-    service_tier: typeof payload?.agents?.compact?.service_tier === 'string' ? payload.agents.compact.service_tier.trim().toLowerCase() : '',
-  }
-}
-
-export function normalizeFinderAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
-  return {
-    provider: typeof payload?.agents?.finder?.provider === 'string' ? payload.agents.finder.provider.trim().toLowerCase() : '',
-    model: typeof payload?.agents?.finder?.model === 'string' ? payload.agents.finder.model.trim() : '',
-    thinking: typeof payload?.agents?.finder?.thinking === 'string' ? payload.agents.finder.thinking.trim() : '',
-    service_tier: typeof payload?.agents?.finder?.service_tier === 'string' ? payload.agents.finder.service_tier.trim().toLowerCase() : '',
-  }
-}
-
-export function normalizeCoderAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
-  return {
-    provider: typeof payload?.agents?.coder?.provider === 'string' ? payload.agents.coder.provider.trim().toLowerCase() : '',
-    model: typeof payload?.agents?.coder?.model === 'string' ? payload.agents.coder.model.trim() : '',
-    thinking: typeof payload?.agents?.coder?.thinking === 'string' ? payload.agents.coder.thinking.trim() : '',
-    service_tier: typeof payload?.agents?.coder?.service_tier === 'string' ? payload.agents.coder.service_tier.trim().toLowerCase() : '',
-  }
-}
-
-export function normalizeDesignerAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
-  return {
-    provider: typeof payload?.agents?.designer?.provider === 'string' ? payload.agents.designer.provider.trim().toLowerCase() : '',
-    model: typeof payload?.agents?.designer?.model === 'string' ? payload.agents.designer.model.trim() : '',
-    thinking: typeof payload?.agents?.designer?.thinking === 'string' ? payload.agents.designer.thinking.trim() : '',
-    service_tier: typeof payload?.agents?.designer?.service_tier === 'string' ? payload.agents.designer.service_tier.trim().toLowerCase() : '',
-  }
-}
-
-export function normalizeRouterAgentSettings(payload?: UISettingsWire | null): Required<UICompactAgentSettingsWire> {
-  return {
-    provider: typeof payload?.agents?.router?.provider === 'string' ? payload.agents.router.provider.trim().toLowerCase() : '',
-    model: typeof payload?.agents?.router?.model === 'string' ? payload.agents.router.model.trim() : '',
-    thinking: typeof payload?.agents?.router?.thinking === 'string' ? payload.agents.router.thinking.trim() : '',
-    service_tier: typeof payload?.agents?.router?.service_tier === 'string' ? payload.agents.router.service_tier.trim().toLowerCase() : '',
-  }
-}
-
-export function withCompactAgentSettings(current: UISettingsWire, compact: UICompactAgentSettingsWire): UISettingsWire {
-  return {
-    ...current,
-    agents: {
-      ...(current.agents ?? {}),
-      compact: {
-        provider: compact.provider?.trim().toLowerCase() ?? '',
-        model: compact.model?.trim() ?? '',
-        thinking: compact.thinking?.trim() ?? '',
-        service_tier: compact.service_tier?.trim().toLowerCase() ?? '',
-      },
-    },
-  }
-}
-
-export function withFinderAgentSettings(current: UISettingsWire, finder: UICompactAgentSettingsWire): UISettingsWire {
-  return {
-    ...current,
-    agents: {
-      ...(current.agents ?? {}),
-      finder: {
-        provider: finder.provider?.trim().toLowerCase() ?? '',
-        model: finder.model?.trim() ?? '',
-        thinking: finder.thinking?.trim() ?? '',
-        service_tier: finder.service_tier?.trim().toLowerCase() ?? '',
-      },
-    },
-  }
-}
-
-export function withCoderAgentSettings(current: UISettingsWire, coder: UICompactAgentSettingsWire): UISettingsWire {
-  return {
-    ...current,
-    agents: {
-      ...(current.agents ?? {}),
-      coder: {
-        provider: coder.provider?.trim().toLowerCase() ?? '',
-        model: coder.model?.trim() ?? '',
-        thinking: coder.thinking?.trim() ?? '',
-        service_tier: coder.service_tier?.trim().toLowerCase() ?? '',
-      },
-    },
-  }
-}
-
-export function withDesignerAgentSettings(current: UISettingsWire, designer: UICompactAgentSettingsWire): UISettingsWire {
-  return {
-    ...current,
-    agents: {
-      ...(current.agents ?? {}),
-      designer: {
-        provider: designer.provider?.trim().toLowerCase() ?? '',
-        model: designer.model?.trim() ?? '',
-        thinking: designer.thinking?.trim() ?? '',
-        service_tier: designer.service_tier?.trim().toLowerCase() ?? '',
-      },
-    },
-  }
-}
-
-export function withRouterAgentSettings(current: UISettingsWire, router: UICompactAgentSettingsWire): UISettingsWire {
-  return {
-    ...current,
-    agents: {
-      ...(current.agents ?? {}),
-      router: {
-        provider: router.provider?.trim().toLowerCase() ?? '',
-        model: router.model?.trim() ?? '',
-        thinking: router.thinking?.trim() ?? '',
-        service_tier: router.service_tier?.trim().toLowerCase() ?? '',
-      },
     },
   }
 }

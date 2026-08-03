@@ -5,8 +5,7 @@ import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspac
 import type { DesktopSlashCommand } from '../services/slash-commands'
 import { agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
 import { createModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from '../queries/model-profile-queries'
-import { getSwarmModelSettings } from '../../settings/swarm/queries/get-model-settings'
-import { swarmModelSettingsQueryKey } from '../../settings/models/components/models-settings-page'
+import { agentModelSettingsQueryOptions } from '../../settings/swarm/queries/get-agent-model-settings'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { modelOptionKey } from '../services/model-options'
 import {
@@ -59,14 +58,10 @@ export function DesktopV3NewSessionPane({
   const agentStateQuery = useQuery(agentStateQueryOptions())
   const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const modelProfilesQuery = useQuery(modelProfilesQueryOptions())
-  const swarmModelSettingsQuery = useQuery({
-    queryKey: swarmModelSettingsQueryKey,
-    queryFn: ({ signal }: { signal?: AbortSignal }) => getSwarmModelSettings(signal),
-    staleTime: 30_000,
-  })
+  const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const modelProfiles = modelProfilesQuery.data?.profiles ?? []
-  const actionModel = swarmModelSettingsQuery.data?.action ?? null
+  const actionModel = agentModelSettingsQuery.data?.swarm.action ?? null
   const activeModelProfile = { source: 'agent-default' as const, profileId: '', name: 'Swarm action model' }
   const stagedAttachmentsRef = useRef<DesktopComposerStagedAttachment[]>([])
   const stagedAttachmentHistoryRef = useRef<DesktopComposerStagedAttachment[]>([])

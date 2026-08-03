@@ -17,15 +17,13 @@ import {
   type FlatModelFavoriteInput,
   type FlatModelOption,
 } from '../../model-favorites/components/model-favorites-settings'
-import { saveSwarmModelSettings } from '../../swarm/mutations/save-model-settings'
-import { getSwarmModelSettings } from '../../swarm/queries/get-model-settings'
-import type { SwarmModelSettings } from '../../swarm/types/model-settings'
+import { saveSwarmAgentModelSettings } from '../../swarm/mutations/save-agent-model-settings'
+import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../swarm/queries/get-agent-model-settings'
+import type { AgentModelSettings } from '../../swarm/types/agent-model-settings'
 import {
   SwarmModelAssignmentSettings,
   type SwarmModelAssignmentSaveInput,
 } from './swarm-model-assignment-settings'
-
-export const swarmModelSettingsQueryKey = ['swarm-model-settings'] as const
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message : fallback
@@ -85,11 +83,7 @@ export function ModelsSettingsPage() {
   const queryClient = useQueryClient()
   const optionsQuery = useQuery(modelOptionsQueryOptions())
   const profilesQuery = useQuery(modelProfilesQueryOptions())
-  const settingsQuery = useQuery({
-    queryKey: swarmModelSettingsQueryKey,
-    queryFn: ({ signal }: { signal?: AbortSignal }) => getSwarmModelSettings(signal),
-    staleTime: 30_000,
-  })
+  const settingsQuery = useQuery(agentModelSettingsQueryOptions())
 
   const favoritesMutation = useMutation({
     mutationFn: async (operation: () => Promise<unknown>) => {
@@ -98,8 +92,8 @@ export function ModelsSettingsPage() {
     },
   })
   const settingsMutation = useMutation({
-    mutationFn: saveSwarmModelSettings,
-    onSuccess: (settings) => queryClient.setQueryData<SwarmModelSettings>(swarmModelSettingsQueryKey, settings),
+    mutationFn: saveSwarmAgentModelSettings,
+    onSuccess: (settings) => queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, settings),
   })
 
   const profiles = profilesQuery.data?.profiles ?? []
@@ -154,8 +148,8 @@ export function ModelsSettingsPage() {
         {settings ? (
           <SwarmModelAssignmentSettings
             modelOptions={modelOptions}
-            action={settings.action}
-            plan={settings.plan}
+            action={settings.swarm.action}
+            plan={settings.swarm.plan}
             saving={settingsMutation.isPending}
             error={assignmentError || null}
             onSave={saveAssignments}

@@ -1,57 +1,83 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getSwarmModelSettings } from './get-model-settings'
-import { saveSwarmModelSettings } from '../mutations/save-model-settings'
+import { getAgentModelSettings } from './get-agent-model-settings'
+import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../mutations/save-agent-model-settings'
 
 const originalFetch = globalThis.fetch
-const action = { provider: 'codex', model: 'gpt-action', thinking: 'high', service_tier: 'fast', context_mode: '' }
-const plan = { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', service_tier: 'fast', context_mode: 'large' }
+const assignment = (model: string) => ({ provider: 'codex', model, thinking: 'high', service_tier: 'fast', context_mode: '' })
+const responseRecord = (updatedAt = 42) => ({
+  swarm: { action: assignment('gpt-action'), plan: assignment('gpt-plan') },
+  system_agents: {
+    compact: assignment('gpt-compact'), finder: assignment('gpt-finder'), coder: assignment('gpt-coder'),
+    designer: assignment('gpt-designer'), router: assignment('gpt-router'),
+  },
+  updated_at: updatedAt,
+})
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
-test('GET maps direct Action and Plan selections', async () => {
+test('GET maps the complete unified assignment record', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     ok: true,
-    model_settings: { action, plan, updated_at: 42 },
+    agent_model_settings: responseRecord(),
   }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-  assert.deepEqual(await getSwarmModelSettings(), {
-    action: { provider: 'codex', model: 'gpt-action', thinking: 'high', serviceTier: 'fast', contextMode: '' },
-    plan: { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', serviceTier: 'fast', contextMode: 'large' },
+  assert.deepEqual(await getAgentModelSettings(), {
+    swarm: {
+      action: { provider: 'codex', model: 'gpt-action', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+      plan: { provider: 'codex', model: 'gpt-plan', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+    },
+    systemAgents: {
+      compact: { provider: 'codex', model: 'gpt-compact', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+      finder: { provider: 'codex', model: 'gpt-finder', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+      coder: { provider: 'codex', model: 'gpt-coder', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+      designer: { provider: 'codex', model: 'gpt-designer', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+      router: { provider: 'codex', model: 'gpt-router', thinking: 'high', serviceTier: 'fast', contextMode: '' },
+    },
     updatedAt: 42,
   })
 })
 
-test('GET rejects missing or malformed direct selections', async () => {
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    ok: true, model_settings: { action, updated_at: 42 },
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-  await assert.rejects(getSwarmModelSettings(), /missing plan/)
+test('GET rejects incomplete system-agent assignments', async () => {
+  const record = responseRecord()
+  delete (record.system_agents as Partial<typeof record.system_agents>).router
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, agent_model_settings: record }), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  })
+  await assert.rejects(getAgentModelSettings(), /missing system_agents.router/)
 })
 
-test('PUT sends direct Action and Plan payloads and parses the response', async () => {
+test('PATCH replaces Action and Plan together', async () => {
   let request: RequestInit | undefined
   globalThis.fetch = async (_input, init) => {
     request = init
-    return new Response(JSON.stringify({ ok: true, model_settings: { action, plan, updated_at: 43 } }), {
+    return new Response(JSON.stringify({ ok: true, agent_model_settings: responseRecord(43) }), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     })
   }
-  await saveSwarmModelSettings({
-    action: { provider: ' codex ', model: ' gpt-action ', thinking: ' high ', serviceTier: ' fast ', contextMode: '' },
-    plan: { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', serviceTier: 'fast', contextMode: ' LARGE ' },
+  await saveSwarmAgentModelSettings({
+    action: { provider: ' CODEX ', model: ' gpt-action ', thinking: ' high ', serviceTier: ' FAST ', contextMode: '' },
+    plan: { provider: 'codex', model: 'gpt-plan', thinking: 'high', serviceTier: 'fast', contextMode: '' },
   })
-  assert.equal(request?.method, 'PUT')
-  assert.deepEqual(JSON.parse(String(request?.body)), { action, plan })
+  assert.equal(request?.method, 'PATCH')
+  assert.deepEqual(JSON.parse(String(request?.body)), {
+    swarm: { action: assignment('gpt-action'), plan: assignment('gpt-plan') },
+  })
 })
 
-test('PUT validates both selections before making a request', async () => {
-  let called = false
-  globalThis.fetch = async () => { called = true; throw new Error('unexpected') }
-  await assert.rejects(saveSwarmModelSettings({
-    action: { provider: '', model: 'gpt-action', thinking: 'high', serviceTier: '', contextMode: '' },
-    plan: { provider: 'codex', model: 'gpt-plan', thinking: 'xhigh', serviceTier: '', contextMode: '' },
-  }), /Action provider, model, and thinking are required/)
-  assert.equal(called, false)
+test('PATCH updates one system agent without sending sibling assignments', async () => {
+  let request: RequestInit | undefined
+  globalThis.fetch = async (_input, init) => {
+    request = init
+    return new Response(JSON.stringify({ ok: true, agent_model_settings: responseRecord(44) }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  await saveSystemAgentModelSettings({
+    agent: 'coder',
+    assignment: { provider: 'CODEX', model: 'gpt-coder', thinking: 'high', serviceTier: 'FAST', contextMode: '' },
+  })
+  assert.equal(request?.method, 'PATCH')
+  assert.deepEqual(JSON.parse(String(request?.body)), { system_agents: { coder: assignment('gpt-coder') } })
 })

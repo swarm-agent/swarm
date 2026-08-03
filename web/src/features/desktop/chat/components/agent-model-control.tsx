@@ -4,13 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
-import { uiSettingsQueryOptions } from '../../../queries/query-options'
-import { saveSystemAgentSettings } from '../../settings/swarm/mutations/save-system-agent-settings'
-import { normalizeCoderAgentSettings, normalizeCompactAgentSettings, normalizeDesignerAgentSettings, normalizeFinderAgentSettings, normalizeRouterAgentSettings } from '../../settings/swarm/types/swarm-settings'
 import { displayAgentName } from '../services/agent-display'
-import { getSwarmModelSettings } from '../../settings/swarm/queries/get-model-settings'
-import { saveSwarmModelSettings } from '../../settings/swarm/mutations/save-model-settings'
-import type { SwarmModelSettings } from '../../settings/swarm/types/model-settings'
+import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../settings/swarm/queries/get-agent-model-settings'
+import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
+import type { AgentModelAssignment, AgentModelSettings, SystemAgentModelName } from '../../settings/swarm/types/agent-model-settings'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'provider'
@@ -215,12 +212,13 @@ export function AgentModelControl({
   initialAgentName = '',
 }: AgentModelControlProps) {
   const queryClient = useQueryClient()
-  const { data: uiSettings = {} } = useQuery(uiSettingsQueryOptions())
-  const compactSettings = normalizeCompactAgentSettings(uiSettings)
-  const finderSettings = normalizeFinderAgentSettings(uiSettings)
-  const coderSettings = normalizeCoderAgentSettings(uiSettings)
-  const designerSettings = normalizeDesignerAgentSettings(uiSettings)
-  const routerSettings = normalizeRouterAgentSettings(uiSettings)
+  const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
+  const emptyAssignment: AgentModelAssignment = { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '' }
+  const compactSettings = agentModelSettingsQuery.data?.systemAgents.compact ?? emptyAssignment
+  const finderSettings = agentModelSettingsQuery.data?.systemAgents.finder ?? emptyAssignment
+  const coderSettings = agentModelSettingsQuery.data?.systemAgents.coder ?? emptyAssignment
+  const designerSettings = agentModelSettingsQuery.data?.systemAgents.designer ?? emptyAssignment
+  const routerSettings = agentModelSettingsQuery.data?.systemAgents.router ?? emptyAssignment
   const coderSettingsEnabled = Boolean(coderSettings.provider && coderSettings.model)
   const compactProfile = useMemo<AgentProfileRecord>(() => ({
     name: COMPACT_AGENT_NAME,
@@ -233,7 +231,7 @@ export function AgentModelControl({
     exitPlanModeEnabled: false, toolScope: null,
     toolContract: { preset: 'custom', inheritPolicy: false, tools: {} },
     enabled: true, protected: true, updatedAt: 0,
-  } as AgentProfileRecord), [compactSettings.model, compactSettings.provider, compactSettings.service_tier, compactSettings.thinking])
+  } as AgentProfileRecord), [compactSettings.model, compactSettings.provider, compactSettings.serviceTier, compactSettings.thinking])
   const finderProfile = useMemo(() => ({
     name: FINDER_AGENT_NAME,
     mode: 'subagent',
@@ -245,7 +243,7 @@ export function AgentModelControl({
     exitPlanModeEnabled: false, toolScope: null,
     toolContract: { preset: 'custom', inheritPolicy: false, tools: { read: { enabled: true, bashPrefixes: [] }, search: { enabled: true, bashPrefixes: [] }, list: { enabled: true, bashPrefixes: [] }, websearch: { enabled: true, bashPrefixes: [] }, webfetch: { enabled: true, bashPrefixes: [] } } },
     enabled: true, protected: true, updatedAt: 0,
-  } as AgentProfileRecord), [finderSettings.model, finderSettings.provider, finderSettings.service_tier, finderSettings.thinking])
+  } as AgentProfileRecord), [finderSettings.model, finderSettings.provider, finderSettings.serviceTier, finderSettings.thinking])
   const coderProfile = useMemo(() => ({
     name: CODER_AGENT_NAME,
     mode: 'subagent',
@@ -254,7 +252,7 @@ export function AgentModelControl({
     prompt: '', runtimeMode: 'readwrite', defaultSessionMode: 'auto', executionSetting: 'readwrite',
     exitPlanModeEnabled: false, toolScope: null, toolContract: null,
     enabled: true, protected: true, updatedAt: 0,
-  } as AgentProfileRecord), [coderSettings.model, coderSettings.provider, coderSettings.service_tier, coderSettings.thinking, coderSettingsEnabled])
+  } as AgentProfileRecord), [coderSettings.model, coderSettings.provider, coderSettings.serviceTier, coderSettings.thinking, coderSettingsEnabled])
   const routerProfile = useMemo(() => ({
     name: ROUTER_AGENT_NAME,
     mode: 'subagent',
@@ -264,7 +262,7 @@ export function AgentModelControl({
     exitPlanModeEnabled: false, toolScope: null,
     toolContract: { preset: 'custom', inheritPolicy: false, tools: {} },
     enabled: true, protected: true, updatedAt: 0,
-  } as AgentProfileRecord), [routerSettings.model, routerSettings.provider, routerSettings.service_tier, routerSettings.thinking])
+  } as AgentProfileRecord), [routerSettings.model, routerSettings.provider, routerSettings.serviceTier, routerSettings.thinking])
   const designerProfile = useMemo(() => ({
     name: DESIGNER_AGENT_NAME,
     mode: 'subagent',
@@ -274,26 +272,21 @@ export function AgentModelControl({
     exitPlanModeEnabled: false, toolScope: null,
     toolContract: { preset: 'custom', inheritPolicy: false, tools: { read: { enabled: true, bashPrefixes: [] }, search: { enabled: true, bashPrefixes: [] }, find: { enabled: true, bashPrefixes: [] }, list: { enabled: true, bashPrefixes: [] }, write: { enabled: true, bashPrefixes: [] }, edit: { enabled: true, bashPrefixes: [] } } },
     enabled: true, protected: true, updatedAt: 0,
-  } as AgentProfileRecord), [designerSettings.model, designerSettings.provider, designerSettings.service_tier, designerSettings.thinking])
+  } as AgentProfileRecord), [designerSettings.model, designerSettings.provider, designerSettings.serviceTier, designerSettings.thinking])
   function modelDraftForProfile(profile: AgentProfileRecord | null): ModelDraft {
     const draft = singleDraftFromProfile(profile, selectedModel, selectedServiceTier, selectedThinking)
     if (!profile || !isSystemUtility(profile.name)) return draft
     const serviceTier = profile.name === COMPACT_AGENT_NAME
-      ? compactSettings.service_tier
+      ? compactSettings.serviceTier
       : profile.name === CODER_AGENT_NAME
-        ? coderSettings.service_tier
+        ? coderSettings.serviceTier
         : profile.name === DESIGNER_AGENT_NAME
-          ? designerSettings.service_tier
+          ? designerSettings.serviceTier
           : profile.name === ROUTER_AGENT_NAME
-            ? routerSettings.service_tier
-            : finderSettings.service_tier
+            ? routerSettings.serviceTier
+            : finderSettings.serviceTier
     return { ...draft, serviceTier: normalizeDraftServiceTier(draft.provider, serviceTier) }
   }
-  const swarmModelSettingsQuery = useQuery({
-    queryKey: ['swarm-model-settings'],
-    queryFn: ({ signal }: { signal?: AbortSignal }) => getSwarmModelSettings(signal),
-    staleTime: 30_000,
-  })
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -332,7 +325,7 @@ export function AgentModelControl({
 
   function initializeDrafts(profile: AgentProfileRecord | null) {
     const fallback = modelDraftForProfile(profile)
-    const settings = swarmModelSettingsQuery.data
+    const settings = agentModelSettingsQuery.data?.swarm
     const action = settings?.action ?? fallback
     const plan = settings?.plan ?? action
     setSingleDraft(fallback)
@@ -355,12 +348,12 @@ export function AgentModelControl({
     const requestedProfile = selectableAgents.find((agent) => agent.name === requestedAgentName) ?? null
     const agentName = requestedAgentName === SWARM_AGENT_NAME || requestedProfile ? requestedAgentName : SWARM_AGENT_NAME
     const profile = agentName === SWARM_AGENT_NAME ? null : requestedProfile
-    if (agentName === SWARM_AGENT_NAME && swarmModelSettingsQuery.isPending) return
+    if (isCompiledSystemAgent(agentName) && agentModelSettingsQuery.isPending) return
     initializedOpenRef.current = true
     setDraftAgentName(agentName)
     initializeDrafts(profile)
     setError(null)
-  }, [activeModelProfile, initialAgentName, modelProfiles, open, selectableAgents, swarmModelSettingsQuery.data, swarmModelSettingsQuery.isPending])
+  }, [activeModelProfile, agentModelSettingsQuery.data, agentModelSettingsQuery.isPending, initialAgentName, modelProfiles, open, selectableAgents])
 
   function chooseAgent(name: string, profile: AgentProfileRecord | null) {
     setDraftAgentName(name)
@@ -395,11 +388,11 @@ export function AgentModelControl({
   async function saveSwarmModels() {
     const action = validateDraft('Swarm Action', actionDraft)
     const plan = validateDraft('Swarm Plan', planDraft)
-    const saved = await saveSwarmModelSettings({
+    const saved = await saveSwarmAgentModelSettings({
       action: { provider: action.provider, model: action.model, thinking: action.thinking, serviceTier: action.serviceTier, contextMode: action.contextMode },
       plan: { provider: plan.provider, model: plan.model, thinking: plan.thinking, serviceTier: plan.serviceTier, contextMode: plan.contextMode },
     })
-    queryClient.setQueryData<SwarmModelSettings>(['swarm-model-settings'], saved)
+    queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, saved)
   }
 
   async function confirm() {
@@ -412,17 +405,18 @@ export function AgentModelControl({
         await saveSwarmModels()
       } else if (profile && isSystemUtility(profile.name)) {
         const agentPatch = validateDraft(`${displayAgentName(profile.name)} model`, singleDraft)
-        const saved = await saveSystemAgentSettings({
-          current: uiSettings,
-          agent: profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : profile.name === ROUTER_AGENT_NAME ? 'router' : 'finder',
-          settings: {
+        const agent: SystemAgentModelName = profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : profile.name === ROUTER_AGENT_NAME ? 'router' : 'finder'
+        const saved = await saveSystemAgentModelSettings({
+          agent,
+          assignment: {
             provider: agentPatch.provider,
             model: agentPatch.model,
             thinking: agentPatch.thinking,
-            service_tier: agentPatch.serviceTier,
+            serviceTier: agentPatch.serviceTier,
+            contextMode: agentPatch.contextMode,
           },
         })
-        queryClient.setQueryData(uiSettingsQueryOptions().queryKey, saved)
+        queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, saved)
       } else if (profile) {
         const input = validateDraft(`${displayAgentName(profile.name)} model`, singleDraft)
         await onConfirmAgentSettings?.({

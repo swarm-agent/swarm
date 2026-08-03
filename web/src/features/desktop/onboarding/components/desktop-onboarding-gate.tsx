@@ -119,7 +119,7 @@ async function refreshAuthDependentQueries(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: modelProfilesQueryOptions().queryKey }),
-    queryClient.invalidateQueries({ queryKey: ['swarm-model-settings'] }),
+    queryClient.invalidateQueries({ queryKey: ['agent-model-settings'] }),
     queryClient.invalidateQueries({ queryKey: ['auth-credentials'] }),
   ])
 }
