@@ -125,6 +125,97 @@ func TestStructuredFinalHandoffRendersCompactCardAndLegacyMarkersAreSanitized(t 
 	}
 }
 
+func TestFinalHandoffSectionsUseContentAwareSpacing(t *testing.T) {
+	styles := testPageStyles()
+	message := Message{
+		ID: "spaced", Role: "system", Metadata: map[string]any{"source": finalHandoffSource, "outcome": "ship"},
+		FinalHandoff: &client.PlanFinalHandoff{
+			Title:         "Ready to review",
+			Overview:      "The focused change is complete.",
+			ImpactBullets: []string{"Compact card"},
+			Recommendation: &client.SessionPlanCheckpointRecommendation{
+				Decision: "ship",
+				Action:   "review",
+			},
+			SuggestedPrompts: []client.PlanFinalHandoffSuggestedPrompt{{Label: "Review", Prompt: "Review it."}},
+			Details:          client.PlanFinalHandoffDetails{Report: "Durable report"},
+		},
+	}
+	rows := (&Page{}).renderFinalHandoffRows(message, 80, styles)
+	text := make([]string, 0, len(rows))
+	for _, row := range rows {
+		text = append(text, strings.TrimSpace(strings.Trim(row.text, "│")))
+	}
+	for _, pair := range [][2]string{
+		{"FINAL HANDOFF  ·  ship", "Ready to review"},
+		{"• Compact card", "RECOMMENDATION"},
+		{"ship — review", "NEXT STEPS"},
+		{"1. Review", "Details  ·  report"},
+		{"Details  ·  report", "Tab focus  ·  1–3 choose next step"},
+	} {
+		before, after := -1, -1
+		for index, line := range text {
+			if line == pair[0] {
+				before = index
+			}
+			if line == pair[1] {
+				after = index
+			}
+		}
+		if before < 0 || after != before+2 || text[before+1] != "" {
+			t.Fatalf("sections %q and %q were not separated by exactly one blank row: %#v", pair[0], pair[1], text)
+		}
+	}
+
+	minimal := (&Page{}).renderFinalHandoffRows(Message{
+		ID: "minimal", Role: "system", Metadata: map[string]any{"source": finalHandoffSource},
+		FinalHandoff: &client.PlanFinalHandoff{},
+	}, 40, styles)
+	if len(minimal) != 4 {
+		t.Fatalf("empty optional sections introduced spacing rows: %#v", minimal)
+	}
+}
+
+func TestFinalHandoffCardWrapsTextWithChatPageCellAwareBehavior(t *testing.T) {
+	const cardWidth = 20
+	const contentWidth = cardWidth - 4
+	title := "Unicode e\u0301 👩\u200d💻 content wraps across rows\r\nExplicit 界 line"
+	message := Message{
+		ID: "wrapped", Role: "system", Metadata: map[string]any{"source": finalHandoffSource, "outcome": "completed"},
+		FinalHandoff: &client.PlanFinalHandoff{Title: title},
+	}
+	rows := (&Page{}).renderFinalHandoffRows(message, cardWidth, testPageStyles())
+	for _, row := range rows {
+		if width := displayCellWidth(row.text); width > cardWidth {
+			t.Fatalf("card row exceeded requested width: width=%d row=%q", width, row.text)
+		}
+	}
+
+	want := wrapText(title, contentWidth)
+	if len(want) < 3 {
+		t.Fatalf("test fixture did not require wrapping: %#v", want)
+	}
+	content := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.HasPrefix(row.text, "│ ") && strings.HasSuffix(row.text, " │") {
+			content = append(content, strings.TrimRight(strings.TrimSuffix(strings.TrimPrefix(row.text, "│ "), " │"), " "))
+		}
+	}
+	matched := false
+	for start := 0; start+len(want) <= len(content); start++ {
+		if reflect.DeepEqual(content[start:start+len(want)], want) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("final handoff did not use chat-page wrapping:\n got: %#v\nwant: %#v", content, want)
+	}
+	if strings.Contains(strings.Join(content, "\n"), "…") {
+		t.Fatalf("wrapped final handoff was unexpectedly truncated: %#v", content)
+	}
+}
+
 func TestFinalHandoffGraphemeWrappingPreservesCellWidthsAndClusters(t *testing.T) {
 	text := "A界e\u0301👩\u200d💻B"
 	lines := wrapDisplayText(text, 3)
