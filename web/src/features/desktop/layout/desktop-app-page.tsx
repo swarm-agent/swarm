@@ -41,7 +41,7 @@ import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-sessi
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, startNewDesktopV3Session, type DesktopV3RoutedStartResult } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
-import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
@@ -1579,6 +1579,14 @@ function sessionPlanCheckpointCounts(session: DesktopSessionRecord): { activeInd
   }
 }
 
+function sessionWorkspaceLabel(session: DesktopSessionRecord): string {
+  const workspaceName = session.workspaceName?.trim()
+  if (workspaceName) return workspaceName
+  const workspacePath = session.workspacePath?.trim().replace(/[\\/]+$/, '') ?? ''
+  const pathParts = workspacePath.split(/[\\/]/).filter(Boolean)
+  return pathParts[pathParts.length - 1] || workspacePath || 'Workspace'
+}
+
 function sessionBranchLabel(session: DesktopSessionRecord): string {
   return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || ''
 }
@@ -1956,8 +1964,10 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
   const hasAgentChildren = agentSummary.total > 0
+  const workspaceLabel = sessionWorkspaceLabel(session)
   const branchLabel = sessionBranchLabel(session)
-  const showWorktreeBranchChip = session.worktreeEnabled && Boolean(branchLabel)
+  const showWorktreeChip = Boolean(session.worktreeEnabled)
+  const showBranchLabel = !session.worktreeEnabled && Boolean(branchLabel)
   const showTaskChip = Boolean(backgroundInfo)
   const showActivePlan = session.mode === 'plan' && sessionHasCanonicalActiveRun(session)
   const relativeActivityLabel = sessionStatusDetail(session, now)
@@ -2121,7 +2131,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const actionMenu = (
     <span
       ref={actionMenuRef}
-      className={cn('relative z-20 inline-flex shrink-0 items-center', actionsOpen ? 'z-40' : null)}
+      className={cn('relative z-20 inline-flex h-4 w-4 shrink-0 items-center', actionsOpen ? 'z-40' : null)}
       onPointerDownCapture={(event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -2212,7 +2222,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
         actionsOpen ? 'z-30' : null,
       )}
-      title={tooltip || branchLabel}
+      title={tooltip || [workspaceLabel, showBranchLabel ? branchLabel : ''].filter(Boolean).join(' · ')}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -2270,10 +2280,35 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
           {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
           {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
-          <span className="inline-flex shrink-0 items-center gap-1">
-            {pinActionControl}
-            {archiveActionControl}
-            {actionMenu}
+          <span className="relative inline-flex h-4 w-14 shrink-0 items-center justify-end" data-sidebar-session-corner-controls>
+            <span
+              className={cn(
+                'absolute right-0 inline-flex items-center justify-end gap-1 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0',
+                actionsOpen ? 'opacity-0' : 'opacity-100',
+              )}
+              data-sidebar-session-metadata-icons
+            >
+              {showWorktreeChip ? (
+                <span className="inline-flex h-4 w-4 items-center justify-center" title="Worktree session">
+                  <GitBranch size={12} className="text-[var(--app-success)] opacity-80" aria-label="Worktree session" />
+                </span>
+              ) : null}
+              {showTaskChip ? (
+                <span className="inline-flex h-4 w-4 items-center justify-center" title="Task session">
+                  <ListTodo size={12} className="text-[var(--app-warning)] opacity-80" aria-label="Task session" />
+                </span>
+              ) : null}
+              {showActivePlan ? (
+                <span className="inline-flex h-4 w-4 items-center justify-center" title="Active plan">
+                  <NotepadText size={12} className="text-[var(--app-primary)] opacity-80" aria-label="Active plan" />
+                </span>
+              ) : null}
+            </span>
+            <span className="absolute right-0 inline-flex items-center justify-end gap-1" data-sidebar-session-action-icons>
+              {pinActionControl}
+              {archiveActionControl}
+              {actionMenu}
+            </span>
           </span>
           {showStatusCircle ? (
             <span
@@ -2293,26 +2328,13 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       </div>
       <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
         <span className="flex min-w-0 items-center gap-1.5">
-          {showWorktreeBranchChip ? (
-            <span
-              className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-4 text-[var(--app-text-muted)]"
-              title={`Worktree branch: ${branchLabel}`}
-            >
-              <GitBranch size={10} className="shrink-0" aria-hidden="true" />
-              <span className="truncate">{branchLabel}</span>
-            </span>
-          ) : branchLabel ? <span className="min-w-0 truncate">{branchLabel}</span> : null}
-          {showTaskChip ? (
-            <span
-              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-4 text-[var(--app-text-muted)]"
-              title="Task session"
-              aria-label="Task session"
-            >
-              <ListTodo size={10} aria-hidden="true" />
-              <span>Task</span>
-            </span>
+          <span className="min-w-0 truncate">{workspaceLabel}</span>
+          {showBranchLabel ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="min-w-0 truncate">{branchLabel}</span>
+            </>
           ) : null}
-          {showActivePlan ? <NotepadText size={11} className="shrink-0 text-[var(--app-primary)]" title="Active Plan" aria-label="Active Plan" /> : null}
         </span>
         <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
           {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
