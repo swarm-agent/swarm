@@ -115,6 +115,7 @@ Do not diagnose from or silently reuse old home/XDG config locations. `/workspac
 4. Keep transport, persistence, orchestration, provider adapters, policy, and rendering separated.
 5. Preserve existing user changes and report any unrelated dirty files; never overwrite, stage, or commit them implicitly.
 6. Report files changed, behavioral impact, validation actually run, and remaining risks.
+7. Keep documentation edits concise and consistent with nearby guidance.
 
 ### Git and promotion
 
