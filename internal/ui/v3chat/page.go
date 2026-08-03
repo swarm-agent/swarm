@@ -541,9 +541,9 @@ func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) bool {
 	return false
 }
 
-// PrimeRoutedDraft opens the local Router primer. It deliberately leaves
-// workspace, branch, title, mode, and model authority unset until Router
-// returns a canonical response.
+// PrimeRoutedDraft opens the local Router primer with source workspace
+// authority captured before Router execution. Router may allocate a worktree,
+// but it cannot select or replace the source workspace.
 func (p *Page) PrimeRoutedDraft(draft RoutedDraft) error {
 	if p == nil || p.runtime == nil {
 		return fmt.Errorf("v3 chat runtime is not configured")
@@ -558,14 +558,11 @@ func (p *Page) PrimeRoutedDraft(draft RoutedDraft) error {
 
 // OpenRoutedNew applies one parsed /new command. Bare commands leave an
 // editable primer; prompt forms begin routing immediately.
-func (p *Page) OpenRoutedNew(command NewCommand, agentName string, metadata map[string]any) error {
-	if err := p.PrimeRoutedDraft(RoutedDraft{
-		Prompt:                   command.Prompt,
-		PlanModeRequested:        command.PlanModeRequested,
-		ManagedWorktreeRequested: command.ManagedWorktreeRequested,
-		AgentName:                strings.TrimSpace(agentName),
-		Metadata:                 cloneAnyMap(metadata),
-	}); err != nil {
+func (p *Page) OpenRoutedNew(command NewCommand, authority RoutedDraft) error {
+	authority.Prompt = command.Prompt
+	authority.PlanModeRequested = command.PlanModeRequested
+	authority.ManagedWorktreeRequested = command.ManagedWorktreeRequested
+	if err := p.PrimeRoutedDraft(authority); err != nil {
 		return err
 	}
 	if strings.TrimSpace(command.Prompt) != "" {
@@ -613,8 +610,8 @@ func (p *Page) ApplyWorktreeCommand(input string) (bool, error) {
 		return true, fmt.Errorf("v3 chat runtime is not configured")
 	}
 	state := p.runtime.Store().Snapshot()
-	draft, ok := SelectRoutedDraft(state)
-	if !ok {
+	draft, routed := SelectRoutedDraft(state)
+	if !routed || strings.TrimSpace(state.Session.ID) != "" || draft.Status != RoutedDraftReady {
 		return true, fmt.Errorf("worktree priming is available only for a new session draft")
 	}
 	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, draft.PlanModeRequested, command.Enabled); err != nil {

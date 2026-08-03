@@ -7,10 +7,101 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
+	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
+
+func TestGlobalWorkspaceSelectShortcutOpensSelector(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workspace/list" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspaces": []client.WorkspaceEntry{{Path: "/repo-a", WorkspaceName: "Repo A", Active: true}}})
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), route: "home", homeModel: model.EmptyHome()}
+	app.homeModel.Workspaces = []model.Workspace{{Name: "Repo A", Path: "/repo-a", Active: true}}
+	app.home = ui.NewHomePage(app.homeModel)
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModAlt)) {
+		t.Fatal("Alt+W was not handled")
+	}
+	if !app.home.WorkspaceModalVisible() || app.home.WorkspaceModalIntent() != "select" {
+		t.Fatalf("workspace selector state = visible:%v intent:%q", app.home.WorkspaceModalVisible(), app.home.WorkspaceModalIntent())
+	}
+}
+
+func TestGlobalWorkspaceSlotShortcutUsesCanonicalSelection(t *testing.T) {
+	var selected string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspace/select":
+			var req map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			selected = req["path"]
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspace": client.WorkspaceResolution{WorkspacePath: selected, ResolvedPath: selected, WorkspaceName: "Repo B"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), route: "home", homeModel: model.EmptyHome(), tuiSessionStore: newTUISessionStore(), gitStatusCh: make(chan gitStatusRefreshResult, 1)}
+	app.homeModel.Workspaces = []model.Workspace{{Name: "Repo A", Path: "/repo-a", Active: true}, {Name: "Repo B", Path: "/repo-b"}}
+	app.home = ui.NewHomePage(app.homeModel)
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '2', tcell.ModAlt)) {
+		t.Fatal("Alt+2 was not handled")
+	}
+	if selected != "/repo-b" || app.workspacePath != "/repo-b" || !app.homeModel.Workspaces[1].Active {
+		t.Fatalf("selection = request:%q workspace:%q model:%#v", selected, app.workspacePath, app.homeModel.Workspaces)
+	}
+}
+
+func TestGlobalWorkspaceSlotShortcutEmptyAndModalGuards(t *testing.T) {
+	app := &App{route: "home", homeModel: model.EmptyHome()}
+	app.homeModel.Workspaces = []model.Workspace{{Name: "Repo A", Path: "/repo-a", Active: true}}
+	app.home = ui.NewHomePage(app.homeModel)
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '2', tcell.ModAlt)) {
+		t.Fatal("empty Alt+2 was not handled")
+	}
+	if got := app.home.Status(); got != "workspace slot 2 is empty" {
+		t.Fatalf("empty-slot status = %q", got)
+	}
+
+	app.home.ShowKeybindsModal()
+	app.home.SetStatus("modal active")
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '1', tcell.ModAlt)) {
+		t.Fatal("modal-guarded Alt+1 was not consumed")
+	}
+	if got := app.home.Status(); got != "modal active" {
+		t.Fatalf("modal-guarded shortcut changed status to %q", got)
+	}
+}
+
+func TestGlobalWorkspaceSlotShortcutBlockedDuringActiveV3Run(t *testing.T) {
+	store := v3chat.NewStore()
+	store.Dispatch(v3chat.HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:         client.SessionSummary{ID: "session-a"},
+		Projection:      client.SessionV3Projection{SessionID: "session-a"},
+		ActiveRunIntent: &client.SessionV3RunIntent{SessionID: "session-a", RunID: "run-a", Status: "running"},
+	}})
+	runtime := v3chat.NewRuntime(nil, store, nil)
+	app := &App{route: "v3chat", homeModel: model.EmptyHome(), v3Chat: v3chat.NewPage(runtime, v3chat.PageStyles{})}
+	app.homeModel.Workspaces = []model.Workspace{{Name: "Repo A", Path: "/repo-a", Active: true}}
+	app.home = ui.NewHomePage(app.homeModel)
+	if !app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '1', tcell.ModAlt)) {
+		t.Fatal("active-run Alt+1 was not handled")
+	}
+	if got := app.home.Status(); got != "workspace switching is unavailable while a run is active" {
+		t.Fatalf("active-run status = %q", got)
+	}
+}
 
 func TestTUIWorkspaceSelectionMarksScopeStaleAndStopsRealtime(t *testing.T) {
 	fake := newTUIRealtimeFakeStreamer()

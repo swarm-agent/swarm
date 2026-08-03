@@ -70,7 +70,7 @@ func (r *Runtime) Store() *Store {
 }
 
 // SetRoutedActivation installs the app-shell reconciliation that must succeed
-// before a Router-selected durable session is exposed as the active TUI chat.
+// before a routed worktree session is exposed as the active TUI chat.
 func (r *Runtime) SetRoutedActivation(activate func(context.Context, client.RoutedSessionV3StartResponse) error) {
 	if r == nil {
 		return
@@ -145,10 +145,17 @@ func (r *Runtime) startRoutedDraft(ctx context.Context, allowResolved bool) (cli
 		Input: draft.Prompt, ClientRequestID: draft.ClientRequestID, IdempotencyKey: draft.ClientRequestID,
 		AgentName: draft.AgentName, Metadata: cloneMetadata(draft.Metadata),
 		ManagedWorktreeRequested: draft.ManagedWorktreeRequested, PlanModeRequested: draft.PlanModeRequested,
+		WorkspacePath: draft.WorkspacePath, HostWorkspacePath: draft.HostWorkspacePath,
+		RuntimeWorkspacePath: draft.RuntimeWorkspacePath, WorkspaceBindingID: draft.WorkspaceBindingID,
+		SwarmID: draft.SwarmID, TargetKind: draft.TargetKind, TargetRelationship: draft.TargetRelationship,
 	})
 	if err != nil {
 		r.store.Dispatch(RoutedDraftFailedAction{Error: err.Error()})
 		r.signalWake()
+		return client.RoutedSessionV3StartResponse{}, err
+	}
+	if err := validateRoutedDraftAuthority(draft, response); err != nil {
+		r.restoreRoutedDraftFailure(draft, err)
 		return client.RoutedSessionV3StartResponse{}, err
 	}
 	r.mu.Lock()
@@ -204,6 +211,30 @@ func (r *Runtime) RetryRoutedDraft(ctx context.Context) (client.RoutedSessionV3S
 		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft has no failed operation to retry")
 	}
 	return r.startRoutedDraft(ctx, true)
+}
+
+func validateRoutedDraftAuthority(draft RoutedDraft, response client.RoutedSessionV3StartResponse) error {
+	identity := response.SessionView.Identity
+	if identity == nil {
+		return errors.New("routed response has no canonical identity")
+	}
+	if !strings.EqualFold(strings.TrimSpace(identity.SourceWorkspacePath), strings.TrimSpace(draft.WorkspacePath)) {
+		return errors.New("routed response changed the captured source workspace")
+	}
+	if !strings.EqualFold(strings.TrimSpace(identity.WorkspaceBindingID), strings.TrimSpace(draft.WorkspaceBindingID)) {
+		return errors.New("routed response changed the captured workspace binding")
+	}
+	responseSwarmID := strings.TrimSpace(identity.AuthorityHostSwarmID)
+	if responseSwarmID == "" {
+		responseSwarmID = strings.TrimSpace(identity.RuntimeSwarmID)
+	}
+	if !strings.EqualFold(responseSwarmID, strings.TrimSpace(draft.SwarmID)) {
+		return errors.New("routed response changed the captured swarm authority")
+	}
+	if !identity.WorktreeEnabled || !response.Session.WorktreeEnabled {
+		return errors.New("routed worktree start returned a non-worktree session")
+	}
+	return nil
 }
 
 func (r *Runtime) restoreRoutedDraftFailure(draft RoutedDraft, err error) {

@@ -49,17 +49,15 @@ func TestFirstRegisteredWorkspaceIsInitialSelection(t *testing.T) {
 	if len(items) != 3 || items[0].Action != "workspace-selector" || items[1].Action != "workspace-select" || items[1].Index != 0 || items[2].Index != 1 {
 		t.Fatalf("workspace indicators = %#v", items)
 	}
-	for _, item := range items {
-		if strings.Contains(strings.ToLower(item.Label), "alt+") {
-			t.Fatalf("workspace indicator advertises a removed shortcut: %q", item.Label)
-		}
+	if !strings.Contains(strings.ToLower(items[0].Label), "alt+w") {
+		t.Fatalf("workspace selector indicator does not advertise Alt+W: %q", items[0].Label)
 	}
 }
 
-func TestEmptyWorkspaceIndicatorKeepsMouseSelectorWithoutShortcutLabel(t *testing.T) {
+func TestEmptyWorkspaceIndicatorKeepsSelectorWithShortcutLabel(t *testing.T) {
 	page := NewHomePage(model.HomeModel{})
 	items := page.workspaceItems()
-	if len(items) != 1 || items[0].Action != "workspace-selector" || strings.Contains(strings.ToLower(items[0].Label), "alt+") {
+	if len(items) != 1 || items[0].Action != "workspace-selector" || !strings.Contains(strings.ToLower(items[0].Label), "alt+w") {
 		t.Fatalf("empty workspace indicator = %#v", items)
 	}
 }

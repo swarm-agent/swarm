@@ -75,7 +75,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
 		{Command: "/mode", Hint: "Toggle Plan behavior for new chats", QuickTips: []string{"/mode plan", "/mode action", "/mode status"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
-		{Command: "/new", Hint: "Open a local Router primer", QuickTips: []string{"/new [<prompt>]", "/new worktree [<prompt>]", "/new plan [<prompt>]", "/new wp [<prompt>]"}},
+		{Command: "/new", Hint: "Open a local session draft; explicit worktree forms route", QuickTips: []string{"/new [<prompt>]", "/new worktree [<prompt>]", "/new plan [<prompt>]", "/new wp [<prompt>]"}},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
 		{Command: "/plan", Hint: "Show or close the existing session plan"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
@@ -86,7 +86,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
-		{Command: "/worktree", Hint: "Prime worktree use for the local Router draft", QuickTips: []string{"/worktree on", "/worktree off"}},
+		{Command: "/worktree", Hint: "Switch a local draft between direct and routed worktree start", QuickTips: []string{"/worktree on", "/worktree off"}},
 		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
 		{Command: "/wt", Hint: "Prime the local draft or manage worktrees", QuickTips: []string{"/wt on", "/wt off", "/wt new"}},
 	}
@@ -1869,6 +1869,30 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return true
 		}
 	}
+	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceSelect) {
+		if a.homeInteractionActive() {
+			return true
+		}
+		if a.workspaceSwitchHotkeyBlocked() {
+			return true
+		}
+		a.showWorkspaceSelector()
+		return true
+	}
+	for slot := 1; slot <= ui.WorkspaceSlotCount; slot++ {
+		id, ok := ui.WorkspaceSlotKeybindID(slot)
+		if !ok || !keybinds.Match(ev, id) {
+			continue
+		}
+		if a.homeInteractionActive() {
+			return true
+		}
+		if a.workspaceSwitchHotkeyBlocked() {
+			return true
+		}
+		a.activateWorkspaceSlot(slot)
+		return true
+	}
 	if keybinds.Match(ev, ui.KeybindGlobalCycleProfiles) {
 		if a.homeInteractionActive() {
 			return false
@@ -2192,8 +2216,9 @@ func (a *App) showHelp() {
 	keybinds := a.activeKeyBindings()
 	lines := []string{
 		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
-		"/new [<prompt>]   (open a local Router primer; a prompt routes immediately)",
-		"/new worktree|plan|wp [<prompt>]   (prime Worktree, Plan, or both)",
+		"/new [<prompt>]   (open a local session draft; a prompt starts immediately)",
+		"/new plan [<prompt>]   (open a direct Plan-mode draft or start)",
+		"/new worktree|wp [<prompt>]   (route an explicit worktree start)",
 		"/home   (return to home from chat)",
 		"/plan   (show or close the existing session plan)",
 		"/task <request>   (queue a durable AI task in automatic mode)",
@@ -2217,8 +2242,8 @@ func (a *App) showHelp() {
 		"/permissions reset",
 		"/permissions explain <tool> [arguments json or text]",
 		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
-		"/worktree on|off   (prime only the current local Router draft)",
-		"/wt on|off   (short local draft primer; other forms use /worktrees management)",
+		"/worktree on|off   (switch the current local draft between direct and routed worktree start)",
+		"/wt on|off   (short local draft control; other forms use /worktrees management)",
 		"/worktrees   (open worktrees menu)",
 		"/worktrees new   (create a worktree session with title and editable branch)",
 		"/worktrees [new|open|off|status|branch <name>]",
@@ -2470,7 +2495,12 @@ func (a *App) handleNewCommand(raw string) {
 		a.home.SetStatus("usage: /new [worktree|plan|wp] [<prompt>]")
 		return
 	}
-	if err := a.openRoutedV3Primer(command); err != nil {
+	intent := a.home.SessionIntent()
+	intent.InitialPrompt = strings.TrimSpace(command.Prompt)
+	intent.Mode = map[bool]string{true: "plan", false: "auto"}[command.PlanModeRequested]
+	intent.WorktreeRequested = command.ManagedWorktreeRequested
+	route := a.selectedChatRouteForWorkspace(a.activeContextPath())
+	if err := a.openNewV3Chat(intent, route, ""); err != nil {
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
 	}
@@ -2491,14 +2521,26 @@ func (a *App) handleWorktreePrimerCommand(raw string) {
 		a.home.SetWorktreeRequested(command.Enabled)
 		return
 	}
-	if a.route == "v3chat" && a.v3Chat != nil {
-		_, err = a.v3Chat.ApplyWorktreeCommand(raw)
-		if err == nil {
-			a.home.SetStatus(a.v3Chat.Status())
-		} else {
+	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil {
+		state := a.v3Chat.Runtime().Store().Snapshot()
+		if strings.TrimSpace(state.Session.ID) != "" {
+			a.home.SetStatus("worktree priming is available only on home or a new session draft")
+			a.v3Chat.SetStatus(a.home.Status())
+			return
+		}
+		intent := a.home.SessionIntent()
+		intent.InitialPrompt = ""
+		intent.Mode = emptyFallback(strings.TrimSpace(state.Session.Mode), intent.Mode)
+		intent.WorktreeRequested = command.Enabled
+		route := a.selectedChatRouteForWorkspace(a.activeContextPath())
+		if err = a.openNewV3Chat(intent, route, ""); err != nil {
 			a.home.SetStatus(err.Error())
 			a.v3Chat.SetStatus(a.home.Status())
+			return
 		}
+		status := "Worktree: " + map[bool]string{true: "on", false: "off"}[command.Enabled]
+		a.home.SetStatus(status)
+		a.v3Chat.SetStatus(status)
 		return
 	}
 	a.home.ClearCommandOverlay()
@@ -8401,6 +8443,43 @@ func (a *App) workspaceSwitchRunActive() bool {
 		}
 	}
 	return a.route == "chat" && a.chat != nil && a.chat.RunInProgress()
+}
+
+func (a *App) workspaceSwitchHotkeyBlocked() bool {
+	if a.workspaceSwitchRunActive() {
+		message := "workspace switching is unavailable while a run is active"
+		if a.home != nil {
+			a.home.SetStatus(message)
+		}
+		if a.v3Chat != nil {
+			a.v3Chat.SetStatus(message)
+		}
+		if a.chat != nil {
+			a.chat.SetStatus(message)
+		}
+		return true
+	}
+	if a.route == "home" || a.route == "v3chat" {
+		return a.homeInteractionActive()
+	}
+	if a.route == "chat" {
+		message := "To change workspace, do /new or go to the home screen (Ctrl+B)"
+		if a.chat != nil {
+			a.chat.SetStatus("")
+		}
+		a.showToast(ui.ToastInfo, message)
+	}
+	return true
+}
+
+func (a *App) activateWorkspaceSlot(slot int) {
+	if slot < 1 || slot > len(a.homeModel.Workspaces) {
+		if a.home != nil {
+			a.home.SetStatus(fmt.Sprintf("workspace slot %d is empty", slot))
+		}
+		return
+	}
+	a.activateWorkspaceAtIndex(slot - 1)
 }
 
 func (a *App) activateWorkspaceAtIndex(index int) {

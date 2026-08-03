@@ -207,7 +207,7 @@ func TestRoutedActivationFailureRestoresRetryableLocalOperation(t *testing.T) {
 		}
 		return nil
 	})
-	if err := runtime.PrimeRoutedDraft(RoutedDraft{Prompt: "route this", PlanModeRequested: true, ManagedWorktreeRequested: true}); err != nil {
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", true)); err != nil {
 		t.Fatal(err)
 	}
 	identity, _ := SelectRoutedDraft(runtime.Store().Snapshot())
@@ -237,7 +237,7 @@ func TestRoutedTransitionUsesSignedCursorHandshakeInsteadOfMutationStorageCursor
 	response := routedRuntimeResponse("session-routed")
 	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{response}}
 	runtime := NewRuntime(transport, NewStore(), nil)
-	if err := runtime.PrimeRoutedDraft(RoutedDraft{Prompt: "route this"}); err != nil {
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", false)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runtime.StartRoutedDraft(context.Background()); err != nil {
@@ -264,7 +264,7 @@ func TestRoutedDraftFailureRestoresLocalIntentAndRetryKeepsIdentity(t *testing.T
 	response := routedRuntimeResponse("session-routed")
 	transport := &fakeTransport{routedErrors: []error{errors.New("router unavailable"), nil}, routedResponses: []client.RoutedSessionV3StartResponse{{}, response}}
 	runtime := NewRuntime(transport, nil, nil)
-	if err := runtime.PrimeRoutedDraft(RoutedDraft{Prompt: "route this", PlanModeRequested: true, ManagedWorktreeRequested: true, Metadata: map[string]any{"source": "tui"}}); err != nil {
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", true)); err != nil {
 		t.Fatal(err)
 	}
 	pending := runtime.Store().Snapshot()
@@ -302,6 +302,15 @@ func TestRoutedDraftFailureRestoresLocalIntentAndRetryKeepsIdentity(t *testing.T
 	}
 }
 
+func routedTestDraft(prompt string, plan bool) RoutedDraft {
+	return RoutedDraft{
+		Prompt: prompt, PlanModeRequested: plan, ManagedWorktreeRequested: true,
+		AgentName: "swarm", WorkspacePath: "/source", HostWorkspacePath: "/source", RuntimeWorkspacePath: "/source",
+		WorkspaceBindingID: "binding-1", SwarmID: "swarm-1", TargetKind: "host", TargetRelationship: "self",
+		Metadata: map[string]any{"source": "tui"},
+	}
+}
+
 func routedRuntimeResponse(sessionID string) client.RoutedSessionV3StartResponse {
 	projection := client.SessionV3Projection{SessionID: sessionID, LastEventSeq: 1, ProjectionHighWatermarkSeq: 1}
 	message := client.SessionMessage{ID: "message-1", SessionID: sessionID, GlobalSeq: 1, Role: "user", Content: "route this"}
@@ -309,13 +318,31 @@ func routedRuntimeResponse(sessionID string) client.RoutedSessionV3StartResponse
 	outbox := &client.SessionV3RealtimeOutboxRow{EndpointCursor: "cursor-1", SessionID: sessionID, Projection: projection, Event: client.SessionV3Event{ID: "event-1", SessionID: sessionID, Seq: 1}}
 	return client.RoutedSessionV3StartResponse{
 		OK: true, SessionID: sessionID, Title: "Routed", StartingMode: "plan",
-		Session: client.SessionSummary{ID: sessionID, Title: "Routed", Mode: "plan", WorkspacePath: "/runtime"},
+		Session: client.SessionSummary{ID: sessionID, Title: "Routed", Mode: "plan", WorkspacePath: "/runtime", WorktreeEnabled: true, WorktreeRootPath: "/runtime"},
 		SessionView: client.RoutedSessionV3SessionView{
-			Identity:        &client.RoutedSessionV3Identity{SessionID: sessionID, Title: "Routed", SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime"},
+			Identity:        &client.RoutedSessionV3Identity{SessionID: sessionID, Title: "Routed", WorkspaceBindingID: "binding-1", SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime", RuntimeSwarmID: "swarm-1", AuthorityHostSwarmID: "swarm-1", WorktreeEnabled: true, WorktreeRootPath: "/runtime"},
 			AgenticSettings: &client.RoutedSessionV3AgenticSettings{Mode: "plan", EffectivePreference: client.ModelPreference{Provider: "codex", Model: "gpt"}},
 		},
 		FirstMessage: message, Projection: projection,
 		Mutation: client.SessionV3MutationResult{SessionID: sessionID, Event: client.SessionV3Event{ID: "event-1", SessionID: sessionID, Seq: 1}, Message: &message, RunIntent: &run, Projection: projection, RealtimeOutbox: outbox},
+	}
+}
+
+func TestRoutedDraftRejectsChangedSourceAuthority(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	response.SessionView.Identity.SourceWorkspacePath = "/other"
+	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{response}}
+	runtime := NewRuntime(transport, NewStore(), nil)
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartRoutedDraft(context.Background()); err == nil || !strings.Contains(err.Error(), "changed the captured source workspace") {
+		t.Fatalf("authority error = %v", err)
+	}
+	state := runtime.Store().Snapshot()
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || draft.Status != RoutedDraftFailed || state.Session.ID != "" {
+		t.Fatalf("authority rejection state = session %#v draft %#v", state.Session, draft)
 	}
 }
 

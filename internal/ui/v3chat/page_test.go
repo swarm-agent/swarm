@@ -1985,7 +1985,9 @@ func TestWorktreeCommandUpdatesOnlyReadyRoutedPrimer(t *testing.T) {
 func TestFailedRoutedDraftRetriesOnEmptySubmit(t *testing.T) {
 	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{routedRuntimeResponse("session-retried")}}
 	store := NewStore()
-	store.Dispatch(PrimeRoutedDraftAction{Draft: RoutedDraft{Prompt: "retry this", ClientRequestID: "retry-id"}})
+	draft := routedTestDraft("retry this", false)
+	draft.ClientRequestID = "retry-id"
+	store.Dispatch(PrimeRoutedDraftAction{Draft: draft})
 	store.Dispatch(RoutedDraftFailedAction{Error: "router unavailable"})
 	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
 

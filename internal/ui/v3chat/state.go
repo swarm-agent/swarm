@@ -97,6 +97,13 @@ type RoutedDraft struct {
 	ManagedWorktreeRequested bool
 	ClientRequestID          string
 	AgentName                string
+	WorkspacePath            string
+	HostWorkspacePath        string
+	RuntimeWorkspacePath     string
+	WorkspaceBindingID       string
+	SwarmID                  string
+	TargetKind               string
+	TargetRelationship       string
 	Metadata                 map[string]any
 	Status                   RoutedDraftStatus
 	Error                    string
@@ -415,6 +422,13 @@ func Reduce(current State, action Action) State {
 		draft.Prompt = strings.TrimSpace(draft.Prompt)
 		draft.ClientRequestID = strings.TrimSpace(draft.ClientRequestID)
 		draft.AgentName = strings.TrimSpace(draft.AgentName)
+		draft.WorkspacePath = strings.TrimSpace(draft.WorkspacePath)
+		draft.HostWorkspacePath = strings.TrimSpace(draft.HostWorkspacePath)
+		draft.RuntimeWorkspacePath = strings.TrimSpace(draft.RuntimeWorkspacePath)
+		draft.WorkspaceBindingID = strings.TrimSpace(draft.WorkspaceBindingID)
+		draft.SwarmID = strings.TrimSpace(draft.SwarmID)
+		draft.TargetKind = strings.TrimSpace(draft.TargetKind)
+		draft.TargetRelationship = strings.TrimSpace(draft.TargetRelationship)
 		draft.Metadata = cloneAnyMap(draft.Metadata)
 		draft.Status = RoutedDraftReady
 		draft.Error = ""

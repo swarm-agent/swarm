@@ -14,8 +14,8 @@ import (
 
 const homeBootstrapWorkspaceLimit = 200
 
-// claimInitialHomeWorkspaceBootstrap limits launch-CWD fallback to the first
-// successful home bootstrap. Registered workspaces keep first-item precedence.
+// claimInitialHomeWorkspaceBootstrap keeps launch-CWD precedence limited to the
+// first successful home bootstrap; later refreshes follow explicit selection.
 func (a *App) claimInitialHomeWorkspaceBootstrap() bool {
 	return a != nil && a.homeWorkspaceBootstrapped.CompareAndSwap(false, true)
 }
@@ -54,12 +54,15 @@ func (a *App) bootstrapHomeWorkspace(ctx context.Context, preferLaunchWorkspace 
 	}()
 	wg.Wait()
 
-	selectedPath := firstRegisteredWorkspacePath(data.workspaces)
-	if selectedPath == "" && data.currentErr == nil && data.hasCurrent {
+	selectedPath := ""
+	if data.currentErr == nil && data.hasCurrent {
 		selectedPath = firstNonEmpty(
 			normalizePath(data.current.WorkspacePath),
 			normalizePath(data.current.ResolvedPath),
 		)
+	}
+	if selectedPath == "" {
+		selectedPath = firstRegisteredWorkspacePath(data.workspaces)
 	}
 	var resolveWG sync.WaitGroup
 	if selectedPath != "" {
@@ -70,7 +73,7 @@ func (a *App) bootstrapHomeWorkspace(ctx context.Context, preferLaunchWorkspace 
 		}()
 	}
 	launchPath := normalizePath(a.startupCWD)
-	if preferLaunchWorkspace && selectedPath == "" && launchPath != "" {
+	if preferLaunchWorkspace && launchPath != "" {
 		data.launchChecked = true
 		resolveWG.Add(1)
 		go func() {
@@ -91,33 +94,42 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		warnings = append(warnings, "workspace list unavailable")
 	}
 
-	selectedPath := firstRegisteredWorkspacePath(data.workspaces)
-	selectedName := firstRegisteredWorkspaceName(data.workspaces, selectedPath)
+	selectedPath := ""
+	selectedName := ""
 	selectedResolve := data.selectedResolve
 	selectedErr := data.selectedErr
-	if selectedPath == "" && data.currentErr == nil && data.hasCurrent {
+	if data.currentErr == nil && data.hasCurrent {
 		selectedPath = firstNonEmpty(normalizePath(data.current.WorkspacePath), normalizePath(data.current.ResolvedPath))
 		selectedName = strings.TrimSpace(data.current.WorkspaceName)
 	}
-	if selectedPath == "" && data.launchChecked && data.launchErr == nil && data.launchResolve.Workspace != nil {
-		selectedPath = firstNonEmpty(
+	if selectedPath == "" {
+		selectedPath = firstRegisteredWorkspacePath(data.workspaces)
+		selectedName = firstRegisteredWorkspaceName(data.workspaces, selectedPath)
+	}
+	launchWorkspacePath := ""
+	if data.launchChecked && data.launchErr == nil && data.launchResolve.Workspace != nil {
+		launchWorkspacePath = registeredWorkspacePath(data.workspaces, firstNonEmpty(
 			normalizePath(data.launchResolve.Workspace.WorkspacePath),
 			normalizePath(data.launchResolve.Workspace.ResolvedPath),
-		)
-		selectedName = strings.TrimSpace(data.launchResolve.Workspace.WorkspaceName)
-		selectedResolve = data.launchResolve
-		selectedErr = nil
+		))
+		if launchWorkspacePath != "" {
+			selectedPath = launchWorkspacePath
+			selectedName = firstNonEmpty(
+				strings.TrimSpace(data.launchResolve.Workspace.WorkspaceName),
+				firstRegisteredWorkspaceName(data.workspaces, launchWorkspacePath),
+			)
+			selectedResolve = data.launchResolve
+			selectedErr = nil
+		}
 	}
-	selectedResolvePath := firstNonEmpty(
-		normalizePath(selectedResolve.ResolvedPath),
-		func() string {
-			if selectedResolve.Workspace == nil {
-				return ""
-			}
-			return normalizePath(selectedResolve.Workspace.WorkspacePath)
-		}(),
-	)
-	if selectedPath != "" && selectedResolvePath != "" && !pathsEqual(selectedPath, selectedResolvePath) {
+	selectedResolveWorkspacePath := ""
+	if selectedResolve.Workspace != nil {
+		selectedResolveWorkspacePath = firstNonEmpty(
+			normalizePath(selectedResolve.Workspace.WorkspacePath),
+			normalizePath(selectedResolve.Workspace.ResolvedPath),
+		)
+	}
+	if selectedPath != "" && selectedResolveWorkspacePath != "" && !pathsEqual(selectedPath, selectedResolveWorkspacePath) {
 		selectedErr = fmt.Errorf("workspace route resolved a different workspace")
 	}
 	for i, entry := range data.workspaces {
@@ -182,7 +194,7 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 	}
 
 	startupCWD = normalizePath(startupCWD)
-	if data.launchChecked && data.launchErr == nil && data.launchResolve.Workspace == nil && startupCWD != "" && !homePathRegistered(startupCWD, next.Workspaces) {
+	if data.launchChecked && data.launchErr == nil && launchWorkspacePath == "" && startupCWD != "" && !homePathRegistered(startupCWD, next.Workspaces) {
 		warnings = append(warnings, "launch directory is not registered; use /workspace to add it")
 	}
 	return next, selectedPath, warnings
@@ -201,6 +213,20 @@ func firstRegisteredWorkspaceName(workspaces []client.WorkspaceEntry, selectedPa
 	for _, workspace := range workspaces {
 		if pathsEqual(workspace.Path, selectedPath) {
 			return strings.TrimSpace(workspace.WorkspaceName)
+		}
+	}
+	return ""
+}
+
+func registeredWorkspacePath(workspaces []client.WorkspaceEntry, candidate string) string {
+	candidate = normalizePath(candidate)
+	if candidate == "" {
+		return ""
+	}
+	for _, workspace := range workspaces {
+		path := normalizePath(workspace.Path)
+		if path != "" && pathsEqual(path, candidate) {
+			return path
 		}
 	}
 	return ""

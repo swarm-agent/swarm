@@ -25,6 +25,13 @@ type RoutedSessionV3StartRequest struct {
 	Metadata                 map[string]any                `json:"metadata,omitempty"`
 	ManagedWorktreeRequested bool                          `json:"managed_worktree_requested"`
 	PlanModeRequested        bool                          `json:"plan_mode_requested"`
+	WorkspacePath            string                        `json:"workspace_path"`
+	HostWorkspacePath        string                        `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string                        `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID       string                        `json:"workspace_binding_id"`
+	SwarmID                  string                        `json:"swarm_id"`
+	TargetKind               string                        `json:"target_kind"`
+	TargetRelationship       string                        `json:"target_relationship"`
 	Media                    []RoutedSessionV3MediaRequest `json:"media,omitempty"`
 	StagingIDs               []string                      `json:"staging_ids,omitempty"`
 }
@@ -147,6 +154,13 @@ func (c *API) StartRoutedSessionV3(ctx context.Context, request RoutedSessionV3S
 	request.ClientRequestID = strings.TrimSpace(request.ClientRequestID)
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	request.AgentName = strings.TrimSpace(request.AgentName)
+	request.WorkspacePath = strings.TrimSpace(request.WorkspacePath)
+	request.HostWorkspacePath = strings.TrimSpace(request.HostWorkspacePath)
+	request.RuntimeWorkspacePath = strings.TrimSpace(request.RuntimeWorkspacePath)
+	request.WorkspaceBindingID = strings.TrimSpace(request.WorkspaceBindingID)
+	request.SwarmID = strings.TrimSpace(request.SwarmID)
+	request.TargetKind = strings.TrimSpace(request.TargetKind)
+	request.TargetRelationship = strings.TrimSpace(request.TargetRelationship)
 	if request.Input == "" {
 		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start requires input")
 	}
@@ -158,6 +172,12 @@ func (c *API) StartRoutedSessionV3(ctx context.Context, request RoutedSessionV3S
 	}
 	if request.IdempotencyKey != request.ClientRequestID {
 		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start requires one stable client_request_id/idempotency identity")
+	}
+	if request.WorkspacePath == "" || request.WorkspaceBindingID == "" || request.SwarmID == "" {
+		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start requires workspace_path, workspace_binding_id, and swarm_id")
+	}
+	if !strings.EqualFold(request.TargetKind, "host") || !strings.EqualFold(request.TargetRelationship, "self") {
+		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start requires canonical host/self workspace authority")
 	}
 	if len(request.Media) != 0 && len(request.StagingIDs) != 0 {
 		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start accepts media or staging_ids, not both")
@@ -179,6 +199,20 @@ func (c *API) StartRoutedSessionV3(ctx context.Context, request RoutedSessionV3S
 	}
 	if response.FirstMessage.Content != request.Input {
 		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start returned an invalid response: first_message does not match input")
+	}
+	identity := response.SessionView.Identity
+	if !strings.EqualFold(strings.TrimSpace(identity.SourceWorkspacePath), request.WorkspacePath) || !strings.EqualFold(strings.TrimSpace(identity.WorkspaceBindingID), request.WorkspaceBindingID) {
+		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start returned source workspace authority different from the request")
+	}
+	responseSwarmID := strings.TrimSpace(identity.AuthorityHostSwarmID)
+	if responseSwarmID == "" {
+		responseSwarmID = strings.TrimSpace(identity.RuntimeSwarmID)
+	}
+	if !strings.EqualFold(responseSwarmID, request.SwarmID) {
+		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start returned swarm authority different from the request")
+	}
+	if !identity.WorktreeEnabled || !response.Session.WorktreeEnabled {
+		return RoutedSessionV3StartResponse{}, errors.New("v3 routed start returned a non-worktree session")
 	}
 	return response, nil
 }

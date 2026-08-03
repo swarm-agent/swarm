@@ -3,47 +3,66 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/gdamore/tcell/v2"
 )
 
-func TestRemovedWorkspaceKeybindsAreNotRegisteredOrRestoredFromOverrides(t *testing.T) {
-	removed := []KeybindID{
-		"global.workspace_select",
-		"global.workspace_prev",
-		"global.workspace_next",
-		"global.workspace_slot_1",
-		"global.workspace_slot_2",
-		"global.workspace_slot_3",
-		"global.workspace_slot_4",
-		"global.workspace_slot_5",
-		"global.workspace_slot_6",
-		"global.workspace_slot_7",
-		"global.workspace_slot_8",
-		"global.workspace_slot_9",
-		"global.workspace_slot_10",
+func TestWorkspaceKeybindsAreRegisteredAndRestoreOverrides(t *testing.T) {
+	wantDefaults := map[KeybindID]string{
+		KeybindGlobalWorkspaceSelect: "alt+w",
+	}
+	for slot := 1; slot <= WorkspaceSlotCount; slot++ {
+		id, ok := WorkspaceSlotKeybindID(slot)
+		if !ok {
+			t.Fatalf("workspace slot %d has no keybind id", slot)
+		}
+		key := slot
+		if slot == 10 {
+			key = 0
+		}
+		wantDefaults[id] = "alt+" + string(rune('0'+key))
 	}
 
 	bindings := NewDefaultKeyBindings()
-	overrides := make(map[string]string, len(removed))
-	for _, id := range removed {
-		if _, ok := LookupKeybindDefinition(id); ok {
-			t.Fatalf("removed keybind %q is still registered", id)
+	for id, want := range wantDefaults {
+		def, ok := LookupKeybindDefinition(id)
+		if !ok {
+			t.Fatalf("workspace keybind %q is not registered", id)
 		}
-		overrides[string(id)] = "ctrl+g"
-	}
-	bindings.ApplyOverrides(overrides)
-	if got := bindings.SerializeOverrides(); len(got) != 0 {
-		t.Fatalf("stale workspace overrides were retained: %#v", got)
+		if !def.Editable || def.Group != "Global" || def.Default != want {
+			t.Fatalf("workspace keybind definition = %#v, want editable Global default %q", def, want)
+		}
+		if got := bindings.Token(id); got != want {
+			t.Fatalf("workspace keybind %q token = %q, want %q", id, got, want)
+		}
+		keyRune := rune(want[len(want)-1])
+		if !bindings.Match(tcell.NewEventKey(tcell.KeyRune, keyRune, tcell.ModAlt), id) {
+			t.Fatalf("workspace keybind %q did not match %q event", id, want)
+		}
 	}
 
+	if !bindings.Match(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModAlt), KeybindGlobalWorkspaceSelect) {
+		t.Fatal("workspace selector did not match Alt+W event")
+	}
+
+	bindings.ApplyOverrides(map[string]string{string(KeybindGlobalWorkspaceSelect): "ctrl+g"})
+	if got := bindings.SerializeOverrides()[string(KeybindGlobalWorkspaceSelect)]; got != "ctrl+g" {
+		t.Fatalf("workspace selector override = %q, want ctrl+g", got)
+	}
+
+	registered := 0
 	for _, def := range KeybindDefinitions() {
 		if strings.HasPrefix(string(def.ID), "global.workspace_") {
-			t.Fatalf("workspace keyboard definition remains: %#v", def)
+			registered++
 		}
-		if strings.HasPrefix(def.Default, "alt+") && len(def.Default) == len("alt+0") {
-			last := def.Default[len(def.Default)-1]
-			if last >= '0' && last <= '9' {
-				t.Fatalf("workspace slot-shaped default remains: %#v", def)
-			}
-		}
+	}
+	if registered != WorkspaceSlotCount+1 {
+		t.Fatalf("registered workspace keybinds = %d, want %d", registered, WorkspaceSlotCount+1)
+	}
+	if _, ok := WorkspaceSlotKeybindID(0); ok {
+		t.Fatal("slot 0 unexpectedly has a keybind id")
+	}
+	if _, ok := WorkspaceSlotKeybindID(WorkspaceSlotCount + 1); ok {
+		t.Fatal("out-of-range slot unexpectedly has a keybind id")
 	}
 }
