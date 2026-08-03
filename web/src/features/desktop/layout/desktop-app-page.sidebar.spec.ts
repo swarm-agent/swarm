@@ -205,6 +205,19 @@ test('workspace dropdown rows create chats without icons and the standalone mess
   assert.doesNotMatch(dropdownSource, /handleWorkspaceSelect|menuitemradio|aria-checked|event\.stopPropagation\(\)/)
 })
 
+test('sidebar metadata icons use semantic colors from the active theme', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const iconClassesStart = source.indexOf('const SIDEBAR_SESSION_ICON_CLASS =')
+  const iconClassesEnd = source.indexOf('const PWA_DEBUG_QUERY_PARAM', iconClassesStart)
+  const iconClassesSource = source.slice(iconClassesStart, iconClassesEnd)
+
+  assert.ok(iconClassesStart >= 0 && iconClassesEnd > iconClassesStart)
+  assert.match(iconClassesSource, /worktree: 'text-\[var\(--app-primary\)\]'/)
+  assert.match(iconClassesSource, /task: 'text-\[var\(--app-warning\)\]'/)
+  assert.match(iconClassesSource, /plan: 'text-\[var\(--app-info\)\]'/)
+  assert.doesNotMatch(iconClassesSource, /green|emerald|#[\da-f]{3,8}/i)
+})
+
 test('sidebar card places compact metadata at the top right and swaps it for actions on hover', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const rowStart = source.indexOf('const SessionRow = memo')

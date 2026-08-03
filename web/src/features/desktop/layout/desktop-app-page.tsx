@@ -101,6 +101,11 @@ const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] it
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
 const SIDEBAR_ACTION_BOX_CLASS = 'grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit'
 const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]`
+const SIDEBAR_SESSION_ICON_CLASS = {
+  worktree: 'text-[var(--app-primary)]',
+  task: 'text-[var(--app-warning)]',
+  plan: 'text-[var(--app-info)]',
+} as const
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
@@ -2290,17 +2295,17 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
             >
               {showWorktreeChip ? (
                 <span className="inline-flex h-4 w-4 items-center justify-center" title="Worktree session">
-                  <GitBranch size={12} className="text-[var(--app-success)] opacity-80" aria-label="Worktree session" />
+                  <GitBranch size={12} className={cn(SIDEBAR_SESSION_ICON_CLASS.worktree, 'opacity-80')} aria-label="Worktree session" />
                 </span>
               ) : null}
               {showTaskChip ? (
                 <span className="inline-flex h-4 w-4 items-center justify-center" title="Task session">
-                  <ListTodo size={12} className="text-[var(--app-warning)] opacity-80" aria-label="Task session" />
+                  <ListTodo size={12} className={cn(SIDEBAR_SESSION_ICON_CLASS.task, 'opacity-80')} aria-label="Task session" />
                 </span>
               ) : null}
               {showActivePlan ? (
                 <span className="inline-flex h-4 w-4 items-center justify-center" title="Active plan">
-                  <NotepadText size={12} className="text-[var(--app-primary)] opacity-80" aria-label="Active plan" />
+                  <NotepadText size={12} className={cn(SIDEBAR_SESSION_ICON_CLASS.plan, 'opacity-80')} aria-label="Active plan" />
                 </span>
               ) : null}
             </span>
