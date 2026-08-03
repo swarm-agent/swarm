@@ -1206,6 +1206,10 @@ func (p *Page) ensurePermissionPrefixLocked() {
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
+	if taskIndex := p.taskLaunchPermissionIndexLocked(permissions); taskIndex >= 0 {
+		p.permissionIndex = taskIndex
+		permission = permissions[taskIndex]
+	}
 	p.syncPermissionInteractionLocked(permission)
 	p.syncPermissionContentLocked(permission)
 	if intent, ok := parsePlanPermissionIntent(permission); ok && p.permissionPlanReviewID != permission.ID {
@@ -1256,8 +1260,15 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
+	if taskIndex := p.taskLaunchPermissionIndexLocked(permissions); taskIndex >= 0 {
+		p.permissionIndex = taskIndex
+		permission = permissions[taskIndex]
+	}
 	p.syncPermissionInteractionLocked(permission)
 	p.syncPermissionContentLocked(permission)
+	if isTaskLaunchPermission(permission) {
+		return p.handleTaskLaunchPermissionKeyLocked(permission, ev)
+	}
 	if isAskUserPermission(permission) {
 		return p.handleAskUserPermissionKeyLocked(permission, ev)
 	}
@@ -1384,7 +1395,9 @@ func (p *Page) resolvePermissionWithReasonLocked(permission client.PermissionRec
 		defer cancel()
 		approvedArguments := ""
 		if strings.HasPrefix(action, "allow") {
-			if _, ok := parsePlanPermissionIntent(permission); ok && normalizePermissionToolName(permission.ToolName) == "exit_plan_mode" {
+			if _, ok := parseTaskLaunchPermissionIntent(permission); ok {
+				approvedArguments = taskLaunchApprovedArguments(permission)
+			} else if _, ok := parsePlanPermissionIntent(permission); ok && normalizePermissionToolName(permission.ToolName) == "exit_plan_mode" {
 				approvedArguments = planPermissionApprovedArguments(permission, manualReview)
 			} else if _, ok := parseManageSessionsPermissionIntent(permission); ok {
 				approvedArguments = strings.TrimSpace(permission.ApprovedArguments)
@@ -1440,6 +1453,9 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			return
 		}
 		p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
+		if taskIndex := p.taskLaunchPermissionIndexLocked(permissions); taskIndex >= 0 {
+			p.permissionIndex = taskIndex
+		}
 		if buttons&tcell.Button1 != 0 {
 			permission := permissions[p.permissionIndex]
 			switch {
@@ -1468,7 +1484,7 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		permission := permissions[p.permissionIndex]
 		p.syncPermissionContentLocked(permission)
 		if buttons&tcell.WheelUp != 0 {
-			if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+			if (isBashPermissionRequest(permission) || isTaskLaunchPermission(permission)) && p.permissionContentMaxScroll > 0 {
 				p.permissionContentScroll = maxInt(0, p.permissionContentScroll-3)
 			} else {
 				p.scroll += 3
@@ -1476,7 +1492,7 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			}
 		}
 		if buttons&tcell.WheelDown != 0 {
-			if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+			if (isBashPermissionRequest(permission) || isTaskLaunchPermission(permission)) && p.permissionContentMaxScroll > 0 {
 				p.permissionContentScroll = minInt(p.permissionContentMaxScroll, p.permissionContentScroll+3)
 			} else {
 				p.scroll = maxInt(0, p.scroll-3)
@@ -1570,6 +1586,12 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
 	p.ensurePermissionPrefixLocked()
+	pendingPermissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+	taskLaunchModalIndex := p.taskLaunchPermissionIndexLocked(pendingPermissions)
+	if taskLaunchModalIndex >= 0 {
+		p.permissionIndex = taskLaunchModalIndex
+	}
+	permissionContentScroll := p.permissionContentScroll
 	commandPaletteIndex := p.commandPaletteIndex
 	commandPaletteOptionIndex := p.commandPaletteOptionIndex
 	commandPaletteOptionOwner := p.commandPaletteOptionOwner
@@ -1715,7 +1737,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		}
 		screen.SetContent(cursorX, cursorY, r, nil, styles.Cursor)
 	}
-	if handoffDetailsModal {
+	if taskLaunchModalIndex >= 0 && taskLaunchModalIndex < len(pendingPermissions) {
+		p.drawTaskLaunchPermissionModal(screen, width, height, styles, pendingPermissions[taskLaunchModalIndex], permissionContentScroll)
+	} else if handoffDetailsModal {
 		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsScroll)
 	} else if planModal {
 		plan := state.Plan.ActivePlan
@@ -2595,7 +2619,7 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 // execution; a correlated tool-history item would produce a duplicate card.
 func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []PermissionTimelineItem) bool {
 	toolName := normalizeToolDisplayName(tool.Name)
-	if toolName != "plan-manage" && toolName != "exit-plan-mode" && toolName != "manage-sessions" {
+	if toolName != "plan-manage" && toolName != "exit-plan-mode" && toolName != "manage-sessions" && toolName != "task" {
 		return false
 	}
 	callID := strings.TrimSpace(tool.CallID)
@@ -2613,6 +2637,9 @@ func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []Permission
 			}
 		}
 		if toolName == "manage-sessions" && normalizePermissionToolName(record.ToolName) == "manage_sessions" && isManageSessionsApprovalRequirement(record.Requirement) {
+			return true
+		}
+		if toolName == "task" && isTaskLaunchPermission(record) {
 			return true
 		}
 	}
