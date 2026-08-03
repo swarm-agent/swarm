@@ -26,8 +26,8 @@ func footerTokensFromState(theme Theme, state FooterState) []footerToken {
 	return footerbar.Tokens(footerBarStyles(theme), footerbar.State(state))
 }
 
-func footerProfileUnit(state FooterState) string {
-	return footerbar.ProfileUnit(footerbar.State(state))
+func footerAgentModelUnit(state FooterState) string {
+	return footerbar.AgentModelUnit(footerbar.State(state))
 }
 
 func (state FooterState) rightLine(maxWidth int) string {

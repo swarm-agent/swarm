@@ -91,7 +91,8 @@ type Page struct {
 	rowCache                     map[string]cachedRows
 	lastWidth                    int
 	lastHeight                   int
-	modelTarget                  footerbar.Rect
+	agentModelTarget             footerbar.Rect
+	openAgentsRequested          bool
 	routeLabel                   string
 	profileLabel                 string
 	showHeader                   bool
@@ -268,6 +269,8 @@ func (p *Page) SetRouteLabel(label string) {
 	p.mu.Unlock()
 }
 
+// SetProfileLabel is retained for session hydration compatibility; footer
+// presentation no longer exposes model-profile semantics.
 func (p *Page) SetProfileLabel(label string) {
 	if p == nil {
 		return
@@ -368,6 +371,17 @@ func (p *Page) ConsumeCommand() string {
 	command := p.pendingCommand
 	p.pendingCommand = ""
 	return command
+}
+
+func (p *Page) ConsumeOpenAgentsRequest() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	requested := p.openAgentsRequested
+	p.openAgentsRequested = false
+	return requested
 }
 
 func (p *Page) permissionVisibleLocked() bool {
@@ -1355,8 +1369,8 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		if action := finalHandoffTargetAt(p.handoffTargets, x, y); action != "" && p.activateFinalHandoffTargetLocked(action) {
 			return
 		}
-		if containsFooterPoint(p.modelTarget, x, y) {
-			p.openModelPickerLocked()
+		if containsFooterPoint(p.agentModelTarget, x, y) {
+			p.openAgentsRequested = true
 			return
 		}
 	}
@@ -1421,7 +1435,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	cursor := p.cursor
 	scroll := p.scroll
 	errText, status := p.errText, p.status
-	routeLabel, profileLabel := p.routeLabel, p.profileLabel
+	routeLabel := p.routeLabel
 	showHeader, commandEmission := p.showHeader, p.commandEmission
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
@@ -1553,7 +1567,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	}
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
-	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel)
+	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel)
 	composerEnd := minInt(len(composerLines), composerStart+composerVisibleRows)
 	for i := composerStart; i < composerEnd; i++ {
 		drawText(screen, 0, composerY+1+i-composerStart, width, styles.Prompt, composerLines[i])
@@ -1960,32 +1974,27 @@ func (p *Page) scheduleRunTimer(active bool) {
 	})
 }
 
-func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, profileLabel string) {
+func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel string) {
 	modelState := SelectModel(state)
 	usage := SelectUsage(state)
 	displayedMode := "off"
 	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
 		displayedMode = "on"
 	}
-	resolvedProfileLabel := modelProfileLabel(modelState)
-	if resolvedProfileLabel == "" {
-		resolvedProfileLabel = strings.TrimSpace(profileLabel)
-	}
 	footerState := footerbar.State{
 		RouteLabel:     strings.TrimSpace(routeLabel),
 		DisplayedMode:  displayedMode,
-		ProfileLabel:   resolvedProfileLabel,
+		Agent:          "swarm",
 		ModelLabel:     displayModelLabel(modelState.Preference),
 		Thinking:       strings.TrimSpace(modelState.Preference.Thinking),
 		ServiceTier:    strings.TrimSpace(modelState.Preference.ServiceTier),
-		UnifiedProfile: true,
 		PlanToggle:     true,
 		RightFacts:     conversationContextFacts(usage, modelState.ContextWindow),
 	}
 	footerbar.Draw(screen, footerbar.Styles{Border: p.styles.Border, Accent: p.styles.Accent, Secondary: p.styles.Secondary, Text: p.styles.Text}, rect, footerState, func(target footerbar.Rect, token footerbar.Token) {
-		if token.Action == "open-profiles-modal" {
+		if token.Action == "open-agents-modal" {
 			p.mu.Lock()
-			p.modelTarget = target
+			p.agentModelTarget = target
 			p.mu.Unlock()
 		}
 	})
@@ -2010,21 +2019,6 @@ func conversationContextFacts(usage UsageState, fallbackWindow int) []string {
 	}
 	percentage := int(math.Round(float64(remaining) * 100 / float64(window)))
 	return []string{fmt.Sprintf("ctx %d%%", percentage)}
-}
-
-func modelProfileLabel(state ModelState) string {
-	source := strings.ToLower(strings.TrimSpace(state.ProfileSource))
-	switch source {
-	case "saved":
-		if name := strings.TrimSpace(state.ProfileName); name != "" {
-			return name
-		}
-		return "Saved profile"
-	case "temporary":
-		return "Temporary/customized"
-	default:
-		return ""
-	}
 }
 
 func displayModelLabel(preference client.ModelPreference) string {

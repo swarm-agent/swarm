@@ -10,57 +10,46 @@ import (
 	"swarm-refactor/swarmtui/internal/ui"
 )
 
-func TestAgentsModalProfileSwitchClosesOnlyAfterSuccess(t *testing.T) {
-	profilesJSON := `{"model_profiles":[{"profile_id":"default","name":"Default","model_mode":"single","single":{"provider":"codex","model":"gpt-default"}},{"profile_id":"selected","name":"Selected","model_mode":"single","single":{"provider":"codex","model":"gpt-selected"}}],"default_profile_id":"default"}`
+func TestAgentsModalCanonicalSaveClosesOnlyAfterSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/model-profiles" || r.Method != http.MethodGet {
-			t.Fatalf("unexpected profile switch request: %s %s", r.Method, r.URL.Path)
+		if r.URL.Path != "/v1/agent-model-settings" || r.Method != http.MethodPatch {
+			t.Fatalf("unexpected save request: %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(profilesJSON))
+		_, _ = w.Write([]byte(`{"ok":true,"agent_model_settings":{"swarm":{"action":{"provider":"codex","model":"action","thinking":"high"},"plan":{"provider":"codex","model":"plan","thinking":"high"}},"system_agents":{},"updated_at":1}}`))
 	}))
 	defer server.Close()
 
-	initial := model.EmptyHome()
-	initial.DefaultModelProfileID = "default"
-	initial.ActiveModelProfile = model.ActiveModelProfile{Source: "saved", ProfileID: "default", Name: "Default", ModelMode: "single"}
-	page := ui.NewHomePage(initial)
+	page := ui.NewHomePage(model.EmptyHome())
 	page.ShowAgentsModal()
-	app := &App{api: testAPIWithToken(server.URL), home: page, homeModel: initial, route: "home"}
-
-	app.handleAgentsModalAction(ui.AgentsModalAction{Kind: ui.AgentsModalActionSwitchProfile, ModelProfileID: "selected"})
-
+	app := &App{api: testAPIWithToken(server.URL), home: page, route: "home"}
+	app.handleAgentsModalAction(ui.AgentsModalAction{
+		Kind:  ui.AgentsModalActionSave,
+		Agent: "swarm",
+		Swarm: &client.AgentModelSettingsSwarmPatch{
+			Action: client.AgentModelAssignment{Provider: "codex", Model: "action", Thinking: "high"},
+			Plan:   client.AgentModelAssignment{Provider: "codex", Model: "plan", Thinking: "high"},
+		},
+	})
 	if page.AgentsModalVisible() {
-		t.Fatal("successful profile switch left the Agents modal open")
-	}
-	if got := app.homeModel.ActiveModelProfile.ProfileID; got != "selected" {
-		t.Fatalf("active profile = %q, want selected", got)
-	}
-	if got := app.homeModel.DefaultModelProfileID; got != "default" {
-		t.Fatalf("account default changed to %q during active-profile switch", got)
+		t.Fatal("successful canonical save left Agents modal open")
 	}
 }
 
-func TestAgentsModalProfileSwitchFailureKeepsModalOpen(t *testing.T) {
+func TestAgentsModalCanonicalSaveFailureKeepsModalOpen(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "profile service unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "settings unavailable", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
 
-	initial := model.EmptyHome()
-	initial.DefaultModelProfileID = "default"
-	initial.ActiveModelProfile = model.ActiveModelProfile{Source: "saved", ProfileID: "default", Name: "Default", ModelMode: "single"}
-	page := ui.NewHomePage(initial)
+	page := ui.NewHomePage(model.EmptyHome())
 	page.ShowAgentsModal()
-	app := &App{api: client.New(server.URL), home: page, homeModel: initial, route: "home"}
-	app.api.SetToken("test-token")
-
-	app.handleAgentsModalAction(ui.AgentsModalAction{Kind: ui.AgentsModalActionSwitchProfile, ModelProfileID: "selected"})
-
+	api := client.New(server.URL)
+	api.SetToken("test-token")
+	app := &App{api: api, home: page, route: "home"}
+	assignment := client.AgentModelAssignment{Provider: "codex", Model: "finder", Thinking: "high"}
+	app.handleAgentsModalAction(ui.AgentsModalAction{Kind: ui.AgentsModalActionSave, Agent: "finder", Assignment: &assignment})
 	if !page.AgentsModalVisible() {
-		t.Fatal("failed profile switch closed the Agents modal")
-	}
-	if got := app.homeModel.ActiveModelProfile.ProfileID; got != "default" {
-		t.Fatalf("failed switch changed active profile to %q", got)
+		t.Fatal("failed canonical save closed Agents modal")
 	}
 }

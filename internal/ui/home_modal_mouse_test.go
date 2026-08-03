@@ -5,7 +5,6 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
-	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -89,6 +88,42 @@ func TestModelsModalChatOverlayMouseRoutesToModelTargets(t *testing.T) {
 	}
 }
 
+func TestAgentsModalMouseOpensCanonicalAgentEditor(t *testing.T) {
+	p := NewHomePage(model.EmptyHome())
+	p.ShowAgentsModal()
+	p.SetAgentsModalData(canonicalAgentsModalTestData())
+	screen := newModalMouseTestScreen(t, 110, 36)
+	defer screen.Fini()
+	p.drawAgentsModal(screen)
+	target := findClickTarget(t, p.agentsModalTargets, "agents-agent", 2)
+	p.HandleMouse(tcell.NewEventMouse(target.Rect.X, target.Rect.Y, tcell.Button1, 0))
+	if got := p.selectedAgentsModalName(); got != "finder" {
+		t.Fatalf("selected agent = %q, want finder", got)
+	}
+	if p.agentsModal.Focus != agentsModalFocusAssignments {
+		t.Fatalf("mouse focus = %v, want assignment selector", p.agentsModal.Focus)
+	}
+}
+
+func TestAgentsModalMouseClickFieldStartsCanonicalEditor(t *testing.T) {
+	p := NewHomePage(model.EmptyHome())
+	p.ShowAgentsModal()
+	p.SetAgentsModalData(canonicalAgentsModalTestData())
+	p.agentsModal.Focus = agentsModalFocusFields
+	p.agentsModal.SelectedAssignment = 0
+
+	screen := newModalMouseTestScreen(t, 110, 36)
+	defer screen.Fini()
+	p.drawAgentsModal(screen)
+
+	target := findClickTarget(t, p.agentsModalTargets, "agents-field", 1)
+	p.HandleChatOverlayMouse(tcell.NewEventMouse(target.Rect.X, target.Rect.Y, tcell.Button1, 0))
+	if p.agentsModal.Focus != agentsModalFocusFields || p.agentsModal.SelectedField != 1 || !p.agentsModal.EditingField {
+		t.Fatalf("field click state = focus %v field %d editing %v", p.agentsModal.Focus, p.agentsModal.SelectedField, p.agentsModal.EditingField)
+	}
+}
+
+/* Legacy profile-oriented mouse tests removed with the old /agents workflow.
 func TestAgentsModalMouseOpensAgentInV2Editor(t *testing.T) {
 	p := NewHomePage(model.EmptyHome())
 	p.ShowAgentsModal()
@@ -186,3 +221,5 @@ func TestAgentsModalMouseClickEditorFieldStartsEditing(t *testing.T) {
 		t.Fatalf("expected clicked editor field to enter editing mode")
 	}
 }
+
+*/

@@ -138,7 +138,7 @@ func TestChatFooterUsesLocalSwarmNameForHostRoute(t *testing.T) {
 	}
 }
 
-func TestHomeFooterUsesUnifiedModelProfileAction(t *testing.T) {
+func TestHomeFooterAgentModelControlOpensCanonicalAgents(t *testing.T) {
 	home := NewHomePage(model.HomeModel{
 		ServerMode:    "local",
 		ActiveAgent:   "swarm",
@@ -150,34 +150,41 @@ func TestHomeFooterUsesUnifiedModelProfileAction(t *testing.T) {
 
 	tokens := home.homeFooterTokens()
 	if len(tokens) != 3 {
-		t.Fatalf("home footer token count = %d, want route, plan, and unified model profile", len(tokens))
+		t.Fatalf("home footer token count = %d, want route, plan, and agent/model", len(tokens))
 	}
-	if tokens[2].Action != "open-profiles-modal" {
-		t.Fatalf("home model profile action = %q, want open-profiles-modal", tokens[2].Action)
+	if tokens[2].Action != "open-agents-modal" {
+		t.Fatalf("home agent/model action = %q, want open-agents-modal", tokens[2].Action)
 	}
-	if got, want := tokens[2].Text, "[claude]"; got != want {
-		t.Fatalf("home model profile unit = %q, want %q", got, want)
-	}
-	for _, token := range tokens {
-		if token.Action == "open-agents-modal" {
-			t.Fatalf("home footer retained redundant agent action: %#v", tokens)
-		}
+	if got, want := tokens[2].Text, "[swarm · claude]"; got != want {
+		t.Fatalf("home agent/model unit = %q, want %q", got, want)
 	}
 }
 
-func TestHomeFooterModelProfileUsesConciseOptionValues(t *testing.T) {
-	got := footerProfileUnit(FooterState{
-		ProfileLabel: "Recommended",
-		ModelLabel:   "gpt-5.4",
-		Thinking:     "high",
-		ServiceTier:  "fast",
+func TestChatFooterAgentModelControlOpensCanonicalAgents(t *testing.T) {
+	chat := NewChatPage(ChatPageOptions{
+		SessionID: "session-test", SessionMode: "plan", AuthConfigured: true,
+		Meta: ChatSessionMeta{Agent: "swarm"},
 	})
-	if want := "[Recommended · gpt-5.4 · high · fast]"; got != want {
-		t.Fatalf("footerProfileUnit() = %q, want %q", got, want)
+	chat.SetModelState("codex", "gpt-5.4", "high", "fast", "")
+	tokens := chat.footerSettingsTokens()
+	if len(tokens) != 3 || tokens[1].Text != "Plan" || tokens[2].Action != "open-agents-modal" {
+		t.Fatalf("chat footer tokens = %#v, want route, Plan, and canonical agent/model control", tokens)
 	}
-	for _, unwanted := range []string{"Action", "Plan", "thinking", "tier"} {
+}
+
+func TestFooterAgentModelUsesConciseResolvedFacts(t *testing.T) {
+	got := footerAgentModelUnit(FooterState{
+		Agent:       "swarm",
+		ModelLabel:  "gpt-5.4",
+		Thinking:    "high",
+		ServiceTier: "fast",
+	})
+	if want := "[swarm · gpt-5.4 · high · fast]"; got != want {
+		t.Fatalf("footerAgentModelUnit() = %q, want %q", got, want)
+	}
+	for _, unwanted := range []string{"Profile", "Action", "thinking", "tier"} {
 		if strings.Contains(got, unwanted) {
-			t.Fatalf("footerProfileUnit() retained obsolete label %q: %q", unwanted, got)
+			t.Fatalf("footerAgentModelUnit() retained obsolete label %q: %q", unwanted, got)
 		}
 	}
 }

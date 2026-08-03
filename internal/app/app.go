@@ -565,6 +565,9 @@ func (a *App) Run() error {
 			}
 			if a.route == "v3chat" && a.v3Chat != nil {
 				a.v3Chat.HandleMouse(e)
+				if a.v3Chat.ConsumeOpenAgentsRequest() {
+					a.openAgentsModal()
+				}
 				dirty = true
 				continue
 			}
@@ -1274,36 +1277,7 @@ func (a *App) applyAgentStreamEvent(event client.StreamEventEnvelope) bool {
 		}
 		state = fetched
 	}
-	changed := a.applyAgentStateToRuntime(state)
-	if a.home.AgentsModalVisible() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		hints := make([]string, 0, len(state.Profiles)+2)
-		homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
-		hints = append(hints, homeProvider)
-		for _, profile := range state.Profiles {
-			hints = append(hints, profile.Provider)
-		}
-		settings, err := a.api.GetUISettings(ctx)
-		if err != nil {
-			return false
-		}
-		modalState := enrichSystemAgentModels(state, settings, a.homeModel)
-		resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
-		a.home.SetAgentsModalData(mapAgentsModalData(
-			modalState,
-			resolvedModels,
-			strings.TrimSpace(homeProvider),
-			strings.TrimSpace(homeModelName),
-			strings.TrimSpace(homeThinking),
-			a.homeModel.ModelProfiles,
-			a.homeModel.DefaultModelProfileID,
-			a.homeModel.ActiveModelProfile.ProfileID,
-		))
-		a.home.SetAgentsModalLoading(false)
-		changed = true
-	}
-	return changed
+	return a.applyAgentStateToRuntime(state)
 }
 
 func decodeAgentStateFromStreamEvent(event client.StreamEventEnvelope) client.AgentState {
@@ -5852,9 +5826,63 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	if !a.home.AgentsModalVisible() {
 		return
 	}
-	switch action.Kind {
-	case ui.AgentsModalActionRefresh:
-		a.refreshAgentsModalData("Refreshing agent profiles...")
+	if action.Kind == ui.AgentsModalActionSave {
+		if a.api == nil {
+			a.home.SetAgentsModalError("agent model settings API is unavailable")
+			return
+		}
+		patch := client.AgentModelSettingsPatch{}
+		if strings.EqualFold(strings.TrimSpace(action.Agent), "swarm") {
+			if action.Swarm == nil {
+				a.home.SetAgentsModalError("complete Swarm Default and Plan assignments are required")
+				return
+			}
+			patch.Swarm = action.Swarm
+		} else {
+			if action.Assignment == nil {
+				a.home.SetAgentsModalError("system agent assignment is required")
+				return
+			}
+			systemPatch := &client.AgentModelSettingsSystemAgentsPatch{}
+			switch strings.ToLower(strings.TrimSpace(action.Agent)) {
+			case "compact":
+				systemPatch.Compact = action.Assignment
+			case "finder":
+				systemPatch.Finder = action.Assignment
+			case "coder":
+				systemPatch.Coder = action.Assignment
+			case "designer":
+				systemPatch.Designer = action.Assignment
+			case "router":
+				systemPatch.Router = action.Assignment
+			default:
+				a.home.SetAgentsModalError("unknown compiled system agent")
+				return
+			}
+			patch.SystemAgents = systemPatch
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		if _, err := a.api.PatchAgentModelSettings(ctx, patch); err != nil {
+			a.home.SetAgentsModalError(fmt.Sprintf("save agent model settings failed: %v", err))
+			return
+		}
+		a.home.HideAgentsModal()
+		if a.route == "home" {
+			a.showToast(ui.ToastSuccess, "agent model settings saved")
+		}
+		return
+	}
+	if action.Kind == ui.AgentsModalActionRefresh {
+		a.refreshAgentsModalData("Refreshing agent model settings...")
+		return
+	}
+	a.home.SetAgentsModalLoading(false)
+}
+
+/* Legacy profile-oriented /agents actions were removed in favor of the
+canonical agent-model settings endpoint. The disabled historical body remains
+temporarily below to make the migration boundary explicit during review.
 	case ui.AgentsModalActionCreateModelProfile:
 		if action.ModelProfile == nil {
 			a.home.SetAgentsModalLoading(false)
@@ -6182,27 +6210,7 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	default:
 		a.home.SetAgentsModalLoading(false)
 	}
-}
-
-func isCompactSystemAgentName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "compact" || name == "system-compact"
-}
-
-func isCloneSystemAgentName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "clone" || name == "coder" || name == "system-clone" || name == "system-coder"
-}
-
-func isFinderSystemAgentName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "finder" || name == "system-finder"
-}
-
-func isDesignerSystemAgentName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "designer" || name == "system-designer"
-}
+*/
 
 func (a *App) handleThemeModalAction(action ui.ThemeModalAction) {
 	switch action.Kind {
@@ -6954,7 +6962,7 @@ func (a *App) openAgentsModal() {
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
 	a.home.ShowAgentsModal()
-	a.refreshAgentsModalData("Loading agent profiles...")
+	a.refreshAgentsModalData("Loading agent model settings...")
 }
 
 func (a *App) refreshAgentsModalData(statusHint string) {
@@ -6975,42 +6983,25 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 
-	state, err := a.api.ListAgentSummary(ctx, 200)
+	settings, err := a.api.GetAgentModelSettings(ctx)
 	if err != nil {
 		a.home.SetAgentsModalLoading(false)
-		a.home.SetAgentsModalError(fmt.Sprintf("agent list failed: %v", err))
+		a.home.SetAgentsModalError(fmt.Sprintf("agent model settings failed: %v", err))
 		return
 	}
-	hints := make([]string, 0, len(state.Profiles)+6)
-	homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
-	hints = append(hints, homeProvider)
-	for _, profile := range state.Profiles {
-		hints = append(hints, profile.Provider)
-	}
-	settings, err := a.api.GetUISettings(ctx)
-	if err != nil {
-		a.home.SetAgentsModalLoading(false)
-		a.home.SetAgentsModalError(fmt.Sprintf("system agent model settings failed: %v", err))
-		return
-	}
-	modalState := canonicalAgentsModalState(state, settings)
-	for _, profile := range modalState.Profiles {
-		hints = append(hints, profile.Provider)
+	hints := []string{
+		settings.Swarm.Action.Provider,
+		settings.Swarm.Plan.Provider,
+		settings.SystemAgents.Compact.Provider,
+		settings.SystemAgents.Finder.Provider,
+		settings.SystemAgents.Coder.Provider,
+		settings.SystemAgents.Designer.Provider,
+		settings.SystemAgents.Router.Provider,
 	}
 	resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
-
-	a.home.SetAgentsModalData(mapAgentsModalData(
-		modalState,
-		resolvedModels,
-		strings.TrimSpace(homeProvider),
-		strings.TrimSpace(homeModelName),
-		strings.TrimSpace(homeThinking),
-		a.homeModel.ModelProfiles,
-		a.homeModel.DefaultModelProfileID,
-		a.homeModel.ActiveModelProfile.ProfileID,
-	))
+	a.home.SetAgentsModalData(mapCanonicalAgentModelSettings(settings, resolvedModels))
 	a.home.SetAgentsModalLoading(false)
-	status := fmt.Sprintf("agent profiles loaded: %d", len(modalState.Profiles))
+	status := "agent model settings loaded"
 	if len(resolvedModels.Warnings) > 0 {
 		status += " (" + strings.Join(uniqueNonEmpty(resolvedModels.Warnings), "; ") + ")"
 	}
@@ -7244,6 +7235,55 @@ func mapWorkspaceModalEntries(entries []client.WorkspaceEntry) []ui.WorkspaceMod
 	return out
 }
 
+func mapCanonicalAgentModelSettings(settings client.AgentModelSettings, resolved providerModelResolverResult) ui.AgentsModalData {
+	modelsByProvider := make(map[string][]string, len(resolved.ModelsByProvider))
+	for provider, models := range resolved.ModelsByProvider {
+		provider = normalizeModelProviderID(provider)
+		if provider != "" {
+			modelsByProvider[provider] = append([]string(nil), models...)
+		}
+	}
+	catalog := make(map[string]client.ModelCatalogRecord, len(resolved.CatalogByKey))
+	for key, record := range resolved.CatalogByKey {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key != "" {
+			catalog[key] = record
+		}
+	}
+	providers := append([]string(nil), resolved.ProviderIDs...)
+	assignments := []client.AgentModelAssignment{
+		settings.Swarm.Action,
+		settings.Swarm.Plan,
+		settings.SystemAgents.Compact,
+		settings.SystemAgents.Finder,
+		settings.SystemAgents.Coder,
+		settings.SystemAgents.Designer,
+		settings.SystemAgents.Router,
+	}
+	for _, assignment := range assignments {
+		provider := normalizeModelProviderID(assignment.Provider)
+		if provider == "" {
+			continue
+		}
+		providers = append(providers, provider)
+		if modelID := strings.TrimSpace(assignment.Model); modelID != "" {
+			modelsByProvider[provider] = append(modelsByProvider[provider], modelID)
+		}
+	}
+	providers = dedupeModelValues(providers)
+	for provider, models := range modelsByProvider {
+		modelsByProvider[provider] = dedupeModelValues(models)
+	}
+	sort.Strings(providers)
+	return ui.AgentsModalData{
+		Settings:         settings,
+		Providers:        providers,
+		ModelsByProvider: modelsByProvider,
+		ModelCatalog:     catalog,
+	}
+}
+
+/* Legacy AgentState/UISettings mapping is intentionally not used by /agents.
 func enrichSystemAgentModels(state client.AgentState, settings client.UISettings, home model.HomeModel) client.AgentState {
 	state.Profiles = append([]client.AgentProfile(nil), state.Profiles...)
 	for i := range state.Profiles {
@@ -7321,7 +7361,9 @@ func compiledAgentsModalProfile(name, description, runtimeMode string, selection
 		Protected:          true,
 	}
 }
+*/
 
+/* Legacy profile/modal mapping is intentionally not used by /agents.
 func mapAgentsModalData(state client.AgentState, resolved providerModelResolverResult, defaultProvider, defaultModel, defaultThinking string, modelProfiles []client.ModelProfile, defaultModelProfileID, activeModelProfileID string) ui.AgentsModalData {
 	profiles := make([]ui.AgentModalProfile, 0, len(state.Profiles))
 	modelsByProvider := make(map[string][]string, len(resolved.ModelsByProvider)+8)
@@ -7491,19 +7533,7 @@ func mapAgentsModalData(state client.AgentState, resolved providerModelResolverR
 	}
 	return data
 }
-
-func hasModelValue(models []string, target string) bool {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return false
-	}
-	for _, model := range models {
-		if strings.EqualFold(strings.TrimSpace(model), target) {
-			return true
-		}
-	}
-	return false
-}
+*/
 
 func (a *App) handleWorkspaceCommand(args []string) {
 	if len(args) == 0 {

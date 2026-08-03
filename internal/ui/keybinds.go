@@ -326,7 +326,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindEditorBackspace, Group: "Editors", Action: "Backspace", Default: "backspace", Editable: true},
 	{ID: KeybindEditorClear, Group: "Editors", Action: "Clear field", Default: "ctrl+u", Editable: true},
 	{ID: KeybindEditorSubmit, Group: "Editors", Action: "Submit/next", Default: "enter", Editable: true},
-	{ID: KeybindAgentsEditorSave, Group: "Editors", Action: "Save profile changes", Default: "ctrl+y", Editable: true},
+	{ID: KeybindAgentsEditorSave, Group: "Editors", Action: "Save agent model changes", Default: "ctrl+y", Editable: true},
 	{ID: KeybindAgentsEditorInsertNewline, Group: "Editors", Action: "Insert prompt newline", Default: "ctrl+j", Editable: true},
 
 	{ID: KeybindChatEscape, Group: "Chat", Action: "Escape / leave chat", Default: "esc", Editable: true},

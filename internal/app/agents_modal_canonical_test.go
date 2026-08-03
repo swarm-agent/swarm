@@ -6,48 +6,33 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
-func TestCanonicalAgentsModalStateUsesDesktopSystemSubagents(t *testing.T) {
-	state := client.AgentState{
-		Profiles: []client.AgentProfile{
-			{Name: "swarm", Mode: "primary", Enabled: true},
-			{Name: "custom-primary", Mode: "primary", Enabled: true},
-			{Name: "random-subagent", Mode: "subagent", Enabled: true},
-			{Name: "system-plan-sidechat", Mode: "subagent", Enabled: true},
-			{Name: "system-finder", Mode: "subagent", Provider: "wrong", Model: "wrong", Enabled: true},
+func TestMapCanonicalAgentModelSettingsPreservesDaemonAuthority(t *testing.T) {
+	settings := client.AgentModelSettings{
+		Swarm: client.SwarmAgentModelAssignments{
+			Action: client.AgentModelAssignment{Provider: "codex", Model: "action", Thinking: "high"},
+			Plan:   client.AgentModelAssignment{Provider: "anthropic", Model: "plan", Thinking: "high"},
+		},
+		SystemAgents: client.SystemAgentModelAssignments{
+			Compact: client.AgentModelAssignment{Provider: "codex", Model: "compact", Thinking: "low"},
+			Router:  client.AgentModelAssignment{Provider: "codex", Model: "router", Thinking: "high"},
 		},
 	}
-	settings := client.UISettings{Agents: client.UIAgentSettings{
-		Compact:  client.UICompactAgentSettings{Provider: "codex", Model: "compact-model", Thinking: "low"},
-		Finder:   client.UICompactAgentSettings{Provider: "anthropic", Model: "finder-model", Thinking: "medium"},
-		Coder:    client.UICompactAgentSettings{Provider: "codex", Model: "coder-model", Thinking: "high"},
-		Designer: client.UICompactAgentSettings{Provider: "google", Model: "designer-model", Thinking: "high"},
-	}}
+	resolved := providerModelResolverResult{
+		ProviderIDs:     []string{"codex", "anthropic"},
+		ModelsByProvider: map[string][]string{"codex": {"action", "compact", "router"}},
+		CatalogByKey: map[string]client.ModelCatalogRecord{
+			"codex/action": {Provider: "codex", Model: "action"},
+		},
+	}
 
-	got := canonicalAgentsModalState(state, settings)
-	wantNames := []string{"swarm", "custom-primary", "system-compact", "system-finder", "system-coder", "system-designer"}
-	if len(got.Profiles) != len(wantNames) {
-		t.Fatalf("canonical profiles = %#v, want names %#v", got.Profiles, wantNames)
+	got := mapCanonicalAgentModelSettings(settings, resolved)
+	if got.Settings.Swarm.Action.Model != "action" || got.Settings.Swarm.Plan.Model != "plan" {
+		t.Fatalf("Swarm settings = %#v", got.Settings.Swarm)
 	}
-	for i, want := range wantNames {
-		if got.Profiles[i].Name != want {
-			t.Fatalf("canonical profile[%d] = %q, want %q", i, got.Profiles[i].Name, want)
-		}
+	if got.Settings.SystemAgents.Router.Model != "router" {
+		t.Fatalf("Router settings = %#v", got.Settings.SystemAgents.Router)
 	}
-	for _, profile := range got.Profiles[2:] {
-		if profile.Mode != "subagent" || profile.ModelMode != "single" || !profile.Enabled || !profile.Protected {
-			t.Fatalf("compiled subagent contract = %#v", profile)
-		}
-	}
-	if got.Profiles[3].Provider != "anthropic" || got.Profiles[3].Model != "finder-model" {
-		t.Fatalf("finder settings = %#v, want UI settings authority", got.Profiles[3])
-	}
-}
-
-func TestCompiledSystemAgentNamesCoverCanonicalIDs(t *testing.T) {
-	for _, name := range []string{"system-compact", "system-finder", "system-coder", "system-designer"} {
-		matched := isCompactSystemAgentName(name) || isFinderSystemAgentName(name) || isCloneSystemAgentName(name) || isDesignerSystemAgentName(name)
-		if !matched {
-			t.Fatalf("canonical compiled subagent %q was not recognized", name)
-		}
+	if len(got.Providers) != 2 || got.Providers[0] != "anthropic" || got.Providers[1] != "codex" {
+		t.Fatalf("providers = %#v", got.Providers)
 	}
 }

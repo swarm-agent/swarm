@@ -1102,6 +1102,33 @@ func TestBashPermissionCardApproveUsesCanonicalV3PermissionAPI(t *testing.T) {
 	}
 }
 
+func TestAgentModelFooterMouseRequestsCanonicalAgentsModal(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-agents"}}})
+	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 28)
+	page.Draw(screen)
+
+	page.mu.Lock()
+	target := page.agentModelTarget
+	page.mu.Unlock()
+	if target.W == 0 || target.H == 0 {
+		t.Fatal("agent/model footer did not expose a mouse target")
+	}
+	page.HandleMouse(tcell.NewEventMouse(target.X, target.Y, tcell.Button1, tcell.ModNone))
+	if !page.ConsumeOpenAgentsRequest() {
+		t.Fatal("agent/model footer did not request /agents")
+	}
+	if page.modelPicker {
+		t.Fatal("agent/model footer opened the legacy model picker")
+	}
+}
+
 func TestBashPermissionCardMouseApproveUsesCanonicalV3PermissionAPI(t *testing.T) {
 	permission := client.PermissionRecord{
 		ID: "permission-mouse", SessionID: "session-bash", ToolName: "bash", Status: "pending",
