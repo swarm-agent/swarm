@@ -1346,6 +1346,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 				runIntent.RunSessionID = sessionID
 				runIntent.ParentSessionID = sessionID
 				runIntent.ResumeContext = true
+				markSessionsV3CheckpointResumeRouting(&message, runIntent.RunID, doc.ActiveCheckpointID, "rebind_in_progress_user_message")
 			}
 		}
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStatePaused) {
@@ -1367,6 +1368,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 			runIntent.RunSessionID = sessionID
 			runIntent.ParentSessionID = sessionID
 			runIntent.ResumeContext = true
+			markSessionsV3CheckpointResumeRouting(&message, runIntent.RunID, doc.ActiveCheckpointID, "resume_paused_user_message")
 		}
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
 		epochResult, epochErr := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{

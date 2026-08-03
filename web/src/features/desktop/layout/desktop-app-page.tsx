@@ -2497,11 +2497,11 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                   data-sidebar-dirty-git-entry
                   className={`flex h-5 items-center gap-1 rounded px-1 text-[9px] font-medium hover:bg-[var(--app-surface-hover)] ${input.gitDirtyCount > 0 ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-muted)]'}`}
                   onClick={input.onOpenGit}
-                  aria-label={`Open Git details: ${input.gitAheadCount} ahead, ${input.gitBehindCount} behind, ${input.gitDirtyCount} dirty files`}
+                  aria-label={`Open Git details: ${input.gitAheadCount} ahead, ${input.gitBehindCount} behind, ${input.gitDirtyCount} uncommitted changes`}
                   title="Open Git details"
                 >
                   <span aria-hidden="true">↑{input.gitAheadCount} ↓{input.gitBehindCount}</span>
-                  <span>· {input.gitDirtyCount > 0 ? `${input.gitDirtyCount} dirty` : 'clean'}</span>
+                  <span>· {input.gitDirtyCount > 0 ? `${input.gitDirtyCount} uncommitted` : 'clean'}</span>
                 </button>
               ) : null}
               {groupControls}

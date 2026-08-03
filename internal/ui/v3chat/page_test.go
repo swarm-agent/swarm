@@ -1390,14 +1390,14 @@ func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunStateAboveComposer(t *testi
 	page.DrawAt(screen, time.UnixMilli(125_000))
 	screen.Show()
 	header := simulationRow(screen, 100, 0)
-	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "swarm-go  /  git dev  /  dirty 3") || !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 Wire live plan state") {
+	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "swarm-go  /  git dev  /  uncommitted 3") || !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 Wire live plan state") {
 		t.Fatalf("canonical header missing workspace/git/checkpoint state: %q", header)
 	}
 	workspace := strings.Index(header, "swarm-go")
 	branch := strings.Index(header, "git dev")
-	dirty := strings.Index(header, "dirty 3")
+	uncommitted := strings.Index(header, "uncommitted 3")
 	checkpoint := strings.Index(header, "cp-1 Wire live plan state")
-	if workspace < 0 || branch < workspace || dirty < branch || checkpoint < dirty {
+	if workspace < 0 || branch < workspace || uncommitted < branch || checkpoint < uncommitted {
 		t.Fatalf("canonical header order = %q", header)
 	}
 	if strings.Contains(header, "0:05") || strings.Contains(header, "1:35") {

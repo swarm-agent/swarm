@@ -6430,6 +6430,9 @@ func TestSessionsV3DirectionChangingUserMessageReactivatesPausedCheckpointForAge
 	if enqueueJob.PlanID != "plan-paused-message" || enqueueJob.CheckpointID != "cp-1" || enqueueJob.AttemptID != "cp-1:attempt-2" || !enqueueJob.ResumeContext {
 		t.Fatalf("paused message executor job = %#v", enqueueJob)
 	}
+	if result.Message == nil || !sessionV3MetadataBool(result.Message.Metadata, sessionsV3CheckpointResumeRoutingKey) || sessionV3MetadataString(result.Message.Metadata, sessionsV3CheckpointResumeRoutingRunIDKey) != enqueueJob.RunID || sessionV3MetadataString(result.Message.Metadata, sessionsV3CheckpointResumeRoutingCheckpointKey) != "cp-1" {
+		t.Fatalf("paused message resume routing metadata = %#v", result.Message)
+	}
 
 	active, ok, err := sessionSvc.GetActivePlan(created.ID)
 	if err != nil || !ok || active.Document == nil || active.Document.ExecutionState == nil {

@@ -1974,7 +1974,7 @@ func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyl
 			renderSpan{text: "git ", style: muted},
 			renderSpan{text: branch, style: secondary},
 			renderSpan{text: "  /  ", style: muted},
-			renderSpan{text: fmt.Sprintf("dirty %d", dirtyCount), style: dirtyStyle},
+			renderSpan{text: fmt.Sprintf("uncommitted %d", dirtyCount), style: dirtyStyle},
 		)
 	}
 	if plan.Active {

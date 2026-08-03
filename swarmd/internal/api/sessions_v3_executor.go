@@ -3168,6 +3168,7 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 		if err != nil {
 			return nil, err
 		}
+		messages = sessionsV3InjectCheckpointResumeRoutingMessage(messages, job.RunID)
 	}
 	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "post_checkpoint_followup") {
 		if activePlan, planOK, planErr := e.server.sessions.GetActivePlan(job.SessionID); planErr != nil {

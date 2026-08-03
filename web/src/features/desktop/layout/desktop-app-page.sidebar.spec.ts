@@ -167,7 +167,7 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.match(rendererSource, /gitAheadCount: number[\s\S]*gitBehindCount: number[\s\S]*gitDirtyCount: number/)
   assert.match(gitEntrySource, /onClick=\{input\.onOpenGit\}/)
   assert.match(gitEntrySource, /↑\{input\.gitAheadCount\} ↓\{input\.gitBehindCount\}/)
-  assert.match(gitEntrySource, /input\.gitDirtyCount > 0 \? `\$\{input\.gitDirtyCount\} dirty` : 'clean'/)
+  assert.match(gitEntrySource, /input\.gitDirtyCount > 0 \? `\$\{input\.gitDirtyCount\} uncommitted` : 'clean'/)
   assert.doesNotMatch(gitEntrySource, /<GitBranch|\bGit ·|min-h-|border|bg-\[var\(--app-warning-bg\)\]|Commit/)
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   assert.match(handlerSource, /gitStatusQueryKey\(normalizedPath\)/)
