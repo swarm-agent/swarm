@@ -320,7 +320,7 @@ test("active checkpoint heading has balanced spacing before Progress", () => {
   assert.match(markup, /class="mt-4" data-plan-progress/);
 });
 
-test("checkpoint sidebar bounds overflow while prioritizing active work and preserving full task text", () => {
+test("checkpoint sidebar expands into one scrollable task list while prioritizing active work", () => {
   const base = view();
   const longTask =
     "Render the complete task text even when it is long enough that the old sidebar would have truncated it";
@@ -352,7 +352,7 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
 
   assert.match(markup, />Tasks</);
   assert.match(markup, /Render sidebar state/);
-  assert.match(markup, new RegExp(longTask));
+  assert.doesNotMatch(markup, new RegExp(longTask));
   assert.match(markup, /data-plan-task-mode="bounded"/);
   assert.match(markup, /data-plan-task-viewport=""/);
   assert.match(markup, /max-h-\[min\(28vh,240px\)\]/);
@@ -361,7 +361,7 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   assert.match(markup, /data-plan-task-expansion="" data-plan-completed-tasks=""/);
   assert.match(markup, /data-plan-task-chevron=""/);
   assert.match(markup, /aria-expanded="false"/);
-  assert.match(markup, /aria-controls="desktop-plan-overflow-tasks"/);
+  assert.match(markup, /aria-controls="desktop-plan-task-list"/);
   assert.match(markup, /Show 3 more tasks and 1 completed/);
   assert.ok(
     markup.indexOf("Render sidebar state") < markup.indexOf("Keep the layout compact"),
@@ -371,9 +371,12 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   assert.match(markup, /break-words \[overflow-wrap:anywhere\]/);
   assert.doesNotMatch(source, /ResizeObserver|getBoundingClientRect|viewportHeight/);
   assert.doesNotMatch(source, /setExpanded\(false\)/);
-  assert.match(source, /expanded \? "flex-1 overflow-hidden" : "shrink-0"/);
-  assert.match(source, /className="min-h-0 flex-1 overflow-y-auto/);
-  assert.match(source, /data-plan-task-overflow-scroll="conditional"/);
+  assert.match(source, /const displayedTasks = expanded/);
+  assert.match(source, /\.\.\.activeTasks, \.\.\.pendingTasks, \.\.\.completedTasks/);
+  assert.match(source, /data-plan-task-list-scroll="single"/);
+  assert.match(source, /id="desktop-plan-task-list"[\s\S]*?overflow-y-auto/);
+  assert.doesNotMatch(source, /data-plan-task-overflow/);
+  assert.doesNotMatch(source, /desktop-plan-overflow-tasks/);
   assert.match(source, /data-plan-scroll-region[\s\S]*?overflow-y-auto/);
   assert.doesNotMatch(markup, /\[x\] Persist task changes/);
   assert.doesNotMatch(markup, /\[ \] Render sidebar state/);

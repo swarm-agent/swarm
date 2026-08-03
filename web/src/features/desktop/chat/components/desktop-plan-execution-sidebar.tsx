@@ -181,7 +181,10 @@ function CheckpointDetails({
   const completedTasks = tasks.filter((task) => task.checked === true);
   const visiblePendingTasks = pendingTasks.slice(0, COLLAPSED_VISIBLE_PENDING_TASKS);
   const overflowPendingTasks = pendingTasks.slice(COLLAPSED_VISIBLE_PENDING_TASKS);
-  const visibleTasks = [...activeTasks, ...visiblePendingTasks];
+  const collapsedTasks = [...activeTasks, ...visiblePendingTasks];
+  const displayedTasks = expanded
+    ? [...activeTasks, ...pendingTasks, ...completedTasks]
+    : collapsedTasks;
   const disclosureCount = overflowPendingTasks.length + completedTasks.length;
 
   if (tasks.length === 0) return null;
@@ -237,14 +240,14 @@ function CheckpointDetails({
         data-plan-task-mode="bounded"
         data-plan-task-viewport
       >
-        {visibleTasks.length > 0 ? (
+        {displayedTasks.length > 0 ? (
           <ul
-            className={cn(
-              "grid min-h-0 shrink gap-1.5 overflow-y-auto pr-1 [scrollbar-gutter:stable]",
-            )}
+            id="desktop-plan-task-list"
+            className="grid min-h-0 flex-1 gap-1.5 overflow-y-auto pr-1 [scrollbar-gutter:stable]"
             data-plan-visible-tasks
+            data-plan-task-list-scroll="single"
           >
-            {visibleTasks.map((task, index) => renderTask(task, index))}
+            {displayedTasks.map((task, index) => renderTask(task, index))}
           </ul>
         ) : (
           <div className="shrink-0 text-[var(--app-text-subtle)]">
@@ -253,18 +256,15 @@ function CheckpointDetails({
         )}
         {disclosureCount > 0 ? (
           <div
-            className={cn(
-              "mt-1.5 flex min-h-0 flex-col border-t border-[var(--app-border)]/50 pt-1",
-              expanded ? "flex-1 overflow-hidden" : "shrink-0",
-            )}
+            className="mt-1.5 shrink-0"
             data-plan-task-expansion
             data-plan-completed-tasks={completedTasks.length > 0 ? "" : undefined}
           >
             <button
               type="button"
-              className="mt-2.5 flex w-full shrink-0 items-center gap-1 py-1 text-left text-[10px] font-medium text-[var(--app-text-subtle)]/80 transition-colors hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
+              className="flex w-full items-center gap-1 py-1 text-left text-[10px] font-medium text-[var(--app-text-subtle)]/80 transition-colors hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
               aria-expanded={expanded}
-              aria-controls="desktop-plan-overflow-tasks"
+              aria-controls="desktop-plan-task-list"
               onClick={() => setExpanded((current) => !current)}
             >
               <ChevronDown
@@ -277,37 +277,6 @@ function CheckpointDetails({
               />
               {disclosureLabel}
             </button>
-            {expanded ? (
-              <div
-                id="desktop-plan-overflow-tasks"
-                className="min-h-0 flex-1 overflow-y-auto pb-1 pr-1 [scrollbar-gutter:stable]"
-                data-plan-task-overflow
-                data-plan-task-overflow-scroll="conditional"
-              >
-                {overflowPendingTasks.length > 0 ? (
-                  <ul className="mt-1 grid gap-1.5">
-                    {overflowPendingTasks.map((task, index) =>
-                      renderTask(task, index + visibleTasks.length),
-                    )}
-                  </ul>
-                ) : null}
-                {completedTasks.length > 0 ? (
-                  <div className="mt-2 border-t border-[var(--app-border)]/50 pt-1.5">
-                    <div className="mb-1 text-[10px] font-medium text-[var(--app-text-subtle)]">
-                      {completedTasks.length} completed
-                    </div>
-                    <ul className="grid gap-1.5">
-                      {completedTasks.map((task, index) =>
-                        renderTask(
-                          task,
-                          index + visibleTasks.length + overflowPendingTasks.length,
-                        ),
-                      )}
-                    </ul>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>
