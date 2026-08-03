@@ -12,6 +12,7 @@ export type PinnedGitFlowKind = 'action' | 'ai-commit-action'
 export interface PinnedGitFlow {
   actionId: string
   kind: PinnedGitFlowKind
+  name?: string
 }
 
 interface AICommitButtonProps {
@@ -40,10 +41,15 @@ function readPinnedGitFlows(): StoredPinnedGitFlows {
     return Object.fromEntries(Object.entries(parsed).map(([workspacePath, value]) => [
       workspacePath,
       Array.isArray(value)
-        ? value.filter((entry): entry is PinnedGitFlow => {
-            if (!entry || typeof entry !== 'object') return false
+        ? value.flatMap((entry): PinnedGitFlow[] => {
+            if (!entry || typeof entry !== 'object') return []
             const flow = entry as Partial<PinnedGitFlow>
-            return typeof flow.actionId === 'string' && (flow.kind === 'action' || flow.kind === 'ai-commit-action')
+            if (typeof flow.actionId !== 'string' || (flow.kind !== 'action' && flow.kind !== 'ai-commit-action')) return []
+            return [{
+              actionId: flow.actionId,
+              kind: flow.kind,
+              ...(typeof flow.name === 'string' && flow.name.trim() ? { name: flow.name.trim() } : {}),
+            }]
           })
         : [],
     ]))
@@ -73,6 +79,12 @@ function flowKey(flow: PinnedGitFlow): string {
   return `${flow.kind}:${flow.actionId}`
 }
 
+function flowDisplayName(flow: PinnedGitFlow, action: WorkspaceAction): string {
+  const savedName = flow.name?.trim()
+  if (savedName) return savedName
+  return flow.kind === 'action' ? action.name : `AI Commit → ${action.name}`
+}
+
 export function AICommitButton({ phase = null, disabled = false, compact = false, onGenerate }: AICommitButtonProps) {
   return (
     <button
@@ -99,14 +111,17 @@ export function GitActionFlowControl({ workspacePath, canAICommit, disabled = fa
   const [request, setRequest] = useState(0)
   const [configuredFlow, setConfiguredFlow] = useState<PinnedGitFlow | null>(null)
   const [inputValues, setInputValues] = useState<Record<string, string>>({})
+  const [pinDraft, setPinDraft] = useState<{ flow: PinnedGitFlow; name: string } | null>(null)
   const [menuPosition, setMenuPosition] = useState({ bottom: 0, right: 0 })
   const rootRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const pinNameInputRef = useRef<HTMLInputElement>(null)
   const menuId = useId()
 
   useEffect(() => {
     setPinnedFlows(loadPinnedGitFlows(workspacePath))
     setConfiguredFlow(null)
+    setPinDraft(null)
   }, [workspacePath])
 
   useEffect(() => {
@@ -156,6 +171,10 @@ export function GitActionFlowControl({ workspacePath, canAICommit, disabled = fa
     }
   }, [open, positionMenu])
 
+  useEffect(() => {
+    if (pinDraft) pinNameInputRef.current?.focus()
+  }, [pinDraft])
+
   const actionById = useMemo(() => new Map(actions.map((action) => [action.id, action])), [actions])
   const resolvedPinnedFlows = pinnedFlows.flatMap((flow) => {
     const action = actionById.get(flow.actionId)
@@ -169,11 +188,26 @@ export function GitActionFlowControl({ workspacePath, canAICommit, disabled = fa
     savePinnedGitFlows(workspacePath, next)
   }
 
-  const togglePin = (flow: PinnedGitFlow) => {
+  const unpinFlow = (flow: PinnedGitFlow) => {
     const key = flowKey(flow)
-    updatePinnedFlows(pinnedFlows.some((entry) => flowKey(entry) === key)
-      ? pinnedFlows.filter((entry) => flowKey(entry) !== key)
-      : [...pinnedFlows, flow])
+    updatePinnedFlows(pinnedFlows.filter((entry) => flowKey(entry) !== key))
+  }
+
+  const beginPin = (flow: PinnedGitFlow) => {
+    setConfiguredFlow(null)
+    setPinDraft({ flow, name: '' })
+  }
+
+  const confirmPin = () => {
+    if (!pinDraft) return
+    const name = pinDraft.name.trim()
+    if (!name) return
+    const key = flowKey(pinDraft.flow)
+    updatePinnedFlows([
+      ...pinnedFlows.filter((entry) => flowKey(entry) !== key),
+      { ...pinDraft.flow, name },
+    ])
+    setPinDraft(null)
   }
 
   const runFlow = (flow: PinnedGitFlow, action: WorkspaceAction) => {
@@ -210,6 +244,7 @@ export function GitActionFlowControl({ workspacePath, canAICommit, disabled = fa
         onClick={() => {
           positionMenu()
           setConfiguredFlow(null)
+          setPinDraft(null)
           setOpen((current) => !current)
         }}
         aria-label="Open workspace Actions and flows"
@@ -223,20 +258,23 @@ export function GitActionFlowControl({ workspacePath, canAICommit, disabled = fa
         <ChevronUp size={14} aria-hidden="true" />
       </button>
       <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" data-pinned-git-flows>
-        {resolvedPinnedFlows.map(({ flow, action }) => (
-          <button
-            key={flowKey(flow)}
-            type="button"
-            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50"
-            disabled={disabled || (flow.kind === 'ai-commit-action' && !canAICommit)}
-            onClick={() => runFlow(flow, action)}
-            aria-label={flow.kind === 'action' ? `Run pinned Action ${action.name}` : `Run pinned AI Commit then ${action.name}`}
-            title={flow.kind === 'action' ? `Run ${action.name}` : `AI Commit, then run ${action.name}`}
-          >
-            {flow.kind === 'action' ? <Zap size={13} aria-hidden="true" /> : <><Bot size={13} aria-hidden="true" /><Link2 size={10} aria-hidden="true" /><Zap size={13} aria-hidden="true" /></>}
-            {!compact ? <span className="max-w-28 truncate">{action.name}</span> : null}
-          </button>
-        ))}
+        {resolvedPinnedFlows.map(({ flow, action }) => {
+          const displayName = flowDisplayName(flow, action)
+          return (
+            <button
+              key={flowKey(flow)}
+              type="button"
+              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50"
+              disabled={disabled || (flow.kind === 'ai-commit-action' && !canAICommit)}
+              onClick={() => runFlow(flow, action)}
+              aria-label={`Run pinned flow ${displayName}`}
+              title={flow.kind === 'action' ? `${displayName}: run ${action.name}` : `${displayName}: AI Commit, then run ${action.name}`}
+            >
+              {flow.kind === 'action' ? <Zap size={13} aria-hidden="true" /> : <><Bot size={13} aria-hidden="true" /><Link2 size={10} aria-hidden="true" /><Zap size={13} aria-hidden="true" /></>}
+              <span className="max-w-28 truncate">{displayName}</span>
+            </button>
+          )
+        })}
       </div>
       {open ? createPortal(
         <div ref={menuRef} id={menuId} role="menu" aria-label="Workspace Actions and flows" className="fixed z-[100] w-[22rem] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 text-left shadow-2xl" style={{ bottom: menuPosition.bottom, right: menuPosition.right }} data-menu-direction="up">
@@ -252,7 +290,7 @@ export function GitActionFlowControl({ workspacePath, canAICommit, disabled = fa
             </div>
           ) : (
             <>
-              {resolvedPinnedFlows.length > 0 ? <div className="border-t border-[var(--app-border)] px-2 py-2"><div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Pinned</div>{resolvedPinnedFlows.map(({ flow, action }) => <div key={flowKey(flow)} className="flex h-9 items-center gap-2"><button type="button" role="menuitem" className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[var(--app-text)]" onClick={() => runFlow(flow, action)}>{flow.kind === 'action' ? <Zap size={13} /> : <><Bot size={13} /><Link2 size={10} /><Zap size={13} /></>}<span className="truncate">{flow.kind === 'action' ? action.name : `AI Commit → ${action.name}`}</span></button><button type="button" className="grid size-7 place-items-center text-[var(--app-text-muted)]" onClick={() => togglePin(flow)} aria-label={`Unpin ${action.name}`}><X size={12} /></button></div>)}</div> : null}
+              {resolvedPinnedFlows.length > 0 ? <div className="border-t border-[var(--app-border)] px-2 py-2"><div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Pinned</div>{resolvedPinnedFlows.map(({ flow, action }) => { const displayName = flowDisplayName(flow, action); return <div key={flowKey(flow)} className="flex h-9 items-center gap-2"><button type="button" role="menuitem" className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[var(--app-text)]" onClick={() => runFlow(flow, action)}>{flow.kind === 'action' ? <Zap size={13} /> : <><Bot size={13} /><Link2 size={10} /><Zap size={13} /></>}<span className="truncate">{displayName}</span></button><button type="button" className="grid size-7 place-items-center text-[var(--app-text-muted)]" onClick={() => unpinFlow(flow)} aria-label={`Unpin ${displayName}`}><X size={12} /></button></div> })}</div> : null}
               {loading ? <div className="flex items-center gap-2 border-t border-[var(--app-border)] px-2 py-3 text-xs text-[var(--app-text-muted)]"><LoaderCircle size={13} className="animate-spin" />Loading Actions…</div> : null}
               {!loading && !error && actions.length === 0 ? <div className="border-t border-[var(--app-border)] px-2 py-3 text-xs text-[var(--app-text-muted)]">No workspace Actions configured.</div> : null}
               {actions.length > 0 ? <div className={cn('border-t border-[var(--app-border)]', actions.length > 5 && 'max-h-[300px] overflow-y-auto [scrollbar-gutter:stable]')} data-action-list-scroll={actions.length > 5 ? 'conditional' : undefined}>{actions.map((action) => {
@@ -260,7 +298,8 @@ export function GitActionFlowControl({ workspacePath, canAICommit, disabled = fa
                 const comboFlow = { kind: 'ai-commit-action', actionId: action.id } satisfies PinnedGitFlow
                 const actionPinned = pinnedFlows.some((flow) => flowKey(flow) === flowKey(actionFlow))
                 const comboPinned = pinnedFlows.some((flow) => flowKey(flow) === flowKey(comboFlow))
-                return <div key={action.id} className="grid gap-1 border-b border-[var(--app-border)] p-2 last:border-b-0"><button type="button" role="menuitem" className="flex min-w-0 items-center gap-2 text-xs text-[var(--app-text)]" onClick={() => { setOpen(false); onActionRun(action) }}><Zap size={13} className="shrink-0" /><span className="min-w-0 flex-1 text-left"><strong className="block truncate font-medium">{action.name}</strong><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]" title={actionOptionsPreview(action)}>{actionOptionsPreview(action)}</span></span><span className="text-[10px] font-semibold uppercase text-[var(--app-primary)]">Run</span></button><div className="flex justify-end gap-1"><button type="button" aria-pressed={actionPinned} className={cn('inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[10px] text-[var(--app-text-muted)]', actionPinned && 'bg-[var(--app-selection-bg)] text-[var(--app-text)]')} onClick={() => togglePin(actionFlow)}><Pin size={11} />Pin</button><button type="button" aria-pressed={comboPinned} className={cn('inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[10px] text-[var(--app-text-muted)]', comboPinned && 'bg-[var(--app-selection-bg)] text-[var(--app-text)]')} onClick={() => togglePin(comboFlow)}><Bot size={11} /><Link2 size={9} /><Zap size={11} />Commit + Pin</button></div></div>
+                const draftForAction = pinDraft?.flow.actionId === action.id ? pinDraft : null
+                return <div key={action.id} className="grid gap-1 border-b border-[var(--app-border)] p-2 last:border-b-0"><button type="button" role="menuitem" className="flex min-w-0 items-center gap-2 text-xs text-[var(--app-text)]" onClick={() => { setOpen(false); onActionRun(action) }}><Zap size={13} className="shrink-0" /><span className="min-w-0 flex-1 text-left"><strong className="block truncate font-medium">{action.name}</strong><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]" title={actionOptionsPreview(action)}>{actionOptionsPreview(action)}</span></span><span className="text-[10px] font-semibold uppercase text-[var(--app-primary)]">Run</span></button>{draftForAction ? <form className="grid gap-1.5 pt-1" data-pin-name-editor onSubmit={(event) => { event.preventDefault(); confirmPin() }}><label className="text-[10px] font-semibold text-[var(--app-text-muted)]" htmlFor={`${menuId}-pin-name`}>{draftForAction.flow.kind === 'action' ? 'Name pinned Action' : 'Name Commit + Action flow'}</label><div className="flex items-center gap-1"><input ref={pinNameInputRef} id={`${menuId}-pin-name`} type="text" value={draftForAction.name} onChange={(event) => setPinDraft({ ...draftForAction, name: event.target.value })} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setPinDraft(null) } }} placeholder="Enter a name" aria-label="Pinned flow name" className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]" /><button type="button" className="h-8 px-2 text-[10px] text-[var(--app-text-muted)]" onClick={() => setPinDraft(null)}>Cancel</button><button type="submit" disabled={!draftForAction.name.trim()} className="h-8 rounded-lg bg-[var(--app-primary)] px-2.5 text-[10px] font-semibold text-[var(--app-primary-text)] disabled:cursor-not-allowed disabled:opacity-50">Pin</button></div><div className="text-[10px] text-[var(--app-text-subtle)]">Press Enter to add it to the Git sidebar.</div></form> : <div className="flex justify-end gap-1"><button type="button" aria-pressed={actionPinned} className={cn('inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[10px] text-[var(--app-text-muted)]', actionPinned && 'bg-[var(--app-selection-bg)] text-[var(--app-text)]')} onClick={() => actionPinned ? unpinFlow(actionFlow) : beginPin(actionFlow)}><Pin size={11} />{actionPinned ? 'Unpin' : 'Pin'}</button><button type="button" aria-pressed={comboPinned} className={cn('inline-flex h-7 items-center gap-1 rounded-md border border-[var(--app-border)] px-2 text-[10px] text-[var(--app-text-muted)]', comboPinned && 'bg-[var(--app-selection-bg)] text-[var(--app-text)]')} onClick={() => comboPinned ? unpinFlow(comboFlow) : beginPin(comboFlow)}><Bot size={11} /><Link2 size={9} /><Zap size={11} />{comboPinned ? 'Unpin flow' : 'Commit + Pin'}</button></div>}</div>
               })}</div> : null}
               {error ? <div className="border-t border-[var(--app-border)] px-2 py-2 text-xs text-[var(--app-danger)]" role="alert">{error}<button type="button" className="ml-2 underline" onClick={() => setRequest((current) => current + 1)}>Retry</button></div> : null}
             </>

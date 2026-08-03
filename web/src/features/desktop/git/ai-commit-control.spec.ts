@@ -41,20 +41,31 @@ test('AI Commit and persistent Actions are distinct, quiet controls with the plu
   assert.ok(actionsButtonStart < source.indexOf('data-pinned-git-flows'), 'the plus control should lead the pinned Git flow row')
 })
 
-test('Actions popup independently runs Actions and pins standalone or AI Commit combo flows', async () => {
+test('Actions popup independently runs Actions and starts named standalone or AI Commit combo pins', async () => {
   const source = await readFile(controlURL, 'utf8')
 
   assert.match(source, /role="menu" aria-label="Workspace Actions and flows"/)
   assert.match(source, /Run an Action now, pin it, or commit changes before it runs\./)
   assert.match(source, /if \(flow\.kind === 'action'\) \{[\s\S]*onActionRun\(action\)/)
-  assert.match(source, /aria-pressed=\{actionPinned\}[\s\S]*<Pin size=\{11\} \/>Pin<\/button>/)
-  assert.match(source, /aria-pressed=\{comboPinned\}[\s\S]*Commit \+ Pin<\/button>/)
-  assert.match(source, /togglePin\(actionFlow\)/)
-  assert.match(source, /togglePin\(comboFlow\)/)
+  assert.match(source, /aria-pressed=\{actionPinned\}[\s\S]*beginPin\(actionFlow\)/)
+  assert.match(source, /aria-pressed=\{comboPinned\}[\s\S]*beginPin\(comboFlow\)/)
   assert.match(source, /kind: 'action', actionId: action\.id/)
   assert.match(source, /kind: 'ai-commit-action', actionId: action\.id/)
   assert.match(source, /savePinnedGitFlows\(workspacePath, next\)/)
   assert.match(source, /swarm\.web\.desktop\.git\.pinned-flows\.v1/)
+})
+
+test('pinning requires an inline name and displays that saved name in the sidebar', async () => {
+  const source = await readFile(controlURL, 'utf8')
+
+  assert.match(source, /data-pin-name-editor/)
+  assert.match(source, /aria-label="Pinned flow name"/)
+  assert.match(source, /onSubmit=\{\(event\) => \{ event\.preventDefault\(\); confirmPin\(\) \}\}/)
+  assert.match(source, /disabled=\{!draftForAction\.name\.trim\(\)\}/)
+  assert.match(source, /if \(!name\) return/)
+  assert.match(source, /\{ \.\.\.pinDraft\.flow, name \}/)
+  assert.match(source, /const displayName = flowDisplayName\(flow, action\)/)
+  assert.match(source, /<span className="max-w-28 truncate">\{displayName\}<\/span>/)
 })
 
 test('pinned AI Commit combos collect inputs and route through commit-first orchestration', async () => {

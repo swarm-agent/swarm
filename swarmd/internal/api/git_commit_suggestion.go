@@ -142,7 +142,16 @@ Authoritative output schema: {"type":"object","additionalProperties":false,"requ
 }
 
 func decodeConfiguredRouterGitCommitSuggestion(raw string) (string, error) {
-	return decodeWorkspaceGitCommitSuggestion(normalizeConfiguredRouterJSONResponse(raw))
+	normalized := normalizeConfiguredRouterJSONResponse(raw)
+	decoder := json.NewDecoder(strings.NewReader(normalized))
+	var first json.RawMessage
+	if err := decoder.Decode(&first); err != nil {
+		return decodeWorkspaceGitCommitSuggestion(normalized)
+	}
+	// Provider text is not a protocol boundary: some models append another JSON
+	// value or commentary after the requested object. Validate and use only the
+	// first complete value so irrelevant trailing output cannot break AI Commit.
+	return decodeWorkspaceGitCommitSuggestion(string(first))
 }
 
 func decodeWorkspaceGitCommitSuggestion(raw string) (string, error) {

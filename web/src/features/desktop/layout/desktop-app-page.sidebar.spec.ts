@@ -181,28 +181,19 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
 })
 
-test('workspace dropdown rows create chats without icons and the standalone message-square precedes worktree', async () => {
+test('sidebar shows the current workspace without a dropdown before chat and worktree actions', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
-  const dropdownStart = source.indexOf('<div ref={workspaceDropdownRef}')
-  const dropdownEnd = source.indexOf('{needsReviewCleanupOpen ?', dropdownStart)
-  const dropdownSource = source.slice(dropdownStart, dropdownEnd)
-  const menuStart = dropdownSource.indexOf('role="menu"')
-  const menuEnd = dropdownSource.indexOf(') : null}', menuStart)
-  const menuSource = dropdownSource.slice(menuStart, menuEnd)
-  const newChatIndex = dropdownSource.indexOf('handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)')
-  const worktreeIndex = dropdownSource.indexOf('openWorktreeSessionModal({')
+  const workspaceLabelIndex = source.indexOf('aria-label="Current workspace"')
+  const sessionGroupsIndex = source.indexOf('{renderSidebarSessionGroups({', workspaceLabelIndex)
+  const workspaceRowSource = source.slice(workspaceLabelIndex, sessionGroupsIndex)
+  const newChatIndex = workspaceRowSource.indexOf('handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)')
+  const worktreeIndex = workspaceRowSource.indexOf('openRouteWorkspaceWorktree()')
 
-  assert.ok(dropdownStart >= 0 && dropdownEnd > dropdownStart)
-  assert.ok(menuStart >= 0 && menuEnd > menuStart)
-  assert.doesNotMatch(dropdownSource, /<select|<option/)
-  assert.match(dropdownSource, /bg-\[var\(--app-surface\)\][^\n]*text-\[var\(--app-text\)\]/)
-  assert.match(dropdownSource, /border-\[var\(--app-border\)\]/)
-  assert.match(menuSource, /role="menuitem"[\s\S]*onClick=\{\(\) => \{[\s\S]*setWorkspaceDropdownOpen\(false\)[\s\S]*handleStartNewSessionInWorkspace\(workspace\.path, workspace\.workspaceName\)/)
-  assert.match(menuSource, /aria-label=\{`New chat in \$\{workspace\.workspaceName\}`\}/)
-  assert.doesNotMatch(menuSource, /<Plus/)
+  assert.ok(workspaceLabelIndex >= 0 && sessionGroupsIndex > workspaceLabelIndex)
+  assert.match(workspaceRowSource, /aria-label="Current workspace"[\s\S]*\{topWorkspaceLabel\}/)
+  assert.doesNotMatch(workspaceRowSource, /aria-haspopup|aria-expanded|role="menu"|workspaceDropdown/)
   assert.ok(newChatIndex >= 0 && worktreeIndex > newChatIndex)
-  assert.match(dropdownSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<MessageSquare[\s\S]*openWorktreeSessionModal\(\{/)
-  assert.doesNotMatch(dropdownSource, /handleWorkspaceSelect|menuitemradio|aria-checked|event\.stopPropagation\(\)/)
+  assert.match(workspaceRowSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<MessageSquare[\s\S]*openRouteWorkspaceWorktree\(\)/)
 })
 
 test('sidebar metadata icons use semantic colors from the active theme', async () => {

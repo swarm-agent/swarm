@@ -77,7 +77,6 @@ import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-
 import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
-import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
@@ -2617,7 +2616,6 @@ export function DesktopAppPage() {
   const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
-  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
@@ -2635,8 +2633,6 @@ export function DesktopAppPage() {
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
-  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
-  const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
   const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
   const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | 'rename' | undefined>>({})
   const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false)
@@ -2656,27 +2652,6 @@ export function DesktopAppPage() {
   const routedActivationWorkspaceRef = useRef('')
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
-  useEffect(() => {
-    if (!workspaceDropdownOpen) return
-
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null
-      if (target && !workspaceDropdownRef.current?.contains(target)) {
-        setWorkspaceDropdownOpen(false)
-      }
-    }
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setWorkspaceDropdownOpen(false)
-    }
-
-    document.addEventListener('pointerdown', handlePointerDown)
-    document.addEventListener('keydown', handleEscape)
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [workspaceDropdownOpen])
-
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -3193,7 +3168,6 @@ export function DesktopAppPage() {
   const topWorkspaceSlug = topWorkspacePath
     ? workspaceSlugByPath.get(topWorkspacePath) ?? workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel })
     : routeWorkspaceSlug
-  const topWorkspaceOptions = useMemo(() => mergedSidebarWorkspaceEntries, [mergedSidebarWorkspaceEntries])
   const topWorkspaceGitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(topWorkspacePath),
     queryFn: () => fetchGitStatus(topWorkspacePath),
@@ -3842,18 +3816,6 @@ export function DesktopAppPage() {
     setMobileSidebarOpen(false)
   }, [])
 
-  const handleOpenWorkspacePicker = useCallback(() => {
-    setWorkspacePickerOpen(true)
-    setMobileSidebarOpen(false)
-    setWorkspaceDropdownOpen(false)
-  }, [])
-
-  const handleSelectWorkspaceFromPicker = useCallback((workspace: WorkspaceEntry) => {
-    setWorkspacePickerOpen(false)
-    handleOpenWorkspace(workspace.path, workspace.workspaceName)
-    setComposerFocusSignal((current) => current + 1)
-  }, [handleOpenWorkspace])
-
   const canStartNewSession = Boolean(topWorkspacePath)
   const canReturnToPreviousChat = Boolean(previousChatSessionId && sessionById.has(previousChatSessionId))
   useEffect(() => {
@@ -3881,13 +3843,6 @@ export function DesktopAppPage() {
       const insideDialog = Boolean(element?.closest('[role="dialog"]'))
       const insideChatComposer = shortcutTargetIsChatComposer(target)
       const targetBlocksDesktopShortcuts = shortcutTargetBlocksDesktopShortcuts(target)
-      const normalizedKey = event.key.toLowerCase()
-      const normalizedCode = event.code.toLowerCase()
-      if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (normalizedKey === 'w' || normalizedCode === 'keyw') && !insideDialog) {
-        event.preventDefault()
-        handleOpenWorkspacePicker()
-        return
-      }
       if (desktopShortcutMatches(event, 'n') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
@@ -3925,7 +3880,7 @@ export function DesktopAppPage() {
 
     window.addEventListener('keydown', handleDesktopShortcut)
     return () => window.removeEventListener('keydown', handleDesktopShortcut)
-  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
+  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
 
   const quickActions = useMemo<DesktopQuickActionItem[]>(() => [
     {
@@ -3937,20 +3892,6 @@ export function DesktopAppPage() {
       enabled: true,
       icon: Keyboard,
       onRun: handleOpenQuickActions,
-    },
-    {
-      id: 'workspace-picker',
-      label: 'Switch workspace',
-      description: 'Open the numbered workspace picker and press 1–9 or 0 to switch.',
-      keys: ['Alt', 'W'],
-      availability: 'Available anywhere in Desktop unless another modal owns the shortcut.',
-      enabled: topWorkspaceOptions.length > 0,
-      disabledReason: 'No workspaces are available.',
-      icon: Folder,
-      onRun: () => {
-        setQuickActionsOpen(false)
-        handleOpenWorkspacePicker()
-      },
     },
     {
       id: 'new-session',
@@ -4014,7 +3955,7 @@ export function DesktopAppPage() {
         handleOpenPreviousChat()
       },
     },
-  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, topWorkspaceLabel, topWorkspaceOptions.length, topWorkspacePath])
+  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, topWorkspaceLabel, topWorkspacePath])
 
 
   const runDesktopUpdate = useCallback(async () => {
@@ -4801,44 +4742,12 @@ export function DesktopAppPage() {
             <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
               <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
                   <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
-                    <div ref={workspaceDropdownRef} className="relative min-w-0">
-                      <button
-                        type="button"
-                        className="flex h-7 w-full min-w-0 items-center justify-between gap-2 rounded border border-transparent bg-transparent px-1 text-left text-[11px] font-semibold text-[var(--app-text)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-70"
-                        onClick={() => setWorkspaceDropdownOpen((open) => !open)}
-                        disabled={topWorkspaceOptions.length === 0}
-                        aria-label="Workspace"
-                        aria-haspopup="menu"
-                        aria-expanded={workspaceDropdownOpen}
-                        title={topWorkspacePath || 'Default Workspace'}
-                      >
-                        <span className="min-w-0 truncate">{topWorkspaceLabel}</span>
-                        <ChevronDown size={12} strokeWidth={1.8} className={cn('shrink-0 text-[var(--app-text-subtle)] transition-transform', workspaceDropdownOpen && 'rotate-180')} />
-                      </button>
-                      {workspaceDropdownOpen ? (
-                        <div
-                          role="menu"
-                          aria-label="Workspaces"
-                          className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-full w-max max-w-[280px] overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-[var(--app-text)] shadow-xl shadow-black/30"
-                        >
-                          {topWorkspaceOptions.map((workspace) => (
-                            <button
-                              key={workspace.path}
-                              type="button"
-                              role="menuitem"
-                              className="flex min-w-[190px] w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[11px] font-medium text-[var(--app-text-muted)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
-                              onClick={() => {
-                                setWorkspaceDropdownOpen(false)
-                                handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)
-                              }}
-                              aria-label={`New chat in ${workspace.workspaceName}`}
-                              title={`New chat in ${workspace.workspaceName}`}
-                            >
-                              <span className="min-w-0 flex-1 truncate">{workspace.workspaceName}</span>
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
+                    <div
+                      className="flex h-7 min-w-0 items-center px-1 text-left text-[11px] font-semibold text-[var(--app-text)]"
+                      aria-label="Current workspace"
+                      title={topWorkspacePath || 'Default Workspace'}
+                    >
+                      <span className="min-w-0 truncate">{topWorkspaceLabel}</span>
                     </div>
                     <button
                       type="button"
@@ -5088,14 +4997,6 @@ export function DesktopAppPage() {
         actions={quickActions}
         onClose={() => setQuickActionsOpen(false)}
         onOpenShortcutsSettings={() => handleOpenSettingsTab('shortcuts')}
-      />
-
-      <DesktopWorkspacePicker
-        open={workspacePickerOpen}
-        workspaces={topWorkspaceOptions}
-        currentWorkspacePath={topWorkspacePath}
-        onClose={() => setWorkspacePickerOpen(false)}
-        onSelect={handleSelectWorkspaceFromPicker}
       />
 
       <SearchChatsModal

@@ -70,7 +70,7 @@ func TestWorkspaceGitCommitSuggestionInstructionsRequestBriefMessageWithSafetyLi
 	}
 }
 
-func TestDecodeWorkspaceGitCommitSuggestionAcceptsSingleCompleteJSONFence(t *testing.T) {
+func TestDecodeConfiguredRouterGitCommitSuggestionAcceptsSingleCompleteJSONFence(t *testing.T) {
 	raw := "```json\n{\"message\":\"feat: add AI commit suggestions\"}\n```"
 	message, err := decodeConfiguredRouterGitCommitSuggestion(raw)
 	if err != nil {
@@ -81,7 +81,36 @@ func TestDecodeWorkspaceGitCommitSuggestionAcceptsSingleCompleteJSONFence(t *tes
 	}
 }
 
-func TestDecodeWorkspaceGitCommitSuggestionRejectsPartialOrCommentaryFences(t *testing.T) {
+func TestDecodeConfiguredRouterGitCommitSuggestionIgnoresTrailingProviderOutput(t *testing.T) {
+	for name, raw := range map[string]string{
+		"json":       `{"message":"feat: add AI commit suggestions"} {"message":"ignore me"}`,
+		"commentary": "{\"message\":\"feat: add AI commit suggestions\"}\nDone.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			message, err := decodeConfiguredRouterGitCommitSuggestion(raw)
+			if err != nil {
+				t.Fatalf("decode suggestion with trailing provider output: %v", err)
+			}
+			if message != "feat: add AI commit suggestions" {
+				t.Fatalf("message = %q", message)
+			}
+		})
+	}
+}
+
+func TestDecodeConfiguredRouterGitCommitSuggestionStillRejectsInvalidFirstValue(t *testing.T) {
+	for _, raw := range []string{
+		`{"message":"ok","extra":true} {"message":"valid but second"}`,
+		`{} {"message":"valid but second"}`,
+		`{"message":"first\nsecond"} {"message":"valid but second"}`,
+	} {
+		if _, err := decodeConfiguredRouterGitCommitSuggestion(raw); err == nil {
+			t.Fatalf("expected invalid first suggestion failure for %q", raw)
+		}
+	}
+}
+
+func TestDecodeConfiguredRouterGitCommitSuggestionRejectsPartialOrCommentaryFences(t *testing.T) {
 	for _, raw := range []string{
 		"```json\n{\"message\":\"ok\"}",
 		"commentary\n```json\n{\"message\":\"ok\"}\n```",
