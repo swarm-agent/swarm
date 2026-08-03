@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, Sparkles, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
 import { WorkspaceStatus } from '../launcher/components/workspace-status'
 import { WorkspaceFolderTree } from '../launcher/components/workspace-folder-tree'
 import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory } from '../launcher/components/workspace-editor-modal'
-import { WorkspaceDefinitionStatus } from '../launcher/components/workspace-definition-status'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../launcher/services/workspace-route'
 import { formatWorkspaceDirectories, formatWorkspacePath } from '../launcher/services/workspace-format'
 import type { WorkspaceBrowseResult, WorkspaceDiscoverEntry, WorkspaceEntry } from '../launcher/types/workspace'
@@ -228,9 +227,6 @@ function PinnedWorkspaceCard({ workspace, current, busy, dragging, onOpen, onEdi
           Edit
         </button>
         <ChevronRight size={16} className="text-[var(--app-text-subtle)] transition-transform group-hover:translate-x-0.5" />
-      </div>
-      <div className="col-span-full ml-[6.5rem] max-sm:ml-0">
-        <WorkspaceDefinitionStatus workspace={workspace} compact />
       </div>
     </div>
   )
@@ -979,18 +975,6 @@ export function WorkspaceHomePage() {
                   <Settings size={14} />
                   <span className="hidden sm:inline">Settings</span>
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void refreshWorkspaceDefinitions()}
-                  disabled={personalizing || workspaces.length === 0}
-                  className="size-9 rounded-md bg-[var(--app-surface)] p-0 shadow-sm sm:w-auto sm:px-3"
-                  aria-label="Personalize workspaces"
-                  title="Start a fresh Router session for every saved workspace"
-                >
-                  <Sparkles size={14} className={personalizing ? 'animate-pulse' : undefined} />
-                  <span className="hidden sm:inline">{personalizing ? 'Starting…' : 'Personalize'}</span>
-                </Button>
                 <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={refreshing} className="size-9 rounded-md bg-[var(--app-surface)] p-0 shadow-sm sm:w-auto sm:px-3" aria-label="Refresh workspaces">
                   <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
                   <span className="hidden sm:inline">Refresh</span>
@@ -1016,7 +1000,6 @@ export function WorkspaceHomePage() {
             ) : null}
 
             {!loading && actionError ? <WorkspaceStatus kind="error" title="Workspace action failed" message={actionError} /> : null}
-            {!loading && personalizationMessage ? <WorkspaceStatus kind="success" title="Workspace personalization started" message={personalizationMessage} /> : null}
 
             {!loading && !loadError ? (
               <div className="flex flex-col gap-12">
@@ -1154,8 +1137,17 @@ export function WorkspaceHomePage() {
         browserLoading={browserLoading}
         browserError={browserError}
         canRemoveLinkedDirectories={Boolean(modalState)}
-        error={modalError}
+        error={modalError || (personalizationMessage ? actionError : null)}
         saving={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
+        workspace={editingWorkspace}
+        personalizing={personalizing}
+        personalizationMessage={personalizationMessage}
+        onPersonalize={() => {
+          setModalError(null)
+          void refreshWorkspaceDefinitions().catch((err) => {
+            setModalError(err instanceof Error ? err.message : 'Failed to personalize workspaces')
+          })
+        }}
         onWorkspacePathChange={(value) => setModalState((current) => (current ? { ...current, workspacePath: value } : current))}
         onPickWorkspaceFolder={pickWorkspaceFolder}
         onNameChange={setDraftNameTouched}

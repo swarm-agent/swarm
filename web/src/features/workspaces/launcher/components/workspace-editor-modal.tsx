@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowUp, Check, ChevronDown, ChevronRight, Folder, FolderPlus, Home, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, ChevronRight, Folder, FolderPlus, Home, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Card } from '../../../../components/ui/card'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -8,6 +8,7 @@ import { cn } from '../../../../lib/cn'
 import { formatWorkspacePath } from '../services/workspace-format'
 import { createWorkspaceThemeStyle, WORKSPACE_THEME_OPTIONS } from '../services/workspace-theme'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../types/workspace'
+import { WorkspaceDefinitionStatus } from './workspace-definition-status'
 
 export interface WorkspaceEditorAvailableDirectory {
   path: string
@@ -33,6 +34,10 @@ interface WorkspaceEditorModalProps {
   canRemoveLinkedDirectories?: boolean
   error: string | null
   saving: boolean
+  workspace?: WorkspaceEntry | null
+  personalizing?: boolean
+  personalizationMessage?: string | null
+  onPersonalize?: () => void
   onWorkspacePathChange: (value: string) => void
   onPickWorkspaceFolder?: (path: string) => void
   onNameChange: (value: string) => void
@@ -129,6 +134,10 @@ export function WorkspaceEditorModal({
   canRemoveLinkedDirectories = false,
   error,
   saving,
+  workspace = null,
+  personalizing = false,
+  personalizationMessage = null,
+  onPersonalize,
   onWorkspacePathChange,
   onPickWorkspaceFolder,
   onNameChange,
@@ -611,6 +620,39 @@ export function WorkspaceEditorModal({
                   </Button>
                 </div>
               </section>
+
+              {mode === 'edit' && workspace ? (
+                <section className="grid gap-3">
+                  <div className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                    <div className="grid gap-1">
+                      <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Workspace definition</h3>
+                      <p className={helperTextClass}>Router uses this definition to personalize how Swarm works here. Refreshing starts a fresh Router session for every saved workspace.</p>
+                    </div>
+                    {onPersonalize ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={onPersonalize}
+                        disabled={personalizing || workspace.definitionStatus === 'pending'}
+                        title="Start a fresh Router session for saved workspaces"
+                      >
+                        <Sparkles size={14} className={personalizing ? 'animate-pulse' : undefined} />
+                        {personalizing ? 'Starting…' : workspace.definition ? 'Repersonalize' : 'Personalize'}
+                      </Button>
+                    ) : null}
+                  </div>
+                  <WorkspaceDefinitionStatus workspace={workspace} />
+                  {!workspace.definitionStatus ? (
+                    <p className={helperTextClass}>No workspace definition has been generated yet.</p>
+                  ) : null}
+                  {personalizationMessage ? (
+                    <p role="status" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-xs leading-5 text-[var(--app-text-muted)]">
+                      {personalizationMessage}
+                    </p>
+                  ) : null}
+                </section>
+              ) : null}
 
               <section className="grid gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Theme</h3>
