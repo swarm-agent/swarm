@@ -744,17 +744,17 @@ func normalizeRoutedSessionMedia(req routedSessionStartRequest) ([]routedSession
 
 func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3PrimaryBinding, clientRequestID string, media []routedSessionMediaRequest) (string, error) {
 	raw, err := json.Marshal(struct {
-		Input, ClientRequestID, AgentName                         string
-		WorkspacePath, HostWorkspacePath, RuntimeWorkspacePath   string
-		WorkspaceBindingID, SwarmID, TargetKind, TargetRelationship string
+		Input, ClientRequestID, AgentName                                 string
+		WorkspacePath, HostWorkspacePath, RuntimeWorkspacePath            string
+		WorkspaceBindingID, SwarmID, TargetKind, TargetRelationship       string
 		CanonicalBindingID, RuntimeSwarmID, CanonicalRuntimeWorkspacePath string
-		SourceWorkspaceID, SourceWorkspaceName, SourceWorkspacePath      string
-		SourceWorkspaceGeneration                                        int64
-		PlacementGeneration, BindingGeneration                    int
-		ManagedWorktreeRequested                                  *bool
-		PlanModeRequested                                         *bool
-		Metadata                                                  map[string]any
-		Media                                                     []routedSessionMediaRequest
+		SourceWorkspaceID, SourceWorkspaceName, SourceWorkspacePath       string
+		SourceWorkspaceGeneration                                         int64
+		PlacementGeneration, BindingGeneration                            int
+		ManagedWorktreeRequested                                          *bool
+		PlanModeRequested                                                 *bool
+		Metadata                                                          map[string]any
+		Media                                                             []routedSessionMediaRequest
 	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media})
 	if err != nil {
 		return "", err

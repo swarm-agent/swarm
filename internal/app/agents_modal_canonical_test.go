@@ -18,7 +18,7 @@ func TestMapCanonicalAgentModelSettingsPreservesDaemonAuthority(t *testing.T) {
 		},
 	}
 	resolved := providerModelResolverResult{
-		ProviderIDs:     []string{"codex", "anthropic"},
+		ProviderIDs:      []string{"codex", "anthropic"},
 		ModelsByProvider: map[string][]string{"codex": {"action", "compact", "router"}},
 		CatalogByKey: map[string]client.ModelCatalogRecord{
 			"codex/action": {Provider: "codex", Model: "action"},

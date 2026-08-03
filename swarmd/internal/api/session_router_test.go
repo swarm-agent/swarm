@@ -104,16 +104,20 @@ func TestSessionRouterOnceAcceptsSingleCompleteJSONFence(t *testing.T) {
 	}
 }
 
-type sessionRouterWorkspace struct { path, name, definition string }
+type sessionRouterWorkspace struct{ path, name, definition string }
 
 func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunner, candidates []sessionRouterWorkspace) (*Server, identity.Principal, []pebblestore.WorkspaceEntry) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-router.pebble"))
-	if err != nil { t.Fatalf("open store: %v", err) }
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
 	t.Cleanup(func() { _ = store.Close() })
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "router-user", AccountScopeID: "router-account", AccountScopeSource: identity.AccountScopeSourceServerState}
 	events, err := pebblestore.NewEventLog(store)
-	if err != nil { t.Fatalf("create event log: %v", err) }
+	if err != nil {
+		t.Fatalf("create event log: %v", err)
+	}
 	catalogStore := pebblestore.NewModelCatalogStore(store)
 	if err := catalogStore.SetRecord(pebblestore.ModelCatalogRecord{Provider: runner.id, Model: "router-model", ThinkingOptions: []string{"high"}, ServiceTiers: []string{"priority", "fast"}}); err != nil {
 		t.Fatalf("seed Router model catalog: %v", err)
@@ -123,7 +127,9 @@ func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunn
 	entries := make([]pebblestore.WorkspaceEntry, 0, len(candidates))
 	for _, candidate := range candidates {
 		entry, addErr := workspaceStore.AddForAccount(principal.AccountScopeID, candidate.path, candidate.name)
-		if addErr != nil { t.Fatalf("add workspace: %v", addErr) }
+		if addErr != nil {
+			t.Fatalf("add workspace: %v", addErr)
+		}
 		pending, _ := workspaceStore.MarkDefinitionPendingForAccount(principal.AccountScopeID, entry.Path)
 		entry, _, _ = workspaceStore.CompleteDefinitionForAccount(principal.AccountScopeID, entry.Path, pending.DefinitionGeneration, candidate.definition, 1)
 		entries = append(entries, entry)
@@ -131,9 +137,14 @@ func newSessionRouterTestServer(t *testing.T, runner *sessionRouterRecordingRunn
 	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
 	agentSettings := testAgentModelSettingsRecord(principal.AccountScopeID)
 	agentSettings.SystemAgents.Router = pebblestore.AgentModelAssignment{Provider: runner.id, Model: "router-model", Thinking: "high", ServiceTier: "priority"}
-	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil { t.Fatalf("set Router settings: %v", err) }
+	if _, err := agentSettingsStore.PutForAccount(agentSettings); err != nil {
+		t.Fatalf("set Router settings: %v", err)
+	}
 	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	if err := agents.EnsureDefaults(); err != nil { t.Fatalf("ensure agents: %v", err) }
-	providers := registry.New(); providers.RegisterRunner(runner)
+	if err := agents.EnsureDefaults(); err != nil {
+		t.Fatalf("ensure agents: %v", err)
+	}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
 	return &Server{workspace: workspace.NewService(workspaceStore), providers: providers, agentModelSettings: agentmodelsettings.NewService(agentSettingsStore), model: modelService, agents: agents}, principal, entries
 }

@@ -83,7 +83,7 @@ func TestResolveAgentToolContractForcesTaskOffForEverySubagent(t *testing.T) {
 			Mode: agentruntime.ModeSubagent,
 			ToolContract: &pebblestore.AgentToolContract{
 				Preset: preset,
-				Tools: map[string]pebblestore.AgentToolConfig{"task": {Enabled: pebblestore.BoolPtr(true)}},
+				Tools:  map[string]pebblestore.AgentToolConfig{"task": {Enabled: pebblestore.BoolPtr(true)}},
 			},
 		}
 		resolved, compiled, disabled, err := svc.ResolveAgentToolContract(profile)
