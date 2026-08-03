@@ -467,7 +467,53 @@ export function AgentModelControl({
                   <div className="grid gap-1 min-[480px]:grid-cols-2 min-[900px]:grid-cols-1">
                     {section.items.map(({ name, profile }) => {
                       const selected = name === draftAgentName
-                      return <button key={name} type="button" onClick={() => chooseAgent(name, profile)} aria-pressed={selected} className={`group flex w-full items-center rounded-lg border px-2.5 py-2 text-left text-xs transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}><span className="min-w-0 flex-1 truncate font-semibold">{displayAgentName(name)}</span></button>
+                      const assignment = name === SWARM_AGENT_NAME
+                        ? agentModelSettingsQuery.data?.swarm.action ?? null
+                        : name === COMPACT_AGENT_NAME
+                          ? compactSettings
+                          : name === FINDER_AGENT_NAME
+                            ? finderSettings
+                            : name === CODER_AGENT_NAME
+                              ? coderSettings
+                              : name === DESIGNER_AGENT_NAME
+                                ? designerSettings
+                                : name === ROUTER_AGENT_NAME
+                                  ? routerSettings
+                                  : profile
+                      const model = assignment?.model.trim() ?? ''
+                      const thinking = normalizeThinking(assignment?.thinking ?? '')
+                      const configuredServiceTier = name === SWARM_AGENT_NAME
+                        ? agentModelSettingsQuery.data?.swarm.action.serviceTier ?? ''
+                        : name === COMPACT_AGENT_NAME
+                          ? compactSettings.serviceTier
+                          : name === FINDER_AGENT_NAME
+                            ? finderSettings.serviceTier
+                            : name === CODER_AGENT_NAME
+                              ? coderSettings.serviceTier
+                              : name === DESIGNER_AGENT_NAME
+                                ? designerSettings.serviceTier
+                                : name === ROUTER_AGENT_NAME
+                                  ? routerSettings.serviceTier
+                                  : ''
+                      const serviceTier = normalizeDraftServiceTier(assignment?.provider ?? '', configuredServiceTier)
+                      const enabledDetails = [thinking !== 'off' ? thinking : '', serviceTier].filter(Boolean)
+                      return (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => chooseAgent(name, profile)}
+                          aria-pressed={selected}
+                          className={`group flex w-full flex-col gap-1.5 rounded-lg border px-2.5 py-2.5 text-left text-xs transition ${selected ? 'border-[var(--app-primary)] bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
+                        >
+                          <span className="w-full truncate font-semibold">{displayAgentName(name)}</span>
+                          <span className="w-full truncate font-mono text-[10px] text-[var(--app-text-subtle)]" title={model || 'Model not configured'}>
+                            {model || 'Model not configured'}
+                          </span>
+                          {enabledDetails.length > 0 ? (
+                            <span className="w-full truncate text-[10px] text-[var(--app-text-muted)]">{enabledDetails.join(' · ')}</span>
+                          ) : null}
+                        </button>
+                      )
                     })}
                   </div>
                 </section>

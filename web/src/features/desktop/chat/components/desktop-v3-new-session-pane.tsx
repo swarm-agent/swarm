@@ -39,6 +39,8 @@ export interface DesktopV3NewSessionPaneProps {
   initialPrompt?: string
   initialWorktreeRequested?: boolean
   initialPlanModeRequested?: boolean
+  agentSettingsOpenSignal?: number
+  agentSettingsInitialAgent?: string
 }
 
 /**
@@ -55,6 +57,8 @@ export function DesktopV3NewSessionPane({
   initialPrompt = '',
   initialWorktreeRequested = false,
   initialPlanModeRequested = false,
+  agentSettingsOpenSignal = 0,
+  agentSettingsInitialAgent = '',
 }: DesktopV3NewSessionPaneProps) {
   const queryClient = useQueryClient()
   const agentStateQuery = useQuery(agentStateQueryOptions())
@@ -334,6 +338,8 @@ export function DesktopV3NewSessionPane({
           thinking={actionModel?.thinking ?? ''}
           modelControlDetail={actionModel ? `${actionModel.provider}/${actionModel.model}` : 'Swarm action model'}
           modelStatusLabel="Waiting…"
+          agentSettingsOpenSignal={agentSettingsOpenSignal}
+          agentSettingsInitialAgent={agentSettingsInitialAgent}
           onConfirmAgentSettings={handleConfirmAgentSettings}
           agentModelControlBusy={agentModelSaving}
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}

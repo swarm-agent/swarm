@@ -4969,6 +4969,8 @@ export function DesktopAppPage() {
             initialPrompt={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.prompt : undefined}
             initialWorktreeRequested={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.worktreeRequested : requestedNewWorktree}
             initialPlanModeRequested={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
+            agentSettingsOpenSignal={agentSettingsOpenSignal}
+            agentSettingsInitialAgent={requestedAgentName}
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
           />
