@@ -55,6 +55,66 @@ func TestTaskLaunchPermissionForwardsCanonicalApprovedArguments(t *testing.T) {
 	}
 }
 
+func TestApprovedTaskLaunchPermissionTransitionsToCanonicalTaskStream(t *testing.T) {
+	permission := taskLaunchTestPermission()
+	permission.Status = "approved"
+	permission.Decision = "allow_once"
+	state := NewState()
+	state.Session.ID = permission.SessionID
+	state.Permissions.Records = []PermissionTimelineItem{{Record: permission, GlobalSeq: 1}}
+	state.Tools[permission.CallID] = ToolTimelineItem{
+		ID:        permission.CallID,
+		CallID:    permission.CallID,
+		GlobalSeq: 2,
+		Name:      "task",
+		Status:    "running",
+		TaskStream: &TaskStreamState{
+			PathID:        "tool.task.stream.v2",
+			Status:        "running",
+			LaunchCount:   1,
+			LaunchOrder:   []string{"child-1"},
+			LaunchesByKey: map[string]map[string]any{"child-1": {"launch_index": 1, "subagent": "finder", "assignment_label": "Test one Finder delegation", "status": "running", "current_tool": "search"}},
+		},
+	}
+
+	rows := NewPage(nil, testPageStyles()).renderRows(state, 100, testPageStyles())
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	text := rendered.String()
+	for _, want := range []string{"SUBAGENT STREAM", "Test one Finder delegation", "@finder", "current: search"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("approved task launch did not transition to canonical stream %q:\n%s", want, text)
+		}
+	}
+	for _, stale := range []string{"Launch 2 subagents", "Resolved · Approved once", "RESOLVED"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("approved task launch kept stale permission content %q:\n%s", stale, text)
+		}
+	}
+}
+
+func TestResolvedTaskLaunchPermissionRemainsUntilCanonicalTaskStreamArrives(t *testing.T) {
+	permission := taskLaunchTestPermission()
+	permission.Status = "approved"
+	permission.Decision = "allow_once"
+	state := NewState()
+	state.Session.ID = permission.SessionID
+	state.Permissions.Records = []PermissionTimelineItem{{Record: permission, GlobalSeq: 1}}
+
+	rows := NewPage(nil, testPageStyles()).renderRows(state, 100, testPageStyles())
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	if text := rendered.String(); !strings.Contains(text, "Resolved · Approved once") || !strings.Contains(text, "RESOLVED") {
+		t.Fatalf("resolved task permission disappeared before the task stream arrived:\n%s", text)
+	}
+}
+
 func TestTaskLaunchPermissionTakesFocusOverOtherPendingPermission(t *testing.T) {
 	taskPermission := taskLaunchTestPermission()
 	ordinary := client.PermissionRecord{ID: "permission-read", SessionID: taskPermission.SessionID, ToolName: "functions.read", Requirement: "tool", Mode: "auto", Status: "pending", ToolArguments: `{"path":"README.md"}`}

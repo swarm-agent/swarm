@@ -2485,6 +2485,9 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		items = append(items, timelineRenderItem{kind: "reasoning", seq: segment.GlobalSeq, createdAt: segment.StartedAt, order: len(items), reasoning: segment})
 	}
 	for _, permission := range permissions {
+		if taskPermissionReplacedByTool(permission.Record, items) {
+			continue
+		}
 		createdAt := firstPositiveInt64(permission.Record.PermissionRequestedAt, permission.Record.CreatedAt)
 		items = append(items, timelineRenderItem{kind: "permission", seq: permission.GlobalSeq, createdAt: createdAt, order: len(items), permission: permission})
 	}
@@ -2640,6 +2643,25 @@ func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []Permission
 			return true
 		}
 		if toolName == "task" && isTaskLaunchPermission(record) {
+			// While approval is pending, the permission card owns this timeline
+			// position. Once approved, the canonical task stream replaces it so
+			// live subagent cards and their animation can render.
+			return permissionPending(record)
+		}
+	}
+	return false
+}
+
+func taskPermissionReplacedByTool(record client.PermissionRecord, items []timelineRenderItem) bool {
+	if permissionPending(record) || !isTaskLaunchPermission(record) {
+		return false
+	}
+	callID := strings.TrimSpace(record.CallID)
+	if callID == "" {
+		return false
+	}
+	for _, item := range items {
+		if item.kind == "tool" && normalizeToolDisplayName(item.tool.Name) == "task" && strings.TrimSpace(item.tool.CallID) == callID {
 			return true
 		}
 	}
