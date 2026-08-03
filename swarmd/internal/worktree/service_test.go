@@ -242,6 +242,84 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestTaskIntegrationSkipsAlreadyIntegratedCommitAndAppliesRemainingCommit(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	childPath := filepath.Join(t.TempDir(), "child")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/partial-batch", childPath, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childPath, "first.txt"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(childPath, "add", "first.txt")
+	_, _ = runGit(childPath, "commit", "-m", "first child commit")
+	first, _ := runGit(childPath, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(childPath, "second.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(childPath, "add", "second.txt")
+	_, _ = runGit(childPath, "commit", "-m", "second child commit")
+	second, _ := runGit(childPath, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent context\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "parent.txt")
+	_, _ = runGit(repo, "commit", "-m", "parent context")
+	if _, err := runGit(repo, "cherry-pick", first); err != nil {
+		t.Fatalf("integrate first child commit fixture: %v", err)
+	}
+	parentHead, _ := runGit(repo, "rev-parse", "HEAD")
+	if parentHead == first {
+		t.Fatal("fixture must use a patch-equivalent cherry-pick with a distinct commit id")
+	}
+
+	svc := &Service{}
+	plan, err := svc.PrepareTaskIntegration(repo, parentHead, []TaskIntegrationChild{{SessionID: "partial-batch", BaseCommit: base, HeadCommit: second}})
+	if err != nil {
+		t.Fatalf("PrepareTaskIntegration: %v", err)
+	}
+	if got := strings.Join(plan.Commits, " "); got != second {
+		t.Fatalf("required commits = %q, want only %s", got, second)
+	}
+	if got := strings.Join(plan.AlreadyIntegratedCommits, " "); got != first {
+		t.Fatalf("already integrated commits = %q, want %s", got, first)
+	}
+	if len(plan.Entries) != 1 || strings.Join(plan.Entries[0].Commits, " ") != second || strings.Join(plan.Entries[0].AlreadyIntegratedCommits, " ") != first {
+		t.Fatalf("integration entry = %#v", plan.Entries)
+	}
+
+	result, err := svc.ApplyTaskIntegration(repo, plan)
+	if err != nil {
+		t.Fatalf("ApplyTaskIntegration: %v", err)
+	}
+	if result.ResultingParentHead == parentHead {
+		t.Fatalf("parent HEAD did not advance: %#v", result)
+	}
+	if content, err := os.ReadFile(filepath.Join(repo, "second.txt")); err != nil || string(content) != "second\n" {
+		t.Fatalf("remaining commit content = %q, %v", content, err)
+	}
+	status, _ := runGit(repo, "status", "--porcelain=v1")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("parent left dirty after integration: %q", status)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "CHERRY_PICK_HEAD")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cherry-pick state remains after integration: %v", err)
+	}
+}
+
 func TestApplyTaskIntegrationPreservesAuthorAndUsesConfiguredCommitter(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {

@@ -18,6 +18,7 @@ import (
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/lock"
+	"swarm/packages/swarmd/internal/sessionreview"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
@@ -117,18 +118,20 @@ type TaskIntegrationChild struct {
 }
 
 type TaskIntegrationEntry struct {
-	SessionID  string   `json:"session_id"`
-	BaseCommit string   `json:"base_commit"`
-	HeadCommit string   `json:"head_commit"`
-	Commits    []string `json:"commits"`
-	Files      []string `json:"files"`
+	SessionID                string   `json:"session_id"`
+	BaseCommit               string   `json:"base_commit"`
+	HeadCommit               string   `json:"head_commit"`
+	Commits                  []string `json:"commits"`
+	AlreadyIntegratedCommits []string `json:"already_integrated_commits,omitempty"`
+	Files                    []string `json:"files"`
 }
 
 type TaskIntegrationPlan struct {
-	ParentHead string                 `json:"parent_head"`
-	Entries    []TaskIntegrationEntry `json:"entries"`
-	Commits    []string               `json:"commits"`
-	Overlaps   []string               `json:"overlaps,omitempty"`
+	ParentHead               string                 `json:"parent_head"`
+	Entries                  []TaskIntegrationEntry `json:"entries"`
+	Commits                  []string               `json:"commits"`
+	AlreadyIntegratedCommits []string               `json:"already_integrated_commits,omitempty"`
+	Overlaps                 []string               `json:"overlaps,omitempty"`
 }
 
 type TaskIntegrationResult struct {
@@ -476,9 +479,23 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 		if err != nil {
 			return TaskIntegrationPlan{}, fmt.Errorf("list child %q commits: %w", child.SessionID, err)
 		}
-		commits := strings.Fields(commitText)
-		if len(commits) == 0 {
+		childCommits := strings.Fields(commitText)
+		if len(childCommits) == 0 {
 			return TaskIntegrationPlan{}, fmt.Errorf("child %q has no commits", child.SessionID)
+		}
+		commits := make([]string, 0, len(childCommits))
+		alreadyIntegrated := make([]string, 0, len(childCommits))
+		for _, commit := range childCommits {
+			integrated, classifyErr := taskCommitAlreadyIntegrated(parentPath, plan.ParentHead, commit)
+			if classifyErr != nil {
+				return TaskIntegrationPlan{}, fmt.Errorf("classify child %q commit %s: %w", child.SessionID, commit, classifyErr)
+			}
+			if integrated {
+				alreadyIntegrated = append(alreadyIntegrated, commit)
+				plan.AlreadyIntegratedCommits = append(plan.AlreadyIntegratedCommits, commit)
+				continue
+			}
+			commits = append(commits, commit)
 		}
 		fileText, err := runGit(parentPath, "diff", "--name-only", child.BaseCommit+".."+child.HeadCommit)
 		if err != nil {
@@ -492,7 +509,14 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 				owners[file] = child.SessionID
 			}
 		}
-		plan.Entries = append(plan.Entries, TaskIntegrationEntry{SessionID: child.SessionID, BaseCommit: child.BaseCommit, HeadCommit: child.HeadCommit, Commits: commits, Files: files})
+		plan.Entries = append(plan.Entries, TaskIntegrationEntry{
+			SessionID:                child.SessionID,
+			BaseCommit:               child.BaseCommit,
+			HeadCommit:               child.HeadCommit,
+			Commits:                  commits,
+			AlreadyIntegratedCommits: alreadyIntegrated,
+			Files:                    files,
+		})
 		plan.Commits = append(plan.Commits, commits...)
 	}
 	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Commits); err != nil {
@@ -517,6 +541,9 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	}
 	if strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
 		return TaskIntegrationResult{}, errors.New("integration manifest became stale")
+	}
+	if len(current.Commits) == 0 {
+		return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: current.ParentHead}, nil
 	}
 	cherryPickArgs := append([]string{"cherry-pick"}, current.Commits...)
 	if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), cherryPickArgs...); err != nil {
@@ -575,6 +602,40 @@ func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChil
 		out = append(out, TaskIntegrationChild{SessionID: entry.SessionID, BaseCommit: entry.BaseCommit, HeadCommit: entry.HeadCommit})
 	}
 	return out
+}
+
+func taskCommitAlreadyIntegrated(parentPath, parentHead, commit string) (bool, error) {
+	reachable, err := (&Service{}).TaskCommitDescendsFrom(parentPath, commit, parentHead)
+	if err != nil {
+		return false, err
+	}
+	if reachable {
+		return true, nil
+	}
+	cherry, err := runGit(parentPath, "cherry", parentHead, commit, commit+"^")
+	if err != nil {
+		return false, fmt.Errorf("compare commit with parent HEAD: %w", err)
+	}
+	fields := strings.Fields(cherry)
+	if len(fields) == 0 {
+		return true, nil
+	}
+	if len(fields) != 2 || fields[1] != commit {
+		return false, fmt.Errorf("unexpected git cherry result %q", cherry)
+	}
+	if fields[0] == "-" {
+		return true, nil
+	}
+	if fields[0] != "+" {
+		return false, fmt.Errorf("unexpected git cherry classification %q", fields[0])
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+	integrated, err := sessionreview.CommitMatchesResolvedIntegration(ctx, sessionreview.ExecGitRunner{}, parentPath, parentHead, commit)
+	if err != nil {
+		return false, err
+	}
+	return integrated, nil
 }
 
 func preflightCherryPick(parentPath, parentHead string, commits []string) error {
