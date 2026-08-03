@@ -57,6 +57,12 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 		"Current agent runtime contract: plan_auto",
 		"Current agent exit-plan-mode enabled: true.",
 		"Plan-mode expectation:",
+		"Plan-mode Coder-wave assessment:",
+		"do not overload one Coder with several independent systems or deliverables",
+		"do not split a cohesive change into tiny artificial assignments",
+		"do not create a separate dependency graph, planning file, wave manifest artifact, or orchestration document",
+		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
+		"place them in sequential waves after parent integration",
 		"Because the current session mode is plan",
 	} {
 		if !strings.Contains(instructions, want) {
@@ -65,6 +71,42 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 	}
 	if strings.Contains(instructions, "Current execution mode:") {
 		t.Fatalf("plan-enabled instructions should not advertise static execution mode\n--- instructions ---\n%s", instructions)
+	}
+}
+
+func TestModeCapabilityInstructionsKeepCoderWavePlanningOutOfAutoMode(t *testing.T) {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:                "swarm",
+		Mode:                "primary",
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+	})
+
+	instructions := modeCapabilityInstructions(sessionruntime.ModeAuto, false, profile)
+	for _, forbidden := range []string{
+		"Plan-mode Coder-wave assessment:",
+		"do not create a separate dependency graph",
+		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
+	} {
+		if strings.Contains(instructions, forbidden) {
+			t.Fatalf("auto instructions unexpectedly contain plan-only wave guidance %q\n--- instructions ---\n%s", forbidden, instructions)
+		}
+	}
+}
+
+func TestMasterHarnessAllowsApprovedPlanCoderWavesWithoutGenericSessionDelegation(t *testing.T) {
+	instructions := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"approved structured-plan checkpoint that calls for a dependency-ready Coder wave",
+		"Concurrent Coder assignments must have non-overlapping owned scopes",
+		"sequence dependent or overlapping implementation work into later waves after the parent integrates the prerequisite wave",
+		"Never reinterpret a generic new-session request as delegation",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("master harness missing Coder-wave contract %q\n--- instructions ---\n%s", want, instructions)
+		}
+	}
+	if strings.Contains(instructions, "Intentional overlapping Coder scopes are allowed") {
+		t.Fatalf("master harness still permits concurrent overlapping Coder scopes\n--- instructions ---\n%s", instructions)
 	}
 }
 
