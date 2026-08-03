@@ -285,7 +285,7 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			writeSessionNotFound(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated))
+		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session)))
 	case "archive":
 		s.handleSessionV3PrimaryArchive(w, r, principal, sessionID)
 	case "messages":
@@ -2871,10 +2871,10 @@ func sessionV3CreateResultResponse(result sessionruntime.SessionMutationResult) 
 	}, nil
 }
 
-func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]any {
+func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession, fields gitStatusResponseFields) map[string]any {
 	response := map[string]any{
 		"ok":                       true,
-		"session":                  hydrated.Session,
+		"session":                  hydratedSessionSummaryResponse(hydrated.Session, fields),
 		"projection":               hydrated.Projection,
 		"messages":                 hydrated.Messages,
 		"events":                   hydrated.Events,

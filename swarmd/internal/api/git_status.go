@@ -42,6 +42,15 @@ func gitStatusResponseForSession(session pebblestore.SessionSnapshot) gitStatusR
 	return gitStatusResponseFields{}
 }
 
+func hydratedSessionSummaryResponse(session pebblestore.SessionSnapshot, fields gitStatusResponseFields) sessionSummaryResponse {
+	return sessionSummaryResponse{
+		SessionSnapshot:         session,
+		gitStatusResponseFields: fields,
+		GitCommitDetected:       gitCommitDetectedForSession(session, fields),
+		GitCommitCount:          gitCommitCountForSession(session, fields),
+	}
+}
+
 func gitStatusResponseForWorktree(path, baseBranch string) gitStatusResponseFields {
 	status := gitstatus.ForWorktreePath(path, baseBranch)
 	branch := strings.TrimSpace(status.Branch)

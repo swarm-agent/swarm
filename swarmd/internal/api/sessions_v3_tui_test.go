@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,12 @@ func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	seedSessionsV3PrimaryAuthority(t, server, "/workspace/known")
 	cwd := filepath.Join(t.TempDir(), "cwd-only")
+	if output, err := exec.Command("git", "init", "-b", "dev", cwd).CombinedOutput(); err != nil {
+		t.Fatalf("init git workspace: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
 
 	created := postSessionsV3TUIDirectoryCreate(t, server, "tui-dir-create", cwd, "TUI Directory")
 	if created.Session.WorkspacePath != cwd || created.Session.WorkspaceName != filepath.Base(cwd) || created.Session.Title != "TUI Directory" {
@@ -65,8 +72,13 @@ func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 		t.Fatalf("open status = %d, want %d, body=%s", openRec.Code, http.StatusOK, openRec.Body.String())
 	}
 	var opened struct {
-		OK                     bool                          `json:"ok"`
-		Session                pebblestore.SessionSnapshot   `json:"session"`
+		OK      bool `json:"ok"`
+		Session struct {
+			pebblestore.SessionSnapshot
+			GitBranch     string `json:"git_branch"`
+			GitHasGit     bool   `json:"git_has_git"`
+			GitDirtyCount int    `json:"git_dirty_count"`
+		} `json:"session"`
 		Events                 []sessionruntime.SessionEvent `json:"events"`
 		SnapshotEndpointCursor string                        `json:"snapshot_endpoint_cursor"`
 	}
@@ -75,6 +87,9 @@ func TestSessionsV3TUIDirectoryCreateOpenAndWorkset(t *testing.T) {
 	}
 	if !opened.OK || opened.Session.ID != created.Session.ID || len(opened.Events) != 0 {
 		t.Fatalf("opened = %+v", opened)
+	}
+	if !opened.Session.GitHasGit || opened.Session.GitBranch != "dev" || opened.Session.GitDirtyCount != 1 {
+		t.Fatalf("opened git status = branch %q has_git %t dirty %d", opened.Session.GitBranch, opened.Session.GitHasGit, opened.Session.GitDirtyCount)
 	}
 	cursorPayload, err := server.verifyV3SyncCursor(opened.SnapshotEndpointCursor)
 	if err != nil {

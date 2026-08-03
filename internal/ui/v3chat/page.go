@@ -1579,7 +1579,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	_, stale, reason := SelectReconnect(state)
 	transcriptTop := 0
 	if showHeader {
-		transcriptTop = drawCanonicalHeader(screen, width, height, styles, title, workspaceName, SelectPlanHeader(state))
+		transcriptTop = drawCanonicalHeader(screen, width, height, styles, title, workspaceName, gitHeader{
+			Branch:     state.Session.GitBranch,
+			HasGit:     state.Session.GitHasGit,
+			DirtyCount: state.Session.GitDirtyCount,
+		}, SelectPlanHeader(state))
 	}
 	runStatus, hasRunStatus := BuildRunStatus(state, now)
 	statusLine := ""
@@ -1919,13 +1923,21 @@ func drawConversationStatus(screen tcell.Screen, width, y int, styles PageStyles
 	drawText(screen, 0, y, minInt(width, utf8.RuneCountInString(label)), styleWithForeground(styles.Background, style).Bold(status.Active), label)
 }
 
-func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyles, title, workspaceName string, plan PlanHeader) int {
+type gitHeader struct {
+	Branch     string
+	HasGit     bool
+	DirtyCount int
+}
+
+func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyles, title, workspaceName string, git gitHeader, plan PlanHeader) int {
 	if width <= 0 || height <= 0 {
 		return 0
 	}
 	panel := styles.Panel.Bold(true)
 	text := styleWithForeground(panel, styles.Text)
 	muted := styleWithForeground(panel, styles.Muted)
+	secondary := styleWithForeground(panel, styles.Secondary)
+	warning := styleWithForeground(panel, styles.Warning)
 	accent := styleWithForeground(panel, styles.Accent).Bold(true)
 
 	spans := []renderSpan{{text: strings.TrimSpace(title), style: text}}
@@ -1933,6 +1945,23 @@ func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyl
 		spans = append(spans,
 			renderSpan{text: "  /  ", style: muted},
 			renderSpan{text: workspaceName, style: muted},
+		)
+	}
+	if branch := strings.TrimSpace(git.Branch); git.HasGit || branch != "" {
+		if branch == "" {
+			branch = "detached"
+		}
+		dirtyCount := maxInt(0, git.DirtyCount)
+		dirtyStyle := muted
+		if dirtyCount > 0 {
+			dirtyStyle = warning
+		}
+		spans = append(spans,
+			renderSpan{text: "  /  ", style: muted},
+			renderSpan{text: "git ", style: muted},
+			renderSpan{text: branch, style: secondary},
+			renderSpan{text: "  /  ", style: muted},
+			renderSpan{text: fmt.Sprintf("dirty %d", dirtyCount), style: dirtyStyle},
 		)
 	}
 	if plan.Active {

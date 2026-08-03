@@ -36,6 +36,9 @@ type Session struct {
 	WorkspacePath string
 	WorkspaceName string
 	Mode          string
+	GitBranch     string
+	GitHasGit     bool
+	GitDirtyCount int
 	TargetSwarmID string
 	CreatedAt     int64
 	UpdatedAt     int64
@@ -558,6 +561,9 @@ func reduceMessageResult(state State, result client.SessionV3MessageResult) Stat
 		if incoming.Mode != "" {
 			state.Session.Mode = incoming.Mode
 		}
+		state.Session.GitBranch = incoming.GitBranch
+		state.Session.GitHasGit = incoming.GitHasGit
+		state.Session.GitDirtyCount = incoming.GitDirtyCount
 		if incoming.CreatedAt != 0 {
 			state.Session.CreatedAt = incoming.CreatedAt
 		}
@@ -903,6 +909,9 @@ func sessionFromClient(value client.SessionSummary, fallbackID string) Session {
 		WorkspacePath: strings.TrimSpace(value.WorkspacePath),
 		WorkspaceName: strings.TrimSpace(value.WorkspaceName),
 		Mode:          strings.TrimSpace(value.Mode),
+		GitBranch:     strings.TrimSpace(value.GitBranch),
+		GitHasGit:     value.GitHasGit,
+		GitDirtyCount: maxInt(0, value.GitDirtyCount),
 		TargetSwarmID: metadataString(value.Metadata, "swarm_v3_runtime_swarm_id"),
 		CreatedAt:     value.CreatedAt,
 		UpdatedAt:     value.UpdatedAt,

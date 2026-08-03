@@ -1372,7 +1372,7 @@ func TestRunTimerWakeIsOneShotAndReschedulesWithoutHeartbeat(t *testing.T) {
 func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunStateAboveComposer(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
-		Session: client.SessionSummary{ID: "s", Title: "Canonical title"},
+		Session: client.SessionSummary{ID: "s", Title: "Canonical title", WorkspaceName: "swarm-go", GitBranch: "dev", GitHasGit: true, GitDirtyCount: 3},
 		ActiveRunIntent: &client.SessionV3RunIntent{
 			RunID: "run", Status: "running", StartedAt: 120_000, CumulativeDurationMS: 90_000,
 		},
@@ -1390,8 +1390,15 @@ func TestPageCanonicalHeaderKeepsPlanStateAndShowsRunStateAboveComposer(t *testi
 	page.DrawAt(screen, time.UnixMilli(125_000))
 	screen.Show()
 	header := simulationRow(screen, 100, 0)
-	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 Wire live plan state") {
-		t.Fatalf("canonical header missing live title/checkpoint state: %q", header)
+	if !strings.HasPrefix(header, "Canonical title") || !strings.Contains(header, "swarm-go  /  git dev  /  dirty 3") || !strings.Contains(header, "In Progress") || !strings.Contains(header, "cp-1 Wire live plan state") {
+		t.Fatalf("canonical header missing workspace/git/checkpoint state: %q", header)
+	}
+	workspace := strings.Index(header, "swarm-go")
+	branch := strings.Index(header, "git dev")
+	dirty := strings.Index(header, "dirty 3")
+	checkpoint := strings.Index(header, "cp-1 Wire live plan state")
+	if workspace < 0 || branch < workspace || dirty < branch || checkpoint < dirty {
+		t.Fatalf("canonical header order = %q", header)
 	}
 	if strings.Contains(header, "0:05") || strings.Contains(header, "1:35") {
 		t.Fatalf("run indicator leaked into canonical header: %q", header)

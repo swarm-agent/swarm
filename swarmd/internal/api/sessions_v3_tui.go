@@ -234,9 +234,10 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, errors.New("created sessions v3 tui projection was not found"))
 		return
 	}
+	fields := gitStatusResponseForPath(hydrated.Session.WorkspacePath)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
-		"session":    hydrated.Session,
+		"session":    hydratedSessionSummaryResponse(hydrated.Session, fields),
 		"projection": hydrated.Projection,
 		"messages":   hydrated.Messages,
 		"events":     hydrated.Events,
@@ -262,7 +263,7 @@ func (s *Server) handleSessionV3TUIOpen(w http.ResponseWriter, r *http.Request, 
 		writeSessionNotFound(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated))
+	writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForPath(hydrated.Session.WorkspacePath)))
 }
 
 func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
