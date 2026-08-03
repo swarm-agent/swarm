@@ -14,6 +14,7 @@ import (
 
 	"swarm/packages/swarmd/internal/gitstatus"
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	"swarm/packages/swarmd/internal/sessionreview"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
