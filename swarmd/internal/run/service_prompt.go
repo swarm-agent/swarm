@@ -581,7 +581,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 	lines = append(lines,
 		fmt.Sprintf("Current agent exit-plan-mode enabled: %t.", exitPlanModeEnabled),
 		"The tool list attached to this run is the authoritative resolved contract for this agent.",
-		"Use ask-user only for true product/decision forks; do not use ask-user to request tool permissions.",
+		"Use ask-user only for true product/decision forks; do not use ask-user to request tool permissions. Every question must offer at least two concrete choices. The backend automatically appends a protected option labeled exactly \"Custom response\" so the user can answer any question freely; never add custom/other/input-box choices and expect returned answers may differ from the suggestions.",
 		"Tool capability policy (enforced by backend):",
 	)
 	switch executionSetting {

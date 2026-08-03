@@ -1921,11 +1921,9 @@ function AskUserModal({
       const resolvedAnswers: Record<string, string> = {}
       for (const question of payload.questions) {
         const selected = (answers[question.id] ?? '').trim()
-        if (selected === '__custom__') {
-          resolvedAnswers[question.id] = (customInputs[question.id] ?? '').trim()
-        } else {
-          resolvedAnswers[question.id] = selected
-        }
+        resolvedAnswers[question.id] = selected === '__custom__'
+          ? (customInputs[question.id] ?? '').trim()
+          : selected
       }
 
       const reason = buildAskUserResolutionReason(payload, resolvedAnswers)

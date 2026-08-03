@@ -1384,6 +1384,120 @@ func (s *Service) executeManageTodosTool(sessionID string, call tool.Call, feedb
 	return output, nil
 }
 
+const (
+	askUserCustomResponseLabel = "Custom response"
+	askUserCustomResponseValue = "__custom__"
+)
+
+func isAskUserReservedCustomChoice(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.EqualFold(value, askUserCustomResponseValue) || strings.EqualFold(value, askUserCustomResponseLabel) || strings.EqualFold(value, "Other")
+}
+
+func validateAskUserCallArguments(arguments string) error {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return errors.New("ask-user requires arguments")
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return fmt.Errorf("ask-user arguments invalid: %w", err)
+	}
+	validateOptions := func(raw any, label string) error {
+		items, ok := raw.([]any)
+		if !ok {
+			return fmt.Errorf("%s must contain at least two choices", label)
+		}
+		concrete := 0
+		for _, item := range items {
+			switch option := item.(type) {
+			case string:
+				value := strings.TrimSpace(option)
+				if value == "" {
+					continue
+				}
+				if isAskUserReservedCustomChoice(value) {
+					return fmt.Errorf("%s must not include a custom response option; %q is provided automatically", label, askUserCustomResponseLabel)
+				}
+				concrete++
+			case map[string]any:
+				value := strings.TrimSpace(mapString(option, "value"))
+				optionLabel := strings.TrimSpace(mapString(option, "label"))
+				if mapBool(option, "allow_custom") || mapBool(option, "allowCustom") || isAskUserReservedCustomChoice(value) || isAskUserReservedCustomChoice(optionLabel) {
+					return fmt.Errorf("%s must not include a custom response option; %q is provided automatically", label, askUserCustomResponseLabel)
+				}
+				if value != "" || optionLabel != "" {
+					concrete++
+				}
+			}
+		}
+		if concrete < 2 {
+			return fmt.Errorf("%s must contain at least two concrete choices", label)
+		}
+		return nil
+	}
+
+	if rawQuestions, exists := args["questions"]; exists {
+		questions, ok := rawQuestions.([]any)
+		if !ok || len(questions) == 0 {
+			return errors.New("ask-user questions must contain at least one question")
+		}
+		for index, rawQuestion := range questions {
+			question, ok := rawQuestion.(map[string]any)
+			if !ok {
+				return fmt.Errorf("ask-user question %d must be an object", index+1)
+			}
+			if strings.TrimSpace(mapString(question, "question")) == "" {
+				return fmt.Errorf("ask-user question %d requires question text", index+1)
+			}
+			if err := validateOptions(question["options"], fmt.Sprintf("ask-user question %d options", index+1)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if strings.TrimSpace(mapString(args, "question")) == "" {
+		return errors.New("ask-user requires question text")
+	}
+	return validateOptions(args["options"], "ask-user options")
+}
+
+func normalizeAskUserPermissionArguments(arguments string) (string, error) {
+	if err := validateAskUserCallArguments(arguments); err != nil {
+		return "", err
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return "", fmt.Errorf("ask-user arguments invalid: %w", err)
+	}
+	customResponse := func() map[string]any {
+		return map[string]any{
+			"label":        askUserCustomResponseLabel,
+			"value":        askUserCustomResponseValue,
+			"description":  "Type your own response.",
+			"allow_custom": true,
+		}
+	}
+	appendCustomResponse := func(payload map[string]any) {
+		options, _ := payload["options"].([]any)
+		payload["options"] = append(options, customResponse())
+	}
+	if rawQuestions, exists := args["questions"]; exists {
+		questions, _ := rawQuestions.([]any)
+		for _, rawQuestion := range questions {
+			question, _ := rawQuestion.(map[string]any)
+			appendCustomResponse(question)
+		}
+	} else {
+		appendCustomResponse(args)
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return "", fmt.Errorf("encode ask-user permission arguments: %w", err)
+	}
+	return string(encoded), nil
+}
+
 func executeAskUserTool(arguments, feedback string) (string, error) {
 	arguments = strings.TrimSpace(arguments)
 	if arguments == "" {

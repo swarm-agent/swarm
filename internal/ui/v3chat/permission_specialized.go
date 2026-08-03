@@ -78,7 +78,18 @@ func isWorkspaceScopePermission(record client.PermissionRecord) bool {
 }
 
 func defaultAskUserOptions() []askUserOption {
-	return []askUserOption{{Value: "__custom__", Label: "Custom response", Description: "Type your own response.", AllowCustom: true}}
+	return nil
+}
+
+func ensureAskUserFreeformOption(options []askUserOption) []askUserOption {
+	concrete := make([]askUserOption, 0, len(options)+1)
+	for _, option := range options {
+		if option.AllowCustom || strings.EqualFold(strings.TrimSpace(option.Value), "__custom__") {
+			continue
+		}
+		concrete = append(concrete, option)
+	}
+	return append(concrete, askUserOption{Value: "__custom__", Label: "Custom response", Description: "Type your own response.", AllowCustom: true})
 }
 
 func parseAskUserOptions(raw any) []askUserOption {
@@ -124,7 +135,7 @@ func parseAskUserIntent(record client.PermissionRecord) (askUserIntent, bool) {
 	}
 	payload := parseToolObject(record.ToolArguments)
 	if payload == nil {
-		return askUserIntent{Title: "Ask User", Questions: []askUserQuestion{{ID: "q_1", Question: "User input requested", Options: defaultAskUserOptions(), Required: true}}}, true
+		return askUserIntent{Title: "Ask User", Questions: []askUserQuestion{{ID: "q_1", Question: "User input requested", Options: ensureAskUserFreeformOption(defaultAskUserOptions()), Required: true}}}, true
 	}
 	intent := askUserIntent{Title: firstNonEmptyToolRaw(toolString(payload, "title"), "Ask User"), Context: toolString(payload, "context")}
 	if rawQuestions, ok := payload["questions"].([]any); ok {
@@ -148,17 +159,13 @@ func parseAskUserIntent(record client.PermissionRecord) (askUserIntent, bool) {
 					question.Required = !containsFold([]string{"false", "0", "no"}, required)
 				}
 			}
-			if len(question.Options) == 0 {
-				question.Options = defaultAskUserOptions()
-			}
+			question.Options = ensureAskUserFreeformOption(question.Options)
 			intent.Questions = append(intent.Questions, question)
 		}
 	}
 	if len(intent.Questions) == 0 {
 		options := parseAskUserOptions(payload["options"])
-		if len(options) == 0 {
-			options = defaultAskUserOptions()
-		}
+		options = ensureAskUserFreeformOption(options)
 		intent.Questions = []askUserQuestion{{ID: "q_1", Question: firstNonEmptyToolRaw(toolString(payload, "question"), "User input requested"), Options: options, Required: true}}
 	}
 	return intent, true

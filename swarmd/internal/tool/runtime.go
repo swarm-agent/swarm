@@ -858,7 +858,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "ask-user",
-			Description: "Request a user decision/input through the permission interaction flow",
+			Description: "Request user input through the permission interaction flow. Supply at least two concrete choices per question. The backend always appends a protected option labeled exactly \"Custom response\" so the user can freely type a different answer. Never add a custom/other/input-box option; returned answers may not match any supplied choice.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -866,28 +866,29 @@ func (r *Runtime) Definitions() []Definition {
 					"context":  map[string]any{"type": "string", "description": "Optional context shown above questions"},
 					"question": map[string]any{"type": "string", "description": "Single-question prompt shown to the user"},
 					"options": map[string]any{
-						"type": "array",
+						"type":        "array",
+						"minItems":    2,
+						"description": "At least two concrete suggested answers for the single-question path. Do not add a custom/other/input-box option; the backend appends \"Custom response\" automatically.",
 						"items": map[string]any{
 							"oneOf": []any{
 								map[string]any{"type": "string"},
 								map[string]any{
 									"type": "object",
 									"properties": map[string]any{
-										"label":        map[string]any{"type": "string"},
-										"value":        map[string]any{"type": "string"},
-										"description":  map[string]any{"type": "string"},
-										"allow_custom": map[string]any{"type": "boolean"},
-										"allowCustom":  map[string]any{"type": "boolean"},
+										"label":       map[string]any{"type": "string"},
+										"value":       map[string]any{"type": "string"},
+										"description": map[string]any{"type": "string"},
 									},
 									"required":             []string{},
 									"additionalProperties": false,
 								},
 							},
 						},
-						"description": "Optional choices for the single-question path",
 					},
 					"questions": map[string]any{
-						"type": "array",
+						"type":        "array",
+						"minItems":    1,
+						"description": "Structured questions. Every question needs at least two concrete choices; the backend separately appends a protected \"Custom response\" option.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -896,18 +897,18 @@ func (r *Runtime) Definitions() []Definition {
 								"question": map[string]any{"type": "string"},
 								"required": map[string]any{"type": "boolean"},
 								"options": map[string]any{
-									"type": "array",
+									"type":        "array",
+									"minItems":    2,
+									"description": "At least two concrete suggested answers. Do not add a custom/other/input-box option; the backend appends \"Custom response\" automatically.",
 									"items": map[string]any{
 										"oneOf": []any{
 											map[string]any{"type": "string"},
 											map[string]any{
 												"type": "object",
 												"properties": map[string]any{
-													"label":        map[string]any{"type": "string"},
-													"value":        map[string]any{"type": "string"},
-													"description":  map[string]any{"type": "string"},
-													"allow_custom": map[string]any{"type": "boolean"},
-													"allowCustom":  map[string]any{"type": "boolean"},
+													"label":       map[string]any{"type": "string"},
+													"value":       map[string]any{"type": "string"},
+													"description": map[string]any{"type": "string"},
 												},
 												"required":             []string{},
 												"additionalProperties": false,
@@ -916,11 +917,14 @@ func (r *Runtime) Definitions() []Definition {
 									},
 								},
 							},
-							"required":             []string{"question"},
+							"required":             []string{"question", "options"},
 							"additionalProperties": false,
 						},
-						"description": "Optional multi-question payload for structured user input",
 					},
+				},
+				"anyOf": []any{
+					map[string]any{"required": []string{"question", "options"}},
+					map[string]any{"required": []string{"questions"}},
 				},
 				"required":             []string{},
 				"additionalProperties": false,

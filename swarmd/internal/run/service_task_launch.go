@@ -407,6 +407,9 @@ func rejectMalformedToolCallArguments(call tool.Call) error {
 	if canonical == "bash" {
 		return tool.ValidateBashCallArguments(call.Arguments)
 	}
+	if canonical == "ask_user" {
+		return validateAskUserCallArguments(call.Arguments)
+	}
 	if canonical != "task" {
 		return nil
 	}
@@ -695,6 +698,8 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		return string(raw), nil
 	}
 	switch canonicalToolName(call.Name) {
+	case "ask_user":
+		return normalizeAskUserPermissionArguments(arguments)
 	case "task":
 		payload, err := s.buildTaskLaunchPermissionPayload(sessionID, sessionMode, call)
 		if err != nil {

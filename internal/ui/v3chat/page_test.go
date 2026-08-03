@@ -904,7 +904,7 @@ func TestAskUserPermissionRendersInteractiveChoicesAndSubmitsCanonicalAnswer(t *
 	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
 	rows := page.renderRows(store.Snapshot(), 88, testPageStyles())
 	drawn := renderRowsText(rows)
-	for _, want := range []string{"Choose deployment", "Pick the safe target.", "Where should this run?", "1 Staging", "2 Production", "Enter Select", "S Submit"} {
+	for _, want := range []string{"Choose deployment", "Pick the safe target.", "Where should this run?", "1 Staging", "2 Production", "3 Custom response", "Enter Select", "S Submit"} {
 		if !strings.Contains(drawn, want) {
 			t.Fatalf("ask-user card missing %q:\n%s", want, drawn)
 		}
@@ -923,6 +923,40 @@ func TestAskUserPermissionRendersInteractiveChoicesAndSubmitsCanonicalAnswer(t *
 	transport.mu.Unlock()
 	if request.permissionID != permission.ID || request.action != "allow_once" || request.reason != "production" {
 		t.Fatalf("ask-user resolution request = %#v", request)
+	}
+}
+
+func TestAskUserPermissionCustomResponseSubmitsTypedAnswer(t *testing.T) {
+	permission := client.PermissionRecord{
+		ID: "permission-ask-custom", SessionID: "session-ask-custom", ToolName: "ask-user", Requirement: "user_input", Status: "pending",
+		ToolArguments: `{"question":"Where should this run?","options":["Staging","Production"]}`,
+	}
+	resolved := permission
+	resolved.Status = "approved"
+	resolved.Decision = "allow_once"
+	transport := &fakeTransport{resolvedPermission: resolved}
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: permission.SessionID}, PendingPermissions: []client.PermissionRecord{permission}}})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	for _, r := range "my private target" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+
+	deadline := time.Now().Add(time.Second)
+	for page.PendingPermissionVisible() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	transport.mu.Lock()
+	request := transport.permissionRequest
+	transport.mu.Unlock()
+	if request.permissionID != permission.ID || request.action != "allow_once" || request.reason != "my private target" {
+		t.Fatalf("ask-user custom resolution request = %#v", request)
 	}
 }
 

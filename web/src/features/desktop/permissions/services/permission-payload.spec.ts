@@ -1,6 +1,7 @@
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import {
   parseAgentChangePermission,
+  parseAskUserPermission,
   parseManageTodosPermission,
   parseSessionArchivePermission,
   parseSessionCommitPermission,
@@ -704,7 +705,30 @@ function testManageTodosBatchParsing(): void {
   assert(payload.summaryLine.includes('User Todos'), 'expected default owner label')
 }
 
+function testAskUserParserIgnoresModelAuthoredCustomOptions(): void {
+  const permission = makePermission({
+    toolName: 'ask-user',
+    requirement: 'ask_user',
+    toolArguments: JSON.stringify({
+      question: 'Which path?',
+      options: [
+        { label: 'First', value: 'first' },
+        { label: 'Second', value: 'second' },
+        { label: 'Other', value: '__custom__', allowCustom: true },
+      ],
+    }),
+  })
+  const payload = parseAskUserPermission(permission)
+  assert(payload.questions.length === 1, 'expected one parsed question')
+  assert(payload.questions[0]?.options.length === 3, 'expected two concrete suggestions plus backend custom response')
+  const custom = payload.questions[0]?.options[2]
+  assert(custom?.label === 'Custom response', 'expected exact backend-owned Custom response label')
+  assert(custom?.value === '__custom__' && custom.allowCustom, 'expected canonical custom response control')
+  assert(payload.questions[0]?.options.filter((option) => option.allowCustom).length === 1, 'expected one custom response control')
+}
+
 function main(): void {
+  testAskUserParserIgnoresModelAuthoredCustomOptions()
   testAgentChangeKindAndPayloadParsing()
   testAgentChangeParsesApprovedContentFallback()
   testAgentChangeParsesToolContractFallback()
