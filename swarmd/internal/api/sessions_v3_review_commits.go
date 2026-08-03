@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/gitstatus"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
@@ -24,7 +25,7 @@ import (
 const reviewCommitMetadataKey = "review_commit_job"
 
 func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal identity.Principal, workspacePath string, requested []string, searchItems []pebblestore.V3SessionSearchItem, now time.Time) (string, error) {
-	if s == nil || s.runner == nil || s.agents == nil || s.sessions == nil {
+	if s == nil || s.runner == nil || s.model == nil || s.agents == nil || s.agentModelSettings == nil || s.sessions == nil {
 		return "", errors.New("review commit agent is not configured")
 	}
 	workspacePath = strings.TrimSpace(workspacePath)
@@ -39,16 +40,9 @@ func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal ide
 	for _, item := range searchItems {
 		allowed[item.ID] = struct{}{}
 	}
-	parent, err := s.resolveSessionsV3ReviewCommitParent(principal.AccountScopeID)
+	_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, principal.AccountScopeID, agentruntime.ReviewCommitAgentID, "")
 	if err != nil {
-		return "", err
-	}
-	profile, err := s.agents.ResolveSystemAgent(agentruntime.ReviewCommitAgentID, parent)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
-		return "", errors.New("review commit agent requires a configured auto model")
+		return "", fmt.Errorf("resolve review commit agent: %w", err)
 	}
 	batchID := reviewCommitBatchID(principal, workspacePath, ids, now)
 	type candidate struct {
@@ -112,28 +106,6 @@ func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal ide
 		wg.Wait()
 	}()
 	return batchID, nil
-}
-
-func (s *Server) resolveSessionsV3ReviewCommitParent(accountScopeID string) (pebblestore.AgentProfile, error) {
-	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
-	if err != nil {
-		return pebblestore.AgentProfile{}, err
-	}
-	for _, profile := range state.Profiles {
-		if strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.SwarmAgentID) && profile.Enabled && pebblestore.AgentProfileRuntimeMode(profile) == pebblestore.AgentRuntimeModePlanAuto {
-			return profile, nil
-		}
-	}
-	eligible := make([]pebblestore.AgentProfile, 0, 1)
-	for _, profile := range state.Profiles {
-		if profile.Enabled && !profile.Protected && !agentruntime.IsReservedSystemAgentName(profile.Name) && (profile.Mode == agentruntime.ModePrimary || profile.Mode == agentruntime.ModeBackground) {
-			eligible = append(eligible, profile)
-		}
-	}
-	if len(eligible) != 1 {
-		return pebblestore.AgentProfile{}, errors.New("review commits require configured Swarm plan/auto or exactly one enabled agent")
-	}
-	return eligible[0], nil
 }
 
 func (s *Server) runSessionsV3ReviewCommit(ctx context.Context, principal identity.Principal, batchID string, profile pebblestore.AgentProfile, session pebblestore.SessionSnapshot, path string) {
