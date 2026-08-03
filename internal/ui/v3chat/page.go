@@ -297,6 +297,19 @@ func (p *Page) SetHeaderVisible(show bool) {
 	p.mu.Unlock()
 }
 
+// SetGitStatus updates the open page from the app shell's event-driven Git
+// watcher. Draw remains a pure read of cached state and never invokes Git.
+func (p *Page) SetGitStatus(branch string, hasGit bool, dirtyCount int) {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return
+	}
+	p.runtime.Store().Dispatch(GitStatusAction{
+		Branch:     branch,
+		HasGit:     hasGit,
+		DirtyCount: dirtyCount,
+	})
+}
+
 func (p *Page) SetThinkingTagsVisible(show bool) {
 	if p == nil {
 		return

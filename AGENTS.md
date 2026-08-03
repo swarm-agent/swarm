@@ -116,6 +116,7 @@ Do not diagnose from or silently reuse old home/XDG config locations. `/workspac
 5. Preserve existing user changes and report any unrelated dirty files; never overwrite, stage, or commit them implicitly.
 6. Report files changed, behavioral impact, validation actually run, and remaining risks.
 7. Keep documentation edits concise and consistent with nearby guidance.
+8. Keep review scopes narrow so each change remains easy to inspect.
 
 ### Git and promotion
 

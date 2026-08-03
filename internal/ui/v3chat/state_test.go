@@ -11,6 +11,16 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
+func TestGitStatusActionRefreshesCachedHeaderState(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "s", GitBranch: "main", GitHasGit: true, GitDirtyCount: 0},
+	}})
+	state = Reduce(state, GitStatusAction{Branch: "feature/live", HasGit: true, DirtyCount: 3})
+	if state.Session.GitBranch != "feature/live" || !state.Session.GitHasGit || state.Session.GitDirtyCount != 3 {
+		t.Fatalf("Git status action did not refresh cached header state: %#v", state.Session)
+	}
+}
+
 func TestRoutedDraftReducerStaysLocalUntilCanonicalResponse(t *testing.T) {
 	state := Reduce(NewState(), PrimeRoutedDraftAction{Draft: RoutedDraft{
 		Prompt: "draft prompt", PlanModeRequested: true, ManagedWorktreeRequested: true,

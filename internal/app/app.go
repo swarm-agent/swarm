@@ -8299,16 +8299,20 @@ func (a *App) applyGitStatusRefresh(result gitStatusRefreshResult) bool {
 		}
 		break
 	}
-	if !changed {
-		return false
-	}
-	if a.home != nil {
+	if a.home != nil && changed {
 		a.home.SetModel(a.homeModel)
 	}
-	if a.chat != nil && pathsEqual(a.activePath, target) {
-		a.chat.SetSessionBranch(result.status.Branch)
+	if pathsEqual(a.activeContextPath(), target) {
+		if a.chat != nil {
+			a.chat.SetSessionBranch(result.status.Branch)
+			changed = true
+		}
+		if a.v3Chat != nil {
+			a.v3Chat.SetGitStatus(result.status.Branch, result.status.HasGit, result.status.DirtyCount)
+			changed = true
+		}
 	}
-	return true
+	return changed
 }
 
 func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution) {

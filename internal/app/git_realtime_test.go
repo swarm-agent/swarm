@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
+	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
 func TestGitStatusForPathUsesNoOptionalLocks(t *testing.T) {
@@ -46,6 +48,37 @@ func TestGitStatusForPathUsesNoOptionalLocks(t *testing.T) {
 	want := "--no-optional-locks -C " + repo + " status --porcelain=v2 --branch"
 	if !containsLine(string(logged), want) {
 		t.Fatalf("git invocation missing no-optional-locks:\n%s", string(logged))
+	}
+}
+
+func TestApplyGitStatusRefreshUpdatesV3ChatWithoutDirectoryEntry(t *testing.T) {
+	repo := initGitRepo(t)
+	runtime := v3chat.NewRuntime(nil, v3chat.NewStore(), nil)
+	page := v3chat.NewPage(runtime, v3chat.PageStyles{})
+	page.Runtime().Store().Dispatch(v3chat.HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-1", GitBranch: "main", GitHasGit: true},
+	}})
+	a := &App{
+		activePath: repo,
+		v3Chat:     page,
+		homeModel:  model.HomeModel{CWD: repo},
+	}
+
+	changed := a.applyGitStatusRefresh(gitStatusRefreshResult{
+		path: repo,
+		ok:   true,
+		status: gitRepoStatus{
+			Branch:     "feature/live",
+			DirtyCount: 2,
+			HasGit:     true,
+		},
+	})
+	if !changed {
+		t.Fatal("applyGitStatusRefresh returned false for active V3 chat")
+	}
+	state := page.Runtime().Store().Snapshot()
+	if state.Session.GitBranch != "feature/live" || !state.Session.GitHasGit || state.Session.GitDirtyCount != 2 {
+		t.Fatalf("V3 Git header state = %#v", state.Session)
 	}
 }
 
@@ -190,6 +223,45 @@ func TestRepoGitWatcherEmitsOnWorkingTreeChange(t *testing.T) {
 	awaitWatcherRefresh(t, triggered, "working tree change")
 }
 
+func TestRepoGitWatcherRefreshesOpenV3HeaderAfterWorkingTreeChange(t *testing.T) {
+	repo := initGitRepo(t)
+	tracked := filepath.Join(repo, "tracked.txt")
+	writeFile(t, tracked, "hello\n")
+	runGit(t, repo, "add", "tracked.txt")
+	runGit(t, repo, "commit", "-m", "init")
+
+	runtime := v3chat.NewRuntime(nil, v3chat.NewStore(), nil)
+	page := v3chat.NewPage(runtime, v3chat.PageStyles{})
+	page.Runtime().Store().Dispatch(v3chat.HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "session-1", GitBranch: "main", GitHasGit: true},
+	}})
+	a := &App{activePath: repo, v3Chat: page, homeModel: model.HomeModel{CWD: repo}}
+
+	watcher, err := newRepoGitWatcher(repo)
+	if err != nil {
+		t.Fatalf("newRepoGitWatcher: %v", err)
+	}
+	defer watcher.stopWatching()
+
+	refreshed := make(chan int, 8)
+	go watcher.run(func() {
+		status, ok := gitStatusForPath(repo)
+		a.applyGitStatusRefresh(gitStatusRefreshResult{path: repo, status: status, ok: ok})
+		select {
+		case refreshed <- page.Runtime().Store().Snapshot().Session.GitDirtyCount:
+		default:
+		}
+	})
+
+	awaitGitDirtyCount(t, refreshed, 0)
+	writeFile(t, tracked, "changed\n")
+	awaitGitDirtyCount(t, refreshed, 1)
+	state := page.Runtime().Store().Snapshot()
+	if state.Session.GitBranch != "main" || !state.Session.GitHasGit || state.Session.GitDirtyCount != 1 {
+		t.Fatalf("open V3 header remained stale: %#v", state.Session)
+	}
+}
+
 func TestRepoGitWatcherDoesNotRecursivelyWatchHomeRepo(t *testing.T) {
 	repo := initGitRepo(t)
 	nested := filepath.Join(repo, "project", "deep")
@@ -260,5 +332,21 @@ func awaitWatcherRefresh(t *testing.T, triggered <-chan struct{}, label string) 
 	case <-triggered:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("watcher did not refresh after %s", label)
+	}
+}
+
+func awaitGitDirtyCount(t *testing.T, refreshed <-chan int, want int) {
+	t.Helper()
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case got := <-refreshed:
+			if got == want {
+				return
+			}
+		case <-timer.C:
+			t.Fatalf("Git header dirty count did not refresh to %d", want)
+		}
 	}
 }

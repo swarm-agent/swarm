@@ -396,6 +396,18 @@ type ModeAction struct {
 
 func (ModeAction) isV3ChatAction() {}
 
+// GitStatusAction applies an app-shell Git watcher snapshot to the V3 render
+// cache. It is intentionally local presentation state: durable session state
+// remains authoritative for hydration, while filesystem events keep the open
+// header current between hydrations.
+type GitStatusAction struct {
+	Branch     string
+	HasGit     bool
+	DirtyCount int
+}
+
+func (GitStatusAction) isV3ChatAction() {}
+
 type PermissionsAction struct {
 	Records []client.PermissionRecord
 }
@@ -485,6 +497,10 @@ func Reduce(current State, action Action) State {
 	case ModeAction:
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Resolved.Mode))
 		applyAgentModelPolicy(&next.Model, value.Resolved.Preference, value.Resolved.ContextWindow, value.Resolved.MaxOutputTokens, value.Resolved.AgentModelPolicy)
+	case GitStatusAction:
+		next.Session.GitBranch = strings.TrimSpace(value.Branch)
+		next.Session.GitHasGit = value.HasGit
+		next.Session.GitDirtyCount = maxInt(0, value.DirtyCount)
 	case PermissionsAction:
 		next.Permissions = permissionsFromClient(value.Records)
 	case PermissionAction:
