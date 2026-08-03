@@ -157,13 +157,24 @@ function testPlanManageSubtaskUsesCanonicalUpdatedMetadata(): void {
 }
 
 function testTaskSwarmLayoutProgressivelyCompacts(): void {
-  const five = taskSwarmLayout(5, 420, 720);
-  const twenty = taskSwarmLayout(20, 420, 720);
+  const eleven = taskSwarmLayout(11, 420, 720);
+  const twelve = taskSwarmLayout(12, 420, 720);
+  const twentyFive = taskSwarmLayout(25, 420, 720);
+  const twentySix = taskSwarmLayout(26, 420, 720);
+  const fifty = taskSwarmLayout(50, 420, 720);
+  const fiftyOne = taskSwarmLayout(51, 420, 720);
+  const seventyFive = taskSwarmLayout(75, 420, 720);
+  const seventySix = taskSwarmLayout(76, 420, 720);
   const hundred = taskSwarmLayout(100, 420, 720);
-  assert(five.density === "detailed", `five rows should remain detailed, got ${five.density}`);
-  assert(twenty.density === "compact", `twenty rows should compact, got ${twenty.density}`);
-  assert(hundred.density === "signal", `one hundred rows should use signal density, got ${hundred.density}`);
-  assert(hundred.columns > twenty.columns, "extreme density should add columns instead of scrolling");
+  const hundredOne = taskSwarmLayout(101, 420, 720);
+
+  assert(eleven.stage === 11 && eleven.density === "detailed", "eleven agents should preserve the spacious box treatment");
+  assert(twelve.stage === 25 && twentyFive.stage === 25 && twelve.density === "compact", "12–25 agents should share one stable compact stage");
+  assert(twentySix.stage === 50 && fifty.stage === 50 && twentySix.density === "micro", "26–50 agents should share the next stacking stage");
+  assert(fiftyOne.stage === 75 && seventyFive.stage === 75 && fiftyOne.density === "dense", "51–75 agents should share the dense stacking stage");
+  assert(seventySix.stage === 100 && hundred.stage === 100 && seventySix.density === "signal", "76–100 agents should share the final bounded stage");
+  assert(eleven.columns < twelve.columns && twelve.columns < twentySix.columns && twentySix.columns < fiftyOne.columns && fiftyOne.columns < seventySix.columns, "each boundary should add columns progressively rather than flip layouts");
+  assert(hundredOne.stage === 101 && hundredOne.maxHeight !== undefined, "only swarms above one hundred should become vertically bounded and scrollable");
 }
 
 function testTaskSwarmUsesCompactPreview(): void {
@@ -191,9 +202,9 @@ function testTaskSwarmUsesCompactPreview(): void {
   const markup = renderToolMarkup(message!);
   assert(markup.includes("SWARM MODE"), "expected the post-five swarm mode label");
   assert((markup.match(/SWARM MODE/g) ?? []).length === 1, "swarm mode heading should render once");
-  assert(markup.includes("12 AI"), "expected the visible swarm population count");
-  assert(markup.includes("finder"), "expected compact row model or agent label");
-  assert(markup.includes("search"), "expected compact row current tool");
+  assert(!markup.includes("12 AI"), "swarm mode should omit the redundant AI population badge");
+  assert(!markup.includes("finder"), "swarm rows should not show provider or agent metadata");
+  assert(markup.includes("search"), "12–25 agent rows should retain the current tool");
   assert(markup.includes("RUN"), "expected compact row status");
   assert(!markup.includes("Subagent stream"), "swarm mode should replace the regular stream heading");
   assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
