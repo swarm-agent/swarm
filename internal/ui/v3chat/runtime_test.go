@@ -32,6 +32,9 @@ type fakeTransport struct {
 	resolvedPermission client.PermissionRecord
 	permissionExplain  client.PermissionExplain
 	messageRequest     client.SessionV3MessageOptions
+	routedRequests     []client.RoutedSessionV3StartRequest
+	routedResponses    []client.RoutedSessionV3StartResponse
+	routedErrors       []error
 	compactRequest     client.SessionV3CompactOptions
 	compactSessionID   string
 	permissionRequest  struct {
@@ -54,6 +57,21 @@ func (f *fakeTransport) record(call string) {
 	f.calls = append(f.calls, call)
 	f.mu.Unlock()
 }
+func (f *fakeTransport) StartRoutedSessionV3(_ context.Context, request client.RoutedSessionV3StartRequest) (client.RoutedSessionV3StartResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "route")
+	f.routedRequests = append(f.routedRequests, request)
+	index := len(f.routedRequests) - 1
+	if index < len(f.routedErrors) && f.routedErrors[index] != nil {
+		return client.RoutedSessionV3StartResponse{}, f.routedErrors[index]
+	}
+	if index < len(f.routedResponses) {
+		return f.routedResponses[index], nil
+	}
+	return client.RoutedSessionV3StartResponse{}, nil
+}
+
 func (f *fakeTransport) CreateSessionV3WithOptions(_ context.Context, options client.SessionCreateOptions) (client.SessionV3Hydrated, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "create")
@@ -175,6 +193,65 @@ func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string
 	f.result.Message.Content = options.Content
 	f.result.Message.Metadata = options.Metadata
 	return f.result, nil
+}
+
+func TestRoutedDraftFailureRestoresLocalIntentAndRetryKeepsIdentity(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	transport := &fakeTransport{routedErrors: []error{errors.New("router unavailable"), nil}, routedResponses: []client.RoutedSessionV3StartResponse{{}, response}}
+	runtime := NewRuntime(transport, nil, nil)
+	if err := runtime.PrimeRoutedDraft(RoutedDraft{Prompt: "route this", PlanModeRequested: true, ManagedWorktreeRequested: true, Metadata: map[string]any{"source": "tui"}}); err != nil {
+		t.Fatal(err)
+	}
+	pending := runtime.Store().Snapshot()
+	draft, ok := SelectRoutedDraft(pending)
+	if !ok || draft.ClientRequestID == "" || pending.Session.ID != "" || pending.Connection != ConnectionDisconnected {
+		t.Fatalf("local pending state = %#v", pending)
+	}
+	identity := draft.ClientRequestID
+	if _, err := runtime.StartRoutedDraft(context.Background()); err == nil {
+		t.Fatal("expected routed start failure")
+	}
+	failed := runtime.Store().Snapshot()
+	draft, ok = SelectRoutedDraft(failed)
+	if !ok || draft.Status != RoutedDraftFailed || draft.Prompt != "route this" || !draft.PlanModeRequested || !draft.ManagedWorktreeRequested || draft.ClientRequestID != identity || failed.Session.ID != "" {
+		t.Fatalf("failed draft = %#v state=%#v", draft, failed)
+	}
+	if _, err := runtime.RetryRoutedDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+	resolved := runtime.Store().Snapshot()
+	draft, ok = SelectRoutedDraft(resolved)
+	if !ok || draft.Status != RoutedDraftResolved || draft.ClientRequestID != identity || resolved.Session.ID != "session-routed" || resolved.Connection != ConnectionReady {
+		t.Fatalf("resolved state = %#v", resolved)
+	}
+	transport.mu.Lock()
+	requests := append([]client.RoutedSessionV3StartRequest(nil), transport.routedRequests...)
+	calls := append([]string(nil), transport.calls...)
+	transport.mu.Unlock()
+	if len(requests) != 2 || requests[0].ClientRequestID != identity || requests[1].ClientRequestID != identity || requests[1].IdempotencyKey != identity {
+		t.Fatalf("retry requests = %#v", requests)
+	}
+	if !reflect.DeepEqual(calls, []string{"route", "route", "stream", "ready"}) {
+		t.Fatalf("routed calls = %#v", calls)
+	}
+}
+
+func routedRuntimeResponse(sessionID string) client.RoutedSessionV3StartResponse {
+	projection := client.SessionV3Projection{SessionID: sessionID, LastEventSeq: 1, ProjectionHighWatermarkSeq: 1}
+	message := client.SessionMessage{ID: "message-1", SessionID: sessionID, GlobalSeq: 1, Role: "user", Content: "route this"}
+	run := client.SessionV3RunIntent{SessionID: sessionID, RunID: "run-1", Status: "pending_executor", EventSeq: 1}
+	outbox := &client.SessionV3RealtimeOutboxRow{EndpointCursor: "cursor-1", SessionID: sessionID, Projection: projection, Event: client.SessionV3Event{ID: "event-1", SessionID: sessionID, Seq: 1}}
+	return client.RoutedSessionV3StartResponse{
+		OK: true, SessionID: sessionID, Title: "Routed", StartingMode: "plan",
+		Session: client.SessionSummary{ID: sessionID, Title: "Routed", Mode: "plan", WorkspacePath: "/runtime"},
+		SessionView: client.RoutedSessionV3SessionView{
+			Identity: &client.RoutedSessionV3Identity{SessionID: sessionID, Title: "Routed", SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime"},
+			AgenticSettings: &client.RoutedSessionV3AgenticSettings{Mode: "plan", EffectivePreference: client.ModelPreference{Provider: "codex", Model: "gpt"}},
+		},
+		FirstMessage: message, Projection: projection,
+		Mutation: client.SessionV3MutationResult{SessionID: sessionID, Event: client.SessionV3Event{ID: "event-1", SessionID: sessionID, Seq: 1}, Message: &message, RunIntent: &run, Projection: projection, RealtimeOutbox: outbox},
+	}
 }
 
 func TestCompactUsesCanonicalSessionAPIWithoutNotes(t *testing.T) {

@@ -82,6 +82,26 @@ type PendingMessage struct {
 	ClientRequestID string
 }
 
+type RoutedDraftStatus string
+
+const (
+	RoutedDraftReady    RoutedDraftStatus = "ready"
+	RoutedDraftRouting  RoutedDraftStatus = "routing"
+	RoutedDraftResolved RoutedDraftStatus = "resolved"
+	RoutedDraftFailed   RoutedDraftStatus = "failed"
+)
+
+type RoutedDraft struct {
+	Prompt                    string
+	PlanModeRequested         bool
+	ManagedWorktreeRequested  bool
+	ClientRequestID           string
+	AgentName                 string
+	Metadata                  map[string]any
+	Status                    RoutedDraftStatus
+	Error                     string
+}
+
 type PermissionTimelineItem struct {
 	Record    client.PermissionRecord
 	GlobalSeq uint64
@@ -288,6 +308,7 @@ type State struct {
 	Usage          UsageState
 	Plan           PlanState
 	Permissions    PermissionState
+	RoutedDraft    *RoutedDraft
 }
 
 type Action interface{ isV3ChatAction() }
@@ -313,6 +334,22 @@ func (DraftModeAction) isV3ChatAction() {}
 type PendingUserAction struct{ Pending PendingMessage }
 
 func (PendingUserAction) isV3ChatAction() {}
+
+type PrimeRoutedDraftAction struct{ Draft RoutedDraft }
+
+func (PrimeRoutedDraftAction) isV3ChatAction() {}
+
+type RoutedDraftRoutingAction struct{}
+
+func (RoutedDraftRoutingAction) isV3ChatAction() {}
+
+type RoutedDraftFailedAction struct{ Error string }
+
+func (RoutedDraftFailedAction) isV3ChatAction() {}
+
+type RoutedDraftResolvedAction struct{ Response client.RoutedSessionV3StartResponse }
+
+func (RoutedDraftResolvedAction) isV3ChatAction() {}
 
 type MessageResultAction struct{ Result client.SessionV3MessageResult }
 
@@ -371,6 +408,36 @@ func Reduce(current State, action Action) State {
 	case DraftModeAction:
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
 		applyDraftModeSelection(&next.Model, value.Selection)
+	case PrimeRoutedDraftAction:
+		draft := value.Draft
+		draft.Prompt = strings.TrimSpace(draft.Prompt)
+		draft.ClientRequestID = strings.TrimSpace(draft.ClientRequestID)
+		draft.AgentName = strings.TrimSpace(draft.AgentName)
+		draft.Metadata = cloneAnyMap(draft.Metadata)
+		draft.Status = RoutedDraftReady
+		draft.Error = ""
+		next = NewState()
+		next.RoutedDraft = &draft
+	case RoutedDraftRoutingAction:
+		if next.RoutedDraft != nil && next.RoutedDraft.Status != RoutedDraftResolved {
+			next.RoutedDraft.Status = RoutedDraftRouting
+			next.RoutedDraft.Error = ""
+		}
+	case RoutedDraftFailedAction:
+		if next.RoutedDraft != nil && next.RoutedDraft.Status != RoutedDraftResolved {
+			next.RoutedDraft.Status = RoutedDraftFailed
+			next.RoutedDraft.Error = strings.TrimSpace(value.Error)
+		}
+	case RoutedDraftResolvedAction:
+		draft := next.RoutedDraft
+		next = reduceHydrated(NewState(), value.Response.Hydrated())
+		if draft != nil {
+			resolved := *draft
+			resolved.Metadata = cloneAnyMap(draft.Metadata)
+			resolved.Status = RoutedDraftResolved
+			resolved.Error = ""
+			next.RoutedDraft = &resolved
+		}
 	case PendingUserAction:
 		pending := value.Pending
 		if id := strings.TrimSpace(pending.ID); id != "" {
@@ -1002,6 +1069,11 @@ func cloneState(value State) State {
 	if value.Plan.ActivePlan != nil {
 		plan := cloneSessionPlan(*value.Plan.ActivePlan)
 		out.Plan.ActivePlan = &plan
+	}
+	if value.RoutedDraft != nil {
+		draft := *value.RoutedDraft
+		draft.Metadata = cloneAnyMap(value.RoutedDraft.Metadata)
+		out.RoutedDraft = &draft
 	}
 	return out
 }

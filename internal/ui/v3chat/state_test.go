@@ -11,6 +11,33 @@ import (
 	"swarm-refactor/swarmtui/internal/client"
 )
 
+func TestRoutedDraftReducerStaysLocalUntilCanonicalResponse(t *testing.T) {
+	state := Reduce(NewState(), PrimeRoutedDraftAction{Draft: RoutedDraft{
+		Prompt: "draft prompt", PlanModeRequested: true, ManagedWorktreeRequested: true,
+		ClientRequestID: "route-1", Metadata: map[string]any{"source": "tui"},
+	}})
+	if state.Session.ID != "" || state.EndpointCursor != "" || state.Connection != ConnectionDisconnected || len(state.Messages) != 0 {
+		t.Fatalf("primed routed draft created durable authority: %#v", state)
+	}
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || draft.Status != RoutedDraftReady || draft.ClientRequestID != "route-1" {
+		t.Fatalf("primed draft = %#v", draft)
+	}
+	state = Reduce(state, RoutedDraftRoutingAction{})
+	state = Reduce(state, RoutedDraftFailedAction{Error: "failed"})
+	draft, _ = SelectRoutedDraft(state)
+	if draft.Status != RoutedDraftFailed || draft.Error != "failed" || draft.Prompt != "draft prompt" || draft.ClientRequestID != "route-1" || !draft.PlanModeRequested || !draft.ManagedWorktreeRequested {
+		t.Fatalf("failed draft lost retry intent: %#v", draft)
+	}
+
+	response := routedRuntimeResponse("session-1")
+	state = Reduce(state, RoutedDraftResolvedAction{Response: response})
+	draft, _ = SelectRoutedDraft(state)
+	if state.Session.ID != "session-1" || len(state.Messages) != 1 || state.Messages[0].Content != "route this" || state.EndpointCursor != "cursor-1" || draft.Status != RoutedDraftResolved {
+		t.Fatalf("resolved routed state = %#v", state)
+	}
+}
+
 func TestRunIntentLifecycleUsesAuthoritativeTimingAndTerminalState(t *testing.T) {
 	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
 		Session: client.SessionSummary{ID: "s"},

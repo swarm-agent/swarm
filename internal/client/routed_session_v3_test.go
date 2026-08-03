@@ -1,0 +1,83 @@
+package client
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestStartRoutedSessionV3UsesOneExplicitIdempotencyIdentity(t *testing.T) {
+	var request RoutedSessionV3StartRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != routedSessionV3Path {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Idempotency-Key"); got != "route-1" {
+			t.Fatalf("Idempotency-Key = %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(validRoutedSessionV3Response("session-1"))
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("token")
+	response, err := api.StartRoutedSessionV3(context.Background(), RoutedSessionV3StartRequest{
+		Input: "  build it  ", ClientRequestID: " route-1 ", ManagedWorktreeRequested: true, PlanModeRequested: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Input != "build it" || request.ClientRequestID != "route-1" || request.IdempotencyKey != "route-1" || !request.ManagedWorktreeRequested || !request.PlanModeRequested {
+		t.Fatalf("request = %#v", request)
+	}
+	if response.SessionID != "session-1" || response.Session.SessionAPI != "v3" || response.Hydrated().SnapshotEndpointCursor != "cursor-1" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestStartRoutedSessionV3RejectsConflictingOrInconsistentAuthority(t *testing.T) {
+	api := New("http://unused")
+	_, err := api.StartRoutedSessionV3(context.Background(), RoutedSessionV3StartRequest{Input: "x", ClientRequestID: "one", IdempotencyKey: "two"})
+	if err == nil || !strings.Contains(err.Error(), "one stable") {
+		t.Fatalf("idempotency error = %v", err)
+	}
+
+	payload := validRoutedSessionV3Response("session-1")
+	payload["mutation"].(map[string]any)["session_id"] = "other"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(payload) }))
+	defer server.Close()
+	api = New(server.URL)
+	_, err = api.StartRoutedSessionV3(context.Background(), RoutedSessionV3StartRequest{Input: "x", ClientRequestID: "one"})
+	if err == nil || !strings.Contains(err.Error(), "mutation projection") {
+		t.Fatalf("authority error = %v", err)
+	}
+}
+
+func validRoutedSessionV3Response(sessionID string) map[string]any {
+	session := map[string]any{"id": sessionID, "title": "Routed title", "mode": "plan", "workspace_path": "/runtime", "workspace_name": "repo"}
+	message := map[string]any{"id": "message-1", "session_id": sessionID, "global_seq": 1, "role": "user", "content": "build it"}
+	projection := map[string]any{"session_id": sessionID, "last_event_seq": 1, "projection_high_watermark_seq": 1}
+	run := map[string]any{"session_id": sessionID, "run_id": "run-1", "status": "pending_executor", "event_seq": 1}
+	outbox := map[string]any{"endpoint_seq": 1, "endpoint_cursor": "cursor-1", "session_id": sessionID, "projection": projection, "event": map[string]any{"id": "event-1", "session_id": sessionID, "seq": 1, "event_type": "session.created"}}
+	return map[string]any{
+		"ok": true, "session_id": sessionID, "title": "Routed title", "starting_mode": "plan", "replayed": false,
+		"session": session,
+		"session_view": map[string]any{
+			"identity": map[string]any{"session_id": sessionID, "title": "Routed title", "source_workspace_name": "repo", "source_workspace_path": "/source", "runtime_workspace_path": "/runtime", "worktree_enabled": true},
+			"agentic_settings": map[string]any{"mode": "plan", "agent_name": "swarm", "resolved_agent_name": "swarm", "effective_preference": map[string]any{"provider": "codex", "model": "gpt"}, "agent_model_policy": map[string]any{}, "context_window": 100},
+			"media_capability": map[string]any{"status": "unavailable", "capabilities": []any{}}, "pending_permissions": []any{},
+		},
+		"first_message": message, "projection": projection,
+		"mutation": map[string]any{
+			"session_id": sessionID, "primary_seq": 1, "first_seq": 1, "last_seq": 1,
+			"session": session, "message": message, "run_intent": run, "projection": projection, "realtime_outbox": outbox,
+			"event": map[string]any{"id": "event-1", "session_id": sessionID, "seq": 1, "event_type": "session.created"},
+		},
+	}
+}

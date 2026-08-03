@@ -14,6 +14,7 @@ import (
 
 // Transport is deliberately limited to the canonical V3 APIs used by chat.
 type Transport interface {
+	StartRoutedSessionV3(context.Context, client.RoutedSessionV3StartRequest) (client.RoutedSessionV3StartResponse, error)
 	CreateSessionV3WithOptions(context.Context, client.SessionCreateOptions) (client.SessionV3Hydrated, error)
 	CreateSessionV3TUIWithOptions(context.Context, client.SessionCreateOptions) (client.SessionV3Hydrated, error)
 	GetSessionV3TUI(context.Context, string, string, string) (client.SessionV3Hydrated, error)
@@ -65,6 +66,88 @@ func (r *Runtime) Store() *Store {
 		return nil
 	}
 	return r.store
+}
+
+// PrimeRoutedDraft creates a local-only operation. It has no durable session
+// identity and cannot be subscribed to until StartRoutedDraft validates success.
+func (r *Runtime) PrimeRoutedDraft(draft RoutedDraft) error {
+	if r == nil || r.transport == nil {
+		return errors.New("v3 chat transport is not configured")
+	}
+	draft.Prompt = strings.TrimSpace(draft.Prompt)
+	if draft.Prompt == "" {
+		return errors.New("v3 routed draft prompt is required")
+	}
+	if strings.TrimSpace(draft.ClientRequestID) == "" {
+		draft.ClientRequestID = "tui-v3-routed:" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	} else {
+		draft.ClientRequestID = strings.TrimSpace(draft.ClientRequestID)
+	}
+	r.mu.Lock()
+	r.primedCreate = nil
+	r.primedModeSelections = nil
+	r.workspacePath = ""
+	r.cwdPath = ""
+	r.mu.Unlock()
+	r.Stop()
+	r.store.Dispatch(PrimeRoutedDraftAction{Draft: draft})
+	r.signalWake()
+	return nil
+}
+
+func (r *Runtime) StartRoutedDraft(ctx context.Context) (client.RoutedSessionV3StartResponse, error) {
+	if r == nil || r.transport == nil {
+		return client.RoutedSessionV3StartResponse{}, errors.New("v3 chat transport is not configured")
+	}
+	state := r.store.Snapshot()
+	draft, ok := SelectRoutedDraft(state)
+	if !ok {
+		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft is not primed")
+	}
+	if draft.Status == RoutedDraftRouting {
+		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft is already routing")
+	}
+	if draft.Status == RoutedDraftResolved || strings.TrimSpace(state.Session.ID) != "" {
+		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft is already resolved")
+	}
+	r.store.Dispatch(RoutedDraftRoutingAction{})
+	r.signalWake()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	response, err := r.transport.StartRoutedSessionV3(ctx, client.RoutedSessionV3StartRequest{
+		Input: draft.Prompt, ClientRequestID: draft.ClientRequestID, IdempotencyKey: draft.ClientRequestID,
+		AgentName: draft.AgentName, Metadata: cloneMetadata(draft.Metadata),
+		ManagedWorktreeRequested: draft.ManagedWorktreeRequested, PlanModeRequested: draft.PlanModeRequested,
+	})
+	if err != nil {
+		r.store.Dispatch(RoutedDraftFailedAction{Error: err.Error()})
+		r.signalWake()
+		return client.RoutedSessionV3StartResponse{}, err
+	}
+	r.mu.Lock()
+	r.primedCreate = nil
+	r.primedModeSelections = nil
+	r.workspacePath = strings.TrimSpace(response.SessionView.Identity.RuntimeWorkspacePath)
+	r.cwdPath = r.workspacePath
+	r.mu.Unlock()
+	r.Stop()
+	r.store.Dispatch(RoutedDraftResolvedAction{Response: response})
+	r.signalWake()
+	startAtCurrent := strings.TrimSpace(response.Hydrated().SnapshotEndpointCursor) == ""
+	if err := r.connect(ctx, startAtCurrent); err != nil {
+		return client.RoutedSessionV3StartResponse{}, fmt.Errorf("connect routed v3 session: %w", err)
+	}
+	return response, nil
+}
+
+func (r *Runtime) RetryRoutedDraft(ctx context.Context) (client.RoutedSessionV3StartResponse, error) {
+	state := r.store.Snapshot()
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || draft.Status != RoutedDraftFailed {
+		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft has no failed operation to retry")
+	}
+	return r.StartRoutedDraft(ctx)
 }
 
 // PrimeNewSession keeps creation settings local until the first message is sent.

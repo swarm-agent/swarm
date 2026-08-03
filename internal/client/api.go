@@ -870,8 +870,12 @@ type SessionV3MutationResult struct {
 	FirstSeq       uint64                      `json:"first_seq"`
 	LastSeq        uint64                      `json:"last_seq"`
 	Event          SessionV3Event              `json:"event"`
+	Session        *SessionSummary             `json:"session,omitempty"`
+	Message        *SessionMessage             `json:"message,omitempty"`
+	RunIntent      *SessionV3RunIntent         `json:"run_intent,omitempty"`
 	Projection     SessionV3Projection         `json:"projection"`
 	RealtimeOutbox *SessionV3RealtimeOutboxRow `json:"realtime_outbox,omitempty"`
+	Events         []SessionV3Event            `json:"events,omitempty"`
 	Replayed       bool                        `json:"replayed,omitempty"`
 }
 

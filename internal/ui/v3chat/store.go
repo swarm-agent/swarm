@@ -39,6 +39,14 @@ func (s *Store) Snapshot() State {
 
 func SelectTitle(state State) string       { return state.Session.Title }
 func SelectMessages(state State) []Message { return append([]Message(nil), state.Messages...) }
+func SelectRoutedDraft(state State) (RoutedDraft, bool) {
+	if state.RoutedDraft == nil {
+		return RoutedDraft{}, false
+	}
+	draft := *state.RoutedDraft
+	draft.Metadata = cloneAnyMap(state.RoutedDraft.Metadata)
+	return draft, true
+}
 func SelectPending(state State) []PendingMessage {
 	out := make([]PendingMessage, 0, len(state.Pending))
 	for _, pending := range state.Pending {
