@@ -74,6 +74,9 @@ func TestTaskCommandReturnsBeforeRoutedDispatchCompletes(t *testing.T) {
 			if got := body["plan_mode_requested"]; got != (test.wantMode == "plan") {
 				t.Fatalf("plan_mode_requested = %#v", got)
 			}
+			if body["workspace_path"] != testWorkspacePath || body["host_workspace_path"] != testWorkspacePath || body["runtime_workspace_path"] != testWorkspacePath || body["workspace_binding_id"] != "binding-self" || body["swarm_id"] != "swarm-self" || body["target_kind"] != "host" || body["target_relationship"] != "self" {
+				t.Fatalf("routed task workspace authority = %#v", body)
+			}
 			close(release)
 			awaitTaskCommandResult(t, app)
 			if got := app.home.Status(); got != "Fix routing started in a worktree." {
@@ -98,8 +101,20 @@ func TestTaskCommandReportsBackgroundDispatchFailure(t *testing.T) {
 }
 
 func newTaskCommandTestApp(baseURL string) *App {
+	workspace := model.Workspace{
+		Name:                    "Workspace",
+		Path:                    testWorkspacePath,
+		LocalWorkspaceBindingID: "binding-self",
+		Active:                  true,
+	}
+	homeModel := model.EmptyHome()
+	homeModel.Workspaces = []model.Workspace{workspace}
+	homeModel.CurrentSwarmTarget = &model.SwarmTarget{SwarmID: "swarm-self", Kind: "host", Relationship: "self", Current: true}
+	homeModel.ChatRoutes = buildChatRoutesForHomeModel(homeModel, testWorkspacePath)
 	return &App{
-		home:          ui.NewHomePage(model.EmptyHome()),
+		home:          ui.NewHomePage(homeModel),
+		homeModel:     homeModel,
+		workspacePath: testWorkspacePath,
 		route:         "home",
 		api:           testAPIWithToken(baseURL),
 		taskCommandCh: make(chan taskCommandResult, 8),

@@ -58,6 +58,21 @@ async function listOutputFiles(directory: string): Promise<string[]> {
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), versionBuiltServiceWorker()],
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: 'desktop',
+              test: /src[\\/]features[\\/]desktop[\\/]/,
+              maxSize: 400 * 1024,
+            },
+          ],
+        },
+      },
+    },
+  },
   server: {
     host: '127.0.0.1',
     port: Number.isFinite(desktopPort) ? desktopPort : 5555,

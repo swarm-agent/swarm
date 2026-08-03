@@ -20,6 +20,7 @@ type taskCommandRequest struct {
 	mode            string
 	originSessionID string
 	requestID       string
+	authority       client.RoutedTaskWorkspaceAuthority
 }
 
 type taskCommandResult struct {
@@ -52,6 +53,32 @@ func (a *App) handleTaskCommand(args []string) {
 		return
 	}
 
+	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
+	if workspacePath == "" {
+		message := "/task failed: source workspace is unavailable"
+		a.home.SetStatus(message)
+		a.showToast(ui.ToastError, message)
+		return
+	}
+	route, err := a.canonicalSelfChatRoute(workspacePath)
+	if err != nil {
+		message := fmt.Sprintf("/task failed: resolve source workspace: %v", err)
+		a.home.SetStatus(message)
+		a.showToast(ui.ToastError, message)
+		return
+	}
+	authority := client.RoutedTaskWorkspaceAuthority{
+		WorkspacePath:      workspacePath,
+		WorkspaceBindingID: strings.TrimSpace(route.WorkspaceBindingID),
+		SwarmID:            createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget),
+	}
+	if authority.WorkspaceBindingID == "" || strings.TrimSpace(authority.SwarmID) == "" {
+		message := "/task failed: source workspace authority is unavailable"
+		a.home.SetStatus(message)
+		a.showToast(ui.ToastError, message)
+		return
+	}
+
 	originSessionID := ""
 	if a.route == "chat" && a.chat != nil {
 		originSessionID = strings.TrimSpace(a.chat.SessionID())
@@ -64,6 +91,7 @@ func (a *App) handleTaskCommand(args []string) {
 		mode:            mode,
 		originSessionID: originSessionID,
 		requestID:       uuid.NewString(),
+		authority:       authority,
 	}
 	a.home.SetStatus("dispatching task...")
 	go a.dispatchTaskCommand(dispatch)
@@ -72,7 +100,7 @@ func (a *App) handleTaskCommand(args []string) {
 func (a *App) dispatchTaskCommand(dispatch taskCommandRequest) {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCommandTimeout)
 	defer cancel()
-	response, err := a.api.CreateRoutedTaskSession(ctx, dispatch.request, dispatch.requestID, dispatch.mode == "plan", dispatch.originSessionID)
+	response, err := a.api.CreateRoutedTaskSession(ctx, dispatch.request, dispatch.requestID, dispatch.mode == "plan", dispatch.originSessionID, dispatch.authority)
 	result := taskCommandResult{response: response, err: err}
 
 	if a.taskCommandCh == nil {

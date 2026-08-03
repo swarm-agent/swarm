@@ -35,6 +35,9 @@ func TestCreateRoutedTaskSessionPinsWorktreeAndMode(t *testing.T) {
 				if body["managed_worktree_requested"] != true || body["plan_mode_requested"] != test.planMode {
 					t.Fatalf("routed task intent = %#v", body)
 				}
+				if body["workspace_path"] != "/source-workspace" || body["host_workspace_path"] != "/source-workspace" || body["runtime_workspace_path"] != "/source-workspace" || body["workspace_binding_id"] != "source-binding" || body["swarm_id"] != "host-swarm" || body["target_kind"] != "host" || body["target_relationship"] != "self" {
+					t.Fatalf("routed task workspace authority = %#v", body)
+				}
 				metadata, _ := body["metadata"].(map[string]any)
 				if metadata["task_command"] != true || metadata["task_origin_session_id"] != "origin-session" {
 					t.Fatalf("routed task metadata = %#v", metadata)
@@ -54,7 +57,11 @@ func TestCreateRoutedTaskSessionPinsWorktreeAndMode(t *testing.T) {
 
 			api := New(server.URL)
 			api.SetToken("test-token")
-			response, err := api.CreateRoutedTaskSession(context.Background(), "fix routing", "task-request", test.planMode, "origin-session")
+			response, err := api.CreateRoutedTaskSession(context.Background(), "fix routing", "task-request", test.planMode, "origin-session", RoutedTaskWorkspaceAuthority{
+				WorkspacePath:      "/source-workspace",
+				WorkspaceBindingID: "source-binding",
+				SwarmID:            "host-swarm",
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

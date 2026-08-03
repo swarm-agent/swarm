@@ -17,18 +17,31 @@ type RoutedTaskSessionResponse struct {
 	Session      SessionSummary `json:"session"`
 }
 
+type RoutedTaskWorkspaceAuthority struct {
+	WorkspacePath      string
+	WorkspaceBindingID string
+	SwarmID            string
+}
+
 // CreateRoutedTaskSession asks the Router to create and start a background
-// session. Task commands always authorize and require a managed worktree; Plan
-// remains an explicit caller-owned intent rather than a Router decision.
-func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyKey string, planMode bool, originSessionID string) (RoutedTaskSessionResponse, error) {
+// session. The caller supplies canonical source-workspace authority while the
+// Router owns task naming and worktree routing. Task commands always authorize
+// and require a managed worktree; Plan remains an explicit caller-owned intent.
+func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyKey string, planMode bool, originSessionID string, authority RoutedTaskWorkspaceAuthority) (RoutedTaskSessionResponse, error) {
 	request = strings.TrimSpace(request)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	originSessionID = strings.TrimSpace(originSessionID)
+	authority.WorkspacePath = strings.TrimSpace(authority.WorkspacePath)
+	authority.WorkspaceBindingID = strings.TrimSpace(authority.WorkspaceBindingID)
+	authority.SwarmID = strings.TrimSpace(authority.SwarmID)
 	if request == "" {
 		return RoutedTaskSessionResponse{}, errors.New("enter a task request after /task")
 	}
 	if idempotencyKey == "" {
 		return RoutedTaskSessionResponse{}, errors.New("routed task idempotency key is required")
+	}
+	if authority.WorkspacePath == "" || authority.WorkspaceBindingID == "" || authority.SwarmID == "" {
+		return RoutedTaskSessionResponse{}, errors.New("routed task requires source workspace path, binding, and swarm authority")
 	}
 	payload := map[string]any{
 		"input":                      request,
@@ -37,6 +50,13 @@ func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyK
 		"agent_name":                 "swarm",
 		"managed_worktree_requested": true,
 		"plan_mode_requested":        planMode,
+		"workspace_path":             authority.WorkspacePath,
+		"host_workspace_path":        authority.WorkspacePath,
+		"runtime_workspace_path":     authority.WorkspacePath,
+		"workspace_binding_id":       authority.WorkspaceBindingID,
+		"swarm_id":                   authority.SwarmID,
+		"target_kind":                "host",
+		"target_relationship":        "self",
 		"metadata": map[string]any{
 			"task_command": true,
 		},
