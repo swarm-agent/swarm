@@ -215,12 +215,22 @@ func agentsModalAssignmentLabel(agent string, index int) string {
 	return "Plan model"
 }
 
-func agentsModalAssignmentSummary(assignment client.AgentModelAssignment) string {
+func agentsModalAssignmentModelLine(assignment client.AgentModelAssignment) string {
 	selection := strings.Trim(strings.TrimSpace(assignment.Provider)+"/"+modelpkg.DisplayModelName(assignment.Provider, assignment.Model), "/")
 	if selection == "" {
-		selection = "not configured"
+		return "not configured"
 	}
-	parts := []string{selection}
+	return selection
+}
+
+func agentsModalAssignmentSettingsLine(assignment client.AgentModelAssignment) string {
+	thinking := emptyValue(strings.TrimSpace(assignment.Thinking), "off")
+	priority := emptyValue(strings.TrimSpace(assignment.ServiceTier), "off")
+	return fmt.Sprintf("%s • %s", thinking, priority)
+}
+
+func agentsModalAssignmentSummary(assignment client.AgentModelAssignment) string {
+	parts := []string{agentsModalAssignmentModelLine(assignment)}
 	if thinking := strings.TrimSpace(assignment.Thinking); thinking != "" {
 		parts = append(parts, thinking)
 	}
@@ -592,7 +602,8 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, statusStyle, clampEllipsis(status, rect.W-4))
 
 	body := Rect{X: rect.X + 1, Y: rect.Y + 3, W: rect.W - 2, H: rect.H - 6}
-	leftW := maxInt(22, body.W/3)
+	leftW := maxInt(36, body.W*2/5)
+	leftW = minInt(leftW, maxInt(22, body.W-36))
 	left := Rect{X: body.X, Y: body.Y, W: leftW, H: body.H}
 	right := Rect{X: body.X + leftW + 1, Y: body.Y, W: body.W - leftW - 1, H: body.H}
 	p.drawAgentsModalAgentList(s, left)
@@ -608,22 +619,39 @@ func (p *HomePage) drawAgentsModalAgentList(s tcell.Screen, rect Rect) {
 	}
 	DrawBox(s, rect, style)
 	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, "Agents")
-	for i, name := range canonicalAgentModelNames {
-		y := rect.Y + 2 + i*3
-		if y >= rect.Y+rect.H-1 {
+	const (
+		cardH   = 4
+		cardGap = 0
+	)
+	visibleCards := maxInt(1, (rect.H-2+cardGap)/(cardH+cardGap))
+	start := 0
+	if p.agentsModal.SelectedAgent >= visibleCards {
+		start = p.agentsModal.SelectedAgent - visibleCards + 1
+	}
+	for i := start; i < len(canonicalAgentModelNames); i++ {
+		name := canonicalAgentModelNames[i]
+		card := Rect{X: rect.X + 1, Y: rect.Y + 1 + (i-start)*(cardH+cardGap), W: rect.W - 2, H: cardH}
+		if card.Y+card.H > rect.Y+rect.H-1 {
 			break
 		}
 		selected := i == p.agentsModal.SelectedAgent
-		prefix, lineStyle := "  ", p.theme.Text
+		cardBorder := p.theme.Border
+		prefix, nameStyle := "  ", p.theme.Text.Bold(true)
 		if selected {
-			prefix, lineStyle = "> ", p.theme.Accent.Bold(true)
+			cardBorder = p.theme.BorderActive
+			prefix, nameStyle = "> ", p.theme.Accent.Bold(true)
 		}
-		DrawText(s, rect.X+2, y, rect.W-4, lineStyle, prefix+agentsModalDisplayName(name))
-		assignments := p.agentsModal.Drafts[name]
-		if len(assignments) > 0 {
-			DrawText(s, rect.X+4, y+1, rect.W-6, p.theme.TextMuted, clampEllipsis(agentsModalAssignmentSummary(assignments[0]), rect.W-6))
+		DrawBox(s, card, cardBorder)
+		contentX, contentW := card.X+1, maxInt(0, card.W-2)
+		DrawText(s, contentX, card.Y, contentW, styleForCurrentCellBackground(nameStyle), clampEllipsis(prefix+agentsModalDisplayName(name), contentW))
+
+		assignment := client.AgentModelAssignment{}
+		if assignments := p.agentsModal.Drafts[name]; len(assignments) > 0 {
+			assignment = assignments[0]
 		}
-		p.registerAgentsModalTarget(Rect{X: rect.X + 1, Y: y, W: rect.W - 2, H: minInt(2, rect.Y+rect.H-y-1)}, "agents-agent", i, "")
+		DrawText(s, contentX+2, card.Y+1, maxInt(0, contentW-2), styleForCurrentCellBackground(p.theme.Text), clampEllipsis(agentsModalAssignmentModelLine(assignment), maxInt(0, contentW-2)))
+		DrawText(s, contentX+2, card.Y+2, maxInt(0, contentW-2), styleForCurrentCellBackground(p.theme.TextMuted), clampEllipsis(agentsModalAssignmentSettingsLine(assignment), maxInt(0, contentW-2)))
+		p.registerAgentsModalTarget(card, "agents-agent", i, "")
 	}
 }
 
@@ -751,4 +779,3 @@ func findAgentsModalOptionIndex(options []string, value string) int {
 	}
 	return -1
 }
-

@@ -12,7 +12,7 @@ import (
 
 func canonicalAgentsModalTestData() AgentsModalData {
 	assignment := func(model string) client.AgentModelAssignment {
-		return client.AgentModelAssignment{Provider: "codex", Model: model, Thinking: "high"}
+		return client.AgentModelAssignment{Provider: "codex", Model: model, Thinking: "high", ServiceTier: "priority"}
 	}
 	return AgentsModalData{
 		Settings: client.AgentModelSettings{
@@ -153,6 +153,68 @@ func TestAgentsModalEscCancelsWithoutPersisting(t *testing.T) {
 	}
 }
 
+func TestAgentsModalAgentCardLinesUseCanonicalAssignment(t *testing.T) {
+	assignment := client.AgentModelAssignment{Provider: "codex", Model: "gpt-5.6", Thinking: "xhigh", ServiceTier: "priority"}
+	if got := agentsModalAssignmentModelLine(assignment); got != "codex/gpt-5.6" {
+		t.Fatalf("model line = %q, want codex/gpt-5.6", got)
+	}
+	if got := agentsModalAssignmentSettingsLine(assignment); got != "xhigh • priority" {
+		t.Fatalf("settings line = %q", got)
+	}
+}
+
+func TestAgentsModalAgentCardUsesOneOutlineAndPanelBackground(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(canonicalAgentsModalTestData())
+	page.theme.Panel = tcell.StyleDefault.Background(tcell.ColorBlack)
+	page.theme.Element = tcell.StyleDefault.Background(tcell.ColorGreen)
+	page.theme.Border = tcell.StyleDefault.Foreground(tcell.ColorGray).Background(tcell.ColorBlack)
+	page.theme.BorderActive = tcell.StyleDefault.Foreground(tcell.ColorBlue).Background(tcell.ColorBlack)
+	page.theme.Text = tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorRed)
+	page.theme.TextMuted = tcell.StyleDefault.Foreground(tcell.ColorGray).Background(tcell.ColorPurple)
+	page.theme.Accent = tcell.StyleDefault.Foreground(tcell.ColorYellow).Background(tcell.ColorMaroon)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(110, 36)
+	page.drawAgentsModal(screen)
+	screen.Show()
+
+	for _, point := range []struct {
+		x int
+		y int
+	}{
+		{x: 7, y: 7},  // model text
+		{x: 7, y: 8},  // settings text
+		{x: 40, y: 7}, // card padding
+	} {
+		_, _, style, _ := screen.GetContent(point.x, point.y)
+		_, background, _ := style.Decompose()
+		if background != tcell.ColorBlack {
+			t.Fatalf("card cell (%d,%d) background = %v, want panel background", point.x, point.y, background)
+		}
+	}
+	for _, point := range []struct {
+		x    int
+		y    int
+		want rune
+	}{
+		{x: 4, y: 6, want: tcell.RuneULCorner},
+		{x: 42, y: 6, want: tcell.RuneURCorner},
+		{x: 4, y: 9, want: tcell.RuneLLCorner},
+		{x: 42, y: 9, want: tcell.RuneLRCorner},
+	} {
+		got, _, _, _ := screen.GetContent(point.x, point.y)
+		if got != point.want {
+			t.Fatalf("card outline cell (%d,%d) = %q, want %q", point.x, point.y, got, point.want)
+		}
+	}
+}
+
 func TestAgentsModalRenderHasNoProfileOrPolicyWorkflow(t *testing.T) {
 	page := NewHomePage(model.EmptyHome())
 	page.ShowAgentsModal()
@@ -178,12 +240,12 @@ func TestAgentsModalRenderHasNoProfileOrPolicyWorkflow(t *testing.T) {
 		}
 	}
 	text := rendered.String()
-	for _, want := range []string{"Swarm", "Compact", "Finder", "Coder", "Designer", "Router", "Default model", "Plan model", "Save changes and exit"} {
+	for _, want := range []string{"Swarm", "codex/action-model", "high • priority", "Compact", "Finder", "Coder", "Designer", "Router", "Default model", "Plan model", "Save changes and exit"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("render missing %q:\n%s", want, text)
 		}
 	}
-	for _, rejected := range []string{"Profile", "single", "split", "temporary", "Save as new"} {
+	for _, rejected := range []string{"thinking:", "priority:", "Profile", "single", "split", "temporary", "Save as new"} {
 		if strings.Contains(text, rejected) {
 			t.Fatalf("render retained %q workflow:\n%s", rejected, text)
 		}
