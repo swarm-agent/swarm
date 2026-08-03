@@ -3476,10 +3476,15 @@ export function DesktopAppPage() {
     try {
       const returnedAuthority = desktopV3RoutedResultResponse(result).session_view.identity
       const sourceWorkspacePath = returnedAuthority.source_workspace_path.trim()
+      const runtimeWorkspacePath = returnedAuthority.runtime_workspace_path.trim()
+      const expectedRuntimeWorkspacePath = authority.runtime_workspace_path.trim()
+      const runtimeAuthorityMatches = returnedAuthority.worktree_enabled
+        ? runtimeWorkspacePath === returnedAuthority.worktree_root_path?.trim()
+        : runtimeWorkspacePath === expectedRuntimeWorkspacePath
       if (sourceWorkspacePath !== expectedWorkspacePath
         || returnedAuthority.workspace_binding_id?.trim() !== authority.workspace_binding_id
         || returnedAuthority.runtime_swarm_id?.trim() !== authority.swarm_id
-        || returnedAuthority.runtime_workspace_path.trim() !== authority.runtime_workspace_path) {
+        || !runtimeAuthorityMatches) {
         throw new Error('Routed Desktop start returned authority for a different workspace')
       }
       canonicalWorkspace = workspaceByPath.get(sourceWorkspacePath)
@@ -4247,7 +4252,7 @@ export function DesktopAppPage() {
             <ListChecks size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
             <span className="text-sm font-semibold text-[var(--app-text)]">Task</span>
           </button>
-          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)] disabled:opacity-50" onClick={openRouteWorkspaceWorktree} disabled={!routeWorkspace}>
+          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)] disabled:opacity-50" onClick={() => openRouteWorkspaceWorktree()} disabled={!routeWorkspace}>
             <GitBranch size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
             <span className="text-sm font-semibold text-[var(--app-text)]">Worktree</span>
           </button>
@@ -4945,7 +4950,7 @@ export function DesktopAppPage() {
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
               <div className="text-lg font-semibold">Managed worktree</div>
               <p className="mt-2 text-sm text-[var(--app-text-muted)]">Worktree intent is chosen before routing; Swarm chooses the branch only after you send the new chat.</p>
-              <Button className="mt-4" onClick={openRouteWorkspaceWorktree}>Use a managed worktree</Button>
+              <Button className="mt-4" onClick={() => openRouteWorkspaceWorktree()}>Use a managed worktree</Button>
             </Card>
           </div>
         ) : routeSessionUnavailable ? (

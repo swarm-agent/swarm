@@ -42,6 +42,9 @@ test('routed activation derives URL identity from the returned source workspace 
 
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   assert.match(handler, /source_workspace_path\.trim\(\)/)
+  assert.match(handler, /returnedAuthority\.worktree_enabled[\s\S]*runtimeWorkspacePath === returnedAuthority\.worktree_root_path\?\.trim\(\)[\s\S]*runtimeWorkspacePath === expectedRuntimeWorkspacePath/)
+  assert.match(handler, /!runtimeAuthorityMatches/)
+  assert.doesNotMatch(handler, /returnedAuthority\.runtime_workspace_path\.trim\(\) !== authority\.runtime_workspace_path/)
   assert.match(handler, /source_workspace_id/)
   assert.match(handler, /unknown source workspace/)
   assert.match(handler, /activationGeneration === routedActivationGenerationRef\.current/)

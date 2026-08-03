@@ -915,7 +915,10 @@ export class DesktopV3RoutedNewSessionController {
     if (this.state.phase === 'failed') {
       operation = this.state.operation
     } else if (this.state.phase === 'draft' || this.state.phase === 'worktree-primed') {
-      const operationInput: CreateDesktopV3RoutedStartOperationInput = input ?? { snapshot: this.state.snapshot }
+      if (!input) {
+        return Promise.reject(new Error('Routed Desktop start requires captured workspace authority'))
+      }
+      const operationInput: CreateDesktopV3RoutedStartOperationInput = input
       operation = createDesktopV3RoutedStartOperation({
         ...operationInput,
         identity: operationInput.identity ?? this.prepareOperationIdentity(),
