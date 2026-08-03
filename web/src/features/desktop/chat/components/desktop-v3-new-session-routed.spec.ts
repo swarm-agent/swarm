@@ -16,7 +16,7 @@ test('new Desktop chat uses only the routed controller and endpoint before activ
   assert.match(source, /initialPrompt\?: string/)
   assert.match(source, /initialControllerState\.phase === 'failed' \? '' : initialPrompt\.trim\(\)/)
   assert.match(source, /const commandPrompt = initialPrompt\.trim\(\)[\s\S]*initialWorktreeRequested[\s\S]*routedController\.primeWorktree\(commandPrompt, snapshot\)[\s\S]*routedController\.startDraft\(commandPrompt, snapshot\)/)
-  assert.match(source, /const initialCommandStarting = Boolean\(initialCommandPrompt\)[\s\S]*const pendingState = routedState\.phase === 'resolved' \|\| initialCommandStarting \? 'routing' : routedState\.phase[\s\S]*const showComposer = !initialCommandStarting/)
+  assert.match(source, /const initialCommandStarting = Boolean\(initialCommandPrompt\)[\s\S]*const activationPending = initialCommandStarting[\s\S]*routedState\.phase === 'routing'[\s\S]*routedState\.phase === 'resolved'[\s\S]*const pendingState = routedState\.phase === 'failed' \|\| routedState\.phase === 'worktree-primed'[\s\S]*: 'draft'/)
   assert.match(source, /initialCommandPrompt[\s\S]*initialPromptSubmittedRef\.current[\s\S]*handleSubmit\(createDesktopV3RoutedComposerSnapshot\(\{[\s\S]*prompt: initialCommandPrompt[\s\S]*worktreePrimed: initialWorktreeRequested[\s\S]*planModeRequested: initialPlanModeRequested/)
   assert.match(source, /controller\.submit\(\{[\s\S]*snapshot: captured[\s\S]*metadata: encodeDesktopRoutedWorktreeIntentMetadata/)
   assert.match(source, /controller\.retry\(\)/)
@@ -70,8 +70,19 @@ test('routed pending and failure stay local and retry the persisted controller i
   assert.match(composerSource, /routedTextFiles = files\.filter\(isComposerTextFile\)/)
   assert.match(composerSource, /routedMediaFiles = files\.filter\(\(file\) => !isComposerTextFile\(file\)\)/)
   assert.match(composerSource, /textAttachments\.reduce\([\s\S]*appendComposerTextFile\(nextDraft, attachment\.name, attachment\.fileType, attachment\.content\)/)
-  assert.match(paneSource, /showComposer \? \([\s\S]*<DesktopV3AgenticComposer/)
+  assert.match(paneSource, /<DesktopV3AgenticComposer[\s\S]*disabled=\{activationPending\}[\s\S]*busy=\{activationPending\}/)
   assert.match(paneSource, /routedNewSession/)
+})
+
+test('all successful direct starts retain the new-chat surface until destination activation', async () => {
+  const source = await readFile(paneURL, 'utf8')
+
+  assert.match(source, /const activationPending = initialCommandStarting[\s\S]*routedState\.phase === 'routing'[\s\S]*routedState\.phase === 'resolved'/)
+  assert.match(source, /const pendingState = routedState\.phase === 'failed' \|\| routedState\.phase === 'worktree-primed'[\s\S]*: 'draft'/)
+  assert.match(source, /startPath=\{routedState\.snapshot\.worktreePrimed \? 'router' : 'session'\}/)
+  assert.match(source, /<DesktopV3AgenticComposer[\s\S]*disabled=\{activationPending\}[\s\S]*busy=\{activationPending\}/)
+  assert.doesNotMatch(source, /activationPending \? 'routing'/)
+  assert.doesNotMatch(source, /showComposer/)
 })
 
 test('routed new-chat composer exposes explicit Worktree and Plan intent with a waiting model bar', async () => {

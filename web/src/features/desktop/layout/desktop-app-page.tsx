@@ -4246,27 +4246,45 @@ export function DesktopAppPage() {
   })
 
   const mobileSessionQuickMenu = routeWorkspace?.path ? (
-    <div className="flex min-h-0 w-full flex-1 flex-col gap-4 pb-2" data-testid="mobile-workspace-home">
-      <section className="shrink-0" aria-label="Workspace actions">
-        <div className="grid grid-cols-2 gap-3">
-          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)]" onClick={openBackgroundTaskModal}>
-            <ListChecks size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
-            <span className="text-sm font-semibold text-[var(--app-text)]">Task</span>
-          </button>
-          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)] disabled:opacity-50" onClick={() => openRouteWorkspaceWorktree()} disabled={!routeWorkspace}>
-            <GitBranch size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
-            <span className="text-sm font-semibold text-[var(--app-text)]">Worktree</span>
-          </button>
+    <div className="flex min-h-0 w-full flex-1 flex-col bg-[var(--app-bg)]" data-testid="mobile-workspace-home">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Workspace</p>
+          <div className="relative mt-0.5 max-w-full">
+            <select
+              aria-label="Change workspace"
+              className="min-h-8 w-full appearance-none truncate rounded-lg border border-transparent bg-transparent py-1 pl-0 pr-7 text-base font-semibold text-[var(--app-text)] outline-none transition focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+              value={routeWorkspace.path}
+              onChange={(event) => {
+                const workspace = mergedSidebarWorkspaceEntries.find((candidate) => candidate.path === event.target.value)
+                if (workspace) handleOpenWorkspace(workspace.path, workspace.workspaceName)
+              }}
+            >
+              {mergedSidebarWorkspaceEntries.map((workspace) => (
+                <option key={workspace.path} value={workspace.path}>{workspace.workspaceName}</option>
+              ))}
+            </select>
+            <ChevronDown size={16} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)]" aria-hidden="true" />
+          </div>
         </div>
-      </section>
+        <button
+          type="button"
+          className="inline-flex min-h-11 shrink-0 touch-manipulation items-center gap-2 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface)] px-4 text-sm font-semibold text-[var(--app-primary)] shadow-sm transition active:bg-[var(--app-surface-hover)]"
+          onClick={openBackgroundTaskModal}
+        >
+          <ListChecks size={17} aria-hidden="true" />
+          <span>Task</span>
+        </button>
+      </div>
 
-      <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-sm">
-        <div data-mobile-active-sessions-header className="mb-2 flex min-h-11 shrink-0 items-center px-1">
-          <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Active sessions</h2>
+      <section className="flex min-h-0 flex-1 flex-col" aria-labelledby="mobile-workspace-sessions-heading">
+        <div data-mobile-active-sessions-header className="flex min-h-11 shrink-0 items-center justify-between px-4 pt-1">
+          <h2 id="mobile-workspace-sessions-heading" className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Sessions</h2>
+          {mobileActiveSessionNodes.length > 0 ? <span className="text-xs text-[var(--app-text-subtle)]">{mobileActiveSessionNodes.length} active</span> : null}
         </div>
-        <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
+        <div className="grid min-h-0 content-start gap-2 overflow-y-auto px-3 pb-3 [-webkit-overflow-scrolling:touch]" data-testid="mobile-workspace-session-scroll">
           {renderMobileSessions(mobileActiveSessionNodes) ?? (
-            <div className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
+            <div className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-6 text-center text-sm text-[var(--app-text-subtle)]">No active sessions yet.</div>
           )}
           {mobilePreviousSessionNodes.length > 0 ? (
             <div className="mt-1 border-t border-[var(--app-border)] pt-2">
@@ -4278,7 +4296,7 @@ export function DesktopAppPage() {
             </div>
           ) : null}
         </div>
-      </Card>
+      </section>
     </div>
   ) : null
 

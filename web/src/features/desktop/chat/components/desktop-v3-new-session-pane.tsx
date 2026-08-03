@@ -297,9 +297,16 @@ export function DesktopV3NewSessionPane({
   const initialCommandStarting = Boolean(initialCommandPrompt)
     && !initialPromptSubmittedRef.current
     && (routedState.phase === 'draft' || routedState.phase === 'worktree-primed')
-  const pendingState = routedState.phase === 'resolved' || initialCommandStarting ? 'routing' : routedState.phase
-  const showComposer = !initialCommandStarting
-    && (routedState.phase === 'draft' || routedState.phase === 'worktree-primed' || routedState.phase === 'failed')
+  const activationPending = initialCommandStarting
+    || routedState.phase === 'routing'
+    || routedState.phase === 'resolved'
+  // Keep the current new-chat surface mounted until the durable destination is
+  // activated. Swapping it for the routed pending shell causes a visible page
+  // flash on fast starts and is unnecessary because the composer can own the
+  // transient busy state without publishing another session authority.
+  const pendingState = routedState.phase === 'failed' || routedState.phase === 'worktree-primed'
+    ? routedState.phase
+    : 'draft'
 
   return (
     <div
@@ -308,8 +315,14 @@ export function DesktopV3NewSessionPane({
       data-testid="desktop-v3-new-session-pane"
       data-routed-phase={routedState.phase}
     >
-      {mobileSessionQuickMenu && showComposer ? (
-        <div className="absolute inset-x-0 top-0 z-10 flex min-h-0 sm:hidden">{mobileSessionQuickMenu}</div>
+      {mobileSessionQuickMenu ? (
+        <section
+          className="flex min-h-0 flex-1 flex-col overflow-hidden pt-[var(--app-safe-area-top)] sm:hidden"
+          data-testid="mobile-workspace-session-list"
+          aria-label="Workspace sessions"
+        >
+          {mobileSessionQuickMenu}
+        </section>
       ) : null}
 
       <DesktopV3RoutedPendingShell
@@ -318,22 +331,24 @@ export function DesktopV3NewSessionPane({
         pendingPrompt={routedState.prompt}
         error={routedState.phase === 'failed' ? routedState.error : undefined}
         onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
+        className={mobileSessionQuickMenu ? 'hidden sm:flex' : undefined}
       />
 
-      {showComposer ? (
-        <DesktopV3AgenticComposer
+      <DesktopV3AgenticComposer
           workspacePath={workspace.path}
           draft={draft}
           focusSignal={composerFocusSignal}
           onDraftChange={setDraft}
           placeholder="What would you like to work on?"
           inputLabel="Start a routed Desktop V3 session"
+          disabled={activationPending}
+          busy={activationPending}
           canSubmit={Boolean(draft.trim()) || stagedAttachments.length > 0}
           onSubmit={() => undefined}
           onRoutedSubmit={handleSubmit}
           routedStagedAttachments={stagedAttachments}
-          onRoutedStageAttachments={routedState.phase === 'failed' ? undefined : handleStageAttachments}
-          onRoutedRemoveStagedAttachment={routedState.phase === 'failed' ? undefined : (stagingId) => setStagedAttachments((current) => {
+          onRoutedStageAttachments={routedState.phase === 'failed' || activationPending ? undefined : handleStageAttachments}
+          onRoutedRemoveStagedAttachment={routedState.phase === 'failed' || activationPending ? undefined : (stagingId) => setStagedAttachments((current) => {
             removedStagedAttachmentIdsRef.current.add(stagingId)
             const next = current.filter((attachment) => attachment.stagingId !== stagingId)
             stagedAttachmentsRef.current = next
@@ -342,8 +357,8 @@ export function DesktopV3NewSessionPane({
           routedComposerSnapshot={restoredSnapshot}
           routedWorktreeRequested={worktreeIntent.requested}
           mode={mode}
-          onModeSelect={routedState.phase === 'failed' ? undefined : setMode}
-          onRoutedWorktreeRequestedChange={routedState.phase === 'failed' ? undefined : (requested) => {
+          onModeSelect={routedState.phase === 'failed' || activationPending ? undefined : setMode}
+          onRoutedWorktreeRequestedChange={routedState.phase === 'failed' || activationPending ? undefined : (requested) => {
             setWorktreeIntent((current) => setDesktopRoutedWorktreeIntent(current, requested))
           }}
           currentAgent="swarm"
@@ -356,7 +371,7 @@ export function DesktopV3NewSessionPane({
           selectedServiceTier={actionModel?.serviceTier ?? ''}
           thinking={actionModel?.thinking ?? ''}
           modelControlDetail={actionModel ? `${actionModel.provider}/${actionModel.model}` : 'Swarm action model'}
-          modelStatusLabel="Waiting…"
+          modelStatusLabel="Ready"
           agentSettingsOpenSignal={agentSettingsOpenSignal}
           agentSettingsInitialAgent={agentSettingsInitialAgent}
           onConfirmAgentSettings={handleConfirmAgentSettings}
@@ -366,7 +381,6 @@ export function DesktopV3NewSessionPane({
           onSlashCommand={onSlashCommand}
           slashCommandContext="new-session"
         />
-      ) : null}
     </div>
   )
 }
