@@ -47,7 +47,7 @@ import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
-import { AICommitControl } from '../git/ai-commit-control'
+import { AICommitButton, GitActionFlowControl } from '../git/ai-commit-control'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
 import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../workspaces/actions/types'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
@@ -4353,18 +4353,20 @@ export function DesktopAppPage() {
 
   const gitCommitActionMissingInputs = Boolean(gitCommitAction?.inputs.some((input) => input.required && !(gitCommitActionInputs[input.id] ?? '').trim()))
 
-  const handleAICommit = async (input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>) => {
+  const handleAICommit = async (
+    input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>,
+    flow?: { action: WorkspaceAction; inputs: Record<string, string> },
+  ) => {
     if (gitCommitBusy || gitAICommitRunningRef.current) return
-    const selectedAction = gitCommitAction?.workspacePath === input.workspacePath ? gitCommitAction : null
-    if (selectedAction?.inputs.some((actionInput) => actionInput.required && !(gitCommitActionInputs[actionInput.id] ?? '').trim())) {
+    const selectedAction = flow?.action ?? (gitCommitAction?.workspacePath === input.workspacePath ? gitCommitAction : null)
+    const selectedActionInputs = flow?.inputs ?? (selectedAction ? { ...gitCommitActionInputs } : {})
+    if (selectedAction?.inputs.some((actionInput) => actionInput.required && !(selectedActionInputs[actionInput.id] ?? '').trim())) {
       setDesktopToast({ message: 'Fill every required post-commit Action input before running AI Commit.', tone: 'error' })
       return
     }
 
     gitAICommitRunningRef.current = true
     if (gitCommitAction && !selectedAction) selectGitCommitAction(null)
-
-    const selectedActionInputs = selectedAction ? { ...gitCommitActionInputs } : {}
     setGitAICommitPhase('generating')
     setDesktopToast({ message: 'AI Commit is generating a commit message. Please wait…', tone: 'info' })
     try {
@@ -4534,25 +4536,20 @@ export function DesktopAppPage() {
 
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
     <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="inset-card" data-plan-section-treatment="inset-card">
-      <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <GitBranch size={13} className="shrink-0" />
-          <span className="min-w-0 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
-          {gitSnapshot?.has_git ? <span className="shrink-0">{gitSnapshot.dirty_count}</span> : null}
-        </div>
-        {gitSnapshot?.has_git ? (
-          <div className="ml-auto flex shrink-0 items-center justify-end gap-2 normal-case tracking-normal" data-plan-git-commit>
-            {gitSnapshot.files.length > 0 ? (
-              <>
-                <button type="button" className="grid min-h-8 w-8 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
-                <AICommitControl compact workspacePath={selectedGitWorkspacePath} selectedAction={gitCommitAction} phase={gitAICommitPhase} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }) }} />
-              </>
-            ) : (
-              <AICommitControl actionsOnly workspacePath={selectedGitWorkspacePath} selectedAction={null} disabled={gitCommitBusy} onActionRun={openWorkspaceAction} />
-            )}
-          </div>
-        ) : null}
+      <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]" data-plan-git-header>
+        <GitBranch size={13} className="shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
+        {gitSnapshot?.has_git ? <span className="shrink-0">{gitSnapshot.dirty_count}</span> : null}
       </div>
+      {gitSnapshot?.has_git ? (
+        <div className="mt-2 flex min-w-0 shrink-0 items-center gap-1 normal-case tracking-normal" data-plan-git-action-row data-plan-git-commit>
+          <GitActionFlowControl compact workspacePath={selectedGitWorkspacePath} canAICommit={gitSnapshot.files.length > 0} disabled={gitCommitBusy || gitAICommitPhase !== null} onActionRun={openWorkspaceAction} onAICommitActionRun={(action, inputs) => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }, { action, inputs }) }} />
+          {gitSnapshot.files.length > 0 ? <>
+            <button type="button" className="grid min-h-9 w-9 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
+            <AICommitButton compact phase={gitAICommitPhase} disabled={gitCommitBusy} onGenerate={() => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }) }} />
+          </> : null}
+        </div>
+      ) : null}
       {activeSessionWorktree ? (
         <div className="mt-2 shrink-0" data-plan-git-session-commits>
           <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]"><GitCommitHorizontal size={11} />Session commits <span className="ml-auto">{activeSessionCommits.length}</span></div>
@@ -5389,7 +5386,7 @@ export function DesktopAppPage() {
           openGitCommitReview({ workspacePath: gitPanel.workspacePath, sessionId: '', files })
           setGitPanel(null)
         }}
-        aiCommitControl={gitPanel && topWorkspaceGitSnapshot?.files.length ? <AICommitControl workspacePath={gitPanel.workspacePath} selectedAction={gitCommitAction} phase={gitAICommitPhase} disabled={gitCommitBusy} onActionSelect={selectGitCommitAction} onGenerate={() => { void handleAICommit({ workspacePath: gitPanel.workspacePath, sessionId: '' }); setGitPanel(null) }} /> : null}
+        aiCommitControl={gitPanel && topWorkspaceGitSnapshot?.files.length ? <AICommitButton phase={gitAICommitPhase} disabled={gitCommitBusy} onGenerate={() => { void handleAICommit({ workspacePath: gitPanel.workspacePath, sessionId: '' }); setGitPanel(null) }} /> : null}
         onClose={closeGitPanel}
       />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}
