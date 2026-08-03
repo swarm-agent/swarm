@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Button } from '../../../../../components/ui/button'
 import { Select } from '../../../../../components/ui/select'
-import type { SwarmModelSelection, SwarmModelSettingsInput } from '../../swarm/types/model-settings'
+import type { AgentModelAssignment, SwarmAgentModelSettingsPatch } from '../../swarm/types/agent-model-settings'
 
 export interface SwarmDirectModelOption {
   provider: string
@@ -12,12 +12,12 @@ export interface SwarmDirectModelOption {
   contextModeOptions?: string[]
 }
 
-export type SwarmModelAssignmentSaveInput = SwarmModelSettingsInput
+export type SwarmModelAssignmentSaveInput = SwarmAgentModelSettingsPatch
 
 export interface SwarmModelAssignmentSettingsProps {
   modelOptions: readonly SwarmDirectModelOption[]
-  action: SwarmModelSelection
-  plan: SwarmModelSelection
+  action: AgentModelAssignment
+  plan: AgentModelAssignment
   saving: boolean
   error?: string | null
   onSave: (input: SwarmModelAssignmentSaveInput) => void
@@ -27,7 +27,7 @@ type AssignmentValidationResult =
   | { value: SwarmModelAssignmentSaveInput; error: null }
   | { value: null; error: string }
 
-function normalizeSelection(selection: SwarmModelSelection): SwarmModelSelection {
+function normalizeSelection(selection: AgentModelAssignment): AgentModelAssignment {
   return {
     provider: selection.provider.trim(),
     model: selection.model.trim(),
@@ -37,7 +37,7 @@ function normalizeSelection(selection: SwarmModelSelection): SwarmModelSelection
   }
 }
 
-export function buildSwarmModelAssignmentSaveInput(input: SwarmModelSettingsInput): AssignmentValidationResult {
+export function buildSwarmModelAssignmentSaveInput(input: SwarmAgentModelSettingsPatch): AssignmentValidationResult {
   const action = normalizeSelection(input.action)
   const plan = normalizeSelection(input.plan)
   if (!action.provider || !action.model || !action.thinking) {
@@ -61,10 +61,10 @@ function DirectModelEditor({
   onChange,
 }: {
   label: string
-  value: SwarmModelSelection
+  value: AgentModelAssignment
   modelOptions: readonly SwarmDirectModelOption[]
   disabled: boolean
-  onChange: (value: SwarmModelSelection) => void
+  onChange: (value: AgentModelAssignment) => void
 }) {
   const providers = Array.from(new Set(modelOptions.map((option) => option.provider.trim()).filter(Boolean)))
   const choices = modelOptions.filter((option) => option.provider === value.provider)
