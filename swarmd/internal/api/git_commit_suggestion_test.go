@@ -201,6 +201,35 @@ func TestInvokeConfiguredRouterOnceDoesNotRetryProviderFailure(t *testing.T) {
 	}
 }
 
+func TestCommitSessionsV3ReviewChangesUsesOneToolFreeUtilityRequest(t *testing.T) {
+	repo := initGitCommitTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("review change\n"), 0o644); err != nil {
+		t.Fatalf("write review change: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new review file\n"), 0o644); err != nil {
+		t.Fatalf("write untracked review file: %v", err)
+	}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"message":"feat: commit review worktree"}`}}
+	server, principal, _ := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{repo, "Review", "Git workspace"}})
+
+	if err := server.commitSessionsV3ReviewChanges(context.Background(), principal, repo); err != nil {
+		t.Fatalf("commit review changes: %v", err)
+	}
+	if runner.createCalls != 1 || runner.streamingCalls != 0 {
+		t.Fatalf("review commit provider calls=%d/%d, want one non-streaming call", runner.createCalls, runner.streamingCalls)
+	}
+	request := runner.requests[0]
+	if request.ToolChoice != "none" || len(request.Tools) != 0 || request.ToolInvoker != nil {
+		t.Fatalf("review commit utility request exposed tools: %+v", request)
+	}
+	if got := strings.TrimSpace(runGitCommitTestCommand(t, repo, "log", "-1", "--pretty=%s")); got != "feat: commit review worktree" {
+		t.Fatalf("review commit subject = %q", got)
+	}
+	if got := strings.TrimSpace(runGitCommitTestCommand(t, repo, "status", "--porcelain")); got != "" {
+		t.Fatalf("review commit left dirty status: %q", got)
+	}
+}
+
 func TestResolveGitCommitWorkspacePathRoutesOwnedWorkspaceAndRejectsOtherAccount(t *testing.T) {
 	runner := &sessionRouterRecordingRunner{id: "recording"}
 	server, principal, entries := newSessionRouterTestServer(t, runner, []sessionRouterWorkspace{{"/workspace/owned", "Owned", "Git workspace"}})

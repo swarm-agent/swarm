@@ -11,7 +11,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestResolveSystemAgentUsesCanonicalAccountModelForConfiguredAgents(t *testing.T) {
+func TestResolveSystemAgentUsesCanonicalAccountModelForAllOnboardingAgents(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -48,7 +48,6 @@ func TestResolveSystemAgentUsesCanonicalAccountModelForConfiguredAgents(t *testi
 		agentruntime.CoderAgentID,
 		agentruntime.DesignerAgentID,
 		agentruntime.RouterAgentID,
-		agentruntime.ReviewCommitAgentID,
 	} {
 		t.Run(agentID, func(t *testing.T) {
 			resolved, profile, err := ResolveSystemAgent(models, agents, settings, "account-a", agentID, "")

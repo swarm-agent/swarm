@@ -78,7 +78,7 @@ func configuredAgentSettingsForID(settings agentmodelsettings.Settings, agentID 
 		return settings.SystemAgents.Coder, true
 	case agentruntime.DesignerAgentID:
 		return settings.SystemAgents.Designer, true
-	case agentruntime.RouterAgentID, agentruntime.ReviewCommitAgentID:
+	case agentruntime.RouterAgentID:
 		return settings.SystemAgents.Router, true
 	default:
 		return agentmodelsettings.Assignment{}, false
@@ -97,8 +97,6 @@ func systemAgentLabel(agentID string) string {
 		return agentruntime.DesignerAgentName
 	case agentruntime.RouterAgentID:
 		return agentruntime.RouterAgentName
-	case agentruntime.ReviewCommitAgentID:
-		return agentruntime.ReviewCommitAgentName
 	default:
 		return agentID
 	}
