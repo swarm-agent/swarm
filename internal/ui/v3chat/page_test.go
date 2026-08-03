@@ -1857,6 +1857,28 @@ func TestWorktreeCommandUpdatesOnlyReadyRoutedPrimer(t *testing.T) {
 	}
 }
 
+func TestFailedRoutedDraftRetriesOnEmptySubmit(t *testing.T) {
+	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{routedRuntimeResponse("session-retried")}}
+	store := NewStore()
+	store.Dispatch(PrimeRoutedDraftAction{Draft: RoutedDraft{Prompt: "retry this", ClientRequestID: "retry-id"}})
+	store.Dispatch(RoutedDraftFailedAction{Error: "router unavailable"})
+	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	deadline := time.Now().Add(time.Second)
+	for store.Snapshot().Session.ID == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := store.Snapshot().Session.ID; got != "session-retried" {
+		t.Fatalf("empty-submit retry session = %q", got)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.routedRequests) != 1 || transport.routedRequests[0].ClientRequestID != "retry-id" {
+		t.Fatalf("empty-submit retry requests = %#v", transport.routedRequests)
+	}
+}
+
 func TestRoutedDraftRowsKeepPromptStatusFlagsAndRetryGuidanceLocal(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(PrimeRoutedDraftAction{Draft: RoutedDraft{Prompt: "route this", PlanModeRequested: true, ManagedWorktreeRequested: true}})

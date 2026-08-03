@@ -9,6 +9,7 @@ func TestParseNewCommandForms(t *testing.T) {
 	}{
 		{"/new", NewCommand{}},
 		{" /NEW  ", NewCommand{}},
+		{"/new\u00a0fix the bug", NewCommand{Prompt: "fix the bug"}},
 		{"/new fix the bug", NewCommand{Prompt: "fix the bug"}},
 		{"/new worktree", NewCommand{ManagedWorktreeRequested: true}},
 		{"/new worktree fix it", NewCommand{Prompt: "fix it", ManagedWorktreeRequested: true}},

@@ -40,6 +40,7 @@ const (
 	interruptStreamReady       = "stream-ready"
 	interruptGitStatusReady    = "git-status-ready"
 	interruptNotificationReady = "notification-ready"
+	interruptTaskCommandReady  = "task-command-ready"
 	interruptV3Chat            = "v3-chat-ready"
 	interruptQuit              = "quit"
 	defaultDaemonURL           = "http://127.0.0.1:7781"
@@ -74,7 +75,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
 		{Command: "/mode", Hint: "Toggle Plan behavior for new chats", QuickTips: []string{"/mode plan", "/mode action", "/mode status"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
-		{Command: "/new", Hint: "Open a new session draft"},
+		{Command: "/new", Hint: "Open a local Router primer", QuickTips: []string{"/new [<prompt>]", "/new worktree [<prompt>]", "/new plan [<prompt>]", "/new wp [<prompt>]"}},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
 		{Command: "/plan", Hint: "Show or close the existing session plan"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
@@ -85,8 +86,9 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
+		{Command: "/worktree", Hint: "Prime worktree use for the local Router draft", QuickTips: []string{"/worktree on", "/worktree off"}},
 		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
-		{Command: "/wt new", Hint: "Create a new worktree session (short alias)"},
+		{Command: "/wt", Hint: "Prime the local draft or manage worktrees", QuickTips: []string{"/wt on", "/wt off", "/wt new"}},
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
@@ -286,6 +288,7 @@ type App struct {
 	gitWatchGeneration     atomic.Uint64
 
 	notificationCountCh    chan notificationCountResult
+	taskCommandCh          chan taskCommandResult
 	swarmNotificationCount int
 
 	pendingChatRender   chan struct{}
@@ -382,6 +385,7 @@ func New() (*App, error) {
 		gitStatusCh:           make(chan gitStatusRefreshResult, 8),
 		gitWatcherReady:       make(chan gitWatcherStartResult, 1),
 		notificationCountCh:   make(chan notificationCountResult, 1),
+		taskCommandCh:         make(chan taskCommandResult, 8),
 		pendingChatRender:     make(chan struct{}, 1),
 		pendingV3ChatRender:   make(chan struct{}, 1),
 		pendingStreamReady:    make(chan struct{}, 1),
@@ -511,6 +515,9 @@ func (a *App) Run() error {
 				}
 			case interruptNotificationReady:
 				a.consumeNotificationCountResult()
+				dirty = true
+			case interruptTaskCommandReady:
+				a.consumeTaskCommandResults()
 				dirty = true
 			case interruptV3Chat:
 				a.consumeV3ChatRender()
@@ -1862,53 +1869,6 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return true
 		}
 	}
-	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceSelect) {
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
-		}
-		if a.workspaceCycleHotkeyBlocked() {
-			return true
-		}
-		a.showWorkspaceSelector()
-		return true
-	}
-	if keybinds.Match(ev, ui.KeybindGlobalWorkspacePrev) {
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
-		}
-		if a.workspaceCycleHotkeyBlocked() {
-			return true
-		}
-		a.cycleWorkspaceBy(-1)
-		return true
-	}
-	for slot := 1; slot <= ui.WorkspaceSlotCount; slot++ {
-		id, ok := ui.WorkspaceSlotKeybindID(slot)
-		if !ok {
-			continue
-		}
-		if !keybinds.Match(ev, id) {
-			continue
-		}
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
-		}
-		if a.workspaceCycleHotkeyBlocked() {
-			return true
-		}
-		a.activateWorkspaceSlot(slot)
-		return true
-	}
-	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceNext) {
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
-		}
-		if a.workspaceCycleHotkeyBlocked() {
-			return true
-		}
-		a.cycleWorkspaceBy(1)
-		return true
-	}
 	if keybinds.Match(ev, ui.KeybindGlobalCycleProfiles) {
 		if a.homeInteractionActive() {
 			return false
@@ -2152,7 +2112,7 @@ func (a *App) executeCommand(raw string) {
 	case "alerts", "notifications":
 		a.handleAlertsCommand(args)
 	case "new":
-		a.handleNewCommand()
+		a.handleNewCommand(raw)
 	case "plan":
 		a.handlePlanCommand(args)
 	case "task":
@@ -2180,8 +2140,16 @@ func (a *App) executeCommand(raw string) {
 		a.handlePermissionsCommand(args)
 	case "output":
 		a.handleOutputCommand(args)
-	case "worktrees", "wt":
+	case "worktree":
+		a.handleWorktreePrimerCommand(raw)
+	case "worktrees":
 		a.handleWorktreesCommand(args)
+	case "wt":
+		if _, matched, err := v3chat.ParseWorktreeCommand(raw); matched && err == nil {
+			a.handleWorktreePrimerCommand(raw)
+		} else {
+			a.handleWorktreesCommand(args)
+		}
 	case "mode":
 		a.handleModeCommand(args)
 	case "profiles":
@@ -2224,7 +2192,8 @@ func (a *App) showHelp() {
 	keybinds := a.activeKeyBindings()
 	lines := []string{
 		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
-		"/new   (open a new session draft; create on first message)",
+		"/new [<prompt>]   (open a local Router primer; a prompt routes immediately)",
+		"/new worktree|plan|wp [<prompt>]   (prime Worktree, Plan, or both)",
 		"/home   (return to home from chat)",
 		"/plan   (show or close the existing session plan)",
 		"/task <request>   (queue a durable AI task in automatic mode)",
@@ -2248,8 +2217,9 @@ func (a *App) showHelp() {
 		"/permissions reset",
 		"/permissions explain <tool> [arguments json or text]",
 		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
+		"/worktree on|off   (prime only the current local Router draft)",
+		"/wt on|off   (short local draft primer; other forms use /worktrees management)",
 		"/worktrees   (open worktrees menu)",
-		"/wt   (alias for /worktrees)",
 		"/worktrees new   (create a worktree session with title and editable branch)",
 		"/worktrees [new|open|off|status|branch <name>]",
 		"/agents   (open agent cards and model setup)",
@@ -2257,19 +2227,6 @@ func (a *App) showHelp() {
 		"/mode [plan|action|status]   (Plan on/off for new chats)",
 		"/profiles   (quick-switch the saved model profile used by new sessions)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
-		fmt.Sprintf("%s   (open workspace selector)", keybinds.Label(ui.KeybindGlobalWorkspaceSelect)),
-		fmt.Sprintf("%s   (cycle workspace previous)", keybinds.Label(ui.KeybindGlobalWorkspacePrev)),
-		fmt.Sprintf("%s   (cycle workspace next)", keybinds.Label(ui.KeybindGlobalWorkspaceNext)),
-		fmt.Sprintf("%s   (activate workspace slot 1)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot1)),
-		fmt.Sprintf("%s   (activate workspace slot 2)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot2)),
-		fmt.Sprintf("%s   (activate workspace slot 3)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot3)),
-		fmt.Sprintf("%s   (activate workspace slot 4)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot4)),
-		fmt.Sprintf("%s   (activate workspace slot 5)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot5)),
-		fmt.Sprintf("%s   (activate workspace slot 6)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot6)),
-		fmt.Sprintf("%s   (activate workspace slot 7)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot7)),
-		fmt.Sprintf("%s   (activate workspace slot 8)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot8)),
-		fmt.Sprintf("%s   (activate workspace slot 9)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot9)),
-		fmt.Sprintf("%s   (activate workspace slot 10)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot10)),
 		fmt.Sprintf("%s   (cycle saved model profiles)", keybinds.Label(ui.KeybindGlobalCycleProfiles)),
 		"/themes   (open theme modal with live preview)",
 		"/themes [open|list|set|next|prev|status|create|edit|delete|slots]",
@@ -2506,12 +2463,46 @@ func firstNonZeroInt64(values ...int64) int64 {
 	return 0
 }
 
-func (a *App) handleNewCommand() {
-	if err := a.openChatSession("New Session", ""); err != nil {
+func (a *App) handleNewCommand(raw string) {
+	command, matched := v3chat.ParseNewCommand(raw)
+	if !matched {
 		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
+		a.home.SetStatus("usage: /new [worktree|plan|wp] [<prompt>]")
 		return
 	}
+	if err := a.openRoutedV3Primer(command); err != nil {
+		a.home.ClearCommandOverlay()
+		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
+	}
+}
+
+func (a *App) handleWorktreePrimerCommand(raw string) {
+	command, matched, err := v3chat.ParseWorktreeCommand(raw)
+	if !matched {
+		return
+	}
+	if err != nil {
+		a.home.ClearCommandOverlay()
+		a.home.SetStatus(err.Error())
+		return
+	}
+	if a.route == "home" {
+		a.home.ClearCommandOverlay()
+		a.home.SetWorktreeRequested(command.Enabled)
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil {
+		_, err = a.v3Chat.ApplyWorktreeCommand(raw)
+		if err == nil {
+			a.home.SetStatus(a.v3Chat.Status())
+		} else {
+			a.home.SetStatus(err.Error())
+			a.v3Chat.SetStatus(a.home.Status())
+		}
+		return
+	}
+	a.home.ClearCommandOverlay()
+	a.home.SetStatus("worktree priming is available only on home or a new session draft")
 }
 
 func (a *App) handlePlanCommand(args []string) {
@@ -2803,163 +2794,6 @@ func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBran
 	intent.InitialPrompt = strings.TrimSpace(initialPrompt)
 	route := a.selectedChatRouteForWorkspace(a.activeContextPath())
 	return a.openNewV3Chat(intent, route, worktreeBranchSuffix)
-}
-
-// openLegacyChatSessionWithWorktree is retained only for old app-shell callers
-// outside the new homepage/V3 page route. It is not used by production home.
-func (a *App) openLegacyChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBranchSuffix string) error {
-	if a.api == nil {
-		return errors.New("api client is not configured")
-	}
-	workspacePath := strings.TrimSpace(a.activeContextPath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		return errors.New("workspace path is required")
-	}
-
-	activeWorkspaceName := ""
-	if a.home != nil {
-		activeWorkspaceName = strings.TrimSpace(a.home.ActiveWorkspaceName())
-	}
-	workspaceName := a.contextDisplayNameForPath(workspacePath, activeWorkspaceName)
-	route := a.selectedChatRouteForWorkspace(workspacePath)
-	knownWorkspacePath := strings.TrimSpace(a.activeWorkspacePath())
-	useV3Primary := knownWorkspacePath != "" && isPrimaryHostChatRoute(route) && strings.TrimSpace(route.WorkspaceBindingID) != ""
-	useV3Directory := knownWorkspacePath == ""
-	if !useV3Primary && !useV3Directory && strings.TrimSpace(route.WorkspaceBindingID) == "" {
-		return errors.New("workspace binding id is required")
-	}
-	if !useV3Primary && !useV3Directory {
-		return errTUIRetiredSessionAPI("create session for non-v3 TUI route")
-	}
-	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
-
-	title := strings.TrimSpace(titleSeed)
-	if title == "" {
-		title = "New Session"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	modelProvider, modelName, thinking, serviceTier, contextMode := a.home.ModelState()
-	preference := client.ModelPreference{
-		Provider:    strings.TrimSpace(modelProvider),
-		Model:       strings.TrimSpace(modelName),
-		Thinking:    strings.TrimSpace(thinking),
-		ServiceTier: strings.TrimSpace(serviceTier),
-		ContextMode: strings.TrimSpace(contextMode),
-	}
-	if strings.TrimSpace(preference.Provider) == "" || strings.TrimSpace(preference.Model) == "" || strings.TrimSpace(preference.Thinking) == "" {
-		return errors.New("new sessions require an explicit draft model selection")
-	}
-	createMode := "auto"
-	if a.home != nil {
-		createMode = a.home.SessionMode()
-	}
-	createMode = normalizeAppSessionMode(createMode)
-	if createMode != "auto" {
-		createMode = "plan"
-	}
-
-	worktreeMode := "off"
-	var worktreeUseCurrentBranch *bool
-	worktreeBaseBranch := ""
-	worktreeBranchName := ""
-	if useV3Primary {
-		settings, err := a.api.GetWorktreeSettings(ctx, workspacePath)
-		if err != nil {
-			return fmt.Errorf("get worktree settings: %w", err)
-		}
-		if settings.Enabled || strings.TrimSpace(worktreeBranchSuffix) != "" {
-			worktreeMode = "on"
-			useCurrentBranch := settings.UseCurrentBranch
-			if !settings.Enabled && strings.TrimSpace(worktreeBranchSuffix) != "" {
-				useCurrentBranch = true
-			}
-			worktreeUseCurrentBranch = &useCurrentBranch
-			if !useCurrentBranch {
-				worktreeBaseBranch = strings.TrimSpace(settings.BaseBranch)
-			}
-			worktreeBranchName = normalizeWorktreeBranchPrefix(settings.BranchName)
-			if suffix := strings.Trim(strings.TrimSpace(worktreeBranchSuffix), "/"); suffix != "" {
-				worktreeBranchName = strings.Trim(worktreeBranchName, "/") + "/" + suffix
-			}
-		}
-	}
-
-	createOptions := client.SessionCreateOptions{
-		Title:                    title,
-		WorkspacePath:            workspacePath,
-		WorkspaceName:            workspaceName,
-		WorkspaceBindingID:       route.WorkspaceBindingID,
-		SwarmID:                  createSwarmID,
-		TargetKind:               route.TargetKind,
-		TargetRelationship:       route.TargetRelationship,
-		Mode:                     createMode,
-		AgentName:                emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
-		Preference:               preference,
-		Metadata:                 nil,
-		WorktreeMode:             worktreeMode,
-		WorktreeUseCurrentBranch: worktreeUseCurrentBranch,
-		WorktreeBaseBranch:       worktreeBaseBranch,
-		WorktreeBranchName:       worktreeBranchName,
-	}
-	var createdV3 client.SessionV3Hydrated
-	var err error
-	if useV3Directory {
-		createOptions.CWDPath = workspacePath
-		createdV3, err = a.api.CreateSessionV3TUIWithOptions(ctx, createOptions)
-	} else {
-		createdV3, err = a.api.CreateSessionV3WithOptions(ctx, createOptions)
-	}
-	if err != nil {
-		return err
-	}
-	session := createdV3.Session
-	activeRunIntent := cloneClientSessionV3RunIntent(createdV3.ActiveRunIntent)
-	warning := strings.TrimSpace(session.Warning)
-	created := model.SessionSummary{
-		ID:                         strings.TrimSpace(session.ID),
-		WorkspacePath:              strings.TrimSpace(session.WorkspacePath),
-		WorkspaceName:              strings.TrimSpace(session.WorkspaceName),
-		Title:                      strings.TrimSpace(session.Title),
-		Mode:                       strings.TrimSpace(session.Mode),
-		Metadata:                   cloneMetadataMap(session.Metadata),
-		Preference:                 session.Preference,
-		WorktreeEnabled:            session.WorktreeEnabled,
-		WorktreeRootPath:           strings.TrimSpace(session.WorktreeRootPath),
-		WorktreeBaseBranch:         strings.TrimSpace(session.WorktreeBaseBranch),
-		WorktreeBranch:             strings.TrimSpace(session.WorktreeBranch),
-		SessionAPI:                 strings.TrimSpace(session.SessionAPI),
-		ActiveRunIntent:            activeRunIntent,
-		LastEventSeq:               session.LastEventSeq,
-		ProjectionHighWatermarkSeq: session.ProjectionHighWatermarkSeq,
-	}
-	if created.WorkspacePath == "" {
-		created.WorkspacePath = workspacePath
-	}
-	if created.WorkspaceName == "" {
-		created.WorkspaceName = workspaceName
-	}
-	created.WorkspaceName = a.contextDisplayNameForPath(created.WorkspacePath, created.WorkspaceName)
-	if lifecycle := v3RunIntentSessionLifecycle(created.ID, activeRunIntent); lifecycle != nil {
-		created.Lifecycle = lifecycle
-	}
-	if created.Title == "" {
-		created.Title = title
-	}
-	if err := a.openSessionSummary(created, strings.TrimSpace(initialPrompt)); err != nil {
-		return err
-	}
-	if warning != "" {
-		if a.chat != nil {
-			a.chat.SetStatus(warning)
-		}
-		a.showToast(ui.ToastWarning, warning)
-	}
-	return nil
 }
 
 func (a *App) openExistingSession(summary model.SessionSummary) error {
@@ -8567,63 +8401,6 @@ func (a *App) workspaceSwitchRunActive() bool {
 		}
 	}
 	return a.route == "chat" && a.chat != nil && a.chat.RunInProgress()
-}
-
-func (a *App) workspaceCycleHotkeyBlocked() bool {
-	if a.workspaceSwitchRunActive() {
-		message := "workspace switching is unavailable while a run is active"
-		if a.v3Chat != nil {
-			a.v3Chat.SetStatus(message)
-		}
-		if a.chat != nil {
-			a.chat.SetStatus(message)
-		}
-		return true
-	}
-	if a.route == "v3chat" && a.v3Chat != nil {
-		return a.homeInteractionActive()
-	}
-	if a.route != "home" {
-		if a.route == "chat" {
-			message := "To change workspace, do /new or go to the home screen (Ctrl+B)"
-			if a.chat != nil {
-				a.chat.SetStatus("")
-			}
-			a.showToast(ui.ToastInfo, message)
-			return true
-		}
-		return true
-	}
-	return a.homeInteractionActive()
-}
-
-func (a *App) cycleWorkspaceBy(delta int) {
-	if delta == 0 {
-		return
-	}
-	workspaces := a.homeModel.Workspaces
-	if len(workspaces) == 0 {
-		a.home.SetStatus("no saved workspaces to cycle")
-		return
-	}
-	current := activeWorkspaceIndex(workspaces)
-	next := 0
-	if current < 0 {
-		if delta < 0 {
-			next = len(workspaces) - 1
-		}
-	} else {
-		next = (current + delta + len(workspaces)) % len(workspaces)
-	}
-	a.activateWorkspaceAtIndex(next)
-}
-
-func (a *App) activateWorkspaceSlot(slot int) {
-	if slot < 1 || slot > len(a.homeModel.Workspaces) {
-		a.home.SetStatus(fmt.Sprintf("workspace slot %d is empty", slot))
-		return
-	}
-	a.activateWorkspaceAtIndex(slot - 1)
 }
 
 func (a *App) activateWorkspaceAtIndex(index int) {

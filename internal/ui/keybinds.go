@@ -21,28 +21,15 @@ type KeybindDefinition struct {
 }
 
 const (
-	KeybindGlobalQuit            KeybindID = "global.quit"
-	KeybindGlobalReloadHome      KeybindID = "global.reload_home"
-	KeybindGlobalToggleMouse     KeybindID = "global.toggle_mouse"
-	KeybindGlobalOpenAgents      KeybindID = "global.open_agents"
-	KeybindGlobalCycleProfiles   KeybindID = "global.cycle_profiles"
-	KeybindGlobalCycleThinking   KeybindID = "global.cycle_thinking"
-	KeybindGlobalCycleRoute      KeybindID = "global.cycle_route"
-	KeybindGlobalVoiceInput      KeybindID = "global.voice_input"
-	KeybindGlobalShowBackground  KeybindID = "global.show_background"
-	KeybindGlobalWorkspaceSelect KeybindID = "global.workspace_select"
-	KeybindGlobalWorkspacePrev   KeybindID = "global.workspace_prev"
-	KeybindGlobalWorkspaceNext   KeybindID = "global.workspace_next"
-	KeybindGlobalWorkspaceSlot1  KeybindID = "global.workspace_slot_1"
-	KeybindGlobalWorkspaceSlot2  KeybindID = "global.workspace_slot_2"
-	KeybindGlobalWorkspaceSlot3  KeybindID = "global.workspace_slot_3"
-	KeybindGlobalWorkspaceSlot4  KeybindID = "global.workspace_slot_4"
-	KeybindGlobalWorkspaceSlot5  KeybindID = "global.workspace_slot_5"
-	KeybindGlobalWorkspaceSlot6  KeybindID = "global.workspace_slot_6"
-	KeybindGlobalWorkspaceSlot7  KeybindID = "global.workspace_slot_7"
-	KeybindGlobalWorkspaceSlot8  KeybindID = "global.workspace_slot_8"
-	KeybindGlobalWorkspaceSlot9  KeybindID = "global.workspace_slot_9"
-	KeybindGlobalWorkspaceSlot10 KeybindID = "global.workspace_slot_10"
+	KeybindGlobalQuit           KeybindID = "global.quit"
+	KeybindGlobalReloadHome     KeybindID = "global.reload_home"
+	KeybindGlobalToggleMouse    KeybindID = "global.toggle_mouse"
+	KeybindGlobalOpenAgents     KeybindID = "global.open_agents"
+	KeybindGlobalCycleProfiles  KeybindID = "global.cycle_profiles"
+	KeybindGlobalCycleThinking  KeybindID = "global.cycle_thinking"
+	KeybindGlobalCycleRoute     KeybindID = "global.cycle_route"
+	KeybindGlobalVoiceInput     KeybindID = "global.voice_input"
+	KeybindGlobalShowBackground KeybindID = "global.show_background"
 
 	KeybindHomeOpenSessions        KeybindID = "home.open_sessions"
 	KeybindHomePaletteMoveUp       KeybindID = "home.palette.move_up"
@@ -213,19 +200,6 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalCycleRoute, Group: "Global", Action: "Cycle chat route", Default: "alt+r", Editable: true},
 	{ID: KeybindGlobalVoiceInput, Group: "Global", Action: "Voice input capture", Default: "f9", Editable: true},
 	{ID: KeybindGlobalShowBackground, Group: "Global", Action: "Go home", Default: "ctrl+b", Editable: true},
-	{ID: KeybindGlobalWorkspaceSelect, Group: "Global", Action: "Open workspace selector (/workspace select)", Default: "alt+w", Editable: true},
-	{ID: KeybindGlobalWorkspacePrev, Group: "Global", Action: "Cycle workspace previous", Default: "", Editable: true},
-	{ID: KeybindGlobalWorkspaceNext, Group: "Global", Action: "Cycle workspace next", Default: "", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot1, Group: "Global", Action: "Activate workspace slot 1", Default: "alt+1", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot2, Group: "Global", Action: "Activate workspace slot 2", Default: "alt+2", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot3, Group: "Global", Action: "Activate workspace slot 3", Default: "alt+3", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot4, Group: "Global", Action: "Activate workspace slot 4", Default: "alt+4", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot5, Group: "Global", Action: "Activate workspace slot 5", Default: "alt+5", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot6, Group: "Global", Action: "Activate workspace slot 6", Default: "alt+6", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot7, Group: "Global", Action: "Activate workspace slot 7", Default: "alt+7", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot8, Group: "Global", Action: "Activate workspace slot 8", Default: "alt+8", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot9, Group: "Global", Action: "Activate workspace slot 9", Default: "alt+9", Editable: true},
-	{ID: KeybindGlobalWorkspaceSlot10, Group: "Global", Action: "Activate workspace slot 10", Default: "alt+0", Editable: true},
 
 	{ID: KeybindHomeOpenSessions, Group: "Home", Action: "Open session manager (/sessions)", Default: "ctrl+x", Editable: true},
 	{ID: KeybindHomePaletteMoveUp, Group: "Home", Action: "Command palette up", Default: "up", Editable: true},
@@ -387,21 +361,6 @@ var keybindDefinitions = []KeybindDefinition{
 }
 
 var keybindDefinitionIndex = buildKeybindDefinitionIndex()
-
-const WorkspaceSlotCount = 10
-
-var workspaceSlotKeybindIDs = [...]KeybindID{
-	KeybindGlobalWorkspaceSlot1,
-	KeybindGlobalWorkspaceSlot2,
-	KeybindGlobalWorkspaceSlot3,
-	KeybindGlobalWorkspaceSlot4,
-	KeybindGlobalWorkspaceSlot5,
-	KeybindGlobalWorkspaceSlot6,
-	KeybindGlobalWorkspaceSlot7,
-	KeybindGlobalWorkspaceSlot8,
-	KeybindGlobalWorkspaceSlot9,
-	KeybindGlobalWorkspaceSlot10,
-}
 
 type KeyBindings struct {
 	values map[KeybindID]string
@@ -586,13 +545,6 @@ func LookupKeybindDefinition(id KeybindID) (KeybindDefinition, bool) {
 	copyDef := def
 	copyDef.Aliases = append([]string(nil), def.Aliases...)
 	return copyDef, true
-}
-
-func WorkspaceSlotKeybindID(slot int) (KeybindID, bool) {
-	if slot < 1 || slot > len(workspaceSlotKeybindIDs) {
-		return "", false
-	}
-	return workspaceSlotKeybindIDs[slot-1], true
 }
 
 func KeybindTokenFromEvent(ev *tcell.EventKey) (string, bool) {

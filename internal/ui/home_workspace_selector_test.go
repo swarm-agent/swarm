@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -42,6 +43,24 @@ func TestFirstRegisteredWorkspaceIsInitialSelection(t *testing.T) {
 	state := page.HomepageState()
 	if state.SelectedWorkspace.Name != "first" || state.SelectedWorkspace.Path != "/work/first" {
 		t.Fatalf("initial workspace = %#v", state.SelectedWorkspace)
+	}
+
+	items := page.workspaceItems()
+	if len(items) != 3 || items[0].Action != "workspace-selector" || items[1].Action != "workspace-select" || items[1].Index != 0 || items[2].Index != 1 {
+		t.Fatalf("workspace indicators = %#v", items)
+	}
+	for _, item := range items {
+		if strings.Contains(strings.ToLower(item.Label), "alt+") {
+			t.Fatalf("workspace indicator advertises a removed shortcut: %q", item.Label)
+		}
+	}
+}
+
+func TestEmptyWorkspaceIndicatorKeepsMouseSelectorWithoutShortcutLabel(t *testing.T) {
+	page := NewHomePage(model.HomeModel{})
+	items := page.workspaceItems()
+	if len(items) != 1 || items[0].Action != "workspace-selector" || strings.Contains(strings.ToLower(items[0].Label), "alt+") {
+		t.Fatalf("empty workspace indicator = %#v", items)
 	}
 }
 

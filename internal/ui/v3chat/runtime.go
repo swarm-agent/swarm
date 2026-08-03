@@ -49,6 +49,7 @@ type Runtime struct {
 	readyOnce            sync.Once
 	primedCreate         *client.SessionCreateOptions
 	primedModeSelections map[string]DraftModeSelection
+	routedActivation     func(context.Context, client.RoutedSessionV3StartResponse) error
 
 	workspacePath string
 	cwdPath       string
@@ -66,6 +67,17 @@ func (r *Runtime) Store() *Store {
 		return nil
 	}
 	return r.store
+}
+
+// SetRoutedActivation installs the app-shell reconciliation that must succeed
+// before a Router-selected durable session is exposed as the active TUI chat.
+func (r *Runtime) SetRoutedActivation(activate func(context.Context, client.RoutedSessionV3StartResponse) error) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.routedActivation = activate
+	r.mu.Unlock()
 }
 
 // PrimeRoutedDraft creates a local-only operation. It has no durable session
@@ -99,6 +111,10 @@ func (r *Runtime) PrimeRoutedDraft(draft RoutedDraft) error {
 }
 
 func (r *Runtime) StartRoutedDraft(ctx context.Context) (client.RoutedSessionV3StartResponse, error) {
+	return r.startRoutedDraft(ctx, false)
+}
+
+func (r *Runtime) startRoutedDraft(ctx context.Context, allowResolved bool) (client.RoutedSessionV3StartResponse, error) {
 	if r == nil || r.transport == nil {
 		return client.RoutedSessionV3StartResponse{}, errors.New("v3 chat transport is not configured")
 	}
@@ -117,7 +133,7 @@ func (r *Runtime) StartRoutedDraft(ctx context.Context) (client.RoutedSessionV3S
 	if draft.Status == RoutedDraftRouting {
 		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft is already routing")
 	}
-	if draft.Status == RoutedDraftResolved || strings.TrimSpace(state.Session.ID) != "" {
+	if !allowResolved && (draft.Status == RoutedDraftResolved || strings.TrimSpace(state.Session.ID) != "") {
 		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft is already resolved")
 	}
 	r.store.Dispatch(RoutedDraftRoutingAction{})
@@ -140,13 +156,21 @@ func (r *Runtime) StartRoutedDraft(ctx context.Context) (client.RoutedSessionV3S
 	r.primedModeSelections = nil
 	r.workspacePath = strings.TrimSpace(response.SessionView.Identity.RuntimeWorkspacePath)
 	r.cwdPath = r.workspacePath
+	activate := r.routedActivation
 	r.mu.Unlock()
 	r.Stop()
 	r.store.Dispatch(RoutedDraftResolvedAction{Response: response})
 	r.signalWake()
 	startAtCurrent := strings.TrimSpace(response.Hydrated().SnapshotEndpointCursor) == ""
 	if err := r.connect(ctx, startAtCurrent); err != nil {
+		r.restoreRoutedDraftFailure(draft, fmt.Errorf("connect routed v3 session: %w", err))
 		return client.RoutedSessionV3StartResponse{}, fmt.Errorf("connect routed v3 session: %w", err)
+	}
+	if activate != nil {
+		if err := activate(ctx, response); err != nil {
+			r.restoreRoutedDraftFailure(draft, fmt.Errorf("activate routed v3 session: %w", err))
+			return client.RoutedSessionV3StartResponse{}, fmt.Errorf("activate routed v3 session: %w", err)
+		}
 	}
 	return response, nil
 }
@@ -179,7 +203,18 @@ func (r *Runtime) RetryRoutedDraft(ctx context.Context) (client.RoutedSessionV3S
 	if !ok || draft.Status != RoutedDraftFailed {
 		return client.RoutedSessionV3StartResponse{}, errors.New("v3 routed draft has no failed operation to retry")
 	}
-	return r.StartRoutedDraft(ctx)
+	return r.startRoutedDraft(ctx, true)
+}
+
+func (r *Runtime) restoreRoutedDraftFailure(draft RoutedDraft, err error) {
+	r.Stop()
+	r.mu.Lock()
+	r.workspacePath = ""
+	r.cwdPath = ""
+	r.mu.Unlock()
+	r.store.Dispatch(PrimeRoutedDraftAction{Draft: draft})
+	r.store.Dispatch(RoutedDraftFailedAction{Error: err.Error()})
+	r.signalWake()
 }
 
 // PrimeNewSession keeps creation settings local until the first message is sent.

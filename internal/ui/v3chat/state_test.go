@@ -33,8 +33,21 @@ func TestRoutedDraftReducerStaysLocalUntilCanonicalResponse(t *testing.T) {
 	response := routedRuntimeResponse("session-1")
 	state = Reduce(state, RoutedDraftResolvedAction{Response: response})
 	draft, _ = SelectRoutedDraft(state)
-	if state.Session.ID != "session-1" || len(state.Messages) != 1 || state.Messages[0].Content != "route this" || state.EndpointCursor != "cursor-1" || draft.Status != RoutedDraftResolved {
+	if state.Session.ID != "session-1" || len(state.Messages) != 1 || state.Messages[0].Content != "route this" || state.EndpointCursor != "" || draft.Status != RoutedDraftResolved {
 		t.Fatalf("resolved routed state = %#v", state)
+	}
+}
+
+func TestMessageMutationDoesNotReplaceSignedRealtimeCursorWithStorageCursor(t *testing.T) {
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:                client.SessionSummary{ID: "session-1"},
+		SnapshotEndpointCursor: "v3c1.signed-tui-scope",
+	}})
+	state = Reduce(state, MessageResultAction{Result: client.SessionV3MessageResult{
+		RealtimeOutbox: &client.SessionV3RealtimeOutboxRow{EndpointCursor: "cursor-2"},
+	}})
+	if state.EndpointCursor != "v3c1.signed-tui-scope" {
+		t.Fatalf("mutation storage cursor replaced signed realtime cursor: %q", state.EndpointCursor)
 	}
 }
 

@@ -3,6 +3,8 @@ package v3chat
 import (
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // NewCommand describes one /new invocation. An empty Prompt opens a local
@@ -20,8 +22,11 @@ func ParseNewCommand(input string) (NewCommand, bool) {
 	if len(trimmed) < len("/new") || !strings.EqualFold(trimmed[:len("/new")], "/new") {
 		return NewCommand{}, false
 	}
-	if len(trimmed) > len("/new") && !isCommandSpace(rune(trimmed[len("/new")])) {
-		return NewCommand{}, false
+	if len(trimmed) > len("/new") {
+		next, _ := utf8.DecodeRuneInString(trimmed[len("/new"):])
+		if !isCommandSpace(next) {
+			return NewCommand{}, false
+		}
 	}
 	body := strings.TrimSpace(trimmed[len("/new"):])
 	if body == "" {
@@ -75,5 +80,5 @@ func splitCommandWord(value string) (string, string) {
 }
 
 func isCommandSpace(value rune) bool {
-	return value == ' ' || value == '\t' || value == '\n' || value == '\r'
+	return unicode.IsSpace(value)
 }

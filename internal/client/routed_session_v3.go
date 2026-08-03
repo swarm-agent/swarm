@@ -90,22 +90,22 @@ type RoutedSessionV3SessionView struct {
 	MediaCapability    *json.RawMessage                `json:"media_capability"`
 	PendingPermissions []PermissionRecord              `json:"pending_permissions"`
 	UsageSummary       *SessionUsageSummary            `json:"usage_summary,omitempty"`
-	CurrentRunState    *RoutedSessionV3RunState         `json:"current_run_state,omitempty"`
-	HasActivePlan      *bool                            `json:"has_active_plan,omitempty"`
-	ActivePlan         *SessionPlan                     `json:"active_plan,omitempty"`
+	CurrentRunState    *RoutedSessionV3RunState        `json:"current_run_state,omitempty"`
+	HasActivePlan      *bool                           `json:"has_active_plan,omitempty"`
+	ActivePlan         *SessionPlan                    `json:"active_plan,omitempty"`
 }
 
 type RoutedSessionV3StartResponse struct {
-	OK           bool                          `json:"ok"`
-	SessionID    string                        `json:"session_id"`
-	Title        string                        `json:"title"`
-	StartingMode string                        `json:"starting_mode"`
-	Replayed     bool                          `json:"replayed"`
-	Session      SessionSummary                `json:"session"`
-	SessionView  RoutedSessionV3SessionView    `json:"session_view"`
-	FirstMessage SessionMessage                `json:"first_message"`
-	Projection   SessionV3Projection           `json:"projection"`
-	Mutation     SessionV3MutationResult        `json:"mutation"`
+	OK           bool                       `json:"ok"`
+	SessionID    string                     `json:"session_id"`
+	Title        string                     `json:"title"`
+	StartingMode string                     `json:"starting_mode"`
+	Replayed     bool                       `json:"replayed"`
+	Session      SessionSummary             `json:"session"`
+	SessionView  RoutedSessionV3SessionView `json:"session_view"`
+	FirstMessage SessionMessage             `json:"first_message"`
+	Projection   SessionV3Projection        `json:"projection"`
+	Mutation     SessionV3MutationResult    `json:"mutation"`
 }
 
 func (r RoutedSessionV3StartResponse) Hydrated() SessionV3Hydrated {
@@ -124,9 +124,9 @@ func (r RoutedSessionV3StartResponse) Hydrated() SessionV3Hydrated {
 	hydrated := SessionV3Hydrated{
 		Session: r.Session, Projection: r.Projection, Messages: []SessionMessage{r.FirstMessage}, Events: events,
 		PendingPermissions: append([]PermissionRecord(nil), r.SessionView.PendingPermissions...),
-		UsageSummary: r.SessionView.UsageSummary, ActiveRunIntent: activeRun,
+		UsageSummary:       r.SessionView.UsageSummary, ActiveRunIntent: activeRun,
 		HasActivePlan: r.SessionView.HasActivePlan != nil && *r.SessionView.HasActivePlan,
-		ActivePlan: r.SessionView.ActivePlan,
+		ActivePlan:    r.SessionView.ActivePlan,
 	}
 	if settings := r.SessionView.AgenticSettings; settings != nil {
 		hydrated.Preference = settings.EffectivePreference
@@ -134,9 +134,10 @@ func (r RoutedSessionV3StartResponse) Hydrated() SessionV3Hydrated {
 		hydrated.MaxOutputTokens = settings.MaxOutputTokens
 		hydrated.AgentModelPolicy = settings.AgentModelPolicy
 	}
-	if r.Mutation.RealtimeOutbox != nil {
-		hydrated.SnapshotEndpointCursor = strings.TrimSpace(r.Mutation.RealtimeOutbox.EndpointCursor)
-	}
+	// RealtimeOutbox.EndpointCursor is the durable outbox storage cursor from the
+	// mutation response, not a signed transport cursor scoped to a realtime
+	// surface. A newly routed session must use the cursorless start-at-current
+	// handshake so /v3/realtime/stream can issue the canonical signed cursor.
 	hydrated.Session = markSessionV3(hydrated.Session, hydrated.Projection)
 	return hydrated
 }
@@ -183,16 +184,16 @@ func (c *API) StartRoutedSessionV3(ctx context.Context, request RoutedSessionV3S
 }
 
 type routedSessionV3StartResponseWire struct {
-	OK           *bool                      `json:"ok"`
-	SessionID    string                     `json:"session_id"`
-	Title        string                     `json:"title"`
-	StartingMode string                     `json:"starting_mode"`
-	Replayed     *bool                      `json:"replayed"`
-	Session      *SessionSummary            `json:"session"`
+	OK           *bool                       `json:"ok"`
+	SessionID    string                      `json:"session_id"`
+	Title        string                      `json:"title"`
+	StartingMode string                      `json:"starting_mode"`
+	Replayed     *bool                       `json:"replayed"`
+	Session      *SessionSummary             `json:"session"`
 	SessionView  *RoutedSessionV3SessionView `json:"session_view"`
-	FirstMessage *SessionMessage            `json:"first_message"`
-	Projection   *SessionV3Projection       `json:"projection"`
-	Mutation     *SessionV3MutationResult   `json:"mutation"`
+	FirstMessage *SessionMessage             `json:"first_message"`
+	Projection   *SessionV3Projection        `json:"projection"`
+	Mutation     *SessionV3MutationResult    `json:"mutation"`
 }
 
 func validateRoutedSessionV3StartResponse(raw routedSessionV3StartResponseWire) (RoutedSessionV3StartResponse, error) {

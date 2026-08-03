@@ -92,14 +92,14 @@ const (
 )
 
 type RoutedDraft struct {
-	Prompt                    string
-	PlanModeRequested         bool
-	ManagedWorktreeRequested  bool
-	ClientRequestID           string
-	AgentName                 string
-	Metadata                  map[string]any
-	Status                    RoutedDraftStatus
-	Error                     string
+	Prompt                   string
+	PlanModeRequested        bool
+	ManagedWorktreeRequested bool
+	ClientRequestID          string
+	AgentName                string
+	Metadata                 map[string]any
+	Status                   RoutedDraftStatus
+	Error                    string
 }
 
 type PermissionTimelineItem struct {
@@ -347,7 +347,9 @@ type RoutedDraftFailedAction struct{ Error string }
 
 func (RoutedDraftFailedAction) isV3ChatAction() {}
 
-type RoutedDraftResolvedAction struct{ Response client.RoutedSessionV3StartResponse }
+type RoutedDraftResolvedAction struct {
+	Response client.RoutedSessionV3StartResponse
+}
 
 func (RoutedDraftResolvedAction) isV3ChatAction() {}
 
@@ -559,9 +561,9 @@ func reduceMessageResult(state State, result client.SessionV3MessageResult) Stat
 	if strings.TrimSpace(result.RunIntent.RunID) != "" {
 		state = applyRunIntent(state, result.RunIntent, result.RunIntent.EventSeq)
 	}
-	if result.RealtimeOutbox != nil && strings.TrimSpace(result.RealtimeOutbox.EndpointCursor) != "" {
-		state.EndpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
-	}
+	// RealtimeOutbox.EndpointCursor is an internal durable outbox cursor. Only
+	// signed cursors received from hydration or realtime frames may advance the
+	// transport resume cursor retained by this store.
 	state = reconcilePending(state)
 	state = reconcileDurableTools(state)
 	return reconcileDurableLive(state)

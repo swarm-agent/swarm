@@ -195,6 +195,71 @@ func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string
 	return f.result, nil
 }
 
+func TestRoutedActivationFailureRestoresRetryableLocalOperation(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{response, response}}
+	runtime := NewRuntime(transport, NewStore(), nil)
+	activationCalls := 0
+	runtime.SetRoutedActivation(func(context.Context, client.RoutedSessionV3StartResponse) error {
+		activationCalls++
+		if activationCalls == 1 {
+			return errors.New("workspace activation failed")
+		}
+		return nil
+	})
+	if err := runtime.PrimeRoutedDraft(RoutedDraft{Prompt: "route this", PlanModeRequested: true, ManagedWorktreeRequested: true}); err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := SelectRoutedDraft(runtime.Store().Snapshot())
+	if _, err := runtime.StartRoutedDraft(context.Background()); err == nil || !strings.Contains(err.Error(), "workspace activation failed") {
+		t.Fatalf("activation error = %v", err)
+	}
+	failed := runtime.Store().Snapshot()
+	draft, ok := SelectRoutedDraft(failed)
+	if !ok || draft.Status != RoutedDraftFailed || draft.ClientRequestID != identity.ClientRequestID || draft.Prompt != "route this" || failed.Session.ID != "" {
+		t.Fatalf("failed activation state = %#v draft=%#v", failed.Session, draft)
+	}
+	if _, err := runtime.RetryRoutedDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	resolved := runtime.Store().Snapshot()
+	if resolved.Session.ID != "session-routed" || resolved.Connection != ConnectionReady {
+		t.Fatalf("retry state = session %#v connection %q", resolved.Session, resolved.Connection)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.routedRequests) != 2 || transport.routedRequests[0].ClientRequestID != transport.routedRequests[1].ClientRequestID {
+		t.Fatalf("retry identities = %#v", transport.routedRequests)
+	}
+}
+
+func TestRoutedTransitionUsesSignedCursorHandshakeInsteadOfMutationStorageCursor(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{response}}
+	runtime := NewRuntime(transport, NewStore(), nil)
+	if err := runtime.PrimeRoutedDraft(RoutedDraft{Prompt: "route this"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartRoutedDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+
+	transport.mu.Lock()
+	options := append([]client.V3RealtimeResumeOptions(nil), transport.streamOptions...)
+	transport.mu.Unlock()
+	if len(options) != 1 || !options[0].StartAtCurrent || options[0].EndpointCursor != "" {
+		t.Fatalf("routed stream options = %#v", options)
+	}
+	if len(options[0].Subscriptions) != 1 || options[0].Subscriptions[0].EndpointCursor != "" || options[0].Subscriptions[0].SessionID != "session-routed" {
+		t.Fatalf("routed subscription = %#v", options[0].Subscriptions)
+	}
+	state := runtime.Store().Snapshot()
+	if state.Connection != ConnectionReady || state.NeedsRehydrate || state.StaleReason != "" || state.EndpointCursor != "" {
+		t.Fatalf("routed transition state = %#v", state)
+	}
+}
+
 func TestRoutedDraftFailureRestoresLocalIntentAndRetryKeepsIdentity(t *testing.T) {
 	response := routedRuntimeResponse("session-routed")
 	transport := &fakeTransport{routedErrors: []error{errors.New("router unavailable"), nil}, routedResponses: []client.RoutedSessionV3StartResponse{{}, response}}
@@ -246,7 +311,7 @@ func routedRuntimeResponse(sessionID string) client.RoutedSessionV3StartResponse
 		OK: true, SessionID: sessionID, Title: "Routed", StartingMode: "plan",
 		Session: client.SessionSummary{ID: sessionID, Title: "Routed", Mode: "plan", WorkspacePath: "/runtime"},
 		SessionView: client.RoutedSessionV3SessionView{
-			Identity: &client.RoutedSessionV3Identity{SessionID: sessionID, Title: "Routed", SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime"},
+			Identity:        &client.RoutedSessionV3Identity{SessionID: sessionID, Title: "Routed", SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime"},
 			AgenticSettings: &client.RoutedSessionV3AgenticSettings{Mode: "plan", EffectivePreference: client.ModelPreference{Provider: "codex", Model: "gpt"}},
 		},
 		FirstMessage: message, Projection: projection,

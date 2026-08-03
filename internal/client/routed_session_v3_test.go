@@ -36,8 +36,11 @@ func TestStartRoutedSessionV3UsesOneExplicitIdempotencyIdentity(t *testing.T) {
 	if request.Input != "build it" || request.ClientRequestID != "route-1" || request.IdempotencyKey != "route-1" || !request.ManagedWorktreeRequested || !request.PlanModeRequested {
 		t.Fatalf("request = %#v", request)
 	}
-	if response.SessionID != "session-1" || response.Session.SessionAPI != "v3" || response.Hydrated().SnapshotEndpointCursor != "cursor-1" {
+	if response.SessionID != "session-1" || response.Session.SessionAPI != "v3" {
 		t.Fatalf("response = %#v", response)
+	}
+	if cursor := response.Hydrated().SnapshotEndpointCursor; cursor != "" {
+		t.Fatalf("routed hydration exposed storage cursor %q as a signed realtime cursor", cursor)
 	}
 }
 
@@ -69,7 +72,7 @@ func validRoutedSessionV3Response(sessionID string) map[string]any {
 		"ok": true, "session_id": sessionID, "title": "Routed title", "starting_mode": "plan", "replayed": false,
 		"session": session,
 		"session_view": map[string]any{
-			"identity": map[string]any{"session_id": sessionID, "title": "Routed title", "source_workspace_name": "repo", "source_workspace_path": "/source", "runtime_workspace_path": "/runtime", "worktree_enabled": true},
+			"identity":         map[string]any{"session_id": sessionID, "title": "Routed title", "source_workspace_name": "repo", "source_workspace_path": "/source", "runtime_workspace_path": "/runtime", "worktree_enabled": true},
 			"agentic_settings": map[string]any{"mode": "plan", "agent_name": "swarm", "resolved_agent_name": "swarm", "effective_preference": map[string]any{"provider": "codex", "model": "gpt"}, "agent_model_policy": map[string]any{}, "context_window": 100},
 			"media_capability": map[string]any{"status": "unavailable", "capabilities": []any{}}, "pending_permissions": []any{},
 		},

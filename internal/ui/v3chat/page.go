@@ -820,6 +820,13 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			return PageActionCommand
 		}
 		text := strings.TrimSpace(string(p.input))
+		if text == "" && !p.busy && p.runtime != nil && p.runtime.Store() != nil {
+			state := p.runtime.Store().Snapshot()
+			if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status == RoutedDraftFailed {
+				go p.RetryRoutedDraft()
+				break
+			}
+		}
 		if strings.HasPrefix(text, "/") {
 			p.pendingCommand = text
 			p.input = nil
@@ -2137,7 +2144,7 @@ func routedDraftStatusLine(draft RoutedDraft) string {
 		if message == "" {
 			message = "Router start failed"
 		}
-		return message + " • retry the same request"
+		return message + " • press Enter to retry the same request"
 	default:
 		return "Waiting..."
 	}

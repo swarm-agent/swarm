@@ -393,6 +393,29 @@ func TestV3ChatDraftSelectionsReuseHomepagePlanAutoProjection(t *testing.T) {
 	}
 }
 
+func TestRetiredWorkspaceShortcutsAreAbsentFromGlobalHandlingAndHelp(t *testing.T) {
+	appRaw, err := os.ReadFile("app.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(appRaw)
+	for _, removed := range []string{
+		"KeybindGlobalWorkspaceSelect",
+		"KeybindGlobalWorkspacePrev",
+		"KeybindGlobalWorkspaceNext",
+		"KeybindGlobalWorkspaceSlot",
+		"WorkspaceSlotKeybindID",
+		"activateWorkspaceSlot",
+		"cycleWorkspaceBy",
+		"open workspace selector)",
+		"activate workspace slot",
+	} {
+		if strings.Contains(source, removed) {
+			t.Fatalf("retired workspace keyboard route remains in app source: %q", removed)
+		}
+	}
+}
+
 func TestNewHomepageChatRouteUsesV3PageBoundary(t *testing.T) {
 	appRaw, err := os.ReadFile("app.go")
 	if err != nil {
@@ -404,13 +427,19 @@ func TestNewHomepageChatRouteUsesV3PageBoundary(t *testing.T) {
 	}
 	appSource := string(appRaw)
 	start := strings.Index(appSource, "func (a *App) openChatSessionWithWorktree")
-	end := strings.Index(appSource[start:], "func (a *App) openLegacyChatSessionWithWorktree")
+	end := strings.Index(appSource[start:], "func (a *App) openExistingSession")
 	if start < 0 || end < 0 {
 		t.Fatal("new homepage route boundary not found")
 	}
 	productionRoute := appSource[start : start+end]
 	if !strings.Contains(productionRoute, "openNewV3Chat") {
 		t.Fatal("new homepage route does not open V3 page")
+	}
+	if !strings.Contains(string(routeRaw), "openRoutedV3Primer") || !strings.Contains(string(routeRaw), "ManagedWorktreeRequested") || !strings.Contains(string(routeRaw), "PlanModeRequested") {
+		t.Fatal("new homepage route does not submit the local intent through Router")
+	}
+	if strings.Contains(string(routeRaw), "a.v3Chat.OpenNew(") || strings.Contains(string(routeRaw), "runtime.CreateAndSend") || strings.Contains(appSource, "openLegacyChatSessionWithWorktree") {
+		t.Fatal("new homepage route still exposes direct create-and-send wiring")
 	}
 	for _, forbidden := range []string{"ui.NewChatPage", "startSessionEventStream", "StreamEvents", "time.NewTicker"} {
 		if strings.Contains(productionRoute, forbidden) || strings.Contains(string(routeRaw), forbidden) {

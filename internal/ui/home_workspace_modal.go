@@ -2011,14 +2011,8 @@ func (p *HomePage) drawWorkspaceModalCards(s tcell.Screen, rect Rect) {
 				continue
 			}
 			meta := fmt.Sprintf("theme %s · dirs %d", workspaceModalDisplayThemeLabel(workspace.ThemeID), dirs)
-			slotLabel := fmt.Sprintf("slot %02d", workspace.SortIndex+1)
-			if id, ok := WorkspaceSlotKeybindID(workspace.SortIndex + 1); ok {
-				if keyLabel := p.workspaceModalKeyLabel(id); keyLabel != "" {
-					slotLabel = fmt.Sprintf("%s · %s", slotLabel, keyLabel)
-				}
-			}
 			DrawText(s, cardRect.X+2, cardRect.Y+3, cardRect.W-4, mutedStyle, clampEllipsis(meta, cardRect.W-4))
-			orderLine := slotLabel
+			orderLine := fmt.Sprintf("slot %02d", workspace.SortIndex+1)
 			if selected {
 				orderLine += " · Enter to edit"
 			}
