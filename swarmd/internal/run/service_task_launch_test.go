@@ -597,6 +597,9 @@ func TestDelegatedSubagentRunStartMetaKeepsPreparedProfileSnapshot(t *testing.T)
 	if !meta.AllowSubagent || meta.PermissionSessionID != "parent-session" || meta.Principal.AccountScopeID != "account-a" {
 		t.Fatalf("delegated run meta lost trusted context: %#v", meta)
 	}
+	if !taskDisabledTools(true)["task"] || !taskDisabledTools(false)["task"] {
+		t.Fatal("every delegated launch must disable recursive task regardless of bash policy")
+	}
 }
 
 func TestApprovedFinderInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {

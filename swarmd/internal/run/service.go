@@ -1182,6 +1182,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	ctx = runnerCtx
 	compiledPolicy := options.CompiledPolicy
 	effectiveDisabledTools := cloneDisabledTools(options.DisabledTools)
+	if targetKind == RunTargetKindSubagent || strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModeSubagent) {
+		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{"task": true})
+	}
 	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile); scopeErr != nil {
 		return RunResult{}, scopeErr
 	} else {

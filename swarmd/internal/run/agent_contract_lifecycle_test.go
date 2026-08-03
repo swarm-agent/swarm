@@ -75,6 +75,42 @@ func TestResolveAgentToolContractInheritsOnlyAccountPolicy(t *testing.T) {
 	}
 }
 
+func TestResolveAgentToolContractForcesTaskOffForEverySubagent(t *testing.T) {
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	for _, preset := range []string{"custom", "read_only", "read_write"} {
+		profile := pebblestore.AgentProfile{
+			Name: "subagent-" + preset,
+			Mode: agentruntime.ModeSubagent,
+			ToolContract: &pebblestore.AgentToolContract{
+				Preset: preset,
+				Tools: map[string]pebblestore.AgentToolConfig{"task": {Enabled: pebblestore.BoolPtr(true)}},
+			},
+		}
+		resolved, compiled, disabled, err := svc.ResolveAgentToolContract(profile)
+		if err != nil {
+			t.Fatalf("ResolveAgentToolContract(%s): %v", preset, err)
+		}
+		if task := resolved.Tools["task"]; task.Enabled || task.Source != "runtime.subagent_boundary" {
+			t.Fatalf("subagent preset %q resolved task = %+v", preset, task)
+		}
+		if !disabled["task"] || slices.Contains(resolved.AvailableTools, "task") {
+			t.Fatalf("subagent preset %q advertises task: resolved=%+v disabled=%+v", preset, resolved, disabled)
+		}
+		if explain := permission.ExplainPolicy("auto", "task", `{}`, *compiled); explain.Decision != permission.PolicyDecisionDeny {
+			t.Fatalf("subagent preset %q task policy = %q, want deny", preset, explain.Decision)
+		}
+	}
+
+	primary := pebblestore.AgentProfile{Name: "primary", Mode: agentruntime.ModePrimary, ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"task": {Enabled: pebblestore.BoolPtr(true)}}}}
+	resolved, _, disabled, err := svc.ResolveAgentToolContract(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Tools["task"].Enabled || disabled["task"] {
+		t.Fatalf("primary task delegation was removed: resolved=%+v disabled=%+v", resolved.Tools["task"], disabled)
+	}
+}
+
 func TestResolveAgentToolContractFailsClosedWhenSavedContractMissing(t *testing.T) {
 	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
 	_, _, _, err := svc.ResolveAgentToolContract(pebblestore.AgentProfile{

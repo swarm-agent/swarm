@@ -214,6 +214,9 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		return ResolvedAgentToolContract{}, nil, nil, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	if strings.EqualFold(strings.TrimSpace(profile.Mode), "subagent") {
+		resolved.Tools["task"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
+	}
 
 	policyRules := make([]permission.PolicyRule, 0, len(knownTools)+8)
 	disabled := make(map[string]bool, len(knownTools))

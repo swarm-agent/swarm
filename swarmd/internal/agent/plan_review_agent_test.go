@@ -41,10 +41,8 @@ func TestPlanSidechatPromptAttachesAuthoritativePlanContext(t *testing.T) {
 			t.Fatalf("prompt missing %q: %s", expected, prompt)
 		}
 	}
-	for _, expected := range []string{"only to Finder", "read-only contract", "cannot delegate further", "budgets", "depth checks"} {
-		if !strings.Contains(prompt, expected) {
-			t.Fatalf("prompt missing Finder delegation boundary %q: %s", expected, prompt)
-		}
+	if strings.Contains(prompt, "delegate") || strings.Contains(prompt, "task only to Finder") {
+		t.Fatalf("Plan sidechat prompt must not advertise subagent delegation: %s", prompt)
 	}
 	if strings.Contains(prompt, `"expected_revision":"4"`) || strings.Contains(prompt, `"document":"{`) {
 		t.Fatalf("prompt example stringifies structured arguments: %s", prompt)
@@ -59,13 +57,13 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	if profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled {
 		t.Fatal("Plan sidechat must not exit plan mode")
 	}
-	for _, name := range []string{"write", "edit", "bash", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
+	for _, name := range []string{"write", "edit", "bash", "task", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || *config.Enabled {
 			t.Fatalf("tool %q must be explicitly disabled", name)
 		}
 	}
-	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "edit_pending_plan", "task"} {
+	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "edit_pending_plan"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || !*config.Enabled {
 			t.Fatalf("tool %q must be enabled", name)
@@ -87,11 +85,22 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	}
 }
 
-func TestFinderContractExplicitlyDisablesRecursiveTask(t *testing.T) {
-	profile := FinderAgentProfileForParent(pebblestore.AgentProfile{})
-	config, ok := profile.ToolContract.Tools["task"]
-	if !ok || config.Enabled == nil || *config.Enabled {
-		t.Fatal("Finder task capability must be explicitly disabled")
+func TestSystemSubagentsDoNotEnableRecursiveTask(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range registry.IDs() {
+		profile, err := registry.Materialize(id, SwarmAgentProfileForContext(pebblestore.AgentProfile{}))
+		if err != nil {
+			t.Fatalf("materialize %q: %v", id, err)
+		}
+		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
+			t.Fatalf("system subagent %q enables recursive task delegation", id)
+		}
+	}
+	if !agentToolEnabled(SwarmAgentToolContract(), "task") {
+		t.Fatal("primary Swarm task delegation must remain enabled")
 	}
 }
 

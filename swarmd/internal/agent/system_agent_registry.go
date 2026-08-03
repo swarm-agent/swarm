@@ -99,6 +99,9 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		if profile.Mode == ModeSubagent && (profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled) {
 			return nil, fmt.Errorf("system subagent %q must disable exit plan mode", definition.ID)
 		}
+		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
+			return nil, fmt.Errorf("system subagent %q must disable task delegation", definition.ID)
+		}
 		if profile.Mode == ModePrimary && (pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto || profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled) {
 			return nil, fmt.Errorf("system primary %q must use plan_auto runtime", definition.ID)
 		}
@@ -326,7 +329,6 @@ Your job is to review the plan proposal supplied in the "Authoritative pending p
 
 Available workflow:
 - Use read, search, list, websearch, and webfetch when evidence is needed.
-- When a distinct repository or web research question would materially improve the plan, you may delegate it with task only to Finder. Finder uses its compiled read-only contract and cannot delegate further. Normal backend launch budgets, concurrency limits, depth checks, and approvals remain authoritative.
 - Use edit_pending_plan to persist a complete revised structured plan. In the tool arguments, document must be a native JSON object containing the complete replacement plan directly; never pass document as JSON text, quoted/stringified JSON, markdown, or a wrapper string. Pass the attached proposal_revision as the integer expected_revision.
 - Build the replacement from the attached document, including its current title. Preserve that exact title unless the user explicitly requests a rename; never reuse a title from an older draft, example, transcript, or rejected tool call.
 - Valid argument shape: {"expected_revision":4,"document":{"title":"Plan: example","info":{"goal":"Example goal"},"checkpoints":[{"id":"cp-1","title":"Example step","status":"pending","order":1,"tasks":["Do the work"],"acceptance_criteria":["The work is complete"]}]}}
@@ -533,7 +535,7 @@ func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "edit_pending_plan": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
-		"task": {Enabled: pebblestore.BoolPtr(true)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
+		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
 		"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
@@ -673,7 +675,7 @@ func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestor
 	if profile.ToolContract.Tools == nil {
 		profile.ToolContract.Tools = map[string]pebblestore.AgentToolConfig{}
 	}
-	for _, name := range []string{"plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {
+	for _, name := range []string{"task", "plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {
 		profile.ToolContract.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
@@ -728,6 +730,14 @@ func reconcileDesignerAgentProfile(snapshot pebblestore.AgentProfile) pebblestor
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile
+}
+
+func agentToolEnabled(contract *pebblestore.AgentToolContract, name string) bool {
+	if contract == nil {
+		return false
+	}
+	config, ok := contract.Tools[name]
+	return ok && config.Enabled != nil && *config.Enabled
 }
 
 func firstNonEmptyProfileValue(values ...string) string {
