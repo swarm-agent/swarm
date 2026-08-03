@@ -18,12 +18,11 @@ import (
 func ResolveSystemAgent(
 	modelService *model.Service,
 	agentService *agentruntime.Service,
-	settingsAuthority any,
+	settingsService *agentmodelsettings.Service,
 	accountScopeID string,
 	agentID string,
 	contextMode string,
 ) (model.ResolvedPreference, pebblestore.AgentProfile, error) {
-	settingsService, ok := settingsAuthority.(*agentmodelsettings.Service)
 	if modelService == nil || agentService == nil || settingsService == nil {
 		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("system-agent model, agent, and canonical agent-model settings services are not configured")
 	}

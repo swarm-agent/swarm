@@ -22,9 +22,7 @@ func TestUISettingsServiceDoesNotExposeOrPersistAgentModels(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	service := NewService(pebblestore.NewUISettingsStore(store))
-	settings := defaultUISettings()
-	settings.Agents.Router = CompactAgentSettings{Provider: "openai", Model: "router", Thinking: "medium"}
-	stored, err := service.SetForAccount("account-a", settings)
+	stored, err := service.SetForAccount("account-a", defaultUISettings())
 	if err != nil {
 		t.Fatalf("SetForAccount(): %v", err)
 	}

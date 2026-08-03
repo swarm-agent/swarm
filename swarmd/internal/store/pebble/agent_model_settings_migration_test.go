@@ -9,7 +9,7 @@ import (
 func TestAgentModelSettingsMigrationJoinsAndCleansLegacyRecords(t *testing.T) {
 	store := openAgentModelSettingsTestStore(t)
 	selection := ModelProfileSelection{Provider: "codex", Model: "gpt", Thinking: "high", ServiceTier: "fast", ContextMode: "full"}
-	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account-a"), SwarmModeSettingsRecord{AccountScopeID: "account-a", Action: selection, Plan: selection, UpdatedAt: 10}); err != nil {
+	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account-a"), legacySwarmModeSettingsRecord{AccountScopeID: "account-a", Action: selection, Plan: selection, UpdatedAt: 10}); err != nil {
 		t.Fatalf("put mode settings: %v", err)
 	}
 	legacyUI := json.RawMessage(`{"theme":{"active_id":"tide"},"chat":{"show_header":true},"agents":{"compact":{"provider":"codex","model":"small","thinking":"low"},"finder":{"provider":"codex","model":"finder","thinking":"medium"},"coder":{"provider":"codex","model":"coder","thinking":"high"},"designer":{"provider":"openai","model":"designer","thinking":"medium"},"router":{"provider":"openai","model":"router","thinking":"medium","service_tier":"priority"}},"updated_at":20}`)
@@ -85,7 +85,7 @@ func TestAgentModelSettingsMigrationRejectsConflictingCanonicalCollision(t *test
 		t.Fatalf("put canonical settings: %v", err)
 	}
 	legacySelection := ModelProfileSelection{Provider: "openai", Model: "legacy", Thinking: "medium"}
-	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account-a"), SwarmModeSettingsRecord{AccountScopeID: "account-a", Action: legacySelection, Plan: legacySelection}); err != nil {
+	if err := store.PutJSON(swarmModeSettingsKeyForAccount("account-a"), legacySwarmModeSettingsRecord{AccountScopeID: "account-a", Action: legacySelection, Plan: legacySelection}); err != nil {
 		t.Fatalf("put legacy mode: %v", err)
 	}
 	if err := store.PutBytes(KeyUISettingsForAccount("account-a"), []byte(`{"agents":{"compact":{"provider":"openai","model":"legacy","thinking":"medium"},"finder":{"provider":"openai","model":"legacy","thinking":"medium"},"coder":{"provider":"openai","model":"legacy","thinking":"medium"},"designer":{"provider":"openai","model":"legacy","thinking":"medium"},"router":{"provider":"openai","model":"legacy","thinking":"medium"}}}`)); err != nil {

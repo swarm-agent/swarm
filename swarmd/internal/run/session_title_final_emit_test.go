@@ -57,9 +57,9 @@ func TestFinalSessionTitleUsesEmitter(t *testing.T) {
 		SessionID:      "session-title",
 		AccountScopeID: "account-title",
 		Title:          "New Session",
-		WorkspacePath: "/workspace",
-		WorkspaceName: "workspace",
-		Preference:    &preference,
+		WorkspacePath:  "/workspace",
+		WorkspaceName:  "workspace",
+		Preference:     &preference,
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}

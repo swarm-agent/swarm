@@ -101,19 +101,24 @@ func TestRunModelProfileFlatMigrationRewritesSingleAndSplitAccounts(t *testing.T
 		t.Fatalf("split state = %+v, want default standard_action and %+v", splitState, wantSplit)
 	}
 
-	modeStore := NewSwarmModeSettingsStore(store)
-	singleMode, found, err := modeStore.GetForAccount(single.AccountScopeID)
-	if err != nil || !found {
-		t.Fatalf("get single mode settings: found=%v err=%v", found, err)
+	readLegacyMode := func(accountScopeID string) legacySwarmModeSettingsRecord {
+		t.Helper()
+		payload, found, err := store.GetBytes(swarmModeSettingsKeyForAccount(accountScopeID))
+		if err != nil || !found {
+			t.Fatalf("get legacy mode settings for %q: found=%v err=%v", accountScopeID, found, err)
+		}
+		var record legacySwarmModeSettingsRecord
+		if err := json.Unmarshal(payload, &record); err != nil {
+			t.Fatalf("decode legacy mode settings for %q: %v", accountScopeID, err)
+		}
+		return record
 	}
-	if want := (SwarmModeSettingsRecord{AccountScopeID: single.AccountScopeID, Action: ModelProfileSelection{Provider: "codex", Model: "single-model", Thinking: "high", ServiceTier: "fast", ContextMode: "full"}, Plan: ModelProfileSelection{Provider: "codex", Model: "single-model", Thinking: "high", ServiceTier: "fast", ContextMode: "full"}, UpdatedAt: 20}); singleMode != want {
+	singleMode := readLegacyMode(single.AccountScopeID)
+	if want := (legacySwarmModeSettingsRecord{AccountScopeID: single.AccountScopeID, Action: ModelProfileSelection{Provider: "codex", Model: "single-model", Thinking: "high", ServiceTier: "fast", ContextMode: "full"}, Plan: ModelProfileSelection{Provider: "codex", Model: "single-model", Thinking: "high", ServiceTier: "fast", ContextMode: "full"}, UpdatedAt: 20}); singleMode != want {
 		t.Fatalf("single mode settings = %+v, want %+v", singleMode, want)
 	}
-	splitMode, found, err := modeStore.GetForAccount(split.AccountScopeID)
-	if err != nil || !found {
-		t.Fatalf("get split mode settings: found=%v err=%v", found, err)
-	}
-	if want := (SwarmModeSettingsRecord{AccountScopeID: split.AccountScopeID, Action: ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"}, Plan: ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "full"}, UpdatedAt: 40}); splitMode != want {
+	splitMode := readLegacyMode(split.AccountScopeID)
+	if want := (legacySwarmModeSettingsRecord{AccountScopeID: split.AccountScopeID, Action: ModelProfileSelection{Provider: "openai", Model: "action-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"}, Plan: ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "full"}, UpdatedAt: 40}); splitMode != want {
 		t.Fatalf("split mode settings = %+v, want %+v", splitMode, want)
 	}
 

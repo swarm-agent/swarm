@@ -102,7 +102,6 @@ type UISettings struct {
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
 	Tools     ToolSettings     `json:"tools,omitempty"`
-	Agents    AgentSettings    `json:"-"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 

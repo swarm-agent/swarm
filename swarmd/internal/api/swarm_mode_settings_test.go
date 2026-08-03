@@ -121,7 +121,7 @@ func testAgentModelSettingsRecord(accountScopeID string) pebblestore.AgentModelS
 	}
 	return pebblestore.AgentModelSettingsRecord{
 		AccountScopeID: accountScopeID,
-		Swarm: pebblestore.SwarmAgentModelAssignments{Action: assignment("action"), Plan: assignment("plan")},
+		Swarm:          pebblestore.SwarmAgentModelAssignments{Action: assignment("action"), Plan: assignment("plan")},
 		SystemAgents: pebblestore.SystemAgentModelAssignments{
 			Compact: assignment("compact"), Finder: assignment("finder"), Coder: assignment("coder"),
 			Designer: assignment("designer"), Router: assignment("router"),

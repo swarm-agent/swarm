@@ -40,7 +40,7 @@ func TestSessionsV3ModelProfileChoiceSnapshotsSavedAndTemporaryProfiles(t *testi
 	defaultRecord := testAgentModelSettingsRecord(principal.AccountScopeID)
 	defaultRecord.Swarm = pebblestore.SwarmAgentModelAssignments{
 		Action: pebblestore.AgentModelAssignment{Provider: created.Provider, Model: created.Model, Thinking: created.Thinking, ServiceTier: created.ServiceTier, ContextMode: created.ContextMode},
-		Plan: pebblestore.AgentModelAssignment{Provider: planFavorite.Provider, Model: planFavorite.Model, Thinking: planFavorite.Thinking, ServiceTier: planFavorite.ServiceTier, ContextMode: planFavorite.ContextMode},
+		Plan:   pebblestore.AgentModelAssignment{Provider: planFavorite.Provider, Model: planFavorite.Model, Thinking: planFavorite.Thinking, ServiceTier: planFavorite.ServiceTier, ContextMode: planFavorite.ContextMode},
 	}
 	if _, err := agentModelSettingsStore.PutForAccount(defaultRecord); err != nil {
 		t.Fatalf("configure account defaults: %v", err)

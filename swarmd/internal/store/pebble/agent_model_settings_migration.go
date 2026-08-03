@@ -226,18 +226,18 @@ func RunAgentModelSettingsMigration(store *Store) (AgentModelSettingsMigrationRe
 	return result, nil
 }
 
-func scanLegacySwarmModeSettings(store *Store) (map[string]SwarmModeSettingsRecord, []string, error) {
+func scanLegacySwarmModeSettings(store *Store) (map[string]legacySwarmModeSettingsRecord, []string, error) {
 	values, keys, err := scanValuesWithPrefix(store, swarmModeSettingsAccountPrefix)
 	if err != nil {
 		return nil, nil, fmt.Errorf("scan legacy swarm mode settings: %w", err)
 	}
-	rows := make(map[string]SwarmModeSettingsRecord, len(keys))
+	rows := make(map[string]legacySwarmModeSettingsRecord, len(keys))
 	for _, key := range keys {
-		var record SwarmModeSettingsRecord
+		var record legacySwarmModeSettingsRecord
 		if err := decodeStrictJSON(values[key], &record); err != nil {
 			return nil, nil, fmt.Errorf("decode legacy swarm mode settings at %q: %w", key, err)
 		}
-		record = normalizeSwarmModeSettingsRecord(record)
+		record = normalizeLegacySwarmModeSettingsRecord(record)
 		accountID := NormalizeAgentModelAccountScopeID(record.AccountScopeID)
 		if accountID == "" || accountID != record.AccountScopeID {
 			return nil, nil, fmt.Errorf("legacy swarm mode settings at %q have a noncanonical account scope", key)
@@ -245,7 +245,7 @@ func scanLegacySwarmModeSettings(store *Store) (map[string]SwarmModeSettingsReco
 		if swarmModeSettingsKeyForAccount(accountID) != key {
 			return nil, nil, fmt.Errorf("legacy swarm mode settings at %q do not match their storage key", key)
 		}
-		if err := validateSwarmModeSettingsRecord(record); err != nil {
+		if err := validateLegacySwarmModeSettingsRecord(record); err != nil {
 			return nil, nil, fmt.Errorf("validate legacy swarm mode settings at %q: %w", key, err)
 		}
 		if _, exists := rows[accountID]; exists {

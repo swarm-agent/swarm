@@ -111,7 +111,7 @@ func RunModelProfileFlatMigration(store *Store) (ModelProfileFlatMigrationResult
 
 	outputs := make(map[string][]ModelProfileRecord, len(accounts))
 	defaults := make(map[string]string, len(accounts))
-	modeSettings := make(map[string]SwarmModeSettingsRecord, len(accounts))
+	modeSettings := make(map[string]legacySwarmModeSettingsRecord, len(accounts))
 	consumedDefaults := make(map[string]struct{}, len(accounts))
 
 	for _, accountScopeID := range accounts {
@@ -181,7 +181,7 @@ func RunModelProfileFlatMigration(store *Store) (ModelProfileFlatMigrationResult
 				if actionSelection == nil || planSelection == nil {
 					return result, fmt.Errorf("legacy default %q for account %q has no Action/Plan selections", legacyDefaultID, accountScopeID)
 				}
-				modeSettings[accountScopeID] = SwarmModeSettingsRecord{
+				modeSettings[accountScopeID] = legacySwarmModeSettingsRecord{
 					AccountScopeID: accountScopeID,
 					Action:         modelProfileSelectionFromLegacy(*actionSelection),
 					Plan:           modelProfileSelectionFromLegacy(*planSelection),
