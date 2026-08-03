@@ -56,6 +56,21 @@ func TestWorkspaceAddCreatesLocalSelfBinding(t *testing.T) {
 	if binding.DestinationWorkspacePath != workspacePath || binding.AttestedByHostSwarmID != "local-swarm" {
 		t.Fatalf("unexpected materialization/attestation: %+v", binding)
 	}
+
+	entries, err := server.workspace.ListKnownForPrincipal(workspaceAddSelfBindingPrincipal(), 10)
+	if err != nil {
+		t.Fatalf("list workspaces: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("workspaces len=%d: %+v", len(entries), entries)
+	}
+	entry := entries[0]
+	if entry.DefinitionStatus != "" || entry.DefinitionGeneration != 0 || entry.Definition != "" || entry.DefinitionError != "" {
+		t.Fatalf("workspace add initialized definition lifecycle: %+v", entry)
+	}
+	if _, ok := workspacePayload["definition_status"]; ok {
+		t.Fatalf("workspace response unexpectedly includes definition status: %#v", workspacePayload)
+	}
 }
 
 func TestWorkspaceAddDuplicateReusesLocalSelfBinding(t *testing.T) {
