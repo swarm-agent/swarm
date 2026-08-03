@@ -37,6 +37,39 @@ func TestDecodeWorkspaceGitCommitSuggestionStrict(t *testing.T) {
 	}
 }
 
+func TestDecodeWorkspaceGitCommitSuggestionAllowsNormalVerbosityAndEnforcesSafetyLimit(t *testing.T) {
+	longerThanLegacyLimit := strings.Repeat("界", 121)
+	message, err := decodeWorkspaceGitCommitSuggestion(`{"message":"` + longerThanLegacyLimit + `"}`)
+	if err != nil {
+		t.Fatalf("decode suggestion over legacy limit: %v", err)
+	}
+	if message != longerThanLegacyLimit {
+		t.Fatalf("message rune count = %d, want 121", len([]rune(message)))
+	}
+
+	atLimit := strings.Repeat("x", maxWorkspaceGitSuggestionMessageRunes)
+	if _, err := decodeWorkspaceGitCommitSuggestion(`{"message":"` + atLimit + `"}`); err != nil {
+		t.Fatalf("decode suggestion at safety limit: %v", err)
+	}
+	overLimit := strings.Repeat("x", maxWorkspaceGitSuggestionMessageRunes+1)
+	if _, err := decodeWorkspaceGitCommitSuggestion(`{"message":"` + overLimit + `"}`); err == nil || !strings.Contains(err.Error(), "exceeds 4096 characters") {
+		t.Fatalf("oversized suggestion error = %v", err)
+	}
+}
+
+func TestWorkspaceGitCommitSuggestionInstructionsRequestBriefMessageWithSafetyLimit(t *testing.T) {
+	instructions := workspaceGitCommitSuggestionInstructions()
+	if !strings.Contains(instructions, "Keep it brief") {
+		t.Fatalf("instructions do not request a brief message: %q", instructions)
+	}
+	if !strings.Contains(instructions, `"maxLength":4096`) {
+		t.Fatalf("instructions do not retain the safety limit: %q", instructions)
+	}
+	if strings.Contains(instructions, "at most 120") {
+		t.Fatalf("instructions retain the legacy limit: %q", instructions)
+	}
+}
+
 func TestDecodeWorkspaceGitCommitSuggestionAcceptsSingleCompleteJSONFence(t *testing.T) {
 	raw := "```json\n{\"message\":\"feat: add AI commit suggestions\"}\n```"
 	message, err := decodeConfiguredRouterGitCommitSuggestion(raw)
