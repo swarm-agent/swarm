@@ -66,6 +66,26 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 			t.Fatalf("configure Compact title settings: %v", err)
 		}
 		server.v3SessionExecutor = newSessionV3Executor(server)
+		t.Cleanup(func() {
+			server.CancelInFlightRuns()
+			waitForRoutedSessionExecutorIdle(t, server.v3SessionExecutor, 2*time.Second)
+		})
+		for index, candidate := range []struct{ path, name, definition string }{
+			{path: t.TempDir(), name: "Distractor Alpha", definition: "confidential alpha routing definition"},
+			{path: t.TempDir(), name: "Distractor Beta", definition: "confidential beta routing definition"},
+		} {
+			resolution, err := server.workspace.AddForPrincipal(principal, candidate.path, candidate.name, "", false)
+			if err != nil {
+				t.Fatalf("add distractor workspace %d: %v", index, err)
+			}
+			pending, err := server.workspace.MarkDefinitionPendingForPrincipal(principal, resolution.WorkspacePath)
+			if err != nil {
+				t.Fatalf("mark distractor definition pending %d: %v", index, err)
+			}
+			if _, current, err := server.workspace.CompleteDefinitionForPrincipal(principal, resolution.WorkspacePath, pending.DefinitionGeneration, candidate.definition, 1); err != nil || !current {
+				t.Fatalf("complete distractor definition %d current=%t err=%v", index, current, err)
+			}
+		}
 		created := postRoutedSessionAtomicityRequest(t, server, principal, map[string]any{
 			"input": "name this routed session", "client_request_id": "plain-compact-title",
 		})
@@ -73,6 +93,12 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 			t.Fatalf("plain routed start status=%d body=%s", created.Code, created.Body.String())
 		}
 		result := decodeRoutedSessionAtomicityResponse(t, created)
+		if result.Session.WorkspaceName != "Routed Workspace" || result.Session.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || result.Session.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
+			t.Fatalf("plain start did not retain selected binding authority: %+v", result.Session)
+		}
+		if result.Mutation.RunIntent == nil || result.Mutation.RunIntent.Status != "pending_executor" {
+			t.Fatalf("plain start did not enqueue its run independently of Router: %+v", result.Mutation.RunIntent)
+		}
 		deadline := time.Now().Add(2 * time.Second)
 		for {
 			stored, ok, err := sessions.GetSession(result.SessionID)
@@ -84,7 +110,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 					t.Fatalf("Compact title metadata=%+v", stored.Metadata)
 				}
 				events, eventErr := sessions.ListSessionEvents(result.SessionID, 0, 10)
-				outbox, outboxErr := sessions.Store().ListV3RealtimeOutboxForSessionAfterEndpoint(result.SessionID, 0, 10)
+				outbox, outboxErr := sessions.Store().ListV3RealtimeOutboxForSessionAfterSeq(result.SessionID, 0, 10)
 				if eventErr != nil || outboxErr != nil {
 					t.Fatalf("read Compact title events/outbox: %v/%v", eventErr, outboxErr)
 				}
@@ -116,10 +142,17 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		if routerRunner.createCalls != 0 || routerRunner.streamingCalls != 0 || compactRunner.streamingCalls != 1 {
 			t.Fatalf("provider calls Router=%d/%d Compact streaming=%d", routerRunner.createCalls, routerRunner.streamingCalls, compactRunner.streamingCalls)
 		}
-		server.CancelInFlightRuns()
-		if !server.WaitForInFlightRuns(2 * time.Second) {
-			t.Fatal("Compact title flow did not become idle")
+		if len(compactRunner.requests) != 1 {
+			t.Fatalf("Compact title requests=%d, want one", len(compactRunner.requests))
 		}
+		compactInstructions := compactRunner.requests[0].Instructions
+		for _, forbidden := range []string{"Routed Workspace", "routed-binding", "confidential alpha routing definition", "confidential beta routing definition", "Distractor Alpha", "Distractor Beta"} {
+			if strings.Contains(compactInstructions, forbidden) {
+				t.Fatalf("Compact title instructions leaked workspace authority %q: %s", forbidden, compactInstructions)
+			}
+		}
+		server.CancelInFlightRuns()
+		waitForRoutedSessionExecutorIdle(t, server.v3SessionExecutor, 2*time.Second)
 	})
 
 	t.Run("explicit Plan intent owns mode while Router names the managed worktree", func(t *testing.T) {
@@ -136,10 +169,11 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 				runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical Title","worktree_name":"router-canonical"}`}}
 				server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 				managedPath := t.TempDir()
-				server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-					config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
+				worktrees := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+					config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
 					allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, RepoRoot: managedPath, BranchName: "agent/router-canonical", WorkspaceID: "router-canonical"},
-				}})
+				}}
+				server.SetWorktreeService(worktrees)
 				created := postRoutedSessionAtomicityRequest(t, server, principal, map[string]any{
 					"input": "implement this work", "client_request_id": "router-canonical-" + strings.ToLower(test.name), "plan_mode_requested": test.planRequested, "managed_worktree_requested": true,
 				})
@@ -157,8 +191,19 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 				if stored.Title != "Router Canonical Title" || stored.Mode != test.wantMode || stored.WorkspaceName != "Routed Workspace" || stored.WorkspacePath == "" {
 					t.Fatalf("routed authority was not canonical: %+v", stored)
 				}
-				if runner.createCalls != 1 || runner.streamingCalls != 0 {
-					t.Fatalf("Router calls create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
+				if stored.Metadata["title_source"] != "router" || stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false || stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
+					t.Fatalf("managed worktree title/runtime metadata=%+v", stored.Metadata)
+				}
+				if runner.createCalls != 1 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 || worktrees.lastWorkspace == "" || worktrees.lastNameSeed == "" || worktrees.lastBranchName != "agent/router-canonical" {
+					t.Fatalf("Router calls create=%d streaming=%d allocation=%d source=%q seed=%q branch=%q", runner.createCalls, runner.streamingCalls, worktrees.allocationCalls, worktrees.lastWorkspace, worktrees.lastNameSeed, worktrees.lastBranchName)
+				}
+				if len(runner.requests) != 1 {
+					t.Fatalf("Router requests=%d, want one", len(runner.requests))
+				}
+				for _, forbidden := range []string{"Routed Workspace", "routed-binding", worktrees.lastWorkspace} {
+					if forbidden != "" && strings.Contains(runner.requests[0].Instructions, forbidden) {
+						t.Fatalf("Router instructions leaked selected workspace authority %q: %s", forbidden, runner.requests[0].Instructions)
+					}
 				}
 			})
 		}
@@ -209,6 +254,26 @@ type routedContractRollbackWorktree struct {
 func (s *routedContractRollbackWorktree) RollbackAllocation(allocation worktreeruntime.Allocation) error {
 	s.rollbacks = append(s.rollbacks, allocation)
 	return nil
+}
+
+func waitForRoutedSessionExecutorIdle(t *testing.T, executor *sessionV3Executor, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if executor == nil {
+			return
+		}
+		executor.mu.Lock()
+		inFlight := len(executor.inFlightRuns)
+		executor.mu.Unlock()
+		if inFlight == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("routed session executor did not become idle; in_flight=%d", inFlight)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func postRoutedSessionRawContractRequest(t *testing.T, server *Server, principal identity.Principal, body string) *httptest.ResponseRecorder {

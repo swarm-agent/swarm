@@ -4,13 +4,13 @@ import test from 'node:test'
 
 import { DESKTOP_SHORTCUTS } from './desktop-shortcuts'
 
-test('desktop omits workspace quick switching', async () => {
+test('desktop keeps workspace selection in the compact sidebar without restoring picker shortcuts', async () => {
   assert.equal(DESKTOP_SHORTCUTS.some((definition) => definition.id === 'workspace-picker'), false)
 
   const desktopSource = await readFile(new URL('../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(desktopSource, /normalizedCode === 'keyw'/)
   assert.doesNotMatch(desktopSource, /handleOpenWorkspacePicker/)
   assert.doesNotMatch(desktopSource, /<DesktopWorkspacePicker/)
-  assert.doesNotMatch(desktopSource, /aria-haspopup="menu"/)
-  assert.match(desktopSource, /aria-label="Current workspace"/)
+  assert.match(desktopSource, /aria-haspopup="menu"/)
+  assert.match(desktopSource, /aria-label=\{`Current workspace: \$\{topWorkspaceLabel\}`\}/)
 })

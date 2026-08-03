@@ -181,19 +181,20 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
 })
 
-test('sidebar shows the current workspace without a dropdown before chat and worktree actions', async () => {
+test('sidebar shows an accessible current-workspace dropdown before chat and worktree actions', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
-  const workspaceLabelIndex = source.indexOf('aria-label="Current workspace"')
+  const workspaceLabelIndex = source.indexOf('aria-label={`Current workspace: ${topWorkspaceLabel}`}')
   const sessionGroupsIndex = source.indexOf('{renderSidebarSessionGroups({', workspaceLabelIndex)
   const workspaceRowSource = source.slice(workspaceLabelIndex, sessionGroupsIndex)
   const newChatIndex = workspaceRowSource.indexOf('handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)')
-  const worktreeIndex = workspaceRowSource.indexOf('openRouteWorkspaceWorktree()')
+  const worktreeIndex = workspaceRowSource.indexOf('openRouteWorkspaceWorktree(topWorkspace)')
 
   assert.ok(workspaceLabelIndex >= 0 && sessionGroupsIndex > workspaceLabelIndex)
-  assert.match(workspaceRowSource, /aria-label="Current workspace"[\s\S]*\{topWorkspaceLabel\}/)
-  assert.doesNotMatch(workspaceRowSource, /aria-haspopup|aria-expanded|role="menu"|workspaceDropdown/)
+  assert.match(workspaceRowSource, /aria-label=\{`Current workspace: \$\{topWorkspaceLabel\}`\}[\s\S]*aria-haspopup="menu"[\s\S]*aria-expanded=\{workspaceDropdownOpen\}[\s\S]*role="menu"[\s\S]*role="menuitemradio"/)
+  assert.match(source, /if \(!workspaceDropdownRef\.current\?\.contains\(event\.target as Node\)\) setWorkspaceDropdownOpen\(false\)/)
+  assert.match(source, /if \(event\.key === 'Escape'\) setWorkspaceDropdownOpen\(false\)/)
   assert.ok(newChatIndex >= 0 && worktreeIndex > newChatIndex)
-  assert.match(workspaceRowSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<MessageSquare[\s\S]*openRouteWorkspaceWorktree\(\)/)
+  assert.match(workspaceRowSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<MessageSquare[\s\S]*openRouteWorkspaceWorktree\(topWorkspace\)/)
 })
 
 test('sidebar metadata icons use semantic colors from the active theme', async () => {

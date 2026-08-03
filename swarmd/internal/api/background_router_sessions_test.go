@@ -64,8 +64,16 @@ func TestBackgroundRouterSessionStartUsesCanonicalRouterWithRequiredWorktree(t *
 			if got := stored.Metadata["routed_start_request_hash"]; got == nil || got == "" {
 				t.Fatalf("background Router session is missing routed transaction hash: %+v", stored.Metadata)
 			}
-			if runner.createCalls != 1 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 {
-				t.Fatalf("Router calls=%d/%d worktree calls=%d", runner.createCalls, runner.streamingCalls, worktrees.allocationCalls)
+			if runner.createCalls != 1 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 || worktrees.lastWorkspace == "" || worktrees.lastNameSeed == "" || worktrees.lastBranchName != "agent/background-router" {
+				t.Fatalf("Router calls=%d/%d worktree calls=%d source=%q seed=%q branch=%q", runner.createCalls, runner.streamingCalls, worktrees.allocationCalls, worktrees.lastWorkspace, worktrees.lastNameSeed, worktrees.lastBranchName)
+			}
+			if len(runner.requests) != 1 {
+				t.Fatalf("Router requests=%d, want one", len(runner.requests))
+			}
+			for _, forbidden := range []string{"Routed Workspace", "routed-binding", worktrees.lastWorkspace} {
+				if forbidden != "" && strings.Contains(runner.requests[0].Instructions, forbidden) {
+					t.Fatalf("background Router instructions leaked workspace authority %q: %s", forbidden, runner.requests[0].Instructions)
+				}
 			}
 		})
 	}

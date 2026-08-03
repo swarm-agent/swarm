@@ -8,6 +8,10 @@ import {
 } from './write-api'
 
 const originalFetch = globalThis.fetch
+const workspaceAuthority = {
+  workspace_path: '/workspace/source', host_workspace_path: '/workspace/source', runtime_workspace_path: '/workspace/runtime',
+  workspace_binding_id: 'binding-self', swarm_id: 'swarm-self', target_kind: 'host' as const, target_relationship: 'self' as const,
+}
 
 function routedResponse(overrides: Record<string, unknown> = {}) {
   const session = {
@@ -79,6 +83,7 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
 
   try {
     const response = await postDesktopV3RoutedSessionStart({
+      ...workspaceAuthority,
       input: '  Build the routed flow  ',
       client_request_id: 'desktop-routed:stable-1',
       agent_name: ' swarm ',
@@ -101,6 +106,7 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
   assert.equal(headers.get('Idempotency-Key'), 'desktop-routed:stable-1')
   const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>
   assert.deepEqual(body, {
+    ...workspaceAuthority,
     input: 'Build the routed flow',
     client_request_id: 'desktop-routed:stable-1',
     idempotency_key: 'desktop-routed:stable-1',
@@ -111,7 +117,7 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
     media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
   })
   for (const forbidden of [
-    'workspace_path', 'workspace_binding_id', 'title', 'mode', 'starting_mode',
+    'title', 'mode', 'starting_mode',
     'preference', 'model', 'model_profile', 'favorite_id', 'branch',
     'worktree_mode', 'worktree_branch_name',
   ]) {
@@ -134,6 +140,7 @@ test('background Router start uses its dedicated endpoint without exposing workt
 
   try {
     await postDesktopV3BackgroundRouterSessionStart({
+      ...workspaceAuthority,
       input: '  Implement in the background  ',
       client_request_id: 'desktop-background-router:stable-1',
       agent_name: ' swarm ',
@@ -148,6 +155,7 @@ test('background Router start uses its dedicated endpoint without exposing workt
   assert.equal(calls[0]?.url, '/v3/sessions:background-router')
   const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>
   assert.deepEqual(body, {
+    ...workspaceAuthority,
     input: 'Implement in the background',
     client_request_id: 'desktop-background-router:stable-1',
     idempotency_key: 'desktop-background-router:stable-1',
@@ -170,6 +178,7 @@ test('routed start accepts staging IDs without inventing route selections', asyn
 
   try {
     const response = await postDesktopV3RoutedSessionStart({
+      ...workspaceAuthority,
       input: 'Replay this',
       client_request_id: 'desktop-routed:stable-2',
       managed_worktree_requested: false,
@@ -202,6 +211,7 @@ test('routed response normalization rejects mismatched canonical durable state',
 test('routed start rejects conflicting idempotency identities before transport', async () => {
   await assert.rejects(
     postDesktopV3RoutedSessionStart({
+      ...workspaceAuthority,
       input: 'Do work',
       client_request_id: 'desktop-routed:one',
       idempotency_key: 'desktop-routed:two',

@@ -39,7 +39,7 @@ import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
-import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, startNewDesktopV3Session, type DesktopV3RoutedStartResult } from '../session-v3/new-session-flow'
+import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
@@ -2577,7 +2577,7 @@ export function DesktopAppPage() {
   const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
   const routeSessionId = mobileCreationPage ? '' : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, currentWorkspacePath, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  const { workspaces, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
   const focusMode = sidebarDisplayMode === 'focus'
   const setSidebarDisplayMode = useCallback((mode: DesktopMainSidebarMode) => {
@@ -2619,6 +2619,7 @@ export function DesktopAppPage() {
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
@@ -2651,6 +2652,7 @@ export function DesktopAppPage() {
   const routedActivationGenerationRef = useRef(0)
   const routedActivationWorkspaceRef = useRef('')
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
+  const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
@@ -2671,6 +2673,22 @@ export function DesktopAppPage() {
     [routeWorkspaceSlug, workspaces],
   )
   routedActivationWorkspaceRef.current = routeSessionId ? '' : routeWorkspace?.path.trim() ?? ''
+  useEffect(() => {
+    if (!workspaceDropdownOpen) return
+    const dismiss = (event: MouseEvent) => {
+      if (!workspaceDropdownRef.current?.contains(event.target as Node)) setWorkspaceDropdownOpen(false)
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setWorkspaceDropdownOpen(false)
+    }
+    document.addEventListener('mousedown', dismiss)
+    window.addEventListener('keydown', dismissOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', dismiss)
+      window.removeEventListener('keydown', dismissOnEscape)
+    }
+  }, [workspaceDropdownOpen])
+
   useEffect(() => {
     if (!desktopToast) {
       return
@@ -3184,16 +3202,20 @@ export function DesktopAppPage() {
     ? gitSnapshot?.branch
     : gitSnapshot?.branch || selectedWorkspace?.gitBranch || routeWorkspace?.gitBranch || topWorkspace?.gitBranch
   const sidebarWorkspaceContext = sidebarWorkspaceContextLabel(masterWorkspaceName || topWorkspaceLabel, sidebarWorkspaceBranch)
-  const defaultNewChatWorkspace = useMemo(() => {
-    const defaultPath = currentWorkspacePath?.trim() || ''
-    if (defaultPath) {
-      return mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === defaultPath)
-        ?? buildTemporaryWorkspaceEntry(defaultPath, fallbackWorkspaceNameFromPath(defaultPath))
-    }
-    return topWorkspace
-  }, [currentWorkspacePath, mergedSidebarWorkspaceEntries, topWorkspace])
-  const defaultNewChatWorkspacePath = defaultNewChatWorkspace?.path || ''
-  const defaultNewChatWorkspaceLabel = defaultNewChatWorkspace?.workspaceName?.trim() || 'Default Workspace'
+  const defaultNewChatWorkspacePath = topWorkspacePath
+  const defaultNewChatWorkspaceLabel = topWorkspaceLabel
+  const activeWorkspaceAuthority = useMemo<DesktopV3RoutedWorkspaceAuthority | null>(() => {
+    if (!topWorkspace) return null
+    const route = buildDesktopChatRouteOptions({
+      hostSwarmName: swarmName,
+      workspacePath: topWorkspace.path,
+      workspaceName: topWorkspace.workspaceName,
+      topologyRoutes: topWorkspace.topologyRoutes,
+      localWorkspaceBindingId: topWorkspace.localWorkspaceBindingId,
+      hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+    }).find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions')
+    return route ? desktopV3RoutedWorkspaceAuthority(topWorkspace.path, route) : null
+  }, [currentSwarmTarget?.swarm_id, swarmName, topWorkspace])
   const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
     const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
       || selectedWorkspacePath
@@ -3444,18 +3466,24 @@ export function DesktopAppPage() {
     setComposerFocusSignal((current) => current + 1)
   }, [navigate, workspaceSlugByPath])
 
-  const handleRoutedSessionResolved = useCallback(async (result: DesktopV3RoutedStartResult, sourceWorkspacePath: string): Promise<void> => {
-    const expectedWorkspacePath = sourceWorkspacePath.trim()
+  const handleRoutedSessionResolved = useCallback(async (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority): Promise<void> => {
+    const expectedWorkspacePath = authority.workspace_path.trim()
     if (!expectedWorkspacePath || routedActivationWorkspaceRef.current !== expectedWorkspacePath) {
       throw new Error('Routed Desktop activation is stale')
     }
     const activationGeneration = ++routedActivationGenerationRef.current
     let canonicalWorkspace: WorkspaceEntry
     try {
-      const authority = desktopV3RoutedResultResponse(result).session_view.identity
-      const sourceWorkspacePath = authority.source_workspace_path.trim()
+      const returnedAuthority = desktopV3RoutedResultResponse(result).session_view.identity
+      const sourceWorkspacePath = returnedAuthority.source_workspace_path.trim()
+      if (sourceWorkspacePath !== expectedWorkspacePath
+        || returnedAuthority.workspace_binding_id?.trim() !== authority.workspace_binding_id
+        || returnedAuthority.runtime_swarm_id?.trim() !== authority.swarm_id
+        || returnedAuthority.runtime_workspace_path.trim() !== authority.runtime_workspace_path) {
+        throw new Error('Routed Desktop start returned authority for a different workspace')
+      }
       canonicalWorkspace = workspaceByPath.get(sourceWorkspacePath)
-        ?? workspaces.find((workspace) => workspace.workspaceId && workspace.workspaceId === authority.source_workspace_id)
+        ?? workspaces.find((workspace) => workspace.workspaceId && workspace.workspaceId === returnedAuthority.source_workspace_id)
         ?? (() => { throw new Error('Routed Desktop start returned an unknown source workspace') })()
     } catch (error) {
       setDesktopToast({ message: error instanceof Error ? error.message : 'Routed session authority is invalid.', tone: 'error' })
@@ -3754,7 +3782,9 @@ export function DesktopAppPage() {
         const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
         let launch: ReturnType<typeof postDesktopV3BackgroundRouterSessionStart>
         try {
+          if (!activeWorkspaceAuthority) throw new Error('Background Router session requires the active workspace authority')
           launch = postDesktopV3BackgroundRouterSessionStart({
+            ...activeWorkspaceAuthority,
             input: request,
             client_request_id: clientRequestId,
             agent_name: 'swarm',
@@ -3783,7 +3813,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
+  }, [activeWorkspaceAuthority, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -4142,7 +4172,9 @@ export function DesktopAppPage() {
     const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
     let launch: ReturnType<typeof postDesktopV3BackgroundRouterSessionStart>
     try {
+      if (!activeWorkspaceAuthority) throw new Error('Background Router session requires the active workspace authority')
       launch = postDesktopV3BackgroundRouterSessionStart({
+        ...activeWorkspaceAuthority,
         input: request,
         client_request_id: clientRequestId,
         agent_name: 'swarm',
@@ -4164,20 +4196,12 @@ export function DesktopAppPage() {
     void launch.catch((error) => {
       setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
     })
-  }, [backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspaceSlug])
+  }, [activeWorkspaceAuthority, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspaceSlug])
 
-  const openRouteWorkspaceWorktree = useCallback(() => {
-    if (!routeWorkspace?.path) return
-    const prime = document.querySelector<HTMLButtonElement>('[data-testid="desktop-routed-worktree-prime"]')
-    if (prime) {
-      if (prime.dataset.worktreeRequested !== 'true') prime.click()
-      setComposerFocusSignal((current) => current + 1)
-      return
-    }
-    if (mobileCreationPage === 'worktree' && routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
-    }
-  }, [mobileCreationPage, navigate, routeWorkspace?.path, routeWorkspaceSlug])
+  const openRouteWorkspaceWorktree = useCallback((workspace: WorkspaceEntry | null = routeWorkspace) => {
+    if (!workspace?.path) return
+    handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName, { worktreeRequested: true })
+  }, [handleStartNewSessionInWorkspace, routeWorkspace])
 
   const renderMobileSessions = (nodes: SidebarSessionNode[]) => renderSidebarSessionGroups({
     nodes,
@@ -4742,12 +4766,43 @@ export function DesktopAppPage() {
             <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
               <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
                   <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
-                    <div
-                      className="flex h-7 min-w-0 items-center px-1 text-left text-[11px] font-semibold text-[var(--app-text)]"
-                      aria-label="Current workspace"
-                      title={topWorkspacePath || 'Default Workspace'}
-                    >
-                      <span className="min-w-0 truncate">{topWorkspaceLabel}</span>
+                    <div ref={workspaceDropdownRef} className="relative min-w-0">
+                      <button
+                        type="button"
+                        className="flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                        aria-label={`Current workspace: ${topWorkspaceLabel}`}
+                        aria-haspopup="menu"
+                        aria-expanded={workspaceDropdownOpen}
+                        title={topWorkspacePath || 'Default Workspace'}
+                        onClick={() => setWorkspaceDropdownOpen((open) => !open)}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{topWorkspaceLabel}</span>
+                        <ChevronDown size={12} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
+                      </button>
+                      {workspaceDropdownOpen ? (
+                        <div
+                          role="menu"
+                          aria-label="Select workspace"
+                          className="absolute left-0 top-8 z-30 max-h-64 min-w-full overflow-y-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 shadow-xl"
+                        >
+                          {mergedSidebarWorkspaceEntries.map((workspace) => (
+                            <button
+                              key={workspace.path}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={workspace.path === topWorkspacePath}
+                              className="flex min-h-8 w-full min-w-[220px] items-center gap-2 rounded px-2 text-left text-[11px] hover:bg-[var(--app-surface-hover)]"
+                              onClick={() => {
+                                setWorkspaceDropdownOpen(false)
+                                handleOpenWorkspace(workspace.path, workspace.workspaceName)
+                              }}
+                            >
+                              <span className="min-w-0 flex-1 truncate">{workspace.workspaceName}</span>
+                              {workspace.path === topWorkspacePath ? <Check size={12} aria-hidden="true" /> : null}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                     <button
                       type="button"
@@ -4766,7 +4821,7 @@ export function DesktopAppPage() {
                       className={SIDEBAR_ACTION_BUTTON_CLASS}
                       onClick={() => {
                         if (topWorkspace && topWorkspacePath) {
-                          openRouteWorkspaceWorktree()
+                          openRouteWorkspaceWorktree(topWorkspace)
                         }
                       }}
                       disabled={!topWorkspace}
@@ -4960,15 +5015,16 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : routeWorkspace?.path ? (
+        ) : topWorkspace?.path && activeWorkspaceAuthority ? (
           <DesktopV3NewSessionPane
-            key={`new:${routeWorkspace.path}:${newSessionEpoch}`}
-            workspace={routeWorkspace}
-            onRoutedSessionResolved={(result) => handleRoutedSessionResolved(result, routeWorkspace.path)}
+            key={`new:${topWorkspace.path}:${newSessionEpoch}`}
+            workspace={topWorkspace}
+            workspaceAuthority={activeWorkspaceAuthority}
+            onRoutedSessionResolved={handleRoutedSessionResolved}
             composerFocusSignal={composerFocusSignal}
-            initialPrompt={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.prompt : undefined}
-            initialWorktreeRequested={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.worktreeRequested : requestedNewWorktree}
-            initialPlanModeRequested={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
+            initialPrompt={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.prompt : undefined}
+            initialWorktreeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.worktreeRequested : requestedNewWorktree}
+            initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={requestedAgentName}
             mobileSessionQuickMenu={mobileSessionQuickMenu}

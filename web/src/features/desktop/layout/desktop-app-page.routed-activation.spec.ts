@@ -49,7 +49,7 @@ test('routed activation derives URL identity from the returned source workspace 
   assert.match(source, /routedActivationGenerationRef\.current \+= 1|\+\+routedActivationGenerationRef\.current/)
   assert.match(handler, /await navigate\([\s\S]*params: \{ workspaceSlug, sessionId: response\.session_id \}/)
   assert.match(handler, /activationStillCurrent[\s\S]*throw new Error\('Routed Desktop activation is stale'\)/)
-  assert.match(source, /onRoutedSessionResolved=\{\(result\) => handleRoutedSessionResolved\(result, routeWorkspace\.path\)\}/)
+  assert.match(source, /onRoutedSessionResolved=\{handleRoutedSessionResolved\}/)
 })
 
 test('routed activation validates all returned display authority and never publishes before realtime readiness', async () => {
@@ -122,6 +122,6 @@ test('app-level new-chat wiring has no local pending authority or generic mode c
   assert.doesNotMatch(source, /createDesktopV3RoutedStartOperation/)
   assert.doesNotMatch(source, /createDesktopV3CreateOnlySessionOperation|startDesktopV3CreateOnlySession/)
   assert.doesNotMatch(source, /titleToWorktreeBranchSlug|worktreeSessionBranch/)
-  assert.match(source, /onRoutedSessionResolved=\{\(result\) => handleRoutedSessionResolved\(result, routeWorkspace\.path\)\}/)
+  assert.match(source, /onRoutedSessionResolved=\{handleRoutedSessionResolved\}/)
   assert.doesNotMatch(source, /onRoutedSessionResolved:[\s\S]*as \{\}/)
 })

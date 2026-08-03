@@ -19,7 +19,7 @@ test('/task always uses the dedicated background Router session API', async () =
   const backgroundCase = app.match(/case 'start-background-router-session': \{([\s\S]*?)\n      case 'show-help':/)?.[1] ?? ''
   assert.notEqual(backgroundCase, '')
   assert.match(backgroundCase, /parseDesktopTaskCommand\(draft\)/)
-  assert.match(backgroundCase, /launch = postDesktopV3BackgroundRouterSessionStart\(\{[\s\S]*?input: request/)
+  assert.match(backgroundCase, /launch = postDesktopV3BackgroundRouterSessionStart\(\{[\s\S]*?\.\.\.activeWorkspaceAuthority[\s\S]*?input: request/)
   assert.match(backgroundCase, /plan_mode_requested: mode === 'plan'/)
   assert.match(backgroundCase, /Background Router task sent\.', tone: 'success'/)
   assert.match(backgroundCase, /void launch\.catch\([\s\S]*?tone: 'error'/)

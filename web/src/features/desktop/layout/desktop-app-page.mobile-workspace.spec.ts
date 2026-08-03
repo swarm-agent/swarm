@@ -127,7 +127,7 @@ test('mobile Task page uses the natural composer with background guidance and su
   assert.match(page, /executionLabel="background"/)
   assert.doesNotMatch(page, /<textarea|<form/)
   assert.match(source, /const handleStartBackgroundRouterSession = useCallback\(\(submittedRequest = backgroundTaskRequest\)/)
-  assert.match(source, /postDesktopV3BackgroundRouterSessionStart\(\{[\s\S]*?input: request[\s\S]*?plan_mode_requested: false/)
+  assert.match(source, /postDesktopV3BackgroundRouterSessionStart\(\{[\s\S]*?\.\.\.activeWorkspaceAuthority[\s\S]*?input: request[\s\S]*?plan_mode_requested: false/)
   assert.match(source, /Background Router task sent\.', tone: 'success'/)
   assert.match(source, /void launch\.catch\([\s\S]*?tone: 'error'/)
   assert.doesNotMatch(source, /backgroundTaskBusy|setBackgroundTaskBusy|await postDesktopV3BackgroundRouterSessionStart/)

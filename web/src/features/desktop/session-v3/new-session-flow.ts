@@ -493,7 +493,17 @@ export interface DesktopV3RoutedWorktreePrimedState {
   snapshot: DesktopV3RoutedComposerSnapshot
 }
 
-export interface DesktopV3RoutedStartRequest {
+export interface DesktopV3RoutedWorkspaceAuthority {
+  workspace_path: string
+  host_workspace_path: string
+  runtime_workspace_path: string
+  workspace_binding_id: string
+  swarm_id: string
+  target_kind: 'host' | 'self'
+  target_relationship: 'self'
+}
+
+export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAuthority {
   input: string
   client_request_id: string
   idempotency_key: string
@@ -505,7 +515,7 @@ export interface DesktopV3RoutedStartRequest {
 }
 
 export interface DesktopV3RoutedStartOperation {
-  version: 1
+  version: 2
   operationId: string
   createdAt: number
   snapshot: DesktopV3RoutedComposerSnapshot
@@ -560,7 +570,27 @@ export interface DesktopV3RoutedOperationIdentity {
   clientRequestId: string
 }
 
+export function desktopV3RoutedWorkspaceAuthority(
+  workspacePath: string,
+  route: DesktopChatRoute,
+): DesktopV3RoutedWorkspaceAuthority {
+  const target = getDesktopSessionCreateTarget(route)
+  if (target.endpoint !== '/v3/sessions') {
+    throw new Error(target.unsupportedReason || 'Routed Desktop start requires the primary V3 route')
+  }
+  return normalizeDesktopV3RoutedWorkspaceAuthority({
+    workspace_path: workspacePath,
+    host_workspace_path: route.hostWorkspacePath,
+    runtime_workspace_path: route.runtimeWorkspacePath,
+    workspace_binding_id: target.workspaceBindingId,
+    swarm_id: target.swarmId,
+    target_kind: route.targetKind.trim().toLowerCase() as 'host' | 'self',
+    target_relationship: route.targetRelationship.trim().toLowerCase() as 'self',
+  })
+}
+
 export interface CreateDesktopV3RoutedStartOperationInput {
+  workspace: DesktopV3RoutedWorkspaceAuthority
   prompt?: string
   snapshot?: DesktopV3RoutedComposerSnapshot
   agentName?: string
@@ -578,7 +608,8 @@ export type PostDesktopV3RoutedStart = (
   request: DesktopV3RoutedStartRequest,
 ) => Promise<DesktopV3RoutedStartResult>
 
-const ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v1'
+const ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v2'
+const LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v1'
 
 function normalizedRoutedMedia(media: DesktopV3RoutedMediaInput[] | undefined): DesktopV3RoutedMediaInput[] | undefined {
   if (!media?.length) return undefined
@@ -670,12 +701,14 @@ export function createDesktopV3RoutedStartOperation(
   if (!operationId || clientRequestID !== `desktop-v3-routed:${operationId}`) {
     throw new Error('Routed Desktop operation identity is invalid')
   }
+  const authority = normalizeDesktopV3RoutedWorkspaceAuthority(input.workspace)
   return {
-    version: 1,
+    version: 2,
     operationId,
     createdAt: Date.now(),
     snapshot,
     request: {
+      ...authority,
       input: requestInput,
       client_request_id: clientRequestID,
       idempotency_key: clientRequestID,
@@ -688,14 +721,44 @@ export function createDesktopV3RoutedStartOperation(
   }
 }
 
+function normalizeDesktopV3RoutedWorkspaceAuthority(value: DesktopV3RoutedWorkspaceAuthority): DesktopV3RoutedWorkspaceAuthority {
+  const workspacePath = value.workspace_path?.trim()
+  const hostWorkspacePath = value.host_workspace_path?.trim()
+  const runtimeWorkspacePath = value.runtime_workspace_path?.trim()
+  const workspaceBindingID = value.workspace_binding_id?.trim()
+  const swarmID = value.swarm_id?.trim()
+  const targetKind = value.target_kind?.trim().toLowerCase()
+  const targetRelationship = value.target_relationship?.trim().toLowerCase()
+  if (!workspacePath || !hostWorkspacePath || !runtimeWorkspacePath || !workspaceBindingID || !swarmID) {
+    throw new Error('Routed Desktop start requires complete captured workspace authority')
+  }
+  if (workspacePath !== hostWorkspacePath) throw new Error('Routed Desktop source and host workspace paths must match')
+  if (targetKind !== 'host' && targetKind !== 'self') throw new Error('Routed Desktop start requires a self host target')
+  if (targetRelationship !== 'self') throw new Error('Routed Desktop start requires a self target relationship')
+  return {
+    workspace_path: workspacePath,
+    host_workspace_path: hostWorkspacePath,
+    runtime_workspace_path: runtimeWorkspacePath,
+    workspace_binding_id: workspaceBindingID,
+    swarm_id: swarmID,
+    target_kind: targetKind,
+    target_relationship: 'self',
+  }
+}
+
 function isStoredDesktopV3RoutedStartOperation(value: unknown): value is DesktopV3RoutedStartOperation {
   if (!value || typeof value !== 'object') return false
   const operation = value as Partial<DesktopV3RoutedStartOperation>
-  if (operation.version !== 1 || !operation.operationId?.trim() || typeof operation.createdAt !== 'number' || !Number.isFinite(operation.createdAt)) return false
+  if (operation.version !== 2 || !operation.operationId?.trim() || typeof operation.createdAt !== 'number' || !Number.isFinite(operation.createdAt)) return false
   const snapshot = operation.snapshot
   if (!isStoredDesktopV3RoutedComposerSnapshot(snapshot)) return false
   const request = operation.request
   if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
+  try {
+    normalizeDesktopV3RoutedWorkspaceAuthority(request)
+  } catch {
+    return false
+  }
   if (request.idempotency_key !== request.client_request_id) return false
   if (typeof request.managed_worktree_requested !== 'boolean' || request.managed_worktree_requested !== snapshot.worktreePrimed) return false
   if (typeof request.plan_mode_requested !== 'boolean' || request.plan_mode_requested !== snapshot.planModeRequested) return false
@@ -723,6 +786,7 @@ export function persistDesktopV3RoutedStartOperation(operation: DesktopV3RoutedS
 export function loadDesktopV3RoutedStartOperation(): DesktopV3RoutedStartOperation | null {
   if (typeof window === 'undefined') return null
   try {
+    window.sessionStorage.removeItem(LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY)
     const raw = window.sessionStorage.getItem(ROUTED_NEW_SESSION_OPERATION_KEY)
     if (!raw) return null
     const operation: unknown = JSON.parse(raw)
@@ -742,6 +806,7 @@ export function clearDesktopV3RoutedStartOperation(operationId?: string): void {
     if (current && current.operationId !== operationId) return
   }
   window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+  window.sessionStorage.removeItem(LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY)
 }
 
 export function restoreDesktopV3RoutedNewSessionState(): DesktopV3RoutedNewSessionState {

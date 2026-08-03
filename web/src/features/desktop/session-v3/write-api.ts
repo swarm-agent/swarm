@@ -62,6 +62,31 @@ export interface DesktopV3ModelProfileChoiceWire {
   use_agent_default?: true
 }
 
+function normalizedRoutedWorkspaceAuthority(input: DesktopV3RoutedWorkspaceAuthorityRequest): DesktopV3RoutedWorkspaceAuthorityRequest {
+  const workspacePath = input.workspace_path.trim()
+  const hostWorkspacePath = input.host_workspace_path.trim()
+  const runtimeWorkspacePath = input.runtime_workspace_path.trim()
+  const workspaceBindingID = input.workspace_binding_id.trim()
+  const swarmID = input.swarm_id.trim()
+  const targetKind = input.target_kind.trim().toLowerCase()
+  const targetRelationship = input.target_relationship.trim().toLowerCase()
+  if (!workspacePath || !hostWorkspacePath || !runtimeWorkspacePath || !workspaceBindingID || !swarmID) {
+    throw new Error('Desktop V3 routed start requires complete workspace authority')
+  }
+  if (workspacePath !== hostWorkspacePath || (targetKind !== 'host' && targetKind !== 'self') || targetRelationship !== 'self') {
+    throw new Error('Desktop V3 routed start workspace authority is inconsistent')
+  }
+  return {
+    workspace_path: workspacePath,
+    host_workspace_path: hostWorkspacePath,
+    runtime_workspace_path: runtimeWorkspacePath,
+    workspace_binding_id: workspaceBindingID,
+    swarm_id: swarmID,
+    target_kind: targetKind,
+    target_relationship: 'self',
+  }
+}
+
 function modelProfileSelectionWire(value: ModelProfileSelectionRecord): DesktopV3ModelProfileSelectionWire {
   return {
     provider: value.provider.trim(), model: value.model.trim(), thinking: value.thinking.trim(),
@@ -89,7 +114,17 @@ export interface DesktopV3RoutedSessionMediaRequest {
   file_type?: string
 }
 
-export interface DesktopV3RoutedSessionStartRequest {
+export interface DesktopV3RoutedWorkspaceAuthorityRequest {
+  workspace_path: string
+  host_workspace_path: string
+  runtime_workspace_path: string
+  workspace_binding_id: string
+  swarm_id: string
+  target_kind: 'host' | 'self'
+  target_relationship: 'self'
+}
+
+export interface DesktopV3RoutedSessionStartRequest extends DesktopV3RoutedWorkspaceAuthorityRequest {
   input: string
   client_request_id: string
   idempotency_key?: string
@@ -101,7 +136,7 @@ export interface DesktopV3RoutedSessionStartRequest {
   staging_ids?: string[]
 }
 
-export interface DesktopV3BackgroundRouterSessionStartRequest {
+export interface DesktopV3BackgroundRouterSessionStartRequest extends DesktopV3RoutedWorkspaceAuthorityRequest {
   input: string
   client_request_id: string
   idempotency_key?: string
@@ -255,6 +290,7 @@ export async function postDesktopV3RoutedSessionStart(
   }
 
   const request: DesktopV3RoutedSessionStartRequest = {
+    ...normalizedRoutedWorkspaceAuthority(input),
     input: userInput,
     client_request_id: clientRequestId,
     idempotency_key: clientRequestId,
@@ -295,6 +331,7 @@ export async function postDesktopV3BackgroundRouterSessionStart(
   }
 
   const request: DesktopV3BackgroundRouterSessionStartRequest = {
+    ...normalizedRoutedWorkspaceAuthority(input),
     input: userInput,
     client_request_id: clientRequestId,
     idempotency_key: clientRequestId,

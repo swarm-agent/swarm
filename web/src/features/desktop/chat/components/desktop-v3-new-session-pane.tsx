@@ -13,6 +13,7 @@ import {
   createDesktopV3RoutedComposerSnapshot,
   type DesktopV3RoutedComposerSnapshot,
   type DesktopV3RoutedNewSessionState,
+  type DesktopV3RoutedWorkspaceAuthority,
   type DesktopV3RoutedStartResult,
 } from '../../session-v3/new-session-flow'
 import { postDesktopV3RoutedSessionStart } from '../../session-v3/write-api'
@@ -32,7 +33,8 @@ import {
 
 export interface DesktopV3NewSessionPaneProps {
   workspace: WorkspaceEntry
-  onRoutedSessionResolved: (result: DesktopV3RoutedStartResult) => void | Promise<void>
+  workspaceAuthority: DesktopV3RoutedWorkspaceAuthority
+  onRoutedSessionResolved: (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority) => void | Promise<void>
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   composerFocusSignal?: number
@@ -50,6 +52,7 @@ export interface DesktopV3NewSessionPaneProps {
  */
 export function DesktopV3NewSessionPane({
   workspace,
+  workspaceAuthority,
   onRoutedSessionResolved,
   mobileSessionQuickMenu,
   onSlashCommand,
@@ -153,7 +156,7 @@ export function DesktopV3NewSessionPane({
     let cancelled = false
     const operationId = routedState.operation.operationId
     void Promise.resolve()
-      .then(() => resolvedCallbackRef.current(routedState.result))
+      .then(() => resolvedCallbackRef.current(routedState.result, routedState.operation.request))
       .then(() => {
         controller.acknowledgeResolved(operationId)
         operationAttachmentsRef.current = null
@@ -222,6 +225,7 @@ export function DesktopV3NewSessionPane({
       setLocalError(null)
       operationAttachmentsRef.current = [...stagedAttachmentsRef.current]
       return controller.submit({
+        workspace: workspaceAuthority,
         snapshot: captured,
         metadata: encodeDesktopRoutedWorktreeIntentMetadata(
           createDesktopRoutedWorktreeIntent(captured.worktreePrimed),

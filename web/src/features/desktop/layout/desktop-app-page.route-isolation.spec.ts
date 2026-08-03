@@ -23,7 +23,7 @@ test('Desktop V3 route panes are keyed by route identity', async () => {
   )
   assert.match(
     source,
-    /<DesktopV3NewSessionPane\s+key=\{`new:\$\{routeWorkspace\.path\}`\}\s+workspace=\{routeWorkspace\}/,
+    /<DesktopV3NewSessionPane\s+key=\{`new:\$\{topWorkspace\.path\}:\$\{newSessionEpoch\}`\}\s+workspace=\{topWorkspace\}\s+workspaceAuthority=\{activeWorkspaceAuthority\}/,
   )
 })
 
@@ -63,7 +63,7 @@ test('Desktop V3 routed drafts and durable conversations keep separate ownership
   const existingPane = await readExistingConversationPane()
 
   assert.match(appPage, /routeSessionId \? \(\s*<DesktopV3ExistingConversationPane/s)
-  assert.match(appPage, /routeWorkspace\?\.path \? \(\s*<DesktopV3NewSessionPane/s)
+  assert.match(appPage, /topWorkspace\?\.path && activeWorkspaceAuthority \? \(\s*<DesktopV3NewSessionPane/s)
   assert.doesNotMatch(appPage, /function DesktopV3ChatPane/)
   assert.doesNotMatch(appPage, /commitDesktopV3Message/)
   assert.doesNotMatch(appPage, /postDesktopV3AppendMessage/)
