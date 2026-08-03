@@ -14,17 +14,15 @@ import (
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	routerruntime "swarm/packages/swarmd/internal/router"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/workspace"
 )
 
 const maxSessionRouterOutputBytes = 64 << 10
 
-// sessionRouterDecision is an account-validated, non-durable routing decision.
-// Session creation and worktree allocation intentionally happen at a later API boundary.
+// sessionRouterDecision is a non-durable managed-worktree naming decision.
+// Workspace authority and worktree allocation intentionally remain at the API boundary.
 type sessionRouterDecision struct {
-	Result    routerruntime.Result
-	Workspace workspace.RoutingWorkspaceSelection
-	Profile   pebblestore.AgentProfile
+	Result  routerruntime.Result
+	Profile pebblestore.AgentProfile
 }
 
 // configuredRouterResponse is the result of one non-durable, tool-free call to
@@ -35,13 +33,10 @@ type configuredRouterResponse struct {
 	Profile pebblestore.AgentProfile
 }
 
-// routeSessionOnce invokes the configured hidden Router exactly once. It does not
-// create a session, allocate a worktree, or mutate workspace selection.
-func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Principal, input string, managedWorktreeAllowed bool) (sessionRouterDecision, error) {
-	if s == nil || s.workspace == nil {
-		return sessionRouterDecision{}, errors.New("workspace service is not configured")
-	}
-	if s.providers == nil {
+// routeSessionOnce invokes the configured hidden Router exactly once to name an
+// already-authorized managed worktree. It receives no workspace information.
+func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Principal, input string) (sessionRouterDecision, error) {
+	if s == nil || s.providers == nil {
 		return sessionRouterDecision{}, errors.New("provider registry is not configured")
 	}
 	if s.agentModelSettings == nil {
@@ -50,45 +45,12 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	if !principal.Valid() {
 		return sessionRouterDecision{}, identity.ErrPrincipalRequired
 	}
-
-	workspaceContext, err := s.workspace.BuildRoutingContextForPrincipal(principal)
-	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("build Router workspace context: %w", err)
-	}
-
-	routerContext := routerruntime.Context{}
-	if workspaceContext.WorkspaceSelectionRequired {
-		routerContext.Workspaces = make([]routerruntime.Workspace, 0, len(workspaceContext.Workspaces))
-		for _, candidate := range workspaceContext.Workspaces {
-			routerContext.Workspaces = append(routerContext.Workspaces, routerruntime.Workspace{
-				ID: candidate.WorkspaceID, Name: candidate.Name, Definition: candidate.Definition,
-			})
-		}
-	} else {
-		// RoutingContext deliberately hides a sole binding. Resolve it server-side
-		// so Router still receives its bounded descriptive context, but cannot select it.
-		bound, resolveErr := s.workspace.ResolveRoutingWorkspaceForPrincipal(principal, workspaceContext, "")
-		if resolveErr != nil {
-			return sessionRouterDecision{}, fmt.Errorf("resolve Router server-bound workspace: %w", resolveErr)
-		}
-		routerContext.ServerBoundWorkspaceID = bound.WorkspaceID
-		routerContext.Workspaces = []routerruntime.Workspace{{ID: bound.WorkspaceID, Name: bound.WorkspaceName, Definition: bound.Definition}}
-	}
-
-	routerContext.ManagedWorktreeAllowed = managedWorktreeAllowed
-
-	routerRequest := routerruntime.Request{Input: input, Context: routerContext}
+	routerRequest := routerruntime.Request{Input: input}
 	if err := routerruntime.ValidateRequest(routerRequest); err != nil {
 		return sessionRouterDecision{}, err
 	}
-	prompt, err := routerruntime.Prompt(routerContext)
-	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("build Router prompt: %w", err)
-	}
-	schema, err := routerruntime.ResultSchema(routerContext)
-	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("build Router result schema: %w", err)
-	}
+	prompt := routerruntime.Prompt()
+	schema := routerruntime.ResultSchema()
 	encodedSchema, err := json.Marshal(schema)
 	if err != nil {
 		return sessionRouterDecision{}, fmt.Errorf("encode Router result schema: %w", err)
@@ -97,24 +59,15 @@ func (s *Server) routeSessionOnce(ctx context.Context, principal identity.Princi
 	// provideriface has no structured-output field shared by every adapter. Keep
 	// the strict schema in system instructions and enforce it again with DecodeResult.
 	instructions := strings.TrimSpace(prompt) + "\nOutput JSON schema (authoritative): " + string(encodedSchema)
-	configuredResponse, err := s.invokeConfiguredRouterOnce(ctx, principal, instructions, input, maxSessionRouterOutputBytes)
+	configuredResponse, err := s.invokeConfiguredRouterOnce(ctx, principal, instructions, routerRequest.Input, maxSessionRouterOutputBytes)
 	if err != nil {
 		return sessionRouterDecision{}, err
 	}
-	result, err := routerruntime.DecodeResult(normalizeConfiguredRouterJSONResponse(configuredResponse.Text), routerContext)
+	result, err := routerruntime.DecodeResult(normalizeConfiguredRouterJSONResponse(configuredResponse.Text))
 	if err != nil {
 		return sessionRouterDecision{}, err
 	}
-
-	selectedWorkspaceID := ""
-	if result.WorkspaceID != nil {
-		selectedWorkspaceID = *result.WorkspaceID
-	}
-	selection, err := s.workspace.ResolveRoutingWorkspaceForPrincipal(principal, workspaceContext, selectedWorkspaceID)
-	if err != nil {
-		return sessionRouterDecision{}, fmt.Errorf("revalidate Router workspace selection: %w", err)
-	}
-	return sessionRouterDecision{Result: result, Workspace: selection, Profile: configuredResponse.Profile}, nil
+	return sessionRouterDecision{Result: result, Profile: configuredResponse.Profile}, nil
 }
 
 // normalizeConfiguredRouterJSONResponse removes only one complete JSON Markdown fence.

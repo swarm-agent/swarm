@@ -60,13 +60,13 @@ func TestNormalizeRoutedSessionMediaCanonicalizesAndBounds(t *testing.T) {
 
 func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
 	base := routedSessionStartRequest{Input: "route this", AgentName: "swarm", Metadata: map[string]any{"source": "desktop"}}
-	first, err := routedSessionRequestHash(base, "request", nil)
+	first, err := routedSessionRequestHash(base, sessionsV3PrimaryBinding{}, "request", nil)
 	if err != nil {
 		t.Fatalf("first hash: %v", err)
 	}
 	second := base
 	second.Input = "route something else"
-	secondHash, err := routedSessionRequestHash(second, "request", nil)
+	secondHash, err := routedSessionRequestHash(second, sessionsV3PrimaryBinding{}, "request", nil)
 	if err != nil {
 		t.Fatalf("second hash: %v", err)
 	}
@@ -76,11 +76,18 @@ func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
 	planRequested := true
 	second = base
 	second.PlanModeRequested = &planRequested
-	planHash, err := routedSessionRequestHash(second, "request", nil)
+	planHash, err := routedSessionRequestHash(second, sessionsV3PrimaryBinding{}, "request", nil)
 	if err != nil {
 		t.Fatalf("Plan hash: %v", err)
 	}
 	if first == planHash {
 		t.Fatal("request hash did not bind plan_mode_requested")
+	}
+	bindingHash, err := routedSessionRequestHash(base, sessionsV3PrimaryBinding{WorkspaceBindingID: "binding", RuntimeSwarmID: "runtime", SourceWorkspaceID: "workspace", SourceWorkspaceGeneration: 2, BindingGeneration: 3, PlacementGeneration: 4}, "request", nil)
+	if err != nil {
+		t.Fatalf("binding hash: %v", err)
+	}
+	if first == bindingHash {
+		t.Fatal("request hash did not bind canonical workspace authority")
 	}
 }

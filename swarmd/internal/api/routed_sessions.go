@@ -40,6 +40,13 @@ type routedSessionStartRequest struct {
 	Metadata                 map[string]any              `json:"metadata,omitempty"`
 	ManagedWorktreeRequested *bool                       `json:"managed_worktree_requested"`
 	PlanModeRequested        *bool                       `json:"plan_mode_requested"`
+	WorkspacePath            string                      `json:"workspace_path"`
+	HostWorkspacePath        string                      `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string                      `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID       string                      `json:"workspace_binding_id"`
+	SwarmID                  string                      `json:"swarm_id"`
+	TargetKind               string                      `json:"target_kind"`
+	TargetRelationship       string                      `json:"target_relationship"`
 	Media                    []routedSessionMediaRequest `json:"media,omitempty"`
 	StagingIDs               []string                    `json:"staging_ids,omitempty"`
 }
@@ -352,8 +359,8 @@ func canonicalWorktreeSessionStateError(session pebblestore.SessionSnapshot, mis
 }
 
 // handleRoutedSessionStart is the canonical Desktop new-session transaction.
-// It resolves all non-durable routing authority, including any managed worktree
-// allocation, before entering the V3 mutation boundary.
+// It validates the submitted self-runtime workspace authority before any model
+// call and resolves any managed worktree before entering the V3 mutation boundary.
 func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -372,6 +379,13 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey, r.Header.Get("Idempotency-Key")))
 	req.Input = strings.TrimSpace(req.Input)
 	req.AgentName = strings.TrimSpace(req.AgentName)
+	req.WorkspacePath = strings.TrimSpace(req.WorkspacePath)
+	req.HostWorkspacePath = strings.TrimSpace(req.HostWorkspacePath)
+	req.RuntimeWorkspacePath = strings.TrimSpace(req.RuntimeWorkspacePath)
+	req.WorkspaceBindingID = strings.TrimSpace(req.WorkspaceBindingID)
+	req.SwarmID = strings.TrimSpace(req.SwarmID)
+	req.TargetKind = strings.TrimSpace(req.TargetKind)
+	req.TargetRelationship = strings.TrimSpace(req.TargetRelationship)
 	if req.AgentName == "" {
 		req.AgentName = "swarm"
 	}
@@ -408,7 +422,20 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	requestHash, err := routedSessionRequestHash(req, clientRequestID, media)
+	binding, err := s.resolveSessionsV3PrimaryBinding(principal, sessionsV3CreateRequest{
+		WorkspacePath:        req.WorkspacePath,
+		HostWorkspacePath:    req.HostWorkspacePath,
+		RuntimeWorkspacePath: req.RuntimeWorkspacePath,
+		WorkspaceBindingID:   req.WorkspaceBindingID,
+		SwarmID:              req.SwarmID,
+		TargetKind:           req.TargetKind,
+		TargetRelationship:   req.TargetRelationship,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	requestHash, err := routedSessionRequestHash(req, binding, clientRequestID, media)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -435,10 +462,13 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 
 	managedWorktreeAllowed := *req.ManagedWorktreeRequested
 	planModeRequested := *req.PlanModeRequested
-	decision, err := s.routeSessionOnce(r.Context(), principal, req.Input, managedWorktreeAllowed)
-	if err != nil {
-		writeRoutedSessionError(w, err)
-		return
+	var decision sessionRouterDecision
+	if managedWorktreeAllowed {
+		decision, err = s.routeSessionOnce(r.Context(), principal, req.Input)
+		if err != nil {
+			writeRoutedSessionError(w, err)
+			return
+		}
 	}
 	now := time.Now().UnixMilli()
 	resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, req.AgentName)
@@ -459,32 +489,39 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeRoutedSessionError(w, errors.New("Plan was requested but the account default has Plan disabled"))
 		return
 	}
-	candidate := pebblestore.SessionSnapshot{ID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: decision.Workspace.WorkspacePath, WorkspaceName: decision.Workspace.WorkspaceName, Title: strings.TrimSpace(decision.Result.Title), Mode: mode, ModelProfile: modelProfile, CreatedAt: now, UpdatedAt: now}
+	workspaceName := binding.SourceWorkspaceName
+	if workspaceName == "" {
+		workspaceName = baseNameForPath(binding.SourceWorkspacePath)
+	}
+	if workspaceName == "" || workspaceName == "." || workspaceName == string(filepath.Separator) {
+		workspaceName = "workspace"
+	}
+	candidate := pebblestore.SessionSnapshot{ID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: binding.SourceWorkspacePath, WorkspaceName: workspaceName, Title: sessionV3TitleDefault, Mode: mode, ModelProfile: modelProfile, CreatedAt: now, UpdatedAt: now}
 	if preference, preferenceOK := sessionsV3ProfilePreference(candidate); preferenceOK {
 		candidate.Preference = normalizeSessionsV3ModelPreference(preference)
 	} else {
 		writeRoutedSessionError(w, errors.New("routed session mode has no configured model assignment"))
 		return
 	}
-	canonical, err := s.CanonicalizeSessionDeploy(runruntime.SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: decision.Workspace.WorkspacePath, AgentProfile: resolvedAgent.Profile, ModelProfile: modelProfile, RuntimeMode: mode, Metadata: req.Metadata})
-	if err != nil {
-		writeRoutedSessionError(w, err)
-		return
+	candidate.Metadata = sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfile)
+	if managedWorktreeAllowed {
+		createRequest := sessionCreateRequest{Metadata: cloneSessionsV3Metadata(candidate.Metadata)}
+		if err := applyRoutedSessionRouterTitle(&createRequest, decision.Result.Title); err != nil {
+			writeRoutedSessionError(w, err)
+			return
+		}
+		candidate.Title = createRequest.Title
+		candidate.Metadata = createRequest.Metadata
+	} else {
+		candidate.Metadata["title_pending"] = true
+		candidate.Metadata["title_locked"] = false
+		delete(candidate.Metadata, "title_source")
 	}
-	candidate.WorkspacePath = canonical.SourceWorkspacePath
-	candidate.WorkspaceName = firstNonEmpty(canonical.SourceWorkspaceName, decision.Workspace.WorkspaceName)
-	createRequest := sessionCreateRequest{Metadata: cloneSessionsV3Metadata(canonical.Metadata)}
-	if err := applyRoutedSessionRouterTitle(&createRequest, decision.Result.Title); err != nil {
-		writeRoutedSessionError(w, err)
-		return
-	}
-	candidate.Title = createRequest.Title
-	candidate.Metadata = createRequest.Metadata
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
 	candidate.Metadata["managed_worktree_requested"] = managedWorktreeAllowed
 	candidate.Metadata["plan_mode_requested"] = planModeRequested
-	candidate.Metadata["routed_worktree_requested"] = managedWorktreeAllowed && decision.Result.Worktree
+	candidate.Metadata["routed_worktree_requested"] = managedWorktreeAllowed
 	if backgroundRouterRequest {
 		candidate.Metadata["background"] = true
 		candidate.Metadata["launch_mode"] = "background"
@@ -502,7 +539,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 			log.Printf("routed session worktree rollback failed session_id=%q path=%q branch=%q err=%v", sessionID, worktreeAllocation.WorkspacePath, worktreeAllocation.BranchName, rollbackErr)
 		}
 	}()
-	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, managedWorktreeAllowed, decision.Result.Worktree, decision.Result.WorktreeName)
+	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, managedWorktreeAllowed, managedWorktreeAllowed, decision.Result.WorktreeName)
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return
@@ -705,14 +742,20 @@ func normalizeRoutedSessionMedia(req routedSessionStartRequest) ([]routedSession
 	return media, ids, nil
 }
 
-func routedSessionRequestHash(req routedSessionStartRequest, clientRequestID string, media []routedSessionMediaRequest) (string, error) {
+func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3PrimaryBinding, clientRequestID string, media []routedSessionMediaRequest) (string, error) {
 	raw, err := json.Marshal(struct {
-		Input, ClientRequestID, AgentName string
-		ManagedWorktreeRequested          *bool
-		PlanModeRequested                 *bool
-		Metadata                          map[string]any
-		Media                             []routedSessionMediaRequest
-	}{req.Input, clientRequestID, req.AgentName, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media})
+		Input, ClientRequestID, AgentName                         string
+		WorkspacePath, HostWorkspacePath, RuntimeWorkspacePath   string
+		WorkspaceBindingID, SwarmID, TargetKind, TargetRelationship string
+		CanonicalBindingID, RuntimeSwarmID, CanonicalRuntimeWorkspacePath string
+		SourceWorkspaceID, SourceWorkspaceName, SourceWorkspacePath      string
+		SourceWorkspaceGeneration                                        int64
+		PlacementGeneration, BindingGeneration                    int
+		ManagedWorktreeRequested                                  *bool
+		PlanModeRequested                                         *bool
+		Metadata                                                  map[string]any
+		Media                                                     []routedSessionMediaRequest
+	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media})
 	if err != nil {
 		return "", err
 	}

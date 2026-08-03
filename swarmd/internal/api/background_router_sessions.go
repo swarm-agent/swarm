@@ -22,14 +22,21 @@ func isBackgroundRouterSessionRequest(r *http.Request) bool {
 // background Router session. Managed worktree isolation is intentionally not a
 // client option: this endpoint always authorizes and requires it.
 type backgroundRouterSessionStartRequest struct {
-	Input             string                      `json:"input"`
-	ClientRequestID   string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey    string                      `json:"idempotency_key,omitempty"`
-	AgentName         string                      `json:"agent_name,omitempty"`
-	Metadata          map[string]any              `json:"metadata,omitempty"`
-	PlanModeRequested *bool                       `json:"plan_mode_requested"`
-	Media             []routedSessionMediaRequest `json:"media,omitempty"`
-	StagingIDs        []string                    `json:"staging_ids,omitempty"`
+	Input                string                      `json:"input"`
+	ClientRequestID      string                      `json:"client_request_id,omitempty"`
+	IdempotencyKey       string                      `json:"idempotency_key,omitempty"`
+	AgentName            string                      `json:"agent_name,omitempty"`
+	Metadata             map[string]any              `json:"metadata,omitempty"`
+	PlanModeRequested    *bool                       `json:"plan_mode_requested"`
+	WorkspacePath        string                      `json:"workspace_path"`
+	HostWorkspacePath    string                      `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath string                      `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID   string                      `json:"workspace_binding_id"`
+	SwarmID              string                      `json:"swarm_id"`
+	TargetKind           string                      `json:"target_kind"`
+	TargetRelationship   string                      `json:"target_relationship"`
+	Media                []routedSessionMediaRequest `json:"media,omitempty"`
+	StagingIDs           []string                    `json:"staging_ids,omitempty"`
 }
 
 // handleBackgroundRouterSessionStart preserves the canonical routed-session
@@ -68,6 +75,13 @@ func (s *Server) handleBackgroundRouterSessionStart(w http.ResponseWriter, r *ht
 		Metadata:                 metadata,
 		ManagedWorktreeRequested: &managedWorktreeRequested,
 		PlanModeRequested:        req.PlanModeRequested,
+		WorkspacePath:            req.WorkspacePath,
+		HostWorkspacePath:        req.HostWorkspacePath,
+		RuntimeWorkspacePath:     req.RuntimeWorkspacePath,
+		WorkspaceBindingID:       req.WorkspaceBindingID,
+		SwarmID:                  req.SwarmID,
+		TargetKind:               req.TargetKind,
+		TargetRelationship:       req.TargetRelationship,
 		Media:                    req.Media,
 		StagingIDs:               req.StagingIDs,
 	}

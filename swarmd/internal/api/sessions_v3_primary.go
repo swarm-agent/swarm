@@ -3197,6 +3197,9 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 	if strings.TrimSpace(binding.AccessMode) != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || !binding.Writable {
 		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding must be read_write and writable")
 	}
+	if strings.TrimSpace(binding.MaterializationKind) != pebblestore.TopologyWorkspaceBindingMaterializationSource {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding must be a local source materialization")
+	}
 	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != swarmID || strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != swarmID {
 		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding does not match selected self authority")
 	}
