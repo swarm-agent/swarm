@@ -88,7 +88,6 @@ import {
 } from "../services/model-options";
 import {
   activeModelProfileFromMetadata,
-  modelProfileFromMetadata,
   preferenceFromModelProfile,
   preferenceFromModelProfileMetadata,
 } from "../services/model-profiles";
@@ -1619,10 +1618,10 @@ export function DesktopV3ExistingConversationPane({
   const sessionMetadata =
     cacheSession?.metadata ?? session?.metadata ?? metadata;
   const headerBranchLabel =
-    metadataString(sessionMetadata, "swarm_v3_branch_label") ||
     session?.worktreeBranch?.trim() ||
-    session?.gitBranch?.trim() ||
     cacheSession?.worktree_branch?.trim() ||
+    session?.gitBranch?.trim() ||
+    metadataString(sessionMetadata, "swarm_v3_branch_label") ||
     metadataString(sessionMetadata, "git_branch") ||
     metadataString(sessionMetadata, "branch");
   const settingsBaseline = useMemo(
@@ -1700,10 +1699,6 @@ export function DesktopV3ExistingConversationPane({
   const composerActiveModelProfile = selectedAgent.trim().toLowerCase() === 'swarm'
     ? { source: 'agent-default' as const, profileId: '', name: 'Swarm model' }
     : sessionActiveModelProfile;
-  const resolvedModelProfile = useMemo(
-    () => modelProfileFromMetadata(sessionMetadata, mode),
-    [mode, sessionMetadata],
-  );
   const sessionProfilePreference = useMemo(
     () => preferenceFromModelProfileMetadata(sessionMetadata, mode),
     [mode, sessionMetadata],
@@ -2652,9 +2647,7 @@ export function DesktopV3ExistingConversationPane({
           session?.workspaceName || cacheSession?.workspace_name || "Workspace"
         }
         branchName={headerBranchLabel}
-        mode={mode}
         modelLabel={canonicalHeaderModelLabel}
-        favoriteName={canonicalHeaderModelLabel ? resolvedModelProfile?.name : undefined}
         runStatus={runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
