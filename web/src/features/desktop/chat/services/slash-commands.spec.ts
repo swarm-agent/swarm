@@ -77,22 +77,47 @@ function testNewSessionCommandVariantsPrimeRouterChips(): void {
     }
     assert(buildDesktopSlashPaletteState(commandText).exactMatch?.command === commandText, `expected ${commandText} to resolve exactly`)
     const parsed = parseDesktopNewSessionCommand(commandText)
+    assert(parsed?.prompt === '', `expected bare ${commandText} to have no prompt`)
     assert(parsed?.worktreeRequested === worktreeRequested, `expected ${commandText} parser worktree priming to match`)
     assert(parsed?.planModeRequested === planModeRequested, `expected ${commandText} parser plan priming to match`)
   }
 
-  assert(parseDesktopNewSessionCommand('/new something-else') === null, 'expected unknown /new directives to be rejected')
+  const promptCases = [
+    ['/new fix the sidebar', 'fix the sidebar', false, false, 'new'],
+    ['/new worktree fix the sidebar', 'fix the sidebar', true, false, 'new-worktree'],
+    ['/new plan fix the sidebar', 'fix the sidebar', false, true, 'new-plan'],
+    ['/new wp fix the sidebar', 'fix the sidebar', true, true, 'new-wp'],
+  ] as const
+  for (const [input, prompt, worktreeRequested, planModeRequested, commandID] of promptCases) {
+    const parsed = parseDesktopNewSessionCommand(input)
+    assert(parsed?.prompt === prompt, `expected ${input} prompt to be preserved`)
+    assert(parsed?.worktreeRequested === worktreeRequested, `expected ${input} worktree intent to match`)
+    assert(parsed?.planModeRequested === planModeRequested, `expected ${input} plan intent to match`)
+    const palette = buildDesktopSlashPaletteState(input)
+    assert(palette.exactMatch?.id === commandID, `expected ${input} to resolve its longest command prefix`)
+    assert(palette.matches[0]?.id === commandID, `expected ${input} to select its compound palette entry`)
+  }
 }
 
 function testTaskCommandAcceptsFullArguments(): void {
-  const task = getDesktopSlashCommands().find((command) => command.id === 'task')
+  const commands = getDesktopSlashCommands()
+  const task = commands.find((command) => command.id === 'task')
+  const taskPlan = commands.find((command) => command.id === 'task-plan')
   assert(Boolean(task), 'expected /task command to exist')
+  assert(Boolean(taskPlan), 'expected /task plan command to exist')
   assert(task?.state === 'ready', 'expected /task command to be ready')
   assert((task?.action as DesktopSlashCommandAction | undefined)?.kind === 'start-background-router-session', 'expected /task to start a background Router session')
+  assert((taskPlan?.action as DesktopSlashCommandAction | undefined)?.kind === 'start-background-router-session', 'expected /task plan to start a background Router session')
+  assert(task?.tips.some((tip) => tip.includes('/task <prompt>')) === true, 'expected /task guidance to show required prompt syntax')
+  assert(taskPlan?.tips.some((tip) => tip.includes('/task plan <prompt>')) === true, 'expected /task plan guidance to show required prompt syntax')
 
   const palette = buildDesktopSlashPaletteState('/task fix the sidebar now')
   assert(palette.exactMatch?.id === 'task', 'expected /task arguments to preserve the exact command match')
   assert(palette.hasArguments === true, 'expected /task request to be recognized as arguments')
+
+  const planPalette = buildDesktopSlashPaletteState('/task plan fix the sidebar now')
+  assert(planPalette.exactMatch?.id === 'task-plan', 'expected /task plan arguments to select the compound command')
+  assert(planPalette.matches[0]?.id === 'task-plan', 'expected /task plan to lead the palette matches')
 }
 
 function testTaskCommandParsesModeDirective(): void {

@@ -45,6 +45,7 @@ export interface DesktopTaskCommandRequest {
 }
 
 export interface DesktopNewSessionCommandRequest {
+  prompt: string
   worktreeRequested: boolean
   planModeRequested: boolean
 }
@@ -94,9 +95,9 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'new',
     command: '/new',
     aliases: [],
-    hint: 'Start a fresh session in this workspace',
+    hint: 'Start fresh, optionally with <prompt>',
     actionLabel: 'New Session',
-    tips: ['/new', 'Open the Router composer with its default chips'],
+    tips: ['/new [<prompt>]', 'Bare opens an editable composer; a prompt starts immediately'],
     state: 'ready',
     action: { kind: 'new-session', worktreeRequested: false, planModeRequested: false },
   },
@@ -104,9 +105,9 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'new-worktree',
     command: '/new worktree',
     aliases: [],
-    hint: 'Start fresh with the Worktree chip on',
+    hint: 'Start fresh in a worktree, optionally with <prompt>',
     actionLabel: 'New + Worktree',
-    tips: ['/new worktree', 'Prime a new Router session in a managed worktree'],
+    tips: ['/new worktree [<prompt>]', 'A non-empty prompt starts the routed worktree session immediately'],
     state: 'ready',
     action: { kind: 'new-session', worktreeRequested: true, planModeRequested: false },
   },
@@ -114,9 +115,9 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'new-plan',
     command: '/new plan',
     aliases: [],
-    hint: 'Start fresh with the Plan chip on',
+    hint: 'Start fresh in plan mode, optionally with <prompt>',
     actionLabel: 'New + Plan',
-    tips: ['/new plan', 'Prime a new Router session in plan mode'],
+    tips: ['/new plan [<prompt>]', 'A non-empty prompt starts the routed plan session immediately'],
     state: 'ready',
     action: { kind: 'new-session', worktreeRequested: false, planModeRequested: true },
   },
@@ -124,9 +125,9 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'new-wp',
     command: '/new wp',
     aliases: [],
-    hint: 'Start fresh with Worktree and Plan on',
+    hint: 'Start fresh with Worktree and Plan, optionally with <prompt>',
     actionLabel: 'New + Both',
-    tips: ['/new wp', 'Prime both the Worktree and Plan chips'],
+    tips: ['/new wp [<prompt>]', 'A non-empty prompt starts with both chips enabled'],
     state: 'ready',
     action: { kind: 'new-session', worktreeRequested: true, planModeRequested: true },
   },
@@ -134,9 +135,19 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'task',
     command: '/task',
     aliases: [],
-    hint: 'Start a background Router session',
+    hint: 'Start an automatic background Router task with <prompt>',
     actionLabel: 'Start Background Router Session',
-    tips: ['/task <request> (auto)', '/task plan <request>', 'The task opens a managed worktree session'],
+    tips: ['/task <prompt>', 'Runs in auto mode through the background Router endpoint'],
+    state: 'ready',
+    action: { kind: 'start-background-router-session' },
+  },
+  {
+    id: 'task-plan',
+    command: '/task plan',
+    aliases: [],
+    hint: 'Start a planned background Router task with <prompt>',
+    actionLabel: 'Start Background Router Plan',
+    tips: ['/task plan <prompt>', 'Requests plan mode through the background Router endpoint'],
     state: 'ready',
     action: { kind: 'start-background-router-session' },
   },
@@ -314,18 +325,21 @@ export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionC
   const match = input.trim().match(/^\/new(?:\s+([\s\S]*))?$/i)
   if (!match) return null
 
-  const directive = (match[1] ?? '').trim().toLowerCase()
+  const body = (match[1] ?? '').trim()
+  if (!body) return { prompt: '', worktreeRequested: false, planModeRequested: false }
+
+  const firstToken = body.match(/^(\S+)(?:\s+([\s\S]*))?$/)
+  const directive = firstToken?.[1].toLowerCase() ?? ''
+  const promptAfterDirective = (firstToken?.[2] ?? '').trim()
   switch (directive) {
-    case '':
-      return { worktreeRequested: false, planModeRequested: false }
     case 'worktree':
-      return { worktreeRequested: true, planModeRequested: false }
+      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: false }
     case 'plan':
-      return { worktreeRequested: false, planModeRequested: true }
+      return { prompt: promptAfterDirective, worktreeRequested: false, planModeRequested: true }
     case 'wp':
-      return { worktreeRequested: true, planModeRequested: true }
+      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: true }
     default:
-      return null
+      return { prompt: body, worktreeRequested: false, planModeRequested: false }
   }
 }
 
@@ -361,11 +375,15 @@ export function buildDesktopSlashPaletteState(input: string): DesktopSlashPalett
   const fullQuery = normalizeSlashToken(trimmedBody)
   const exactMatch = query === ''
     ? null
-    : DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(fullQuery))
+    : DESKTOP_SLASH_COMMANDS
+        .flatMap((command) => commandTokens(command).map((token) => ({ command, token })))
+        .filter(({ token }) => fullQuery === token || fullQuery.startsWith(`${token} `))
+        .sort((left, right) => right.token.length - left.token.length)[0]?.command
       ?? DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(query))
       ?? null
 
-  const matches = (hasArguments && exactMatch && commandTokens(exactMatch).includes(fullQuery)
+  const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `)))
+  const matches = (hasArguments && exactMatch && exactMatchHasPrefix
     ? [exactMatch]
     : DESKTOP_SLASH_COMMANDS
         .filter((command) => commandMatchRank(command, query) > 0)

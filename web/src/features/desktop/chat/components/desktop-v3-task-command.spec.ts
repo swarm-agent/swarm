@@ -10,6 +10,9 @@ test('/task always uses the dedicated background Router session API', async () =
 
   assert.match(composer, /desktopComposerBackgroundRouterCommand\(submittedDraft\)/)
   assert.match(composer, /start-background-router-session/)
+  const slashCommands = await readFile(new URL('../services/slash-commands.ts', import.meta.url), 'utf8')
+  assert.match(slashCommands, /id: 'task-plan'[\s\S]*command: '\/task plan'[\s\S]*start-background-router-session/)
+  assert.match(slashCommands, /tips: \['\/task plan <prompt>'/)
   assert.match(submitService, /desktopComposerBackgroundRouterCommand\(input\.draft\)/)
   assert.ok(submitService.indexOf('if (backgroundRouterCommand)') < submitService.indexOf('if (input.canStop)'))
 

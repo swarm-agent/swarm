@@ -13,6 +13,9 @@ test('new Desktop chat uses only the routed controller and endpoint before activ
   assert.match(source, /initialControllerState\.phase === 'failed'/)
   assert.match(source, /postDesktopV3RoutedSessionStart\(request\)/)
   assert.match(source, /controller\.submit\(\{/)
+  assert.match(source, /initialPrompt\?: string/)
+  assert.match(source, /initialControllerState\.phase === 'failed' \? '' : initialPrompt\.trim\(\)/)
+  assert.match(source, /initialCommandPrompt[\s\S]*initialPromptSubmittedRef\.current[\s\S]*handleSubmit\(createDesktopV3RoutedComposerSnapshot\(\{[\s\S]*prompt: initialCommandPrompt[\s\S]*worktreePrimed: initialWorktreeRequested[\s\S]*planModeRequested: initialPlanModeRequested/)
   assert.match(source, /controller\.retry\(\)/)
   assert.match(source, /controller\.prepareOperationIdentity\(\)/)
   assert.match(source, /stageDesktopComposerAttachments\(\{/)
@@ -36,7 +39,7 @@ test('new Desktop chat uses only the routed controller and endpoint before activ
   assert.doesNotMatch(source, /\bappendFirstDesktopV3Message\b/)
   assert.doesNotMatch(source, /modeCommand|pendingWorktreeBranch|initialMode|onModeChange|workspaceSlug|routeOptions|onOpenChats/)
   assert.doesNotMatch(source, /dispatchDesktopV3Cache|retainDesktopV3RealtimeController|bootstrapDesktopV3SidebarMetadataOnly/)
-  assert.doesNotMatch(source, /useNavigate|navigate\(/)
+  assert.doesNotMatch(source, /useNavigate|navigate\(|URLSearchParams|promptParam/)
 })
 
 test('routed pending and failure stay local and retry the persisted controller identity', async () => {

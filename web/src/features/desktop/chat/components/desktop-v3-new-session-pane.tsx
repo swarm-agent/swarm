@@ -36,6 +36,7 @@ export interface DesktopV3NewSessionPaneProps {
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   composerFocusSignal?: number
+  initialPrompt?: string
   initialWorktreeRequested?: boolean
   initialPlanModeRequested?: boolean
 }
@@ -51,6 +52,7 @@ export function DesktopV3NewSessionPane({
   mobileSessionQuickMenu,
   onSlashCommand,
   composerFocusSignal = 0,
+  initialPrompt = '',
   initialWorktreeRequested = false,
   initialPlanModeRequested = false,
 }: DesktopV3NewSessionPaneProps) {
@@ -82,8 +84,11 @@ export function DesktopV3NewSessionPane({
   })
   const [routedState, setRoutedState] = useState<DesktopV3RoutedNewSessionState>(() => controller.getState())
   const initialControllerState = controller.getState()
-  const [draft, setDraft] = useState(() => initialControllerState.snapshot.prompt)
-  const [mode, setMode] = useState<'auto' | 'plan'>(() => initialControllerState.snapshot.planModeRequested || initialPlanModeRequested ? 'plan' : 'auto')
+  const initialCommandPrompt = initialControllerState.phase === 'failed' ? '' : initialPrompt.trim()
+  const [draft, setDraft] = useState(() => initialControllerState.phase === 'failed' ? initialControllerState.snapshot.prompt : initialCommandPrompt)
+  const [mode, setMode] = useState<'auto' | 'plan'>(() => initialControllerState.phase === 'failed'
+    ? (initialControllerState.snapshot.planModeRequested ? 'plan' : 'auto')
+    : (initialPlanModeRequested ? 'plan' : 'auto'))
   const initialStagedAttachments = initialControllerState.phase === 'failed'
     ? initialControllerState.snapshot.attachments.map((attachment, index) => ({
         id: `restored:${index}:${attachment.staging_id}`,
@@ -99,11 +104,14 @@ export function DesktopV3NewSessionPane({
       }))
     : []
   const [stagedAttachments, setStagedAttachments] = useState<DesktopComposerStagedAttachment[]>(initialStagedAttachments)
-  const [worktreeIntent, setWorktreeIntent] = useState(() => createDesktopRoutedWorktreeIntent(initialControllerState.snapshot.worktreePrimed || initialWorktreeRequested))
+  const [worktreeIntent, setWorktreeIntent] = useState(() => createDesktopRoutedWorktreeIntent(initialControllerState.phase === 'failed'
+    ? initialControllerState.snapshot.worktreePrimed
+    : initialWorktreeRequested))
   const [restoredSnapshot, setRestoredSnapshot] = useState<DesktopV3RoutedComposerSnapshot | null>(() => initialControllerState.phase === 'failed' ? initialControllerState.snapshot : null)
   const [localError, setLocalError] = useState<string | null>(null)
   const resolvedCallbackRef = useRef(onRoutedSessionResolved)
   const activatingOperationRef = useRef('')
+  const initialPromptSubmittedRef = useRef(false)
   if (operationAttachmentsRef.current === null && initialControllerState.phase === 'failed') {
     operationAttachmentsRef.current = initialStagedAttachments
     stagedAttachmentsRef.current = initialStagedAttachments
@@ -221,6 +229,16 @@ export function DesktopV3NewSessionPane({
       return Promise.resolve(controller.getState())
     }
   }
+
+  useEffect(() => {
+    if (!initialCommandPrompt || initialPromptSubmittedRef.current) return
+    initialPromptSubmittedRef.current = true
+    void handleSubmit(createDesktopV3RoutedComposerSnapshot({
+      prompt: initialCommandPrompt,
+      worktreePrimed: initialWorktreeRequested,
+      planModeRequested: initialPlanModeRequested,
+    }))
+  }, [initialCommandPrompt, initialPlanModeRequested, initialWorktreeRequested])
 
   async function handleStageAttachments(files: File[], signal: AbortSignal) {
     if (controller.getState().phase === 'failed') {

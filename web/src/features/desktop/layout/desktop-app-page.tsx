@@ -44,7 +44,7 @@ import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
-import { parseDesktopTaskCommand, type DesktopSlashCommand } from '../chat/services/slash-commands'
+import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitControl } from '../git/ai-commit-control'
@@ -2615,6 +2615,7 @@ export function DesktopAppPage() {
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
+  const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
@@ -3438,7 +3439,7 @@ export function DesktopAppPage() {
   const handleStartNewSessionInWorkspace = useCallback((
     wsPath: string,
     wsName: string,
-    options: { worktreeRequested?: boolean; planModeRequested?: boolean } = {},
+    options: { prompt?: string; worktreeRequested?: boolean; planModeRequested?: boolean } = {},
   ) => {
     // An explicit New Session gesture is an abandonment boundary, not an
     // interrupted-start retry. Drop persisted retry identity and force a fresh
@@ -3446,6 +3447,12 @@ export function DesktopAppPage() {
     clearDesktopV3RoutedStartOperation()
     routedActivationGenerationRef.current += 1
     setNewSessionEpoch((current) => current + 1)
+    setNewSessionIntent({
+      workspacePath: wsPath,
+      prompt: options.prompt?.trim() ?? '',
+      worktreeRequested: options.worktreeRequested === true,
+      planModeRequested: options.planModeRequested === true,
+    })
     dispatchDesktopV3Cache(selectSession(undefined))
     setMobileSidebarOpen(false)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
@@ -3743,6 +3750,11 @@ export function DesktopAppPage() {
         setDesktopToast({ message: 'Desktop shortcuts differ from TUI keybindings. Open Settings → Shortcuts for the Desktop list.', tone: 'info' })
         return
       case 'new-session': {
+        const parsed = parseDesktopNewSessionCommand(draft) ?? {
+          prompt: '',
+          worktreeRequested: action.worktreeRequested,
+          planModeRequested: action.planModeRequested,
+        }
         if (!routeSessionId) {
           setDesktopToast({ message: 'You’re already starting a new session—just type your request in the chat.', tone: 'info' })
           return
@@ -3750,7 +3762,7 @@ export function DesktopAppPage() {
         const session = sessionById.get(routeSessionId)
         const workspacePath = session?.workspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = session?.workspaceName || selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
-        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName, action)
+        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName, parsed)
         return
       }
       case 'start-background-router-session': {
@@ -5047,8 +5059,9 @@ export function DesktopAppPage() {
             workspace={routeWorkspace}
             onRoutedSessionResolved={(result) => handleRoutedSessionResolved(result, routeWorkspace.path)}
             composerFocusSignal={composerFocusSignal}
-            initialWorktreeRequested={requestedNewWorktree}
-            initialPlanModeRequested={requestedNewPlan}
+            initialPrompt={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.prompt : undefined}
+            initialWorktreeRequested={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.worktreeRequested : requestedNewWorktree}
+            initialPlanModeRequested={newSessionIntent?.workspacePath === routeWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
           />
