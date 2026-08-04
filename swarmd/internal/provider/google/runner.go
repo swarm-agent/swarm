@@ -247,7 +247,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 		return provideriface.Response{}, sanitizeGoogleError("decode google response", err)
 	}
 	result := parseGoogleResponse(decoded)
-	annotateGoogleServiceTier(&result.Usage, resp.Header.Get("x-gemini-service-tier"))
+	annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, resp.Header.Get("x-gemini-service-tier"))
 	result.Model = modelID
 	return result, nil
 }
@@ -321,7 +321,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		return provideriface.Response{}, errors.New("google stream ended without a finish reason")
 	}
 	result := accumulator.response()
-	annotateGoogleServiceTier(&result.Usage, servedTier)
+	annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, servedTier)
 	return result, nil
 }
 
@@ -1627,19 +1627,31 @@ func parseGoogleUsage(resp googleResponse) provideriface.TokenUsage {
 	return out
 }
 
-func annotateGoogleServiceTier(usage *provideriface.TokenUsage, serviceTier string) {
+func annotateGoogleServiceTier(usage *provideriface.TokenUsage, requestedTier, servedTier string) {
 	if usage == nil {
 		return
 	}
-	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
-	if serviceTier == "" {
+	requestedTier = strings.ToLower(strings.TrimSpace(requestedTier))
+	servedTier = strings.ToLower(strings.TrimSpace(servedTier))
+	if requestedTier == "" && servedTier == "" {
 		return
 	}
-	usage.ServiceTier = serviceTier
 	if usage.APIUsageRaw == nil {
 		usage.APIUsageRaw = map[string]any{}
 	}
-	usage.APIUsageRaw["service_tier"] = serviceTier
+	if requestedTier != "" {
+		usage.RequestedServiceTier = requestedTier
+		usage.APIUsageRaw["requested_service_tier"] = requestedTier
+	}
+	if servedTier == "" {
+		usage.ServiceTierStatus = "unconfirmed"
+		usage.APIUsageRaw["service_tier_status"] = "unconfirmed"
+	} else {
+		usage.ServiceTier = servedTier
+		usage.ServiceTierStatus = "confirmed"
+		usage.APIUsageRaw["service_tier"] = servedTier
+		usage.APIUsageRaw["service_tier_status"] = "confirmed"
+	}
 	usage.APIUsageHistory = []map[string]any{cloneGoogleUsageMap(usage.APIUsageRaw)}
 }
 

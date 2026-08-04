@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -97,6 +99,97 @@ func TestBuildGoogleRequestAppliesCatalogBackedPriorityServiceTier(t *testing.T)
 	}
 	if payload.ServiceTier != "" {
 		t.Fatalf("unmapped service tier = %q, want omitted", payload.ServiceTier)
+	}
+}
+
+type googleRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn googleRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func newGoogleTransportTestRunner(t *testing.T, transport http.RoundTripper) (*Runner, context.Context) {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "google-transport.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	authStore := pebblestore.NewAuthStore(store)
+	if _, err := authStore.UpsertCredential(pebblestore.AuthCredentialInput{AccountScopeID: "account-1", ID: "credential-1", Provider: "google", Type: pebblestore.AuthTypeAPI, APIKey: "test-key", SetActive: true}); err != nil {
+		t.Fatalf("seed Google credential: %v", err)
+	}
+	runner := NewRunner(authStore)
+	runner.httpClient = &http.Client{Transport: transport}
+	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"})
+	return runner, ctx
+}
+
+func googlePriorityTransportRequest() provideriface.Request {
+	return provideriface.Request{
+		Model:       "gemini-test",
+		Input:       []map[string]any{{"role": "user", "content": "urgent request"}},
+		ServiceTier: "fast",
+		ModelCatalog: pebblestore.ModelCatalogRecord{ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{{
+			Tier: "priority", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "priority",
+		}}},
+	}
+}
+
+func TestGooglePriorityTransportSendsCanonicalTierAndCapturesServedTier(t *testing.T) {
+	var capturedBody []byte
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var err error
+		capturedBody, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Gemini-Service-Tier": []string{"standard"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n")),
+			Request:    req,
+		}, nil
+	}))
+	response, err := runner.CreateResponseStreaming(ctx, googlePriorityTransportRequest(), nil)
+	if err != nil {
+		t.Fatalf("Google streaming request: %v", err)
+	}
+	var requestBody map[string]any
+	if err := json.Unmarshal(capturedBody, &requestBody); err != nil {
+		t.Fatalf("decode captured request: %v", err)
+	}
+	if requestBody["service_tier"] != "priority" {
+		t.Fatalf("captured request service_tier = %#v, want priority; body=%s", requestBody["service_tier"], capturedBody)
+	}
+	usage := response.Usage
+	if usage.RequestedServiceTier != "priority" || usage.ServiceTier != "standard" || usage.ServiceTierStatus != "confirmed" {
+		t.Fatalf("usage tiers = requested=%q served=%q status=%q", usage.RequestedServiceTier, usage.ServiceTier, usage.ServiceTierStatus)
+	}
+	if usage.APIUsageRaw["requested_service_tier"] != "priority" || usage.APIUsageRaw["service_tier"] != "standard" || usage.APIUsageRaw["service_tier_status"] != "confirmed" {
+		t.Fatalf("raw usage tier evidence = %#v", usage.APIUsageRaw)
+	}
+}
+
+func TestGooglePriorityTransportMarksMissingServedTierUnconfirmed(t *testing.T) {
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n")),
+			Request:    req,
+		}, nil
+	}))
+	response, err := runner.CreateResponseStreaming(ctx, googlePriorityTransportRequest(), nil)
+	if err != nil {
+		t.Fatalf("Google streaming request: %v", err)
+	}
+	usage := response.Usage
+	if usage.RequestedServiceTier != "priority" || usage.ServiceTier != "" || usage.ServiceTierStatus != "unconfirmed" {
+		t.Fatalf("usage tiers = requested=%q served=%q status=%q", usage.RequestedServiceTier, usage.ServiceTier, usage.ServiceTierStatus)
+	}
+	if _, claimed := usage.APIUsageRaw["service_tier"]; claimed || usage.APIUsageRaw["requested_service_tier"] != "priority" || usage.APIUsageRaw["service_tier_status"] != "unconfirmed" {
+		t.Fatalf("missing header must remain explicitly unconfirmed: %#v", usage.APIUsageRaw)
 	}
 }
 
@@ -557,9 +650,9 @@ func TestParseGoogleUsageMapsResponseAndThoughtCacheTokens(t *testing.T) {
 	if usage.APIUsageRaw["responseTokenCount"] != int64(7) || usage.APIUsageRaw["toolUsePromptTokenCount"] != int64(2) {
 		t.Fatalf("raw usage = %+v, want response/tool-use fields preserved", usage.APIUsageRaw)
 	}
-	annotateGoogleServiceTier(&usage, "standard")
-	if usage.ServiceTier != "standard" || usage.APIUsageRaw["service_tier"] != "standard" {
-		t.Fatalf("served tier = %q raw=%+v, want response-header standard preserved", usage.ServiceTier, usage.APIUsageRaw)
+	annotateGoogleServiceTier(&usage, "priority", "standard")
+	if usage.RequestedServiceTier != "priority" || usage.ServiceTier != "standard" || usage.ServiceTierStatus != "confirmed" || usage.APIUsageRaw["requested_service_tier"] != "priority" || usage.APIUsageRaw["service_tier"] != "standard" || usage.APIUsageRaw["service_tier_status"] != "confirmed" {
+		t.Fatalf("tier observability = requested=%q served=%q status=%q raw=%+v", usage.RequestedServiceTier, usage.ServiceTier, usage.ServiceTierStatus, usage.APIUsageRaw)
 	}
 }
 

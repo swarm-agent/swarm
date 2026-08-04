@@ -309,21 +309,23 @@ const (
 )
 
 type TokenUsage struct {
-	InputTokens      int64            `json:"input_tokens,omitempty"`
-	OutputTokens     int64            `json:"output_tokens,omitempty"`
-	ThinkingTokens   int64            `json:"thinking_tokens,omitempty"`
-	TotalTokens      int64            `json:"total_tokens,omitempty"`
-	CacheReadTokens  int64            `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int64            `json:"cache_write_tokens,omitempty"`
-	ServiceTier      string           `json:"service_tier,omitempty"`
-	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
-	Source           string           `json:"source,omitempty"`
-	Transport        string           `json:"transport,omitempty"`
-	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`
-	APIUsageRaw      map[string]any   `json:"api_usage_raw,omitempty"`
-	APIUsageRawPath  string           `json:"api_usage_raw_path,omitempty"`
-	APIUsageHistory  []map[string]any `json:"api_usage_history,omitempty"`
-	APIUsagePaths    []string         `json:"api_usage_paths,omitempty"`
+	InputTokens          int64            `json:"input_tokens,omitempty"`
+	OutputTokens         int64            `json:"output_tokens,omitempty"`
+	ThinkingTokens       int64            `json:"thinking_tokens,omitempty"`
+	TotalTokens          int64            `json:"total_tokens,omitempty"`
+	CacheReadTokens      int64            `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens     int64            `json:"cache_write_tokens,omitempty"`
+	RequestedServiceTier string           `json:"requested_service_tier,omitempty"`
+	ServiceTier          string           `json:"service_tier,omitempty"`
+	ServiceTierStatus    string           `json:"service_tier_status,omitempty"`
+	EstimatedCostUSD     float64          `json:"estimated_cost_usd,omitempty"`
+	Source               string           `json:"source,omitempty"`
+	Transport            string           `json:"transport,omitempty"`
+	ConnectedViaWS       *bool            `json:"connected_via_websocket,omitempty"`
+	APIUsageRaw          map[string]any   `json:"api_usage_raw,omitempty"`
+	APIUsageRawPath      string           `json:"api_usage_raw_path,omitempty"`
+	APIUsageHistory      []map[string]any `json:"api_usage_history,omitempty"`
+	APIUsagePaths        []string         `json:"api_usage_paths,omitempty"`
 }
 
 type Response struct {
