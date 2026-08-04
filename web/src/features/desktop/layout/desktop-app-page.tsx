@@ -77,6 +77,7 @@ import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-
 import { SearchChatsModal } from '../session-search/search-chats-modal'
 import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
+import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
@@ -2616,6 +2617,7 @@ export function DesktopAppPage() {
   const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
@@ -3852,6 +3854,17 @@ export function DesktopAppPage() {
     setMobileSidebarOpen(false)
   }, [])
 
+  const handleOpenWorkspacePicker = useCallback(() => {
+    setWorkspacePickerOpen(true)
+    setMobileSidebarOpen(false)
+    setWorkspaceDropdownOpen(false)
+  }, [])
+
+  const handleSelectWorkspaceFromPicker = useCallback((workspace: WorkspaceEntry) => {
+    setWorkspacePickerOpen(false)
+    handleOpenWorkspace(workspace.path, workspace.workspaceName)
+  }, [handleOpenWorkspace])
+
   const canStartNewSession = Boolean(topWorkspacePath)
   const canReturnToPreviousChat = Boolean(previousChatSessionId && sessionById.has(previousChatSessionId))
   useEffect(() => {
@@ -3879,6 +3892,13 @@ export function DesktopAppPage() {
       const insideDialog = Boolean(element?.closest('[role="dialog"]'))
       const insideChatComposer = shortcutTargetIsChatComposer(target)
       const targetBlocksDesktopShortcuts = shortcutTargetBlocksDesktopShortcuts(target)
+      const normalizedKey = event.key.toLowerCase()
+      const normalizedCode = event.code.toLowerCase()
+      if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (normalizedKey === 'w' || normalizedCode === 'keyw') && !insideDialog) {
+        event.preventDefault()
+        handleOpenWorkspacePicker()
+        return
+      }
       if (desktopShortcutMatches(event, 'n') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
@@ -3916,7 +3936,7 @@ export function DesktopAppPage() {
 
     window.addEventListener('keydown', handleDesktopShortcut)
     return () => window.removeEventListener('keydown', handleDesktopShortcut)
-  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
+  }, [handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, topWorkspaceLabel, topWorkspacePath])
 
   const quickActions = useMemo<DesktopQuickActionItem[]>(() => [
     {
@@ -3928,6 +3948,20 @@ export function DesktopAppPage() {
       enabled: true,
       icon: Keyboard,
       onRun: handleOpenQuickActions,
+    },
+    {
+      id: 'workspace-picker',
+      label: 'Switch workspace',
+      description: 'Open the numbered workspace picker and press 1–9 or 0 to switch.',
+      keys: ['Alt', 'W'],
+      availability: 'Available anywhere in Desktop unless another modal owns the shortcut.',
+      enabled: mergedSidebarWorkspaceEntries.length > 0,
+      disabledReason: 'No workspaces are available.',
+      icon: Folder,
+      onRun: () => {
+        setQuickActionsOpen(false)
+        handleOpenWorkspacePicker()
+      },
     },
     {
       id: 'new-session',
@@ -3991,7 +4025,7 @@ export function DesktopAppPage() {
         handleOpenPreviousChat()
       },
     },
-  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, topWorkspaceLabel, topWorkspacePath])
+  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, mergedSidebarWorkspaceEntries.length, topWorkspaceLabel, topWorkspacePath])
 
 
   const runDesktopUpdate = useCallback(async () => {
@@ -5079,6 +5113,14 @@ export function DesktopAppPage() {
         actions={quickActions}
         onClose={() => setQuickActionsOpen(false)}
         onOpenShortcutsSettings={() => handleOpenSettingsTab('shortcuts')}
+      />
+
+      <DesktopWorkspacePicker
+        open={workspacePickerOpen}
+        workspaces={mergedSidebarWorkspaceEntries}
+        currentWorkspacePath={topWorkspacePath}
+        onClose={() => setWorkspacePickerOpen(false)}
+        onSelect={handleSelectWorkspaceFromPicker}
       />
 
       <SearchChatsModal
