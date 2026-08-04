@@ -48,6 +48,34 @@ func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 	}
 }
 
+func TestHomepageOutsideWorkspaceWarningRendersBelowTipsAndKeepsWorkspaceRow(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(120, 32)
+	page := NewHomePage(model.HomeModel{
+		WorkspaceSetupPath: "/outside/project",
+		Workspaces:         []model.Workspace{{Name: "Default", Path: "/workspace", Active: true}},
+	})
+	page.Draw(screen)
+	text := dumpHomeTestScreen(screen, 120, 32)
+	for _, want := range []string{
+		"Default",
+		"Shift+Tab toggles Plan on/off • Ctrl+X sessions • / for commands",
+		"Detected launch path: /outside/project is not a workspace. Type /workspace save to save this",
+		"directory and switch.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("outside-workspace homepage missing %q:\n%s", want, text)
+		}
+	}
+	if tipsAt, warningAt := strings.Index(text, "Shift+Tab toggles Plan on/off"), strings.Index(text, "Detected launch path:"); tipsAt < 0 || warningAt <= tipsAt {
+		t.Fatalf("outside-workspace warning was not rendered below tips:\n%s", text)
+	}
+}
+
 func TestHomepageWorktreePrimerKeepsWorkspaceRowAndShowsFlag(t *testing.T) {
 	screen := tcell.NewSimulationScreen("")
 	if err := screen.Init(); err != nil {

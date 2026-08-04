@@ -195,7 +195,7 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 
 	startupCWD = normalizePath(startupCWD)
 	if data.launchChecked && data.launchErr == nil && launchWorkspacePath == "" && startupCWD != "" && !homePathRegistered(startupCWD, next.Workspaces) {
-		warnings = append(warnings, "launch directory is not registered; use /workspace to add it")
+		next.WorkspaceSetupPath = startupCWD
 	}
 	return next, selectedPath, warnings
 }

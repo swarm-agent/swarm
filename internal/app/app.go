@@ -5543,6 +5543,7 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			}
 		}
 		if action.MakeCurrent {
+			a.homeModel.WorkspaceSetupPath = ""
 			a.syncActiveWorkspaceSelection(resolution)
 		}
 		a.refreshWorkspaceModalData("")
@@ -6863,7 +6864,12 @@ func (a *App) handleWorkspaceCommand(args []string) {
 			allowPathEdit = true
 		}
 		target = a.resolveWorkspaceTarget(target)
-		a.openWorkspaceModalForSave(target, allowPathEdit)
+		saveAndSwitch := strings.TrimSpace(a.homeModel.WorkspaceSetupPath) != "" && len(args) == 1
+		if saveAndSwitch {
+			target = normalizePath(a.homeModel.WorkspaceSetupPath)
+			allowPathEdit = false
+		}
+		a.openWorkspaceModalForSave(target, allowPathEdit, saveAndSwitch)
 	case "select", "use":
 		if len(args) < 2 {
 			a.showWorkspaceSelector()
@@ -6971,10 +6977,15 @@ func (a *App) showWorkspaceManager() {
 	}
 }
 
-func (a *App) openWorkspaceModalForSave(target string, allowPathEdit bool) {
+func (a *App) openWorkspaceModalForSave(target string, allowPathEdit, saveAndSwitch bool) {
 	a.home.SetWorkspaceModalIntent("", "")
 	if _, err := a.openWorkspaceModal(); err != nil {
 		a.home.SetStatus(fmt.Sprintf("workspace manager failed: %v", err))
+		return
+	}
+	if saveAndSwitch {
+		a.home.OpenWorkspaceModalSaveAndSwitchEditor(target, allowPathEdit)
+		a.home.SetStatus("workspace setup: review and Save and Switch")
 		return
 	}
 	a.home.OpenWorkspaceModalSaveEditor(target, allowPathEdit)
@@ -8381,6 +8392,9 @@ func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution
 func (a *App) resolveWorkspaceTarget(value string) string {
 	target := strings.TrimSpace(value)
 	if target == "" || target == "." {
+		if setupPath := normalizePath(strings.TrimSpace(a.homeModel.WorkspaceSetupPath)); setupPath != "" {
+			return setupPath
+		}
 		return a.activeContextPath()
 	}
 	if strings.HasPrefix(target, "#") {

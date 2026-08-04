@@ -178,13 +178,13 @@ func TestApplyHomeWorkspaceBootstrapRejectsResolverPseudoWorkspace(t *testing.T)
 	if len(next.Workspaces) != 1 || !next.Workspaces[0].Active || next.Workspaces[0].Path != "/default" {
 		t.Fatalf("pseudo-workspace was added: %#v", next.Workspaces)
 	}
-	if len(warnings) != 1 || warnings[0] != "launch directory is not registered; use /workspace to add it" {
-		t.Fatalf("warnings = %#v", warnings)
+	if len(warnings) != 0 || next.WorkspaceSetupPath != "/other" {
+		t.Fatalf("warnings = %#v, setup path = %q", warnings, next.WorkspaceSetupPath)
 	}
 }
 
 func TestApplyHomeWorkspaceBootstrapGuidesUnregisteredLaunchCWD(t *testing.T) {
-	_, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
+	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
 		current:         client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
 		hasCurrent:      true,
 		workspaces:      []client.WorkspaceEntry{{Path: "/default", WorkspaceName: "Default"}},
@@ -196,7 +196,7 @@ func TestApplyHomeWorkspaceBootstrapGuidesUnregisteredLaunchCWD(t *testing.T) {
 	if selected != "/default" {
 		t.Fatalf("selected path = %q, want /default", selected)
 	}
-	if len(warnings) != 1 || warnings[0] != "launch directory is not registered; use /workspace to add it" {
-		t.Fatalf("warnings = %#v", warnings)
+	if len(warnings) != 0 || next.WorkspaceSetupPath != "/other" {
+		t.Fatalf("warnings = %#v, setup path = %q", warnings, next.WorkspaceSetupPath)
 	}
 }

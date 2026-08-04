@@ -593,8 +593,17 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	}
 	inputHeight := p.desiredInputBarHeight(contentW)
 	for i := range sections {
-		if sections[i].kind == "input" {
+		switch sections[i].kind {
+		case "input":
 			sections[i].h = inputHeight
+		case "tips":
+			if warning := p.workspaceSetupWarning(); warning != "" {
+				warningWidth := contentW
+				if warningWidth > 118 {
+					warningWidth = 118
+				}
+				sections[i].h = 1 + len(wrapVoiceModalText(warning, warningWidth))
+			}
 		}
 	}
 	pinMetaTop := profile.PinMetaTop && !variant.UseSwarmTopBar

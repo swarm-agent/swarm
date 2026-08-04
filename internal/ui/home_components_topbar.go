@@ -390,14 +390,28 @@ func headerWorkspaceIndexes(workspaces []model.Workspace, limit int) ([]int, boo
 	return indexes, true
 }
 
+func (p *HomePage) workspaceSetupWarning() string {
+	setupPath := strings.TrimSpace(p.model.WorkspaceSetupPath)
+	if setupPath == "" {
+		return ""
+	}
+	return fmt.Sprintf("Detected launch path: %s is not a workspace. Type /workspace save to save this directory and switch.", setupPath)
+}
+
 func (p *HomePage) workspaceItems() []topItem {
+	workspaceShortcut := "Alt+W"
+	if p.keybinds != nil {
+		if label := strings.TrimSpace(p.keybinds.Label(KeybindGlobalWorkspaceSelect)); label != "" {
+			workspaceShortcut = label
+		}
+	}
 	if len(p.model.Workspaces) == 0 {
-		return []topItem{{Label: "[Alt+W: workspace]", Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
+		return []topItem{{Label: fmt.Sprintf("[%s: workspace]", workspaceShortcut), Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
 	}
 
 	indexes, overflow := headerWorkspaceIndexes(p.model.Workspaces, maxHeaderWorkspaces)
 	items := make([]topItem, 0, len(indexes)+2)
-	items = append(items, topItem{Label: "[Alt+W: switch]", Style: p.theme.Secondary, Action: "workspace-selector", Index: -1})
+	items = append(items, topItem{Label: fmt.Sprintf("[%s: switch]", workspaceShortcut), Style: p.theme.Secondary, Action: "workspace-selector", Index: -1})
 	activeOutsidePrefix := overflow && len(indexes) > 0 && indexes[len(indexes)-1] >= maxHeaderWorkspaces
 	for position, i := range indexes {
 		if activeOutsidePrefix && position == len(indexes)-1 {

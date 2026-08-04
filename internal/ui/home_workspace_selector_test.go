@@ -146,6 +146,20 @@ func TestEmptyWorkspaceIndicatorKeepsSelectorWithShortcutLabel(t *testing.T) {
 	}
 }
 
+func TestWorkspaceHeaderWarningUsesSaveCommandAndConfiguredSelectorKey(t *testing.T) {
+	page := NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside"})
+	if got := page.workspaceSetupWarning(); got != "Detected launch path: /outside is not a workspace. Type /workspace save to save this directory and switch." {
+		t.Fatalf("workspace setup warning = %q", got)
+	}
+	if err := page.keybinds.Set(KeybindGlobalWorkspaceSelect, "ctrl+w"); err != nil {
+		t.Fatal(err)
+	}
+	items := page.workspaceItems()
+	if len(items) != 1 || !strings.Contains(items[0].Label, "Ctrl+W") {
+		t.Fatalf("workspace selector label = %#v", items)
+	}
+}
+
 func TestWorkspaceSelectorCancelClearsState(t *testing.T) {
 	page := NewHomePage(testHomeModel())
 	page.SetWorkspaceModalIntent("select", "")

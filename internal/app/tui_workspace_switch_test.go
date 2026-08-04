@@ -40,6 +40,30 @@ func TestWorkspaceCommandOpensManagerWhileAltWOpensSelector(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSaveCommandForUnregisteredLaunchCWDOpensSaveAndSwitchFlow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workspace/list" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspaces": []client.WorkspaceEntry{{Path: "/default", WorkspaceName: "Default", Active: true}}})
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), route: "home", activePath: "/default", homeModel: model.EmptyHome()}
+	app.homeModel.WorkspaceSetupPath = "/outside/project"
+	app.home = ui.NewHomePage(app.homeModel)
+	app.handleWorkspaceCommand([]string{"save"})
+
+	if !app.home.WorkspaceModalVisible() || app.home.WorkspaceModalIntent() != "" {
+		t.Fatalf("workspace manager state = visible:%v intent:%q", app.home.WorkspaceModalVisible(), app.home.WorkspaceModalIntent())
+	}
+	app.home.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	action, ok := app.home.PopWorkspaceModalAction()
+	if !ok || action.Kind != ui.WorkspaceModalActionSave || action.Path != "/outside/project" || !action.MakeCurrent {
+		t.Fatalf("workspace save-and-switch action = %#v, ok=%v", action, ok)
+	}
+}
+
 func TestWorkspaceSaveAndSwitchActivatesAndRefreshesHeader(t *testing.T) {
 	var makeCurrent bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

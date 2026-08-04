@@ -205,6 +205,13 @@ func (p *HomePage) OpenWorkspaceModalSaveEditor(path string, allowPathEdit bool)
 	p.openWorkspaceModalSaveEditorForPath(path, allowPathEdit, "")
 }
 
+func (p *HomePage) OpenWorkspaceModalSaveAndSwitchEditor(path string, allowPathEdit bool) {
+	p.openWorkspaceModalSaveEditorForPath(path, allowPathEdit, "")
+	if p.workspaceModal.Editor != nil {
+		p.workspaceModal.Editor.Selected = len(p.workspaceModal.Editor.Fields) - 1
+	}
+}
+
 func (p *HomePage) PopWorkspaceModalAction() (WorkspaceModalAction, bool) {
 	if p.pendingWorkspaceAction == nil {
 		return WorkspaceModalAction{}, false
