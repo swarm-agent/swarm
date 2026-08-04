@@ -4239,10 +4239,19 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 	totalTokens, _ := intFromPath(usage, "total_tokens")
 	cacheReadTokens, _ := intFromPath(usage, "input_tokens_details", "cached_tokens")
 	cacheWriteTokens, _ := intFromPath(usage, "input_tokens_details", "cache_creation_tokens")
-	serviceTier := strings.TrimSpace(asString(usage["service_tier"]))
+	// OpenAI-compatible Responses APIs report the actually served tier on
+	// the response object. Keep the usage location only as a compatibility
+	// fallback for provider variants that return it there.
+	serviceTier := strings.TrimSpace(asString(responseObj["service_tier"]))
+	if serviceTier == "" {
+		serviceTier = strings.TrimSpace(asString(usage["service_tier"]))
+	}
 	estimatedCostUSD, _ := floatFromAny(usage["estimated_cost_usd"])
 
 	usageRaw := cloneMapAny(usage)
+	if serviceTier != "" {
+		usageRaw["service_tier"] = serviceTier
+	}
 	out := TokenUsage{
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,

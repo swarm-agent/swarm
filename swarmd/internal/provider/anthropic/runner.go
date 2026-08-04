@@ -890,16 +890,18 @@ func anthropicMessageToResponse(message anthropicapi.Message) provideriface.Resp
 }
 
 func anthropicUsageToTokenUsage(usage anthropicapi.Usage) provideriface.TokenUsage {
-	usageRaw := map[string]any{
-		"input_tokens":                usage.InputTokens,
-		"output_tokens":               usage.OutputTokens,
-		"cache_creation_input_tokens": usage.CacheCreationInputTokens,
-		"cache_read_input_tokens":     usage.CacheReadInputTokens,
-		"service_tier":                strings.TrimSpace(string(usage.ServiceTier)),
-		"inference_geo":               strings.TrimSpace(usage.InferenceGeo),
-		"cache_creation":              cloneAnthropicRawJSONMap(usage.CacheCreation.RawJSON()),
-		"server_tool_use":             cloneAnthropicRawJSONMap(usage.ServerToolUse.RawJSON()),
+	usageRaw := cloneAnthropicRawJSONMap(usage.RawJSON())
+	if usageRaw == nil {
+		usageRaw = make(map[string]any, 8)
 	}
+	usageRaw["input_tokens"] = usage.InputTokens
+	usageRaw["output_tokens"] = usage.OutputTokens
+	usageRaw["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	usageRaw["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	usageRaw["service_tier"] = strings.TrimSpace(string(usage.ServiceTier))
+	usageRaw["inference_geo"] = strings.TrimSpace(usage.InferenceGeo)
+	usageRaw["cache_creation"] = cloneAnthropicRawJSONMap(usage.CacheCreation.RawJSON())
+	usageRaw["server_tool_use"] = cloneAnthropicRawJSONMap(usage.ServerToolUse.RawJSON())
 	return provideriface.TokenUsage{
 		InputTokens:      maxInt64(usage.InputTokens, 0),
 		OutputTokens:     maxInt64(usage.OutputTokens, 0),

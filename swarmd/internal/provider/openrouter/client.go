@@ -54,11 +54,12 @@ type chatCompletionToolFunction struct {
 }
 
 type chatCompletionResponse struct {
-	ID      string                 `json:"id"`
-	Model   string                 `json:"model"`
-	Choices []chatCompletionChoice `json:"choices"`
-	Usage   *chatCompletionUsage   `json:"usage,omitempty"`
-	Error   *streamErrorPayload    `json:"error,omitempty"`
+	ID          string                 `json:"id"`
+	Model       string                 `json:"model"`
+	Choices     []chatCompletionChoice `json:"choices"`
+	Usage       *chatCompletionUsage   `json:"usage,omitempty"`
+	ServiceTier string                 `json:"service_tier,omitempty"`
+	Error       *streamErrorPayload    `json:"error,omitempty"`
 }
 
 type chatCompletionChoice struct {
@@ -108,11 +109,12 @@ type chatCompletionToolFunctionDelta struct {
 }
 
 type chatCompletionChunk struct {
-	ID      string                 `json:"id,omitempty"`
-	Model   string                 `json:"model,omitempty"`
-	Choices []chatCompletionChoice `json:"choices,omitempty"`
-	Usage   *chatCompletionUsage   `json:"usage,omitempty"`
-	Error   *streamErrorPayload    `json:"error,omitempty"`
+	ID          string                 `json:"id,omitempty"`
+	Model       string                 `json:"model,omitempty"`
+	Choices     []chatCompletionChoice `json:"choices,omitempty"`
+	Usage       *chatCompletionUsage   `json:"usage,omitempty"`
+	ServiceTier string                 `json:"service_tier,omitempty"`
+	Error       *streamErrorPayload    `json:"error,omitempty"`
 }
 
 type chatCompletionUsage struct {
@@ -354,6 +356,9 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 	}
 	if chunk.Usage != nil {
 		s.merged.Usage = chunk.Usage
+	}
+	if strings.TrimSpace(chunk.ServiceTier) != "" {
+		s.merged.ServiceTier = chunk.ServiceTier
 	}
 	if chunk.Error != nil {
 		s.merged.Error = chunk.Error

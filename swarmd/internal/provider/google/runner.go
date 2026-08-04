@@ -244,6 +244,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 		return provideriface.Response{}, sanitizeGoogleError("decode google response", err)
 	}
 	result := parseGoogleResponse(decoded)
+	annotateGoogleServiceTier(&result.Usage, resp.Header.Get("x-gemini-service-tier"))
 	result.Model = modelID
 	return result, nil
 }
@@ -304,6 +305,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	}
 
 	providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
+	servedTier := resp.Header.Get("x-gemini-service-tier")
 	accumulator := newGoogleStreamAccumulator(modelID)
 	if err := parseGoogleEventStream(resp.Body, func(payload string) error {
 		providerdiagnostics.LogStreamChunkContext(ctx, "google", "streamGenerateContent", []byte(payload))
@@ -315,7 +317,9 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if !accumulator.finished {
 		return provideriface.Response{}, errors.New("google stream ended without a finish reason")
 	}
-	return accumulator.response(), nil
+	result := accumulator.response()
+	annotateGoogleServiceTier(&result.Usage, servedTier)
+	return result, nil
 }
 
 func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
@@ -1562,6 +1566,22 @@ func parseGoogleUsage(resp googleResponse) provideriface.TokenUsage {
 		out.TotalTokens = 0
 	}
 	return out
+}
+
+func annotateGoogleServiceTier(usage *provideriface.TokenUsage, serviceTier string) {
+	if usage == nil {
+		return
+	}
+	serviceTier = strings.ToLower(strings.TrimSpace(serviceTier))
+	if serviceTier == "" {
+		return
+	}
+	usage.ServiceTier = serviceTier
+	if usage.APIUsageRaw == nil {
+		usage.APIUsageRaw = map[string]any{}
+	}
+	usage.APIUsageRaw["service_tier"] = serviceTier
+	usage.APIUsageHistory = []map[string]any{cloneGoogleUsageMap(usage.APIUsageRaw)}
 }
 
 func cloneGoogleUsageMap(in map[string]any) map[string]any {

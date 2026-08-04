@@ -606,10 +606,19 @@ func openRouterIntPointer(value int) *int {
 }
 
 func parseChatCompletionResponse(resp chatCompletionResponse) provideriface.Response {
+	usage := parseUsage(resp.Usage)
+	if serviceTier := strings.TrimSpace(resp.ServiceTier); serviceTier != "" {
+		usage.ServiceTier = serviceTier
+		if usage.APIUsageRaw == nil {
+			usage.APIUsageRaw = map[string]any{}
+		}
+		usage.APIUsageRaw["service_tier"] = serviceTier
+		usage.APIUsageHistory = []map[string]any{cloneMap(usage.APIUsageRaw)}
+	}
 	out := provideriface.Response{
 		ID:    strings.TrimSpace(resp.ID),
 		Model: strings.TrimSpace(resp.Model),
-		Usage: parseUsage(resp.Usage),
+		Usage: usage,
 	}
 	if len(resp.Choices) == 0 {
 		return out

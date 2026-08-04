@@ -808,10 +808,9 @@ func annotateUsage(usage *provideriface.TokenUsage, serving requestServingResolu
 	if usage.APIUsageRaw == nil {
 		usage.APIUsageRaw = map[string]any{}
 	}
-	if strings.TrimSpace(serving.EffectiveTier) != "" {
-		usage.ServiceTier = strings.TrimSpace(serving.EffectiveTier)
-		usage.APIUsageRaw["service_tier"] = usage.ServiceTier
-	}
+	// Fireworks does not return an authoritative served-tier field on its
+	// Chat Completions response. Keep request resolution separate from provider
+	// usage so durable logs do not mislabel a requested tier as provider-confirmed.
 	if strings.TrimSpace(serving.ModelID) != "" {
 		usage.APIUsageRaw["provider_model"] = strings.TrimSpace(serving.ModelID)
 	}

@@ -518,6 +518,10 @@ func TestParseGoogleUsageMapsResponseAndThoughtCacheTokens(t *testing.T) {
 	if usage.APIUsageRaw["responseTokenCount"] != int64(7) || usage.APIUsageRaw["toolUsePromptTokenCount"] != int64(2) {
 		t.Fatalf("raw usage = %+v, want response/tool-use fields preserved", usage.APIUsageRaw)
 	}
+	annotateGoogleServiceTier(&usage, "standard")
+	if usage.ServiceTier != "standard" || usage.APIUsageRaw["service_tier"] != "standard" {
+		t.Fatalf("served tier = %q raw=%+v, want response-header standard preserved", usage.ServiceTier, usage.APIUsageRaw)
+	}
 }
 
 func TestGoogleStreamEmitsToolCallConstructionLifecycle(t *testing.T) {

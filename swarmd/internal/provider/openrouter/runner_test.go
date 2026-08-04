@@ -131,20 +131,23 @@ func TestBuildChatCompletionRequestMapsReasoningAndServiceTierFromCatalog(t *tes
 }
 
 func TestParseUsagePreservesOpenRouterDetails(t *testing.T) {
-	usage := parseUsage(&chatCompletionUsage{
-		PromptTokens:     194,
-		CompletionTokens: 2,
-		TotalTokens:      196,
-		PromptTokensDetails: &chatPromptTokensDetails{
-			CachedTokens:     30,
-			CacheWriteTokens: 100,
-			AudioTokens:      4,
+	response := parseChatCompletionResponse(chatCompletionResponse{
+		ServiceTier: "priority",
+		Usage: &chatCompletionUsage{
+			PromptTokens:     194,
+			CompletionTokens: 2,
+			TotalTokens:      196,
+			PromptTokensDetails: &chatPromptTokensDetails{
+				CachedTokens:     30,
+				CacheWriteTokens: 100,
+				AudioTokens:      4,
+			},
+			CompletionTokensDetails: &chatCompletionTokensDetails{ReasoningTokens: 7},
+			Cost:                    0.95,
+			CostDetails:             map[string]any{"upstream_inference_cost": float64(19)},
 		},
-		CompletionTokensDetails: &chatCompletionTokensDetails{ReasoningTokens: 7},
-		Cost:                    0.95,
-		CostDetails:             map[string]any{"upstream_inference_cost": float64(19)},
-		ServiceTier:             "priority",
 	})
+	usage := response.Usage
 	if usage.InputTokens != 194 || usage.OutputTokens != 2 || usage.TotalTokens != 196 || usage.CacheReadTokens != 30 || usage.CacheWriteTokens != 100 || usage.ThinkingTokens != 7 {
 		t.Fatalf("usage token mapping = %+v", usage)
 	}
