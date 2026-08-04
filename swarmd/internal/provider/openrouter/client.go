@@ -495,11 +495,15 @@ func apiErrorMessage(raw []byte) string {
 	}
 	var payload struct {
 		Error struct {
-			Message string `json:"message"`
-			Code    any    `json:"code"`
+			Message  string          `json:"message"`
+			Code     any             `json:"code"`
+			Metadata json.RawMessage `json:"metadata"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &payload); err == nil {
+		if detail := openRouterMetadataRawMessage(payload.Error.Metadata); detail != "" {
+			return boundedProviderError(privacy.SanitizeText(detail))
+		}
 		if msg := strings.TrimSpace(payload.Error.Message); msg != "" {
 			return boundedProviderError(privacy.SanitizeText(msg))
 		}
@@ -511,6 +515,60 @@ func apiErrorMessage(raw []byte) string {
 		}
 	}
 	return message
+}
+
+func openRouterMetadataRawMessage(metadata json.RawMessage) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		return ""
+	}
+	raw, ok := fields["raw"]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return openRouterRawErrorMessage(value, 0)
+}
+
+func openRouterRawErrorMessage(value any, depth int) string {
+	if depth > 8 {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		message := strings.TrimSpace(typed)
+		if message == "" {
+			return ""
+		}
+		if strings.HasPrefix(message, "{") || strings.HasPrefix(message, "[") {
+			var nested any
+			if err := json.Unmarshal([]byte(message), &nested); err == nil {
+				if extracted := openRouterRawErrorMessage(nested, depth+1); extracted != "" {
+					return extracted
+				}
+			}
+		}
+		return message
+	case map[string]any:
+		for _, field := range []string{"message", "error", "detail", "details", "msg"} {
+			if extracted := openRouterRawErrorMessage(typed[field], depth+1); extracted != "" {
+				return extracted
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if extracted := openRouterRawErrorMessage(item, depth+1); extracted != "" {
+				return extracted
+			}
+		}
+	}
+	return ""
 }
 
 func boundedProviderError(value string) string {
