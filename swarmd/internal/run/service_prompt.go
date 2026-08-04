@@ -826,7 +826,9 @@ func cloneToolSchemaValue(value any) any {
 		}
 		return out
 	case []string:
-		return append([]string(nil), typed...)
+		out := make([]string, len(typed))
+		copy(out, typed)
+		return out
 	default:
 		return value
 	}
