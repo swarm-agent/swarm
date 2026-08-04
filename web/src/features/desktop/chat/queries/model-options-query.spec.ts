@@ -9,10 +9,10 @@ test.afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
-test('fetchModelOptions expands catalog requests until every provider model is visible', async () => {
-  const catalogRecords = Array.from({ length: 205 }, (_, index) => ({
+test('fetchModelOptions bounds OpenRouter catalog loading and preserves routed family identity', async () => {
+  const catalogRecords = Array.from({ length: 600 }, (_, index) => ({
     provider: 'openrouter',
-    model: index === 204 ? 'openai/gpt-5.6-sol' : `vendor/model-${String(index).padStart(3, '0')}`,
+    model: index === 499 ? 'google/gemini-3.1-pro' : `vendor/model-${String(index).padStart(3, '0')}`,
     context_window: index === 50 ? 128_000 : 64_000,
     thinking_options: index === 50 ? ['off', 'high'] : [],
     default_thinking: index === 50 ? 'high' : '',
@@ -52,13 +52,14 @@ test('fetchModelOptions expands catalog requests until every provider model is v
 
   assert.deepEqual(
     requests.filter((url) => url.startsWith('/v1/model/catalog?provider=openrouter')),
-    [
-      '/v1/model/catalog?provider=openrouter&limit=200',
-      '/v1/model/catalog?provider=openrouter&limit=400',
-    ],
+    ['/v1/model/catalog?provider=openrouter&limit=500'],
   )
   assert.equal(requests.some((url) => url.includes('provider=not-ready')), false)
-  assert.equal(options.some((option) => option.model === 'openai/gpt-5.6-sol' && !option.favorite), true)
+  const routedGoogle = options.find((option) => option.model === 'google/gemini-3.1-pro' && !option.favorite)
+  assert.ok(routedGoogle)
+  assert.equal(routedGoogle.provider, 'openrouter')
+  assert.equal(routedGoogle.upstreamFamily, 'google')
+  assert.equal(options.some((option) => option.model === 'vendor/model-500'), false)
 
   const favorite = options.find((option) => option.model === 'vendor/model-050' && option.contextMode === '')
   assert.ok(favorite)
@@ -73,5 +74,5 @@ test('fetchModelOptions expands catalog requests until every provider model is v
   assert.ok(longContext)
   assert.equal(longContext.favorite, true)
   assert.equal(longContext.contextWindow, 256_000)
-  assert.equal(options.length, 206)
+  assert.equal(options.length, 501)
 })

@@ -443,6 +443,8 @@ export interface ModelOptionRecord {
   key: string;
   provider: string;
   model: string;
+  /** Upstream model namespace for routed providers; empty for direct providers. */
+  upstreamFamily?: string;
   contextMode: string;
   label: string;
   thinking: string;

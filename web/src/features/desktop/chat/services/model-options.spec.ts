@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { defaultModelThinking, displayModelName, modelAllowedByProviderPreset, modelServiceTierOptions, modelThinkingOptions, normalizeModelID, normalizeModelServiceTier, normalizeProviderID, supportsModelServiceTier } from './model-options'
+import { defaultModelThinking, displayModelName, modelAllowedByProviderPreset, modelOptionGroupKey, modelOptionRouteLabel, modelServiceTierOptions, modelThinkingOptions, modelUpstreamFamily, normalizeModelID, normalizeModelServiceTier, normalizeProviderID, supportsModelServiceTier } from './model-options'
 
 test('displayModelName strips Fireworks account model prefix', () => {
   assert.equal(displayModelName('fireworks', 'accounts/fireworks/models/kimi-k2p6', ''), 'kimi-k2p6')
@@ -92,6 +92,18 @@ test('OpenAI API provider stays distinct from Codex and exposes catalog models',
   assert.equal(normalizeModelServiceTier('openai', 'batch'), '')
   assert.equal(supportsModelServiceTier('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch'], 'priority'), true)
   assert.equal(supportsModelServiceTier('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch'], 'batch'), false)
+})
+
+test('OpenRouter upstream families remain routed and distinct from direct providers', () => {
+  const routedGoogle = { provider: 'openrouter', model: 'google/gemini-3.1-pro', upstreamFamily: 'google' }
+  const directGoogle = { provider: 'google', model: 'gemini-3.1-pro', upstreamFamily: '' }
+  assert.equal(modelUpstreamFamily(routedGoogle.provider, routedGoogle.model), 'google')
+  assert.equal(modelUpstreamFamily(directGoogle.provider, directGoogle.model), '')
+  assert.equal(modelOptionRouteLabel(routedGoogle), 'OpenRouter → Google')
+  assert.equal(modelOptionRouteLabel(directGoogle), 'google')
+  assert.equal(modelOptionGroupKey(routedGoogle), 'openrouter::upstream::google')
+  assert.equal(modelOptionGroupKey(directGoogle), 'google::direct')
+  assert.notEqual(modelOptionGroupKey(routedGoogle), modelOptionGroupKey(directGoogle))
 })
 
 test('Codex catalog models are not filtered by the local sorting presets', () => {

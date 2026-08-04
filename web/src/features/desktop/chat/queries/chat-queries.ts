@@ -42,6 +42,7 @@ import {
 import {
   modelAllowedByProviderPreset,
   modelOptionKey,
+  modelUpstreamFamily,
   sortModelOptions,
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
@@ -2221,28 +2222,22 @@ function normalizeContextModes(value: unknown): ModelContextModeRecord[] {
     .filter((item): item is ModelContextModeRecord => Boolean(item));
 }
 
-const MODEL_CATALOG_INITIAL_LIMIT = 200;
+const MODEL_CATALOG_DEFAULT_LIMIT = 500;
+const OPENROUTER_MODEL_CATALOG_LIMIT = 500;
 
-async function fetchCompleteModelCatalog(
+async function fetchBoundedModelCatalog(
   provider: string,
   signal?: AbortSignal,
 ): Promise<CatalogResponseWire> {
-  let limit = MODEL_CATALOG_INITIAL_LIMIT;
-  while (true) {
-    const response = await requestJson<CatalogResponseWire>(
-      `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=${limit}`,
-      { signal },
-    );
-    const records = Array.isArray(response.records) ? response.records : [];
-    if (records.length < limit) {
-      return { ...response, records };
-    }
-    const nextLimit = limit * 2;
-    if (!Number.isSafeInteger(nextLimit)) {
-      throw new Error(`model catalog for ${provider} is too large to load safely`);
-    }
-    limit = nextLimit;
-  }
+  const limit = provider.trim().toLowerCase() === 'openrouter'
+    ? OPENROUTER_MODEL_CATALOG_LIMIT
+    : MODEL_CATALOG_DEFAULT_LIMIT;
+  const response = await requestJson<CatalogResponseWire>(
+    `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=${limit}`,
+    { signal },
+  );
+  const records = Array.isArray(response.records) ? response.records.slice(0, limit) : [];
+  return { ...response, records };
 }
 
 export async function fetchModelOptions(
@@ -2279,7 +2274,7 @@ export async function fetchModelOptions(
         async (provider) =>
           [
             provider,
-            await fetchCompleteModelCatalog(provider, signal),
+            await fetchBoundedModelCatalog(provider, signal),
           ] as const,
       ),
     ),
@@ -2298,6 +2293,7 @@ export async function fetchModelOptions(
         key,
         provider,
         model,
+        upstreamFamily: modelUpstreamFamily(provider, model),
         contextMode: "",
         label: String(record.label ?? `${provider}/${model}`).trim(),
         thinking: String(record.thinking ?? "").trim(),
@@ -2330,6 +2326,7 @@ export async function fetchModelOptions(
           key,
           provider,
           model,
+          upstreamFamily: modelUpstreamFamily(provider, model),
           contextMode: "",
           label: `${provider}/${model}`,
           thinking: "",

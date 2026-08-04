@@ -48,6 +48,40 @@ export function modelOptionKey(provider: string, model: string, contextMode = ''
   return `${normalizeProviderID(provider)}:${model.trim()}:${contextMode.trim().toLowerCase()}`
 }
 
+export function modelProviderLabel(provider: string): string {
+  const normalized = normalizeProviderID(provider)
+  if (normalized === 'openrouter') return 'OpenRouter (routed)'
+  return normalized
+}
+
+export function modelUpstreamFamily(provider: string, model: string): string {
+  if (normalizeProviderID(provider) !== 'openrouter') return ''
+  const family = model.trim().split('/', 1)[0]?.trim().toLowerCase() ?? ''
+  return family || 'other'
+}
+
+export function modelUpstreamFamilyLabel(family: string): string {
+  const normalized = family.trim().toLowerCase()
+  if (!normalized || normalized === 'other') return 'Other'
+  return normalized.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`)
+}
+
+export function modelOptionUpstreamFamily(option: Pick<ModelOptionRecord, 'provider' | 'model' | 'upstreamFamily'>): string {
+  return option.upstreamFamily?.trim().toLowerCase() || modelUpstreamFamily(option.provider, option.model)
+}
+
+export function modelOptionGroupKey(option: Pick<ModelOptionRecord, 'provider' | 'model' | 'upstreamFamily'>): string {
+  const provider = normalizeProviderID(option.provider)
+  const family = modelOptionUpstreamFamily(option)
+  return family ? `${provider}::upstream::${family}` : `${provider}::direct`
+}
+
+export function modelOptionRouteLabel(option: Pick<ModelOptionRecord, 'provider' | 'model' | 'upstreamFamily'>): string {
+  const provider = normalizeProviderID(option.provider)
+  if (provider !== 'openrouter') return modelProviderLabel(provider)
+  return `OpenRouter → ${modelUpstreamFamilyLabel(modelOptionUpstreamFamily(option))}`
+}
+
 export function normalizeModelID(provider: string, model: string): string {
   const trimmedModel = model.trim()
   if (trimmedModel === '') return ''

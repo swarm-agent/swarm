@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
-import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
+import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { displayAgentName } from '../services/agent-display'
 import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../settings/swarm/queries/get-agent-model-settings'
 import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
@@ -61,7 +61,7 @@ function isSystemUtility(name: string): boolean {
 function isCompiledSystemAgent(name: string): boolean {
   return isSystemUtility(name) || name === SWARM_AGENT_NAME
 }
-export type ModelDraft = { provider: string; model: string; thinking: string; serviceTier: string; contextMode: string }
+export type ModelDraft = { provider: string; upstreamFamily?: string; model: string; thinking: string; serviceTier: string; contextMode: string }
 
 export function resolveInitialModelProfileId(initialProfileId: string | null | undefined, activeProfile: ActiveModelProfileState | undefined, profiles: ModelProfileRecord[]): string {
   if (initialProfileId !== undefined && initialProfileId !== null) return initialProfileId
@@ -113,6 +113,7 @@ function defaultDraftFromModel(model: ModelOptionRecord | null, selectedServiceT
   const resolvedServiceTier = requestedServiceTier || fallbackServiceTier
   return {
     provider,
+    upstreamFamily: model ? modelOptionUpstreamFamily(model) : '',
     model: modelID,
     thinking: selectedThinking.trim() || defaultThinkingForOption(model),
     serviceTier: modelSupportsServiceTier(provider, modelID, model ? [model] : [], resolvedServiceTier) ? resolvedServiceTier : '',
@@ -126,6 +127,7 @@ function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedMode
   const provider = hasExplicitSingleModel ? profile?.provider.trim() || fallback.provider : fallback.provider
   return {
     provider,
+    upstreamFamily: provider === fallback.provider ? fallback.upstreamFamily : '',
     model: hasExplicitSingleModel ? profile?.model.trim() || fallback.model : fallback.model,
     thinking: hasExplicitSingleModel ? profile?.thinking.trim() || fallback.thinking : fallback.thinking,
     serviceTier: fallback.serviceTier,
@@ -133,13 +135,35 @@ function singleDraftFromProfile(profile: AgentProfileRecord | null, selectedMode
   }
 }
 
-function providerOptions(modelOptions: ModelOptionRecord[]): string[] {
-  return Array.from(new Set(modelOptions.map((option) => option.provider.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right))
+export interface AgentModelProviderChoice {
+  key: string
+  label: string
+  provider: string
+  upstreamFamily: string
 }
 
-function modelChoices(provider: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord[] {
-  const normalized = provider.trim()
-  return modelOptions.filter((option) => option.provider === normalized)
+export function agentModelProviderChoices(modelOptions: ModelOptionRecord[]): AgentModelProviderChoice[] {
+  const choices = new Map<string, AgentModelProviderChoice>()
+  for (const option of modelOptions) {
+    const provider = option.provider.trim()
+    if (!provider) continue
+    const upstreamFamily = modelOptionUpstreamFamily(option)
+    const key = upstreamFamily ? `${provider}::upstream::${upstreamFamily}` : `${provider}::direct`
+    choices.set(key, { key, label: modelOptionRouteLabel(option), provider, upstreamFamily })
+  }
+  return Array.from(choices.values()).sort((left, right) => left.label.localeCompare(right.label))
+}
+
+function providerChoiceKey(provider: string, upstreamFamily: string | undefined, model: string, modelOptions: ModelOptionRecord[]): string {
+  const option = modelOptions.find((candidate) => candidate.provider === provider && candidate.model === model)
+  const resolvedUpstreamFamily = upstreamFamily?.trim().toLowerCase() || (option ? modelOptionUpstreamFamily(option) : '')
+  return resolvedUpstreamFamily ? `${provider}::upstream::${resolvedUpstreamFamily}` : `${provider}::direct`
+}
+
+function modelChoices(providerChoiceKey: string, modelOptions: ModelOptionRecord[]): ModelOptionRecord[] {
+  const choice = agentModelProviderChoices(modelOptions).find((candidate) => candidate.key === providerChoiceKey)
+  if (!choice) return []
+  return modelOptions.filter((option) => option.provider === choice.provider && modelOptionUpstreamFamily(option) === choice.upstreamFamily)
 }
 
 function modelOptionKey(option: ModelOptionRecord): string {
@@ -299,7 +323,7 @@ export function AgentModelControl({
   const [actionDraft, setActionDraft] = useState<ModelDraft>(() => modelDraftForProfile(activeProfile))
   const [planDraft, setPlanDraft] = useState<ModelDraft>(() => modelDraftForProfile(activeProfile))
   const [editingProfileId, setEditingProfileId] = useState('')
-  const providers = useMemo(() => providerOptions(modelOptions), [modelOptions])
+  const providers = useMemo(() => agentModelProviderChoices(modelOptions), [modelOptions])
   const agentSections = useMemo(() => {
     const item = (profile: AgentProfileRecord) => ({ name: profile.name, profile })
     const primaryProfiles = selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name))
@@ -361,17 +385,19 @@ export function AgentModelControl({
     setError(null)
   }
 
-  function updateProvider(setDraft: Dispatch<SetStateAction<ModelDraft>>, provider: string) {
-    setDraft((current) => ({ ...current, provider, model: '', thinking: '', serviceTier: '', contextMode: '' }))
+  function updateProvider(setDraft: Dispatch<SetStateAction<ModelDraft>>, providerChoice: string) {
+    const choice = providers.find((candidate) => candidate.key === providerChoice)
+    setDraft((current) => ({ ...current, provider: choice?.provider ?? '', upstreamFamily: choice?.upstreamFamily ?? '', model: '', thinking: '', serviceTier: '', contextMode: '' }))
   }
 
   function updateModel(setDraft: Dispatch<SetStateAction<ModelDraft>>, key: string) {
     setDraft((current) => {
-      const option = modelOptions.find((candidate) => candidate.provider === current.provider && modelOptionKey(candidate) === key) ?? null
+      const option = modelOptions.find((candidate) => candidate.provider === current.provider && modelOptionUpstreamFamily(candidate) === (current.upstreamFamily ?? '') && modelOptionKey(candidate) === key) ?? null
       const model = option?.model ?? ''
       return {
         ...current,
         model,
+        upstreamFamily: option ? modelOptionUpstreamFamily(option) : current.upstreamFamily,
         contextMode: option?.contextMode ?? '',
         thinking: normalizeDraftThinking(current.provider, model, modelOptions, current.thinking),
         serviceTier: modelSupportsServiceTier(current.provider, model, modelOptions, current.serviceTier) ? current.serviceTier : '',
@@ -606,7 +632,7 @@ function ModelDraftEditor({
   className?: string
   compact?: boolean
   draft: ModelDraft
-  providers: string[]
+  providers: AgentModelProviderChoice[]
   modelOptions: ModelOptionRecord[]
   showServiceTier?: boolean
   onProviderChange: (provider: string) => void
@@ -614,7 +640,8 @@ function ModelDraftEditor({
   onThinkingChange: (thinking: string) => void
   onServiceTierChange?: (serviceTier: string) => void
 }) {
-  const choices = modelChoices(draft.provider, modelOptions)
+  const selectedProviderChoice = providerChoiceKey(draft.provider, draft.upstreamFamily, draft.model, modelOptions)
+  const choices = modelChoices(selectedProviderChoice, modelOptions)
   const selectedOption = choices.find((option) => option.model === draft.model && option.contextMode === draft.contextMode) ?? null
   const serviceTierOptions = serviceTierOptionsForDraft(draft, modelOptions)
   const serviceTierSupported = serviceTierOptions.length > 1
@@ -625,7 +652,7 @@ function ModelDraftEditor({
     <div className={`rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 sm:p-4 ${className}`}>
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]"><GitBranch size={14} />{title}</div>
       <div className={`grid gap-3 sm:grid-cols-2 ${compact ? '' : 'min-[1100px]:grid-cols-[minmax(130px,0.7fr)_minmax(220px,1.4fr)_minmax(130px,0.7fr)_minmax(130px,0.7fr)]'}`}>
-        <SelectField label="Provider" value={draft.provider} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider, value: provider }))} placeholder="Choose provider" />
+        <SelectField label="Provider" value={selectedProviderChoice} onChange={onProviderChange} options={providers.map((provider) => ({ label: provider.label, value: provider.key }))} placeholder="Choose provider route" />
         <ModelSelectField label="Model" value={selectedOption ? modelOptionKey(selectedOption) : ''} onChange={onModelChange} options={choices} placeholder="Choose model" disabled={!draft.provider.trim()} />
         <SelectField label="Thinking" value={normalizedThinking} onChange={onThinkingChange} options={thinkingOptions.map((option) => ({ label: option, value: option }))} disabled={!selectedOption || thinkingOptions.length <= 1} />
         {showServiceTier ? <SelectField label="Service tier" value={normalizedServiceTier} onChange={(value) => onServiceTierChange?.(normalizeDraftServiceTier(draft.provider, value))} options={serviceTierOptions} disabled={!serviceTierSupported} /> : <div />}
@@ -645,7 +672,8 @@ function ModelSelectField({ label, value, options, placeholder = '', disabled = 
             const contextLabel = modelContextLabel(option)
             const pricingLabel = formatModelPricing(option.pricing)
             const meta = [contextLabel ? `Context ${contextLabel}` : '', pricingLabel].filter(Boolean).join(' · ')
-            const labelText = `${displayModelName(option.provider, option.model, option.contextMode)}${meta ? ` — ${meta}` : ''}`
+            const route = option.provider === 'openrouter' ? `${modelOptionRouteLabel(option)} · ` : ''
+            const labelText = `${route}${displayModelName(option.provider, option.model, option.contextMode)}${meta ? ` — ${meta}` : ''}`
             return <option key={`model:${modelOptionKey(option)}`} value={modelOptionKey(option)}>{labelText}</option>
           })}
         </select>

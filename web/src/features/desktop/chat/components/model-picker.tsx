@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom'
 import { ChevronDown, Check, Cpu, Star } from 'lucide-react'
 import type { ModelOptionRecord } from '../types/chat'
-import { displayModelName, formatContextWindow, effectiveContextWindow, formatModelPricing } from '../services/model-options'
+import { displayModelName, formatContextWindow, effectiveContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelProviderLabel, modelUpstreamFamilyLabel } from '../services/model-options'
 
 interface ModelPickerProps {
   options: ModelOptionRecord[]
@@ -23,6 +23,7 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
   const dropdownRef = useRef<HTMLDivElement | null>(null)
   const [position, setPosition] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null)
   const [activeProvider, setActiveProvider] = useState<string>('')
+  const [activeUpstreamFamily, setActiveUpstreamFamily] = useState<string>('')
   const [activeModelIndex, setActiveModelIndex] = useState(0)
 
   const providers = useMemo(() => {
@@ -52,13 +53,30 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
     return providerIDs[0] ?? ''
   }, [activeProvider, providerIDs, selectedOption])
 
-  const activeModels = useMemo(
+  const activeProviderModels = useMemo(
     () => providers.find(([provider]) => provider === resolvedActiveProvider)?.[1] ?? [],
     [providers, resolvedActiveProvider],
   )
+  const activeUpstreamFamilies = useMemo(() => {
+    if (resolvedActiveProvider !== 'openrouter') return []
+    return Array.from(new Set(activeProviderModels.map(modelOptionUpstreamFamily).filter(Boolean))).sort((left, right) => left.localeCompare(right))
+  }, [activeProviderModels, resolvedActiveProvider])
+  const resolvedActiveUpstreamFamily = useMemo(() => {
+    if (resolvedActiveProvider !== 'openrouter') return ''
+    if (activeUpstreamFamily && activeUpstreamFamilies.includes(activeUpstreamFamily)) return activeUpstreamFamily
+    const selectedFamily = selectedOption?.provider === 'openrouter' ? modelOptionUpstreamFamily(selectedOption) : ''
+    if (selectedFamily && activeUpstreamFamilies.includes(selectedFamily)) return selectedFamily
+    return activeUpstreamFamilies[0] ?? ''
+  }, [activeUpstreamFamilies, activeUpstreamFamily, resolvedActiveProvider, selectedOption])
+  const activeModels = useMemo(
+    () => resolvedActiveProvider === 'openrouter' && resolvedActiveUpstreamFamily
+      ? activeProviderModels.filter((option) => modelOptionUpstreamFamily(option) === resolvedActiveUpstreamFamily)
+      : activeProviderModels,
+    [activeProviderModels, resolvedActiveProvider, resolvedActiveUpstreamFamily],
+  )
 
   const displayLabel = selectedOption
-    ? `${selectedOption.provider}/${displayModelName(selectedOption.provider, selectedOption.model, selectedOption.contextMode)}`
+    ? `${modelOptionRouteLabel(selectedOption)}/${displayModelName(selectedOption.provider, selectedOption.model, selectedOption.contextMode)}`
     : 'Select model'
 
   const updatePosition = useCallback(() => {
@@ -241,8 +259,8 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                 const isActive = provider === resolvedActiveProvider
                 const hasSelected = models.some((model) => model.key === selectedKey)
                 return (
+                  <div key={provider} className="contents min-[641px]:block">
                   <button
-                    key={provider}
                     type="button"
                     onMouseEnter={() => setActiveProvider(provider)}
                     onFocus={() => setActiveProvider(provider)}
@@ -255,10 +273,30 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       {hasSelected ? <Check size={14} className="shrink-0 text-[var(--app-primary)]" /> : <span className="w-[14px] shrink-0" />}
-                      <span className="truncate font-medium">{provider}</span>
+                      <span className="truncate font-medium">{modelProviderLabel(provider)}</span>
                     </div>
                     <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">{models.length}</span>
                   </button>
+                  {provider === 'openrouter' && isActive ? (
+                    <div className="hidden border-y border-[var(--app-border)] bg-[var(--app-bg)] py-1 min-[641px]:block">
+                      {activeUpstreamFamilies.map((family) => {
+                        const familyActive = family === resolvedActiveUpstreamFamily
+                        const familyModels = models.filter((option) => modelOptionUpstreamFamily(option) === family)
+                        return (
+                          <button
+                            key={`openrouter:${family}`}
+                            type="button"
+                            onClick={() => setActiveUpstreamFamily(family)}
+                            className={`flex w-full items-center justify-between gap-2 px-7 py-2 text-left text-xs transition ${familyActive ? 'bg-[var(--app-surface)] font-semibold text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}`}
+                          >
+                            <span className="truncate">OpenRouter → {modelUpstreamFamilyLabel(family)}</span>
+                            <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{familyModels.length}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  ) : null}
+                </div>
                 )
               })}
             </div>
@@ -267,9 +305,25 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="flex h-10 min-w-0 shrink-0 items-center border-b border-[var(--app-border)] px-3 min-[641px]:h-11 min-[641px]:px-4">
               <div className="truncate text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
-                {resolvedActiveProvider || 'Models'} models
+                {resolvedActiveProvider === 'openrouter'
+                  ? `OpenRouter → ${modelUpstreamFamilyLabel(resolvedActiveUpstreamFamily)} models (routed by OpenRouter)`
+                  : `${modelProviderLabel(resolvedActiveProvider) || 'Models'} models`}
               </div>
             </div>
+            {resolvedActiveProvider === 'openrouter' && activeUpstreamFamilies.length > 0 ? (
+              <div className="flex gap-2 overflow-x-auto border-b border-[var(--app-border)] p-2 min-[641px]:hidden">
+                {activeUpstreamFamilies.map((family) => (
+                  <button
+                    key={`openrouter-mobile:${family}`}
+                    type="button"
+                    onClick={() => setActiveUpstreamFamily(family)}
+                    className={`shrink-0 rounded-lg border px-2.5 py-1.5 text-xs ${family === resolvedActiveUpstreamFamily ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-hover)] text-[var(--app-text)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)]'}`}
+                  >
+                    OpenRouter → {modelUpstreamFamilyLabel(family)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="min-h-0 flex-1 overflow-y-auto py-1">
               {activeModels.length === 0 ? (
                 <div className="px-4 py-6 text-sm text-[var(--app-text-muted)]">No models available.</div>
@@ -301,7 +355,9 @@ export function ModelPicker({ options, selectedKey, onSelect, openSignal = 0, di
                     {option.favorite ? <Star size={12} className="mt-1 shrink-0 text-[var(--app-primary)]" /> : <span className="mt-1 w-[12px] shrink-0" />}
                     <span className="min-w-0 flex-1">
                       <span className="block whitespace-normal break-words font-medium leading-snug text-[var(--app-text)] min-[641px]:truncate">{displayModelName(option.provider, option.model, option.contextMode)}</span>
-                      <span className="mt-1 block whitespace-normal break-words text-[11px] leading-snug text-[var(--app-text-subtle)] min-[641px]:truncate">{option.label}</span>
+                      <span className="mt-1 block whitespace-normal break-words text-[11px] leading-snug text-[var(--app-text-subtle)] min-[641px]:truncate">
+                        {option.provider === 'openrouter' ? `${modelOptionRouteLabel(option)} · ${option.label}` : option.label}
+                      </span>
                       <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--app-text-subtle)]">
                         {contextLabel ? <span>Context {contextLabel}</span> : null}
                         {pricingLabel ? <span>{pricingLabel}</span> : null}
