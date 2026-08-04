@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { Plus } from 'lucide-react'
+import { FolderPlus, Plus } from 'lucide-react'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
@@ -1131,11 +1131,21 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             type="button"
                             onClick={() => (savedWorkspace ? handleOpenWorkspace(savedWorkspace.path) : handleSaveAndOpenFolder(entry))}
                             disabled={submitting || selectingPath === entry.path || savingPath === entry.path}
-                            className="grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent px-4 py-3 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60"
+                            className="group grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent px-4 py-3 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60"
                           >
                             <span className="flex min-w-0 items-center justify-between gap-3">
                               <span className="truncate text-sm font-medium text-[var(--app-text)]">{savedWorkspace?.workspaceName || entry.name}</span>
-                              <span className="shrink-0 text-xs text-[var(--app-text-muted)]">{savedWorkspace ? 'Open' : 'Add'}</span>
+                              {savedWorkspace ? (
+                                <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
+                              ) : (
+                                <span
+                                  className="grid size-8 shrink-0 place-items-center rounded-full border border-[var(--app-border-accent)] bg-[var(--app-surface-hover)] text-[var(--app-primary)] shadow-sm transition-transform group-hover:scale-105"
+                                  title="Add workspace"
+                                >
+                                  <FolderPlus size={16} strokeWidth={2} aria-hidden="true" />
+                                  <span className="sr-only">Add workspace</span>
+                                </span>
+                              )}
                             </span>
                             <span className="truncate text-xs text-[var(--app-text-muted)]">{formatWorkspacePath(entry.path)}</span>
                           </button>
