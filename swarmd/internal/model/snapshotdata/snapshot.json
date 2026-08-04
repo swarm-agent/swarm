@@ -2,9 +2,9 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-64998b51cb503deb",
-  "snapshot_version": "64998b51cb503deb",
-  "generated_at": "2026-08-01T07:58:02.569Z",
+  "snapshot_id": "swarm-models-v1-c447a59aedf76959",
+  "snapshot_version": "c447a59aedf76959",
+  "generated_at": "2026-08-04T08:02:32.934Z",
   "model_count": 596,
   "provider_count": 7,
   "hydrated_provider_count": 6,
@@ -1474,7 +1474,7 @@
         "fast": "off"
       },
       "router": {
-        "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
+        "model": "accounts/fireworks/models/deepseek-v4-flash",
         "thinking": "high",
         "fast": "off"
       }
@@ -1803,7 +1803,7 @@
           "fast": "off"
         },
         "router": {
-          "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
+          "model": "accounts/fireworks/models/deepseek-v4-flash",
           "thinking": "high",
           "fast": "off"
         }
@@ -9570,7 +9570,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9637,7 +9637,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9660,7 +9660,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9884,7 +9884,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-01T07:58:02.569Z"
+      "updated_at": "2026-08-04T08:02:32.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -10072,7 +10072,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10139,7 +10139,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10162,7 +10162,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10436,7 +10436,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-01T07:58:02.569Z"
+      "updated_at": "2026-08-04T08:02:32.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -10623,7 +10623,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10690,7 +10690,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10713,7 +10713,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10969,7 +10969,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-01T07:58:02.569Z"
+      "updated_at": "2026-08-04T08:02:32.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -11157,7 +11157,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11224,7 +11224,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11247,7 +11247,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11521,7 +11521,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-01T07:58:02.569Z"
+      "updated_at": "2026-08-04T08:02:32.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -11716,7 +11716,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11783,7 +11783,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11806,7 +11806,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12093,7 +12093,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-01T07:58:02.569Z"
+      "updated_at": "2026-08-04T08:02:32.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -12289,7 +12289,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12356,7 +12356,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12379,7 +12379,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12681,7 +12681,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-01T07:58:02.569Z"
+      "updated_at": "2026-08-04T08:02:32.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
@@ -12877,7 +12877,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12944,7 +12944,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12967,7 +12967,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-01T07:58:02.569Z",
+          "fetched_at": "2026-08-04T08:02:32.934Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -13247,7 +13247,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-01T07:58:02.569Z"
+      "updated_at": "2026-08-04T08:02:32.934Z"
     },
     {
       "schema_version": "2026-06-09.1",
