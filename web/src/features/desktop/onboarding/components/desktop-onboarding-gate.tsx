@@ -1109,7 +1109,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                           className="sm:max-w-56"
                         />
                       </div>
-                      <div className="grid gap-2 lg:grid-cols-2">
+                      <div className="grid gap-2 lg:grid-cols-3">
                         {visibleSavedWorkspaces.map((workspace) => (
                           <button
                             key={workspace.path}
@@ -1139,7 +1139,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                 <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
                               ) : (
                                 <span
-                                  className="inline-flex h-8 shrink-0 items-center justify-center text-[var(--app-text-muted)] transition-colors group-hover:text-[var(--app-text)]"
+                                  className="inline-flex size-8 shrink-0 items-center justify-center text-[var(--app-text-muted)] opacity-0 transition-[color,opacity] group-hover:text-[var(--app-text)] group-hover:opacity-100 group-focus-visible:text-[var(--app-text)] group-focus-visible:opacity-100"
                                   title="Add workspace"
                                 >
                                   <ChevronRight size={18} strokeWidth={2} aria-hidden="true" />
