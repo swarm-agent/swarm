@@ -5528,7 +5528,7 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), true)
+		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent)
 		if err != nil {
 			a.home.SetWorkspaceModalLoading(false)
 			a.home.SetWorkspaceModalError(fmt.Sprintf("save workspace failed: %v", err))
@@ -5542,11 +5542,19 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 				return
 			}
 		}
-		a.syncActiveWorkspaceSelection(resolution)
+		if action.MakeCurrent {
+			a.syncActiveWorkspaceSelection(resolution)
+		}
 		a.refreshWorkspaceModalData("")
 		status := fmt.Sprintf("workspace saved: %s", displayPath(resolution.ResolvedPath))
+		if action.MakeCurrent {
+			status = fmt.Sprintf("workspace saved and switched: %s", displayPath(resolution.ResolvedPath))
+		}
 		if linkedDir != "" {
 			status = fmt.Sprintf("workspace saved and directory linked: %s", displayPath(resolution.ResolvedPath))
+			if action.MakeCurrent {
+				status = fmt.Sprintf("workspace saved, directory linked, and switched: %s", displayPath(resolution.ResolvedPath))
+			}
 		}
 		a.home.SetWorkspaceModalDirectory(a.activeContextPath())
 		a.home.SetWorkspaceModalStatus(status)

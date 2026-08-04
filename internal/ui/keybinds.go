@@ -83,6 +83,7 @@ const (
 	KeybindAuthEdit                  KeybindID = "auth.edit"
 
 	KeybindWorkspaceFocusList       KeybindID = "workspace.focus_list"
+	KeybindWorkspaceActions         KeybindID = "workspace.actions"
 	KeybindWorkspaceClearSearchAlt  KeybindID = "workspace.clear_search_alt"
 	KeybindWorkspaceRefresh         KeybindID = "workspace.refresh"
 	KeybindWorkspaceSaveCurrent     KeybindID = "workspace.save_current"
@@ -264,6 +265,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindAuthEdit, Group: "Auth Modal", Action: "Edit credential", Default: "e", Editable: true},
 
 	{ID: KeybindWorkspaceFocusList, Group: "Workspace Modal", Action: "Focus list", Default: "w", Editable: true},
+	{ID: KeybindWorkspaceActions, Group: "Workspace Modal", Action: "Open workspace actions", Default: "m", Editable: true},
 	{ID: KeybindWorkspaceClearSearchAlt, Group: "Workspace Modal", Action: "Clear search (alt)", Default: "x", Editable: true},
 	{ID: KeybindWorkspaceRefresh, Group: "Workspace Modal", Action: "Refresh", Default: "r", Editable: true},
 	{ID: KeybindWorkspaceSaveCurrent, Group: "Workspace Modal", Action: "Save current directory", Default: "s", Editable: true},

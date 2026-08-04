@@ -40,7 +40,7 @@ func TestWorkspaceCommandOpensManagerWhileAltWOpensSelector(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSaveImmediatelyActivatesAndRefreshesHeader(t *testing.T) {
+func TestWorkspaceSaveAndSwitchActivatesAndRefreshesHeader(t *testing.T) {
 	var makeCurrent bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -67,10 +67,45 @@ func TestWorkspaceSaveImmediatelyActivatesAndRefreshesHeader(t *testing.T) {
 	app.homeModel.Workspaces = []model.Workspace{{Name: "Repo A", Path: "/repo-a", Active: true}}
 	app.home = ui.NewHomePage(app.homeModel)
 	app.home.ShowWorkspaceModal()
-	app.handleWorkspaceModalAction(ui.WorkspaceModalAction{Kind: ui.WorkspaceModalActionSave, Path: "/repo-b", Name: "Repo B"})
+	app.handleWorkspaceModalAction(ui.WorkspaceModalAction{Kind: ui.WorkspaceModalActionSave, Path: "/repo-b", Name: "Repo B", MakeCurrent: true})
 
 	state := app.home.HomepageState()
 	if !makeCurrent || app.workspacePath != "/repo-b" || state.SelectedWorkspace.Path != "/repo-b" || state.SelectedWorkspace.Name != "Repo B" {
+		t.Fatalf("workspace save state = make_current:%v workspace:%q selected:%#v", makeCurrent, app.workspacePath, state.SelectedWorkspace)
+	}
+}
+
+func TestWorkspaceSaveDoesNotSwitchActiveWorkspace(t *testing.T) {
+	var makeCurrent bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspace/add":
+			var req struct {
+				Path        string `json:"path"`
+				Name        string `json:"name"`
+				MakeCurrent bool   `json:"make_current"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			makeCurrent = req.MakeCurrent
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspace": client.WorkspaceResolution{WorkspacePath: req.Path, ResolvedPath: req.Path, WorkspaceName: req.Name}})
+		case "/v1/workspace/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspaces": []client.WorkspaceEntry{{Path: "/repo-a", WorkspaceName: "Repo A", Active: true}, {Path: "/repo-b", WorkspaceName: "Repo B"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), route: "home", activePath: "/repo-a", workspacePath: "/repo-a", homeModel: model.EmptyHome(), gitStatusCh: make(chan gitStatusRefreshResult, 1)}
+	app.homeModel.Workspaces = []model.Workspace{{Name: "Repo A", Path: "/repo-a", Active: true}}
+	app.home = ui.NewHomePage(app.homeModel)
+	app.home.ShowWorkspaceModal()
+	app.handleWorkspaceModalAction(ui.WorkspaceModalAction{Kind: ui.WorkspaceModalActionSave, Path: "/repo-b", Name: "Repo B"})
+
+	state := app.home.HomepageState()
+	if makeCurrent || app.workspacePath != "/repo-a" || state.SelectedWorkspace.Path != "/repo-a" {
 		t.Fatalf("workspace save state = make_current:%v workspace:%q selected:%#v", makeCurrent, app.workspacePath, state.SelectedWorkspace)
 	}
 }

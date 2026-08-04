@@ -339,6 +339,8 @@ func (p *HomePage) handleWorkspaceModalRune(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindWorkspaceFocusList):
 		p.workspaceModal.Focus = workspaceModalFocusList
 		p.workspaceModal.ActionMenuVisible = false
+	case p.keybinds.Match(ev, KeybindWorkspaceActions):
+		p.workspaceModalOpenActions()
 	case p.keybinds.Match(ev, KeybindWorkspaceRefresh):
 		p.workspaceModalRefresh()
 	case p.keybinds.Match(ev, KeybindWorkspaceSaveCurrent):
@@ -391,6 +393,22 @@ func (p *HomePage) handleWorkspaceModalEnter() {
 		return
 	}
 	p.workspaceModalEditSelected()
+}
+
+func (p *HomePage) workspaceModalOpenActions() {
+	if p.workspaceModalNewCardSelected() {
+		p.workspaceModal.Status = "Select a workspace to view its actions"
+		return
+	}
+	if _, ok := p.selectedWorkspaceModal(); !ok {
+		p.workspaceModal.Status = "Select a workspace to view its actions"
+		return
+	}
+	p.workspaceModal.ActionMenuVisible = true
+	p.workspaceModal.Focus = workspaceModalFocusDetails
+	p.workspaceModal.ConfirmDelete = false
+	p.reconcileWorkspaceModalActionSelection(true)
+	p.workspaceModal.Status = "Workspace Actions opened. Use Up/Down and Enter; Esc returns to workspace cards."
 }
 
 func (p *HomePage) workspaceModalRefresh() {
@@ -573,6 +591,7 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 		},
 	}
 	fields = append(fields, workspaceModalLinkDirectoryField(linkedDirectory, submitLabel))
+	fields = appendWorkspaceModalSaveActions(fields)
 	if linkedDirectory != "" {
 		if hasExisting {
 			title = "Edit Workspace + Link Directory"
@@ -598,9 +617,20 @@ func workspaceModalLinkDirectoryField(value, submitLabel string) workspaceModalE
 		Label:       "Link Directory",
 		Value:       strings.TrimSpace(value),
 		Placeholder: "~/",
-		Editable:    true,
-		Help:        fmt.Sprintf("Optional. Browse from ~/; Right opens the highlighted folder and %s selects it.", submitLabel),
+		Editable:    false,
+		Help:        fmt.Sprintf("Optional. Press %s to browse from ~/; Right opens the highlighted folder and %s selects it.", submitLabel, submitLabel),
 	}
+}
+
+func workspaceModalSaveActionFields() []workspaceModalEditorField {
+	return []workspaceModalEditorField{
+		{Key: "save", Label: "Save", Help: "Save this workspace without switching to it."},
+		{Key: "save_and_switch", Label: "Save and Switch", Help: "Save this workspace and switch to it."},
+	}
+}
+
+func appendWorkspaceModalSaveActions(fields []workspaceModalEditorField) []workspaceModalEditorField {
+	return append(fields, workspaceModalSaveActionFields()...)
 }
 
 func (p *HomePage) openWorkspaceModalEditEditor(workspace WorkspaceModalWorkspace) {
@@ -610,7 +640,11 @@ func (p *HomePage) openWorkspaceModalEditEditor(workspace WorkspaceModalWorkspac
 		return
 	}
 	editor.WorkspacePath = workspace.Path
-	if len(editor.Fields) > 0 && editor.Fields[len(editor.Fields)-1].Key == "linked_directory" {
+	for len(editor.Fields) > 0 {
+		key := editor.Fields[len(editor.Fields)-1].Key
+		if key != "linked_directory" && key != "save" && key != "save_and_switch" {
+			break
+		}
 		editor.Fields = editor.Fields[:len(editor.Fields)-1]
 	}
 	choices := removableWorkspaceModalDirectories(workspace)
@@ -640,6 +674,7 @@ func (p *HomePage) openWorkspaceModalEditEditor(workspace WorkspaceModalWorkspac
 		})
 	}
 	editor.Fields = append(editor.Fields, workspaceModalLinkDirectoryField("", p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")))
+	editor.Fields = appendWorkspaceModalSaveActions(editor.Fields)
 	p.workspaceModal.Status = fmt.Sprintf("Editing %s. Existing linked directories are shown below; use Add Linked Directory to attach another root.", workspace.Path)
 }
 
@@ -718,7 +753,12 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 		p.handleWorkspaceModalThemePickerKey(ev)
 		return
 	}
-	if p.workspaceModalEditorPathFieldSelected(editor) {
+	if editor.DirectoryPicker != nil {
+		p.handleWorkspaceModalDirectoryPickerKey(ev)
+		return
+	}
+	if p.workspaceModalEditorPathFieldSelected(editor) && !p.workspaceModalEditorLinkDirectoryFieldSelected(editor) {
+		p.openWorkspaceModalDirectoryPicker(editor)
 		p.handleWorkspaceModalDirectoryPickerKey(ev)
 		return
 	}
@@ -729,10 +769,14 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 		p.workspaceModal.Status = "Workspace editor closed"
 		return
 	case p.keybinds.MatchAny(ev, KeybindEditorFocusNext, KeybindEditorMoveDown):
-		editor.Selected = (editor.Selected + 1) % len(editor.Fields)
+		if editor.Selected < len(editor.Fields)-1 {
+			editor.Selected++
+		}
 		return
 	case p.keybinds.MatchAny(ev, KeybindEditorFocusPrev, KeybindEditorMoveUp):
-		editor.Selected = (editor.Selected - 1 + len(editor.Fields)) % len(editor.Fields)
+		if editor.Selected > 0 {
+			editor.Selected--
+		}
 		return
 	case p.keybinds.Match(ev, KeybindEditorMoveLeft):
 		if p.workspaceModalEditorThemeFieldSelected(editor) {
@@ -768,8 +812,16 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 		field.Value = ""
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		if p.workspaceModalEditorSaveActionSelected(editor) {
+			p.submitWorkspaceModalEditor()
+			return
+		}
 		if p.workspaceModalEditorThemeFieldSelected(editor) {
 			p.openWorkspaceModalThemePicker(editor)
+			return
+		}
+		if p.workspaceModalEditorLinkDirectoryFieldSelected(editor) {
+			p.openWorkspaceModalDirectoryPicker(editor)
 			return
 		}
 		if editor.Selected < len(editor.Fields)-1 {
@@ -868,13 +920,14 @@ func (p *HomePage) submitWorkspaceModalEditor() {
 	themeID := workspaceModalNormalizeThemeID(get("theme_id"))
 	linkedDirectory := strings.TrimSpace(get("linked_directory"))
 
+	makeCurrent := editor.Selected >= 0 && editor.Selected < len(editor.Fields) && editor.Fields[editor.Selected].Key == "save_and_switch"
 	p.workspaceModal.Editor = nil
 	p.enqueueWorkspaceModalAction(WorkspaceModalAction{
 		Kind:            WorkspaceModalActionSave,
 		Path:            path,
 		Name:            name,
 		ThemeID:         themeID,
-		MakeCurrent:     true,
+		MakeCurrent:     makeCurrent,
 		LinkedDirectory: linkedDirectory,
 		StatusHint:      fmt.Sprintf("Saving workspace %s ...", name),
 	})
@@ -1281,15 +1334,33 @@ func (p *HomePage) workspaceModalEditorPathFieldSelected(editor *workspaceModalE
 		return false
 	}
 	field := editor.Fields[editor.Selected]
+	if field.Key == "linked_directory" {
+		return true
+	}
 	if !field.Editable {
 		return false
 	}
 	switch field.Key {
-	case "path", "linked_directory", "directory_path":
+	case "path", "directory_path":
 		return true
 	default:
 		return false
 	}
+}
+
+func (p *HomePage) workspaceModalEditorLinkDirectoryFieldSelected(editor *workspaceModalEditor) bool {
+	if editor == nil || editor.Selected < 0 || editor.Selected >= len(editor.Fields) {
+		return false
+	}
+	return editor.Fields[editor.Selected].Key == "linked_directory"
+}
+
+func (p *HomePage) workspaceModalEditorSaveActionSelected(editor *workspaceModalEditor) bool {
+	if editor == nil || editor.Selected < 0 || editor.Selected >= len(editor.Fields) {
+		return false
+	}
+	key := editor.Fields[editor.Selected].Key
+	return key == "save" || key == "save_and_switch"
 }
 
 func (p *HomePage) workspaceModalEditorThemeFieldSelected(editor *workspaceModalEditor) bool {
@@ -1414,22 +1485,31 @@ func (p *HomePage) handleWorkspaceModalThemePickerKey(ev *tcell.EventKey) {
 	p.setWorkspaceModalThemePickerSelectionByPrefix(string(r))
 }
 
-func (p *HomePage) workspaceModalDirectoryPicker(editor *workspaceModalEditor) *workspaceModalDirectoryPicker {
+func (p *HomePage) openWorkspaceModalDirectoryPicker(editor *workspaceModalEditor) *workspaceModalDirectoryPicker {
 	if editor == nil || !p.workspaceModalEditorPathFieldSelected(editor) {
 		return nil
 	}
 	field := &editor.Fields[editor.Selected]
-	if editor.DirectoryPicker == nil || editor.DirectoryPicker.FieldKey != field.Key {
-		start := workspaceModalHomePath()
-		if start == "" {
-			start = workspaceModalNormalizeDirectoryPath(field.Value)
-		}
-		editor.DirectoryPicker = &workspaceModalDirectoryPicker{
-			FieldKey:    field.Key,
-			CurrentPath: start,
-			VisibleRows: 8,
-		}
-		p.refreshWorkspaceModalDirectoryPicker(editor)
+	start := workspaceModalHomePath()
+	if start == "" {
+		start = workspaceModalNormalizeDirectoryPath(field.Value)
+	}
+	editor.DirectoryPicker = &workspaceModalDirectoryPicker{
+		FieldKey:    field.Key,
+		CurrentPath: start,
+		VisibleRows: 8,
+	}
+	p.refreshWorkspaceModalDirectoryPicker(editor)
+	return editor.DirectoryPicker
+}
+
+func (p *HomePage) workspaceModalDirectoryPicker(editor *workspaceModalEditor) *workspaceModalDirectoryPicker {
+	if editor == nil || !p.workspaceModalEditorPathFieldSelected(editor) || editor.DirectoryPicker == nil {
+		return nil
+	}
+	if editor.DirectoryPicker.FieldKey != editor.Fields[editor.Selected].Key {
+		editor.DirectoryPicker = nil
+		return nil
 	}
 	return editor.DirectoryPicker
 }
@@ -1495,10 +1575,14 @@ func (p *HomePage) handleWorkspaceModalDirectoryPickerKey(ev *tcell.EventKey) {
 		if editor.Fields[editor.Selected].Key == "linked_directory" {
 			editor.Fields[editor.Selected].Value = ""
 			editor.DirectoryPicker = nil
-			p.submitWorkspaceModalEditor()
+			if editor.Selected < len(editor.Fields)-1 {
+				editor.Selected++
+			}
 		}
 	case p.keybinds.Match(ev, KeybindEditorFocusPrev):
-		editor.Selected = (editor.Selected - 1 + len(editor.Fields)) % len(editor.Fields)
+		if editor.Selected > 0 {
+			editor.Selected--
+		}
 		editor.DirectoryPicker = nil
 	case p.keybinds.Match(ev, KeybindEditorBackspace):
 		if picker.Filter != "" {
@@ -1722,6 +1806,13 @@ func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor)
 		return []string{
 			fmt.Sprintf("%s apply selected theme", submitLabel),
 			fmt.Sprintf("%s/%s move • type to jump • %s close picker", upLabel, downLabel, closeLabel),
+		}
+	}
+
+	if p.workspaceModalEditorLinkDirectoryFieldSelected(editor) && editor.DirectoryPicker == nil {
+		return []string{
+			fmt.Sprintf("%s open directory picker • %s/%s move to save actions", submitLabel, upLabel, downLabel),
+			fmt.Sprintf("%s cancel", closeLabel),
 		}
 	}
 
@@ -1990,7 +2081,11 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 		DrawText(s, rect.X+2, y, rect.W-4, statusStyle, line)
 	}
 
-	help := "arrows move • Enter edit/create • e edit • l link dir • n new • Esc close"
+	actionsLabel := p.workspaceModalKeyLabel(KeybindWorkspaceActions)
+	if actionsLabel == "" {
+		actionsLabel = "m"
+	}
+	help := fmt.Sprintf("arrows move • Enter edit/create • %s Workspace Actions • l link dir • n new • Esc close", actionsLabel)
 	if p.workspaceModal.ActionMenuVisible {
 		help = "↑/↓ choose workspace action • Enter run action • Esc back to cards"
 	}
@@ -2275,6 +2370,9 @@ func (p *HomePage) drawWorkspaceModalEditor(s tcell.Screen, parent Rect) {
 	contentWidth := maxInt(1, width-4)
 	helpWidth := maxInt(1, width-6)
 	picker := p.workspaceModalDirectoryPicker(editor)
+	if picker == nil && p.workspaceModalEditorPathFieldSelected(editor) && !p.workspaceModalEditorLinkDirectoryFieldSelected(editor) {
+		picker = p.openWorkspaceModalDirectoryPicker(editor)
+	}
 	footerLines := p.workspaceModalEditorFooterLines(editor)
 	height := 4 + len(footerLines)
 	for i, field := range editor.Fields {
@@ -2336,9 +2434,10 @@ func (p *HomePage) drawWorkspaceModalEditor(s tcell.Screen, parent Rect) {
 		if rowY >= footerY {
 			break
 		}
+		selected := i == editor.Selected
 		style := p.theme.Text
-		line := workspaceModalEditorFieldLine(field, i == editor.Selected)
-		if field.Key == "theme_id" && i == editor.Selected {
+		line := workspaceModalEditorFieldLine(field, selected)
+		if selected && (field.Key == "theme_id" || workspaceModalEditorSaveActionField(field)) {
 			style = p.theme.Primary.Bold(true)
 		}
 		for _, wrapped := range workspaceModalWrap(line, rect.W-4) {
@@ -2517,9 +2616,21 @@ func workspaceModalWrap(text string, width int) []string {
 	return lines
 }
 
+func workspaceModalEditorSaveActionField(field workspaceModalEditorField) bool {
+	return field.Key == "save" || field.Key == "save_and_switch"
+}
+
 func workspaceModalEditorFieldLine(field workspaceModalEditorField, selected bool) string {
+	if workspaceModalEditorSaveActionField(field) {
+		if selected {
+			return "> " + field.Label
+		}
+		return "  " + field.Label
+	}
 	value := strings.TrimSpace(field.Value)
-	if value == "" {
+	if selected && field.Key == "linked_directory" && value == "" {
+		value = "Link?  [Enter opens directory picker]"
+	} else if value == "" {
 		value = field.Placeholder
 		if value == "" {
 			value = "-"
@@ -2544,7 +2655,7 @@ func workspaceModalEditorFieldLine(field workspaceModalEditorField, selected boo
 		default:
 			line += "  [" + strings.Join(field.Options, "/") + "]"
 		}
-	} else if !field.Editable {
+	} else if !field.Editable && field.Key != "linked_directory" {
 		line += "  [locked]"
 	}
 	return line

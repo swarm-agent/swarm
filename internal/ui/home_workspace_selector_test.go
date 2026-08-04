@@ -26,6 +26,41 @@ func TestWorkspaceSelectorNumberKeyActivatesSlotImmediately(t *testing.T) {
 	}
 }
 
+func TestWorkspaceManagerAdvertisesAndOpensWorkspaceActions(t *testing.T) {
+	page := NewHomePage(testHomeModel())
+	page.SetWorkspaceModalData([]WorkspaceModalWorkspace{{Name: "alpha", Path: "/work/alpha", Active: true}})
+	page.ShowWorkspaceModal()
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 32)
+	page.drawWorkspaceModal(screen)
+	screen.Show()
+	cells, width, _ := screen.GetContents()
+	var rendered strings.Builder
+	for i, cell := range cells {
+		if i > 0 && i%width == 0 {
+			rendered.WriteByte('\n')
+		}
+		if len(cell.Runes) > 0 {
+			rendered.WriteRune(cell.Runes[0])
+		} else {
+			rendered.WriteByte(' ')
+		}
+	}
+	if text := rendered.String(); !strings.Contains(text, "M Workspace Actions") {
+		t.Fatalf("workspace manager did not advertise actions shortcut:\n%s", text)
+	}
+
+	page.handleWorkspaceModalKey(tcell.NewEventKey(tcell.KeyRune, 'm', tcell.ModNone))
+	if !page.workspaceModal.ActionMenuVisible || page.workspaceModal.Focus != workspaceModalFocusDetails || page.workspaceModal.SelectedAction < 0 {
+		t.Fatalf("workspace actions state = visible:%v focus:%v selected:%d", page.workspaceModal.ActionMenuVisible, page.workspaceModal.Focus, page.workspaceModal.SelectedAction)
+	}
+}
+
 func TestWorkspaceSelectorFiltersAndActivates(t *testing.T) {
 	page := NewHomePage(testHomeModel())
 	page.SetWorkspaceModalIntent("select", "")
