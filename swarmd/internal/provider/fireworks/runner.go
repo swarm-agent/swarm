@@ -420,6 +420,7 @@ func sanitizeFireworksSchemaMap(input map[string]any, keepRequired bool) map[str
 		out["properties"] = sanitizeFireworksSchemaMap(properties, true)
 	}
 	properties, _ := out["properties"].(map[string]any)
+	inheritedRequired := sanitizeFireworksRequired(input["required"])
 	for key, value := range input {
 		if value == nil {
 			continue
@@ -434,7 +435,7 @@ func sanitizeFireworksSchemaMap(input map[string]any, keepRequired bool) map[str
 				}
 			}
 		case "allOf", "anyOf", "oneOf":
-			out[key] = sanitizeFireworksSchemaAlternatives(value, properties)
+			out[key] = sanitizeFireworksSchemaAlternatives(value, properties, inheritedRequired)
 		default:
 			out[key] = sanitizeFireworksSchemaValue(value, false)
 		}
@@ -442,24 +443,49 @@ func sanitizeFireworksSchemaMap(input map[string]any, keepRequired bool) map[str
 	return out
 }
 
-func sanitizeFireworksSchemaAlternatives(value any, inheritedProperties map[string]any) any {
+func appendUniqueFireworksRequired(required []string, names ...string) []string {
+	out := make([]string, 0, len(required)+len(names))
+	seen := make(map[string]struct{}, len(required)+len(names))
+	for _, name := range append(append([]string(nil), required...), names...) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func sanitizeFireworksSchemaAlternatives(value any, inheritedProperties map[string]any, inheritedRequired []string) any {
 	sanitizeAlternative := func(schema map[string]any) map[string]any {
 		out := sanitizeFireworksSchemaMap(schema, false)
-		required := sanitizeFireworksRequired(out["required"])
-		if len(required) == 0 {
-			return out
-		}
+		branchRequired := sanitizeFireworksRequired(out["required"])
 		properties, _ := out["properties"].(map[string]any)
+		required := appendUniqueFireworksRequired(inheritedRequired, branchRequired...)
 		if properties == nil {
 			properties = make(map[string]any, len(required))
 		}
+		for _, name := range required {
+			if _, ok := properties[name]; ok {
+				continue
+			}
+			if inherited, ok := inheritedProperties[name]; ok {
+				properties[name] = sanitizeFireworksSchemaValue(inherited, false)
+			}
+		}
+		if len(properties) > 0 {
+			out["type"] = "object"
+			out["properties"] = properties
+		}
+		if len(required) == 0 {
+			return out
+		}
 		validRequired := make([]string, 0, len(required))
 		for _, name := range required {
-			if _, ok := properties[name]; !ok {
-				if inherited, ok := inheritedProperties[name]; ok {
-					properties[name] = sanitizeFireworksSchemaValue(inherited, false)
-				}
-			}
 			if _, ok := properties[name]; ok {
 				validRequired = append(validRequired, name)
 			}

@@ -136,10 +136,23 @@ func TestBuildChatCompletionRequestNormalizesPlanCheckpointCompositionBranches(t
 	if err != nil {
 		t.Fatalf("build Fireworks request with plan tools: %v", err)
 	}
+	checkpointRequired := []string{"id", "title", "status", "order", "acceptance_criteria"}
 	for _, tool := range request.Tools {
 		assertFireworksCompositionRequiredSchemasHaveProperties(t, tool.Function.Parameters, "$.tools."+tool.Function.Name)
 		if !hasFireworksRequiredAlternatives(tool.Function.Parameters, "objective", "tasks") {
 			t.Fatalf("serialized %s parameters lost the checkpoint objective-or-tasks requirement", tool.Function.Name)
+		}
+		if !hasFireworksAlternativeRequiringAll(tool.Function.Parameters, append(checkpointRequired, "objective")...) {
+			t.Fatalf("serialized %s parameters lost complete checkpoint fields from its objective alternative", tool.Function.Name)
+		}
+		if !hasFireworksAlternativeRequiringAll(tool.Function.Parameters, append(checkpointRequired, "tasks")...) {
+			t.Fatalf("serialized %s parameters lost complete checkpoint fields from its tasks alternative", tool.Function.Name)
+		}
+		if !hasFireworksObjectPropertyWithFields(tool.Function.Parameters, "acceptance_criteria", "type", "minItems", "items") {
+			t.Fatalf("serialized %s parameters lost the checkpoint acceptance_criteria schema", tool.Function.Name)
+		}
+		if tool.Function.Name == "plan_manage" && !hasFireworksObjectPropertyWithFields(tool.Function.Parameters, "subtask", "type", "properties") {
+			t.Fatalf("serialized plan_manage parameters lost the nested subtask schema")
 		}
 	}
 	for _, definition := range planTools {
@@ -219,6 +232,77 @@ func hasFireworksRequiredAlternatives(value any, requiredNames ...string) bool {
 	case []any:
 		for _, child := range typed {
 			if hasFireworksRequiredAlternatives(child, requiredNames...) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasFireworksAlternativeRequiringAll(value any, requiredNames ...string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+			alternatives, ok := typed[key].([]any)
+			if !ok {
+				continue
+			}
+			for _, alternative := range alternatives {
+				schema, ok := alternative.(map[string]any)
+				if !ok {
+					continue
+				}
+				required := make(map[string]bool, len(requiredNames))
+				for _, name := range sanitizeFireworksRequired(schema["required"]) {
+					required[name] = true
+				}
+				allRequired := true
+				for _, name := range requiredNames {
+					allRequired = allRequired && required[name]
+				}
+				if allRequired {
+					return true
+				}
+			}
+		}
+		for _, child := range typed {
+			if hasFireworksAlternativeRequiringAll(child, requiredNames...) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasFireworksAlternativeRequiringAll(child, requiredNames...) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasFireworksObjectPropertyWithFields(value any, propertyName string, fieldNames ...string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if properties, ok := typed["properties"].(map[string]any); ok {
+			if property, ok := properties[propertyName].(map[string]any); ok {
+				allPresent := true
+				for _, fieldName := range fieldNames {
+					_, present := property[fieldName]
+					allPresent = allPresent && present
+				}
+				if allPresent {
+					return true
+				}
+			}
+		}
+		for _, child := range typed {
+			if hasFireworksObjectPropertyWithFields(child, propertyName, fieldNames...) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasFireworksObjectPropertyWithFields(child, propertyName, fieldNames...) {
 				return true
 			}
 		}
