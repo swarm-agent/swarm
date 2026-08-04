@@ -1131,7 +1131,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             type="button"
                             onClick={() => (savedWorkspace ? handleOpenWorkspace(savedWorkspace.path) : handleSaveAndOpenFolder(entry))}
                             disabled={submitting || selectingPath === entry.path || savingPath === entry.path}
-                            className="group grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent px-4 py-3 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60"
+                            className={`group relative grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent py-3 pl-4 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60 ${savedWorkspace ? 'pr-4' : 'pr-12'}`}
                           >
                             <span className="flex min-w-0 items-center justify-between gap-3">
                               <span className="truncate text-sm font-medium text-[var(--app-text)]">{savedWorkspace?.workspaceName || entry.name}</span>
@@ -1139,7 +1139,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                 <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
                               ) : (
                                 <span
-                                  className="inline-flex size-8 shrink-0 items-center justify-center text-[var(--app-text-muted)] opacity-0 transition-[color,opacity] group-hover:text-[var(--app-text)] group-hover:opacity-100 group-focus-visible:text-[var(--app-text)] group-focus-visible:opacity-100"
+                                  className="absolute right-4 top-1/2 grid size-8 -translate-y-1/2 place-items-center text-[var(--app-text-muted)] opacity-0 transition-[color,opacity] group-hover:text-[var(--app-text)] group-hover:opacity-100 group-focus-visible:text-[var(--app-text)] group-focus-visible:opacity-100"
                                   title="Add workspace"
                                 >
                                   <ChevronRight size={18} strokeWidth={2} aria-hidden="true" />

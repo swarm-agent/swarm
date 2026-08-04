@@ -416,21 +416,84 @@ func sanitizeFireworksSchemaMap(input map[string]any, keepRequired bool) map[str
 		return nil
 	}
 	out := make(map[string]any, len(input))
+	if properties, ok := input["properties"].(map[string]any); ok {
+		out["properties"] = sanitizeFireworksSchemaMap(properties, true)
+	}
+	properties, _ := out["properties"].(map[string]any)
 	for key, value := range input {
 		if value == nil {
 			continue
 		}
-		if key == "required" {
+		switch key {
+		case "properties":
+			continue
+		case "required":
 			if !keepRequired {
 				if required := sanitizeFireworksRequired(value); len(required) > 0 {
 					out[key] = required
 				}
 			}
-			continue
+		case "allOf", "anyOf", "oneOf":
+			out[key] = sanitizeFireworksSchemaAlternatives(value, properties)
+		default:
+			out[key] = sanitizeFireworksSchemaValue(value, false)
 		}
-		out[key] = sanitizeFireworksSchemaValue(value, key == "properties")
 	}
 	return out
+}
+
+func sanitizeFireworksSchemaAlternatives(value any, inheritedProperties map[string]any) any {
+	sanitizeAlternative := func(schema map[string]any) map[string]any {
+		out := sanitizeFireworksSchemaMap(schema, false)
+		required := sanitizeFireworksRequired(out["required"])
+		if len(required) == 0 {
+			return out
+		}
+		properties, _ := out["properties"].(map[string]any)
+		if properties == nil {
+			properties = make(map[string]any, len(required))
+		}
+		validRequired := make([]string, 0, len(required))
+		for _, name := range required {
+			if _, ok := properties[name]; !ok {
+				if inherited, ok := inheritedProperties[name]; ok {
+					properties[name] = sanitizeFireworksSchemaValue(inherited, false)
+				}
+			}
+			if _, ok := properties[name]; ok {
+				validRequired = append(validRequired, name)
+			}
+		}
+		if len(validRequired) == 0 {
+			delete(out, "required")
+			return out
+		}
+		out["type"] = "object"
+		out["properties"] = properties
+		out["required"] = validRequired
+		return out
+	}
+
+	switch typed := value.(type) {
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if schema, ok := item.(map[string]any); ok {
+				out = append(out, sanitizeAlternative(schema))
+				continue
+			}
+			out = append(out, sanitizeFireworksSchemaValue(item, false))
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, schema := range typed {
+			out = append(out, sanitizeAlternative(schema))
+		}
+		return out
+	default:
+		return sanitizeFireworksSchemaValue(value, false)
+	}
 }
 
 func sanitizeFireworksSchemaValue(value any, keepRequired bool) any {
