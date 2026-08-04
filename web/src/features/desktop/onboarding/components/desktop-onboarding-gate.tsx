@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { FolderPlus, Plus } from 'lucide-react'
+import { ChevronRight, Plus } from 'lucide-react'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
@@ -1139,10 +1139,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                 <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
                               ) : (
                                 <span
-                                  className="grid size-8 shrink-0 place-items-center rounded-full border border-[var(--app-border-accent)] bg-[var(--app-surface-hover)] text-[var(--app-primary)] shadow-sm transition-transform group-hover:scale-105"
+                                  className="inline-flex h-8 shrink-0 items-center justify-center text-[var(--app-text-muted)] transition-colors group-hover:text-[var(--app-text)]"
                                   title="Add workspace"
                                 >
-                                  <FolderPlus size={16} strokeWidth={2} aria-hidden="true" />
+                                  <ChevronRight size={18} strokeWidth={2} aria-hidden="true" />
                                   <span className="sr-only">Add workspace</span>
                                 </span>
                               )}
