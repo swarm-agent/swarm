@@ -362,14 +362,48 @@ func (p *HomePage) workspaceButtonStyle(base tcell.Style, state workspaceButtonS
 	}
 }
 
+const maxHeaderWorkspaces = 5
+
+func headerWorkspaceIndexes(workspaces []model.Workspace, limit int) ([]int, bool) {
+	if limit <= 0 || len(workspaces) <= limit {
+		indexes := make([]int, len(workspaces))
+		for i := range workspaces {
+			indexes[i] = i
+		}
+		return indexes, false
+	}
+
+	active := -1
+	for i := range workspaces {
+		if workspaces[i].Active {
+			active = i
+			break
+		}
+	}
+	indexes := make([]int, 0, limit)
+	for i := 0; i < limit; i++ {
+		indexes = append(indexes, i)
+	}
+	if active >= limit {
+		indexes[limit-1] = active
+	}
+	return indexes, true
+}
+
 func (p *HomePage) workspaceItems() []topItem {
 	if len(p.model.Workspaces) == 0 {
 		return []topItem{{Label: "[Alt+W: workspace]", Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
 	}
 
-	items := make([]topItem, 0, len(p.model.Workspaces)+1)
+	indexes, overflow := headerWorkspaceIndexes(p.model.Workspaces, maxHeaderWorkspaces)
+	items := make([]topItem, 0, len(indexes)+2)
 	items = append(items, topItem{Label: "[Alt+W: switch]", Style: p.theme.Secondary, Action: "workspace-selector", Index: -1})
-	for i, workspace := range p.model.Workspaces {
+	activeOutsidePrefix := overflow && len(indexes) > 0 && indexes[len(indexes)-1] >= maxHeaderWorkspaces
+	for position, i := range indexes {
+		if activeOutsidePrefix && position == len(indexes)-1 {
+			items = append(items, topItem{Label: "...", Style: p.theme.TextMuted})
+		}
+		workspace := p.model.Workspaces[i]
 		icon := strings.TrimSpace(workspace.Icon)
 		name := strings.TrimSpace(workspace.Name)
 		if name == "" {
@@ -381,6 +415,9 @@ func (p *HomePage) workspaceItems() []topItem {
 			style = p.theme.Primary.Bold(true)
 		}
 		items = append(items, topItem{Label: label, Style: style, Action: "workspace-select", Index: i})
+	}
+	if overflow && !activeOutsidePrefix {
+		items = append(items, topItem{Label: "...", Style: p.theme.TextMuted})
 	}
 	return items
 }

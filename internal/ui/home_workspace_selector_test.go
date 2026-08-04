@@ -9,6 +9,23 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
+func TestWorkspaceSelectorNumberKeyActivatesSlotImmediately(t *testing.T) {
+	page := NewHomePage(testHomeModel())
+	page.SetWorkspaceModalIntent("select", "")
+	page.SetWorkspaceModalData([]WorkspaceModalWorkspace{
+		{Name: "alpha", Path: "/work/alpha", SortIndex: 0, Active: true},
+		{Name: "beta", Path: "/work/beta", SortIndex: 1},
+	})
+	page.ShowWorkspaceModal()
+
+	page.handleWorkspaceModalKey(tcell.NewEventKey(tcell.KeyRune, '2', tcell.ModNone))
+
+	action, ok := page.PopWorkspaceModalAction()
+	if !ok || action.Kind != WorkspaceModalActionSelect || action.Path != "/work/beta" {
+		t.Fatalf("slot selection action = %#v, ok=%v", action, ok)
+	}
+}
+
 func TestWorkspaceSelectorFiltersAndActivates(t *testing.T) {
 	page := NewHomePage(testHomeModel())
 	page.SetWorkspaceModalIntent("select", "")
@@ -51,6 +68,38 @@ func TestFirstRegisteredWorkspaceIsInitialSelection(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(items[0].Label), "alt+w") {
 		t.Fatalf("workspace selector indicator does not advertise Alt+W: %q", items[0].Label)
+	}
+}
+
+func TestWorkspaceHeaderLimitsVisibleWorkspacesAndKeepsActiveVisible(t *testing.T) {
+	workspaces := make([]model.Workspace, 7)
+	for i := range workspaces {
+		workspaces[i] = model.Workspace{Name: string(rune('a' + i)), Path: "/work/" + string(rune('a'+i))}
+	}
+	workspaces[6].Active = true
+	page := NewHomePage(model.HomeModel{Workspaces: workspaces})
+
+	indexes, overflow := headerWorkspaceIndexes(workspaces, maxHeaderWorkspaces)
+	if !overflow || len(indexes) != 5 || indexes[0] != 0 || indexes[3] != 3 || indexes[4] != 6 {
+		t.Fatalf("header indexes = %#v, overflow=%v", indexes, overflow)
+	}
+	items := page.workspaceItems()
+	if len(items) != 7 || items[5].Label != "..." || items[6].Index != 6 || !strings.Contains(items[6].Label, "g") {
+		t.Fatalf("workspace header items = %#v", items)
+	}
+}
+
+func TestWorkspaceHeaderShowsOverflowAfterVisibleActiveWorkspace(t *testing.T) {
+	workspaces := make([]model.Workspace, 6)
+	for i := range workspaces {
+		workspaces[i] = model.Workspace{Name: string(rune('a' + i)), Path: "/work/" + string(rune('a'+i))}
+	}
+	workspaces[1].Active = true
+	page := NewHomePage(model.HomeModel{Workspaces: workspaces})
+
+	items := page.workspaceItems()
+	if len(items) != 7 || items[len(items)-1].Label != "..." {
+		t.Fatalf("workspace header items = %#v", items)
 	}
 }
 

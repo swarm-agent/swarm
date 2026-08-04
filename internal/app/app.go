@@ -5528,7 +5528,7 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent)
+		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), true)
 		if err != nil {
 			a.home.SetWorkspaceModalLoading(false)
 			a.home.SetWorkspaceModalError(fmt.Sprintf("save workspace failed: %v", err))
@@ -5542,9 +5542,7 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 				return
 			}
 		}
-		if action.MakeCurrent {
-			a.syncActiveWorkspaceSelection(resolution)
-		}
+		a.syncActiveWorkspaceSelection(resolution)
 		a.refreshWorkspaceModalData("")
 		status := fmt.Sprintf("workspace saved: %s", displayPath(resolution.ResolvedPath))
 		if linkedDir != "" {
@@ -6373,9 +6371,11 @@ func (a *App) loadWorkspaceModalEntries(statusHint string) ([]client.WorkspaceEn
 	a.home.SetWorkspaceModalData(mapWorkspaceModalEntries(entries))
 	a.home.SetWorkspaceModalLoading(false)
 	if len(entries) == 0 {
-		status := "No saved workspaces yet. Press s to start workspace setup."
-		if a.home.WorkspaceModalIntent() == "add_dir" {
-			status = "No saved workspaces yet. Press s to create one. On the last field, press Enter to save it and link the directory."
+		status := "No saved workspaces yet. Select the New Workspace card and press Enter to create one from ~/."
+		if a.home.WorkspaceModalIntent() == "select" {
+			status = "No saved workspaces yet. Close quick switch and use /workspaces to create one."
+		} else if a.home.WorkspaceModalIntent() == "add_dir" {
+			status = "No saved workspaces yet. Select New Workspace and press Enter; the setup can create it and link the directory."
 		}
 		a.home.SetWorkspaceModalStatus(status)
 		return entries, nil
@@ -6839,7 +6839,7 @@ func mapCanonicalAgentModelSettings(settings client.AgentModelSettings, resolved
 
 func (a *App) handleWorkspaceCommand(args []string) {
 	if len(args) == 0 {
-		a.showWorkspaceSelector()
+		a.showWorkspaceManager()
 		return
 	}
 
