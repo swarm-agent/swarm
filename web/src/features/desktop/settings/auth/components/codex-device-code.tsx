@@ -48,13 +48,22 @@ export function CodexDeviceCode({ session, disabled = false }: CodexDeviceCodePr
         </p>
       </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <code className="select-all rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] px-5 py-3 text-center text-2xl font-semibold tracking-[0.18em] text-[var(--app-text)]">
+      <div className="inline-flex w-fit max-w-full items-center rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)]">
+        <code className="select-all px-5 py-3 text-center text-2xl font-semibold tracking-[0.18em] text-[var(--app-text)]">
           {session.userCode || 'Waiting…'}
         </code>
-        <Button type="button" variant="outline" onClick={() => void copyCode()} disabled={disabled || !session.userCode} aria-live="polite">
-          <Copy size={16} />
-          {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy code'}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mr-1 shrink-0 px-2"
+          onClick={() => void copyCode()}
+          disabled={disabled || !session.userCode}
+          aria-label={copyState === 'copied' ? 'Device code copied' : copyState === 'error' ? 'Device code copy failed' : 'Copy device code'}
+          title={copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy device code'}
+          aria-live="polite"
+        >
+          <Copy size={16} aria-hidden="true" />
         </Button>
       </div>
 
