@@ -2221,6 +2221,30 @@ function normalizeContextModes(value: unknown): ModelContextModeRecord[] {
     .filter((item): item is ModelContextModeRecord => Boolean(item));
 }
 
+const MODEL_CATALOG_INITIAL_LIMIT = 200;
+
+async function fetchCompleteModelCatalog(
+  provider: string,
+  signal?: AbortSignal,
+): Promise<CatalogResponseWire> {
+  let limit = MODEL_CATALOG_INITIAL_LIMIT;
+  while (true) {
+    const response = await requestJson<CatalogResponseWire>(
+      `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=${limit}`,
+      { signal },
+    );
+    const records = Array.isArray(response.records) ? response.records : [];
+    if (records.length < limit) {
+      return { ...response, records };
+    }
+    const nextLimit = limit * 2;
+    if (!Number.isSafeInteger(nextLimit)) {
+      throw new Error(`model catalog for ${provider} is too large to load safely`);
+    }
+    limit = nextLimit;
+  }
+}
+
 export async function fetchModelOptions(
   signal?: AbortSignal,
 ): Promise<ModelOptionRecord[]> {
@@ -2255,10 +2279,7 @@ export async function fetchModelOptions(
         async (provider) =>
           [
             provider,
-            await requestJson<CatalogResponseWire>(
-              `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=200`,
-              { signal },
-            ),
+            await fetchCompleteModelCatalog(provider, signal),
           ] as const,
       ),
     ),
