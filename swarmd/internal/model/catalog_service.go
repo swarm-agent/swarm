@@ -209,6 +209,7 @@ type swarmSnapshotProviderSpecific struct {
 type swarmSnapshotRawTier struct {
 	Tier              string          `json:"tier"`
 	Supported         *bool           `json:"supported"`
+	Status            string          `json:"status"`
 	SwarmSetting      string          `json:"swarm_setting"`
 	ProviderParameter string          `json:"provider_parameter"`
 	ProviderValue     string          `json:"provider_value"`
@@ -1294,6 +1295,10 @@ func modelServiceTierMappings(providerSpecificRaw json.RawMessage, providerID st
 		}
 		copy := *raw
 		if copy.Supported != nil && !*copy.Supported {
+			return
+		}
+		switch strings.ToLower(strings.TrimSpace(copy.Status)) {
+		case "deprecated", "disabled", "removed", "retired", "unavailable":
 			return
 		}
 		if strings.TrimSpace(copy.Tier) == "" {

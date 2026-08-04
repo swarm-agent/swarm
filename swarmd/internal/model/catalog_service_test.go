@@ -12,6 +12,23 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestPinnedSnapshotExposesAnthropicFastOnlyForExplicitSupportedModel(t *testing.T) {
+	records, _, err := decodeSwarmSnapshotRecords(pinnedSwarmSnapshotJSON, 1000, 2000, catalogSourcePinned, "")
+	if err != nil {
+		t.Fatalf("decode pinned Swarm snapshot: %v", err)
+	}
+	fastModels := make([]string, 0)
+	for _, record := range records {
+		if record.Provider != "anthropic" || !serviceTierListedForModel("fast", record) {
+			continue
+		}
+		fastModels = append(fastModels, record.Model)
+	}
+	if !stringSlicesEqual(fastModels, []string{"claude-opus-4-8"}) {
+		t.Fatalf("pinned Anthropic Fast Mode models = %#v, want only claude-opus-4-8", fastModels)
+	}
+}
+
 func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	payload := snapshotPassthroughPayload()
 
@@ -127,6 +144,14 @@ func TestDecodeSwarmSnapshotRecordsMapsSnapshotFields(t *testing.T) {
 	}
 	if len(anthropicOpus.ServiceTierMappings) != 3 || anthropicOpus.ServiceTierMappings[2].Tier != "fast" || anthropicOpus.ServiceTierMappings[2].ProviderParameter != "speed" || anthropicOpus.ServiceTierMappings[2].ProviderValue != "fast" || anthropicOpus.ServiceTierMappings[2].BetaHeader != "fast-mode-2026-02-01" {
 		t.Fatalf("anthropic provider fast mode mapping not decoded distinctly from priority: %+v", anthropicOpus.ServiceTierMappings)
+	}
+	if !serviceTierListedForModel("fast", anthropicOpus) || !serviceTierListedForModel("priority", anthropicOpus) {
+		t.Fatalf("anthropic explicit fast/priority tiers not listed from snapshot mappings: %+v", anthropicOpus.ServiceTierMappings)
+	}
+	priorityOnly := anthropicOpus
+	priorityOnly.ServiceTierMappings = []pebblestore.ModelCatalogServiceTierMapping{{Tier: "priority", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "auto"}}
+	if serviceTierListedForModel("fast", priorityOnly) {
+		t.Fatalf("anthropic priority mapping swarm_setting must not infer Fast Mode support: %+v", priorityOnly.ServiceTierMappings)
 	}
 
 	fast := records[5]

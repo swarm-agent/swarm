@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Boxes } from 'lucide-react'
 import { Card } from '../../../../../components/ui/card'
@@ -11,6 +12,7 @@ import {
   updateModelProfile,
 } from '../../../chat/queries/model-profile-queries'
 import type { ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../../../chat/types/chat'
+import { modelServiceTierOptions } from '../../../chat/services/model-options'
 import {
   ModelFavoritesSettings,
   type FlatModelFavorite,
@@ -72,7 +74,12 @@ export function toFlatModelOptions(options: ModelOptionRecord[]): FlatModelOptio
       model: option.model,
       label: current?.label || option.label,
       thinkingOptions: unique([...(current?.thinkingOptions ?? []), ...option.thinkingOptions]),
-      serviceTierOptions: unique([...(current?.serviceTierOptions ?? []), ...option.serviceTiers]),
+      serviceTierOptions: unique([
+        ...(current?.serviceTierOptions ?? []),
+        ...modelServiceTierOptions(option.provider, option.model, option)
+          .map((tier) => tier.value)
+          .filter(Boolean),
+      ]),
       contextModeOptions: contextModes,
     })
   }
@@ -98,7 +105,7 @@ export function ModelsSettingsPage() {
 
   const profiles = profilesQuery.data?.profiles ?? []
   const favorites = profiles.map(toFlatModelFavorite)
-  const modelOptions = toFlatModelOptions(optionsQuery.data ?? [])
+  const modelOptions = useMemo(() => toFlatModelOptions(optionsQuery.data ?? []), [optionsQuery.data])
   const loadErrors = [
     optionsQuery.error ? `Model choices are unavailable: ${errorMessage(optionsQuery.error, 'request failed')}` : '',
     profilesQuery.error ? `Model favorites are unavailable: ${errorMessage(profilesQuery.error, 'request failed')}` : '',

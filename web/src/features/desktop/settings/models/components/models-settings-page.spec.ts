@@ -22,6 +22,16 @@ function option(contextMode: string): ModelOptionRecord {
   }
 }
 
+function anthropicOption(model: string, mappings: ModelOptionRecord['serviceTierMappings']): ModelOptionRecord {
+  return {
+    key: `anthropic:${model}:`, provider: 'anthropic', model, contextMode: '',
+    label: model, thinking: 'high', thinkingOptions: ['high'], defaultThinking: 'high',
+    thinkingProviderParameter: '', thinkingMappings: [], favorite: false, contextWindow: 200_000,
+    pricing: null, serviceTiers: ['standard', 'priority'], defaultServiceTier: 'standard', serviceTierMappings: mappings,
+    contextModes: [], media: null,
+  }
+}
+
 test('composition maps canonical model profile fields without another persistent type', () => {
   assert.deepEqual(toFlatModelFavorite(profile), {
     id: 'mp_daily', name: 'Daily', provider: 'codex', model: 'gpt-5.5', thinking: 'high',
@@ -39,6 +49,17 @@ test('model options collapse context variants into one flat favorite editor choi
     provider: 'codex', model: 'gpt-5.5', label: 'GPT 5.5', thinkingOptions: ['high', 'xhigh'],
     serviceTierOptions: ['fast'], contextModeOptions: ['large', 'compact'],
   }])
+})
+
+test('model settings derives Anthropic tiers from explicit snapshot mapping identities', () => {
+  const priority = { tier: 'priority', swarm_setting: 'fast', provider_parameter: 'service_tier', provider_value: 'auto' }
+  const fast = { tier: 'fast', provider_parameter: 'speed', provider_value: 'fast', beta_header: 'fast-mode-2026-02-01' }
+  const [sonnet, opus] = toFlatModelOptions([
+    anthropicOption('claude-sonnet-4-6', [priority]),
+    anthropicOption('claude-opus-4-8', [priority, fast]),
+  ])
+  assert.deepEqual(sonnet.serviceTierOptions, ['priority'])
+  assert.deepEqual(opus.serviceTierOptions, ['priority', 'fast'])
 })
 
 test('Models page uses canonical queries, mutations, invalidation, and explicit errors', () => {

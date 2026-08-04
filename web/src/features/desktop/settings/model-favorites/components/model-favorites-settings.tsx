@@ -81,8 +81,8 @@ function favoriteToInput(favorite: FlatModelFavorite): FlatModelFavoriteInput {
   }
 }
 
-function uniqueOptions(values: string[] | undefined, current: string): string[] {
-  return Array.from(new Set([...(values ?? []), current].map((value) => value.trim()).filter(Boolean)))
+function uniqueOptions(values: string[] | undefined, current: string, includeCurrent = true): string[] {
+  return Array.from(new Set([...(values ?? []), ...(includeCurrent ? [current] : [])].map((value) => value.trim()).filter(Boolean)))
 }
 
 interface FavoriteEditorProps {
@@ -92,12 +92,14 @@ interface FavoriteEditorProps {
   submitLabel: string
   onChange: (draft: FlatModelFavoriteInput) => void
   onCancel: () => void
-  onSubmit: () => void
+  onSubmit: (draft: FlatModelFavoriteInput) => void
 }
 
 function FavoriteEditor({ draft, modelOptions, submitting, submitLabel, onChange, onCancel, onSubmit }: FavoriteEditorProps) {
   const selectedOption = modelOptions.find((option) => option.provider === draft.provider && option.model === draft.model) ?? null
-  const validationErrors = validateFlatModelFavorite(draft)
+  const serviceTierOptions = uniqueOptions(selectedOption?.serviceTierOptions, draft.serviceTier, false)
+  const normalizedDraft = draft.serviceTier && !serviceTierOptions.includes(draft.serviceTier.trim()) ? { ...draft, serviceTier: '' } : draft
+  const validationErrors = validateFlatModelFavorite(normalizedDraft)
   const fieldClass = 'grid gap-1.5 text-xs font-medium text-[var(--app-text-muted)]'
 
   const update = (patch: Partial<FlatModelFavoriteInput>) => onChange({ ...draft, ...patch })
@@ -107,7 +109,9 @@ function FavoriteEditor({ draft, modelOptions, submitting, submitLabel, onChange
       className="grid gap-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4"
       onSubmit={(event: FormEvent) => {
         event.preventDefault()
-        if (validationErrors.length === 0) onSubmit()
+        if (validationErrors.length === 0) {
+          onSubmit(normalizedDraft)
+        }
       }}
     >
       <div className="grid gap-4 md:grid-cols-2">
@@ -126,7 +130,7 @@ function FavoriteEditor({ draft, modelOptions, submitting, submitLabel, onChange
                 provider: option?.provider ?? '',
                 model: option?.model ?? '',
                 thinking: option?.thinkingOptions?.[0] ?? '',
-                serviceTier: option?.serviceTierOptions?.[0] ?? '',
+                serviceTier: '',
                 contextMode: option?.contextModeOptions?.[0] ?? '',
               })
             }}
@@ -149,9 +153,9 @@ function FavoriteEditor({ draft, modelOptions, submitting, submitLabel, onChange
         </label>
         <label className={fieldClass}>
           Service tier
-          <Select aria-label="Favorite service tier" value={draft.serviceTier} onChange={(event) => update({ serviceTier: event.target.value })} disabled={submitting || !selectedOption}>
+          <Select aria-label="Favorite service tier" value={normalizedDraft.serviceTier} onChange={(event) => update({ serviceTier: event.target.value })} disabled={submitting || !selectedOption}>
             <option value="">Provider default</option>
-            {uniqueOptions(selectedOption?.serviceTierOptions, draft.serviceTier).map((value) => <option key={value} value={value}>{value}</option>)}
+            {serviceTierOptions.map((value) => <option key={value} value={value}>{value}</option>)}
           </Select>
         </label>
         <label className={fieldClass}>
@@ -234,7 +238,7 @@ export function ModelFavoritesSettings({
       {error || localError ? <div role="alert" className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{localError || error}</div> : null}
 
       {editor?.kind === 'create' ? (
-        <FavoriteEditor draft={draft} modelOptions={modelOptions} submitting={locked} submitLabel="Create favorite" onChange={setDraft} onCancel={() => setEditor(null)} onSubmit={() => void run(() => onCreate({ ...draft, name: draft.name.trim() }), true)} />
+        <FavoriteEditor draft={draft} modelOptions={modelOptions} submitting={locked} submitLabel="Create favorite" onChange={setDraft} onCancel={() => setEditor(null)} onSubmit={(value) => void run(() => onCreate({ ...value, name: value.name.trim() }), true)} />
       ) : null}
 
       {favorites.length === 0 && editor?.kind !== 'create' ? (
@@ -249,7 +253,7 @@ export function ModelFavoritesSettings({
           return (
             <li key={favorite.id} className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
               {isEditing ? (
-                <FavoriteEditor draft={draft} modelOptions={modelOptions} submitting={itemBusy} submitLabel="Save favorite" onChange={setDraft} onCancel={() => setEditor(null)} onSubmit={() => void run(() => onUpdate(favorite.id, { ...draft, name: draft.name.trim() }), true)} />
+                <FavoriteEditor draft={draft} modelOptions={modelOptions} submitting={itemBusy} submitLabel="Save favorite" onChange={setDraft} onCancel={() => setEditor(null)} onSubmit={(value) => void run(() => onUpdate(favorite.id, { ...value, name: value.name.trim() }), true)} />
               ) : (
                 <div className="grid gap-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

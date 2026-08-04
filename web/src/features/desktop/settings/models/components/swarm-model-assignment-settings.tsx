@@ -37,6 +37,14 @@ function normalizeSelection(selection: AgentModelAssignment): AgentModelAssignme
   }
 }
 
+function normalizeSelectionForOptions(selection: AgentModelAssignment, modelOptions: readonly SwarmDirectModelOption[]): AgentModelAssignment {
+  const normalized = normalizeSelection(selection)
+  const selected = modelOptions.find((option) => option.provider === normalized.provider && option.model === normalized.model)
+  const serviceTiers = new Set((selected?.serviceTierOptions ?? []).map((tier) => tier.trim()).filter(Boolean))
+  if (normalized.serviceTier && !serviceTiers.has(normalized.serviceTier)) normalized.serviceTier = ''
+  return normalized
+}
+
 export function buildSwarmModelAssignmentSaveInput(input: SwarmAgentModelSettingsPatch): AssignmentValidationResult {
   const action = normalizeSelection(input.action)
   const plan = normalizeSelection(input.plan)
@@ -70,7 +78,7 @@ function DirectModelEditor({
   const choices = modelOptions.filter((option) => option.provider === value.provider)
   const selected = choices.find((option) => option.model === value.model) ?? null
   const thinkingOptions = Array.from(new Set([...(selected?.thinkingOptions ?? []), value.thinking].map((item) => item.trim()).filter(Boolean)))
-  const serviceTierOptions = Array.from(new Set(['', ...(selected?.serviceTierOptions ?? []), value.serviceTier].map((item) => item.trim())))
+  const serviceTierOptions = Array.from(new Set(['', ...(selected?.serviceTierOptions ?? [])].map((item) => item.trim())))
   const contextModeOptions = Array.from(new Set(['', ...(selected?.contextModeOptions ?? []), value.contextMode].map((item) => item.trim().toLowerCase())))
   const fieldClass = 'grid gap-1.5 text-xs font-medium text-[var(--app-text-muted)]'
 
@@ -96,7 +104,7 @@ function DirectModelEditor({
                 provider: option?.provider ?? value.provider,
                 model: option?.model ?? '',
                 thinking: option?.thinkingOptions?.[0] ?? '',
-                serviceTier: option?.serviceTierOptions?.[0] ?? '',
+                serviceTier: '',
                 contextMode: option?.contextModeOptions?.[0] ?? '',
               })
             }}
@@ -130,16 +138,16 @@ function DirectModelEditor({
 }
 
 export function SwarmModelAssignmentSettings({ modelOptions, action, plan, saving, error, onSave }: SwarmModelAssignmentSettingsProps) {
-  const [draftAction, setDraftAction] = useState(() => normalizeSelection(action))
-  const [draftPlan, setDraftPlan] = useState(() => normalizeSelection(plan))
+  const [draftAction, setDraftAction] = useState(() => normalizeSelectionForOptions(action, modelOptions))
+  const [draftPlan, setDraftPlan] = useState(() => normalizeSelectionForOptions(plan, modelOptions))
   const [validationError, setValidationError] = useState<string | null>(null)
   const normalizedOptions = useMemo(() => modelOptions.filter((option) => option.provider.trim() && option.model.trim()), [modelOptions])
 
   useEffect(() => {
-    setDraftAction(normalizeSelection(action))
-    setDraftPlan(normalizeSelection(plan))
+    setDraftAction(normalizeSelectionForOptions(action, modelOptions))
+    setDraftPlan(normalizeSelectionForOptions(plan, modelOptions))
     setValidationError(null)
-  }, [action, plan])
+  }, [action, plan, modelOptions])
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()

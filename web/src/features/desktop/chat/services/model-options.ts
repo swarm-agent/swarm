@@ -110,7 +110,6 @@ function serviceTierCandidates(option: Pick<ModelOptionRecord, 'serviceTiers' | 
   const values = [...(option?.serviceTiers ?? [])]
   for (const mapping of option?.serviceTierMappings ?? []) {
     if (mapping.tier) values.push(mapping.tier)
-    if (mapping.swarm_setting) values.push(mapping.swarm_setting)
   }
   return values
 }

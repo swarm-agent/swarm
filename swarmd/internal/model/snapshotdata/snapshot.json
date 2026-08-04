@@ -2,8 +2,8 @@
   "schema_version": "2026-06-09.1",
   "api_version": "v1",
   "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-a3cf056020973edc",
-  "snapshot_version": "a3cf056020973edc",
+  "snapshot_id": "swarm-models-v1-64998b51cb503deb",
+  "snapshot_version": "64998b51cb503deb",
   "generated_at": "2026-08-01T07:58:02.569Z",
   "model_count": 596,
   "provider_count": 7,
@@ -5554,7 +5554,6 @@
           "metadata",
           "model",
           "service_tier",
-          "speed",
           "stop_sequences",
           "stream",
           "system",
@@ -5674,18 +5673,6 @@
             "capabilities.supports_batch",
             "parameters.supported_parameters",
             "provider_specific.anthropic.serving"
-          ]
-        },
-        {
-          "source_id": "anthropic_fast_mode_docs",
-          "source_url": "https://platform.claude.com/docs/en/build-with-claude/fast-mode",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "parameters.supported_parameters",
-            "provider_specific.anthropic.serving.fast_mode"
           ]
         },
         {
@@ -5874,32 +5861,7 @@
           "supported_thinking_types": [
             "adaptive"
           ],
-          "fast_mode": {
-            "supported": true,
-            "provider_parameter": "speed",
-            "provider_value": "fast",
-            "beta_header": "fast-mode-2026-02-01",
-            "supported_models": [
-              "claude-opus-4-7"
-            ],
-            "status": "deprecated",
-            "deprecated_at": "2026-06-25",
-            "removal_date": "2026-07-24",
-            "pricing": {
-              "relative_to_standard": "premium",
-              "input_price_per_million_tokens": 30,
-              "output_price_per_million_tokens": 150,
-              "notes": "Anthropic Fast Mode is premium-priced and uses speed=fast with the fast-mode-2026-02-01 beta header; it is separate from Priority Tier service_tier=auto."
-            },
-            "incompatible_with": [
-              "messages_batch_api",
-              "priority_tier_commitment"
-            ],
-            "source_ids": [
-              "anthropic_fast_mode_docs"
-            ],
-            "notes": "Anthropic Fast Mode is documented for Claude Opus 4.7 but deprecated as of 2026-06-25 and scheduled for removal on 2026-07-24. Use speed=fast with beta header fast-mode-2026-02-01 while available."
-          },
+          "fast_mode": null,
           "supports_pdf_input": true,
           "supports_citations": true,
           "supports_code_execution": true,
@@ -5980,32 +5942,7 @@
                 "notes": "Batch is a separate Anthropic API surface, not a service_tier value on synchronous Messages requests."
               }
             },
-            "fast_mode": {
-              "supported": true,
-              "provider_parameter": "speed",
-              "provider_value": "fast",
-              "beta_header": "fast-mode-2026-02-01",
-              "supported_models": [
-                "claude-opus-4-7"
-              ],
-              "status": "deprecated",
-              "deprecated_at": "2026-06-25",
-              "removal_date": "2026-07-24",
-              "pricing": {
-                "relative_to_standard": "premium",
-                "input_price_per_million_tokens": 30,
-                "output_price_per_million_tokens": 150,
-                "notes": "Anthropic Fast Mode is premium-priced and uses speed=fast with the fast-mode-2026-02-01 beta header; it is separate from Priority Tier service_tier=auto."
-              },
-              "incompatible_with": [
-                "messages_batch_api",
-                "priority_tier_commitment"
-              ],
-              "source_ids": [
-                "anthropic_fast_mode_docs"
-              ],
-              "notes": "Anthropic Fast Mode is documented for Claude Opus 4.7 but deprecated as of 2026-06-25 and scheduled for removal on 2026-07-24. Use speed=fast with beta header fast-mode-2026-02-01 while available."
-            },
+            "fast_mode": null,
             "source_ids": [
               "anthropic_service_tiers_docs"
             ],
@@ -6396,18 +6333,6 @@
           ]
         },
         {
-          "source_id": "anthropic_fast_mode_docs",
-          "source_url": "https://platform.claude.com/docs/en/build-with-claude/fast-mode",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "parameters.supported_parameters",
-            "provider_specific.anthropic.serving.fast_mode"
-          ]
-        },
-        {
           "source_id": "anthropic_thinking_docs",
           "source_url": "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
           "source_kind": "official_docs",
@@ -6515,6 +6440,18 @@
           "fields": [
             "provider_specific.anthropic.multimodal.request"
           ]
+        },
+        {
+          "source_id": "anthropic_fast_mode_docs",
+          "source_url": "https://platform.claude.com/docs/en/build-with-claude/fast-mode",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.anthropic.serving.fast_mode"
+          ]
         }
       ],
       "provider_specific": {
@@ -6617,7 +6554,7 @@
             "source_ids": [
               "anthropic_fast_mode_docs"
             ],
-            "notes": "Anthropic Fast Mode is documented for Claude Opus 4.8 as a research preview. Use speed=fast with beta header fast-mode-2026-02-01. This is not Priority Tier service_tier=auto."
+            "notes": "Anthropic Fast Mode is documented for claude-opus-4-8 as a research preview. Use speed=fast with beta header fast-mode-2026-02-01. This is not Priority Tier service_tier=auto."
           },
           "supports_pdf_input": true,
           "supports_citations": true,
@@ -6723,7 +6660,7 @@
               "source_ids": [
                 "anthropic_fast_mode_docs"
               ],
-              "notes": "Anthropic Fast Mode is documented for Claude Opus 4.8 as a research preview. Use speed=fast with beta header fast-mode-2026-02-01. This is not Priority Tier service_tier=auto."
+              "notes": "Anthropic Fast Mode is documented for claude-opus-4-8 as a research preview. Use speed=fast with beta header fast-mode-2026-02-01. This is not Priority Tier service_tier=auto."
             },
             "source_ids": [
               "anthropic_service_tiers_docs"
@@ -6992,6 +6929,7 @@
           "metadata",
           "model",
           "service_tier",
+          "speed",
           "stop_sequences",
           "stream",
           "system",
@@ -7221,6 +7159,18 @@
           "fields": [
             "provider_specific.anthropic.multimodal.request"
           ]
+        },
+        {
+          "source_id": "anthropic_fast_mode_docs",
+          "source_url": "https://platform.claude.com/docs/en/build-with-claude/fast-mode",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.anthropic.serving.fast_mode"
+          ]
         }
       ],
       "provider_specific": {
@@ -7299,7 +7249,32 @@
           "supported_thinking_types": [
             "adaptive"
           ],
-          "fast_mode": null,
+          "fast_mode": {
+            "supported": true,
+            "provider_parameter": "speed",
+            "provider_value": "fast",
+            "beta_header": "fast-mode-2026-02-01",
+            "supported_models": [
+              "claude-opus-5"
+            ],
+            "status": "research_preview",
+            "deprecated_at": null,
+            "removal_date": null,
+            "pricing": {
+              "relative_to_standard": "premium",
+              "input_price_per_million_tokens": 10,
+              "output_price_per_million_tokens": 50,
+              "notes": "Anthropic Fast Mode is premium-priced and uses speed=fast with the fast-mode-2026-02-01 beta header; it is separate from Priority Tier service_tier=auto."
+            },
+            "incompatible_with": [
+              "messages_batch_api",
+              "priority_tier_commitment"
+            ],
+            "source_ids": [
+              "anthropic_fast_mode_docs"
+            ],
+            "notes": "Anthropic Fast Mode is documented for claude-opus-5 as a research preview. Use speed=fast with beta header fast-mode-2026-02-01. This is not Priority Tier service_tier=auto."
+          },
           "supports_pdf_input": true,
           "supports_citations": true,
           "supports_code_execution": true,
@@ -7380,7 +7355,32 @@
                 "notes": "Batch is a separate Anthropic API surface, not a service_tier value on synchronous Messages requests."
               }
             },
-            "fast_mode": null,
+            "fast_mode": {
+              "supported": true,
+              "provider_parameter": "speed",
+              "provider_value": "fast",
+              "beta_header": "fast-mode-2026-02-01",
+              "supported_models": [
+                "claude-opus-5"
+              ],
+              "status": "research_preview",
+              "deprecated_at": null,
+              "removal_date": null,
+              "pricing": {
+                "relative_to_standard": "premium",
+                "input_price_per_million_tokens": 10,
+                "output_price_per_million_tokens": 50,
+                "notes": "Anthropic Fast Mode is premium-priced and uses speed=fast with the fast-mode-2026-02-01 beta header; it is separate from Priority Tier service_tier=auto."
+              },
+              "incompatible_with": [
+                "messages_batch_api",
+                "priority_tier_commitment"
+              ],
+              "source_ids": [
+                "anthropic_fast_mode_docs"
+              ],
+              "notes": "Anthropic Fast Mode is documented for claude-opus-5 as a research preview. Use speed=fast with beta header fast-mode-2026-02-01. This is not Priority Tier service_tier=auto."
+            },
             "source_ids": [
               "anthropic_service_tiers_docs"
             ],

@@ -117,13 +117,33 @@ test('GLM 5.2 thinking options come directly from catalog metadata', () => {
 })
 
 
-test('Anthropic service tier options expose priority but hide asynchronous batch', () => {
-  assert.deepEqual(modelServiceTierOptions('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch']), [
+test('Anthropic service tier options expose only explicit snapshot tiers', () => {
+  const priorityOnly = {
+    serviceTiers: ['standard', 'priority', 'batch'],
+    serviceTierMappings: [
+      { tier: 'standard', swarm_setting: 'off', provider_parameter: 'service_tier', provider_value: 'standard_only' },
+      { tier: 'priority', swarm_setting: 'fast', provider_parameter: 'service_tier', provider_value: 'auto' },
+    ],
+  }
+  assert.deepEqual(modelServiceTierOptions('anthropic', 'claude-sonnet-4-6', priorityOnly), [
     { label: 'Off / standard', value: '' },
     { label: 'Priority', value: 'priority' },
   ])
+  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-4-6', priorityOnly, 'fast'), false)
+
+  const opus48 = {
+    ...priorityOnly,
+    serviceTierMappings: [
+      ...priorityOnly.serviceTierMappings,
+      { tier: 'fast', swarm_setting: '', provider_parameter: 'speed', provider_value: 'fast' },
+    ],
+  }
+  assert.deepEqual(modelServiceTierOptions('anthropic', 'claude-opus-4-8', opus48), [
+    { label: 'Off / standard', value: '' },
+    { label: 'Priority', value: 'priority' },
+    { label: 'Fast', value: 'fast' },
+  ])
+  assert.equal(supportsModelServiceTier('anthropic', 'claude-opus-4-8', opus48, 'fast'), true)
   assert.equal(normalizeModelServiceTier('anthropic', 'priority'), 'priority')
   assert.equal(normalizeModelServiceTier('anthropic', 'batch'), '')
-  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch'], 'priority'), true)
-  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch'], 'batch'), false)
 })
