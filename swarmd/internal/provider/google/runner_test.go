@@ -481,7 +481,7 @@ func TestGoogleThinkingConfigUsesCatalogBudgetMapping(t *testing.T) {
 }
 
 func TestBuildGoogleContentsPreservesThoughtSignatureMetadata(t *testing.T) {
-	contents, err := buildGoogleContents(provideriface.Request{Input: []map[string]any{{
+	contents, err := buildGoogleContents(provideriface.Request{Model: "gemini-3.5-flash", Input: []map[string]any{{
 		"type":      "function_call",
 		"call_id":   "call_weather",
 		"name":      "weather",
@@ -500,6 +500,45 @@ func TestBuildGoogleContentsPreservesThoughtSignatureMetadata(t *testing.T) {
 	}
 	if part.FunctionCall == nil || part.FunctionCall.ID != "call_weather" {
 		t.Fatalf("function call = %+v, want provider call id preserved", part.FunctionCall)
+	}
+}
+
+func TestBuildGoogleContentsUsesDocumentedSentinelForUnsignedGemini3History(t *testing.T) {
+	contents, err := buildGoogleContents(provideriface.Request{Model: "gemini-3.5-flash", Input: []map[string]any{
+		{
+			"type":      "function_call",
+			"call_id":   "call_read",
+			"name":      "read",
+			"arguments": `{"path":"README.md"}`,
+		},
+		{
+			"type":      "function_call",
+			"call_id":   "call_search",
+			"name":      "search",
+			"arguments": `{"query":"Gemini"}`,
+		},
+	}})
+	if err != nil {
+		t.Fatalf("build contents: %v", err)
+	}
+	if len(contents) != 1 || len(contents[0].Parts) != 2 {
+		t.Fatalf("contents = %+v, want one parallel model step", contents)
+	}
+	if contents[0].Parts[0].ThoughtSignature != googleSkipSignature {
+		t.Fatalf("first signature = %q, want documented sentinel", contents[0].Parts[0].ThoughtSignature)
+	}
+	if contents[0].Parts[1].ThoughtSignature != "" {
+		t.Fatalf("parallel sibling signature = %q, want empty", contents[0].Parts[1].ThoughtSignature)
+	}
+
+	legacy, err := buildGoogleContents(provideriface.Request{Model: "gemini-2.5-flash", Input: []map[string]any{{
+		"type": "function_call", "call_id": "call_read", "name": "read", "arguments": `{}`,
+	}}})
+	if err != nil {
+		t.Fatalf("build Gemini 2.5 contents: %v", err)
+	}
+	if legacy[0].Parts[0].ThoughtSignature != "" {
+		t.Fatalf("Gemini 2.5 signature = %q, want no synthetic sentinel", legacy[0].Parts[0].ThoughtSignature)
 	}
 }
 
@@ -560,5 +599,63 @@ func TestGoogleStreamEmitsToolCallConstructionLifecycle(t *testing.T) {
 	metadataJSON, _ := json.Marshal(events[2].Metadata)
 	if string(metadataJSON) == "null" || !strings.Contains(string(metadataJSON), "sig-123") {
 		t.Fatalf("completed metadata = %s, want thought signature preserved", metadataJSON)
+	}
+}
+
+func TestGoogleThinkingConfigRequestsThoughtSummaries(t *testing.T) {
+	cfg := googleThinkingConfigForRequest(provideriface.Request{
+		Model:    "gemini-3.5-flash",
+		Thinking: "high",
+		ModelCatalog: pebblestore.ModelCatalogRecord{ThinkingMappings: []pebblestore.ModelCatalogThinkingMapping{{
+			SwarmSetting:           "high",
+			ProviderParameter:      "generationConfig.thinkingConfig.thinkingLevel",
+			ProviderValue:          "high",
+			EffectiveProviderValue: "high",
+			Behavior:               "effort",
+		}}},
+	})
+	if cfg == nil || cfg.ThinkingLevel != "high" || !cfg.IncludeThoughts {
+		t.Fatalf("google thinking config = %+v, want high with thought summaries", cfg)
+	}
+
+	off := googleThinkingConfigForRequest(provideriface.Request{Model: "gemini-2.5-flash", Thinking: "off"})
+	if off == nil || off.ThinkingBudget == nil || *off.ThinkingBudget != 0 || off.IncludeThoughts {
+		t.Fatalf("google off thinking config = %+v, want disabled without summaries", off)
+	}
+}
+
+func TestGoogleStreamSeparatesThoughtSummariesFromAnswer(t *testing.T) {
+	acc := newGoogleStreamAccumulator("gemini-3.5-flash")
+	events := make([]provideriface.StreamEvent, 0, 2)
+	payload := `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"Checking the constraints.","thought":true},{"text":"Final answer."}]}}]}`
+	if err := acc.applyPayload(payload, func(event provideriface.StreamEvent) { events = append(events, event) }); err != nil {
+		t.Fatalf("applyPayload error: %v", err)
+	}
+	if len(events) != 2 || events[0].Type != provideriface.StreamEventReasoningSummaryDelta || events[0].DeltaMode != provideriface.StreamEventDeltaModeReplace || events[0].ReasoningKey != "google-thinking" || events[0].Delta != "Checking the constraints." || events[1].Type != provideriface.StreamEventOutputTextDelta {
+		t.Fatalf("stream events = %+v, want reasoning then answer", events)
+	}
+	response := acc.response()
+	if response.ReasoningSummary != "Checking the constraints." || response.Text != "Final answer." {
+		t.Fatalf("response = %+v, want separate reasoning and answer", response)
+	}
+}
+
+func TestGoogleStreamPreservesLateThoughtSignatureForFunctionCall(t *testing.T) {
+	acc := newGoogleStreamAccumulator("gemini-3.5-flash")
+	first := `{"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"call_read","name":"read","args":{"path":"README.md"}}}]}}]}`
+	if err := acc.applyPayload(first, nil); err != nil {
+		t.Fatalf("apply first payload: %v", err)
+	}
+	last := `{"candidates":[{"index":0,"finishReason":"STOP","content":{"parts":[{"text":"","thoughtSignature":"late-sig"}]}}]}`
+	if err := acc.applyPayload(last, nil); err != nil {
+		t.Fatalf("apply final payload: %v", err)
+	}
+	response := acc.response()
+	if len(response.FunctionCalls) != 1 {
+		t.Fatalf("function calls = %+v, want one", response.FunctionCalls)
+	}
+	googleMetadata, ok := response.FunctionCalls[0].Metadata["google"].(map[string]any)
+	if !ok || googleMetadata["thought_signature"] != "late-sig" {
+		t.Fatalf("function call metadata = %+v, want late thought signature", response.FunctionCalls[0].Metadata)
 	}
 }

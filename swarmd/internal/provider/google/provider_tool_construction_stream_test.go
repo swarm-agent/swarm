@@ -45,7 +45,7 @@ func TestGoogleGenerateContentStreamMapsCompleteFunctionCallSnapshot(t *testing.
 func TestGoogleGenerateContentStreamPreservesParallelCandidateAndPartIdentity(t *testing.T) {
 	acc := newGoogleStreamAccumulator("gemini-test")
 	events := collectGoogleConstructionEvents(t, acc,
-		`{"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","args":{"key":"a"}},"thoughtSignature":"sig-parallel"},{"functionCall":{"id":"call_b","name":"lookup","args":{"key":"b"}}}},{"index":1,"content":{"parts":[{"functionCall":{"id":"call_c","name":"lookup","args":{"key":"c"}}}]}}]}`,
+		`{"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"id":"call_a","name":"lookup","args":{"key":"a"}},"thoughtSignature":"sig-parallel"},{"functionCall":{"id":"call_b","name":"lookup","args":{"key":"b"}}}]}},{"index":1,"content":{"parts":[{"functionCall":{"id":"call_c","name":"lookup","args":{"key":"c"}}}]}}]}`,
 		`{"candidates":[{"index":0,"finishReason":"STOP","content":{"parts":[]}},{"index":1,"finishReason":"STOP","content":{"parts":[]}}]}`,
 	)
 	assertGoogleConstructionTypes(t, events, []provideriface.StreamEventType{

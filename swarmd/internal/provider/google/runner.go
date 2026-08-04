@@ -28,6 +28,7 @@ const (
 	generateContentURL         = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 	streamGenerateContentURL   = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
 	googleAPIKeyHeader         = "x-goog-api-key"
+	googleSkipSignature        = "skip_thought_signature_validator"
 	maxResponseBytes           = 8 << 20
 	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20
@@ -57,6 +58,7 @@ type googleContent struct {
 
 type googlePart struct {
 	Text                  string                  `json:"text,omitempty"`
+	Thought               bool                    `json:"thought,omitempty"`
 	InlineData            *googleInlineData       `json:"inlineData,omitempty"`
 	FunctionCall          *googleFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse      *googleFunctionResponse `json:"functionResponse,omitempty"`
@@ -104,8 +106,9 @@ type googleGenerationConfig struct {
 }
 
 type googleThinkingConfig struct {
-	ThinkingBudget *int   `json:"thinkingBudget,omitempty"`
-	ThinkingLevel  string `json:"thinkingLevel,omitempty"`
+	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
 }
 
 type googleRequest struct {
@@ -420,13 +423,20 @@ func googleThinkingConfigForRequest(req provideriface.Request) *googleThinkingCo
 	if level == "" {
 		return nil
 	}
-	if config := googleThinkingConfigFromCatalog(req.ModelCatalog, level); config != nil {
-		return config
+	config := googleThinkingConfigFromCatalog(req.ModelCatalog, level)
+	if config == nil {
+		if !supportsGoogleThinking(req.Model) {
+			return nil
+		}
+		config = googleLegacyThinkingBudgetConfig(level)
 	}
-	if !supportsGoogleThinking(req.Model) {
-		return nil
+	if config != nil && level != "off" {
+		// generateContent exposes provider-authored thought summaries as Parts
+		// only when explicitly requested. These are summaries, not raw chain of
+		// thought, and the canonical reasoning stream carries them to Desktop.
+		config.IncludeThoughts = true
 	}
-	return googleLegacyThinkingBudgetConfig(level)
+	return config
 }
 
 func googleThinkingConfigFromCatalog(catalog any, level string) *googleThinkingConfig {
@@ -493,6 +503,11 @@ func supportsGoogleThinking(modelID string) bool {
 	return strings.Contains(modelID, "gemini-3") ||
 		strings.Contains(modelID, "gemini-2.5") ||
 		strings.Contains(modelID, "thinking")
+}
+
+func supportsGoogle3(modelID string) bool {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	return strings.Contains(modelID, "gemini-3")
 }
 
 func googleLegacyThinkingBudgetConfig(level string) *googleThinkingConfig {
@@ -701,6 +716,14 @@ func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
 					parts = append(parts, part)
 				}
 				if len(parts) > 0 {
+					// Old durable histories and provider-transferred traces may predate
+					// thought-signature persistence. Gemini 3 validates the first call
+					// in each model step, and Google explicitly documents this sentinel
+					// for client-injected calls that cannot have an original signature.
+					// Never add it to later parallel calls when the first call is signed.
+					if partThoughtSignatureValue(parts[0]) == "" && supportsGoogle3(req.Model) {
+						parts[0].ThoughtSignature = googleSkipSignature
+					}
 					contents = append(contents, googleContent{
 						Role:  "model",
 						Parts: parts,
@@ -933,13 +956,18 @@ func parseGoogleResponse(resp googleResponse) provideriface.Response {
 	}
 
 	textParts := make([]string, 0, len(candidate.Content.Parts))
+	reasoningParts := make([]string, 0, len(candidate.Content.Parts))
 	functionCalls := make([]provideriface.FunctionCall, 0, len(candidate.Content.Parts))
 	pendingThoughtSignature := ""
 	functionCallSequence := 0
 	for _, part := range candidate.Content.Parts {
 		partThoughtSignature := partThoughtSignatureValue(part)
 		if text := strings.TrimSpace(part.Text); text != "" {
-			textParts = append(textParts, text)
+			if part.Thought {
+				reasoningParts = append(reasoningParts, text)
+			} else {
+				textParts = append(textParts, text)
+			}
 		}
 		if part.FunctionCall == nil {
 			if partThoughtSignature != "" {
@@ -955,6 +983,7 @@ func parseGoogleResponse(resp googleResponse) provideriface.Response {
 		functionCalls = append(functionCalls, buildGoogleFunctionCall(part, functionCallSequence, partThoughtSignature))
 	}
 	out.Text = strings.TrimSpace(strings.Join(textParts, "\n\n"))
+	out.ReasoningSummary = strings.TrimSpace(strings.Join(reasoningParts, "\n\n"))
 	out.FunctionCalls = functionCalls
 	return out
 }
@@ -963,6 +992,7 @@ type googleStreamAccumulator struct {
 	modelID            string
 	merged             googleResponse
 	text               string
+	reasoning          string
 	functionCalls      []provideriface.FunctionCall
 	candidateStates    map[int]*googleStreamCandidateState
 	finishedCandidates map[int]bool
@@ -977,6 +1007,7 @@ type googleStreamCandidateState struct {
 	pendingThoughtSignature string
 	callIndexByID           map[string]int
 	callIndexByFingerprint  map[string]int
+	callIndexByPart         map[int]int
 }
 
 func newGoogleStreamAccumulator(modelID string) *googleStreamAccumulator {
@@ -995,6 +1026,7 @@ func (a *googleStreamAccumulator) candidateState(candidateIndex int) *googleStre
 	state := &googleStreamCandidateState{
 		callIndexByID:          make(map[string]int),
 		callIndexByFingerprint: make(map[string]int),
+		callIndexByPart:        make(map[int]int),
 	}
 	a.candidateStates[candidateIndex] = state
 	return state
@@ -1035,14 +1067,25 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 				if a.outputBytes > maxStreamOutputBytes {
 					return errors.New("google stream output limit exceeded")
 				}
-				a.text += part.Text
-				if onEvent != nil {
-					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
+				if part.Thought {
+					a.reasoning += part.Text
+					if onEvent != nil {
+						onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: a.reasoning, DeltaMode: provideriface.StreamEventDeltaModeReplace, ReasoningKey: "google-thinking"})
+					}
+				} else {
+					a.text += part.Text
+					if onEvent != nil {
+						onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: part.Text})
+					}
 				}
 			}
 			if part.FunctionCall == nil {
 				if partThoughtSignature != "" {
-					candidateState.pendingThoughtSignature = partThoughtSignature
+					if callIndex, ok := candidateState.callIndexByPart[partPosition]; ok {
+						a.applyLateFunctionCallThoughtSignature(callIndex, partThoughtSignature)
+					} else {
+						candidateState.pendingThoughtSignature = partThoughtSignature
+					}
 				}
 				continue
 			}
@@ -1051,6 +1094,7 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 			}
 			candidateState.pendingThoughtSignature = ""
 			logicalIndex, partIndex := a.googleStreamToolCallIndex(candidateIndex, partPosition, chunkCallPosition, part)
+			candidateState.callIndexByPart[partIndex] = logicalIndex
 			call := buildGoogleFunctionCall(part, logicalIndex+1, partThoughtSignature)
 			call.Metadata = mergeGoogleFunctionCallMetadata(call.Metadata, googleStreamFunctionCallMetadata(candidateIndex, partIndex))
 			if part.FunctionCall != nil && strings.TrimSpace(part.FunctionCall.ID) != "" {
@@ -1098,6 +1142,9 @@ func (a *googleStreamAccumulator) response() provideriface.Response {
 	}
 	if a.text != "" {
 		result.Text = a.text
+	}
+	if a.reasoning != "" {
+		result.ReasoningSummary = a.reasoning
 	}
 	if len(a.functionCalls) > 0 {
 		result.FunctionCalls = a.functionCalls
@@ -1279,6 +1326,18 @@ func (a *googleStreamAccumulator) upsertFunctionCall(logicalIndex int, call prov
 		a.functionCalls = append(a.functionCalls, provideriface.FunctionCall{})
 	}
 	a.functionCalls[logicalIndex] = mergeGoogleProviderFunctionCall(a.functionCalls[logicalIndex], call)
+}
+
+func (a *googleStreamAccumulator) applyLateFunctionCallThoughtSignature(logicalIndex int, thoughtSignature string) {
+	thoughtSignature = strings.TrimSpace(thoughtSignature)
+	if a == nil || thoughtSignature == "" || logicalIndex < 0 || logicalIndex >= len(a.functionCalls) {
+		return
+	}
+	metadata := googleFunctionCallMetadata(thoughtSignature, false)
+	a.functionCalls[logicalIndex].Metadata = mergeGoogleFunctionCallMetadata(a.functionCalls[logicalIndex].Metadata, metadata)
+	if a.toolState != nil {
+		a.toolState.metadata[logicalIndex] = mergeGoogleFunctionCallMetadata(a.toolState.metadata[logicalIndex], metadata)
+	}
 }
 
 type googleToolCallConstructionState struct {
