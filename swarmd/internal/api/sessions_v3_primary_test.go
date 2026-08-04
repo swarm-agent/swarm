@@ -4995,7 +4995,7 @@ func TestSessionsV3ProviderUsageAccountingE2E(t *testing.T) {
 			expectedContent: "fireworks done",
 			expectedTurns: []sessionsV3UsageExpectation{
 				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 1000, outputTokens: 20, cacheReadTokens: 30, totalTokens: 1020, summaryTotalTokens: 1020, summaryInputTokens: 1000, summaryOutputTokens: 20, summaryCacheReadTokens: 30},
-				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 2, inputTokens: 800, outputTokens: 30, cacheReadTokens: 10, totalTokens: 830, summaryTotalTokens: 1850, summaryInputTokens: 1800, summaryOutputTokens: 50, summaryCacheReadTokens: 40},
+				{clientRequestID: "fireworks-usage-accounting-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 2, inputTokens: 800, outputTokens: 30, cacheReadTokens: 10, totalTokens: 830, summaryTotalTokens: 830, summaryInputTokens: 800, summaryOutputTokens: 30, summaryCacheReadTokens: 10},
 			},
 		},
 	}
@@ -5083,14 +5083,14 @@ func TestSessionsV3ProviderUsageAccountingTransitionE2E(t *testing.T) {
 	}
 	expected := []sessionsV3UsageExpectation{
 		{clientRequestID: "usage-transition-codex-message", provider: "codex", model: "gpt-5.5", step: 1, inputTokens: 500, outputTokens: 10, totalTokens: 510, summaryTotalTokens: 510, summaryInputTokens: 500, summaryOutputTokens: 10},
-		{clientRequestID: "usage-transition-fireworks-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 600, outputTokens: 20, cacheReadTokens: 40, totalTokens: 620, summaryTotalTokens: 1130, summaryInputTokens: 1100, summaryOutputTokens: 30, summaryCacheReadTokens: 40},
+		{clientRequestID: "usage-transition-fireworks-message", provider: "fireworks", model: "accounts/fireworks/models/glm-5p2", step: 1, inputTokens: 600, outputTokens: 20, cacheReadTokens: 40, totalTokens: 620, summaryTotalTokens: 620, summaryInputTokens: 600, summaryOutputTokens: 20, summaryCacheReadTokens: 40},
 	}
 	sessionsV3AssertUsageAccounting(t, sessionSvc, created.ID, expected)
 	summary, ok, err := sessionSvc.GetUsageSummary(created.ID)
 	if err != nil {
 		t.Fatalf("get usage summary: %v", err)
 	}
-	if !ok || summary.Provider != "fireworks" || summary.Model != "accounts/fireworks/models/glm-5p2" || summary.TotalTokens != 1130 || summary.InputTokens != 1100 || summary.OutputTokens != 30 || summary.CacheReadTokens != 40 || summary.TurnCount != 2 {
+	if !ok || summary.Provider != "fireworks" || summary.Model != "accounts/fireworks/models/glm-5p2" || summary.TotalTokens != 620 || summary.InputTokens != 600 || summary.OutputTokens != 20 || summary.CacheReadTokens != 40 || summary.TurnCount != 2 {
 		t.Fatalf("transition summary = %+v", summary)
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
