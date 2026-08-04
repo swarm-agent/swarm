@@ -136,7 +136,7 @@ func googlePriorityTransportRequest() provideriface.Request {
 	}
 }
 
-func TestGooglePriorityTransportSendsCanonicalTierAndCapturesServedTier(t *testing.T) {
+func TestGooglePriorityTransportSendsCanonicalTierAndCapturesStreamBodyDowngrade(t *testing.T) {
 	var capturedBody []byte
 	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var err error
@@ -146,8 +146,8 @@ func TestGooglePriorityTransportSendsCanonicalTierAndCapturesServedTier(t *testi
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Gemini-Service-Tier": []string{"standard"}},
-			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2}}\n\n")),
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2,\"serviceTier\":\"standard\"}}\n\n")),
 			Request:    req,
 		}, nil
 	}))
@@ -166,8 +166,59 @@ func TestGooglePriorityTransportSendsCanonicalTierAndCapturesServedTier(t *testi
 	if usage.RequestedServiceTier != "priority" || usage.ServiceTier != "standard" || usage.ServiceTierStatus != "confirmed" {
 		t.Fatalf("usage tiers = requested=%q served=%q status=%q", usage.RequestedServiceTier, usage.ServiceTier, usage.ServiceTierStatus)
 	}
-	if usage.APIUsageRaw["requested_service_tier"] != "priority" || usage.APIUsageRaw["service_tier"] != "standard" || usage.APIUsageRaw["service_tier_status"] != "confirmed" {
+	if usage.APIUsageRaw["serviceTier"] != "standard" || usage.APIUsageRaw["requested_service_tier"] != "priority" || usage.APIUsageRaw["service_tier"] != "standard" || usage.APIUsageRaw["service_tier_status"] != "confirmed" {
 		t.Fatalf("raw usage tier evidence = %#v", usage.APIUsageRaw)
+	}
+}
+
+func TestGooglePriorityTransportCapturesPriorityStreamBodyTier(t *testing.T) {
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2,\"serviceTier\":\"priority\"}}\n\n")),
+			Request:    req,
+		}, nil
+	}))
+	response, err := runner.CreateResponseStreaming(ctx, googlePriorityTransportRequest(), nil)
+	if err != nil {
+		t.Fatalf("Google streaming request: %v", err)
+	}
+	if usage := response.Usage; usage.RequestedServiceTier != "priority" || usage.ServiceTier != "priority" || usage.ServiceTierStatus != "confirmed" {
+		t.Fatalf("usage tiers = requested=%q served=%q status=%q", usage.RequestedServiceTier, usage.ServiceTier, usage.ServiceTierStatus)
+	}
+}
+
+func TestGooglePriorityTransportRejectsConflictingHeaderAndStreamBodyTiers(t *testing.T) {
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Gemini-Service-Tier": []string{"priority"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"totalTokenCount\":2,\"serviceTier\":\"standard\"}}\n\n")),
+			Request:    req,
+		}, nil
+	}))
+	_, err := runner.CreateResponseStreaming(ctx, googlePriorityTransportRequest(), nil)
+	if err == nil || !strings.Contains(err.Error(), "conflicting google service tier signals") || !strings.Contains(err.Error(), `x-gemini-service-tier="priority"`) || !strings.Contains(err.Error(), `usageMetadata.serviceTier="standard"`) {
+		t.Fatalf("conflicting tier error = %v", err)
+	}
+}
+
+func TestGoogleUnaryTransportRetainsHeaderServedTier(t *testing.T) {
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "X-Gemini-Service-Tier": []string{"standard"}},
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)),
+			Request:    req,
+		}, nil
+	}))
+	response, err := runner.CreateResponse(ctx, googlePriorityTransportRequest())
+	if err != nil {
+		t.Fatalf("Google unary request: %v", err)
+	}
+	if usage := response.Usage; usage.RequestedServiceTier != "priority" || usage.ServiceTier != "standard" || usage.ServiceTierStatus != "confirmed" {
+		t.Fatalf("usage tiers = requested=%q served=%q status=%q", usage.RequestedServiceTier, usage.ServiceTier, usage.ServiceTierStatus)
 	}
 }
 

@@ -132,13 +132,14 @@ type googleCandidate struct {
 }
 
 type googleUsageMetadata struct {
-	PromptTokenCount        int64 `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount    int64 `json:"candidatesTokenCount,omitempty"`
-	ResponseTokenCount      int64 `json:"responseTokenCount,omitempty"`
-	ThoughtsTokenCount      int64 `json:"thoughtsTokenCount,omitempty"`
-	TotalTokenCount         int64 `json:"totalTokenCount,omitempty"`
-	CachedContentTokenCount int64 `json:"cachedContentTokenCount,omitempty"`
-	ToolUsePromptTokenCount int64 `json:"toolUsePromptTokenCount,omitempty"`
+	PromptTokenCount        int64  `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int64  `json:"candidatesTokenCount,omitempty"`
+	ResponseTokenCount      int64  `json:"responseTokenCount,omitempty"`
+	ThoughtsTokenCount      int64  `json:"thoughtsTokenCount,omitempty"`
+	TotalTokenCount         int64  `json:"totalTokenCount,omitempty"`
+	CachedContentTokenCount int64  `json:"cachedContentTokenCount,omitempty"`
+	ToolUsePromptTokenCount int64  `json:"toolUsePromptTokenCount,omitempty"`
+	ServiceTier             string `json:"serviceTier,omitempty"`
 }
 
 func NewRunner(authStore *pebblestore.AuthStore) *Runner {
@@ -308,7 +309,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	}
 
 	providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
-	servedTier := resp.Header.Get("x-gemini-service-tier")
+	headerServiceTier := resp.Header.Get("x-gemini-service-tier")
 	accumulator := newGoogleStreamAccumulator(modelID)
 	if err := parseGoogleEventStream(resp.Body, func(payload string) error {
 		providerdiagnostics.LogStreamChunkContext(ctx, "google", "streamGenerateContent", []byte(payload))
@@ -319,6 +320,11 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	}
 	if !accumulator.finished {
 		return provideriface.Response{}, errors.New("google stream ended without a finish reason")
+	}
+	servedTier, err := reconcileGoogleServiceTierSignals(headerServiceTier, accumulator.serviceTier)
+	if err != nil {
+		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
+		return provideriface.Response{}, err
 	}
 	result := accumulator.response()
 	annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, servedTier)
@@ -997,6 +1003,7 @@ type googleStreamAccumulator struct {
 	candidateStates    map[int]*googleStreamCandidateState
 	finishedCandidates map[int]bool
 	toolState          *googleToolCallConstructionState
+	serviceTier        string
 	finished           bool
 	eventCount         int
 	outputBytes        int
@@ -1044,6 +1051,15 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	var decoded googleResponse
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
 		return fmt.Errorf("decode google stream payload: %w", err)
+	}
+	if decoded.UsageMetadata != nil {
+		serviceTier := strings.ToLower(strings.TrimSpace(decoded.UsageMetadata.ServiceTier))
+		if serviceTier != "" {
+			if a.serviceTier != "" && a.serviceTier != serviceTier {
+				return fmt.Errorf("conflicting google stream usageMetadata.serviceTier signals: first=%q later=%q", a.serviceTier, serviceTier)
+			}
+			a.serviceTier = serviceTier
+		}
 	}
 	a.merged = mergeGoogleResponses(a.merged, decoded)
 	if len(decoded.Candidates) == 0 {
@@ -1592,6 +1608,9 @@ func parseGoogleUsage(resp googleResponse) provideriface.TokenUsage {
 		"cachedContentTokenCount": usage.CachedContentTokenCount,
 		"toolUsePromptTokenCount": usage.ToolUsePromptTokenCount,
 	}
+	if serviceTier := strings.TrimSpace(usage.ServiceTier); serviceTier != "" {
+		usageRaw["serviceTier"] = serviceTier
+	}
 	outputTokens := usage.CandidatesTokenCount
 	if outputTokens == 0 {
 		outputTokens = usage.ResponseTokenCount
@@ -1625,6 +1644,18 @@ func parseGoogleUsage(resp googleResponse) provideriface.TokenUsage {
 		out.TotalTokens = 0
 	}
 	return out
+}
+
+func reconcileGoogleServiceTierSignals(headerTier, bodyTier string) (string, error) {
+	headerTier = strings.ToLower(strings.TrimSpace(headerTier))
+	bodyTier = strings.ToLower(strings.TrimSpace(bodyTier))
+	if headerTier != "" && bodyTier != "" && headerTier != bodyTier {
+		return "", fmt.Errorf("conflicting google service tier signals: x-gemini-service-tier=%q usageMetadata.serviceTier=%q", headerTier, bodyTier)
+	}
+	if bodyTier != "" {
+		return bodyTier, nil
+	}
+	return headerTier, nil
 }
 
 func annotateGoogleServiceTier(usage *provideriface.TokenUsage, requestedTier, servedTier string) {

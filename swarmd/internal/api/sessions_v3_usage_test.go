@@ -53,6 +53,7 @@ func TestSessionV3GoogleUsagePersistsRequestedAndObservedTiersSeparately(t *test
 		Source:               "google_api_usage",
 		APIUsageRawPath:      "usageMetadata",
 		APIUsageRaw: map[string]any{
+			"serviceTier":            "standard",
 			"requested_service_tier": "priority",
 			"service_tier":           "standard",
 			"service_tier_status":    "confirmed",
@@ -64,6 +65,9 @@ func TestSessionV3GoogleUsagePersistsRequestedAndObservedTiersSeparately(t *test
 	}
 	if record.RequestedServiceTier != "priority" || record.ServiceTier != "standard" || record.ServiceTierStatus != "confirmed" {
 		t.Fatalf("durable tier fields = requested=%q served=%q status=%q", record.RequestedServiceTier, record.ServiceTier, record.ServiceTierStatus)
+	}
+	if record.APIUsageRaw["serviceTier"] != "standard" {
+		t.Fatalf("durable raw stream-body serviceTier = %#v", record.APIUsageRaw["serviceTier"])
 	}
 
 	usage.ServiceTier = ""
