@@ -9,6 +9,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
   | { kind: 'toggle-thinking' }
+  | { kind: 'toggle-tips' }
   | { kind: 'open-codex-usage' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
@@ -180,6 +181,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['Generic MCP management is coming later', 'Exa web access requires an active Exa API key', 'Add one in Settings → Providers'],
     state: 'coming-soon',
     action: { kind: 'show-help' },
+  },
+  {
+    id: 'tips',
+    command: '/tips',
+    aliases: [],
+    hint: 'Hide, show, or check workspace home tips',
+    actionLabel: 'Toggle Home Tips',
+    tips: ['/tips [on|off|toggle|status]', 'Bare /tips toggles the persisted setting'],
+    state: 'ready',
+    action: { kind: 'toggle-tips' },
   },
   {
     id: 'thinking',

@@ -33,6 +33,7 @@ export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 
 export interface UIChatSettingsWire {
   show_header?: boolean
+  show_tips?: boolean
   thinking_tags?: boolean
   show_compact_button?: boolean
   default_new_session_mode?: DesktopSessionMode
@@ -111,6 +112,10 @@ export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): G
     activeId,
     activeLabel: normalizeThemeLabel(activeId),
   }
+}
+
+export function normalizeShowTipsEnabled(payload?: UISettingsWire | null): boolean {
+  return typeof payload?.chat?.show_tips === 'boolean' ? payload.chat.show_tips : true
 }
 
 export function normalizeThinkingTagsEnabled(payload?: UISettingsWire | null): boolean {

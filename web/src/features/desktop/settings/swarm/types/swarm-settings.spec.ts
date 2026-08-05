@@ -7,6 +7,7 @@ import {
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
   normalizeSessionMode,
+  normalizeShowTipsEnabled,
   normalizeSidebarHideInactiveHours,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
@@ -25,6 +26,13 @@ test('global theme settings default to Tide when unset', () => {
   assert.equal(normalizeGlobalThemeSettings({}).activeId, DEFAULT_GLOBAL_THEME_ID)
   assert.equal(normalizeGlobalThemeSettings(null).activeId, DEFAULT_GLOBAL_THEME_ID)
   assert.equal(normalizeGlobalThemeSettings({ theme: { active_id: '  ' } }).activeId, DEFAULT_GLOBAL_THEME_ID)
+})
+
+test('home tips default on and preserve an explicit disabled setting', () => {
+  assert.equal(normalizeShowTipsEnabled(undefined), true)
+  assert.equal(normalizeShowTipsEnabled({}), true)
+  assert.equal(normalizeShowTipsEnabled({ chat: { show_tips: true } }), true)
+  assert.equal(normalizeShowTipsEnabled({ chat: { show_tips: false } }), false)
 })
 
 test('withDefaultNewSessionMode preserves existing chat fields while updating default mode', () => {

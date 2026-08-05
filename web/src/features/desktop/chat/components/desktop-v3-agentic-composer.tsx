@@ -737,6 +737,10 @@ export function DesktopV3AgenticComposer({
       return
     }
     void onSlashCommand?.(command, draft)
+    if (command.action.kind === 'toggle-tips') {
+      onDraftChange('')
+      return
+    }
     if (command.action.kind === 'open-model-picker') {
       if (!routedNewSession) openAgentSetup()
       onDraftChange('')
@@ -785,7 +789,7 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session')) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'toggle-tips')) {
         event.preventDefault()
         if (slashPalette.exactMatch?.action.kind === 'start-background-router-session') {
           void handleSubmitClick()

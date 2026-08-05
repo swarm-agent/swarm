@@ -3,9 +3,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { DesktopSlashCommand } from '../services/slash-commands'
-import { agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
+import { agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { createModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from '../queries/model-profile-queries'
 import { agentModelSettingsQueryOptions } from '../../settings/swarm/queries/get-agent-model-settings'
+import { normalizeShowTipsEnabled } from '../../settings/swarm/types/swarm-settings'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { modelOptionKey } from '../services/model-options'
 import {
@@ -68,6 +69,8 @@ export function DesktopV3NewSessionPane({
   const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const modelProfilesQuery = useQuery(modelProfilesQueryOptions())
   const agentModelSettingsQuery = useQuery(agentModelSettingsQueryOptions())
+  const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
+  const showTips = normalizeShowTipsEnabled(uiSettingsQuery.data)
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const modelProfiles = modelProfilesQuery.data?.profiles ?? []
   const actionModel = agentModelSettingsQuery.data?.swarm.action ?? null
@@ -331,6 +334,7 @@ export function DesktopV3NewSessionPane({
         pendingPrompt={routedState.prompt}
         error={routedState.phase === 'failed' ? routedState.error : undefined}
         onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
+        showTips={showTips}
         className={mobileSessionQuickMenu ? 'hidden sm:flex' : undefined}
       />
 

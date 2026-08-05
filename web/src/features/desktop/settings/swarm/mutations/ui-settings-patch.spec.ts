@@ -4,6 +4,7 @@ import test from 'node:test'
 import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
 import { saveShowCompactButtonSetting } from './save-show-compact-button-setting'
+import { saveShowTipsSetting } from './save-show-tips-setting'
 import { saveSwarmSettings } from './save-swarm-settings'
 import { saveDefaultWorkspaceRoute } from './save-default-workspace-route'
 
@@ -29,6 +30,25 @@ test('saveThinkingTagsSetting sends only thinking_tags patch', async () => {
     const response = await saveThinkingTagsSetting(false)
     assert.equal(response.chat?.thinking_tags, false)
     assert.deepEqual(JSON.parse(capturedBody), { chat: { thinking_tags: false } })
+  } finally {
+    restore()
+  }
+})
+
+test('saveShowTipsSetting sends only show_tips patch', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({ chat: { show_tips: false } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await saveShowTipsSetting(false)
+    assert.equal(response.chat?.show_tips, false)
+    assert.deepEqual(JSON.parse(capturedBody), { chat: { show_tips: false } })
   } finally {
     restore()
   }

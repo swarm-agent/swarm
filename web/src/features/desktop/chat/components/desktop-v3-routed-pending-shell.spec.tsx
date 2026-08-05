@@ -10,6 +10,7 @@ function render(
   pendingPrompt = '',
   error = '',
   startPath: Parameters<typeof DesktopV3RoutedPendingShell>[0]['startPath'] = 'router',
+  showTips = true,
 ): string {
   return renderToStaticMarkup(
     <DesktopV3RoutedPendingShell
@@ -18,6 +19,7 @@ function render(
       pendingPrompt={pendingPrompt}
       error={error}
       onRetry={state === 'failed' ? () => undefined : undefined}
+      showTips={showTips}
     />,
   )
 }
@@ -27,9 +29,19 @@ test('draft is a neutral Swarm shell without authoritative setup details', () =>
 
   assert.match(markup, /data-pending-state="draft"/)
   assert.match(markup, />Swarm</)
-  assert.match(markup, /What would you like to work on\?/)
+  assert.match(markup, /data-testid="desktop-home-tip"/)
+  assert.match(markup, /💡 Tip: Ask Swarm for three theme variants, then apply your favorite\./)
+  assert.doesNotMatch(markup, /What would you like to work on\?/)
   assert.doesNotMatch(markup, /aria-busy/)
   assert.doesNotMatch(markup, /model|favorite|workspace|branch|Action|Plan/)
+})
+
+test('draft omits the subtitle when home tips are disabled', () => {
+  const markup = render('draft', '', '', 'router', false)
+
+  assert.match(markup, />Swarm</)
+  assert.doesNotMatch(markup, /desktop-home-tip|💡 Tip:/)
+  assert.doesNotMatch(markup, /What would you like to work on\?/)
 })
 
 test('routing immediately shows a pending chat header, first user message, and status below it', () => {

@@ -153,6 +153,19 @@ function testRetiredCommandsAreNotSuggested(): void {
   assert(visibleCommands.every((command) => !retiredCommands.has(command)), 'expected retired slash commands to be absent from the composer palette')
 }
 
+function testTipsCommandIsReadyAndAcceptsArguments(): void {
+  const tips = getDesktopSlashCommands().find((command) => command.id === 'tips')
+  assert(Boolean(tips), 'expected /tips command to exist')
+  assert(tips?.state === 'ready', 'expected /tips command to be ready')
+  assert(tips?.action.kind === 'toggle-tips', 'expected /tips to toggle home tips')
+  assert(tips?.tips.some((tip) => tip.includes('on|off|toggle|status')) === true, 'expected /tips argument discovery')
+
+  const palette = buildDesktopSlashPaletteState('/tips off')
+  assert(palette.exactMatch?.id === 'tips', 'expected /tips arguments to retain the exact command')
+  assert(palette.hasArguments, 'expected /tips off to expose arguments')
+  assert(palette.matches[0]?.id === 'tips', 'expected /tips to remain selected with arguments')
+}
+
 function testKeybindingsWarnsAboutDesktopShortcuts(): void {
   const keybindings = getDesktopSlashCommands().find((command) => command.id === 'keybindings')
   assert(Boolean(keybindings), 'expected /keybindings command to exist')
@@ -174,6 +187,7 @@ function main(): void {
   testTaskCommandAcceptsFullArguments()
   testTaskCommandParsesModeDirective()
   testRetiredCommandsAreNotSuggested()
+  testTipsCommandIsReadyAndAcceptsArguments()
   testKeybindingsWarnsAboutDesktopShortcuts()
   console.log('slash-commands tests passed')
 }

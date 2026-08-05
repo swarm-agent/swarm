@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { Bot, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
+import { DESKTOP_HOME_TIPS, DESKTOP_HOME_TIP_ROTATION_MS } from '../services/home-tips'
 
 export type DesktopV3RoutedPendingShellState = 'draft' | 'worktree-primed' | 'routing' | 'failed'
 export type DesktopV3PendingStartPath = 'session' | 'router'
@@ -11,6 +13,7 @@ export interface DesktopV3RoutedPendingShellProps {
   pendingPrompt?: string
   error?: string
   onRetry?: () => void
+  showTips?: boolean
   className?: string
 }
 
@@ -25,9 +28,18 @@ export function DesktopV3RoutedPendingShell({
   pendingPrompt = '',
   error = '',
   onRetry,
+  showTips = true,
   className,
 }: DesktopV3RoutedPendingShellProps) {
   const prompt = pendingPrompt.trim()
+  const [tipIndex, setTipIndex] = useState(0)
+  useEffect(() => {
+    if (!showTips || state === 'routing' || state === 'failed') return
+    const timer = window.setInterval(() => {
+      setTipIndex((current) => (current + 1) % DESKTOP_HOME_TIPS.length)
+    }, DESKTOP_HOME_TIP_ROTATION_MS)
+    return () => window.clearInterval(timer)
+  }, [showTips, state])
   const submitted = (state === 'routing' || state === 'failed') && Boolean(prompt)
   const routing = state === 'routing'
   const routerPath = startPath === 'router'
@@ -62,9 +74,11 @@ export function DesktopV3RoutedPendingShell({
               <Bot size={20} />
             </span>
             <h1 className="text-lg font-semibold text-[var(--app-text)]">Swarm</h1>
-            <p className="mt-1 max-w-md text-sm leading-6 text-[var(--app-text-muted)]">
-              What would you like to work on?
-            </p>
+            {showTips ? (
+              <p className="mt-1 max-w-md text-sm leading-6 text-[var(--app-text-muted)]" data-testid="desktop-home-tip">
+                💡 Tip: {DESKTOP_HOME_TIPS[tipIndex]}
+              </p>
+            ) : null}
           </div>
         </div>
       </section>

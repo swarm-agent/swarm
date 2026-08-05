@@ -33,8 +33,9 @@ import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-re
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { normalizeSidebarHideInactiveHours, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { normalizeShowTipsEnabled, normalizeSidebarHideInactiveHours, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
+import { saveShowTipsSetting } from '../settings/swarm/mutations/save-show-tips-setting'
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
@@ -45,6 +46,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
+import { executeDesktopTipsCommand } from '../chat/services/home-tips'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton, GitActionFlowControl } from '../git/ai-commit-control'
@@ -3812,6 +3814,32 @@ export function DesktopAppPage() {
       case 'show-help':
         setDesktopToast({ message: 'Slash commands: use ↑/↓ to choose, Enter to run, Tab to insert.', tone: 'info' })
         return
+      case 'toggle-tips': {
+        try {
+          const result = await executeDesktopTipsCommand(
+            draft,
+            normalizeShowTipsEnabled(uiSettingsQuery.data ?? uiSettings),
+            saveShowTipsSetting,
+          )
+          if (!result) {
+            setDesktopToast({ message: 'Use /tips, /tips on, /tips off, /tips toggle, or /tips status.', tone: 'error' })
+            return
+          }
+          if (result.saved) {
+            setUISettings(result.saved)
+            queryClient.setQueryData(uiSettingsQueryKey(), result.saved)
+          }
+          setDesktopToast({
+            message: result.mode === 'status'
+              ? `Home tips are ${result.enabled ? 'on' : 'off'}.`
+              : `Home tips turned ${result.enabled ? 'on' : 'off'}.`,
+            tone: result.mode === 'status' ? 'info' : 'success',
+          })
+        } catch (error) {
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to update home tips.', tone: 'error' })
+        }
+        return
+      }
       case 'open-model-picker':
       case 'toggle-thinking':
       case 'compact-session':
@@ -3821,7 +3849,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [activeWorkspaceAuthority, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
+  }, [activeWorkspaceAuthority, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath, uiSettings, uiSettingsQuery.data])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
