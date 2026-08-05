@@ -30,17 +30,22 @@ test('draft is a neutral Swarm shell without authoritative setup details', () =>
   assert.match(markup, /data-pending-state="draft"/)
   assert.match(markup, />Swarm</)
   assert.match(markup, /data-testid="desktop-home-tip"/)
-  assert.match(markup, /💡 Tip: Ask Swarm for three theme variants, then apply your favorite\./)
+  assert.match(markup, /lucide-lightbulb/)
+  assert.match(markup, /stroke="currentColor"/)
+  assert.match(markup, /text-\[var\(--app-text-muted\)\]/)
+  assert.match(markup, /Tip: /)
+  assert.doesNotMatch(markup, /💡/)
+  assert.match(markup, /max-w-xl/)
   assert.doesNotMatch(markup, /What would you like to work on\?/)
   assert.doesNotMatch(markup, /aria-busy/)
-  assert.doesNotMatch(markup, /model|favorite|workspace|branch|Action|Plan/)
+  assert.doesNotMatch(markup, /model|workspace|branch/)
 })
 
 test('draft omits the subtitle when home tips are disabled', () => {
   const markup = render('draft', '', '', 'router', false)
 
   assert.match(markup, />Swarm</)
-  assert.doesNotMatch(markup, /desktop-home-tip|💡 Tip:/)
+  assert.doesNotMatch(markup, /desktop-home-tip|lucide-lightbulb|💡|Tip:/)
   assert.doesNotMatch(markup, /What would you like to work on\?/)
 })
 
@@ -61,7 +66,7 @@ test('routing immediately shows a pending chat header, first user message, and s
   assert.match(markup, /animate-pulse/)
   assert.doesNotMatch(markup, /animate-spin|rounded-full border px-/)
   assert.doesNotMatch(markup, /<button/)
-  assert.doesNotMatch(markup, /model|favorite|workspace|branch|Action|Plan/)
+  assert.doesNotMatch(markup, /model|workspace|branch/)
 })
 
 test('normal session start never renders Router presentation', () => {
@@ -94,5 +99,5 @@ test('failure preserves the message in the same chat and offers retry beside the
   assert.match(markup, /Router is unavailable/)
   assert.match(markup, /<button[^>]*>.*Try again.*<\/button>/)
   assert.doesNotMatch(markup, /aria-busy/)
-  assert.doesNotMatch(markup, /model|favorite|workspace|branch|Action|Plan/)
+  assert.doesNotMatch(markup, /model|workspace|branch/)
 })

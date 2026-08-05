@@ -90,7 +90,6 @@ type HomePage struct {
 	sessionMode               string
 	showHomeTips              bool
 	homeTipIndex              int
-	homeTipRotatedAt          time.Time
 	selectedTopAction         string
 	hoverTopAction            string
 	pressedTopAction          string
@@ -143,12 +142,12 @@ func NewHomePage(m model.HomeModel) *HomePage {
 		theme:        NordTheme(),
 		keybinds:     NewDefaultKeyBindings(),
 		model:        m,
-		statusLine:       "Waiting...",
-		sessionMode:      "auto",
-		showHomeTips:     true,
-		homeTipRotatedAt: time.Now(),
-		swarmName:        "Local",
-		promptCursor:     0,
+		statusLine:   "Waiting...",
+		sessionMode:  "auto",
+		showHomeTips: true,
+		homeTipIndex: randomHomeTipIndex(-1),
+		swarmName:    "Local",
+		promptCursor: 0,
 	}
 	if m.OnboardingRequired {
 		page.ShowOnboardingLocked("Complete required identity setup before using Swarm.")
@@ -247,12 +246,6 @@ func (p *HomePage) HandleTick() bool {
 		}
 	}
 	now := time.Now()
-	if p.showHomeTips && len(homeTips) > 1 && now.Sub(p.homeTipRotatedAt) >= homeTipRotationInterval {
-		steps := int(now.Sub(p.homeTipRotatedAt) / homeTipRotationInterval)
-		p.homeTipIndex = (p.homeTipIndex + steps) % len(homeTips)
-		p.homeTipRotatedAt = p.homeTipRotatedAt.Add(time.Duration(steps) * homeTipRotationInterval)
-		changed = true
-	}
 	if p.toast.tick(now) {
 		changed = true
 	}

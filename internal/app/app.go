@@ -85,7 +85,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
-		{Command: "/tips", Hint: "Show or hide rotating home tips", QuickTips: []string{"/tips on", "/tips off", "/tips toggle", "/tips status"}},
+		{Command: "/tips", Hint: "Show or hide launch tips", QuickTips: []string{"/tips on", "/tips off", "/tips toggle", "/tips status"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
 		{Command: "/worktree", Hint: "Switch a local draft between direct and routed worktree start", QuickTips: []string{"/worktree on", "/worktree off"}},
 		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
@@ -674,6 +674,7 @@ func (a *App) Run() error {
 				case v3chat.PageActionHome:
 					a.closeV3Chat()
 					a.route = "home"
+					a.home.SelectNextHomeTip()
 					a.home.SetStatus("home")
 				case v3chat.PageActionCommand:
 					a.handleV3ChatCommand()
@@ -1837,6 +1838,7 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 		if a.route == "chat" {
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			a.chat = nil
 		}
 		if a.route == "home" {
@@ -1934,12 +1936,14 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	if keybinds.Match(ev, ui.KeybindGlobalShowBackground) {
 		if a.route == "chat" {
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			a.chat = nil
 			return true
 		}
 		if a.route == "v3chat" {
 			a.closeV3Chat()
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			return true
 		}
 	}
@@ -2113,6 +2117,7 @@ func (a *App) executeCommand(raw string) {
 		if a.route == "v3chat" && a.v3Chat != nil {
 			a.closeV3Chat()
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			a.home.SetStatus("home")
 			return
 		}
@@ -2121,6 +2126,7 @@ func (a *App) executeCommand(raw string) {
 			return
 		}
 		a.route = "home"
+		a.home.SelectNextHomeTip()
 		a.chat = nil
 		a.home.SetStatus("home")
 	case "reload":
@@ -2267,7 +2273,7 @@ func (a *App) showHelp() {
 		"/swarm [set <name>|name <name>|<name>]   (change primary swarm display name)",
 		updateHelpLine(a.startupDevMode()),
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
-		"/tips [on|off|toggle|status]   (show or hide rotating home tips)",
+		"/tips [on|off|toggle|status]   (show or hide launch tips)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
 		fmt.Sprintf("%s   (toggle mouse click capture)", keybinds.Label(ui.KeybindGlobalToggleMouse)),
 		"/voice [open|device <id>|stt [provider] [model]|profile [list|use <id>|upsert <id> <adapter> [model]|whisper [id] [model]|delete <id>]|tts [provider] [voice]|test [seconds]]",
@@ -2671,6 +2677,7 @@ func (a *App) handleArchiveCommand(args []string) {
 			return
 		}
 		a.route = "home"
+		a.home.SelectNextHomeTip()
 		a.home.SetStatus("session archived")
 		a.requestV3ChatRender()
 	}()

@@ -46,8 +46,8 @@ func (a *App) applyTipsSetting(enabled bool) {
 func (a *App) tipsStatusLines() []string {
 	lines := []string{
 		"home tips: " + enabledLabel(a.config.Chat.ShowTips),
-		"/tips on   show rotating tips beneath Talk to Swarm",
-		"/tips off   hide rotating home tips",
+		"/tips on   show a launch tip beneath Talk to Swarm",
+		"/tips off   hide launch tips",
 		"/tips toggle   switch between on and off",
 		"/tips status   show the current setting",
 	}

@@ -412,6 +412,7 @@ func (a *App) openRoutedV3Primer(command v3chat.NewCommand) error {
 	if err := page.OpenRoutedNew(command, authority); err != nil {
 		a.closeV3Chat()
 		a.route = "home"
+		a.home.SelectNextHomeTip()
 		return err
 	}
 	return nil

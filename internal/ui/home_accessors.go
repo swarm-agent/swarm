@@ -48,15 +48,18 @@ func (p *HomePage) SetHomeTipsVisible(visible bool) {
 	if p == nil {
 		return
 	}
-	wasVisible := p.showHomeTips
 	p.showHomeTips = visible
-	if visible && !wasVisible {
-		p.homeTipRotatedAt = time.Now()
-	}
 }
 
 func (p *HomePage) HomeTipsVisible() bool {
 	return p != nil && p.showHomeTips
+}
+
+func (p *HomePage) SelectNextHomeTip() {
+	if p == nil {
+		return
+	}
+	p.homeTipIndex = randomHomeTipIndex(p.homeTipIndex)
 }
 
 func (p *HomePage) CurrentHomeTip() string {

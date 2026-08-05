@@ -1,11 +1,9 @@
 package ui
 
 import (
+	"math/rand/v2"
 	"strings"
-	"time"
 )
-
-const homeTipRotationInterval = 12 * time.Second
 
 var homeTips = []string{
 	"Ask Swarm for three theme variants, then apply your favorite.",
@@ -32,7 +30,7 @@ var homeTips = []string{
 	"Add another checkpoint when work needs its own review boundary.",
 	"Change direction explicitly; Swarm can revise the active checkpoint.",
 	"Assign different models to Swarm, Finder, Coder, and Designer.",
-	"Use a fast model for Auto mode and a reasoning model for Plan mode.",
+	"Use a fast model for Default mode and a reasoning model for Plan mode.",
 	"Save allow rules for trusted tools and deny rules for risky patterns.",
 	"Drag files, snippets, or images into chat as working context.",
 	"TUI: press Ctrl+P to inspect the full plan and checkpoint status.",
@@ -44,6 +42,16 @@ var homeTips = []string{
 // HomeTips returns the launch-tip catalog in its display order.
 func HomeTips() []string {
 	return append([]string(nil), homeTips...)
+}
+
+func randomHomeTipIndex(previous int) int {
+	if len(homeTips) <= 1 {
+		return 0
+	}
+	if previous < 0 || previous >= len(homeTips) {
+		return rand.IntN(len(homeTips))
+	}
+	return (previous + 1 + rand.IntN(len(homeTips)-1)) % len(homeTips)
 }
 
 func homeTipLines(tip string, width, maxLines int) []string {

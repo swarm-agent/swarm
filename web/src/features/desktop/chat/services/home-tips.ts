@@ -1,5 +1,3 @@
-export const DESKTOP_HOME_TIP_ROTATION_MS = 12_000
-
 export const DESKTOP_HOME_TIPS = [
   'Ask Swarm for three theme variants, then apply your favorite.',
   'Apply a theme to one workspace without changing your global theme.',
@@ -25,7 +23,7 @@ export const DESKTOP_HOME_TIPS = [
   'Add another checkpoint when work needs its own review boundary.',
   'Change direction explicitly; Swarm can revise the active checkpoint.',
   'Assign different models to Swarm, Finder, Coder, and Designer.',
-  'Use a fast model for Auto mode and a reasoning model for Plan mode.',
+  'Use a fast model for Default mode and a reasoning model for Plan mode.',
   'Save allow rules for trusted tools and deny rules for risky patterns.',
   'Drag files, snippets, or images into chat as working context.',
   'TUI: press Ctrl+P to inspect the full plan and checkpoint status.',
@@ -33,6 +31,17 @@ export const DESKTOP_HOME_TIPS = [
   'TUI: press Ctrl+X to browse and resume recent sessions.',
   'Type /tips to hide or show these tips.',
 ] as const
+
+let lastDesktopHomeTipIndex = -1
+
+export function selectDesktopHomeTipIndex(previous = lastDesktopHomeTipIndex, random = Math.random): number {
+  if (DESKTOP_HOME_TIPS.length <= 1) return 0
+  const selected = previous < 0 || previous >= DESKTOP_HOME_TIPS.length
+    ? Math.floor(random() * DESKTOP_HOME_TIPS.length)
+    : (previous + 1 + Math.floor(random() * (DESKTOP_HOME_TIPS.length - 1))) % DESKTOP_HOME_TIPS.length
+  lastDesktopHomeTipIndex = selected
+  return selected
+}
 
 export type DesktopTipsCommandMode = 'toggle' | 'on' | 'off' | 'status'
 

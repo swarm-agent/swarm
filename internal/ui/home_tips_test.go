@@ -3,7 +3,6 @@ package ui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 
@@ -44,14 +43,17 @@ func TestHomeHeroRespectsTipsVisibility(t *testing.T) {
 	}
 }
 
-func TestHomeTipRotatesOnTick(t *testing.T) {
+func TestHomeTipChangesOnlyWhenHomeIsOpened(t *testing.T) {
 	page := NewHomePage(model.EmptyHome())
 	first := page.CurrentHomeTip()
-	page.homeTipRotatedAt = time.Now().Add(-homeTipRotationInterval)
-	if !page.HandleTick() {
-		t.Fatal("rotation tick did not request redraw")
+	if page.HandleTick() {
+		t.Fatal("idle tick unexpectedly requested redraw")
 	}
+	if page.CurrentHomeTip() != first {
+		t.Fatal("idle tick changed the launch tip")
+	}
+	page.SelectNextHomeTip()
 	if page.CurrentHomeTip() == first {
-		t.Fatal("rotation tick did not advance the tip")
+		t.Fatal("opening home did not select a new tip")
 	}
 }

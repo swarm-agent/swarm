@@ -3,10 +3,10 @@ import test from 'node:test'
 
 import {
   DESKTOP_HOME_TIPS,
-  DESKTOP_HOME_TIP_ROTATION_MS,
   executeDesktopTipsCommand,
   parseDesktopTipsCommand,
   resolveDesktopTipsEnabled,
+  selectDesktopHomeTipIndex,
 } from './home-tips'
 
 test('desktop home tip catalog contains the approved 31 tips in order', () => {
@@ -14,7 +14,13 @@ test('desktop home tip catalog contains the approved 31 tips in order', () => {
   assert.equal(DESKTOP_HOME_TIPS[0], 'Ask Swarm for three theme variants, then apply your favorite.')
   assert.equal(DESKTOP_HOME_TIPS[27], 'TUI: press Ctrl+P to inspect the full plan and checkpoint status.')
   assert.equal(DESKTOP_HOME_TIPS[30], 'Type /tips to hide or show these tips.')
-  assert.equal(DESKTOP_HOME_TIP_ROTATION_MS, 12_000)
+})
+
+test('desktop home tip selection chooses a launch tip and avoids the previous tip', () => {
+  assert.equal(selectDesktopHomeTipIndex(-1, () => 0), 0)
+  assert.equal(selectDesktopHomeTipIndex(-1, () => 0.999), 30)
+  assert.equal(selectDesktopHomeTipIndex(0, () => 0), 1)
+  assert.equal(selectDesktopHomeTipIndex(30, () => 0), 0)
 })
 
 test('tips command accepts supported modes and defaults to toggle', () => {
