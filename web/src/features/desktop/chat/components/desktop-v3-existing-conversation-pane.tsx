@@ -2811,7 +2811,6 @@ export function DesktopV3ExistingConversationPane({
                     onAction={stablePlanExecutionAction}
                     onStop={stableStop}
                     onEditPlan={stableOpenPlan}
-                    onOpenActionSettings={onOpenActionSettings}
                     belowActions={planSidebarBelowActions}
                     canonicalRecommendation={canonicalFinalHandoffRecommendation}
                   />
@@ -2931,7 +2930,6 @@ export function DesktopV3ExistingConversationPane({
               onAction={stablePlanExecutionAction}
               onStop={stableStop}
               onEditPlan={stableOpenPlan}
-              onOpenActionSettings={onOpenActionSettings}
               belowActions={planSidebarBelowActions}
               displayMode={planSidebarDisplayMode}
               taskChildren={taskChildren}

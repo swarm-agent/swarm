@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDown, ArrowUp, FileCode2, GripVertical, Pencil, Pin, Plus, ShieldCheck, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, FileCode2, GripVertical, Pencil, Pin, Play, Plus, ShieldCheck, Trash2, X } from 'lucide-react'
 import { Button } from '../../../../../components/ui/button'
 import { Input } from '../../../../../components/ui/input'
 import { Select } from '../../../../../components/ui/select'
@@ -7,6 +7,8 @@ import { browseWorkspacePath } from '../../../../workspaces/launcher/queries/bro
 import { listWorkspaces } from '../../../../workspaces/launcher/queries/list-workspaces'
 import { resolveWorkspaceBySlug } from '../../../../workspaces/launcher/services/workspace-route'
 import type { WorkspaceBrowseEntry } from '../../../../workspaces/launcher/types/workspace'
+import { WorkspaceActionIcon, WorkspaceActionIconPicker, normalizeWorkspaceActionIcon } from './workspace-action-icons'
+import { DesktopWorkspaceActionPanel } from '../../../chat/components/desktop-workspace-action-panel'
 import {
   deleteWorkspaceAction,
   fetchWorkspaceActions,
@@ -18,7 +20,12 @@ import {
 } from '../../../../workspaces/actions/types'
 
 interface ActionsSettingsPageProps {
-  workspaceSlug: string
+  workspaceSlug?: string
+  workspacePath?: string
+  workspaceName?: string
+  compact?: boolean
+  onRun?: (action: WorkspaceAction) => void
+  onMutated?: (actions: WorkspaceAction[]) => void
 }
 
 type Draft = WorkspaceActionDefinition & { id: string }
@@ -56,9 +63,9 @@ function invocationPreview(draft: Draft): string {
   return parts.join(' ')
 }
 
-export function ActionsSettingsPage({ workspaceSlug }: ActionsSettingsPageProps) {
-  const [workspacePath, setWorkspacePath] = useState('')
-  const [workspaceName, setWorkspaceName] = useState('')
+export function ActionsSettingsPage({ workspaceSlug = '', workspacePath: providedWorkspacePath = '', workspaceName: providedWorkspaceName = '', compact = false, onRun, onMutated }: ActionsSettingsPageProps) {
+  const [workspacePath, setWorkspacePath] = useState(providedWorkspacePath)
+  const [workspaceName, setWorkspaceName] = useState(providedWorkspaceName)
   const [actions, setActions] = useState<WorkspaceAction[]>([])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [loading, setLoading] = useState(true)
@@ -68,30 +75,45 @@ export function ActionsSettingsPage({ workspaceSlug }: ActionsSettingsPageProps)
   const [browserPath, setBrowserPath] = useState('')
   const [browserEntries, setBrowserEntries] = useState<WorkspaceBrowseEntry[]>([])
   const [browsing, setBrowsing] = useState(false)
+  const [request, setRequest] = useState(0)
+  const [selectedRunAction, setSelectedRunAction] = useState<WorkspaceAction | null>(null)
   const draftErrors = useMemo(() => draft ? validateDraft(draft) : [], [draft])
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError('')
-    void listWorkspaces().then((workspaces) => {
+    const load = providedWorkspacePath
+      ? Promise.resolve({ path: providedWorkspacePath, name: providedWorkspaceName || providedWorkspacePath })
+      : listWorkspaces().then((workspaces) => {
+          const workspace = resolveWorkspaceBySlug(workspaces, workspaceSlug)
+          if (!workspace) throw new Error('Open Actions from a workspace settings route.')
+          return { path: workspace.path, name: workspace.workspaceName || workspace.path }
+        })
+    void load.then((workspace) => {
       if (cancelled) return
-      const workspace = resolveWorkspaceBySlug(workspaces, workspaceSlug)
-      if (!workspace) throw new Error('Open Actions from a workspace settings route.')
       setWorkspacePath(workspace.path)
-      setWorkspaceName(workspace.workspaceName || workspace.path)
+      setWorkspaceName(workspace.name)
       return fetchWorkspaceActions(workspace.path)
     }).then((next) => {
-      if (!cancelled && next) setActions(next)
+      if (!cancelled && next) {
+        setActions(next)
+        onMutated?.(next)
+      }
     }).catch((cause) => {
       if (!cancelled) setError(cause instanceof Error ? cause.message : 'Could not load Actions.')
     }).finally(() => {
       if (!cancelled) setLoading(false)
     })
     return () => { cancelled = true }
-  }, [workspaceSlug])
+  }, [onMutated, providedWorkspaceName, providedWorkspacePath, request, workspaceSlug])
 
-  const refresh = async () => setActions(await fetchWorkspaceActions(workspacePath))
+  const refresh = async () => {
+    const next = await fetchWorkspaceActions(workspacePath)
+    setActions(next)
+    onMutated?.(next)
+    return next
+  }
 
   const openBrowser = async (path = workspacePath) => {
     setBrowsing(true)
@@ -114,7 +136,7 @@ export function ActionsSettingsPage({ workspaceSlug }: ActionsSettingsPageProps)
     setNotice('')
     setBrowserEntries([])
     setBrowserPath('')
-    setDraft(action ? { ...action, arguments: [...action.arguments], inputs: action.inputs.map((input) => ({ ...input, arguments: [...input.arguments] })) } : emptyDraft())
+    setDraft(action ? { ...action, icon: normalizeWorkspaceActionIcon(action.icon), arguments: [...action.arguments], inputs: action.inputs.map((input) => ({ ...input, arguments: [...input.arguments] })) } : emptyDraft())
   }
 
   const submit = async () => {
@@ -168,28 +190,33 @@ export function ActionsSettingsPage({ workspaceSlug }: ActionsSettingsPageProps)
     }
   }
 
+  const runAction = (action: WorkspaceAction) => {
+    if (onRun) onRun(action)
+    else setSelectedRunAction(action)
+  }
+
   const updateInput = (index: number, patch: Partial<WorkspaceActionInput>) => {
     setDraft((current) => current ? { ...current, inputs: current.inputs.map((input, itemIndex) => itemIndex === index ? { ...input, ...patch } : input) } : current)
   }
 
-  if (!workspaceSlug) return <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning)]">Actions are workspace-scoped. Open a workspace, then choose Settings → Actions.</div>
+  if (!workspaceSlug && !providedWorkspacePath) return <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning)]">Actions are workspace-scoped. Open a workspace, then choose Settings → Actions.</div>
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className={compact ? 'flex flex-col gap-3' : 'flex flex-col gap-6'} data-actions-management-surface={compact ? 'compact' : 'full'}>
       <header>
-        <h1 className="text-xl font-semibold text-[var(--app-text)]">Actions</h1>
+        <h1 className={compact ? 'text-base font-semibold text-[var(--app-text)]' : 'text-xl font-semibold text-[var(--app-text)]'}>{compact ? 'Manage Workspace Actions' : 'Actions'}</h1>
         <p className="mt-1 text-sm text-[var(--app-text-muted)]">Reusable, workspace-scoped script definitions. Saving or editing an Action never runs it.</p>
-        <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3">
+        <div className={compact ? 'mt-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2' : 'mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3'}>
           <div className="text-sm font-medium text-[var(--app-text)]">{workspaceName || 'Workspace'}</div>
           <div className="mt-1 break-all font-mono text-xs text-[var(--app-text-muted)]">{workspacePath || 'Resolving workspace…'}</div>
         </div>
       </header>
 
-      <div className="rounded-xl border border-[var(--app-primary)]/30 bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text-muted)]">
+      <div className={compact ? 'rounded-lg border border-[var(--app-primary)]/30 bg-[var(--app-surface)] p-3 text-xs text-[var(--app-text-muted)]' : 'rounded-xl border border-[var(--app-primary)]/30 bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text-muted)]'}>
         <div className="flex gap-3"><ShieldCheck className="mt-0.5 shrink-0 text-[var(--app-primary)]" size={18} /><div><strong className="text-[var(--app-text)]">Definitions are not shell commands.</strong> The entrypoint stays inside this workspace and every argument is stored separately. Actions run only after an explicit Run gesture. Secret prompts are masked and are never stored as defaults.</div></div>
       </div>
 
-      {error ? <div role="alert" className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">{error}</div> : null}
+      {error ? <div role="alert" className="rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-sm text-[var(--app-danger)]">{error}<button type="button" className="ml-2 font-semibold underline" onClick={() => setRequest((current) => current + 1)}>Retry</button></div> : null}
       {notice ? <div role="status" className="rounded-xl border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-4 py-3 text-sm text-[var(--app-success)]">{notice}</div> : null}
 
       <section className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
@@ -201,8 +228,10 @@ export function ActionsSettingsPage({ workspaceSlug }: ActionsSettingsPageProps)
           <div className="divide-y divide-[var(--app-border)]">
             {actions.map((action, index) => <div key={action.id} className="flex items-center gap-3 px-4 py-3">
               <GripVertical size={15} className="shrink-0 text-[var(--app-text-muted)]" />
+              <WorkspaceActionIcon icon={action.icon} className="shrink-0 text-[var(--app-primary)]" />
               <div className="min-w-0 flex-1"><div className="flex items-center gap-2 text-sm font-semibold text-[var(--app-text)]">{action.name}{action.pinned ? <Pin size={12} className="text-[var(--app-primary)]" /> : null}</div><code className="block truncate text-xs text-[var(--app-text-muted)]">{action.entrypoint}</code></div>
               <div className="flex shrink-0 items-center gap-1">
+                <button type="button" aria-label={`Run ${action.name}`} onClick={() => runAction(action)} className="rounded-lg p-2 text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)]"><Play size={14} /></button>
                 <button type="button" aria-label={`Move ${action.name} up`} disabled={index === 0} onClick={() => void move(index, -1)} className="rounded-lg p-2 hover:bg-[var(--app-surface-hover)] disabled:opacity-30"><ArrowUp size={14} /></button>
                 <button type="button" aria-label={`Move ${action.name} down`} disabled={index === actions.length - 1} onClick={() => void move(index, 1)} className="rounded-lg p-2 hover:bg-[var(--app-surface-hover)] disabled:opacity-30"><ArrowDown size={14} /></button>
                 <button type="button" aria-label={`${action.pinned ? 'Unpin' : 'Pin'} ${action.name}`} onClick={() => void togglePin(action)} className="rounded-lg p-2 hover:bg-[var(--app-surface-hover)]"><Pin size={14} /></button>
@@ -214,11 +243,13 @@ export function ActionsSettingsPage({ workspaceSlug }: ActionsSettingsPageProps)
         )}
       </section>
 
+      {selectedRunAction ? <DesktopWorkspaceActionPanel workspacePath={workspacePath} action={selectedRunAction} autoCloseOnSuccess={false} onClose={() => setSelectedRunAction(null)} /> : null}
+
       {draft ? <section className="rounded-xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] p-4 shadow-sm">
         <div className="flex items-center justify-between"><div><h2 className="font-semibold text-[var(--app-text)]">{draft.id ? 'Edit Action' : 'New Action'}</h2><p className="text-xs text-[var(--app-text-muted)]">Build a structured invocation. One line equals one fixed argument.</p></div><button type="button" onClick={() => setDraft(null)} aria-label="Close editor" className="rounded-lg p-2 hover:bg-[var(--app-surface-hover)]"><X size={16} /></button></div>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <label className="grid gap-1 text-sm font-medium">Name<Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="Run checks" /></label>
-          <label className="grid gap-1 text-sm font-medium">Icon name<Input value={draft.icon} onChange={(event) => setDraft({ ...draft, icon: event.target.value })} placeholder="zap" /></label>
+          <WorkspaceActionIconPicker value={draft.icon} onChange={(icon) => setDraft({ ...draft, icon: normalizeWorkspaceActionIcon(icon) })} disabled={saving} />
           <label className="grid gap-1 text-sm font-medium md:col-span-2">Description<Input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="What this Action does" /></label>
           <div className="md:col-span-2">
             <label className="grid gap-1 text-sm font-medium">Workspace script<div className="flex gap-2"><Input readOnly value={draft.entrypoint} placeholder="Choose a file inside the workspace" /><Button variant="outline" onClick={() => void openBrowser()}><FileCode2 size={15} />Browse</Button></div></label>

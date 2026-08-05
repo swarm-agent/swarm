@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 const panelURL = new URL('./desktop-workspace-action-panel.tsx', import.meta.url)
+const pageURL = new URL('../../layout/desktop-app-page.tsx', import.meta.url)
+const settingsURL = new URL('../../settings/actions/components/actions-settings-page.tsx', import.meta.url)
 
 test('workspace Action panel can foreground an existing run without launching a duplicate', async () => {
   const source = await readFile(panelURL, 'utf8')
@@ -15,7 +17,20 @@ test('workspace Action panel can foreground an existing run without launching a 
   assert.match(source, /onRunChangeRef\.current\?\.\(next\)/)
 })
 
-test('post-commit foreground run preserves output and partial-success context', async () => {
+test('Action definitions and execution remain separate surfaces', async () => {
+  const [panel, page, settings] = await Promise.all([
+    readFile(panelURL, 'utf8'),
+    readFile(pageURL, 'utf8'),
+    readFile(settingsURL, 'utf8'),
+  ])
+
+  assert.match(page, /action=\{workspaceActionPresentation\}/)
+  assert.match(settings, /Action saved\. Nothing was executed\./)
+  assert.match(settings, /onClick=\{\(\) => runAction\(action\)\}/)
+  assert.doesNotMatch(panel, /saveWorkspaceAction|deleteWorkspaceAction|reorderWorkspaceActions/)
+})
+
+test('foreground run preserves output and run-state context', async () => {
   const source = await readFile(panelURL, 'utf8')
 
   assert.match(source, /contextNotice \? <p/)

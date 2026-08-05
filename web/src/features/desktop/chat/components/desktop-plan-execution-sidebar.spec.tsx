@@ -276,6 +276,18 @@ function view(
   };
 }
 
+test("plan sidebar does not render a Settings Actions shortcut", () => {
+  const full = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} displayMode="full" />,
+  );
+  const thin = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} displayMode="thin" />,
+  );
+
+  assert.doesNotMatch(full, /Settings → Actions|desktop-plan-open-action-settings/);
+  assert.doesNotMatch(thin, /Open Settings → Actions/);
+});
+
 test("plan sidebar renders one execution stack followed by a flexing Git card", () => {
   const html = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
