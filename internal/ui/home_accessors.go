@@ -44,6 +44,32 @@ func (p *HomePage) SetTheme(theme Theme) {
 	p.theme = theme
 }
 
+func (p *HomePage) SetHomeTipsVisible(visible bool) {
+	if p == nil {
+		return
+	}
+	wasVisible := p.showHomeTips
+	p.showHomeTips = visible
+	if visible && !wasVisible {
+		p.homeTipRotatedAt = time.Now()
+	}
+}
+
+func (p *HomePage) HomeTipsVisible() bool {
+	return p != nil && p.showHomeTips
+}
+
+func (p *HomePage) CurrentHomeTip() string {
+	if p == nil || len(homeTips) == 0 {
+		return ""
+	}
+	index := p.homeTipIndex % len(homeTips)
+	if index < 0 {
+		index = 0
+	}
+	return homeTips[index]
+}
+
 func (p *HomePage) AcceptCommandPaletteEnter() bool {
 	return p.acceptCommandPaletteEnter()
 }

@@ -85,6 +85,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
+		{Command: "/tips", Hint: "Show or hide rotating home tips", QuickTips: []string{"/tips on", "/tips off", "/tips toggle", "/tips status"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
 		{Command: "/worktree", Hint: "Switch a local draft between direct and routed worktree start", QuickTips: []string{"/worktree on", "/worktree off"}},
 		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
@@ -398,6 +399,7 @@ func New() (*App, error) {
 	app.keybinds.ApplyOverrides(cfg.Input.Keybinds)
 	app.home.SetKeyBindings(app.keybinds)
 	app.home.SetSessionMode(app.config.Chat.DefaultNewSessionMode)
+	app.home.SetHomeTipsVisible(app.config.Chat.ShowTips)
 	app.home.SetPasteActive(app.pasteActive)
 	mouseEnabled := cfg.Input.MouseEnabled
 	app.config.Input.MouseEnabled = mouseEnabled
@@ -2188,6 +2190,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleHeaderCommand(args)
 	case "thinking":
 		a.handleThinkingCommand(args)
+	case "tips":
+		a.handleTipsCommand(args)
 	case "theme", "themes":
 		a.handleThemesCommand(args)
 	case "mouse":
@@ -2263,6 +2267,7 @@ func (a *App) showHelp() {
 		"/swarm [set <name>|name <name>|<name>]   (change primary swarm display name)",
 		updateHelpLine(a.startupDevMode()),
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
+		"/tips [on|off|toggle|status]   (show or hide rotating home tips)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
 		fmt.Sprintf("%s   (toggle mouse click capture)", keybinds.Label(ui.KeybindGlobalToggleMouse)),
 		"/voice [open|device <id>|stt [provider] [model]|profile [list|use <id>|upsert <id> <adapter> [model]|whisper [id] [model]|delete <id>]|tts [provider] [voice]|test [seconds]]",
@@ -7545,6 +7550,7 @@ func (a *App) applyLoadedAppConfig(cfg AppConfig) {
 		a.home.SetKeyBindings(a.keybinds)
 		a.home.SetSwarmName(a.config.Swarm.Name)
 		a.home.SetSessionMode(a.config.Chat.DefaultNewSessionMode)
+		a.home.SetHomeTipsVisible(a.config.Chat.ShowTips)
 		a.home.SetCommandSuggestions(buildHomeCommandSuggestions(a.config.Startup.DevMode))
 	}
 	if a.chat != nil {
