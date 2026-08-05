@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"swarm-refactor/swarmtui/internal/client"
+	"swarm-refactor/swarmtui/pkg/localupdate"
 )
 
 func writeRuntimeArtifact(t *testing.T, artifactRoot, version string, omit map[string]bool) {
@@ -467,7 +468,98 @@ func TestRollbackPendingRuntimeUpdateRestoresPreviousRuntime(t *testing.T) {
 	}
 }
 
-func TestRunUpdateHelperApplyFailureRestartsLastWorkingRuntime(t *testing.T) {
+func TestPreflightReleaseUpdateAcceptsCanonicalWritableInstalledLayout(t *testing.T) {
+	systemRoot := t.TempDir()
+	installRoot := filepath.Join(systemRoot, "share", "swarm")
+	binRoot := filepath.Join(systemRoot, "bin")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", binRoot)
+	for _, dir := range []string{filepath.Join(installRoot, "versions"), binRoot} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtimeRoot := filepath.Join(installRoot, "versions", "v1.0.0")
+	for _, leaf := range []string{"bin", "libexec", "lib", "share"} {
+		if err := os.MkdirAll(filepath.Join(runtimeRoot, leaf), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {
+		if err := os.WriteFile(filepath.Join(runtimeRoot, "libexec", name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := replaceSymlink(filepath.Join(installRoot, "current"), runtimeRoot); err != nil {
+		t.Fatal(err)
+	}
+	for _, leaf := range []string{"bin", "libexec", "lib", "share"} {
+		if err := replaceSymlink(filepath.Join(installRoot, leaf), filepath.Join(installRoot, "current", leaf)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {
+		if err := replaceSymlink(filepath.Join(binRoot, name), filepath.Join(installRoot, "libexec", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := PreflightReleaseUpdate(Profile{InstallRoot: installRoot}); err != nil {
+		t.Fatalf("preflight rejected canonical layout: %v", err)
+	}
+}
+
+func TestPreflightReleaseUpdateRejectsBrokenStableLauncherBeforeActivation(t *testing.T) {
+	systemRoot := t.TempDir()
+	installRoot := filepath.Join(systemRoot, "share", "swarm")
+	binRoot := filepath.Join(systemRoot, "bin")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", binRoot)
+	if err := os.MkdirAll(filepath.Join(installRoot, "versions", "v1.0.0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceSymlink(filepath.Join(installRoot, "current"), filepath.Join(installRoot, "versions", "v1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	err := PreflightReleaseUpdate(Profile{InstallRoot: installRoot})
+	if err == nil || !strings.Contains(err.Error(), "repair/reinstall with sudo") {
+		t.Fatalf("preflight error = %v, want one-time repair guidance", err)
+	}
+}
+
+func TestRunUpdateHelperPreflightFailureRefusesBeforeActivation(t *testing.T) {
+	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
+	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
+
+	originalApplyRelease := applyReleaseUpdateForUpdate
+	originalResolveLifecycle := resolveLifecycleManagerForUpdate
+	originalPreflight := preflightReleaseUpdateForUpdate
+	defer func() {
+		applyReleaseUpdateForUpdate = originalApplyRelease
+		resolveLifecycleManagerForUpdate = originalResolveLifecycle
+		preflightReleaseUpdateForUpdate = originalPreflight
+	}()
+
+	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
+		return lifecycleManager{Kind: lifecycleKindDirect}, true, nil
+	}
+	preflightReleaseUpdateForUpdate = func(Profile) error {
+		return releaseUpdateRepairError("broken launcher topology")
+	}
+	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
+		t.Fatal("activation ran after failed preflight")
+		return UpdateResult{}, nil
+	}
+
+	err := RunUpdateHelper(profile, plan, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "one-time repair/reinstall with sudo") {
+		t.Fatalf("RunUpdateHelper error = %v, want one-time repair guidance", err)
+	}
+}
+
+func TestRunUpdateHelperApplyFailureLeavesServingRuntimeUntouched(t *testing.T) {
 	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
 	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
 
@@ -475,12 +567,15 @@ func TestRunUpdateHelperApplyFailureRestartsLastWorkingRuntime(t *testing.T) {
 	originalApplyRelease := applyReleaseUpdateForUpdate
 	originalStartBackend := startBackendForUpdate
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
+	originalPreflight := preflightReleaseUpdateForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		applyReleaseUpdateForUpdate = originalApplyRelease
 		startBackendForUpdate = originalStartBackend
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
+		preflightReleaseUpdateForUpdate = originalPreflight
 	}()
+	preflightReleaseUpdateForUpdate = func(Profile) error { return nil }
 
 	calls := []string{}
 	stopBackendForUpdate = func(Profile) error {
@@ -500,11 +595,82 @@ func TestRunUpdateHelperApplyFailureRestartsLastWorkingRuntime(t *testing.T) {
 	}
 
 	err := RunUpdateHelper(profile, plan, 0, nil)
-	if err == nil || !strings.Contains(err.Error(), "last working runtime restarted") {
-		t.Fatalf("RunUpdateHelper() error = %v, want recovery evidence", err)
+	if err == nil || !strings.Contains(err.Error(), "current daemon and last working runtime remain active") {
+		t.Fatalf("RunUpdateHelper() error = %v, want untouched runtime evidence", err)
 	}
-	if got, want := strings.Join(calls, ","), "stop,apply-failed,restart-last-working"; got != want {
+	if got, want := strings.Join(calls, ","), "apply-failed"; got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
+	}
+}
+
+func TestFinishReleaseUpdateJobAfterBootPersistsTerminalOutcome(t *testing.T) {
+	profile := Profile{DataDir: t.TempDir()}
+	for _, tt := range []struct {
+		name    string
+		status  string
+		message string
+		errText string
+	}{
+		{name: "success", status: updateJobStatusCompleted, message: "Updated to v1.2.3."},
+		{name: "rollback", status: updateJobStatusFailed, errText: "rolled back to v1.2.2"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			jobID := "job-" + tt.name
+			if err := localupdate.WriteUpdateJobStatus(profile.DataDir, localupdate.UpdateJobStatus{ID: jobID, Kind: updateKindRelease, Status: updateJobStatusRunning}); err != nil {
+				t.Fatalf("seed update status: %v", err)
+			}
+			finishReleaseUpdateJobAfterBoot(profile, tt.status, tt.message, tt.errText)
+			status, ok, err := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(profile.DataDir))
+			if err != nil || !ok {
+				t.Fatalf("read update status: ok=%v err=%v", ok, err)
+			}
+			if status.Status != tt.status || status.Message != tt.message || status.Error != tt.errText || status.CompletedAtUnix == 0 {
+				t.Fatalf("terminal update status = %+v", status)
+			}
+		})
+	}
+}
+
+func TestRunUpdateHelperSystemdShutdownFailureDoesNotReportSuccess(t *testing.T) {
+	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
+	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
+	t.Setenv(updateJobIDEnv, "job-release-failure")
+	if err := localupdate.WriteUpdateJobStatus(profile.DataDir, localupdate.UpdateJobStatus{ID: "job-release-failure", Kind: updateKindRelease, Status: updateJobStatusRunning}); err != nil {
+		t.Fatalf("seed update status: %v", err)
+	}
+
+	originalApplyRelease := applyReleaseUpdateForUpdate
+	originalResolveLifecycle := resolveLifecycleManagerForUpdate
+	originalServiceActive := serviceActiveForUpdate
+	originalRequestShutdown := requestBackendShutdownForUpdate
+	originalPreflight := preflightReleaseUpdateForUpdate
+	defer func() {
+		applyReleaseUpdateForUpdate = originalApplyRelease
+		resolveLifecycleManagerForUpdate = originalResolveLifecycle
+		serviceActiveForUpdate = originalServiceActive
+		requestBackendShutdownForUpdate = originalRequestShutdown
+		preflightReleaseUpdateForUpdate = originalPreflight
+	}()
+	preflightReleaseUpdateForUpdate = func(Profile) error { return nil }
+	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
+		return lifecycleManager{Kind: lifecycleKindSystemd, Scope: "system", Unit: "swarm.service"}, true, nil
+	}
+	serviceActiveForUpdate = func(systemdServiceScope, string) (bool, bool, error) { return true, true, nil }
+	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
+		return UpdateResult{Version: "v1.2.3"}, nil
+	}
+	requestBackendShutdownForUpdate = func(Profile, string) error { return errors.New("transport refused") }
+
+	err := RunUpdateHelper(profile, plan, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "request authenticated update restart") {
+		t.Fatalf("RunUpdateHelper error = %v, want restart request failure", err)
+	}
+	status, ok, statusErr := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(profile.DataDir))
+	if statusErr != nil || !ok {
+		t.Fatalf("read update status: ok=%v err=%v", ok, statusErr)
+	}
+	if status.Status != updateJobStatusFailed || !strings.Contains(status.Error, "transport refused") {
+		t.Fatalf("update status = %+v, want failed restart request", status)
 	}
 }
 
@@ -519,6 +685,7 @@ func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testi
 	originalRunTUI := runTUIWithExtraEnvForUpdate
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalRollbackRestart := rollbackPendingUpdateAndRestartForUpdate
+	originalPreflight := preflightReleaseUpdateForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		applyReleaseUpdateForUpdate = originalApplyRelease
@@ -526,7 +693,9 @@ func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testi
 		runTUIWithExtraEnvForUpdate = originalRunTUI
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		rollbackPendingUpdateAndRestartForUpdate = originalRollbackRestart
+		preflightReleaseUpdateForUpdate = originalPreflight
 	}()
+	preflightReleaseUpdateForUpdate = func(Profile) error { return nil }
 
 	calls := []string{}
 	stopBackendForUpdate = func(Profile) error {
@@ -562,16 +731,20 @@ func TestRunUpdateHelperDirectRestartStartsBackendThenRunsTUIForeground(t *testi
 	if err := RunUpdateHelper(profile, plan, 0, []string{"main"}); err != nil {
 		t.Fatalf("RunUpdateHelper: %v", err)
 	}
-	want := "stop,apply,start-backend,run-tui"
+	want := "apply,stop,start-backend,run-tui"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}
 }
 
-func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *testing.T) {
+func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *testing.T) {
 	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
 	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
 	result := UpdateResult{Version: "v1.2.3", RuntimeRoot: filepath.Join(profile.InstallRoot, "versions", "v1.2.3")}
+	t.Setenv(updateJobIDEnv, "job-release-restart")
+	if err := localupdate.WriteUpdateJobStatus(profile.DataDir, localupdate.UpdateJobStatus{ID: "job-release-restart", Kind: updateKindRelease, Status: updateJobStatusRunning}); err != nil {
+		t.Fatalf("seed update status: %v", err)
+	}
 
 	originalStopBackend := stopBackendForUpdate
 	originalStopSystemd := stopSystemdServiceForUpdate
@@ -582,6 +755,8 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 	originalResolveLifecycle := resolveLifecycleManagerForUpdate
 	originalServiceActive := serviceActiveForUpdate
 	originalRollbackRestart := rollbackPendingUpdateAndRestartForUpdate
+	originalRequestShutdown := requestBackendShutdownForUpdate
+	originalPreflight := preflightReleaseUpdateForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		stopSystemdServiceForUpdate = originalStopSystemd
@@ -592,18 +767,18 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		serviceActiveForUpdate = originalServiceActive
 		rollbackPendingUpdateAndRestartForUpdate = originalRollbackRestart
+		requestBackendShutdownForUpdate = originalRequestShutdown
+		preflightReleaseUpdateForUpdate = originalPreflight
 	}()
+	preflightReleaseUpdateForUpdate = func(Profile) error { return nil }
 
 	calls := []string{}
 	stopBackendForUpdate = func(Profile) error {
 		t.Fatalf("direct backend stop should not be used for active systemd service")
 		return nil
 	}
-	stopSystemdServiceForUpdate = func(scope systemdServiceScope, unit string) error {
-		calls = append(calls, "stop-systemd")
-		if scope != systemdServiceSystem || unit != "swarm.service" {
-			t.Fatalf("systemd stop = %s %s, want system swarm.service", scope, unit)
-		}
+	stopSystemdServiceForUpdate = func(systemdServiceScope, string) error {
+		t.Fatalf("systemd stop must not be used for release update")
 		return nil
 	}
 	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
@@ -614,11 +789,8 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 		t.Fatalf("direct backend start should not be used for active systemd service")
 		return nil
 	}
-	restartSystemdServiceForUpdate = func(scope systemdServiceScope, unit string, enable bool) error {
-		calls = append(calls, "restart-systemd")
-		if scope != systemdServiceSystem || unit != "swarm.service" || enable {
-			t.Fatalf("systemd restart = %s %s enable=%v", scope, unit, enable)
-		}
+	restartSystemdServiceForUpdate = func(systemdServiceScope, string, bool) error {
+		t.Fatalf("systemd restart must not be used for release update")
 		return nil
 	}
 	runTUIWithExtraEnvForUpdate = func(Profile, []string, map[string]string) error {
@@ -632,15 +804,26 @@ func TestRunUpdateHelperSystemdStopsServiceBeforeApplyThenRunsTUIForeground(t *t
 		return true, true, nil
 	}
 	rollbackPendingUpdateAndRestartForUpdate = func(Profile, []string, *os.Process, error) error {
-		t.Fatalf("legacy direct rollback should not be used for systemd lifecycle")
+		t.Fatalf("direct rollback should not be used for successful systemd lifecycle")
+		return nil
+	}
+	requestBackendShutdownForUpdate = func(_ Profile, reason string) error {
+		calls = append(calls, "shutdown:"+reason)
 		return nil
 	}
 
 	if err := RunUpdateHelper(profile, plan, 0, []string{"main"}); err != nil {
 		t.Fatalf("RunUpdateHelper: %v", err)
 	}
-	want := "stop-systemd,apply,restart-systemd,run-tui"
+	want := "apply,shutdown:update-release"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
+	}
+	status, ok, err := localupdate.ReadUpdateJobStatusPath(localupdate.UpdateJobStatusPath(profile.DataDir))
+	if err != nil || !ok {
+		t.Fatalf("read update status: ok=%v err=%v", ok, err)
+	}
+	if status.Status != updateJobStatusRunning || status.CompletedAtUnix != 0 || !strings.Contains(status.Message, "waiting for boot confirmation") {
+		t.Fatalf("update status = %+v, want nonterminal boot confirmation state", status)
 	}
 }

@@ -38,7 +38,7 @@ sh install.sh --yes --no-service
 
 That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm.
 
-The installer prints an install plan, places launchers in `/usr/local/bin`, and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. It then offers three explicit choices: install/start the systemd service, install files only with no service, or cancel. Because these are system locations, `install.sh` may prompt for sudo during provisioning. Swarm-owned subdirectories are created for the installing user so the daemon still runs as that user when started by systemd or another supervisor.
+The installer prints an install plan, places launchers in `/usr/local/bin`, and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. It then offers three explicit choices: install/start the systemd service, install files only with no service, or cancel. Because these are system locations, `install.sh` may prompt for sudo during initial provisioning. Swarm-owned runtime directories are created for the service user, so a healthy installed system can verify, activate, restart, health-check, and if necessary roll back routine stable release updates without prompting for sudo. If launcher links, service topology, or install-root ownership are later changed or damaged, the update refuses before activation and directs you to perform a one-time privileged repair or reinstall; it does not silently fall back to sudo.
 
 If your shell does not already include the launcher directory on `PATH`, run Swarm with:
 

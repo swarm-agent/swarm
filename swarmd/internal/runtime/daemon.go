@@ -815,6 +815,8 @@ func (d *Daemon) Run() error {
 	return d.waitForShutdown()
 }
 
+var ErrReleaseUpdateRestart = errors.New("release update activated; restart required")
+
 func (d *Daemon) waitForShutdown() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -867,7 +869,9 @@ func (d *Daemon) waitForShutdown() error {
 	if err := d.cleanup(); err != nil {
 		errs = append(errs, err)
 	}
-	_ = reason
+	if strings.EqualFold(strings.TrimSpace(reason), "api:update-release") {
+		errs = append(errs, ErrReleaseUpdateRestart)
+	}
 	return errors.Join(errs...)
 }
 

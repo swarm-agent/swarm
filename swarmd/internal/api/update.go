@@ -352,6 +352,7 @@ func (s *Server) startDetachedUpdateCommand(ctx context.Context, kind, jobID str
 		LogPath:      logPath,
 		SystemdUnit:  strings.TrimSpace(os.Getenv("SWARM_SYSTEMD_UNIT")),
 		SystemdScope: strings.TrimSpace(os.Getenv("SWARM_SYSTEMD_SCOPE")),
+		Direct:       kind == updateKindRelease,
 	})
 	if err != nil {
 		return updateLaunchDetails{}, err
@@ -394,6 +395,7 @@ type updateHelperLaunchConfig struct {
 	LogPath      string
 	SystemdUnit  string
 	SystemdScope string
+	Direct       bool
 }
 
 type updateHelperLaunchCommand struct {
@@ -410,7 +412,7 @@ func prepareUpdateHelperLaunch(cfg updateHelperLaunchConfig) (updateHelperLaunch
 		Env:         append([]string(nil), cfg.Env...),
 		Dir:         strings.TrimSpace(cfg.Dir),
 	}
-	if !shouldLaunchUpdateHelperWithSystemdScope(cfg) {
+	if cfg.Direct || !shouldLaunchUpdateHelperWithSystemdScope(cfg) {
 		return command, nil
 	}
 	systemdRunPath, err := execLookPathForUpdate("systemd-run")

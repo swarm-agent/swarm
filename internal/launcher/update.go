@@ -48,6 +48,7 @@ var stableUpdateVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 var (
 	stopBackendForUpdate                     = StopBackend
+	requestBackendShutdownForUpdate          = RequestBackendShutdownForUpdate
 	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
 	startBackendForUpdate                    = StartBackend
 	runTUIWithExtraEnvForUpdate              = RunTUIWithExtraEnv
@@ -64,6 +65,7 @@ var (
 	installLaunchersForUpdate                = InstallLaunchers
 	ensureSystemdServiceUnitForUpdate        = EnsureSystemdServiceUnit
 	rollbackPendingUpdateAndRestartForUpdate = rollbackPendingUpdateAndRestart
+	preflightReleaseUpdateForUpdate          = PreflightReleaseUpdate
 )
 
 type runtimeBootStatus struct {
@@ -87,6 +89,72 @@ type updateRestartPlan struct {
 	systemdUnit   string
 	systemdActive bool
 	blockedErr    error
+}
+
+const releaseUpdateShutdownReason = "update-release"
+
+func releaseUpdateRepairError(detail string) error {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		detail = "the installed runtime layout is not ready for owner-managed updates"
+	}
+	return fmt.Errorf("release update preflight failed: %s; run the one-time repair/reinstall with sudo before retrying the update", detail)
+}
+
+func PreflightReleaseUpdate(profile Profile) error {
+	installRoot, err := filepath.Abs(filepath.Clean(strings.TrimSpace(profile.InstallRoot)))
+	if err != nil || strings.TrimSpace(profile.InstallRoot) == "" {
+		return releaseUpdateRepairError("install root is missing")
+	}
+	canonicalRoot, err := filepath.Abs(filepath.Clean(systemInstallRoot()))
+	if err != nil || installRoot != canonicalRoot {
+		return releaseUpdateRepairError(fmt.Sprintf("install root %q is not the canonical root %q", installRoot, canonicalRoot))
+	}
+	for _, dir := range []string{installRoot, filepath.Join(installRoot, "versions")} {
+		info, statErr := os.Lstat(dir)
+		if statErr != nil {
+			return releaseUpdateRepairError(fmt.Sprintf("required directory %q is missing or unsafe", dir))
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return releaseUpdateRepairError(fmt.Sprintf("required directory %q is missing or unsafe", dir))
+		}
+		if !dirWritable(dir) {
+			return releaseUpdateRepairError(fmt.Sprintf("service owner cannot write %q", dir))
+		}
+	}
+	currentLink := filepath.Join(installRoot, "current")
+	currentRoot, ok := resolveRuntimeLink(currentLink)
+	if !ok {
+		return releaseUpdateRepairError("canonical current runtime link is missing")
+	}
+	versionsDir := filepath.Join(installRoot, "versions")
+	rel, err := filepath.Rel(versionsDir, currentRoot)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.Contains(rel, string(filepath.Separator)) {
+		return releaseUpdateRepairError("current runtime link escapes the versions directory")
+	}
+	if info, err := os.Lstat(currentRoot); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return releaseUpdateRepairError("current runtime target is missing or unsafe")
+	}
+	for _, leaf := range []string{"bin", "libexec", "lib", "share"} {
+		linkPath := filepath.Join(installRoot, leaf)
+		want := filepath.Join(currentLink, leaf)
+		got, err := resolveAbsoluteSymlinkTarget(linkPath)
+		if err != nil || got != want {
+			return releaseUpdateRepairError(fmt.Sprintf("runtime link %q does not target %q", linkPath, want))
+		}
+	}
+	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {
+		linkPath := filepath.Join(systemBinDir(), name)
+		want := filepath.Join(installRoot, "libexec", name)
+		got, err := resolveAbsoluteSymlinkTarget(linkPath)
+		if err != nil || got != want {
+			return releaseUpdateRepairError(fmt.Sprintf("stable launcher link %q does not target %q", linkPath, want))
+		}
+		if !isExecutable(want) {
+			return releaseUpdateRepairError(fmt.Sprintf("stable launcher target %q is not executable", want))
+		}
+	}
+	return nil
 }
 
 func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.UpdateApplyPlan) (UpdateResult, error) {
@@ -133,9 +201,6 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 			return UpdateResult{}, err
 		}
 		if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
-			return UpdateResult{}, err
-		}
-		if err := installLauncherSymlinks(installRoot); err != nil {
 			return UpdateResult{}, err
 		}
 		return UpdateResult{Version: version, RuntimeRoot: targetRoot, CurrentLink: currentLink, PreviousLink: previousLink}, nil
@@ -194,9 +259,6 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 	if err := switchRuntimeLinks(installRoot, targetRoot); err != nil {
 		return UpdateResult{}, err
 	}
-	if err := installLauncherSymlinks(installRoot); err != nil {
-		return UpdateResult{}, err
-	}
 	return UpdateResult{Version: version, RuntimeRoot: targetRoot, CurrentLink: currentLink, PreviousLink: previousLink}, nil
 }
 
@@ -231,8 +293,8 @@ func RunReleaseUpdate(profile Profile, relaunchArgs []string) error {
 		version = "new release"
 	}
 	fmt.Fprintf(os.Stdout, "\nUpdating to %s...\n", version)
-	fmt.Fprintln(os.Stdout, "Swarm is shut down before applying the update.")
-	fmt.Fprintln(os.Stdout, "Swarm will restart in this terminal when the update finishes.")
+	fmt.Fprintln(os.Stdout, "Swarm will keep serving while the release is verified and activated.")
+	fmt.Fprintln(os.Stdout, "Swarm will restart after activation completes.")
 	return RunUpdateHelper(profile, plan, 0, relaunchArgs)
 }
 
@@ -243,7 +305,7 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 			_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusFailed, "", err.Error())
 		}
 	}()
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Preparing to stop Swarm backend for release update.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Checking release-update activation and restart prerequisites.", "")
 	if parentPID > 0 {
 		if err := waitForPIDExit(parentPID, updateParentWaitLimit); err != nil {
 			return err
@@ -256,31 +318,27 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if restartPlan.blockedErr != nil {
 		return restartPlan.blockedErr
 	}
-	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.systemdActive {
-		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, fmt.Sprintf("Stopping Swarm backend via systemd (%s).", restartPlan.systemdUnit), "")
-		if err := stopSystemdServiceForUpdate(restartPlan.systemdScope, restartPlan.systemdUnit); err != nil {
-			return err
-		}
-	} else {
-		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Stopping Swarm backend.", "")
-		if err := stopBackendForUpdate(profile); err != nil {
-			return err
-		}
+	if err := preflightReleaseUpdateForUpdate(profile); err != nil {
+		return err
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Applying Swarm release update.", "")
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Verifying and activating Swarm release while the current daemon remains available.", "")
 	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
 	if err != nil {
-		recoveryErr := restartLastWorkingRuntime(profile, restartPlan)
-		if recoveryErr != nil {
-			return errors.Join(err, fmt.Errorf("restart last working runtime after failed update apply: %w", recoveryErr))
-		}
-		return fmt.Errorf("apply release update (last working runtime restarted): %w", err)
+		return fmt.Errorf("apply release update (current daemon and last working runtime remain active): %w", err)
 	}
-	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend.", "")
-	if err := restartLastWorkingRuntime(profile, restartPlan); err != nil {
-		if restartPlan.managerKind == lifecycleKindSystemd {
-			return rollbackPendingUpdateAndRestartWithPlan(profile, relaunchArgs, nil, err, restartPlan)
+	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.systemdActive {
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, releaseUpdateCompletedMessage(result.Version)+" Requesting restart through the existing systemd policy; waiting for boot confirmation.", "")
+		if err := requestBackendShutdownForUpdate(profile, releaseUpdateShutdownReason); err != nil {
+			return fmt.Errorf("request authenticated update restart: %w", err)
 		}
+		return nil
+	}
+
+	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend without a service manager.", "")
+	if err := stopBackendForUpdate(profile); err != nil {
+		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
+	}
+	if err := startBackendForUpdate(profile, StartBackendOptions{BuildIfMissing: false, ForceRestart: true}); err != nil {
 		return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, err)
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version), "")
@@ -288,6 +346,24 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
+}
+
+func RequestBackendShutdownForUpdate(profile Profile, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = releaseUpdateShutdownReason
+	}
+	body, status, err := localTransportRequest(profile, http.MethodPost, profile.URL+"/v1/system/shutdown", map[string]string{
+		"Accept":       "application/json",
+		"Content-Type": "application/json",
+	}, map[string]string{"reason": reason})
+	if err != nil {
+		return err
+	}
+	if status != http.StatusAccepted {
+		return fmt.Errorf("shutdown request failed (%d): %s", status, responseErrorMessage(body))
+	}
+	return nil
 }
 
 func restartLastWorkingRuntime(profile Profile, plan updateRestartPlan) error {
@@ -346,6 +422,24 @@ func writeLauncherUpdateJobStatus(profile Profile, kind, status, message, errorM
 	return err
 }
 
+func finishReleaseUpdateJobAfterBoot(profile Profile, status, message, errorMessage string) {
+	if strings.TrimSpace(profile.DataDir) == "" {
+		return
+	}
+	path := localupdate.UpdateJobStatusPath(profile.DataDir)
+	existing, ok, err := localupdate.ReadUpdateJobStatusPath(path)
+	if err != nil || !ok || existing.Kind != updateKindRelease || existing.Status != updateJobStatusRunning || strings.TrimSpace(existing.ID) == "" {
+		return
+	}
+	now := time.Now().UnixMilli()
+	existing.Status = strings.TrimSpace(status)
+	existing.Message = strings.TrimSpace(message)
+	existing.Error = strings.TrimSpace(errorMessage)
+	existing.UpdatedAtUnix = now
+	existing.CompletedAtUnix = now
+	_, _ = localupdate.WriteUpdateJobStatusIfCurrent(profile.DataDir, existing.ID, existing)
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -397,7 +491,11 @@ func resolveUpdateRestartPlan(profile Profile) (updateRestartPlan, error) {
 		plan.blockedErr = fmt.Errorf("systemd service %s is not installed", plan.systemdUnit)
 		return plan, nil
 	}
-	plan.systemdActive = active
+	if !active {
+		plan.blockedErr = fmt.Errorf("systemd service %s is not active; start it or repair the service before applying a release update", plan.systemdUnit)
+		return plan, nil
+	}
+	plan.systemdActive = true
 	return plan, nil
 }
 
@@ -1042,9 +1140,6 @@ func rollbackPendingRuntimeUpdate(installRoot string, cause error) (string, erro
 		return "", errors.New("no rollback runtime is available")
 	}
 	if err := switchRuntimeLinks(installRoot, rollbackRoot); err != nil {
-		return "", err
-	}
-	if err := installLauncherSymlinks(installRoot); err != nil {
 		return "", err
 	}
 	if err := replaceSymlink(lastKnownGoodRuntimeLink(installRoot), rollbackRoot); err != nil {

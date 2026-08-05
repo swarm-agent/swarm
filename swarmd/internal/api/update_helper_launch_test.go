@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestPrepareUpdateHelperLaunchUsesSystemdRunScopeForSystemService(t *testing.T) {
+func TestPrepareDevUpdateHelperLaunchUsesSystemdRunScopeForSystemService(t *testing.T) {
 	withUpdateHelperLaunchTestHooks(t)
 	t.Setenv(updateHelperUnitEnv, "swarm-update-test")
 	t.Setenv("USER", "swarm")
@@ -56,7 +56,7 @@ func TestPrepareUpdateHelperLaunchUsesSystemdRunScopeForSystemService(t *testing
 	}
 }
 
-func TestPrepareUpdateHelperLaunchUsesUserScopeForUserService(t *testing.T) {
+func TestPrepareDevUpdateHelperLaunchUsesUserScopeForUserService(t *testing.T) {
 	withUpdateHelperLaunchTestHooks(t)
 	t.Setenv(updateHelperUnitEnv, "swarm-update-user")
 
@@ -79,7 +79,7 @@ func TestPrepareUpdateHelperLaunchUsesUserScopeForUserService(t *testing.T) {
 	assertStringInSlice(t, launch.Args, "--unit=swarm-update-user")
 }
 
-func TestPrepareUpdateHelperLaunchFallsBackWithoutSystemdContextOrBinary(t *testing.T) {
+func TestPrepareDevUpdateHelperLaunchFailsWithoutRequiredSystemdBinary(t *testing.T) {
 	withUpdateHelperLaunchTestHooks(t)
 	execLookPathForUpdate = func(name string) (string, error) {
 		if name == "systemd-run" {
@@ -120,7 +120,7 @@ func TestPrepareUpdateHelperLaunchFallsBackWithoutSystemdContextOrBinary(t *test
 	}
 }
 
-func TestPrepareUpdateHelperLaunchCanBeDisabled(t *testing.T) {
+func TestPrepareDevUpdateHelperLaunchCanBeDisabled(t *testing.T) {
 	withUpdateHelperLaunchTestHooks(t)
 	t.Setenv(updateHelperScopeEnv, "0")
 
@@ -135,6 +135,29 @@ func TestPrepareUpdateHelperLaunchCanBeDisabled(t *testing.T) {
 	}
 	if launch.CommandPath != "/opt/swarm/swarm" {
 		t.Fatalf("disabled command path = %q, want direct swarm", launch.CommandPath)
+	}
+}
+
+func TestPrepareReleaseUpdateHelperLaunchRunsDirectlyForSystemService(t *testing.T) {
+	withUpdateHelperLaunchTestHooks(t)
+	launch, err := prepareUpdateHelperLaunch(updateHelperLaunchConfig{
+		SwarmPath:    "/usr/local/share/swarm/libexec/swarm",
+		Args:         []string{"main", "update", "apply"},
+		Env:          []string{"SWARM_UPDATE_JOB_ID=job-release", "SWARM_UPDATE_JOB_KIND=release"},
+		SystemdScope: "system",
+		SystemdUnit:  "swarm.service",
+		Direct:       true,
+	})
+	if err != nil {
+		t.Fatalf("prepare release update helper: %v", err)
+	}
+	if launch.CommandPath != "/usr/local/share/swarm/libexec/swarm" {
+		t.Fatalf("release command path = %q, want direct launcher", launch.CommandPath)
+	}
+	assertStringNotInSlice(t, launch.Args, "-n")
+	assertStringNotInSlice(t, launch.Args, "/bin/systemd-run")
+	if got := strings.Join(launch.Args, " "); strings.Contains(got, "sudo") || strings.Contains(got, "systemd-run") {
+		t.Fatalf("release helper retained privileged launch path: %q", got)
 	}
 }
 
