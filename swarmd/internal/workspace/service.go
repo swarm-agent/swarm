@@ -1,9 +1,12 @@
 package workspace
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,6 +34,7 @@ type Resolution struct {
 	WorkspacePath             string `json:"workspace_path"`
 	WorkspaceName             string `json:"workspace_name"`
 	ThemeID                   string `json:"theme_id,omitempty"`
+	IconPNGDataURL            string `json:"icon_png_data_url,omitempty"`
 	Definition                string `json:"definition,omitempty"`
 	DefinitionStatus          string `json:"definition_status,omitempty"`
 	DefinitionAttemptCount    int    `json:"definition_attempt_count,omitempty"`
@@ -51,6 +55,7 @@ type Entry struct {
 	LocalWorkspaceBindingID   string   `json:"local_workspace_binding_id,omitempty"`
 	WorkspaceName             string   `json:"workspace_name"`
 	ThemeID                   string   `json:"theme_id,omitempty"`
+	IconPNGDataURL            string   `json:"icon_png_data_url,omitempty"`
 	Directories               []string `json:"directories"`
 	IsGitRepo                 bool     `json:"is_git_repo"`
 	SortIndex                 int      `json:"sort_index"`
@@ -436,6 +441,49 @@ func (s *Service) SetThemeIDForPrincipal(principal identity.Principal, path, the
 	return resolution, nil
 }
 
+func (s *Service) SetIconPNGDataURLForPrincipal(principal identity.Principal, path, iconPNGDataURL string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	iconPNGDataURL = strings.TrimSpace(iconPNGDataURL)
+	if iconPNGDataURL != "" {
+		const prefix = "data:image/png;base64,"
+		if !strings.HasPrefix(iconPNGDataURL, prefix) {
+			return Resolution{}, fmt.Errorf("workspace icon must be a PNG data URL")
+		}
+		if len(iconPNGDataURL) > 1_400_000 {
+			return Resolution{}, fmt.Errorf("workspace icon PNG is too large")
+		}
+		payload, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(iconPNGDataURL, prefix))
+		if err != nil {
+			return Resolution{}, fmt.Errorf("workspace icon PNG encoding is invalid")
+		}
+		if len(payload) == 0 || len(payload) > 1_048_576 {
+			return Resolution{}, fmt.Errorf("workspace icon PNG must be smaller than 1 MB")
+		}
+		config, err := png.DecodeConfig(bytes.NewReader(payload))
+		if err != nil {
+			return Resolution{}, fmt.Errorf("workspace icon content is not a valid PNG")
+		}
+		if config.Width < 1 || config.Height < 1 || config.Width > 2048 || config.Height > 2048 {
+			return Resolution{}, fmt.Errorf("workspace icon PNG dimensions must be between 1 and 2048 pixels")
+		}
+	}
+	entry, err := s.store.SetIconPNGDataURLForAccount(principal.AccountScopeID, resolved, iconPNGDataURL)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("set workspace icon: %w", err)
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(entry.Path)
+	}
+	return resolutionForEntry(path, entry.Path, entry, name), nil
+}
+
 func (s *Service) publishThemeUpdated(resolution Resolution) error {
 	if s == nil || s.events == nil || s.publish == nil {
 		return nil
@@ -529,6 +577,7 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 			State:                     entry.State,
 			WorkspaceName:             entry.Name,
 			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
+			IconPNGDataURL:            entry.IconPNGDataURL,
 			Directories:               append([]string(nil), entry.Directories...),
 			IsGitRepo:                 isGitRepo,
 			SortIndex:                 entry.SortIndex,
@@ -578,6 +627,7 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			State:                     entry.State,
 			WorkspaceName:             entry.Name,
 			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
+			IconPNGDataURL:            entry.IconPNGDataURL,
 			Directories:               append([]string(nil), entry.Directories...),
 			IsGitRepo:                 isGitRepo,
 			SortIndex:                 entry.SortIndex,
@@ -1172,6 +1222,7 @@ func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 
 func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.WorkspaceEntry, workspaceName string) Resolution {
 	resolution := resolutionForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID))
+	resolution.IconPNGDataURL = entry.IconPNGDataURL
 	resolution.Definition = entry.Definition
 	resolution.DefinitionStatus = entry.DefinitionStatus
 	resolution.DefinitionAttemptCount = entry.DefinitionAttemptCount

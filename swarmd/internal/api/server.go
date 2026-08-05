@@ -2048,6 +2048,35 @@ func (s *Server) handleWorkspaceTheme(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleWorkspaceIcon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	var req struct {
+		Path           string `json:"path"`
+		IconPNGDataURL string `json:"icon_png_data_url"`
+	}
+	if err := decodeJSONLimited(w, r, &req, 1_500_000); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resolution, err := s.workspace.SetIconPNGDataURLForPrincipal(principal, req.Path, req.IconPNGDataURL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"workspace": resolution,
+	})
+}
+
 func (s *Server) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import { Bot, Lightbulb, RotateCcw, TriangleAlert } from 'lucide-react'
+import { Lightbulb, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
+import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { DESKTOP_HOME_TIPS, selectDesktopHomeTipIndex } from '../services/home-tips'
+import { WorkspaceHomeIdentity } from './workspace-home-identity'
 
 export type DesktopV3RoutedPendingShellState = 'draft' | 'worktree-primed' | 'routing' | 'failed'
 export type DesktopV3PendingStartPath = 'session' | 'router'
@@ -14,6 +16,10 @@ export interface DesktopV3RoutedPendingShellProps {
   error?: string
   onRetry?: () => void
   showTips?: boolean
+  workspace?: WorkspaceEntry
+  workspaces?: WorkspaceEntry[]
+  onOpenWorkspacePicker?: () => void
+  onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
   className?: string
 }
 
@@ -29,6 +35,10 @@ export function DesktopV3RoutedPendingShell({
   error = '',
   onRetry,
   showTips = true,
+  workspace,
+  workspaces = workspace ? [workspace] : [],
+  onOpenWorkspacePicker,
+  onSetWorkspaceIcon,
   className,
 }: DesktopV3RoutedPendingShellProps) {
   const prompt = pendingPrompt.trim()
@@ -60,13 +70,14 @@ export function DesktopV3RoutedPendingShell({
       >
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-8 sm:px-6">
           <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center text-center">
-            <span
-              className="mb-4 grid size-11 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] shadow-sm"
-              aria-hidden="true"
-            >
-              <Bot size={20} />
-            </span>
-            <h1 className="text-lg font-semibold text-[var(--app-text)]">Swarm</h1>
+            {workspace ? (
+              <WorkspaceHomeIdentity
+                workspace={workspace}
+                workspaces={workspaces}
+                onOpenWorkspacePicker={onOpenWorkspacePicker}
+                onSetWorkspaceIcon={onSetWorkspaceIcon}
+              />
+            ) : null}
             {showTips ? (
               <p className="mt-1 inline-flex max-w-xl items-center justify-center gap-1.5 text-sm leading-6 text-[var(--app-text-muted)]" data-testid="desktop-home-tip">
                 <Lightbulb size={15} className="shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />

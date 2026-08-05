@@ -41,6 +41,7 @@ type WorkspaceEntry struct {
 	Path                      string   `json:"path"`
 	Name                      string   `json:"name"`
 	ThemeID                   string   `json:"theme_id,omitempty"`
+	IconPNGDataURL            string   `json:"icon_png_data_url,omitempty"`
 	Directories               []string `json:"directories,omitempty"`
 	SortIndex                 int      `json:"sort_index,omitempty"`
 	AddedAt                   int64    `json:"added_at"`
@@ -272,6 +273,33 @@ func (s *WorkspaceStore) SetThemeIDForAccount(accountScopeID, path, themeID stri
 	}
 	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	entry.ThemeID = normalizeWorkspaceThemeID(themeID)
+	entry.UpdatedAt = time.Now().UnixMilli()
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *WorkspaceStore) SetIconPNGDataURLForAccount(accountScopeID, path, iconPNGDataURL string) (WorkspaceEntry, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace path is required")
+	}
+	key := KeyWorkspaceEntryForAccount(accountScopeID, path)
+	var entry WorkspaceEntry
+	ok, err := s.store.GetJSON(key, &entry)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", path)
+	}
+	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
+	entry.IconPNGDataURL = strings.TrimSpace(iconPNGDataURL)
 	entry.UpdatedAt = time.Now().UnixMilli()
 	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
 		return WorkspaceEntry{}, err

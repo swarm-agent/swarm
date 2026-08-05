@@ -4,6 +4,23 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import { DesktopV3RoutedPendingShell } from './desktop-v3-routed-pending-shell'
+import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
+
+const workspace: WorkspaceEntry = {
+  path: '/workspace/swarm-go',
+  localWorkspaceBindingId: 'binding-1',
+  workspaceName: 'Swarm Go',
+  themeId: '',
+  directories: ['/workspace/swarm-go'],
+  isGitRepo: true,
+  sortIndex: 0,
+  addedAt: 1,
+  updatedAt: 1,
+  lastSelectedAt: 1,
+  active: true,
+  worktreeEnabled: false,
+  topologyRoutes: [],
+}
 
 function render(
   state: Parameters<typeof DesktopV3RoutedPendingShell>[0]['state'],
@@ -20,6 +37,7 @@ function render(
       error={error}
       onRetry={state === 'failed' ? () => undefined : undefined}
       showTips={showTips}
+      workspace={workspace}
     />,
   )
 }
@@ -28,7 +46,7 @@ test('draft is a neutral Swarm shell without authoritative setup details', () =>
   const markup = render('draft')
 
   assert.match(markup, /data-pending-state="draft"/)
-  assert.match(markup, />Swarm</)
+  assert.match(markup, />Swarm Go</)
   assert.match(markup, /data-testid="desktop-home-tip"/)
   assert.match(markup, /lucide-lightbulb/)
   assert.match(markup, /stroke="currentColor"/)
@@ -38,13 +56,13 @@ test('draft is a neutral Swarm shell without authoritative setup details', () =>
   assert.match(markup, /max-w-xl/)
   assert.doesNotMatch(markup, /What would you like to work on\?/)
   assert.doesNotMatch(markup, /aria-busy/)
-  assert.doesNotMatch(markup, /model|workspace|branch/)
+  assert.doesNotMatch(markup, /model|branch/)
 })
 
 test('draft omits the subtitle when home tips are disabled', () => {
   const markup = render('draft', '', '', 'router', false)
 
-  assert.match(markup, />Swarm</)
+  assert.match(markup, />Swarm Go</)
   assert.doesNotMatch(markup, /desktop-home-tip|lucide-lightbulb|💡|Tip:/)
   assert.doesNotMatch(markup, /What would you like to work on\?/)
 })
@@ -66,7 +84,7 @@ test('routing immediately shows a pending chat header, first user message, and s
   assert.match(markup, /animate-pulse/)
   assert.doesNotMatch(markup, /animate-spin|rounded-full border px-/)
   assert.doesNotMatch(markup, /<button/)
-  assert.doesNotMatch(markup, /model|workspace|branch/)
+  assert.doesNotMatch(markup, /model|branch/)
 })
 
 test('normal session start never renders Router presentation', () => {
@@ -99,5 +117,5 @@ test('failure preserves the message in the same chat and offers retry beside the
   assert.match(markup, /Router is unavailable/)
   assert.match(markup, /<button[^>]*>.*Try again.*<\/button>/)
   assert.doesNotMatch(markup, /aria-busy/)
-  assert.doesNotMatch(markup, /model|workspace|branch/)
+  assert.doesNotMatch(markup, /model|branch/)
 })

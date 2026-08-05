@@ -38,6 +38,9 @@ export interface DesktopV3NewSessionPaneProps {
   onRoutedSessionResolved: (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority) => void | Promise<void>
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
+  workspaces?: WorkspaceEntry[]
+  onOpenWorkspacePicker?: () => void
+  onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
   composerFocusSignal?: number
   initialPrompt?: string
   initialWorktreeRequested?: boolean
@@ -57,6 +60,9 @@ export function DesktopV3NewSessionPane({
   onRoutedSessionResolved,
   mobileSessionQuickMenu,
   onSlashCommand,
+  workspaces = [workspace],
+  onOpenWorkspacePicker,
+  onSetWorkspaceIcon,
   composerFocusSignal = 0,
   initialPrompt = '',
   initialWorktreeRequested = false,
@@ -335,6 +341,10 @@ export function DesktopV3NewSessionPane({
         error={routedState.phase === 'failed' ? routedState.error : undefined}
         onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
         showTips={showTips}
+        workspace={workspace}
+        workspaces={workspaces}
+        onOpenWorkspacePicker={onOpenWorkspacePicker}
+        onSetWorkspaceIcon={onSetWorkspaceIcon}
         className={mobileSessionQuickMenu ? 'hidden sm:flex' : undefined}
       />
 

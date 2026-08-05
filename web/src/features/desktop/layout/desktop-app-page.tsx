@@ -2580,7 +2580,7 @@ export function DesktopAppPage() {
   const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
   const routeSessionId = mobileCreationPage ? '' : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  const { workspaces, loading: launcherWorkspacesLoading, setWorkspaceIcon } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
   const focusMode = sidebarDisplayMode === 'focus'
   const setSidebarDisplayMode = useCallback((mode: DesktopMainSidebarMode) => {
@@ -5115,6 +5115,9 @@ export function DesktopAppPage() {
             agentSettingsInitialAgent={requestedAgentName}
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
+            workspaces={mergedSidebarWorkspaceEntries}
+            onOpenWorkspacePicker={mergedSidebarWorkspaceEntries.length > 1 ? () => setWorkspacePickerOpen(true) : undefined}
+            onSetWorkspaceIcon={setWorkspaceIcon}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">

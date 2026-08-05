@@ -10,6 +10,7 @@ import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/
 import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-workspace'
 import { selectWorkspace } from '../mutations/select-workspace'
 import { setWorkspaceTheme as setWorkspaceThemeAPI } from '../mutations/set-workspace-theme'
+import { setWorkspaceIcon as setWorkspaceIconAPI } from '../mutations/set-workspace-icon'
 import { setWorkspaceWorktrees } from '../mutations/set-workspace-worktrees'
 import { refreshWorkspaceDefinitions as refreshWorkspaceDefinitionsAPI } from '../mutations/refresh-workspace-definitions'
 import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../services/discovery-ordering'
@@ -64,6 +65,7 @@ interface UseWorkspaceLauncherState {
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<WorkspaceResolution>
   createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
+  setWorkspaceIcon: (path: string, iconPNGDataURL: string) => Promise<void>
   moveWorkspaceToIndex: (path: string, targetIndex: number) => Promise<void>
   swapWorkspacePositions: (sourcePath: string, targetPath: string) => Promise<void>
   setDraggingWorkspacePath: (path: string | null) => void
@@ -164,6 +166,7 @@ function workspacesEqual(left: WorkspaceEntry[], right: WorkspaceEntry[]): boole
       leftWorkspace.path !== rightWorkspace.path
       || leftWorkspace.workspaceName !== rightWorkspace.workspaceName
       || leftWorkspace.themeId !== rightWorkspace.themeId
+      || leftWorkspace.iconPNGDataURL !== rightWorkspace.iconPNGDataURL
       || leftWorkspace.definitionStatus !== rightWorkspace.definitionStatus
       || leftWorkspace.definition !== rightWorkspace.definition
       || leftWorkspace.definitionError !== rightWorkspace.definitionError
@@ -646,6 +649,26 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [applyDocumentTheme, currentWorkspacePath, globalThemeId, queryClient, workspaces])
 
+  const updateWorkspaceIcon = useCallback(async (path: string, iconPNGDataURL: string) => {
+    const trimmedPath = path.trim()
+    if (trimmedPath === '') return
+    setSavingPath(trimmedPath)
+    setActionError(null)
+    try {
+      const resolution = await setWorkspaceIconAPI(trimmedPath, iconPNGDataURL)
+      setWorkspaces((current) => current.map((workspace) => (
+        workspace.path === trimmedPath
+          ? { ...workspace, iconPNGDataURL: resolution.iconPNGDataURL }
+          : workspace
+      )))
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update workspace icon')
+      throw err
+    } finally {
+      setSavingPath(null)
+    }
+  }, [])
+
   const refreshWorkspaceDefinitions = useCallback(async () => {
     setPersonalizing(true)
     setPersonalizationMessage(null)
@@ -769,6 +792,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     saveWorkspace: persistWorkspace,
     createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,
+    setWorkspaceIcon: updateWorkspaceIcon,
     moveWorkspaceToIndex,
     swapWorkspacePositions,
     setDraggingWorkspacePath,

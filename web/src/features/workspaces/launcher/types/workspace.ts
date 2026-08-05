@@ -23,6 +23,7 @@ export interface WorkspaceEntry extends OptionalWorkspaceDefinitionFields {
   localWorkspaceBindingId: string
   workspaceName: string
   themeId: string
+  iconPNGDataURL?: string
   directories: string[]
   isGitRepo: boolean
   sortIndex: number
@@ -57,6 +58,7 @@ export interface WorkspaceResolution extends OptionalWorkspaceDefinitionFields {
   localWorkspaceBindingId: string
   workspaceName: string
   themeId: string
+  iconPNGDataURL?: string
 }
 
 export interface WorkspaceDiscoverEntry {
@@ -119,6 +121,7 @@ export interface WorkspaceEntryWire extends WorkspaceDefinitionWire {
   local_workspace_binding_id?: string
   workspace_name: string
   theme_id?: string
+  icon_png_data_url?: string
   directories: string[]
   is_git_repo: boolean
   sort_index: number
@@ -151,6 +154,7 @@ export interface WorkspaceResolutionWire extends WorkspaceDefinitionWire {
   local_workspace_binding_id?: string
   workspace_name: string
   theme_id?: string
+  icon_png_data_url?: string
 }
 
 export interface WorkspaceDiscoverEntryWire {
@@ -206,6 +210,7 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
     localWorkspaceBindingId: String(entry.local_workspace_binding_id ?? '').trim(),
     workspaceName: entry.workspace_name,
     themeId: entry.theme_id ?? '',
+    iconPNGDataURL: String(entry.icon_png_data_url ?? '').trim(),
     directories: entry.directories,
     isGitRepo: Boolean(entry.is_git_repo),
     sortIndex: entry.sort_index,
@@ -243,6 +248,7 @@ export function mapWorkspaceResolution(entry: WorkspaceResolutionWire): Workspac
     localWorkspaceBindingId: entry.local_workspace_binding_id ?? '',
     workspaceName: entry.workspace_name,
     themeId: entry.theme_id ?? '',
+    iconPNGDataURL: String(entry.icon_png_data_url ?? '').trim(),
   }
 }
 
