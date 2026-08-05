@@ -6,6 +6,7 @@ import type { DesktopSessionRecord } from '../types/realtime'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY } from '../session-v3/api'
 import {
   SIDEBAR_SESSION_GROUPS,
+  buildGitSidebarIntegrationHelpPrompt,
   compareSidebarSessions,
   desktopRouteWorkspacePathForSession,
   buildSidebarSessionTree,
@@ -95,6 +96,22 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
 })
 
+test('Git sidebar integration help prompt carries review context without authorizing integration or archive', () => {
+  const prompt = buildGitSidebarIntegrationHelpPrompt({
+    sessionId: 'review-session',
+    workspacePath: '/workspace',
+    worktreeBranch: 'agent/review-help',
+    targetBranch: 'dev',
+    presentation: 'sidebar-popout',
+  })
+
+  assert.match(prompt, /Session ID: review-session/)
+  assert.match(prompt, /Source branch: agent\/review-help/)
+  assert.match(prompt, /Target branch: dev/)
+  assert.match(prompt, /Target workspace: \/workspace/)
+  assert.match(prompt, /Do not integrate or archive anything unless I explicitly ask/)
+})
+
 test('plan Git sidebar renders session commits and an anchored integration confirmation popout', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
@@ -111,6 +128,8 @@ test('plan Git sidebar renders session commits and an anchored integration confi
   assert.match(panelSource, /createPortal\(/[\s\S]*document\.body/)
   assert.match(panelSource, /aria-label="Git sidebar integration options"/)
   assert.match(panelSource, /Confirm and Archive/)
+  assert.match(panelSource, /Ask Swarm for Help/)
+  assert.match(panelSource, /handleAskSwarmForGitIntegrationHelp/)
   assert.match(panelSource, /Confirm integration\?/)
   assert.match(panelSource, /handleGitIntegrate\(true\)/)
   assert.match(panelSource, /handleGitIntegrate\(gitIntegrateModal\.integrationComplete \|\| gitIntegrateArchive\)/)
@@ -119,6 +138,10 @@ test('plan Git sidebar renders session commits and an anchored integration confi
   assert.match(source, /window\.addEventListener\('scroll', positionGitSidebarIntegratePopout, true\)/)
   assert.match(source, /document\.addEventListener\('pointerdown', dismissOnOutsidePointer\)/)
   assert.match(source, /if \(event\.key === 'Escape'\) closeGitSidebarIntegratePopout\(\)/)
+  assert.match(source, /createDesktopV3ExistingMessageOperation\(\{[\s\S]*sessionId: modal\.sessionId[\s\S]*buildGitSidebarIntegrationHelpPrompt\(modal\)/)
+  assert.match(source, /persistDesktopV3ExistingMessageOperation\(operation\)[\s\S]*await continueDesktopV3Conversation\(operation\)[\s\S]*clearDesktopV3ExistingMessageOperation\(modal\.sessionId, operation\.operationId\)/)
+  assert.match(source, /source: 'desktop-v3-git-sidebar-integration-help'/)
+  assert.doesNotMatch(source.slice(source.indexOf('const handleAskSwarmForGitIntegrationHelp'), source.indexOf('const closeGitSidebarIntegratePopout')), /handleGitIntegrate|integrateSessionWorktree|archiveIntegratedSession|createDesktopV3NewSessionOperation/)
 })
 
 test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {

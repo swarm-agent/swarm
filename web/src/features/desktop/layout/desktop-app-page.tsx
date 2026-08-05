@@ -42,6 +42,7 @@ import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
+import { clearDesktopV3ExistingMessageOperation, continueDesktopV3Conversation, createDesktopV3ExistingMessageOperation, persistDesktopV3ExistingMessageOperation } from '../session-v3/existing-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
@@ -221,6 +222,18 @@ interface GitIntegrateModalState {
   targetBranch: string
   integrationComplete?: boolean
   presentation?: 'sidebar-popout'
+}
+
+export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalState): string {
+  return [
+    'Help me review this worktree integration before I choose whether to integrate it or integrate and archive it.',
+    'Inspect the session and worktree context, explain any risks or changes I should make first, and recommend the safe next action. Do not integrate or archive anything unless I explicitly ask in a later message.',
+    '',
+    `Session ID: ${input.sessionId}`,
+    `Source branch: ${input.worktreeBranch || 'unknown'}`,
+    `Target branch: ${input.targetBranch || 'unknown'}`,
+    `Target workspace: ${input.workspacePath || 'unknown'}`,
+  ].join('\n')
 }
 
 interface GitPanelState {
@@ -2615,6 +2628,7 @@ export function DesktopAppPage() {
   const [gitCommitArchive, setGitCommitArchive] = useState(false)
   const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
   const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
+  const [gitIntegrateHelpBusy, setGitIntegrateHelpBusy] = useState(false)
   const [gitIntegrateArchive, setGitIntegrateArchive] = useState(false)
   const [gitIntegrateError, setGitIntegrateError] = useState<string | null>(null)
   const gitIntegrateAnchorRef = useRef<HTMLDivElement | null>(null)
@@ -4591,12 +4605,41 @@ export function DesktopAppPage() {
     }
   }
 
+  const handleAskSwarmForGitIntegrationHelp = async () => {
+    const modal = gitIntegrateModal
+    if (!modal || modal.presentation !== 'sidebar-popout' || gitIntegrateBusy || gitIntegrateHelpBusy) return
+    setGitIntegrateHelpBusy(true)
+    setGitIntegrateError(null)
+    try {
+      const operation = createDesktopV3ExistingMessageOperation({
+        sessionId: modal.sessionId,
+        prompt: buildGitSidebarIntegrationHelpPrompt(modal),
+        metadata: {
+          source: 'desktop-v3-git-sidebar-integration-help',
+          worktree_branch: modal.worktreeBranch,
+          target_branch: modal.targetBranch,
+          target_workspace_path: modal.workspacePath,
+        },
+      })
+      persistDesktopV3ExistingMessageOperation(operation)
+      await continueDesktopV3Conversation(operation)
+      clearDesktopV3ExistingMessageOperation(modal.sessionId, operation.operationId)
+      setGitIntegrateModal(null)
+      setGitIntegrateArchive(false)
+      setDesktopToast({ message: 'Asked Swarm to help review this integration.', tone: 'success' })
+    } catch (error) {
+      setGitIntegrateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setGitIntegrateHelpBusy(false)
+    }
+  }
+
   const closeGitSidebarIntegratePopout = useCallback(() => {
-    if (gitIntegrateBusy) return
+    if (gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateModal((current) => current?.presentation === 'sidebar-popout' ? null : current)
     setGitIntegrateArchive(false)
     setGitIntegrateError(null)
-  }, [gitIntegrateBusy])
+  }, [gitIntegrateBusy, gitIntegrateHelpBusy])
 
   const positionGitSidebarIntegratePopout = useCallback(() => {
     const anchor = gitIntegrateAnchorRef.current
@@ -4685,13 +4728,14 @@ export function DesktopAppPage() {
       {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <div ref={gitIntegrateAnchorRef} className="relative mt-2 shrink-0" data-plan-git-integrate-anchor>
         {gitIntegrateModal?.presentation === 'sidebar-popout' && typeof document !== 'undefined' ? createPortal(
           <div ref={gitIntegratePopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-xs shadow-xl" style={gitIntegratePopoutStyle} role="menu" aria-label="Git sidebar integration options" data-plan-git-integrate-popout>
-            <div className="flex min-h-8 items-center justify-end px-1"><button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" aria-label="Close Git integration options" disabled={gitIntegrateBusy} onClick={closeGitSidebarIntegratePopout}><X size={15} /></button></div>
+            <div className="flex min-h-8 items-center justify-end px-1"><button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" aria-label="Close Git integration options" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={closeGitSidebarIntegratePopout}><X size={15} /></button></div>
             {gitIntegrateError ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-[var(--app-danger)]" role="alert"><p className="break-words">{gitIntegrateError}</p>{gitIntegrateModal.integrationComplete ? <p className="mt-1 text-[var(--app-text-subtle)]">The worktree is integrated. Retry only the remaining archive step.</p> : null}</div> : null}
-            {!gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={gitIntegrateBusy} onClick={() => void handleGitIntegrate(true)}><Archive size={13} />Confirm and Archive</button> : null}
+            <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleAskSwarmForGitIntegrationHelp()}>{gitIntegrateHelpBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button>
+            {!gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleGitIntegrate(true)}><Archive size={13} />Confirm and Archive</button> : null}
           </div>,
           document.body,
         ) : null}
-        <button type="button" className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" data-plan-git-integrate aria-expanded={gitIntegrateModal?.presentation === 'sidebar-popout'} aria-haspopup="menu" disabled={gitIntegrateBusy} onClick={() => {
+        <button type="button" className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" data-plan-git-integrate aria-expanded={gitIntegrateModal?.presentation === 'sidebar-popout'} aria-haspopup="menu" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => {
           if (gitIntegrateModal?.presentation === 'sidebar-popout') {
             void handleGitIntegrate(gitIntegrateModal.integrationComplete || gitIntegrateArchive)
             return
