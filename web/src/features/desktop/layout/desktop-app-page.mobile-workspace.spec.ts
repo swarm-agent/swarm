@@ -32,12 +32,16 @@ test('mobile workspace uses an outlined Task action and workspace picker while d
   assert.match(mobile, /min-h-11 shrink-0 touch-manipulation/)
 })
 
-test('mobile workspace exposes active sessions and keeps prior sessions collapsed', async () => {
+test('mobile workspace exposes the global flat session list and keeps prior sessions collapsed', async () => {
   const source = await readFile(appPage, 'utf8')
+  const globalListStart = source.indexOf('const globalFlattenedSessionNodes = useMemo(')
+  const mobileListEnd = source.indexOf('  const visibleSidebarRootIDs', globalListStart)
+  const mobileListSource = source.slice(globalListStart, mobileListEnd)
 
-  assert.match(source, /desktopRouteWorkspacePathForSession\(node\.session, workspacePathByBindingId, knownWorkspacePaths\) === routeWorkspace\.path/)
-  assert.match(source, /mobileWorkspaceSessionNodes\.filter\(\(node\) => sessionIsMobileActive\(node\.session\)\)/)
-  assert.match(source, /mobileWorkspaceSessionNodes\.filter\(\(node\) => !sessionIsMobileActive\(node\.session\)\)/)
+  assert.ok(globalListStart >= 0 && mobileListEnd > globalListStart)
+  assert.match(mobileListSource, /globalFlattenedSessionNodes\.filter\(\(node\) => sessionIsMobileActive\(node\.session\)\)/)
+  assert.match(mobileListSource, /globalFlattenedSessionNodes\.filter\(\(node\) => !sessionIsMobileActive\(node\.session\)\)/)
+  assert.doesNotMatch(mobileListSource, /routeWorkspace|desktopRouteWorkspacePathForSession|mobileWorkspaceSessionNodes/)
   assert.match(source, /group === 'needs_review' \|\| group === 'in_progress'/)
   assert.match(source, /id="mobile-workspace-sessions-heading"[^>]*>Sessions<\/h2>/)
   assert.match(source, /mobileActiveSessionNodes\.length[^\n]*>\{mobileActiveSessionNodes\.length\} active/)

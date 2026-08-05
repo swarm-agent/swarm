@@ -3075,21 +3075,13 @@ export function DesktopAppPage() {
     () => flattenVisibleSidebarSessionNodes(filteredSidebarTrees.nodes, expandedAgentSessions, routeSessionId),
     [expandedAgentSessions, filteredSidebarTrees.nodes, routeSessionId],
   )
-  const mobileWorkspaceSessionNodes = useMemo(
-    () => globalFlattenedSessionNodes.filter((node) => (
-      routeWorkspace?.path
-        ? desktopRouteWorkspacePathForSession(node.session, workspacePathByBindingId, knownWorkspacePaths) === routeWorkspace.path
-        : false
-    )),
-    [globalFlattenedSessionNodes, knownWorkspacePaths, routeWorkspace?.path, workspacePathByBindingId],
-  )
   const mobileActiveSessionNodes = useMemo(
-    () => mobileWorkspaceSessionNodes.filter((node) => sessionIsMobileActive(node.session)),
-    [mobileWorkspaceSessionNodes],
+    () => globalFlattenedSessionNodes.filter((node) => sessionIsMobileActive(node.session)),
+    [globalFlattenedSessionNodes],
   )
   const mobilePreviousSessionNodes = useMemo(
-    () => mobileWorkspaceSessionNodes.filter((node) => !sessionIsMobileActive(node.session)),
-    [mobileWorkspaceSessionNodes],
+    () => globalFlattenedSessionNodes.filter((node) => !sessionIsMobileActive(node.session)),
+    [globalFlattenedSessionNodes],
   )
   const visibleSidebarRootIDs = useMemo(
     () => sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, null),
