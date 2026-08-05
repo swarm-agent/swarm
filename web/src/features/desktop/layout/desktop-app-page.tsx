@@ -224,15 +224,18 @@ interface GitIntegrateModalState {
   presentation?: 'sidebar-popout'
 }
 
-export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalState): string {
+export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalState, integrationError: string): string {
   return [
-    'Help me review this worktree integration before I choose whether to integrate it or integrate and archive it.',
-    'Inspect the session and worktree context, explain any risks or changes I should make first, and recommend the safe next action. Do not integrate or archive anything unless I explicitly ask in a later message.',
+    'Help me understand and recover from this worktree integration error.',
+    'Inspect the existing session and worktree context, explain the failure, and recommend the safe next action. Do not integrate or archive anything unless I explicitly ask in a later message.',
     '',
     `Session ID: ${input.sessionId}`,
     `Source branch: ${input.worktreeBranch || 'unknown'}`,
     `Target branch: ${input.targetBranch || 'unknown'}`,
     `Target workspace: ${input.workspacePath || 'unknown'}`,
+    '',
+    'Integration error:',
+    integrationError,
   ].join('\n')
 }
 
@@ -4607,13 +4610,13 @@ export function DesktopAppPage() {
 
   const handleAskSwarmForGitIntegrationHelp = async () => {
     const modal = gitIntegrateModal
-    if (!modal || modal.presentation !== 'sidebar-popout' || gitIntegrateBusy || gitIntegrateHelpBusy) return
+    const integrationError = gitIntegrateError
+    if (!modal || modal.presentation !== 'sidebar-popout' || modal.integrationComplete || !integrationError || gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateHelpBusy(true)
-    setGitIntegrateError(null)
     try {
       const operation = createDesktopV3ExistingMessageOperation({
         sessionId: modal.sessionId,
-        prompt: buildGitSidebarIntegrationHelpPrompt(modal),
+        prompt: buildGitSidebarIntegrationHelpPrompt(modal, integrationError),
         metadata: {
           source: 'desktop-v3-git-sidebar-integration-help',
           worktree_branch: modal.worktreeBranch,
@@ -4628,7 +4631,7 @@ export function DesktopAppPage() {
       setGitIntegrateArchive(false)
       setDesktopToast({ message: 'Asked Swarm to help review this integration.', tone: 'success' })
     } catch (error) {
-      setGitIntegrateError(error instanceof Error ? error.message : String(error))
+      setDesktopToast({ message: `Could not ask Swarm for integration help: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
       setGitIntegrateHelpBusy(false)
     }
@@ -4730,7 +4733,7 @@ export function DesktopAppPage() {
           <div ref={gitIntegratePopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-xs shadow-xl" style={gitIntegratePopoutStyle} role="menu" aria-label="Git sidebar integration options" data-plan-git-integrate-popout>
             <div className="flex min-h-8 items-center justify-end px-1"><button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" aria-label="Close Git integration options" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={closeGitSidebarIntegratePopout}><X size={15} /></button></div>
             {gitIntegrateError ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-[var(--app-danger)]" role="alert"><p className="break-words">{gitIntegrateError}</p>{gitIntegrateModal.integrationComplete ? <p className="mt-1 text-[var(--app-text-subtle)]">The worktree is integrated. Retry only the remaining archive step.</p> : null}</div> : null}
-            <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleAskSwarmForGitIntegrationHelp()}>{gitIntegrateHelpBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button>
+            {gitIntegrateError && !gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleAskSwarmForGitIntegrationHelp()}>{gitIntegrateHelpBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button> : null}
             {!gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleGitIntegrate(true)}><Archive size={13} />Confirm and Archive</button> : null}
           </div>,
           document.body,
