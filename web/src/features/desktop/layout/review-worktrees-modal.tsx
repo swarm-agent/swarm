@@ -8,8 +8,6 @@ import { commitWorkspaceChanges, fetchGitStatus } from '../git/api'
 import type { GitFileStatus } from '../git/types'
 import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { reviewDesktopV3Worktrees, unarchiveDesktopV3ReviewSessions, type ReviewWorktreeCandidate, type ReviewWorktreesResponse } from '../session-v3/review-worktrees-api'
-import { resolveDesktopV3StartupAgent } from '../chat/services/desktop-startup-agent'
-import type { AgentStateRecord } from '../chat/types/chat'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveReviewAutoArchiveMinutes } from '../settings/swarm/mutations/save-review-auto-archive-minutes'
 import { normalizeReviewAutoArchiveMinutes, REVIEW_AUTO_ARCHIVE_MINUTES, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
@@ -52,11 +50,6 @@ export interface ReviewWorktreeIntegrationFailure {
   candidate: ReviewWorktreeCandidate
   error: string
   operation?: 'integrate' | 'commit_and_integrate'
-}
-
-export function resolveReviewWorktreeRepairAgent(agentState?: AgentStateRecord | null): string {
-  if (!agentState) return ''
-  return resolveDesktopV3StartupAgent(agentState)
 }
 
 export function reviewWorktreeIntegrationFailureDisplay(error: string, showError: boolean, operation: ReviewWorktreeIntegrationFailure['operation'] = 'integrate'): { summary: string; fullError?: string } {

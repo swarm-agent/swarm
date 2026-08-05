@@ -1,34 +1,11 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { buildReviewWorktreeFixPrompt, CollapsibleReviewSection, currentCheckoutCommitCandidate, resolveReviewWorktreeRepairAgent, reviewCommitCandidates, reviewWorktreeIntegrationFailureDisplay, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates, shouldShowReviewCommitAction } from './review-worktrees-modal'
+import { buildReviewWorktreeFixPrompt, CollapsibleReviewSection, currentCheckoutCommitCandidate, reviewCommitCandidates, reviewWorktreeIntegrationFailureDisplay, reviewWorktreeReasonLabel, selectableReviewIDs, selectedArchiveCandidates, shouldShowReviewCommitAction } from './review-worktrees-modal'
 import type { ReviewWorktreeCandidate, ReviewWorktreesResponse } from '../session-v3/review-worktrees-api'
-import type { AgentProfileRecord, AgentStateRecord } from '../chat/types/chat'
 
 function candidate(overrides: Partial<ReviewWorktreeCandidate>): ReviewWorktreeCandidate {
   return { session_id: 'session-1', title: 'Session', updated_at: 1, classification: 'retained', reason: 'uncommitted_work', archive_ready: false, ...overrides }
-}
-
-function primaryAgent(name: string, overrides: Partial<AgentProfileRecord> = {}): AgentProfileRecord {
-  return {
-    name,
-    mode: 'primary',
-    description: '',
-    provider: 'codex',
-    model: 'gpt-5.4',
-    thinking: 'high',
-    modelMode: 'single',
-    planProvider: '', planModel: '', planThinking: '', planServiceTier: '',
-    autoProvider: '', autoModel: '', autoThinking: '', autoServiceTier: '',
-    prompt: '', runtimeMode: 'readwrite', defaultSessionMode: 'auto', executionSetting: 'readwrite',
-    exitPlanModeEnabled: false, toolScope: null, toolContract: null,
-    enabled: true, protected: false, updatedAt: 0,
-    ...overrides,
-  }
-}
-
-function agentState(profiles: AgentProfileRecord[], activePrimary: string): AgentStateRecord {
-  return { profiles, activePrimary, activeSubagent: {}, version: 1, providerDefaultsPreview: null, toolInventory: null }
 }
 
 describe('review worktrees modal helpers', () => {
@@ -85,17 +62,21 @@ describe('review worktrees modal helpers', () => {
     expect(shouldShowReviewCommitAction(dirtyResult)).toBe(true)
   })
 
-  it('defaults repair to the enabled Swarm primary even when its model mode is single and runtime is readwrite', () => {
-    expect(resolveReviewWorktreeRepairAgent(agentState([
-      primaryAgent('legacy', { runtimeMode: 'plan_auto', exitPlanModeEnabled: true }),
-      primaryAgent('swarm'),
-    ], 'legacy'))).toBe('swarm')
-  })
+  it('routes Review Worktrees failures through the compiled Swarm workspace repair launcher', async () => {
+    const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8'))
+    const handlerStart = source.indexOf('const handleAskSwarmToFixReviewIntegration')
+    const handlerEnd = source.indexOf('useEffect(() => {', handlerStart)
+    const handler = source.slice(handlerStart, handlerEnd)
 
-  it('does not expose repair when no enabled primary agent exists', () => {
-    expect(resolveReviewWorktreeRepairAgent(agentState([
-      primaryAgent('swarm', { enabled: false }),
-    ], 'swarm'))).toBe('')
+    expect(source).toContain("const DESKTOP_REPAIR_AGENT_NAME = 'swarm'")
+    expect(source).toMatch(/const launchDesktopRepairSession = useCallback[\s\S]*agentName: DESKTOP_REPAIR_AGENT_NAME[\s\S]*worktree: \{ mode: 'off' \}/)
+    expect(source).toMatch(/sourceBindingId = sessionWorkspaceBindingId\(sourceSession\?\.metadata\)[\s\S]*workspacePathByBindingId\.get\(sourceBindingId\)[\s\S]*swarm_v3_runtime_swarm_id/)
+    expect(handler).toContain('launchDesktopRepairSession({')
+    expect(handler).toContain('owningWorkspacePath: topWorkspacePath')
+    expect(handler).toContain('sourceSessionId: failure.candidate.session_id')
+    expect(handler).toContain("source: 'desktop-v3-review-worktrees-recovery'")
+    expect(handler).toContain('integration_error: failure.error')
+    expect(handler).not.toContain('resolveReviewWorktreeRepairAgent')
   })
 
   it('turns the original integration button into an anchored popout with integrate-and-archive stacked above it', async () => {

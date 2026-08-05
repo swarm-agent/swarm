@@ -43,7 +43,7 @@ import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-sessi
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
-import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
@@ -82,7 +82,7 @@ import type { DesktopSessionSearchItem } from '../session-search/session-search-
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
-import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
+import { buildReviewWorktreeFixPrompt, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import {
   loadDesktopMainSidebarMode,
@@ -110,6 +110,7 @@ const SIDEBAR_SESSION_ICON_CLASS = {
   plan: 'text-[var(--app-info)]',
 } as const
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
+const DESKTOP_REPAIR_AGENT_NAME = 'swarm'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
   'Check prerequisites',
@@ -241,6 +242,22 @@ export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalSta
 interface GitPanelState {
   workspacePath: string
   workspaceName: string
+}
+
+interface DesktopRepairSessionLaunchInput {
+  owningWorkspacePath: string
+  sourceSessionId: string
+  prompt: string
+  title: string
+  source: string
+  sessionMetadata?: Record<string, unknown>
+  messageMetadata?: Record<string, unknown>
+}
+
+interface DesktopRepairSessionAuthority {
+  workspace: WorkspaceEntry
+  route: DesktopChatRoute
+  workspaceSlug: string
 }
 
 interface DesktopV3RoutedActivationDeps {
@@ -3242,29 +3259,52 @@ export function DesktopAppPage() {
     return workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName || fallbackWorkspaceNameFromPath(workspacePath) })
   }, [knownWorkspacePaths, routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
-  const globalSessionRouteOptions = useMemo(() => buildDesktopChatRouteOptions({
-    hostSwarmName: swarmName,
-    workspacePath: topWorkspacePath,
-    workspaceName: topWorkspaceLabel,
-    topologyRoutes: topWorkspace?.topologyRoutes ?? [],
-    localWorkspaceBindingId: topWorkspace?.localWorkspaceBindingId ?? '',
-    hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-  }), [currentSwarmTarget?.swarm_id, swarmName, topWorkspace?.localWorkspaceBindingId, topWorkspace?.topologyRoutes, topWorkspaceLabel, topWorkspacePath])
-  const reviewFixAgent = resolveReviewWorktreeRepairAgent(agentStateQuery.data)
-  const reviewFixAvailable = Boolean(reviewFixAgent && topWorkspacePath)
-  const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
-    if (!reviewFixAgent || !topWorkspacePath) {
-      setDesktopToast({ message: 'Swarm could not start a repair chat because its agent or workspace route is unavailable.', tone: 'error' })
-      return
+  const resolveDesktopRepairSessionAuthority = useCallback((owningWorkspacePath: string, sourceSessionId: string): DesktopRepairSessionAuthority | null => {
+    const normalizedOwningPath = owningWorkspacePath.trim()
+    const sourceSession = sessionById.get(sourceSessionId.trim()) ?? null
+    const sourceBindingId = sessionWorkspaceBindingId(sourceSession?.metadata)
+    const sourceWorkspacePath = sourceSession
+      ? desktopSidebarWorkspacePathForSession(sourceSession, workspacePathByBindingId)
+      : ''
+    const workspace = workspaceByPath.get(normalizedOwningPath)
+      ?? (sourceBindingId ? workspaceByPath.get(workspacePathByBindingId.get(sourceBindingId) ?? '') : null)
+      ?? workspaceByPath.get(sourceWorkspacePath)
+      ?? mergedSidebarWorkspaceEntries.find((candidate) => candidate.path === normalizedOwningPath || candidate.path === sourceWorkspacePath)
+      ?? null
+    if (!workspace) return null
+
+    const bindingId = workspace.localWorkspaceBindingId.trim() || sourceBindingId
+    const swarmId = currentSwarmTarget?.swarm_id?.trim()
+      || metadataStringValue(sourceSession?.metadata, 'swarm_v3_runtime_swarm_id')
+    const route = buildDesktopChatRouteOptions({
+      hostSwarmName: swarmName,
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      topologyRoutes: workspace.topologyRoutes,
+      localWorkspaceBindingId: bindingId,
+      hostSwarmId: swarmId || null,
+    }).find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
+    if (!route) return null
+
+    return {
+      workspace,
+      route,
+      workspaceSlug: workspaceSlugByPath.get(workspace.path)
+        ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName }),
     }
-    const route = globalSessionRouteOptions.find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
+  }, [currentSwarmTarget?.swarm_id, mergedSidebarWorkspaceEntries, sessionById, swarmName, workspaceByPath, workspacePathByBindingId, workspaceSlugByPath])
+
+  const launchDesktopRepairSession = useCallback(async (input: DesktopRepairSessionLaunchInput): Promise<void> => {
+    const authority = resolveDesktopRepairSessionAuthority(input.owningWorkspacePath, input.sourceSessionId)
+    if (!authority) throw new Error('The owning workspace binding or primary runtime is unavailable')
+
     const draftPreference = draftPreferenceQuery.data?.preference
     const modelProfileState = modelProfilesQuery.data
     const defaultModelProfile = modelProfileState?.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId) ?? null
     const defaultModelProfilePreference = defaultModelProfile
       ? preferenceFromModelProfile(defaultModelProfile, 'auto', defaultModelProfile.updatedAt)
       : null
-    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent)
+    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], DESKTOP_REPAIR_AGENT_NAME)
     const preference = defaultModelProfilePreference ?? (agentModel.locked
       ? {
           provider: agentModel.provider,
@@ -3274,47 +3314,72 @@ export function DesktopAppPage() {
           contextMode: draftPreference?.contextMode || '',
         }
       : draftPreference)
-    const modelProfileChoice = defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined
-    if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
-      setNeedsReviewCleanupOpen(false)
-      setDesktopToast({ message: 'Swarm could not start a repair session because its Desktop V3 route or model preference is unavailable.', tone: 'error' })
-      return
+    if (!preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
+      throw new Error('The Desktop V3 model preference is unavailable')
     }
+
+    const operation = createDesktopV3NewSessionOperation({
+      workspacePath: authority.workspace.path,
+      workspaceName: authority.workspace.workspaceName,
+      route: authority.route,
+      prompt: input.prompt,
+      title: input.title,
+      mode: 'auto',
+      agentName: DESKTOP_REPAIR_AGENT_NAME,
+      modelProfileChoice: defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined,
+      worktree: { mode: 'off' },
+      preference: {
+        provider: preference.provider,
+        model: preference.model,
+        thinking: preference.thinking,
+        serviceTier: preference.serviceTier,
+        contextMode: preference.contextMode,
+      },
+      sessionMetadata: {
+        ...input.sessionMetadata,
+        source: input.source,
+        source_session_id: input.sourceSessionId,
+        workspace_path: authority.workspace.path,
+      },
+      messageMetadata: {
+        ...input.messageMetadata,
+        source: input.source,
+        source_session_id: input.sourceSessionId,
+      },
+    })
+    await startNewDesktopV3Session({
+      operation,
+      onSessionStarted: (sessionId) => {
+        void navigate({
+          to: '/$workspaceSlug/$sessionId',
+          params: { workspaceSlug: authority.workspaceSlug, sessionId },
+        })
+      },
+    })
+  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, modelProfilesQuery.data, navigate, resolveDesktopRepairSessionAuthority])
+
+  const reviewFixAvailable = Boolean(topWorkspacePath)
+  const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
     setNeedsReviewCleanupOpen(false)
     try {
-      const operation = createDesktopV3NewSessionOperation({
-        workspacePath: topWorkspacePath,
-        workspaceName: topWorkspaceLabel,
-        route,
+      await launchDesktopRepairSession({
+        owningWorkspacePath: topWorkspacePath,
+        sourceSessionId: failure.candidate.session_id,
         prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
         title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
-        mode: 'auto',
-        agentName: reviewFixAgent,
-        modelProfileChoice,
-        worktree: { mode: 'off' },
-        preference: {
-          provider: preference.provider,
-          model: preference.model,
-          thinking: preference.thinking,
-          serviceTier: preference.serviceTier,
-          contextMode: preference.contextMode,
-        },
-        sessionMetadata: { source: 'desktop-v3-review-worktrees-recovery', workspace_path: topWorkspacePath },
-        messageMetadata: { source: 'desktop-v3-review-worktrees-recovery', failed_session_id: failure.candidate.session_id },
-      })
-      await startNewDesktopV3Session({
-        operation,
-        onSessionStarted: (sessionId) => {
-          void navigate({
-            to: '/$workspaceSlug/$sessionId',
-            params: { workspaceSlug: topWorkspaceSlug, sessionId },
-          })
+        source: 'desktop-v3-review-worktrees-recovery',
+        messageMetadata: {
+          failed_session_id: failure.candidate.session_id,
+          worktree_branch: failure.candidate.worktree_branch,
+          target_branch: failure.candidate.target_branch,
+          target_workspace_path: topWorkspacePath,
+          integration_error: failure.error,
         },
       })
     } catch (cause) {
       setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
     }
-  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, globalSessionRouteOptions, modelProfilesQuery.data, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
+  }, [launchDesktopRepairSession, topWorkspacePath])
 
   useEffect(() => {
     if (!routeSessionId) return
@@ -4613,79 +4678,17 @@ export function DesktopAppPage() {
     if (!modal || modal.presentation !== 'sidebar-popout' || modal.integrationComplete || !integrationError || gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateHelpBusy(true)
     try {
-      const targetWorkspace = workspaceByPath.get(modal.workspacePath)
-        ?? mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === modal.workspacePath)
-        ?? null
-      if (!targetWorkspace || !reviewFixAgent) {
-        throw new Error('Swarm agent or target workspace is unavailable')
-      }
-      const route = buildDesktopChatRouteOptions({
-        hostSwarmName: swarmName,
-        workspacePath: targetWorkspace.path,
-        workspaceName: targetWorkspace.workspaceName,
-        topologyRoutes: targetWorkspace.topologyRoutes,
-        localWorkspaceBindingId: targetWorkspace.localWorkspaceBindingId,
-        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-      }).find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
-      const draftPreference = draftPreferenceQuery.data?.preference
-      const modelProfileState = modelProfilesQuery.data
-      const defaultModelProfile = modelProfileState?.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId) ?? null
-      const defaultModelProfilePreference = defaultModelProfile
-        ? preferenceFromModelProfile(defaultModelProfile, 'auto', defaultModelProfile.updatedAt)
-        : null
-      const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent)
-      const preference = defaultModelProfilePreference ?? (agentModel.locked
-        ? {
-            provider: agentModel.provider,
-            model: agentModel.model,
-            thinking: agentModel.thinking || draftPreference?.thinking || '',
-            serviceTier: agentModel.serviceTier,
-            contextMode: draftPreference?.contextMode || '',
-          }
-        : draftPreference)
-      const modelProfileChoice = defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined
-      if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
-        throw new Error('Desktop V3 route or model preference is unavailable')
-      }
-      const operation = createDesktopV3NewSessionOperation({
-        workspacePath: targetWorkspace.path,
-        workspaceName: targetWorkspace.workspaceName,
-        route,
+      await launchDesktopRepairSession({
+        owningWorkspacePath: modal.workspacePath,
+        sourceSessionId: modal.sessionId,
         prompt: buildGitSidebarIntegrationHelpPrompt(modal, integrationError),
         title: `Review integration failure: ${modal.worktreeBranch || modal.sessionId}`,
-        mode: 'auto',
-        agentName: reviewFixAgent,
-        modelProfileChoice,
-        worktree: { mode: 'off' },
-        preference: {
-          provider: preference.provider,
-          model: preference.model,
-          thinking: preference.thinking,
-          serviceTier: preference.serviceTier,
-          contextMode: preference.contextMode,
-        },
-        sessionMetadata: {
-          source: 'desktop-v3-git-sidebar-integration-help',
-          source_session_id: modal.sessionId,
-          workspace_path: targetWorkspace.path,
-        },
+        source: 'desktop-v3-git-sidebar-integration-help',
         messageMetadata: {
-          source: 'desktop-v3-git-sidebar-integration-help',
-          source_session_id: modal.sessionId,
           worktree_branch: modal.worktreeBranch,
           target_branch: modal.targetBranch,
           target_workspace_path: modal.workspacePath,
-        },
-      })
-      await startNewDesktopV3Session({
-        operation,
-        onSessionStarted: (sessionId) => {
-          const workspaceSlug = workspaceSlugByPath.get(targetWorkspace.path)
-            ?? workspaceRouteSlugBase({ path: targetWorkspace.path, workspaceName: targetWorkspace.workspaceName })
-          void navigate({
-            to: '/$workspaceSlug/$sessionId',
-            params: { workspaceSlug, sessionId },
-          })
+          integration_error: integrationError,
         },
       })
       setGitIntegrateModal(null)
