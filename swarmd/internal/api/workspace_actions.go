@@ -21,6 +21,7 @@ type workspaceActionRequest struct {
 	Entrypoint    *string                             `json:"entrypoint"`
 	Arguments     *[]string                           `json:"arguments"`
 	Inputs        *[]pebblestore.WorkspaceActionInput `json:"inputs"`
+	Pinned        *bool                               `json:"pinned"`
 	OrderedIDs    []string                            `json:"ordered_ids"`
 }
 
@@ -92,14 +93,14 @@ func (s *Server) handleWorkspaceActionMutation(w http.ResponseWriter, scope acti
 			writeError(w, http.StatusBadRequest, errors.New("name and entrypoint are required"))
 			return
 		}
-		action, err := s.actions.Create(actionruntime.CreateInput{Scope: scope, Name: *req.Name, Description: dereferenceString(req.Description), Icon: dereferenceString(req.Icon), Entrypoint: *req.Entrypoint, Arguments: dereferenceStringSlice(req.Arguments), Inputs: dereferenceActionInputs(req.Inputs)})
+		action, err := s.actions.Create(actionruntime.CreateInput{Scope: scope, Name: *req.Name, Description: dereferenceString(req.Description), Icon: dereferenceString(req.Icon), Entrypoint: *req.Entrypoint, Arguments: dereferenceStringSlice(req.Arguments), Inputs: dereferenceActionInputs(req.Inputs), Pinned: dereferenceBool(req.Pinned)})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "action": action})
 	case "update":
-		action, err := s.actions.Update(actionruntime.UpdateInput{Scope: scope, ID: req.ID, Name: req.Name, Description: req.Description, Icon: req.Icon, Entrypoint: req.Entrypoint, Arguments: req.Arguments, Inputs: req.Inputs})
+		action, err := s.actions.Update(actionruntime.UpdateInput{Scope: scope, ID: req.ID, Name: req.Name, Description: req.Description, Icon: req.Icon, Entrypoint: req.Entrypoint, Arguments: req.Arguments, Inputs: req.Inputs, Pinned: req.Pinned})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -126,6 +127,10 @@ func (s *Server) handleWorkspaceActionMutation(w http.ResponseWriter, scope acti
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported action management operation %q", strings.TrimSpace(req.Action)))
 	}
+}
+
+func dereferenceBool(value *bool) bool {
+	return value != nil && *value
 }
 
 func dereferenceString(value *string) string {

@@ -14,16 +14,20 @@ export interface WorkspaceActionInput {
   arguments: string[]
 }
 
-export interface WorkspaceAction {
-  id: string
-  workspaceId: string
-  workspacePath: string
+export interface WorkspaceActionDefinition {
   name: string
   description: string
   icon: string
   entrypoint: string
   arguments: string[]
   inputs: WorkspaceActionInput[]
+  pinned: boolean
+}
+
+export interface WorkspaceAction extends WorkspaceActionDefinition {
+  id: string
+  workspaceId: string
+  workspacePath: string
   sortIndex: number
 }
 
@@ -64,6 +68,7 @@ interface WorkspaceActionWire {
   entrypoint: string
   arguments?: string[]
   inputs?: WorkspaceActionInputWire[]
+  pinned?: boolean
   sort_index?: number
 }
 
@@ -104,7 +109,7 @@ function mapWorkspaceActionInput(input: WorkspaceActionInputWire): WorkspaceActi
   }
 }
 
-function mapWorkspaceAction(action: WorkspaceActionWire): WorkspaceAction {
+export function mapWorkspaceAction(action: WorkspaceActionWire): WorkspaceAction {
   return {
     id: action.id.trim(),
     workspaceId: action.workspace_id.trim(),
@@ -115,6 +120,7 @@ function mapWorkspaceAction(action: WorkspaceActionWire): WorkspaceAction {
     entrypoint: action.entrypoint.trim(),
     arguments: Array.isArray(action.arguments) ? action.arguments : [],
     inputs: Array.isArray(action.inputs) ? action.inputs.map(mapWorkspaceActionInput) : [],
+    pinned: Boolean(action.pinned),
     sortIndex: typeof action.sort_index === 'number' ? action.sort_index : 0,
   }
 }
@@ -141,9 +147,59 @@ function mapWorkspaceActionRun(run: WorkspaceActionRunWire): WorkspaceActionRun 
   }
 }
 
+export function orderWorkspaceActionsForQuickAccess(actions: readonly WorkspaceAction[]): WorkspaceAction[] {
+  return actions
+    .map((action, backendIndex) => ({ action, backendIndex }))
+    .sort((left, right) => {
+      if (left.action.pinned !== right.action.pinned) return left.action.pinned ? -1 : 1
+      if (left.action.sortIndex !== right.action.sortIndex) return left.action.sortIndex - right.action.sortIndex
+      return left.backendIndex - right.backendIndex
+    })
+    .map(({ action }) => action)
+}
+
 export async function fetchWorkspaceActions(workspacePath: string, signal?: AbortSignal): Promise<WorkspaceAction[]> {
   const search = new URLSearchParams({ workspace_path: workspacePath })
   const response = await requestJson<WorkspaceActionsResponseWire>(`/v1/workspace/actions?${search.toString()}`, { signal })
+  return Array.isArray(response.actions) ? response.actions.map(mapWorkspaceAction) : []
+}
+
+export async function saveWorkspaceAction(workspacePath: string, definition: WorkspaceActionDefinition, actionId = ''): Promise<WorkspaceAction> {
+  const response = await requestJson<{ action?: WorkspaceActionWire }>('/v1/workspace/actions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: actionId ? 'update' : 'create',
+      workspace_path: workspacePath,
+      ...(actionId ? { id: actionId } : {}),
+      name: definition.name,
+      description: definition.description,
+      icon: definition.icon,
+      entrypoint: definition.entrypoint,
+      arguments: definition.arguments,
+      inputs: definition.inputs.map((input) => ({
+        id: input.id,
+        label: input.label,
+        description: input.description,
+        kind: input.kind,
+        required: input.required,
+        placeholder: input.placeholder,
+        default: input.defaultValue,
+        arguments: input.arguments,
+      })),
+      pinned: definition.pinned,
+    }),
+  })
+  if (!response.action) throw new Error('Action save returned no definition')
+  return mapWorkspaceAction(response.action)
+}
+
+export async function reorderWorkspaceActions(workspacePath: string, orderedIds: string[]): Promise<WorkspaceAction[]> {
+  const response = await requestJson<WorkspaceActionsResponseWire>('/v1/workspace/actions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'reorder', workspace_path: workspacePath, ordered_ids: orderedIds }),
+  })
   return Array.isArray(response.actions) ? response.actions.map(mapWorkspaceAction) : []
 }
 

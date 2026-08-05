@@ -13,6 +13,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-codex-usage' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
+  | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
   | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
@@ -251,6 +252,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/plan', '/plan show', 'Review, copy, and edit the active session plan'],
     state: 'ready',
     action: { kind: 'open-plan-modal' },
+  },
+  {
+    id: 'actions',
+    command: '/actions',
+    aliases: ['/actions list'],
+    hint: 'Choose a saved workspace Action without leaving chat',
+    actionLabel: 'Open Workspace Actions',
+    tips: ['/actions', '/actions list', 'Pinned Actions appear first; choosing one opens a review step before it runs'],
+    state: 'ready',
+    action: { kind: 'open-action-chooser' },
   },
   {
     id: 'keybindings',

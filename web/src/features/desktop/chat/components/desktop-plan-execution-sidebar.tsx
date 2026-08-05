@@ -6,7 +6,7 @@ import {
 import type { DesktopSessionPlanCheckpointRecommendation, TaskChildCardActions, TaskToolRow } from "../types/chat";
 import type { DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
 import { DesktopPlanSubagentList } from "./desktop-plan-subagent-list";
-import { ChevronDown, ListChecks } from "lucide-react";
+import { ChevronDown, ListChecks, Settings } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
 import type { DesktopSessionPlanCheckpoint } from "../types/chat";
@@ -35,6 +35,7 @@ export interface DesktopPlanExecutionSidebarProps {
   belowActions?: ReactNode;
   onNewAutoChat?: () => void;
   onOpenPlanAgent?: () => void;
+  onOpenActionSettings?: () => void;
   displayMode?: "full" | "compact" | "thin";
   taskChildren?: Array<{ row: TaskToolRow; view: DesktopV3TaskChildViewModel | null }>;
   taskChildActions?: TaskChildCardActions;
@@ -692,6 +693,7 @@ export const DesktopPlanExecutionSidebar = memo(
     onStop: _onStop,
     onEditPlan,
     belowActions,
+    onOpenActionSettings,
     displayMode = "full",
     taskChildren = [],
     taskChildActions,
@@ -775,6 +777,17 @@ export const DesktopPlanExecutionSidebar = memo(
               >
                 {completedCount}/{totalCount}
               </button>
+              {onOpenActionSettings ? (
+                <button
+                  type="button"
+                  onClick={onOpenActionSettings}
+                  className="grid min-h-11 place-items-center rounded-lg border border-[var(--app-border)] text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                  title="Settings → Actions"
+                  aria-label="Open Settings → Actions"
+                >
+                  <Settings className="size-4" aria-hidden="true" />
+                </button>
+              ) : null}
               {taskChildren.length > 0 ? (
                 <DesktopPlanSubagentList
                   children={taskChildren}
@@ -825,6 +838,17 @@ export const DesktopPlanExecutionSidebar = memo(
               </div>
             </div>
           )}
+          {!thin && onOpenActionSettings ? (
+            <button
+              type="button"
+              onClick={onOpenActionSettings}
+              className="flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] px-3 text-xs font-semibold text-[var(--app-text-muted)] transition-colors hover:border-[var(--app-border-active)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              data-testid="desktop-plan-open-action-settings"
+            >
+              <Settings className="size-3.5" aria-hidden="true" />
+              Settings → Actions
+            </button>
+          ) : null}
           {!thin && belowActions ? (
             <div
               className={cn(

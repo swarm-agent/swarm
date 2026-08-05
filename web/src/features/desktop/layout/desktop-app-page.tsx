@@ -5283,6 +5283,7 @@ export function DesktopAppPage() {
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={requestedAgentName}
             onOpenPlan={() => openPlanModalForSession(routeSessionId)}
+            onOpenActionSettings={() => handleOpenSettingsTab('actions')}
             planSidebarBelowActions={planSidebarGitPanel}
           />
         ) : routeWorkspaceSlug && !chatWorkspacePath && !workspacesLoading ? (
@@ -5311,6 +5312,7 @@ export function DesktopAppPage() {
             workspaces={mergedSidebarWorkspaceEntries}
             onOpenWorkspacePicker={mergedSidebarWorkspaceEntries.length > 1 ? () => setWorkspacePickerOpen(true) : undefined}
             onSetWorkspaceIcon={setWorkspaceIcon}
+            onOpenActionSettings={() => handleOpenSettingsTab('actions')}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { AlertTriangle, ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Plus, Sparkles, Trash2, Zap } from 'lucide-react'
-import { deleteWorkspaceAction, fetchWorkspaceActions, type WorkspaceAction } from '../../../workspaces/actions/types'
+import { AlertTriangle, ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Pin, Plus, Settings, Sparkles, Trash2, Zap } from 'lucide-react'
+import { deleteWorkspaceAction, fetchWorkspaceActions, orderWorkspaceActionsForQuickAccess, type WorkspaceAction } from '../../../workspaces/actions/types'
 import { deleteWorkspaceSkill, fetchWorkspaceSkills, type WorkspaceSkill } from '../services/workspace-skills'
 
 export type DesktopComposerTaskMode = 'action' | 'plan'
@@ -17,6 +17,7 @@ interface DesktopComposerActionMenuProps {
   compactDisabled?: boolean
   workspacePath?: string
   onActionSelect?: (action: WorkspaceAction, confirmedLaunch: boolean) => void
+  onOpenActionSettings?: () => void
   onSkillSelect?: (skill: WorkspaceSkill) => void
 }
 
@@ -40,6 +41,7 @@ export function DesktopComposerActionMenu({
   compactDisabled = false,
   workspacePath = '',
   onActionSelect,
+  onOpenActionSettings,
   onSkillSelect,
 }: DesktopComposerActionMenuProps) {
   const [open, setOpen] = useState(false)
@@ -220,6 +222,11 @@ export function DesktopComposerActionMenu({
     setDeleteError('')
     setArmedActionId('')
     setPendingDeletion(deletion)
+  }
+
+  const openActionSettings = () => {
+    closeMenu()
+    onOpenActionSettings?.()
   }
 
   const selectAction = (action: WorkspaceAction) => {
@@ -491,7 +498,7 @@ export function DesktopComposerActionMenu({
                 </div>
               ) : actions.length === 0 ? (
                 <p className="px-2.5 py-3 text-center text-xs text-[var(--app-text-subtle)]">No Actions are saved for this workspace.</p>
-              ) : actions.map((action) => {
+              ) : orderWorkspaceActionsForQuickAccess(actions).map((action) => {
                 const pendingKey = `action:${action.id}`
                 const deleting = deletingItem === pendingKey
                 const confirming = pendingDeletion?.kind === 'action' && pendingDeletion.item.id === action.id
@@ -501,6 +508,7 @@ export function DesktopComposerActionMenu({
                     <div className="group relative flex items-center rounded-lg hover:bg-[var(--app-surface-hover)] focus-within:bg-[var(--app-surface-hover)]">
                       <button type="button" role="menuitem" onClick={() => selectAction(action)} disabled={Boolean(deletingItem)} aria-label={armed ? `Run ${action.name}?` : action.name} className="flex min-w-0 flex-1 items-center rounded-lg py-2.5 pl-2.5 pr-10 text-left text-sm text-[var(--app-text)] outline-none disabled:cursor-not-allowed disabled:opacity-60">
                         <span className="min-w-0 flex-1 truncate font-semibold">{armed ? 'Run?' : action.name}</span>
+                        {action.pinned ? <Pin size={12} className="ml-2 shrink-0 fill-current text-[var(--app-primary)]" aria-label="Pinned" /> : null}
                       </button>
                       <button type="button" aria-label={`Delete Action ${action.name}`} title="Delete Action" disabled={Boolean(deletingItem)} onClick={() => requestDelete({ kind: 'action', item: action })} className="absolute right-1.5 grid h-7 w-7 place-items-center rounded-md text-[var(--app-text-subtle)] opacity-0 transition-opacity hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50">
                         {deleting ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
@@ -527,6 +535,12 @@ export function DesktopComposerActionMenu({
                   </div>
                 )
               })}
+              {onOpenActionSettings ? (
+                <button type="button" onClick={openActionSettings} className="mt-1 flex w-full items-center gap-2.5 border-t border-[var(--app-border)] px-2.5 pt-2.5 pb-2 text-left text-xs font-semibold text-[var(--app-text-muted)] outline-none transition-colors hover:text-[var(--app-text)] focus-visible:text-[var(--app-text)]" data-testid="desktop-composer-manage-actions">
+                  <Settings size={14} aria-hidden="true" />
+                  Manage Actions in Settings
+                </button>
+              ) : null}
             </div>
           )}
         </div>

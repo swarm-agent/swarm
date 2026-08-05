@@ -41,6 +41,7 @@ export interface DesktopV3NewSessionPaneProps {
   workspaces?: WorkspaceEntry[]
   onOpenWorkspacePicker?: () => void
   onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
+  onOpenActionSettings?: () => void
   composerFocusSignal?: number
   initialPrompt?: string
   initialWorktreeRequested?: boolean
@@ -63,6 +64,7 @@ export function DesktopV3NewSessionPane({
   workspaces = [workspace],
   onOpenWorkspacePicker,
   onSetWorkspaceIcon,
+  onOpenActionSettings,
   composerFocusSignal = 0,
   initialPrompt = '',
   initialWorktreeRequested = false,
@@ -393,6 +395,7 @@ export function DesktopV3NewSessionPane({
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}
           routedNewSession
           onSlashCommand={onSlashCommand}
+          onOpenActionSettings={onOpenActionSettings}
           slashCommandContext="new-session"
         />
     </div>

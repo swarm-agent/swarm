@@ -61,6 +61,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	}
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},
+		{Command: "/actions", Hint: "Open canonical workspace Actions", QuickTips: []string{"/actions", "/actions list"}},
 		{Command: "/alerts", Hint: "Open alerts / notifications (c clears all, Enter opens session)"},
 		{Command: "/agents", Hint: "Open agent cards and model setup"},
 		{Command: "/profiles", Hint: "Quick-switch the saved model profile used by new sessions"},
@@ -2143,6 +2144,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleSessionsCommand(args)
 	case "alerts", "notifications":
 		a.handleAlertsCommand(args)
+	case "actions":
+		a.handleActionsCommand(args)
 	case "new":
 		a.handleNewCommand(raw)
 	case "plan":
@@ -2241,6 +2244,8 @@ func (a *App) showHelp() {
 		"/workspaces   (alias for /workspace)",
 		"/workspace save [path|#n]   (open workspace setup)",
 		"/add-dir [path]   (open workspace linked-directory flow)",
+		"/actions   (open the active workspace Action quick list)",
+		"/actions list   (alias for /actions)",
 		"/workspace scan [query]",
 		"/output   (open full bash output viewer)",
 		"/permissions [on|off]   (toggle global permission prompts)",
@@ -4225,6 +4230,9 @@ func (a *App) consumeHomeOverlayActions() {
 			a.handleWorkspaceModalAction(action)
 			processed = true
 		}
+		if a.consumeWorkspaceActionSelection() {
+			processed = true
+		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {
 			a.handleWorktreesModalAction(action)
 			processed = true
@@ -4297,6 +4305,9 @@ func (a *App) consumeHomeActions() {
 		}
 		if action, ok := a.home.PopWorkspaceModalAction(); ok {
 			a.handleWorkspaceModalAction(action)
+			processed = true
+		}
+		if a.consumeWorkspaceActionSelection() {
 			processed = true
 		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {

@@ -166,6 +166,14 @@ function testTipsCommandIsReadyAndAcceptsArguments(): void {
   assert(palette.matches[0]?.id === 'tips', 'expected /tips to remain selected with arguments')
 }
 
+function testActionsCommandOpensQuickChooser(): void {
+  const actions = getDesktopSlashCommands().find((command) => command.id === 'actions')
+  assert(Boolean(actions), 'expected /actions command to exist')
+  assert(actions?.state === 'ready', 'expected /actions command to be ready')
+  assert(actions?.action.kind === 'open-action-chooser', 'expected /actions to open the in-chat Action chooser')
+  assert(buildDesktopSlashPaletteState('/actions list').exactMatch?.id === 'actions', 'expected /actions list to resolve to the Action chooser')
+}
+
 function testKeybindingsWarnsAboutDesktopShortcuts(): void {
   const keybindings = getDesktopSlashCommands().find((command) => command.id === 'keybindings')
   assert(Boolean(keybindings), 'expected /keybindings command to exist')
@@ -188,6 +196,7 @@ function main(): void {
   testTaskCommandParsesModeDirective()
   testRetiredCommandsAreNotSuggested()
   testTipsCommandIsReadyAndAcceptsArguments()
+  testActionsCommandOpensQuickChooser()
   testKeybindingsWarnsAboutDesktopShortcuts()
   console.log('slash-commands tests passed')
 }

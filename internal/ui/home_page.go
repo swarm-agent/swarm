@@ -75,66 +75,68 @@ var homeLayout = layoutVariant{
 }
 
 type HomePage struct {
-	theme                     Theme
-	keybinds                  *KeyBindings
-	model                     model.HomeModel
-	prompt                    string
-	sessionIntent             HomeSessionIntent
-	promptCursor              int
-	topBarTargets             []clickTarget
-	bottomBarTargets          []clickTarget
-	commandPaletteTargets     []clickTarget
-	commandPaletteOptionIndex int
-	commandPaletteOptionOwner string
-	statusLine                string
-	sessionMode               string
-	showHomeTips              bool
-	homeTipIndex              int
-	selectedTopAction         string
-	hoverTopAction            string
-	pressedTopAction          string
-	pressedTopFrames          int
-	commandOverlay            []string
-	onboarding                onboardingState
-	swarmName                 string
-	swarmNotificationCount    int
-	alertsModal               alertsModalState
-	sessionsModal             sessionsModalState
-	commandSuggestions        []CommandSuggestion
-	commandPaletteIndex       int
-	authModal                 authModalState
-	vaultModal                vaultModalState
-	authDefaultsInfoModal     authDefaultsInfoModalState
-	pendingAuthAction         *AuthModalAction
-	pendingVaultAction        *VaultModalAction
-	workspaceModal            workspaceModalState
-	pendingWorkspaceAction    *WorkspaceModalAction
-	worktreesModal            worktreesModalState
-	pendingWorktreesAction    *WorktreesModalAction
-	codexModal                codexUsageModalState
-	codexModalTargets         []clickTarget
-	modelsModal               modelsModalState
-	modelsModalTargets        []clickTarget
-	pendingModelsAction       *ModelsModalAction
-	profilesModal             profilesModalState
-	profilesModalTargets      []clickTarget
-	agentsModal               agentsModalState
-	agentsModalTargets        []clickTarget
-	pendingAgentsAction       *AgentsModalAction
-	voiceModal                voiceModalState
-	pendingVoiceAction        *VoiceModalAction
-	voiceInput                VoiceInputState
-	pasteActive               bool
-	pasteBuffer               []rune
-	lastPasteBatchSize        int
-	themeModal                themeModalState
-	pendingThemeAction        *ThemeModalAction
-	keybindsModal             keybindsModalState
-	pendingKeybindsAction     *KeybindsModalAction
-	pendingHomeAction         *HomeAction
-	codexUsage                client.CodexAccountUsage
-	codexResetCredits         client.CodexResetCredits
-	toast                     toastState
+	theme                           Theme
+	keybinds                        *KeyBindings
+	model                           model.HomeModel
+	prompt                          string
+	sessionIntent                   HomeSessionIntent
+	promptCursor                    int
+	topBarTargets                   []clickTarget
+	bottomBarTargets                []clickTarget
+	commandPaletteTargets           []clickTarget
+	commandPaletteOptionIndex       int
+	commandPaletteOptionOwner       string
+	statusLine                      string
+	sessionMode                     string
+	showHomeTips                    bool
+	homeTipIndex                    int
+	selectedTopAction               string
+	hoverTopAction                  string
+	pressedTopAction                string
+	pressedTopFrames                int
+	commandOverlay                  []string
+	onboarding                      onboardingState
+	swarmName                       string
+	swarmNotificationCount          int
+	alertsModal                     alertsModalState
+	sessionsModal                   sessionsModalState
+	commandSuggestions              []CommandSuggestion
+	commandPaletteIndex             int
+	authModal                       authModalState
+	vaultModal                      vaultModalState
+	authDefaultsInfoModal           authDefaultsInfoModalState
+	pendingAuthAction               *AuthModalAction
+	pendingVaultAction              *VaultModalAction
+	workspaceModal                  workspaceModalState
+	pendingWorkspaceAction          *WorkspaceModalAction
+	workspaceActionsModal           workspaceActionsModalState
+	pendingWorkspaceActionSelection *WorkspaceActionSelection
+	worktreesModal                  worktreesModalState
+	pendingWorktreesAction          *WorktreesModalAction
+	codexModal                      codexUsageModalState
+	codexModalTargets               []clickTarget
+	modelsModal                     modelsModalState
+	modelsModalTargets              []clickTarget
+	pendingModelsAction             *ModelsModalAction
+	profilesModal                   profilesModalState
+	profilesModalTargets            []clickTarget
+	agentsModal                     agentsModalState
+	agentsModalTargets              []clickTarget
+	pendingAgentsAction             *AgentsModalAction
+	voiceModal                      voiceModalState
+	pendingVoiceAction              *VoiceModalAction
+	voiceInput                      VoiceInputState
+	pasteActive                     bool
+	pasteBuffer                     []rune
+	lastPasteBatchSize              int
+	themeModal                      themeModalState
+	pendingThemeAction              *ThemeModalAction
+	keybindsModal                   keybindsModalState
+	pendingKeybindsAction           *KeybindsModalAction
+	pendingHomeAction               *HomeAction
+	codexUsage                      client.CodexAccountUsage
+	codexResetCredits               client.CodexResetCredits
+	toast                           toastState
 }
 
 func NewHomePage(m model.HomeModel) *HomePage {
@@ -175,7 +177,7 @@ func (p *HomePage) HandleMouse(ev *tcell.EventMouse) {
 		p.handleAgentsModalMouse(ev)
 		return
 	}
-	if p.onboarding.Visible || p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.worktreesModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
+	if p.onboarding.Visible || p.alertsModal.Visible || p.sessionsModal.Visible || p.authModal.Visible || p.vaultModal.Visible || p.authDefaultsInfoModal.Visible || p.workspaceModal.Visible || p.workspaceActionsModal.Visible || p.worktreesModal.Visible || p.voiceModal.Visible || p.themeModal.Visible || p.keybindsModal.Visible {
 		return
 	}
 
@@ -283,6 +285,10 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 	}
 	if p.workspaceModal.Visible {
 		p.handleWorkspaceModalKey(ev)
+		return
+	}
+	if p.workspaceActionsModal.Visible {
+		p.handleWorkspaceActionsModalKey(ev)
 		return
 	}
 	if p.worktreesModal.Visible {
@@ -424,6 +430,7 @@ func (p *HomePage) ChatOverlayVisible() bool {
 		p.authDefaultsInfoModal.Visible ||
 		p.authModal.Visible ||
 		p.workspaceModal.Visible ||
+		p.workspaceActionsModal.Visible ||
 		p.worktreesModal.Visible ||
 		p.codexModal.Visible ||
 		p.profilesModal.Visible ||
@@ -484,6 +491,9 @@ func (p *HomePage) HandleChatOverlayKey(ev *tcell.EventKey) bool {
 	case p.workspaceModal.Visible:
 		p.handleWorkspaceModalKey(ev)
 		return true
+	case p.workspaceActionsModal.Visible:
+		p.handleWorkspaceActionsModalKey(ev)
+		return true
 	case p.worktreesModal.Visible:
 		p.handleWorktreesModalKey(ev)
 		return true
@@ -518,6 +528,7 @@ func (p *HomePage) DrawChatOverlay(s tcell.Screen) {
 	p.drawAuthModal(s)
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)
+	p.drawWorkspaceActionsModal(s)
 	p.drawWorktreesModal(s)
 	p.drawCodexUsageModal(s)
 	p.drawProfilesModal(s)
@@ -747,6 +758,7 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	p.drawVaultModal(s)
 	p.drawAuthDefaultsInfoModal(s)
 	p.drawWorkspaceModal(s)
+	p.drawWorkspaceActionsModal(s)
 	p.drawWorktreesModal(s)
 	p.drawCodexUsageModal(s)
 	p.drawProfilesModal(s)

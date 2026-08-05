@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -16,6 +19,17 @@ import (
 const (
 	WorkspaceActionInputKindText   = "text"
 	WorkspaceActionInputKindSecret = "secret"
+
+	maxWorkspaceActionNameBytes        = 120
+	maxWorkspaceActionDescriptionBytes = 2000
+	maxWorkspaceActionIconBytes        = 120
+	maxWorkspaceActionEntrypointBytes  = 1024
+	maxWorkspaceActionArguments        = 128
+	maxWorkspaceActionArgumentBytes    = 4096
+	maxWorkspaceActionInputs           = 32
+	maxWorkspaceActionInputIDBytes     = 64
+	maxWorkspaceActionInputLabelBytes  = 120
+	maxWorkspaceActionInputTextBytes   = 2000
 )
 
 type WorkspaceActionInput struct {
@@ -40,6 +54,7 @@ type WorkspaceAction struct {
 	Entrypoint     string                 `json:"entrypoint"`
 	Arguments      []string               `json:"arguments,omitempty"`
 	Inputs         []WorkspaceActionInput `json:"inputs,omitempty"`
+	Pinned         bool                   `json:"pinned"`
 	SortIndex      int                    `json:"sort_index"`
 	CreatedAt      int64                  `json:"created_at"`
 	UpdatedAt      int64                  `json:"updated_at"`
@@ -111,6 +126,18 @@ func (s *WorkspaceActionStore) Save(action WorkspaceAction) (WorkspaceAction, er
 	return s.saveLocked(action)
 }
 
+// Append assigns the next durable workspace order while holding the store lock.
+func (s *WorkspaceActionStore) Append(action WorkspaceAction) (WorkspaceAction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	actions, err := s.List(action.AccountScopeID, action.WorkspaceID, 10000)
+	if err != nil {
+		return WorkspaceAction{}, err
+	}
+	action.SortIndex = len(actions)
+	return s.saveLocked(action)
+}
+
 func (s *WorkspaceActionStore) saveLocked(action WorkspaceAction) (WorkspaceAction, error) {
 	normalized, err := NormalizeWorkspaceAction(action)
 	if err != nil {
@@ -133,11 +160,43 @@ func (s *WorkspaceActionStore) saveLocked(action WorkspaceAction) (WorkspaceActi
 func (s *WorkspaceActionStore) Delete(accountScopeID, workspaceID, actionID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, found, err := s.Get(accountScopeID, workspaceID, actionID)
-	if err != nil || !found {
+	actions, err := s.List(accountScopeID, workspaceID, 10000)
+	if err != nil {
 		return false, err
 	}
-	if err := s.store.Delete(KeyWorkspaceActionForAccount(accountScopeID, workspaceID, actionID)); err != nil {
+	actionID = strings.TrimSpace(actionID)
+	found := false
+	remaining := make([]WorkspaceAction, 0, len(actions))
+	for _, action := range actions {
+		if action.ID == actionID {
+			found = true
+			continue
+		}
+		remaining = append(remaining, action)
+	}
+	if !found {
+		return false, nil
+	}
+	now := time.Now().UnixMilli()
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(KeyWorkspaceActionForAccount(accountScopeID, workspaceID, actionID)), nil); err != nil {
+		return false, err
+	}
+	for index, action := range remaining {
+		if action.SortIndex == index {
+			continue
+		}
+		action.SortIndex, action.UpdatedAt = index, now
+		raw, err := json.Marshal(action)
+		if err != nil {
+			return false, err
+		}
+		if err := batch.Set([]byte(KeyWorkspaceActionForAccount(accountScopeID, workspaceID, action.ID)), raw, nil); err != nil {
+			return false, err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -199,12 +258,34 @@ func NormalizeWorkspaceAction(action WorkspaceAction) (WorkspaceAction, error) {
 	action.Name = strings.TrimSpace(action.Name)
 	action.Description = strings.TrimSpace(action.Description)
 	action.Icon = strings.TrimSpace(action.Icon)
-	action.Entrypoint = filepath.Clean(strings.TrimSpace(action.Entrypoint))
-	if action.ID == "" || action.Name == "" || strings.TrimSpace(action.Entrypoint) == "" {
+	rawEntrypoint := strings.TrimSpace(action.Entrypoint)
+	if action.ID == "" || action.Name == "" || rawEntrypoint == "" {
 		return WorkspaceAction{}, errors.New("action id, name, and entrypoint are required")
 	}
-	if filepath.IsAbs(action.Entrypoint) || action.Entrypoint == "." || action.Entrypoint == ".." || strings.HasPrefix(action.Entrypoint, ".."+string(filepath.Separator)) {
-		return WorkspaceAction{}, errors.New("action entrypoint must be a workspace-relative path")
+	if err := validateWorkspaceActionText(action.Name, "name", maxWorkspaceActionNameBytes, false); err != nil {
+		return WorkspaceAction{}, err
+	}
+	if err := validateWorkspaceActionText(action.Description, "description", maxWorkspaceActionDescriptionBytes, true); err != nil {
+		return WorkspaceAction{}, err
+	}
+	if err := validateWorkspaceActionText(action.Icon, "icon", maxWorkspaceActionIconBytes, false); err != nil {
+		return WorkspaceAction{}, err
+	}
+	if !utf8.ValidString(rawEntrypoint) || len(rawEntrypoint) > maxWorkspaceActionEntrypointBytes || strings.IndexByte(rawEntrypoint, 0) >= 0 || strings.Contains(rawEntrypoint, "\\") || hasWorkspaceActionControl(rawEntrypoint, false) {
+		return WorkspaceAction{}, errors.New("action entrypoint must be a valid workspace-relative path")
+	}
+	action.Entrypoint = path.Clean(rawEntrypoint)
+	segments := strings.Split(rawEntrypoint, "/")
+	traverses := false
+	for _, segment := range segments {
+		if segment == ".." {
+			traverses = true
+			break
+		}
+	}
+	windowsDrive := len(rawEntrypoint) >= 2 && ((rawEntrypoint[0] >= 'a' && rawEntrypoint[0] <= 'z') || (rawEntrypoint[0] >= 'A' && rawEntrypoint[0] <= 'Z')) && rawEntrypoint[1] == ':'
+	if filepath.IsAbs(rawEntrypoint) || path.IsAbs(rawEntrypoint) || windowsDrive || traverses || action.Entrypoint == "." {
+		return WorkspaceAction{}, errors.New("action entrypoint must be a non-traversing workspace-relative path")
 	}
 	var err error
 	if action.Arguments, err = normalizeWorkspaceActionStrings(action.Arguments, "argument"); err != nil {
@@ -230,6 +311,9 @@ func normalizeWorkspaceActionInputs(inputs []WorkspaceActionInput) ([]WorkspaceA
 	if len(inputs) == 0 {
 		return nil, nil
 	}
+	if len(inputs) > maxWorkspaceActionInputs {
+		return nil, fmt.Errorf("action inputs exceed limit of %d", maxWorkspaceActionInputs)
+	}
 	seen := make(map[string]struct{}, len(inputs))
 	out := make([]WorkspaceActionInput, 0, len(inputs))
 	for _, input := range inputs {
@@ -241,6 +325,21 @@ func normalizeWorkspaceActionInputs(inputs []WorkspaceActionInput) ([]WorkspaceA
 		if input.ID == "" || input.Label == "" {
 			return nil, errors.New("action input id and label are required")
 		}
+		if !validWorkspaceActionInputID(input.ID) {
+			return nil, fmt.Errorf("action input id %q must start with a letter and contain only letters, numbers, underscores, or hyphens", input.ID)
+		}
+		if err := validateWorkspaceActionText(input.Label, "input label", maxWorkspaceActionInputLabelBytes, false); err != nil {
+			return nil, err
+		}
+		if err := validateWorkspaceActionText(input.Description, "input description", maxWorkspaceActionInputTextBytes, true); err != nil {
+			return nil, err
+		}
+		if err := validateWorkspaceActionText(input.Placeholder, "input placeholder", maxWorkspaceActionInputTextBytes, false); err != nil {
+			return nil, err
+		}
+		if err := validateWorkspaceActionText(input.Default, "input default", maxWorkspaceActionArgumentBytes, true); err != nil {
+			return nil, err
+		}
 		if _, duplicate := seen[input.ID]; duplicate {
 			return nil, fmt.Errorf("duplicate action input id %q", input.ID)
 		}
@@ -250,6 +349,9 @@ func normalizeWorkspaceActionInputs(inputs []WorkspaceActionInput) ([]WorkspaceA
 		}
 		if input.Kind != WorkspaceActionInputKindText && input.Kind != WorkspaceActionInputKindSecret {
 			return nil, fmt.Errorf("action input %q kind must be text or secret", input.ID)
+		}
+		if input.Kind == WorkspaceActionInputKindSecret && input.Default != "" {
+			return nil, fmt.Errorf("action secret input %q cannot persist a default value", input.ID)
 		}
 		var err error
 		if input.Arguments, err = normalizeWorkspaceActionStrings(input.Arguments, "input argument"); err != nil {
@@ -264,14 +366,56 @@ func normalizeWorkspaceActionStrings(values []string, label string) ([]string, e
 	if len(values) == 0 {
 		return nil, nil
 	}
+	if len(values) > maxWorkspaceActionArguments {
+		return nil, fmt.Errorf("action %ss exceed limit of %d", label, maxWorkspaceActionArguments)
+	}
 	out := make([]string, len(values))
 	for index, value := range values {
+		if !utf8.ValidString(value) || len(value) > maxWorkspaceActionArgumentBytes {
+			return nil, fmt.Errorf("action %s %d is invalid or exceeds %d bytes", label, index, maxWorkspaceActionArgumentBytes)
+		}
 		if strings.IndexByte(value, 0) >= 0 {
 			return nil, fmt.Errorf("action %s %d contains a null byte", label, index)
 		}
 		out[index] = value
 	}
 	return out, nil
+}
+
+func validateWorkspaceActionText(value, label string, maxBytes int, allowNewlines bool) error {
+	if !utf8.ValidString(value) || len(value) > maxBytes || hasWorkspaceActionControl(value, allowNewlines) {
+		return fmt.Errorf("action %s is invalid or exceeds %d bytes", label, maxBytes)
+	}
+	if !allowNewlines && strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("action %s must be a single line", label)
+	}
+	return nil
+}
+
+func hasWorkspaceActionControl(value string, allowNewlines bool) bool {
+	for _, char := range value {
+		if !unicode.IsControl(char) {
+			continue
+		}
+		if allowNewlines && (char == '\n' || char == '\r' || char == '\t') {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func validWorkspaceActionInputID(value string) bool {
+	if len(value) == 0 || len(value) > maxWorkspaceActionInputIDBytes || !utf8.ValidString(value) {
+		return false
+	}
+	for index, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (index > 0 && char >= '0' && char <= '9') || (index > 0 && (char == '_' || char == '-')) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func sortWorkspaceActions(actions []WorkspaceAction) {

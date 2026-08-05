@@ -1427,6 +1427,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
+  onOpenActionSettings?: () => void;
   planSidebarBelowActions?: ReactNode;
 }
 
@@ -1514,6 +1515,7 @@ export function DesktopV3ExistingConversationPane({
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
+  onOpenActionSettings,
   planSidebarBelowActions,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
@@ -2809,6 +2811,7 @@ export function DesktopV3ExistingConversationPane({
                     onAction={stablePlanExecutionAction}
                     onStop={stableStop}
                     onEditPlan={stableOpenPlan}
+                    onOpenActionSettings={onOpenActionSettings}
                     belowActions={planSidebarBelowActions}
                     canonicalRecommendation={canonicalFinalHandoffRecommendation}
                   />
@@ -2900,6 +2903,7 @@ export function DesktopV3ExistingConversationPane({
             contextTooltip={contextTooltip}
             compactDisabled={compacting || sending || Boolean(currentRun)}
             onSlashCommand={onSlashCommand}
+            onOpenActionSettings={onOpenActionSettings}
           />
         </div>
 
@@ -2927,6 +2931,7 @@ export function DesktopV3ExistingConversationPane({
               onAction={stablePlanExecutionAction}
               onStop={stableStop}
               onEditPlan={stableOpenPlan}
+              onOpenActionSettings={onOpenActionSettings}
               belowActions={planSidebarBelowActions}
               displayMode={planSidebarDisplayMode}
               taskChildren={taskChildren}

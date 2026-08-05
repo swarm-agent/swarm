@@ -808,6 +808,10 @@ func (s *Service) Browse(path string) (BrowseResult, error) {
 }
 
 func (s *Service) BrowseForPrincipal(principal identity.Principal, path string) (BrowseResult, error) {
+	return s.BrowseEntriesForPrincipal(principal, path, false)
+}
+
+func (s *Service) BrowseEntriesForPrincipal(principal identity.Principal, path string, includeFiles bool) (BrowseResult, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return BrowseResult{}, err
 	}
@@ -828,15 +832,18 @@ func (s *Service) BrowseForPrincipal(principal identity.Principal, path string) 
 		if name == "" || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if !entry.IsDir() {
+		if !entry.IsDir() && !includeFiles {
 			continue
 		}
 		fullPath := filepath.Join(resolved, name)
-		isGitRepo, hasSwarm := detectWorkspaceSignals(fullPath)
+		isGitRepo, hasSwarm := false, false
+		if entry.IsDir() {
+			isGitRepo, hasSwarm = detectWorkspaceSignals(fullPath)
+		}
 		items = append(items, BrowseEntry{
 			Path:        fullPath,
 			Name:        name,
-			IsDirectory: true,
+			IsDirectory: entry.IsDir(),
 			IsGitRepo:   isGitRepo,
 			HasSwarm:    hasSwarm,
 		})

@@ -42,6 +42,7 @@ func manageActionsDefinition() Definition {
 				"entrypoint":     map[string]any{"type": "string", "description": "Workspace-relative executable or script path"},
 				"arguments":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Fixed argv values passed without shell interpolation"},
 				"inputs":         map[string]any{"type": "array", "items": inputSchema, "description": "Optional prompted input definitions whose argument templates are structured argv values"},
+				"pinned":         map[string]any{"type": "boolean", "description": "Whether the Action appears in pinned quick-access lists"},
 				"ordered_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Every workspace Action id in the desired order"},
 			},
 			"required":             []string{"action"},
@@ -112,7 +113,7 @@ func (r *Runtime) executeManageActions(scope WorkspaceScope, args map[string]any
 		if err != nil {
 			return "", err
 		}
-		action, err := r.actions.Create(actionruntime.CreateInput{Scope: canonical, Name: name, Description: asString(args["description"]), Icon: asString(args["icon"]), Entrypoint: entrypoint, Arguments: arguments, Inputs: inputs})
+		action, err := r.actions.Create(actionruntime.CreateInput{Scope: canonical, Name: name, Description: asString(args["description"]), Icon: asString(args["icon"]), Entrypoint: entrypoint, Arguments: arguments, Inputs: inputs, Pinned: asBool(args["pinned"])})
 		if err != nil {
 			return "", err
 		}
@@ -127,6 +128,10 @@ func (r *Runtime) executeManageActions(scope WorkspaceScope, args map[string]any
 		setStringPointer(args, "description", &input.Description)
 		setStringPointer(args, "icon", &input.Icon)
 		setStringPointer(args, "entrypoint", &input.Entrypoint)
+		if _, ok := args["pinned"]; ok {
+			value := asBool(args["pinned"])
+			input.Pinned = &value
+		}
 		if _, ok := args["arguments"]; ok {
 			values, err := parseExactStringSlice(args["arguments"], "arguments")
 			if err != nil {

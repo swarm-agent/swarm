@@ -31,6 +31,7 @@ import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
 import { DesktopComposerActionMenu, type DesktopComposerTaskMode } from './desktop-composer-action-menu'
 import { DesktopWorkspaceActionPanel } from './desktop-workspace-action-panel'
+import { DesktopWorkspaceActionChooser } from './desktop-workspace-action-chooser'
 import type { WorkspaceAction } from '../../../workspaces/actions/types'
 import type { WorkspaceSkill } from '../services/workspace-skills'
 import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
@@ -192,6 +193,7 @@ export interface DesktopV3AgenticComposerProps {
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
   focusSignal?: number
   workspacePath?: string
+  onOpenActionSettings?: () => void
   /** Pre-route composer state; agent/model controls remain visible before the first send. */
   routedNewSession?: boolean
   slashCommandContext?: 'existing-session' | 'new-session'
@@ -288,6 +290,7 @@ export function DesktopV3AgenticComposer({
   onDropTodo,
   focusSignal = 0,
   workspacePath = '',
+  onOpenActionSettings,
   routedNewSession = false,
   slashCommandContext = 'existing-session',
 }: DesktopV3AgenticComposerProps) {
@@ -325,6 +328,7 @@ export function DesktopV3AgenticComposer({
   const [fileDropZone, setFileDropZone] = useState<HTMLElement | null>(null)
   const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
   const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
+  const [workspaceActionChooserOpen, setWorkspaceActionChooserOpen] = useState(false)
   const [workspaceActionAutoLaunch, setWorkspaceActionAutoLaunch] = useState(false)
   const [workspaceActionLaunchToken, setWorkspaceActionLaunchToken] = useState(0)
   const [selectedWorkspaceSkill, setSelectedWorkspaceSkill] = useState<WorkspaceSkill | null>(null)
@@ -734,8 +738,18 @@ export function DesktopV3AgenticComposer({
     onMentionSelect?.(agent)
   }, [draft, onDraftChange, onMentionSelect])
 
+  const openWorkspaceActionChooser = useCallback(() => {
+    setWorkspaceActionChooserOpen(true)
+    setSelectedWorkspaceAction(null)
+  }, [])
+
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
+    if (command.action.kind === 'open-action-chooser') {
+      openWorkspaceActionChooser()
+      onDraftChange('')
+      return
+    }
     if (command.action.kind === 'start-background-router-session') {
       void handleSubmitClick()
       return
@@ -763,7 +777,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
+  }, [currentAgent, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
@@ -800,7 +814,7 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'toggle-tips')) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'toggle-tips' || slashPalette.exactMatch?.action.kind === 'open-action-chooser')) {
         event.preventDefault()
         if (slashPalette.exactMatch?.action.kind === 'start-background-router-session') {
           void handleSubmitClick()
@@ -1063,7 +1077,17 @@ export function DesktopV3AgenticComposer({
         fileDropZone,
       ) : null}
       <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
-        {selectedWorkspaceAction && workspacePath.trim() ? (
+        {workspaceActionChooserOpen && workspacePath.trim() ? (
+          <DesktopWorkspaceActionChooser
+            workspacePath={workspacePath}
+            onSelect={(action) => {
+              setWorkspaceActionChooserOpen(false)
+              handleWorkspaceActionSelect(action, false)
+            }}
+            onOpenSettings={onOpenActionSettings}
+            onClose={() => setWorkspaceActionChooserOpen(false)}
+          />
+        ) : selectedWorkspaceAction && workspacePath.trim() ? (
           <DesktopWorkspaceActionPanel key={`${selectedWorkspaceAction.id}:${workspaceActionLaunchToken}`} workspacePath={workspacePath} action={selectedWorkspaceAction} autoLaunch={workspaceActionAutoLaunch} onClose={closeWorkspaceActionPanel} />
         ) : null}
         {visibleComposerError ? (
@@ -1207,6 +1231,7 @@ export function DesktopV3AgenticComposer({
               compactDisabled={compactDisabled || !onCompact}
               workspacePath={workspacePath}
               onActionSelect={handleWorkspaceActionSelect}
+              onOpenActionSettings={onOpenActionSettings}
               onSkillSelect={setSelectedWorkspaceSkill}
             />
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}

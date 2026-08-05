@@ -30,6 +30,7 @@ type CreateInput struct {
 	Entrypoint  string
 	Arguments   []string
 	Inputs      []pebblestore.WorkspaceActionInput
+	Pinned      bool
 }
 
 type UpdateInput struct {
@@ -41,6 +42,7 @@ type UpdateInput struct {
 	Entrypoint  *string
 	Arguments   *[]string
 	Inputs      *[]pebblestore.WorkspaceActionInput
+	Pinned      *bool
 }
 
 func NewService(store *pebblestore.WorkspaceActionStore) *Service {
@@ -84,10 +86,6 @@ func (s *Service) Create(input CreateInput) (pebblestore.WorkspaceAction, error)
 	if err != nil {
 		return pebblestore.WorkspaceAction{}, err
 	}
-	actions, err := s.store.List(scope.AccountScopeID, scope.WorkspaceID, 1000)
-	if err != nil {
-		return pebblestore.WorkspaceAction{}, err
-	}
 	now := time.Now().UnixMilli()
 	action := pebblestore.WorkspaceAction{
 		ID:             newActionID(),
@@ -100,11 +98,11 @@ func (s *Service) Create(input CreateInput) (pebblestore.WorkspaceAction, error)
 		Entrypoint:     input.Entrypoint,
 		Arguments:      append([]string(nil), input.Arguments...),
 		Inputs:         append([]pebblestore.WorkspaceActionInput(nil), input.Inputs...),
-		SortIndex:      len(actions),
+		Pinned:         input.Pinned,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	return s.store.Save(action)
+	return s.store.Append(action)
 }
 
 func (s *Service) Update(input UpdateInput) (pebblestore.WorkspaceAction, error) {
@@ -139,6 +137,9 @@ func (s *Service) Update(input UpdateInput) (pebblestore.WorkspaceAction, error)
 	}
 	if input.Inputs != nil {
 		action.Inputs = append([]pebblestore.WorkspaceActionInput(nil), (*input.Inputs)...)
+	}
+	if input.Pinned != nil {
+		action.Pinned = *input.Pinned
 	}
 	action.UpdatedAt = time.Now().UnixMilli()
 	return s.store.Save(action)

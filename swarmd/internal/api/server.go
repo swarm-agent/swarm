@@ -1782,7 +1782,8 @@ func (s *Server) handleWorkspaceBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
-	browser, err := s.workspace.BrowseForPrincipal(principal, path)
+	includeFiles := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_files")), "true")
+	browser, err := s.workspace.BrowseEntriesForPrincipal(principal, path, includeFiles)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
