@@ -42,7 +42,6 @@ import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
-import { clearDesktopV3ExistingMessageOperation, continueDesktopV3Conversation, createDesktopV3ExistingMessageOperation, persistDesktopV3ExistingMessageOperation } from '../session-v3/existing-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
@@ -4614,22 +4613,84 @@ export function DesktopAppPage() {
     if (!modal || modal.presentation !== 'sidebar-popout' || modal.integrationComplete || !integrationError || gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateHelpBusy(true)
     try {
-      const operation = createDesktopV3ExistingMessageOperation({
-        sessionId: modal.sessionId,
+      const targetWorkspace = workspaceByPath.get(modal.workspacePath)
+        ?? mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === modal.workspacePath)
+        ?? null
+      if (!targetWorkspace || !reviewFixAgent) {
+        throw new Error('Swarm agent or target workspace is unavailable')
+      }
+      const route = buildDesktopChatRouteOptions({
+        hostSwarmName: swarmName,
+        workspacePath: targetWorkspace.path,
+        workspaceName: targetWorkspace.workspaceName,
+        topologyRoutes: targetWorkspace.topologyRoutes,
+        localWorkspaceBindingId: targetWorkspace.localWorkspaceBindingId,
+        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+      }).find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
+      const draftPreference = draftPreferenceQuery.data?.preference
+      const modelProfileState = modelProfilesQuery.data
+      const defaultModelProfile = modelProfileState?.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId) ?? null
+      const defaultModelProfilePreference = defaultModelProfile
+        ? preferenceFromModelProfile(defaultModelProfile, 'auto', defaultModelProfile.updatedAt)
+        : null
+      const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent)
+      const preference = defaultModelProfilePreference ?? (agentModel.locked
+        ? {
+            provider: agentModel.provider,
+            model: agentModel.model,
+            thinking: agentModel.thinking || draftPreference?.thinking || '',
+            serviceTier: agentModel.serviceTier,
+            contextMode: draftPreference?.contextMode || '',
+          }
+        : draftPreference)
+      const modelProfileChoice = defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined
+      if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
+        throw new Error('Desktop V3 route or model preference is unavailable')
+      }
+      const operation = createDesktopV3NewSessionOperation({
+        workspacePath: targetWorkspace.path,
+        workspaceName: targetWorkspace.workspaceName,
+        route,
         prompt: buildGitSidebarIntegrationHelpPrompt(modal, integrationError),
-        metadata: {
+        title: `Review integration failure: ${modal.worktreeBranch || modal.sessionId}`,
+        mode: 'auto',
+        agentName: reviewFixAgent,
+        modelProfileChoice,
+        worktree: { mode: 'off' },
+        preference: {
+          provider: preference.provider,
+          model: preference.model,
+          thinking: preference.thinking,
+          serviceTier: preference.serviceTier,
+          contextMode: preference.contextMode,
+        },
+        sessionMetadata: {
           source: 'desktop-v3-git-sidebar-integration-help',
+          source_session_id: modal.sessionId,
+          workspace_path: targetWorkspace.path,
+        },
+        messageMetadata: {
+          source: 'desktop-v3-git-sidebar-integration-help',
+          source_session_id: modal.sessionId,
           worktree_branch: modal.worktreeBranch,
           target_branch: modal.targetBranch,
           target_workspace_path: modal.workspacePath,
         },
       })
-      persistDesktopV3ExistingMessageOperation(operation)
-      await continueDesktopV3Conversation(operation)
-      clearDesktopV3ExistingMessageOperation(modal.sessionId, operation.operationId)
+      await startNewDesktopV3Session({
+        operation,
+        onSessionStarted: (sessionId) => {
+          const workspaceSlug = workspaceSlugByPath.get(targetWorkspace.path)
+            ?? workspaceRouteSlugBase({ path: targetWorkspace.path, workspaceName: targetWorkspace.workspaceName })
+          void navigate({
+            to: '/$workspaceSlug/$sessionId',
+            params: { workspaceSlug, sessionId },
+          })
+        },
+      })
       setGitIntegrateModal(null)
       setGitIntegrateArchive(false)
-      setDesktopToast({ message: 'Asked Swarm to help review this integration.', tone: 'success' })
+      setDesktopToast({ message: 'Started a new Swarm session for this integration error.', tone: 'success' })
     } catch (error) {
       setDesktopToast({ message: `Could not ask Swarm for integration help: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {

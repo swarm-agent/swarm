@@ -140,12 +140,14 @@ test('plan Git sidebar renders session commits and an anchored integration confi
   assert.match(source, /window\.addEventListener\('scroll', positionGitSidebarIntegratePopout, true\)/)
   assert.match(source, /document\.addEventListener\('pointerdown', dismissOnOutsidePointer\)/)
   assert.match(source, /if \(event\.key === 'Escape'\) closeGitSidebarIntegratePopout\(\)/)
-  assert.match(source, /const integrationError = gitIntegrateError[\s\S]*modal\.integrationComplete \|\| !integrationError[\s\S]*createDesktopV3ExistingMessageOperation\(\{[\s\S]*sessionId: modal\.sessionId[\s\S]*buildGitSidebarIntegrationHelpPrompt\(modal, integrationError\)/)
-  assert.match(source, /persistDesktopV3ExistingMessageOperation\(operation\)[\s\S]*await continueDesktopV3Conversation\(operation\)[\s\S]*clearDesktopV3ExistingMessageOperation\(modal\.sessionId, operation\.operationId\)/)
+  assert.match(source, /const integrationError = gitIntegrateError[\s\S]*modal\.integrationComplete \|\| !integrationError[\s\S]*createDesktopV3NewSessionOperation\(\{[\s\S]*prompt: buildGitSidebarIntegrationHelpPrompt\(modal, integrationError\)/)
+  assert.match(source, /workspacePath: targetWorkspace\.path[\s\S]*worktree: \{ mode: 'off' \}[\s\S]*source_session_id: modal\.sessionId[\s\S]*worktree_branch: modal\.worktreeBranch[\s\S]*target_branch: modal\.targetBranch[\s\S]*target_workspace_path: modal\.workspacePath/)
+  assert.match(source, /await startNewDesktopV3Session\(\{[\s\S]*onSessionStarted: \(sessionId\)[\s\S]*to: '\/\$workspaceSlug\/\$sessionId'/)
   assert.match(source, /source: 'desktop-v3-git-sidebar-integration-help'/)
   const helpHandlerSource = source.slice(source.indexOf('const handleAskSwarmForGitIntegrationHelp'), source.indexOf('const closeGitSidebarIntegratePopout'))
   assert.match(helpHandlerSource, /Could not ask Swarm for integration help/)
-  assert.doesNotMatch(helpHandlerSource, /setGitIntegrateError\(null\)|handleGitIntegrate|integrateSessionWorktree|archiveIntegratedSession|createDesktopV3NewSessionOperation/)
+  assert.match(helpHandlerSource, /Started a new Swarm session for this integration error/)
+  assert.doesNotMatch(helpHandlerSource, /createDesktopV3ExistingMessageOperation|continueDesktopV3Conversation|setGitIntegrateError|handleGitIntegrate|integrateSessionWorktree|archiveIntegratedSession|archiveDesktopV3Sessions/)
 })
 
 test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {
