@@ -17,6 +17,9 @@ func TestUISettingsStoreDefaultsEnableThinkingTags(t *testing.T) {
 	if !defaults.Chat.ShowHeader {
 		t.Fatal("default show header = false, want true")
 	}
+	if defaults.Chat.ShowTips == nil || !*defaults.Chat.ShowTips {
+		t.Fatalf("default show tips = %v, want true", defaults.Chat.ShowTips)
+	}
 	if !defaults.Chat.ToolStream.ShowAnchor {
 		t.Fatal("default tool stream anchor = false, want true")
 	}
@@ -72,6 +75,43 @@ func TestUISettingsStoreNormalizesMissingThemeToTide(t *testing.T) {
 	record := NormalizeUISettingsRecordForExternal(UISettingsRecord{})
 	if record.Theme.ActiveID != "tide" {
 		t.Fatalf("normalized missing theme = %q, want tide", record.Theme.ActiveID)
+	}
+}
+
+func TestUISettingsStoreLegacyRecordDefaultsShowTipsOn(t *testing.T) {
+	record := NormalizeUISettingsRecordForExternal(UISettingsRecord{
+		Chat: UIChatSettingsRecord{UpdatedAt: 123},
+	})
+	if record.Chat.ShowTips == nil || !*record.Chat.ShowTips {
+		t.Fatalf("legacy show tips = %v, want true", record.Chat.ShowTips)
+	}
+}
+
+func TestUISettingsStorePersistsExplicitShowTipsOff(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "ui-settings-tips-disabled.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	settings := NewUISettingsStore(store)
+	disabled := false
+	record, err := settings.Update(UISettingsPatch{
+		Chat: &UIChatSettingsRecord{ShowTips: &disabled},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if record.Chat.ShowTips == nil || *record.Chat.ShowTips {
+		t.Fatalf("updated show tips = %v, want false", record.Chat.ShowTips)
+	}
+
+	stored, ok, err := settings.Get()
+	if err != nil || !ok {
+		t.Fatalf("Get() ok=%v error=%v", ok, err)
+	}
+	if stored.Chat.ShowTips == nil || *stored.Chat.ShowTips {
+		t.Fatalf("stored show tips = %v, want false", stored.Chat.ShowTips)
 	}
 }
 

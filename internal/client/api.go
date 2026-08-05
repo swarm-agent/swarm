@@ -1297,6 +1297,7 @@ type UIChatToolStreamSettings struct {
 
 type UIChatSettings struct {
 	ShowHeader             bool                     `json:"show_header"`
+	ShowTips               bool                     `json:"show_tips"`
 	ThinkingTags           bool                     `json:"thinking_tags"`
 	ShowCompactButton      bool                     `json:"show_compact_button"`
 	DefaultNewSessionMode  string                   `json:"default_new_session_mode,omitempty"`
@@ -1305,6 +1306,7 @@ type UIChatSettings struct {
 }
 
 type UIChatSettingsPatch struct {
+	ShowTips     *bool `json:"show_tips,omitempty"`
 	ThinkingTags *bool `json:"thinking_tags,omitempty"`
 }
 

@@ -62,6 +62,7 @@ type ChatToolStreamSettings struct {
 
 type ChatSettings struct {
 	ShowHeader                      bool                   `json:"show_header"`
+	ShowTips                        bool                   `json:"show_tips"`
 	ThinkingTags                    bool                   `json:"thinking_tags"`
 	ShowCompactButton               bool                   `json:"show_compact_button"`
 	DefaultNewSessionMode           string                 `json:"default_new_session_mode,omitempty"`
@@ -200,6 +201,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		},
 		Chat: ChatSettings{
 			ShowHeader:                      record.Chat.ShowHeader,
+			ShowTips:                        *record.Chat.ShowTips,
 			ThinkingTags:                    record.Chat.ThinkingTags,
 			ShowCompactButton:               record.Chat.ShowCompactButton,
 			DefaultNewSessionMode:           strings.TrimSpace(record.Chat.DefaultNewSessionMode),
@@ -274,6 +276,7 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 	return &pebblestore.UIChatSettingsRecord{
 		ShowHeader:                      settings.ShowHeader,
 		ShowHeaderSet:                   true,
+		ShowTips:                        boolPointer(settings.ShowTips),
 		ThinkingTags:                    settings.ThinkingTags,
 		ThinkingTagsSet:                 true,
 		ShowCompactButton:               settings.ShowCompactButton,
@@ -293,6 +296,10 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 }
 
 func intPointer(value int) *int {
+	return &value
+}
+
+func boolPointer(value bool) *bool {
 	return &value
 }
 

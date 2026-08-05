@@ -62,6 +62,7 @@ type UIChatToolStreamSettingsRecord struct {
 type UIChatSettingsRecord struct {
 	ShowHeader                      bool                           `json:"show_header"`
 	ShowHeaderSet                   bool                           `json:"-"`
+	ShowTips                        *bool                          `json:"show_tips,omitempty"`
 	ThinkingTags                    bool                           `json:"thinking_tags"`
 	ThinkingTagsSet                 bool                           `json:"-"`
 	ShowCompactButton               bool                           `json:"show_compact_button"`
@@ -199,6 +200,7 @@ func DefaultUISettingsRecord() UISettingsRecord {
 		Chat: UIChatSettingsRecord{
 			ShowHeader:                      true,
 			ShowHeaderSet:                   true,
+			ShowTips:                        boolPointer(true),
 			ThinkingTags:                    true,
 			ThinkingTagsSet:                 true,
 			ShowCompactButton:               false,
@@ -226,6 +228,9 @@ func DefaultUISettingsRecord() UISettingsRecord {
 func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	if !record.Chat.ShowHeaderSet && record.Chat.UpdatedAt == 0 {
 		record.Chat.ShowHeader = true
+	}
+	if record.Chat.ShowTips == nil {
+		record.Chat.ShowTips = boolPointer(true)
 	}
 	if !record.Chat.ThinkingTagsSet && record.Chat.UpdatedAt == 0 {
 		record.Chat.ThinkingTags = true
@@ -287,6 +292,10 @@ func normalizeReviewAutoArchiveMinutes(value int) int {
 }
 
 func intPointer(value int) *int {
+	return &value
+}
+
+func boolPointer(value bool) *bool {
 	return &value
 }
 

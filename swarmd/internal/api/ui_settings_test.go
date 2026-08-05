@@ -172,6 +172,72 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	}
 }
 
+func TestUISettingsPostPatchesShowTipsWithoutOverwritingOtherSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-show-tips.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	seed := uisettings.UISettings{
+		Chat: uisettings.ChatSettings{
+			ShowHeader:             true,
+			ShowTips:               true,
+			ThinkingTags:           false,
+			DefaultNewSessionMode:  "plan",
+			DefaultWorkspaceRoutes: map[string]string{"/repo": "swarm:self:/repo"},
+			ToolStream:             uisettings.ChatToolStreamSettings{ShowAnchor: true, RunningSymbol: "•"},
+		},
+		Theme: uisettings.ThemeSettings{ActiveID: "crimson"},
+	}
+	if _, err := settingsSvc.SetForAccount("tips-account", seed); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"chat":{"show_tips":false}}`)))
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), identity.Principal{
+		Type: identity.PrincipalTypeUser, AccountScopeID: "tips-account",
+	}))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Chat.ShowTips {
+		t.Fatal("response show tips = true, want false")
+	}
+	if response.Chat.ThinkingTags || response.Chat.DefaultNewSessionMode != "plan" || response.Theme.ActiveID != "crimson" {
+		t.Fatalf("partial patch overwrote settings: %+v", response)
+	}
+	if response.Chat.DefaultWorkspaceRoutes["/repo"] != "swarm:self:/repo" || !response.Chat.ToolStream.ShowAnchor {
+		t.Fatalf("partial patch overwrote chat settings: %+v", response.Chat)
+	}
+
+	loaded, err := settingsSvc.GetForAccount("tips-account")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Chat.ShowTips {
+		t.Fatal("persisted show tips = true, want false")
+	}
+}
+
 func TestUISettingsPostPersistsImageDefaultModel(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-image-default.pebble"))
 	if err != nil {

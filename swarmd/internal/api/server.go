@@ -3338,6 +3338,7 @@ type uiChatToolStreamSettingsPatchPresence struct {
 
 type uiChatSettingsPatchPresence struct {
 	ShowHeader                      *bool                                  `json:"show_header"`
+	ShowTips                        *bool                                  `json:"show_tips"`
 	ThinkingTags                    *bool                                  `json:"thinking_tags"`
 	ShowCompactButton               *bool                                  `json:"show_compact_button"`
 	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
@@ -3387,6 +3388,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 	if raw.Chat != nil {
 		if raw.Chat.ShowHeader != nil {
 			settings.Chat.ShowHeader = patch.Chat.ShowHeader
+		}
+		if raw.Chat.ShowTips != nil {
+			settings.Chat.ShowTips = patch.Chat.ShowTips
 		}
 		if raw.Chat.ThinkingTags != nil {
 			settings.Chat.ThinkingTags = patch.Chat.ThinkingTags

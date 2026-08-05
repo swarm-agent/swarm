@@ -10,8 +10,29 @@ import (
 
 func TestDefaultUISettingsEnableThinkingTags(t *testing.T) {
 	settings := defaultUISettings()
-	if !settings.Chat.ThinkingTags || !settings.Chat.ShowHeader || !settings.Chat.ToolStream.ShowAnchor {
+	if !settings.Chat.ShowTips || !settings.Chat.ThinkingTags || !settings.Chat.ShowHeader || !settings.Chat.ToolStream.ShowAnchor {
 		t.Fatalf("unexpected UI defaults: %+v", settings.Chat)
+	}
+}
+
+func TestUISettingsServicePreservesExplicitShowTipsOff(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-tips.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	service := NewService(pebblestore.NewUISettingsStore(store))
+	settings := defaultUISettings()
+	settings.Chat.ShowTips = false
+	if _, err := service.SetForAccount("account-a", settings); err != nil {
+		t.Fatalf("SetForAccount(): %v", err)
+	}
+	loaded, err := service.GetForAccount("account-a")
+	if err != nil {
+		t.Fatalf("GetForAccount(): %v", err)
+	}
+	if loaded.Chat.ShowTips {
+		t.Fatal("show tips = true after explicit false persistence")
 	}
 }
 
