@@ -603,15 +603,20 @@ test("active checkpoint title shows three complete lines before truncating", () 
   assert.match(markup, new RegExp(longTitle));
 });
 
-test("accepted plan sidebar restores the original execution view without AI helpers", () => {
+test("accepted plan sidebar starts with the current checkpoint without an execution heading", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
       onAction={() => undefined}
     />,
   );
+  const currentCheckpointIndex = markup.indexOf("data-plan-current-checkpoint-layout");
+  const scrollContentIndex = markup.indexOf("data-plan-top-stack-content");
 
-  assert.match(markup, />Execution</);
+  assert.doesNotMatch(markup, />Execution</);
+  assert.doesNotMatch(markup, /title="Plan execution"/);
+  assert.ok(currentCheckpointIndex > scrollContentIndex, "expected current checkpoint first in the sidebar stack");
+  assert.doesNotMatch(markup.slice(scrollContentIndex, currentCheckpointIndex), /<header|<svg/);
   assert.doesNotMatch(markup, /Plan Agent/);
   assert.doesNotMatch(markup, /New Auto Agent chat/);
   assert.doesNotMatch(markup, /AI helper/);

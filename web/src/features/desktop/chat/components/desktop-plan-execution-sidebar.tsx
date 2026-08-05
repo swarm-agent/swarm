@@ -6,7 +6,7 @@ import {
 import type { DesktopSessionPlanCheckpointRecommendation, TaskChildCardActions, TaskToolRow } from "../types/chat";
 import type { DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
 import { DesktopPlanSubagentList } from "./desktop-plan-subagent-list";
-import { ChevronDown, ListChecks } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
 import type { DesktopSessionPlanCheckpoint } from "../types/chat";
@@ -737,26 +737,13 @@ export const DesktopPlanExecutionSidebar = memo(
               : "flex min-h-0 flex-1 flex-col gap-3 overflow-hidden",
           )}
         >
-          {!embedded ? (
-            <header className={cn(
-              "shrink-0",
-              thin
-                ? "pb-1 text-center"
-                : "flex items-center gap-2 px-1 pb-1 text-[var(--app-text)]",
-            )}>
-              {!thin ? (
-                <span className="grid size-7 place-items-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
-                  <ListChecks aria-hidden="true" className="size-3.5" />
-                </span>
-              ) : null}
+          {!embedded && thin ? (
+            <header className="shrink-0 pb-1 text-center">
               <div
-                className={cn(
-                  "font-semibold tracking-tight text-[var(--app-text)]",
-                  thin ? "text-center text-xs" : "text-sm",
-                )}
+                className="text-center text-xs font-semibold tracking-tight text-[var(--app-text)]"
                 title="Plan execution"
               >
-                {thin ? "P" : "Execution"}
+                P
               </div>
             </header>
           ) : null}
