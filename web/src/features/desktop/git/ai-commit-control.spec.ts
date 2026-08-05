@@ -8,7 +8,7 @@ const sidebarURL = new URL('../settings/actions/components/workspace-actions-sid
 const settingsURL = new URL('../settings/actions/components/actions-settings-page.tsx', import.meta.url)
 const iconsURL = new URL('../settings/actions/components/workspace-action-icons.tsx', import.meta.url)
 
-test('Git sidebar contains only Git commit controls and no Action flow authority', async () => {
+test('Git sidebar keeps plain commit controls while Workspace Actions own the commit-plus-Action menu', async () => {
   const [control, page] = await Promise.all([readFile(controlURL, 'utf8'), readFile(pageURL, 'utf8')])
   const sidebarStart = page.indexOf('const planSidebarGitPanel =')
   const sidebarEnd = page.indexOf('const focusedSidebarContent =', sidebarStart)
@@ -18,7 +18,7 @@ test('Git sidebar contains only Git commit controls and no Action flow authority
   assert.match(sidebar, /data-plan-git-action-row data-plan-git-commit/)
   assert.match(sidebar, /<AICommitButton compact/)
   assert.match(sidebar, /aria-label="Commit changes"/)
-  assert.doesNotMatch(sidebar, /GitActionFlowControl|pinned-git-flows|onAICommitActionRun/)
+  assert.doesNotMatch(sidebar, /GitActionFlowControl|pinned-git-flows/)
   assert.doesNotMatch(control, /GitActionFlowControl|PINNED_GIT_FLOWS_STORAGE_KEY|WorkspaceAction/)
 })
 
@@ -29,6 +29,9 @@ test('Workspace Actions render directly after Git from canonical pinned definiti
   assert.match(sidebar, /data-pinned-workspace-actions/)
   assert.match(sidebar, /<WorkspaceActionIcon icon=\{action\.icon\}/)
   assert.match(sidebar, /onClick=\{\(\) => onRun\(action\)\}/)
+  assert.match(sidebar, /data-plan-section-treatment="integrated"/)
+  assert.match(sidebar, /className="mt-3 shrink-0 border-t border-\[var\(--app-border\)\] pt-3"/)
+  assert.doesNotMatch(sidebar, /app-primary-border|app-primary-soft/)
 })
 
 test('quick manager reuses the full Settings Actions management implementation', async () => {
@@ -53,9 +56,24 @@ test('shared icon picker is visual and unknown values use a deterministic fallba
   assert.match(icons, /aria-pressed=\{selected\}/)
 })
 
-test('Workspace Action execution remains in the existing execution panel', async () => {
+test('Workspace Action menu offers explicit AI Commit then run orchestration', async () => {
+  const [page, sidebar] = await Promise.all([readFile(pageURL, 'utf8'), readFile(sidebarURL, 'utf8')])
+  const workflowStart = page.indexOf('const handleAICommitWorkspaceAction = async')
+  const workflowEnd = page.indexOf('const handleAICommit = async', workflowStart)
+  const workflow = page.slice(workflowStart, workflowEnd)
+
+  assert.match(sidebar, /AI Commit, then run/)
+  assert.match(sidebar, /onAICommitRun\(action\)/)
+  assert.match(page, /onAICommitRun=\{\(action\) => openAICommitWorkspaceAction/)
+  assert.match(page, /launchLabel=\{workspaceActionPresentation\.mode === 'ai-commit' \? 'AI Commit, then run'/)
+  assert.ok(workflow.indexOf('await commitWorkspaceChanges') < workflow.indexOf('await startWorkspaceAction'), 'the Action must start only after the commit resolves')
+  assert.match(workflow, /mode: 'post-commit'/)
+  assert.match(workflow, /throw error/)
+})
+
+test('standalone Workspace Action execution remains in the existing execution panel', async () => {
   const page = await readFile(pageURL, 'utf8')
-  assert.match(page, /<DesktopWorkspaceActionPanel[\s\S]*action=\{workspaceActionPresentation\}/)
-  assert.match(page, /setWorkspaceActionPresentation\(action\)/)
-  assert.doesNotMatch(page, /startWorkspaceAction|Post-commit Action|gitCommitActionInputs/)
+  assert.match(page, /<DesktopWorkspaceActionPanel[\s\S]*action=\{workspaceActionPresentation\.action\}/)
+  assert.match(page, /mode: 'standalone'/)
+  assert.match(page, /onLaunch=\{workspaceActionPresentation\.mode === 'ai-commit'/)
 })

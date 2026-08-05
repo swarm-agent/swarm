@@ -24,7 +24,7 @@ test('Action definitions and execution remain separate surfaces', async () => {
     readFile(settingsURL, 'utf8'),
   ])
 
-  assert.match(page, /action=\{workspaceActionPresentation\}/)
+  assert.match(page, /action=\{workspaceActionPresentation\.action\}/)
   assert.match(settings, /Action saved\. Nothing was executed\./)
   assert.match(settings, /onClick=\{\(\) => runAction\(action\)\}/)
   assert.doesNotMatch(panel, /saveWorkspaceAction|deleteWorkspaceAction|reorderWorkspaceActions/)
@@ -39,4 +39,13 @@ test('foreground run preserves output and run-state context', async () => {
   assert.match(source, /!autoCloseOnSuccess \|\| run\?\.status !== 'succeeded'/)
   assert.match(source, /run\.output/)
   assert.match(source, /run\.error/)
+})
+
+test('execution panel supports an explicit commit-first launch without duplicating Action input UI', async () => {
+  const source = await readFile(panelURL, 'utf8')
+
+  assert.match(source, /onLaunch\?: \(values: Record<string, string>\) => Promise<WorkspaceActionRun>/)
+  assert.match(source, /onLaunch \? await onLaunch\(values\) : await startWorkspaceAction/)
+  assert.match(source, /launchLabel = 'Run'/)
+  assert.match(source, /\{launchLabel\}/)
 })

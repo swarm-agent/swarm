@@ -52,7 +52,7 @@ import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitReal
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton } from '../git/ai-commit-control'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
-import type { WorkspaceAction } from '../../workspaces/actions/types'
+import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../workspaces/actions/types'
 import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import {
@@ -2634,7 +2634,7 @@ export function DesktopAppPage() {
   const [gitAICommitPhase, setGitAICommitPhase] = useState<'generating' | 'committing' | null>(null)
   const gitAICommitRunningRef = useRef(false)
   const [gitCommitError, setGitCommitError] = useState<string | null>(null)
-  const [workspaceActionPresentation, setWorkspaceActionPresentation] = useState<WorkspaceAction | null>(null)
+  const [workspaceActionPresentation, setWorkspaceActionPresentation] = useState<{ action: WorkspaceAction; mode: 'standalone' | 'post-commit'; workspacePath: string; sessionId: string; initialRun?: WorkspaceActionRun } | null>(null)
   const [gitCommitIntegrate, setGitCommitIntegrate] = useState(false)
   const [gitCommitArchive, setGitCommitArchive] = useState(false)
   const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
@@ -4473,7 +4473,34 @@ export function DesktopAppPage() {
   }
 
   const openWorkspaceAction = (action: WorkspaceAction) => {
-    setWorkspaceActionPresentation(action)
+    setWorkspaceActionPresentation({ action, mode: 'standalone', workspacePath: action.workspacePath, sessionId: '' })
+  }
+
+  const runAICommitWorkspaceAction = async (action: WorkspaceAction, workspacePath: string, sessionId: string) => {
+    if (gitCommitBusy || gitAICommitRunningRef.current) return
+
+    gitAICommitRunningRef.current = true
+    setGitAICommitPhase('generating')
+    setWorkspaceActionPresentation(null)
+    setDesktopToast({ message: `AI Commit is preparing changes before “${action.name}”.`, tone: 'info' })
+    try {
+      const suggestion = await suggestWorkspaceCommitMessage({ workspacePath, sessionId })
+      setGitAICommitPhase('committing')
+      await commitWorkspaceChanges({ workspacePath, sessionId, message: suggestion.message, all: true })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+      const inputs = Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue]))
+      const run = await startWorkspaceAction(workspacePath, action.id, inputs)
+      setWorkspaceActionPresentation({ action, mode: 'post-commit', workspacePath, sessionId, initialRun: run })
+      setDesktopToast({ message: `Committed “${suggestion.message}”; ${action.name} is running.`, tone: 'success' })
+    } catch (error) {
+      setDesktopToast({ message: `AI Commit + Action failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    } finally {
+      gitAICommitRunningRef.current = false
+      setGitAICommitPhase(null)
+    }
   }
 
   const handleAICommit = async (
@@ -4720,7 +4747,7 @@ export function DesktopAppPage() {
         {gitSnapshot?.has_git ? <span className="shrink-0">{gitSnapshot.dirty_count}</span> : null}
       </div>
       {gitSnapshot?.has_git ? (
-        <div className="mt-2 flex min-w-0 shrink-0 items-center gap-1 normal-case tracking-normal" data-plan-git-action-row data-plan-git-commit>
+        <div className="mt-2 flex min-w-0 shrink-0 items-center justify-end gap-1 normal-case tracking-normal" data-plan-git-action-row data-plan-git-commit>
           {gitSnapshot.files.length > 0 ? <>
             <button type="button" className="grid min-h-9 w-9 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
             <AICommitButton compact phase={gitAICommitPhase} disabled={gitCommitBusy} onGenerate={() => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }) }} />
@@ -4762,7 +4789,7 @@ export function DesktopAppPage() {
         }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Try archive again' : gitIntegrateError ? 'Try integration again' : 'Confirm integration?' : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
       </div> : null}
     </section>
-    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} workspaceName={routeWorkspace?.workspaceName || ''} onRun={openWorkspaceAction} />
+    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
     </>
   ) : null
 
@@ -5450,8 +5477,10 @@ export function DesktopAppPage() {
         <div className="absolute bottom-[calc(var(--app-safe-area-bottom)+1rem)] left-4 right-4 z-[65] max-h-[min(70vh,36rem)] overflow-y-auto sm:left-auto sm:right-6 sm:w-[28rem]" data-testid="workspace-action-run">
           <DesktopWorkspaceActionPanel
             workspacePath={workspaceActionPresentation.workspacePath}
-            action={workspaceActionPresentation}
+            action={workspaceActionPresentation.action}
             autoCloseOnSuccess={false}
+            initialRun={workspaceActionPresentation.initialRun}
+            contextNotice={workspaceActionPresentation.mode === 'post-commit' ? 'The AI commit succeeded. This Action is now running.' : ''}
             onRunChange={(run) => {
               if (run.status === 'succeeded') setDesktopToast({ message: `${run.actionName} completed successfully.`, tone: 'success' })
               else if (run.status !== 'running') setDesktopToast({ message: `${run.actionName} failed: ${run.error || run.status.replace('_', ' ')}`, tone: 'error' })

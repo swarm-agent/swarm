@@ -11,6 +11,8 @@ interface DesktopWorkspaceActionPanelProps {
   onRunChange?: (run: WorkspaceActionRun) => void
   autoCloseOnSuccess?: boolean
   contextNotice?: string
+  launchLabel?: string
+  onLaunch?: (values: Record<string, string>) => Promise<WorkspaceActionRun>
   onClose: () => void
 }
 
@@ -22,7 +24,7 @@ function invocationPreview(action: WorkspaceAction): string {
   return parts.join(' ')
 }
 
-export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch = false, initialRun = null, initialValues, onRunChange, autoCloseOnSuccess = true, contextNotice = '', onClose }: DesktopWorkspaceActionPanelProps) {
+export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch = false, initialRun = null, initialValues, onRunChange, autoCloseOnSuccess = true, contextNotice = '', launchLabel = 'Run', onLaunch, onClose }: DesktopWorkspaceActionPanelProps) {
   const [values, setValues] = useState<Record<string, string>>(() => initialValues ?? Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue])))
   const [run, setRun] = useState<WorkspaceActionRun | null>(initialRun)
   const [error, setError] = useState('')
@@ -77,7 +79,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     setLaunching(true)
     setError('')
     try {
-      const next = await startWorkspaceAction(workspacePath, action.id, values)
+      const next = onLaunch ? await onLaunch(values) : await startWorkspaceAction(workspacePath, action.id, values)
       setRun(next)
       onRunChangeRef.current?.(next)
     } catch (cause) {
@@ -85,7 +87,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     } finally {
       setLaunching(false)
     }
-  }, [action.id, values, workspacePath])
+  }, [action.id, onLaunch, values, workspacePath])
 
   useEffect(() => {
     if (!autoLaunch || action.inputs.length > 0 || autoLaunchStartedRef.current) return
@@ -127,8 +129,9 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
             </label>
           ))}
           {action.inputs.length === 0 ? <p className="text-xs text-[var(--app-text-muted)]">This Action has no prompted inputs.</p> : null}
+          {contextNotice ? <p className="text-xs text-[var(--app-text-muted)]">{contextNotice}</p> : null}
           {error ? <p className="text-xs text-[var(--app-danger)]" role="alert">{error}</p> : null}
-          <div className="flex justify-end"><button type="button" onClick={() => { void launch() }} disabled={launching || missingRequired} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-[var(--app-primary-text)] disabled:opacity-50">{launching ? <LoaderCircle size={14} className="animate-spin" /> : <Zap size={14} />}Run</button></div>
+          <div className="flex justify-end"><button type="button" onClick={() => { void launch() }} disabled={launching || missingRequired} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-[var(--app-primary-text)] disabled:opacity-50">{launching ? <LoaderCircle size={14} className="animate-spin" /> : <Zap size={14} />}{launchLabel}</button></div>
         </div>
       ) : (
         <div className="grid gap-2 border-t border-[var(--app-border)] px-4 py-3">
