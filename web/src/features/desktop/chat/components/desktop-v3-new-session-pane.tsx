@@ -3,9 +3,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { DesktopSlashCommand } from '../services/slash-commands'
-import { agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryOptions } from '../../../queries/query-options'
+import { agentStateQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, uiSettingsQueryOptions } from '../../../queries/query-options'
 import { createModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from '../queries/model-profile-queries'
 import { agentModelSettingsQueryOptions } from '../../settings/swarm/queries/get-agent-model-settings'
+import { saveShowTipsSetting } from '../../settings/swarm/mutations/save-show-tips-setting'
 import { normalizeShowTipsEnabled } from '../../settings/swarm/types/swarm-settings'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { modelOptionKey } from '../services/model-options'
@@ -137,6 +138,7 @@ export function DesktopV3NewSessionPane({
     : initialWorktreeRequested))
   const [restoredSnapshot, setRestoredSnapshot] = useState<DesktopV3RoutedComposerSnapshot | null>(() => initialControllerState.phase === 'failed' ? initialControllerState.snapshot : null)
   const [localError, setLocalError] = useState<string | null>(null)
+  const [tipsSaving, setTipsSaving] = useState(false)
   const resolvedCallbackRef = useRef(onRoutedSessionResolved)
   const activatingOperationRef = useRef('')
   const initialPromptSubmittedRef = useRef(false)
@@ -198,6 +200,20 @@ export function DesktopV3NewSessionPane({
       })
     return () => { cancelled = true }
   }, [controller, routedState])
+
+  async function handleDisableTips() {
+    if (tipsSaving) return
+    setTipsSaving(true)
+    setLocalError(null)
+    try {
+      const saved = await saveShowTipsSetting(false)
+      queryClient.setQueryData(uiSettingsQueryKey(), saved)
+    } catch (cause) {
+      setLocalError(cause instanceof Error ? cause.message : 'Failed to disable home tips.')
+    } finally {
+      setTipsSaving(false)
+    }
+  }
 
   async function handleConfirmAgentSettings(input: AgentModelControlConfirmInput) {
     if (agentModelSaving) return
@@ -343,6 +359,7 @@ export function DesktopV3NewSessionPane({
         error={routedState.phase === 'failed' ? routedState.error : undefined}
         onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
         showTips={showTips}
+        onDisableTips={tipsSaving ? undefined : () => { void handleDisableTips() }}
         workspace={workspace}
         workspaces={workspaces}
         onOpenWorkspacePicker={onOpenWorkspacePicker}

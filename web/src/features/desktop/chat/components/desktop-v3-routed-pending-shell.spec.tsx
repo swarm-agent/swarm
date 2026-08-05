@@ -37,6 +37,7 @@ function render(
       error={error}
       onRetry={state === 'failed' ? () => undefined : undefined}
       showTips={showTips}
+      onDisableTips={showTips ? () => undefined : undefined}
       workspace={workspace}
     />,
   )
@@ -48,6 +49,9 @@ test('draft is a neutral Swarm shell without authoritative setup details', () =>
   assert.match(markup, /data-pending-state="draft"/)
   assert.match(markup, />Swarm Go</)
   assert.match(markup, /data-testid="desktop-home-tip"/)
+  assert.match(markup, /title="Click to disable tips"/)
+  assert.match(markup, /aria-label="Click to disable tips"/)
+  assert.match(markup, /class="mt-4 [^"]*hover:text-/)
   assert.match(markup, /lucide-lightbulb/)
   assert.match(markup, /stroke="currentColor"/)
   assert.match(markup, /text-\[var\(--app-text-muted\)\]/)

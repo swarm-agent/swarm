@@ -16,6 +16,7 @@ export interface DesktopV3RoutedPendingShellProps {
   error?: string
   onRetry?: () => void
   showTips?: boolean
+  onDisableTips?: () => void
   workspace?: WorkspaceEntry
   workspaces?: WorkspaceEntry[]
   onOpenWorkspacePicker?: () => void
@@ -35,6 +36,7 @@ export function DesktopV3RoutedPendingShell({
   error = '',
   onRetry,
   showTips = true,
+  onDisableTips,
   workspace,
   workspaces = workspace ? [workspace] : [],
   onOpenWorkspacePicker,
@@ -79,10 +81,18 @@ export function DesktopV3RoutedPendingShell({
               />
             ) : null}
             {showTips ? (
-              <p className="mt-1 inline-flex max-w-xl items-center justify-center gap-1.5 text-sm leading-6 text-[var(--app-text-muted)]" data-testid="desktop-home-tip">
+              <button
+                type="button"
+                className="mt-4 inline-flex max-w-xl items-center justify-center gap-1.5 text-sm leading-6 text-[var(--app-text-muted)] transition-colors hover:text-[var(--app-text)] disabled:cursor-default"
+                data-testid="desktop-home-tip"
+                title="Click to disable tips"
+                aria-label="Click to disable tips"
+                disabled={!onDisableTips}
+                onClick={onDisableTips}
+              >
                 <Lightbulb size={15} className="shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />
                 <span>Tip: {DESKTOP_HOME_TIPS[tipIndex]}</span>
-              </p>
+              </button>
             ) : null}
           </div>
         </div>

@@ -9,18 +9,23 @@ import {
   selectDesktopHomeTipIndex,
 } from './home-tips'
 
-test('desktop home tip catalog contains the approved 31 tips in order', () => {
-  assert.equal(DESKTOP_HOME_TIPS.length, 31)
-  assert.equal(DESKTOP_HOME_TIPS[0], 'Ask Swarm for three theme variants, then apply your favorite.')
-  assert.equal(DESKTOP_HOME_TIPS[27], 'TUI: press Ctrl+P to inspect the full plan and checkpoint status.')
-  assert.equal(DESKTOP_HOME_TIPS[30], 'Type /tips to hide or show these tips.')
+test('desktop home tip catalog contains 27 concise supported tips in order', () => {
+  assert.equal(DESKTOP_HOME_TIPS.length, 27)
+  assert.equal(DESKTOP_HOME_TIPS[0], 'Ask Swarm for three theme variants, then pick one.')
+  assert.equal(DESKTOP_HOME_TIPS[24], 'TUI: Ctrl+P opens plan and checkpoint status.')
+  assert.equal(DESKTOP_HOME_TIPS[26], 'Type /tips to hide or show these tips.')
+  assert.equal(DESKTOP_HOME_TIPS.includes('Drop a Todo into chat to start working on it.'), false)
+  assert.equal(DESKTOP_HOME_TIPS.includes('Ask Swarm to update several workspace Todos.'), false)
+  assert.equal(DESKTOP_HOME_TIPS.includes('Integrate selected Coder branches as one batch.'), false)
+  assert.equal(DESKTOP_HOME_TIPS.includes('TUI: Ctrl+W switches the workspace directory.'), false)
+  assert.equal(DESKTOP_HOME_TIPS.every((tip) => tip.length <= 56), true)
 })
 
 test('desktop home tip selection chooses a launch tip and avoids the previous tip', () => {
   assert.equal(selectDesktopHomeTipIndex(-1, () => 0), 0)
-  assert.equal(selectDesktopHomeTipIndex(-1, () => 0.999), 30)
+  assert.equal(selectDesktopHomeTipIndex(-1, () => 0.999), 26)
   assert.equal(selectDesktopHomeTipIndex(0, () => 0), 1)
-  assert.equal(selectDesktopHomeTipIndex(30, () => 0), 0)
+  assert.equal(selectDesktopHomeTipIndex(26, () => 0), 0)
 })
 
 test('tips command accepts supported modes and defaults to toggle', () => {
