@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { JSX, ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, JSX, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
@@ -219,6 +220,7 @@ interface GitIntegrateModalState {
   worktreeBranch: string
   targetBranch: string
   integrationComplete?: boolean
+  presentation?: 'sidebar-popout'
 }
 
 interface GitPanelState {
@@ -2615,6 +2617,9 @@ export function DesktopAppPage() {
   const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
   const [gitIntegrateArchive, setGitIntegrateArchive] = useState(false)
   const [gitIntegrateError, setGitIntegrateError] = useState<string | null>(null)
+  const gitIntegrateAnchorRef = useRef<HTMLDivElement | null>(null)
+  const gitIntegratePopoutRef = useRef<HTMLDivElement | null>(null)
+  const [gitIntegratePopoutStyle, setGitIntegratePopoutStyle] = useState<CSSProperties>({ visibility: 'hidden' })
   const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
   const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
@@ -3232,7 +3237,10 @@ export function DesktopAppPage() {
   const reviewFixAgent = resolveReviewWorktreeRepairAgent(agentStateQuery.data)
   const reviewFixAvailable = Boolean(reviewFixAgent && topWorkspacePath)
   const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
-    if (!reviewFixAgent || !topWorkspacePath) return
+    if (!reviewFixAgent || !topWorkspacePath) {
+      setDesktopToast({ message: 'Swarm could not start a repair chat because its agent or workspace route is unavailable.', tone: 'error' })
+      return
+    }
     const route = globalSessionRouteOptions.find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
     const draftPreference = draftPreferenceQuery.data?.preference
     const modelProfileState = modelProfilesQuery.data
@@ -4557,9 +4565,10 @@ export function DesktopAppPage() {
     }
   }
 
-  const handleGitIntegrate = async () => {
+  const handleGitIntegrate = async (archiveAfterIntegration = gitIntegrateArchive) => {
     const modal = gitIntegrateModal
     if (!modal || gitIntegrateBusy) return
+    setGitIntegrateArchive(archiveAfterIntegration)
     setGitIntegrateBusy(true)
     setGitIntegrateError(null)
     try {
@@ -4568,9 +4577,9 @@ export function DesktopAppPage() {
         await integrateSessionWorktree(modal)
         setGitIntegrateModal(integrated)
       }
-      if (gitIntegrateArchive) await archiveIntegratedSession(integrated)
+      if (archiveAfterIntegration) await archiveIntegratedSession(integrated)
       setGitIntegrateModal(null)
-      setDesktopToast({ message: gitIntegrateArchive ? 'Worktree integrated and session archived.' : 'Worktree integrated successfully.', tone: 'success' })
+      setDesktopToast({ message: archiveAfterIntegration ? 'Worktree integrated and session archived.' : 'Worktree integrated successfully.', tone: 'success' })
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
         queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
@@ -4581,6 +4590,68 @@ export function DesktopAppPage() {
       setGitIntegrateBusy(false)
     }
   }
+
+  const closeGitSidebarIntegratePopout = useCallback(() => {
+    if (gitIntegrateBusy) return
+    setGitIntegrateModal((current) => current?.presentation === 'sidebar-popout' ? null : current)
+    setGitIntegrateArchive(false)
+    setGitIntegrateError(null)
+  }, [gitIntegrateBusy])
+
+  const positionGitSidebarIntegratePopout = useCallback(() => {
+    const anchor = gitIntegrateAnchorRef.current
+    const popout = gitIntegratePopoutRef.current
+    if (!anchor || !popout) return
+    const viewportPadding = 8
+    const gap = 4
+    const anchorRect = anchor.getBoundingClientRect()
+    const width = Math.min(416, Math.max(anchorRect.width, 280), window.innerWidth - viewportPadding * 2)
+    const availableAbove = Math.max(0, anchorRect.top - viewportPadding - gap)
+    const availableBelow = Math.max(0, window.innerHeight - anchorRect.bottom - viewportPadding - gap)
+    const popoutHeight = popout.scrollHeight
+    const placeAbove = popoutHeight <= availableAbove || availableAbove >= availableBelow
+    const maxHeight = placeAbove ? availableAbove : availableBelow
+    const visibleHeight = Math.min(popoutHeight, maxHeight)
+    const left = Math.min(Math.max(viewportPadding, anchorRect.left), window.innerWidth - width - viewportPadding)
+    const top = placeAbove
+      ? Math.max(viewportPadding, anchorRect.top - gap - visibleHeight)
+      : anchorRect.bottom + gap
+    setGitIntegratePopoutStyle({ left, top, width, maxHeight, visibility: 'visible' })
+  }, [])
+
+  useLayoutEffect(() => {
+    if (gitIntegrateModal?.presentation !== 'sidebar-popout') return
+    positionGitSidebarIntegratePopout()
+    const frame = window.requestAnimationFrame(positionGitSidebarIntegratePopout)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(positionGitSidebarIntegratePopout)
+    if (gitIntegratePopoutRef.current) observer?.observe(gitIntegratePopoutRef.current)
+    window.addEventListener('resize', positionGitSidebarIntegratePopout)
+    window.addEventListener('scroll', positionGitSidebarIntegratePopout, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer?.disconnect()
+      window.removeEventListener('resize', positionGitSidebarIntegratePopout)
+      window.removeEventListener('scroll', positionGitSidebarIntegratePopout, true)
+    }
+  }, [gitIntegrateError, gitIntegrateModal, positionGitSidebarIntegratePopout])
+
+  useEffect(() => {
+    if (gitIntegrateModal?.presentation !== 'sidebar-popout') return
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && (gitIntegrateAnchorRef.current?.contains(target) || gitIntegratePopoutRef.current?.contains(target))) return
+      closeGitSidebarIntegratePopout()
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeGitSidebarIntegratePopout()
+    }
+    document.addEventListener('pointerdown', dismissOnOutsidePointer)
+    document.addEventListener('keydown', dismissOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOnOutsidePointer)
+      document.removeEventListener('keydown', dismissOnEscape)
+    }
+  }, [closeGitSidebarIntegratePopout, gitIntegrateModal?.presentation])
 
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
     <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="inset-card" data-plan-section-treatment="inset-card">
@@ -4611,7 +4682,26 @@ export function DesktopAppPage() {
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
           : <div className="mt-2 min-h-0 flex-1 overflow-y-auto rounded-xl bg-[var(--app-bg-alt)] p-1 [scrollbar-gutter:stable]" data-plan-git-file-list data-plan-git-scroll="at-sidebar-edge">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
       </div>
-      {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <button type="button" className="mt-2 inline-flex w-full shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]" data-plan-git-integrate onClick={() => { setGitIntegrateArchive(false); setGitIntegrateError(null); setGitIntegrateModal({ sessionId: selectedGitSessionId, workspacePath: activeSessionTargetWorkspacePath, worktreeBranch: activeSessionReviewCandidate.worktree_branch || gitSnapshot?.branch || 'worktree', targetBranch: activeSessionReviewCandidate.target_branch || activeSessionTargetBranch }) }}><GitMerge size={12} />Integrate into {activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}…</button> : null}
+      {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <div ref={gitIntegrateAnchorRef} className="relative mt-2 shrink-0" data-plan-git-integrate-anchor>
+        {gitIntegrateModal?.presentation === 'sidebar-popout' && typeof document !== 'undefined' ? createPortal(
+          <div ref={gitIntegratePopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-xs shadow-xl" style={gitIntegratePopoutStyle} role="menu" aria-label="Git sidebar integration options" data-plan-git-integrate-popout>
+            <div className="flex min-h-8 items-center justify-end px-1"><button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" aria-label="Close Git integration options" disabled={gitIntegrateBusy} onClick={closeGitSidebarIntegratePopout}><X size={15} /></button></div>
+            {gitIntegrateError ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-[var(--app-danger)]" role="alert"><p className="break-words">{gitIntegrateError}</p>{gitIntegrateModal.integrationComplete ? <p className="mt-1 text-[var(--app-text-subtle)]">The worktree is integrated. Retry only the remaining archive step.</p> : null}</div> : null}
+            {!gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={gitIntegrateBusy} onClick={() => void handleGitIntegrate(true)}><Archive size={13} />Confirm and Archive</button> : null}
+          </div>,
+          document.body,
+        ) : null}
+        <button type="button" className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" data-plan-git-integrate aria-expanded={gitIntegrateModal?.presentation === 'sidebar-popout'} aria-haspopup="menu" disabled={gitIntegrateBusy} onClick={() => {
+          if (gitIntegrateModal?.presentation === 'sidebar-popout') {
+            void handleGitIntegrate(gitIntegrateModal.integrationComplete || gitIntegrateArchive)
+            return
+          }
+          setGitIntegrateArchive(false)
+          setGitIntegrateError(null)
+          setGitIntegratePopoutStyle({ visibility: 'hidden' })
+          setGitIntegrateModal({ sessionId: selectedGitSessionId, workspacePath: activeSessionTargetWorkspacePath, worktreeBranch: activeSessionReviewCandidate.worktree_branch || gitSnapshot?.branch || 'worktree', targetBranch: activeSessionReviewCandidate.target_branch || activeSessionTargetBranch, presentation: 'sidebar-popout' })
+        }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Try archive again' : gitIntegrateError ? 'Try integration again' : 'Confirm integration?' : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
+      </div> : null}
     </section>
   ) : null
 
@@ -5417,7 +5507,7 @@ export function DesktopAppPage() {
           </form>
         </DialogPanel>
       </Dialog> : null}
-      {gitIntegrateModal ? <Dialog>
+      {gitIntegrateModal && gitIntegrateModal.presentation !== 'sidebar-popout' ? <Dialog>
         <DialogBackdrop onClick={() => { if (!gitIntegrateBusy) setGitIntegrateModal(null) }} />
         <DialogPanel className="w-[min(520px,100%)] gap-4">
           <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void handleGitIntegrate() }}>

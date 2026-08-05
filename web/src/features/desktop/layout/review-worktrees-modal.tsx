@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Archive, Bot, CheckCircle2, ChevronDown, CircleHelp, Eye, EyeOff, GitBranch, GitCommitHorizontal, GitMerge, LoaderCircle, RefreshCcw, ShieldAlert, X } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { cn } from '../../../lib/cn'
@@ -125,6 +126,9 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   const [autoArchiveStatus, setAutoArchiveStatus] = useState('')
   const [doneExpanded, setDoneExpanded] = useState(false)
   const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const integrationAnchorRef = useRef<HTMLDivElement | null>(null)
+  const integrationPopoutRef = useRef<HTMLDivElement | null>(null)
+  const [integrationPopoutStyle, setIntegrationPopoutStyle] = useState<CSSProperties>({ visibility: 'hidden' })
   const refresh = useCallback(async (automatic = false): Promise<ReviewWorktreesResponse | null> => {
     setLoading(true)
     setError('')
@@ -340,11 +344,12 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
       setArchiving(false)
     }
   }
-  const integrateWorktree = async () => {
+  const integrateWorktree = async (archiveAfterIntegration = integrationArchiveAfter) => {
     if (!integrateCandidate?.integrate_eligible) return
     setIntegrating(true)
     setError('')
     setIntegrationFailure(null)
+    setIntegrationArchiveAfter(archiveAfterIntegration)
     setIntegrationArchiveError('')
     setShowIntegrationError(false)
     let integrated = integrationSucceeded
@@ -354,7 +359,7 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
         integrated = true
         setIntegrationSucceeded(true)
       }
-      if (integrationArchiveAfter) {
+      if (archiveAfterIntegration) {
         await reviewDesktopV3Worktrees({ workspacePath, archiveSessionIds: [integrateCandidate.session_id], graceHours: 1 })
       }
       await refresh(false)
@@ -369,15 +374,6 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
       setIntegrating(false)
     }
   }
-  const closeIntegrateReview = () => {
-    if (integrating) return
-    setIntegrateCandidate(null)
-    setIntegrationSucceeded(false)
-    setIntegrationFailure(null)
-    setIntegrationArchiveAfter(false)
-    setIntegrationArchiveError('')
-    setShowIntegrationError(false)
-  }
   const openIntegrateReview = (candidate: ReviewWorktreeCandidate) => {
     setIntegrationSucceeded(false)
     setIntegrationFailure(null)
@@ -386,9 +382,91 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
     setShowIntegrationError(false)
     setIntegrateCandidate(candidate)
   }
+  const closeIntegrationReview = useCallback(() => {
+    setIntegrateCandidate(null)
+    setIntegrationSucceeded(false)
+    setIntegrationFailure(null)
+    setIntegrationArchiveAfter(false)
+    setIntegrationArchiveError('')
+    setShowIntegrationError(false)
+  }, [])
+  const positionIntegrationPopout = useCallback(() => {
+    const anchor = integrationAnchorRef.current
+    const popout = integrationPopoutRef.current
+    if (!anchor || !popout) return
+    const viewportPadding = 8
+    const gap = 4
+    const anchorRect = anchor.getBoundingClientRect()
+    const width = Math.min(416, Math.max(anchorRect.width, 280), window.innerWidth - viewportPadding * 2)
+    const availableAbove = Math.max(0, anchorRect.top - viewportPadding - gap)
+    const availableBelow = Math.max(0, window.innerHeight - anchorRect.bottom - viewportPadding - gap)
+    const popoutHeight = popout.scrollHeight
+    const placeAbove = popoutHeight <= availableAbove || availableAbove >= availableBelow
+    const maxHeight = placeAbove ? availableAbove : availableBelow
+    const visibleHeight = Math.min(popoutHeight, maxHeight)
+    const left = Math.min(Math.max(viewportPadding, anchorRect.left), window.innerWidth - width - viewportPadding)
+    const top = placeAbove
+      ? Math.max(viewportPadding, anchorRect.top - gap - visibleHeight)
+      : anchorRect.bottom + gap
+    setIntegrationPopoutStyle({ left, top, width, maxHeight, visibility: 'visible' })
+  }, [])
+  useLayoutEffect(() => {
+    if (!integrateCandidate) return
+    positionIntegrationPopout()
+    const frame = window.requestAnimationFrame(positionIntegrationPopout)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(positionIntegrationPopout)
+    if (integrationPopoutRef.current) observer?.observe(integrationPopoutRef.current)
+    window.addEventListener('resize', positionIntegrationPopout)
+    window.addEventListener('scroll', positionIntegrationPopout, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer?.disconnect()
+      window.removeEventListener('resize', positionIntegrationPopout)
+      window.removeEventListener('scroll', positionIntegrationPopout, true)
+    }
+  }, [integrateCandidate, integrationArchiveError, integrationFailure, integrationSucceeded, positionIntegrationPopout, showIntegrationError])
+  useEffect(() => {
+    if (!integrateCandidate) return
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && (integrationAnchorRef.current?.contains(target) || integrationPopoutRef.current?.contains(target))) return
+      closeIntegrationReview()
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeIntegrationReview()
+    }
+    document.addEventListener('pointerdown', dismissOnOutsidePointer)
+    document.addEventListener('keydown', dismissOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOnOutsidePointer)
+      document.removeEventListener('keydown', dismissOnEscape)
+    }
+  }, [closeIntegrationReview, integrateCandidate])
   const askSwarmToFixIntegration = () => {
-    if (!integrationFailure || !onAskSwarmFix || !repairFixAvailable) return
+    if (!integrationFailure || !onAskSwarmFix) return
     void onAskSwarmFix(integrationFailure)
+  }
+  const renderIntegrationAction = (item: ReviewWorktreeCandidate): ReactNode => {
+    if (!item.integrate_eligible) return null
+    const expanded = integrateCandidate?.session_id === item.session_id
+    if (!expanded) return <button type="button" className="ml-2 mt-2 inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)] max-sm:ml-0 max-sm:w-full max-sm:justify-center" aria-expanded="false" aria-haspopup="menu" onClick={() => openIntegrateReview(item)}><GitMerge size={12} />Integrate into {item.target_branch || 'target'}</button>
+    const failureDisplay = integrationFailure ? reviewWorktreeIntegrationFailureDisplay(integrationFailure.error, showIntegrationError, integrationFailure.operation) : null
+    const popout = (
+      <div ref={integrationPopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 shadow-xl" style={integrationPopoutStyle} role="menu" aria-label="Integration options popout" data-integration-popout>
+        <div className="flex min-h-8 items-center justify-end px-1">
+          <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)]" aria-label="Close integration options" onClick={closeIntegrationReview}><X size={15} /></button>
+        </div>
+        {integrationArchiveError ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-[var(--app-danger)]" role="alert"><p className="break-words">{integrationArchiveError}</p><p className="mt-1 text-[var(--app-text-subtle)]">The worktree is integrated. Retry only the remaining archive step.</p></div> : null}
+        {integrationFailure && failureDisplay ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2" role="alert"><p className="font-medium text-[var(--app-danger)]">Integration failed</p><p className="mt-1 text-[var(--app-text-subtle)]">{failureDisplay.summary}</p>{failureDisplay.fullError ? <pre className="mt-2 max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2 text-[var(--app-text)]">{failureDisplay.fullError}</pre> : null}<div className="mt-2 flex flex-wrap gap-1"><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1.5 text-[var(--app-text)]" onClick={() => setShowIntegrationError((current) => !current)}>{showIntegrationError ? <EyeOff size={13} /> : <Eye size={13} />}{showIntegrationError ? 'Hide Error' : 'Show Error'}</button>{onAskSwarmFix ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-2 py-1.5 font-semibold text-[var(--app-primary)]" title={repairFixAvailable ? undefined : 'Swarm will explain if a repair chat cannot be started.'} onClick={askSwarmToFixIntegration}><Bot size={13} />Ask Swarm for Help</button> : null}</div></div> : null}
+        {!integrationSucceeded && !integrationFailure ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={integrating} onClick={() => void integrateWorktree(true)}><Archive size={13} />Integrate and Archive</button> : null}
+      </div>
+    )
+    return (
+      <div ref={integrationAnchorRef} className="relative ml-2 mt-2 inline-flex max-w-full max-sm:ml-0 max-sm:w-full" data-integration-popout-anchor>
+        {typeof document === 'undefined' ? null : createPortal(popout, document.body)}
+        <button type="button" className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-[var(--app-surface)] px-2 py-1 font-semibold text-[var(--app-primary)] disabled:opacity-50" aria-expanded="true" aria-haspopup="menu" disabled={integrating} onClick={() => void integrateWorktree(integrationSucceeded || integrationArchiveAfter)}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : integrationSucceeded ? <Archive size={13} /> : <GitMerge size={13} />}{integrationSucceeded ? 'Try archive again' : integrationFailure ? 'Try integration again' : 'Confirm integration?'}</button>
+      </div>
+    )
   }
   const archiveSelected = async () => {
     if (archiveCandidates.length === 0 || !reviewingSelection) return
@@ -431,7 +509,7 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
           {result?.checkout_dirty ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-warning)] bg-[var(--app-surface-subtle)] p-4" aria-label="Dirty main checkout summary"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">{result.current_target_branch || 'Current branch'} has {result.checkout_dirty_count} uncommitted change{result.checkout_dirty_count === 1 ? '' : 's'}</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">{result.blocked_by_checkout_count} chat{result.blocked_by_checkout_count === 1 ? ' is' : 's are'} waiting for these commits before they can get archived. Commit, then Swarm will recheck and show the exact chats released into Done.</p></div>{checkoutCommitCandidate ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-warning)] bg-transparent px-3 py-2 text-xs font-semibold text-[var(--app-warning)] disabled:opacity-50" disabled={openingCommit} onClick={() => void openCommitReview(checkoutCommitCandidate)}>{openingCommit ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}Commit {result.current_target_branch || 'branch'}…</button> : null}</section> : null}
           {!result?.checkout_dirty && releasedAfterCommit.length > 0 ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-success)] bg-[var(--app-surface-subtle)] p-4" aria-label="Released chats ready to archive"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">{releasedAfterCommit.length} chat{releasedAfterCommit.length === 1 ? '' : 's'} released into Done</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The commit succeeded and these exact sessions passed the backend safety recheck. Archive them now or leave them in Done for the configured auto-archive delay.</p></div><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-2 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={archiving} onClick={() => void archiveReleased()}>{archiving ? <LoaderCircle size={13} className="animate-spin" /> : <Archive size={13} />}Archive {releasedAfterCommit.length}</button></section> : null}
           {showReviewCommitAction ? <section className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface-subtle)] p-4" aria-label="AI review commit batch"><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold text-[var(--app-text)]">Prepare review commits with AI</h3><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The AI utility model receives each isolated worktree’s bounded change set, chooses a message, and creates one commit per worktree in parallel. Sessions stay in review.</p><p className="mt-2 text-xs text-[var(--app-text-muted)]">{activeReviewCommitJobs.length > 0 ? `${activeReviewCommitJobs.length} pending or running` : completedReviewCommitJobs.length > 0 ? `${completedReviewCommitJobs.length} committed and ready to review` : `${reviewCommitWorktrees.length} ready to commit`}{failedReviewCommitJobs.length > 0 ? ` · ${failedReviewCommitJobs.length} failed` : ''}</p>{failedReviewCommitJobs.map((item) => <p key={item.session_id} className="mt-1 truncate text-xs text-[var(--app-danger)]" title={item.commit_job?.error}>{item.title || item.session_id}: {item.commit_job?.error}</p>)}</div><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-2 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={batchCommitting || activeReviewCommitJobs.length > 0 || reviewCommitWorktrees.length === 0} onClick={() => void commitReviewWorktrees()}>{batchCommitting || activeReviewCommitJobs.length > 0 ? <LoaderCircle size={13} className="animate-spin" /> : <GitCommitHorizontal size={13} />}{activeReviewCommitJobs.length > 0 ? 'Committing…' : `Commit ${reviewCommitWorktrees.length} with AI`}</button></section> : null}
-          <CandidatePile title="Keep in review" icon={<ShieldAlert size={14} />} items={result?.retained ?? []} selected={selected} onToggle={toggleSelected} selectable={reviewingSelection} onCommit={(item) => void openCommitReview(item)} onIntegrate={openIntegrateReview} />
+          <CandidatePile title="Keep in review" icon={<ShieldAlert size={14} />} items={result?.retained ?? []} selected={selected} onToggle={toggleSelected} selectable={reviewingSelection} onCommit={(item) => void openCommitReview(item)} renderIntegrationAction={renderIntegrationAction} />
           <CandidatePile title={autoArchiveMinutes > 0 ? `Done · archives after ${autoArchiveMinutes === 60 ? '1h' : `${autoArchiveMinutes}m`}` : 'Done · auto-archive off'} icon={<CheckCircle2 size={14} />} items={result?.done ?? []} selected={selected} onToggle={() => undefined} selectable={false} expanded={doneExpanded} onExpandedChange={setDoneExpanded} />
           {commitCandidate ? (
             <section className="mt-5 rounded-xl border border-[var(--app-warning)] bg-[var(--app-surface-subtle)] p-4" aria-label={commitCandidate.current_checkout ? 'Commit current checkout review' : 'Commit worktree review'}>
@@ -453,34 +531,6 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
           ) : null}
           {(result?.recently_archived.length ?? 0) > 0 ? <CollapsibleReviewSection title="Archived" icon={<Archive size={14} />} count={result?.recently_archived.length ?? 0} expanded={archivedExpanded} onExpandedChange={setArchivedExpanded}><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{result?.recently_archived.map((item) => <div key={item.session_id} className="rounded-lg border border-[var(--app-border)] p-3 text-xs"><span className="block truncate font-medium">{item.title || item.worktree_branch || item.session_id}</span><span className="mt-1 block truncate text-[var(--app-text-muted)]">{item.worktree_branch || 'No worktree branch'}{item.target_branch ? ` → ${item.target_branch}` : ''}</span><button type="button" className="mt-2 rounded border border-[var(--app-border)] px-2 py-1" disabled={archiving} onClick={() => void restoreSession(item.session_id, item.updated_at)}>Restore</button></div>)}</div></CollapsibleReviewSection> : null}
         </div>
-        {integrateCandidate ? (
-          <div className="absolute inset-0 z-20 flex items-center justify-center p-4 max-sm:items-end max-sm:p-0" role="alertdialog" aria-modal="true" aria-labelledby="integrate-worktree-title">
-            <button type="button" className="absolute inset-0 bg-[var(--app-backdrop)]" aria-label="Close integration confirmation" disabled={integrating} onClick={closeIntegrateReview} />
-            <section className="relative z-10 w-[min(520px,100%)] rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-5 shadow-2xl max-sm:max-h-[90dvh] max-sm:overflow-y-auto max-sm:rounded-b-none max-sm:pb-[calc(var(--app-safe-area-bottom)+1.25rem)]">
-              {integrationSucceeded && !integrationArchiveError ? (
-                <>
-                  <div className="flex items-start gap-3">
-                    <CheckCircle2 size={20} className="mt-0.5 shrink-0 text-[var(--app-success)]" />
-                    <div>
-                      <h3 id="integrate-worktree-title" className="text-sm font-semibold text-[var(--app-text)]">Integrated into {integrateCandidate.target_branch || 'target'}</h3>
-                      <p className="mt-1 text-xs text-[var(--app-text-subtle)]"><strong>{integrateCandidate.worktree_branch || integrateCandidate.title || 'The worktree'}</strong> was integrated successfully. {integrationArchiveAfter ? 'The session was archived after the safety recheck.' : 'The chat is now in Done and was not archived.'}</p>
-                    </div>
-                  </div>
-                  <div className="mt-4 flex justify-end"><button type="button" className="rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)]" onClick={closeIntegrateReview} autoFocus>Done</button></div>
-                </>
-              ) : (
-                <>
-                  <h3 id="integrate-worktree-title" className="text-sm font-semibold text-[var(--app-text)]">{integrationSucceeded ? `Archive integrated session` : `Integrate ${integrateCandidate.worktree_branch} into ${integrateCandidate.target_branch}`}</h3>
-                  <p className="mt-1 text-xs text-[var(--app-text-subtle)]">{integrationSucceeded ? 'The worktree is integrated. Retry only the remaining archive step.' : 'Swarm preflights the full commit stack and leaves the target unchanged on conflict.'}</p>
-                  <label className="mt-3 flex items-start gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text)]"><input className="mt-0.5" type="checkbox" checked={integrationArchiveAfter} disabled={integrating} onChange={(event) => setIntegrationArchiveAfter(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after integration is verified.</span></span></label>
-                  {integrationArchiveError ? <div className="mt-3 rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-3 text-xs text-[var(--app-danger)]" role="alert">{integrationArchiveError}</div> : null}
-                  {integrationFailure ? (() => { const display = reviewWorktreeIntegrationFailureDisplay(integrationFailure.error, showIntegrationError, integrationFailure.operation); return <div className="mt-3 rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-3" role="alert"><p className="text-xs font-medium text-[var(--app-danger)]">Integration failed</p><p className="mt-1 text-xs text-[var(--app-text-subtle)]">{display.summary}</p>{display.fullError ? <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2.5 text-xs text-[var(--app-text)]">{display.fullError}</pre> : null}<div className="mt-3 flex flex-wrap gap-2"><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2.5 py-1.5 text-xs text-[var(--app-text)]" onClick={() => setShowIntegrationError((current) => !current)}>{showIntegrationError ? <EyeOff size={13} /> : <Eye size={13} />}{showIntegrationError ? 'Hide Error' : 'Show Error'}</button>{repairFixAvailable && onAskSwarmFix ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-2.5 py-1.5 text-xs font-semibold text-[var(--app-primary)]" onClick={askSwarmToFixIntegration}><Bot size={13} />Ask Swarm to fix this</button> : null}</div></div> })() : null}
-                  <div className="mt-4 flex justify-end gap-2"><button type="button" className="rounded-md border border-[var(--app-border)] px-3 py-1.5 text-xs" disabled={integrating} onClick={closeIntegrateReview} autoFocus>Cancel</button><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--app-primary)] disabled:opacity-50" disabled={integrating} onClick={() => void integrateWorktree()}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : <GitMerge size={13} />}{integrationSucceeded ? 'Try archive again' : integrationFailure ? 'Try integration again' : 'Confirm integration'}</button></div>
-                </>
-              )}
-            </section>
-          </div>
-        ) : null}
       </DialogPanel>
     </Dialog>
   )
@@ -491,12 +541,12 @@ export function CollapsibleReviewSection({ title, icon, count, expanded, onExpan
   return <section className="mt-5"><h3><button type="button" className="mb-2 flex min-h-11 w-full touch-manipulation items-center gap-1.5 rounded-md text-left text-xs font-semibold uppercase tracking-wide text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-subtle)]" aria-expanded={expanded} aria-controls={contentID} onClick={() => onExpandedChange(!expanded)}>{icon}{title}<span className="ml-auto">{count}</span><ChevronDown size={14} className={cn('transition-transform', expanded && 'rotate-180')} /></button></h3>{expanded ? <div id={contentID}>{children}</div> : null}</section>
 }
 
-function CandidatePile({ title, icon, items, selected, onToggle, selectable, onCommit, onIntegrate, expanded, onExpandedChange }: { title: string; icon: ReactNode; items: ReviewWorktreeCandidate[]; selected: Set<string>; onToggle: (id: string) => void; selectable: boolean; onCommit?: (item: ReviewWorktreeCandidate) => void; onIntegrate?: (item: ReviewWorktreeCandidate) => void; expanded?: boolean; onExpandedChange?: (expanded: boolean) => void }) {
-  const contents = <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{items.length === 0 ? <p className="col-span-full rounded-lg bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text-muted)]">None</p> : items.map((item) => <WorktreeCard key={item.session_id} item={item} selected={selected} onToggle={onToggle} selectable={selectable} onCommit={onCommit} onIntegrate={onIntegrate} />)}</div>
+function CandidatePile({ title, icon, items, selected, onToggle, selectable, onCommit, renderIntegrationAction, expanded, onExpandedChange }: { title: string; icon: ReactNode; items: ReviewWorktreeCandidate[]; selected: Set<string>; onToggle: (id: string) => void; selectable: boolean; onCommit?: (item: ReviewWorktreeCandidate) => void; renderIntegrationAction?: (item: ReviewWorktreeCandidate) => ReactNode; expanded?: boolean; onExpandedChange?: (expanded: boolean) => void }) {
+  const contents = <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{items.length === 0 ? <p className="col-span-full rounded-lg bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text-muted)]">None</p> : items.map((item) => <WorktreeCard key={item.session_id} item={item} selected={selected} onToggle={onToggle} selectable={selectable} onCommit={onCommit} renderIntegrationAction={renderIntegrationAction} />)}</div>
   if (expanded !== undefined && onExpandedChange) return <CollapsibleReviewSection title={title} icon={icon} count={items.length} expanded={expanded} onExpandedChange={onExpandedChange}>{contents}</CollapsibleReviewSection>
   return <section className="mt-5"><h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-subtle)]">{icon}{title} <span className="ml-auto">{items.length}</span></h3>{contents}</section>
 }
 
-function WorktreeCard({ item, selected, onToggle, selectable, onCommit, onIntegrate }: { item: ReviewWorktreeCandidate; selected: Set<string>; onToggle: (id: string) => void; selectable: boolean; onCommit?: (item: ReviewWorktreeCandidate) => void; onIntegrate?: (item: ReviewWorktreeCandidate) => void }) {
-  return <div className={cn('grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border p-3 text-xs', selected.has(item.session_id) ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)]')}><label className={selectable ? 'cursor-pointer' : ''}>{selectable ? <input className="mt-0.5" type="checkbox" checked={selected.has(item.session_id)} onChange={() => onToggle(item.session_id)} aria-label={`Select ${item.title || item.session_id}`} /> : <span className="mt-1.5 block h-2 w-2 rounded-full bg-[var(--app-warning)]" />}</label><span className="min-w-0"><span className="block truncate font-semibold text-[var(--app-text)]" title={item.title || item.session_id}>{item.title || item.session_id}</span><span className="mt-1 flex min-w-0 items-center gap-1 text-[var(--app-text-muted)]"><GitBranch size={12} className="shrink-0" /><span className="truncate" title={item.worktree_branch}>{item.worktree_branch || 'Unknown worktree branch'}</span></span><span className="mt-0.5 block truncate text-[var(--app-text-subtle)]" title={item.worktree_path}>{item.worktree_path || 'Worktree path unavailable'}</span><span className="mt-2 block text-[var(--app-text-muted)]">{reviewWorktreeReasonLabel(item)}</span>{item.commit_job ? <span className={cn('mt-1 block', item.commit_job.status === 'failed' ? 'text-[var(--app-danger)]' : item.commit_job.status === 'completed' ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}>{item.commit_job.status === 'completed' ? `AI committed ${item.commit_job.commit_hash?.slice(0, 8) || ''}` : item.commit_job.status === 'failed' ? 'AI commit failed' : `AI commit ${item.commit_job.status}`}</span> : null}{item.commit_eligible && onCommit && item.commit_job?.status !== 'pending' && item.commit_job?.status !== 'running' ? <button type="button" className="mt-2 inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)] max-sm:w-full max-sm:justify-center" onClick={() => onCommit(item)}><GitCommitHorizontal size={12} />{item.current_checkout ? 'Review commit' : 'Review, commit + integrate'}</button> : null}{item.integrate_eligible && onIntegrate ? <button type="button" className="ml-2 mt-2 inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)] max-sm:ml-0 max-sm:w-full max-sm:justify-center" onClick={() => onIntegrate(item)}><GitMerge size={12} />Integrate into {item.target_branch || 'target'}</button> : null}{item.classification === 'done' && !item.archive_ready ? <span className="mt-1 block text-[var(--app-text-subtle)]">Grace period active</span> : null}</span></div>
+function WorktreeCard({ item, selected, onToggle, selectable, onCommit, renderIntegrationAction }: { item: ReviewWorktreeCandidate; selected: Set<string>; onToggle: (id: string) => void; selectable: boolean; onCommit?: (item: ReviewWorktreeCandidate) => void; renderIntegrationAction?: (item: ReviewWorktreeCandidate) => ReactNode }) {
+  return <div className={cn('grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-2 rounded-lg border p-3 text-xs', selected.has(item.session_id) ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)]')}><label className={selectable ? 'cursor-pointer' : ''}>{selectable ? <input className="mt-0.5" type="checkbox" checked={selected.has(item.session_id)} onChange={() => onToggle(item.session_id)} aria-label={`Select ${item.title || item.session_id}`} /> : <span className="mt-1.5 block h-2 w-2 rounded-full bg-[var(--app-warning)]" />}</label><span className="min-w-0"><span className="block truncate font-semibold text-[var(--app-text)]" title={item.title || item.session_id}>{item.title || item.session_id}</span><span className="mt-1 flex min-w-0 items-center gap-1 text-[var(--app-text-muted)]"><GitBranch size={12} className="shrink-0" /><span className="truncate" title={item.worktree_branch}>{item.worktree_branch || 'Unknown worktree branch'}</span></span><span className="mt-0.5 block truncate text-[var(--app-text-subtle)]" title={item.worktree_path}>{item.worktree_path || 'Worktree path unavailable'}</span><span className="mt-2 block text-[var(--app-text-muted)]">{reviewWorktreeReasonLabel(item)}</span>{item.commit_job ? <span className={cn('mt-1 block', item.commit_job.status === 'failed' ? 'text-[var(--app-danger)]' : item.commit_job.status === 'completed' ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}>{item.commit_job.status === 'completed' ? `AI committed ${item.commit_job.commit_hash?.slice(0, 8) || ''}` : item.commit_job.status === 'failed' ? 'AI commit failed' : `AI commit ${item.commit_job.status}`}</span> : null}{item.commit_eligible && onCommit && item.commit_job?.status !== 'pending' && item.commit_job?.status !== 'running' ? <button type="button" className="mt-2 inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)] max-sm:w-full max-sm:justify-center" onClick={() => onCommit(item)}><GitCommitHorizontal size={12} />{item.current_checkout ? 'Review commit' : 'Review, commit + integrate'}</button> : null}{renderIntegrationAction ? renderIntegrationAction(item) : null}{item.classification === 'done' && !item.archive_ready ? <span className="mt-1 block text-[var(--app-text-subtle)]">Grace period active</span> : null}</span></div>
 }

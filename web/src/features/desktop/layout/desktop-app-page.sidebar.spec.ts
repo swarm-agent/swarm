@@ -95,7 +95,7 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
 })
 
-test('plan Git sidebar renders session-scoped worktree commits and an integration action', async () => {
+test('plan Git sidebar renders session commits and an anchored integration confirmation popout', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
   const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
@@ -106,8 +106,19 @@ test('plan Git sidebar renders session-scoped worktree commits and an integratio
   assert.match(panelSource, /data-plan-git-session-commits/)
   assert.match(panelSource, /Session commits/)
   assert.match(panelSource, /commit\.short_hash/)
-  assert.match(panelSource, /data-plan-git-integrate/)
-  assert.match(panelSource, /Integrate into/)
+  assert.match(panelSource, /data-plan-git-integrate-anchor/)
+  assert.match(panelSource, /data-plan-git-integrate-popout/)
+  assert.match(panelSource, /createPortal\(/[\s\S]*document\.body/)
+  assert.match(panelSource, /aria-label="Git sidebar integration options"/)
+  assert.match(panelSource, /Confirm and Archive/)
+  assert.match(panelSource, /Confirm integration\?/)
+  assert.match(panelSource, /handleGitIntegrate\(true\)/)
+  assert.match(panelSource, /handleGitIntegrate\(gitIntegrateModal\.integrationComplete \|\| gitIntegrateArchive\)/)
+  assert.match(panelSource, /aria-label="Close Git integration options"/)
+  assert.match(source, /gitIntegrateModal\?\.presentation !== 'sidebar-popout'/)
+  assert.match(source, /window\.addEventListener\('scroll', positionGitSidebarIntegratePopout, true\)/)
+  assert.match(source, /document\.addEventListener\('pointerdown', dismissOnOutsidePointer\)/)
+  assert.match(source, /if \(event\.key === 'Escape'\) closeGitSidebarIntegratePopout\(\)/)
 })
 
 test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {

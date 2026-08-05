@@ -14,12 +14,13 @@ test('Desktop V3 new session input is neutral until the routed response resolves
   assert.doesNotMatch(source, /draftModelQueryOptions|agentStateQueryOptions|modelOptionsQueryOptions/)
 })
 
-test('Desktop V3 new session composer warns and blocks every nested /new form', async () => {
+test('Desktop V3 new session composer submits /new prompts through the routed flow', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /slashCommandContext === 'new-session' && \/\^\\s\*\\\/new\(\?:\\s\|\$\)\/i\.test\(draft\)/)
-  assert.match(source, /slashCommandContext !== 'new-session' \|\| command\.action\.kind !== 'new-session'/)
-  assert.match(source, /if \(newSessionCommandBlocked\) return/)
-  assert.match(source, /You’re already starting a new session\. Remove[\s\S]*\/new[\s\S]*and type your request here\./)
-  assert.match(source, /disabled=\{!canStop && \(newSessionCommandBlocked \|\| uploadingAttachment/)
+  assert.match(source, /routedNewSession \? parseDesktopNewSessionCommand\(rawDraft\) : null/)
+  assert.match(source, /const commandDraft = newSessionCommand\?\.prompt \?\? rawDraft/)
+  assert.match(source, /worktreePrimed: newSessionCommand\?\.worktreeRequested \?\? routedWorktreeRequested/)
+  assert.match(source, /planModeRequested: newSessionCommand\?\.planModeRequested \?\? mode === 'plan'/)
+  assert.match(source, /routedSubmit = onRoutedSubmit\(routedSnapshot\)/)
+  assert.doesNotMatch(source, /newSessionCommandBlocked|You’re already starting a new session/)
 })

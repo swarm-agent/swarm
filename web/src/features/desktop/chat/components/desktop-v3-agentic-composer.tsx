@@ -7,7 +7,7 @@ import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, Mo
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
-import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
+import { buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import { desktopComposerBackgroundRouterCommand, submitDesktopComposer } from '../services/composer-submit'
 import {
   DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
@@ -346,7 +346,6 @@ export function DesktopV3AgenticComposer({
       && (slashCommandContext !== 'new-session' || command.action.kind !== 'new-session')),
     [slashCommandContext, slashPalette.matches],
   )
-  const newSessionCommandBlocked = slashCommandContext === 'new-session' && /^\s*\/new(?:\s|$)/i.test(draft)
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
@@ -636,16 +635,28 @@ export function DesktopV3AgenticComposer({
   }, [])
 
   const handleSubmitClick = useCallback(async () => {
-    if (newSessionCommandBlocked) return
     if (uploadingAttachment) {
       setAttachmentError('Wait for all attachments to finish uploading before sending the message.')
       return
     }
     if (routedNewSession && routedSubmissionRef.current) return
     const rawDraft = textareaRef.current?.value ?? dictationComposer
+    const newSessionCommand = routedNewSession ? parseDesktopNewSessionCommand(rawDraft) : null
+    if (newSessionCommand && !newSessionCommand.prompt) {
+      onRoutedWorktreeRequestedChange?.(newSessionCommand.worktreeRequested)
+      onModeSelect?.(newSessionCommand.planModeRequested ? 'plan' : 'auto')
+      onDraftChange('')
+      const textarea = textareaRef.current
+      if (textarea) {
+        textarea.value = ''
+        resizeTextareaElement(textarea)
+      }
+      return
+    }
+    const commandDraft = newSessionCommand?.prompt ?? rawDraft
     const textAttachmentDraft = textAttachments.reduce(
       (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
-      rawDraft,
+      commandDraft,
     )
     const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 || routedStagedAttachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
     const skillInstruction = selectedWorkspaceSkill
@@ -679,8 +690,8 @@ export function DesktopV3AgenticComposer({
         attachments: desktopComposerStagedMediaInput(routedStagedAttachments),
         selectedAction: selectedWorkspaceAction,
         selectedSkill: selectedWorkspaceSkill,
-        worktreePrimed: routedWorktreeRequested,
-        planModeRequested: mode === 'plan',
+        worktreePrimed: newSessionCommand?.worktreeRequested ?? routedWorktreeRequested,
+        planModeRequested: newSessionCommand?.planModeRequested ?? mode === 'plan',
       }
       let routedSubmit: Promise<DesktopV3RoutedNewSessionState>
       try {
@@ -709,7 +720,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, mode, newSessionCommandBlocked, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
+  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -802,10 +813,9 @@ export function DesktopV3AgenticComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (newSessionCommandBlocked) return
       if (canSubmit || attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
     }
-  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, newSessionCommandBlocked, onDraftChange, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
+  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
@@ -1086,10 +1096,6 @@ export function DesktopV3AgenticComposer({
         ) : null}
         {mentionPaletteIsActive ? (
           <DesktopMentionPanel matches={mentionPaletteMatches} selectedIndex={mentionSelectionIndex} onHover={setMentionSelectionIndex} onSelect={handleMentionInsert} />
-        ) : newSessionCommandBlocked ? (
-          <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-sm text-[var(--app-warning)]" role="status">
-            You’re already starting a new session. Remove <span className="font-mono">/new</span> and type your request here.
-          </div>
         ) : slashPalette.active ? (
           <DesktopSlashCommandPanel palette={{ ...slashPalette, matches: slashCommands } as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
         ) : null}
@@ -1237,7 +1243,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (newSessionCommandBlocked || uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
@@ -1253,7 +1259,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (newSessionCommandBlocked || uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
