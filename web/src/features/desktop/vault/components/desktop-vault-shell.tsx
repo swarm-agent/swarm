@@ -6,6 +6,7 @@ import { DesktopVaultGate } from './desktop-vault-gate'
 import { DesktopOnboardingGate } from '../../onboarding/components/desktop-onboarding-gate'
 import type { DesktopOnboardingStatus, DesktopOnboardingStatusWire } from '../../onboarding/types'
 import { DirectLANDesktopWarningScreen, getDirectLANDesktopWarning } from '../../security/direct-lan-desktop-warning'
+import { TailscaleOriginApprovalScreen, useTailscaleOriginApproval } from '../../security/tailscale-origin-approval'
 import { DesktopModelCatalogSync } from '../../models/desktop-model-catalog-sync'
 
 function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): DesktopOnboardingStatus {
@@ -76,6 +77,7 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
   const [onboardingLoading, setOnboardingLoading] = useState(true)
   const [onboardingError, setOnboardingError] = useState<string | null>(null)
   const directLANDesktopWarning = useMemo(() => getDirectLANDesktopWarning(), [])
+  const tailscaleApproval = useTailscaleOriginApproval()
 
   const loadOnboardingStatus = useCallback(async () => {
     setOnboardingLoading(true)
@@ -97,7 +99,7 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
   }, [])
 
   useEffect(() => {
-    if (directLANDesktopWarning) {
+    if (directLANDesktopWarning || tailscaleApproval.loading || tailscaleApproval.error || tailscaleApproval.status?.required) {
       setOnboardingLoading(false)
       return
     }
@@ -130,10 +132,41 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
     return () => {
       cancelled = true
     }
-  }, [directLANDesktopWarning])
+  }, [directLANDesktopWarning, tailscaleApproval.error, tailscaleApproval.loading, tailscaleApproval.status?.required])
 
   if (directLANDesktopWarning) {
     return <DirectLANDesktopWarningScreen warning={directLANDesktopWarning} />
+  }
+
+  if (tailscaleApproval.error) {
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black px-6">
+        <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-danger)] shadow-2xl shadow-black/40">
+          <div className="font-medium">Unable to verify this desktop address.</div>
+          <div className="mt-2 text-[var(--app-danger)]/90">{tailscaleApproval.error}</div>
+          <button
+            type="button"
+            onClick={() => { void tailscaleApproval.retry() }}
+            className="mt-4 rounded-lg border border-[var(--app-danger-border)] px-3 py-1.5 text-xs font-medium transition hover:bg-[var(--app-danger)]/10 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={tailscaleApproval.loading}
+          >
+            {tailscaleApproval.loading ? 'Retrying…' : 'Try again'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (tailscaleApproval.loading) {
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black text-sm text-[var(--app-text-muted)]">
+        Loading Swarm…
+      </div>
+    )
+  }
+
+  if (tailscaleApproval.status?.required) {
+    return <TailscaleOriginApprovalScreen origin={String(tailscaleApproval.status.origin ?? '')} />
   }
 
   if (onboardingError && onboardingStatus === null) {

@@ -53,7 +53,9 @@ const (
 	transportRetryAttempts                     = 2
 	transportRetryBaseDelay                    = 300 * time.Millisecond
 	startedWebsocketStreamRetryLimit           = 3
-	defaultWebsocketFirstFrameTimeout          = 30 * time.Second
+	websocketIdleTimeoutAttempts               = 3
+	defaultWebsocketIdleTimeout                = 5 * time.Minute
+	websocketWriteTimeout                      = 30 * time.Second
 	maxPromptCacheKeyLength                    = 64
 	codexTransportMetadataKey                  = "_swarm_transport"
 	codexConnectedViaWSMetadataKey             = "_swarm_connected_via_websocket"
@@ -62,22 +64,22 @@ const (
 )
 
 var (
-	errWebsocketStreamStarted     = errors.New("websocket stream interrupted after payload started")
-	errWebsocketRetryFresh        = errors.New("websocket request requires a fresh connection")
-	errWebsocketFirstFrameTimeout = errors.New("websocket first provider frame timed out")
+	errWebsocketStreamStarted = errors.New("websocket stream interrupted after payload started")
+	errWebsocketRetryFresh    = errors.New("websocket request requires a fresh connection")
+	errWebsocketIdleTimeout   = errors.New("codex websocket stream idle timeout")
 )
 
 type Client struct {
-	authStore                  *pebblestore.AuthStore
-	httpClient                 *http.Client
-	earlyExpiry                time.Duration
-	sendWSFn                   func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
-	responsesAPIURL            string
-	responsesWSURL             string
-	websocketFirstFrameTimeout time.Duration
-	wsMu                       sync.Mutex
-	wsSessions                 map[string]*cachedWebsocketSession
-	diagnostics                *longsessiondiag.Recorder
+	authStore            *pebblestore.AuthStore
+	httpClient           *http.Client
+	earlyExpiry          time.Duration
+	sendWSFn             func(context.Context, pebblestore.CodexAuthRecord, []byte, func(StreamEvent)) (map[string]any, int, error)
+	responsesAPIURL      string
+	responsesWSURL       string
+	websocketIdleTimeout time.Duration
+	wsMu                 sync.Mutex
+	wsSessions           map[string]*cachedWebsocketSession
+	diagnostics          *longsessiondiag.Recorder
 }
 
 type startedWebsocketStreamError struct {
@@ -133,7 +135,8 @@ func codexTransportContextFromContext(ctx context.Context) codexTransportContext
 }
 
 type cachedWebsocketSession struct {
-	mu                    sync.Mutex
+	lockOnce              sync.Once
+	mu                    chan struct{}
 	conn                  *websocket.Conn
 	lastPayload           map[string]any
 	lastRequestProperties map[string]any
@@ -353,11 +356,11 @@ func NewClient(authStore *pebblestore.AuthStore) *Client {
 		authStore: authStore,
 		// Long-running response streams must be governed by per-request contexts
 		// (run service deadlines), not a global client timeout.
-		httpClient:                 &http.Client{},
-		earlyExpiry:                5 * time.Minute,
-		responsesAPIURL:            openAIResponsesURL,
-		websocketFirstFrameTimeout: defaultWebsocketFirstFrameTimeout,
-		wsSessions:                 make(map[string]*cachedWebsocketSession),
+		httpClient:           &http.Client{},
+		earlyExpiry:          5 * time.Minute,
+		responsesAPIURL:      openAIResponsesURL,
+		websocketIdleTimeout: defaultWebsocketIdleTimeout,
+		wsSessions:           make(map[string]*cachedWebsocketSession),
 	}
 }
 
@@ -397,13 +400,15 @@ func (c *Client) LongSessionSnapshot() map[string]any {
 	var open, payloadBytes, requestBytes, outputBytes, inputItems int64
 	detail := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
-		entry.session.mu.Lock()
+		if err := lockCachedWebsocketSession(context.Background(), entry.session); err != nil {
+			continue
+		}
 		entryOpen := entry.session.conn != nil
 		entryPayloadBytes := estimatedJSONBytes(entry.session.lastPayload)
 		entryRequestBytes := estimatedJSONBytes(entry.session.lastRequestProperties)
 		entryOutputBytes := estimatedJSONBytes(entry.session.lastOutput)
 		entryInputItems := int64(entry.session.lastInputLen)
-		entry.session.mu.Unlock()
+		unlockCachedWebsocketSession(entry.session)
 		if entryOpen {
 			open++
 		}
@@ -464,11 +469,11 @@ func estimatedJSONBytes(value any) int64 {
 	return walk(value, 0)
 }
 
-func (c *Client) effectiveWebsocketFirstFrameTimeout() time.Duration {
-	if c != nil && c.websocketFirstFrameTimeout > 0 {
-		return c.websocketFirstFrameTimeout
+func (c *Client) effectiveWebsocketIdleTimeout() time.Duration {
+	if c != nil && c.websocketIdleTimeout > 0 {
+		return c.websocketIdleTimeout
 	}
-	return defaultWebsocketFirstFrameTimeout
+	return defaultWebsocketIdleTimeout
 }
 
 func (c *Client) cachedWebsocketSession(sessionID string) *cachedWebsocketSession {
@@ -487,6 +492,30 @@ func (c *Client) cachedWebsocketSession(sessionID string) *cachedWebsocketSessio
 	session := &cachedWebsocketSession{}
 	c.wsSessions[sessionID] = session
 	return session
+}
+
+func lockCachedWebsocketSession(ctx context.Context, session *cachedWebsocketSession) error {
+	if session == nil {
+		return nil
+	}
+	session.lockOnce.Do(func() {
+		session.mu = make(chan struct{}, 1)
+		session.mu <- struct{}{}
+	})
+	provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityLockWaiting)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-session.mu:
+		provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityLockAcquired)
+		return nil
+	}
+}
+
+func unlockCachedWebsocketSession(session *cachedWebsocketSession) {
+	if session != nil {
+		session.mu <- struct{}{}
+	}
 }
 
 func resetCachedWebsocketChainLocked(session *cachedWebsocketSession) {
@@ -1188,10 +1217,25 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 		var wsDecoded map[string]any
 		var wsStatus int
 		var wsErr error
+		idleTimeouts := 0
 		for startedRetry := 0; ; startedRetry++ {
 			streamEmitter.beginAttempt()
 			wsDecoded, wsStatus, wsErr = c.sendWebsocketRequest(ctx, record, req, streamEmitter.emit)
-			if wsErr == nil || !errors.Is(wsErr, errWebsocketStreamStarted) {
+			if wsErr == nil {
+				break
+			}
+			if errors.Is(wsErr, errWebsocketIdleTimeout) {
+				idleTimeouts++
+				if idleTimeouts >= websocketIdleTimeoutAttempts {
+					return nil, 0, exhaustedWebsocketIdleTimeoutError(wsErr, idleTimeouts)
+				}
+				if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(idleTimeouts)); err != nil {
+					return nil, 0, err
+				}
+				startedRetry--
+				continue
+			}
+			if !errors.Is(wsErr, errWebsocketStreamStarted) {
 				break
 			}
 			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
@@ -1210,9 +1254,6 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 					return nil, 0, err
 				}
 				continue
-			}
-			if errors.Is(wsErr, errWebsocketFirstFrameTimeout) {
-				return nil, 0, exhaustedWebsocketFirstFrameTimeoutError(wsErr, attempt)
 			}
 			if record.Type != pebblestore.CodexAuthTypeOAuth && !errors.Is(wsErr, errWebsocketStreamStarted) {
 				return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
@@ -1258,10 +1299,25 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 		var wsDecoded map[string]any
 		var wsStatus int
 		var wsErr error
+		idleTimeouts := 0
 		for startedRetry := 0; ; startedRetry++ {
 			streamEmitter.beginAttempt()
 			wsDecoded, wsStatus, wsErr = sendWS(ctx, record, payload, streamEmitter.emit)
-			if wsErr == nil || !errors.Is(wsErr, errWebsocketStreamStarted) {
+			if wsErr == nil {
+				break
+			}
+			if errors.Is(wsErr, errWebsocketIdleTimeout) {
+				idleTimeouts++
+				if idleTimeouts >= websocketIdleTimeoutAttempts {
+					return nil, 0, exhaustedWebsocketIdleTimeoutError(wsErr, idleTimeouts)
+				}
+				if err := sleepWithContext(ctx, transportRetryBaseDelay*time.Duration(idleTimeouts)); err != nil {
+					return nil, 0, err
+				}
+				startedRetry--
+				continue
+			}
+			if !errors.Is(wsErr, errWebsocketStreamStarted) {
 				break
 			}
 			if !shouldRetryStartedWebsocketStream(wsErr) || startedRetry >= startedWebsocketStreamRetryLimit {
@@ -1280,9 +1336,6 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 					return nil, 0, err
 				}
 				continue
-			}
-			if errors.Is(wsErr, errWebsocketFirstFrameTimeout) {
-				return nil, 0, exhaustedWebsocketFirstFrameTimeoutError(wsErr, attempt)
 			}
 			return nil, 0, wsErr
 		}
@@ -1571,8 +1624,10 @@ func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) 
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
 	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
+	if err := lockCachedWebsocketSession(ctx, session); err != nil {
+		return nil, nil, 0, err
+	}
+	defer unlockCachedWebsocketSession(session)
 	if strings.TrimSpace(session.lastResponseID) == "" || !codexWebsocketRequestPropertiesMatch(session.lastRequestProperties, properties) {
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
@@ -1621,14 +1676,15 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	headers := buildCodexTransportHeaders(record, transportContext)
 	session := c.cachedWebsocketSession(cacheKey)
 	if session != nil {
-		session.mu.Lock()
-		defer session.mu.Unlock()
+		if err := lockCachedWebsocketSession(ctx, session); err != nil {
+			return nil, 0, err
+		}
+		defer unlockCachedWebsocketSession(session)
 	}
 	conn, websocketReused, err := prepareCachedWebsocketSessionLocked(session, transportContext, freshContext, payloadPrepared, requestPayload)
 	if err != nil {
 		return nil, 0, err
 	}
-	initialConnection := !websocketReused
 	if conn == nil {
 		var failureBody map[string]any
 		var status int
@@ -1661,33 +1717,36 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		return nil, 0, err
 	}
 
-	firstFrameTimeout := c.effectiveWebsocketFirstFrameTimeout()
-	writeMessage := func(activeConn *websocket.Conn, encoded []byte, initialConnection bool) error {
+	idleTimeout := c.effectiveWebsocketIdleTimeout()
+	writeMessage := func(activeConn *websocket.Conn, encoded []byte) error {
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
 		activeConn.SetReadLimit(maxCodexResponseBodyBytes)
-		if initialConnection {
-			if err := activeConn.SetWriteDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
-				return fmt.Errorf("set initial websocket request deadline: %w", err)
-			}
+		writeDeadline := time.Now().Add(websocketWriteTimeout)
+		if deadline, ok := ctx.Deadline(); ok && deadline.Before(writeDeadline) {
+			writeDeadline = deadline
 		}
+		if err := activeConn.SetWriteDeadline(writeDeadline); err != nil {
+			return fmt.Errorf("set websocket request deadline: %w", err)
+		}
+		stopCancelWatch := watchCodexWebsocketCancel(ctx, activeConn)
+		defer stopCancelWatch()
 		if err := activeConn.WriteMessage(websocket.TextMessage, encoded); err != nil {
 			if ctxErr := contextErr(ctx); ctxErr != nil {
 				return ctxErr
 			}
 			return fmt.Errorf("send websocket request: %w", err)
 		}
-		if initialConnection {
-			if err := activeConn.SetWriteDeadline(time.Time{}); err != nil {
-				return fmt.Errorf("clear initial websocket request deadline: %w", err)
-			}
+		if err := activeConn.SetWriteDeadline(time.Time{}); err != nil {
+			return fmt.Errorf("clear websocket request deadline: %w", err)
 		}
+		provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityRequestSent)
 		return nil
 	}
 	providerdiagnostics.RecordContext(ctx, codexOutboundShapeEvent("websocket_request_shape", transportContext, sendPayload, asString(sendPayload["previous_response_id"]) != "", websocketReused))
 	providerdiagnostics.LogWebsocketRequestContext(ctx, "codex", "responses.websocket", wsURL, headers, websocketPayload)
-	if err := writeMessage(conn, websocketPayload, initialConnection); err != nil {
+	if err := writeMessage(conn, websocketPayload); err != nil {
 		if ctxErr := contextErr(ctx); ctxErr != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
@@ -1713,14 +1772,13 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 				return failureBody, status, nil
 			}
 			session.conn = conn
-			initialConnection = true
 			sendPayload = cloneMapAny(requestPayload)
 			websocketPayload, err = buildCodexWebsocketPayload(sendPayload)
 			if err != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, err
 			}
-			if retryErr := writeMessage(conn, websocketPayload, initialConnection); retryErr != nil {
+			if retryErr := writeMessage(conn, websocketPayload); retryErr != nil {
 				closeCachedWebsocketSessionLocked(session)
 				return nil, 0, retryErr
 			}
@@ -1732,16 +1790,13 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 	state := &streamDecodeState{}
 	stopCancelWatch := watchCodexWebsocketCancel(ctx, conn)
 	defer stopCancelWatch()
-	if initialConnection {
-		if err := conn.SetReadDeadline(time.Now().Add(firstFrameTimeout)); err != nil {
+	for {
+		if err := conn.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
 			}
-			return nil, 0, fmt.Errorf("set initial websocket first-frame deadline: %w", err)
+			return nil, 0, fmt.Errorf("set websocket idle deadline: %w", err)
 		}
-	}
-	waitingForFirstFrame := initialConnection
-	for {
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {
 			if session != nil {
@@ -1750,8 +1805,8 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			if ctxErr := contextErr(ctx); ctxErr != nil {
 				return nil, 0, ctxErr
 			}
-			if waitingForFirstFrame && websocketTimeoutError(err) {
-				timeoutErr := fmt.Errorf("%w after %s", errWebsocketFirstFrameTimeout, firstFrameTimeout)
+			if websocketTimeoutError(err) {
+				timeoutErr := fmt.Errorf("%w after %s", errWebsocketIdleTimeout, idleTimeout)
 				providerdiagnostics.LogWebsocketErrorContext(ctx, "codex", "responses.websocket", timeoutErr)
 				return nil, 0, timeoutErr
 			}
@@ -1760,16 +1815,7 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			}
 			return nil, 0, fmt.Errorf("read websocket response: %w", err)
 		}
-		if waitingForFirstFrame {
-			waitingForFirstFrame = false
-			if err := conn.SetReadDeadline(time.Time{}); err != nil {
-				if session != nil {
-					closeCachedWebsocketSessionLocked(session)
-				}
-				return nil, 0, fmt.Errorf("clear websocket first-frame deadline: %w", err)
-			}
-		}
-
+		provideriface.ReportAttemptActivity(ctx, provideriface.AttemptActivityResponseRead)
 		if messageType != websocket.TextMessage {
 			if messageType == websocket.BinaryMessage {
 				if session != nil {
@@ -1847,8 +1893,8 @@ func websocketTimeoutError(err error) bool {
 	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
-func exhaustedWebsocketFirstFrameTimeoutError(err error, attempts int) error {
-	return fmt.Errorf("codex websocket first-frame timeout exhausted after %d attempts: %w", attempts, err)
+func exhaustedWebsocketIdleTimeoutError(err error, attempts int) error {
+	return fmt.Errorf("codex timed out %d times in a row: %w", attempts, err)
 }
 
 func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) (*websocket.Conn, map[string]any, int, error) {
@@ -2167,27 +2213,30 @@ func parseEventStream(body []byte) (map[string]any, error) {
 }
 
 type streamDecodeState struct {
-	completedResponse       map[string]any
-	lastObject              map[string]any
-	outputText              string
-	reasoningSummary        map[string]string
-	reasoningOrder          []string
-	outputItems             []map[string]any
-	outputItemsDone         []map[string]any
-	outputItemPos           map[string]int
-	outputItemDonePos       map[string]int
-	imageGenerationResults  map[string]string
-	imageGenerationPartials []map[string]any
-	imageGenerationFinals   []map[string]any
-	toolCallArguments       map[string]string
-	toolCallStarted         map[string]struct{}
-	toolCallCompleted       map[string]struct{}
-	toolCallsByIndex        map[int]StreamEvent
-	rawEvents               []map[string]any
-	sawPayload              bool
-	streamBytes             int
-	streamEvents            int
-	decodeErr               error
+	completedResponse        map[string]any
+	lastObject               map[string]any
+	outputText               string
+	reasoningSummary         map[string]string
+	reasoningOrder           []string
+	outputItems              []map[string]any
+	outputItemsDone          []map[string]any
+	outputItemPos            map[string]int
+	outputItemDonePos        map[string]int
+	imageGenerationResults   map[string]string
+	imageGenerationPartials  []map[string]any
+	imageGenerationFinals    []map[string]any
+	toolCallArguments        map[string]string
+	toolCallSnapshots        map[string]string
+	toolCallStarted          map[string]struct{}
+	toolCallCompleted        map[string]struct{}
+	toolCallPendingArguments map[string][]StreamEvent
+	toolCallPendingComplete  map[string]StreamEvent
+	toolCallsByIndex         map[int]StreamEvent
+	rawEvents                []map[string]any
+	sawPayload               bool
+	streamBytes              int
+	streamEvents             int
+	decodeErr                error
 }
 
 func processResponseStreamEvent(eventName string, payload string, state *streamDecodeState, onEvent func(StreamEvent)) {
@@ -2352,7 +2401,7 @@ func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, ite
 	if onEvent == nil || len(item) == 0 || !isToolCallOutputItem(item) {
 		return
 	}
-	streamEvent := streamEventToolCallFromOutputItem(item, event)
+	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromOutputItem(item, event))
 	rememberToolCallEvent(state, streamEvent)
 	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
 		return
@@ -2362,18 +2411,13 @@ func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, ite
 		return
 	}
 	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	flushPendingToolCallArguments(state, key, streamEvent, onEvent)
 	if toolCallCompletedSeen(state, key) {
 		return
 	}
 
 	snapshot := strings.TrimSpace(streamEvent.ArgumentsSnapshot)
-	if snapshot != "" {
-		if state != nil {
-			if state.toolCallArguments == nil {
-				state.toolCallArguments = make(map[string]string, 4)
-			}
-			state.toolCallArguments[key] = snapshot
-		}
+	if snapshot != "" && rememberToolCallSnapshot(state, key, snapshot) {
 		onEvent(StreamEvent{
 			Type:              StreamEventToolCallArgumentsSnapshot,
 			ToolCallID:        streamEvent.ToolCallID,
@@ -2384,6 +2428,11 @@ func emitToolCallOutputItemEvent(eventName string, state *streamDecodeState, ite
 		})
 	}
 
+	if pending, ok := takePendingToolCallCompletion(state, key); ok {
+		streamEvent = mergeToolCallEvents(streamEvent, pending)
+		emitCompletedToolCall(state, key, streamEvent, onEvent)
+		return
+	}
 	if strings.EqualFold(strings.TrimSpace(eventName), "response.output_item.done") || strings.EqualFold(strings.TrimSpace(asString(item["status"])), "completed") {
 		emitCompletedToolCall(state, key, streamEvent, onEvent)
 	}
@@ -2394,14 +2443,10 @@ func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]
 		return
 	}
 	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
-	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
-		return
-	}
 	key := toolCallStreamKey(streamEvent)
 	if key == "" {
 		return
 	}
-	ensureToolCallStarted(state, key, streamEvent, onEvent)
 
 	delta := firstNonEmpty(
 		asString(event["delta"]),
@@ -2417,7 +2462,7 @@ func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]
 		}
 		state.toolCallArguments[key] += delta
 	}
-	onEvent(StreamEvent{
+	deltaEvent := StreamEvent{
 		Type:           StreamEventToolCallArgumentsDelta,
 		ToolCallID:     streamEvent.ToolCallID,
 		ToolCallIndex:  cloneIntPtr(streamEvent.ToolCallIndex),
@@ -2425,7 +2470,15 @@ func emitToolCallArgumentsDeltaEvent(state *streamDecodeState, event map[string]
 		ArgumentsDelta: delta,
 		Delta:          delta,
 		Metadata:       cloneMapAny(streamEvent.Metadata),
-	})
+	}
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		rememberToolCallEvent(state, streamEvent)
+		rememberPendingToolCallArgument(state, key, deltaEvent)
+		return
+	}
+	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	rememberToolCallEvent(state, streamEvent)
+	onEvent(deltaEvent)
 }
 
 func emitToolCallCompletedEvent(state *streamDecodeState, event map[string]any, onEvent func(StreamEvent)) {
@@ -2433,14 +2486,18 @@ func emitToolCallCompletedEvent(state *streamDecodeState, event map[string]any, 
 		return
 	}
 	streamEvent := mergeToolCallEventWithState(state, streamEventToolCallFromArgumentEvent(event))
-	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
-		return
-	}
 	key := toolCallStreamKey(streamEvent)
 	if key == "" {
 		return
 	}
+	if streamEvent.ToolCallID == "" && streamEvent.ToolName == "" {
+		rememberToolCallEvent(state, streamEvent)
+		rememberPendingToolCallCompletion(state, key, streamEvent)
+		return
+	}
 	ensureToolCallStarted(state, key, streamEvent, onEvent)
+	rememberToolCallEvent(state, streamEvent)
+	flushPendingToolCallArguments(state, key, streamEvent, onEvent)
 	if streamEvent.Arguments == "" && state != nil && state.toolCallArguments != nil {
 		streamEvent.Arguments = strings.TrimSpace(state.toolCallArguments[key])
 	}
@@ -2525,6 +2582,66 @@ func streamEventToolCallFromOutputItem(item map[string]any, event map[string]any
 	}
 }
 
+func rememberToolCallSnapshot(state *streamDecodeState, key, snapshot string) bool {
+	if state == nil {
+		return true
+	}
+	if state.toolCallSnapshots == nil {
+		state.toolCallSnapshots = make(map[string]string, 4)
+	}
+	if state.toolCallSnapshots[key] == snapshot {
+		return false
+	}
+	state.toolCallSnapshots[key] = snapshot
+	if state.toolCallArguments == nil {
+		state.toolCallArguments = make(map[string]string, 4)
+	}
+	state.toolCallArguments[key] = snapshot
+	return true
+}
+
+func rememberPendingToolCallArgument(state *streamDecodeState, key string, event StreamEvent) {
+	if state == nil || key == "" {
+		return
+	}
+	if state.toolCallPendingArguments == nil {
+		state.toolCallPendingArguments = make(map[string][]StreamEvent, 4)
+	}
+	state.toolCallPendingArguments[key] = append(state.toolCallPendingArguments[key], event)
+}
+
+func flushPendingToolCallArguments(state *streamDecodeState, key string, identity StreamEvent, onEvent func(StreamEvent)) {
+	if state == nil || state.toolCallPendingArguments == nil || key == "" || onEvent == nil {
+		return
+	}
+	pending := state.toolCallPendingArguments[key]
+	delete(state.toolCallPendingArguments, key)
+	for _, event := range pending {
+		onEvent(mergeToolCallEvents(identity, event))
+	}
+}
+
+func rememberPendingToolCallCompletion(state *streamDecodeState, key string, event StreamEvent) {
+	if state == nil || key == "" {
+		return
+	}
+	if state.toolCallPendingComplete == nil {
+		state.toolCallPendingComplete = make(map[string]StreamEvent, 4)
+	}
+	state.toolCallPendingComplete[key] = mergeToolCallEvents(state.toolCallPendingComplete[key], event)
+}
+
+func takePendingToolCallCompletion(state *streamDecodeState, key string) (StreamEvent, bool) {
+	if state == nil || state.toolCallPendingComplete == nil || key == "" {
+		return StreamEvent{}, false
+	}
+	event, ok := state.toolCallPendingComplete[key]
+	if ok {
+		delete(state.toolCallPendingComplete, key)
+	}
+	return event, ok
+}
+
 func streamEventToolCallFromArgumentEvent(event map[string]any) StreamEvent {
 	arguments := strings.TrimSpace(firstNonEmpty(
 		asString(event["arguments"]),
@@ -2533,7 +2650,10 @@ func streamEventToolCallFromArgumentEvent(event map[string]any) StreamEvent {
 		asString(event["input_done"]),
 	))
 	return StreamEvent{
-		ToolCallID:    toolCallIDFromMaps(event),
+		// Responses API argument events identify the output item with item_id;
+		// that value is not the stable function call_id. output_index remains the
+		// repair key until an output item reveals call_id and name.
+		ToolCallID:    strings.TrimSpace(firstNonEmpty(asString(event["call_id"]), asString(event["id"]))),
 		ToolCallIndex: intPointerFromAny(firstPresentValue(event, nil, "output_index", "item_index")),
 		ToolName:      toolCallNameFromMap(event),
 		Arguments:     arguments,
@@ -2548,7 +2668,7 @@ func rememberToolCallEvent(state *streamDecodeState, event StreamEvent) {
 	if state.toolCallsByIndex == nil {
 		state.toolCallsByIndex = make(map[int]StreamEvent, 4)
 	}
-	state.toolCallsByIndex[*event.ToolCallIndex] = event
+	state.toolCallsByIndex[*event.ToolCallIndex] = mergeToolCallEvents(state.toolCallsByIndex[*event.ToolCallIndex], event)
 }
 
 func mergeToolCallEventWithState(state *streamDecodeState, event StreamEvent) StreamEvent {
@@ -2559,15 +2679,33 @@ func mergeToolCallEventWithState(state *streamDecodeState, event StreamEvent) St
 	if !ok {
 		return event
 	}
-	if known.ToolCallID != "" {
+	return mergeToolCallEvents(known, event)
+}
+
+func mergeToolCallEvents(known, event StreamEvent) StreamEvent {
+	if event.ToolCallID == "" {
 		event.ToolCallID = known.ToolCallID
+	}
+	if event.ToolCallIndex == nil {
+		event.ToolCallIndex = cloneIntPtr(known.ToolCallIndex)
 	}
 	if event.ToolName == "" {
 		event.ToolName = known.ToolName
 	}
-	if event.Metadata == nil {
-		event.Metadata = cloneMapAny(known.Metadata)
+	if event.Arguments == "" {
+		event.Arguments = known.Arguments
 	}
+	if event.ArgumentsSnapshot == "" {
+		event.ArgumentsSnapshot = known.ArgumentsSnapshot
+	}
+	mergedMetadata := cloneMapAny(known.Metadata)
+	if mergedMetadata == nil && len(event.Metadata) > 0 {
+		mergedMetadata = make(map[string]any, len(event.Metadata))
+	}
+	for key, value := range event.Metadata {
+		mergedMetadata[key] = value
+	}
+	event.Metadata = mergedMetadata
 	return event
 }
 
@@ -2602,11 +2740,13 @@ func toolCallNameFromMap(item map[string]any) string {
 }
 
 func toolCallStreamKey(event StreamEvent) string {
-	if event.ToolCallID != "" {
-		return "id:" + event.ToolCallID
-	}
+	// output_index is stable across output-item and argument event shapes, while
+	// item_id can precede and differ from the eventual function call_id.
 	if event.ToolCallIndex != nil {
 		return fmt.Sprintf("idx:%d", *event.ToolCallIndex)
+	}
+	if event.ToolCallID != "" {
+		return "id:" + event.ToolCallID
 	}
 	if event.ToolName != "" {
 		return "name:" + event.ToolName
@@ -2624,6 +2764,9 @@ func toolCallEventMetadata(item map[string]any, event map[string]any) map[string
 	}
 	if eventType := strings.TrimSpace(asString(event["type"])); eventType != "" {
 		metadata["provider_event_type"] = eventType
+	}
+	if itemID := strings.TrimSpace(asString(event["item_id"])); itemID != "" {
+		metadata["provider_item_id"] = itemID
 	}
 	if outputIndex, ok := asInt64(firstPresentValue(event, item, "output_index")); ok {
 		metadata["provider_output_index"] = outputIndex
@@ -4096,10 +4239,19 @@ func extractTokenUsage(responseObj map[string]any, decoded map[string]any) Token
 	totalTokens, _ := intFromPath(usage, "total_tokens")
 	cacheReadTokens, _ := intFromPath(usage, "input_tokens_details", "cached_tokens")
 	cacheWriteTokens, _ := intFromPath(usage, "input_tokens_details", "cache_creation_tokens")
-	serviceTier := strings.TrimSpace(asString(usage["service_tier"]))
+	// OpenAI-compatible Responses APIs report the actually served tier on
+	// the response object. Keep the usage location only as a compatibility
+	// fallback for provider variants that return it there.
+	serviceTier := strings.TrimSpace(asString(responseObj["service_tier"]))
+	if serviceTier == "" {
+		serviceTier = strings.TrimSpace(asString(usage["service_tier"]))
+	}
 	estimatedCostUSD, _ := floatFromAny(usage["estimated_cost_usd"])
 
 	usageRaw := cloneMapAny(usage)
+	if serviceTier != "" {
+		usageRaw["service_tier"] = serviceTier
+	}
 	out := TokenUsage{
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,

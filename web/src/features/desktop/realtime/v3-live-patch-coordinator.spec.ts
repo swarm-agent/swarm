@@ -4,11 +4,49 @@ import { readFile } from 'node:fs/promises'
 
 import { DesktopV3LivePatchCoordinator } from './v3-live-patch-coordinator'
 import { applyCacheEvent, createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
+import { selectDesktopToolActivities } from '../state/desktop-v3-cache-selectors'
 import type { DesktopV3CacheAction, DesktopV3CacheState, MessageSnapshot, RealtimeMessage } from '../state/desktop-v3-cache-types'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 import { normalizeRealtimeEventFrame } from '../state/desktop-v3-cache-wire'
 
 const encoder = new TextEncoder()
+
+test('Desktop V3 rejects provider construction live patches that bypass durable ordering', () => {
+  let state = createEmptyDesktopV3CacheState()
+  let commits = 0
+  const coordinator = new DesktopV3LivePatchCoordinator({
+    getSnapshot: () => state,
+    commitSnapshot: (_previous, next) => {
+      commits += 1
+      state = next
+    },
+    requestFrame: () => 0,
+    cancelFrame: () => undefined,
+    setTimer: () => 0,
+    clearTimer: () => undefined,
+    isDocumentHidden: () => false,
+  })
+  const text = JSON.stringify({
+    path_id: 'run.v3.provider-tool-construction.v1',
+    type: 'session.provider_tool_call.started',
+    run_id: 'run-a',
+    step: 1,
+    event_index: 1,
+    call_id: 'call-edit',
+    tool_name: 'edit',
+    status: 'building',
+    recorded_at: 1,
+  })
+  coordinator.accept(livePatch({
+    stream_id: 'provider-tool:run-a:step:1:event:1',
+    stream_kind: 'provider_tool_call' as never,
+    text,
+    offset_end: encoder.encode(text).byteLength,
+  }), 1)
+  assert.equal(commits, 0)
+  assert.equal(coordinator.debugSnapshotForTests().scheduled, false)
+  assert.equal(selectDesktopToolActivities(state, 'session-a', 'run-a').length, 0)
+})
 
 test('Desktop V3 ten thousand patches commit once per animation frame', () => {
   let state = createEmptyDesktopV3CacheState()

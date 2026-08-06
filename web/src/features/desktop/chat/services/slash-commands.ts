@@ -8,13 +8,16 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
+  | { kind: 'toggle-thinking' }
+  | { kind: 'toggle-tips' }
   | { kind: 'open-codex-usage' }
   | { kind: 'open-commit-modal' }
   | { kind: 'open-plan-modal' }
+  | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
-  | { kind: 'new-session' }
-  | { kind: 'queue-ai-task' }
+  | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
+  | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
 
 export interface DesktopSlashCommand {
@@ -41,6 +44,12 @@ export type DesktopTaskMode = 'plan' | 'auto'
 export interface DesktopTaskCommandRequest {
   request: string
   mode: DesktopTaskMode
+}
+
+export interface DesktopNewSessionCommandRequest {
+  prompt: string
+  worktreeRequested: boolean
+  planModeRequested: boolean
 }
 
 const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
@@ -88,21 +97,61 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     id: 'new',
     command: '/new',
     aliases: [],
-    hint: 'Start a new session in this workspace',
-    actionLabel: 'Start New Session',
-    tips: ['/new', 'Clear the current selection', 'Start a fresh conversation in this workspace'],
+    hint: 'Start fresh, optionally with <prompt>',
+    actionLabel: 'New Session',
+    tips: ['/new [<prompt>]', 'Bare opens an editable composer; a prompt starts immediately'],
     state: 'ready',
-    action: { kind: 'new-session' },
+    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: false },
+  },
+  {
+    id: 'new-worktree',
+    command: '/new worktree',
+    aliases: [],
+    hint: 'Start fresh in a worktree, optionally with <prompt>',
+    actionLabel: 'New + Worktree',
+    tips: ['/new worktree [<prompt>]', 'A non-empty prompt starts the routed worktree session immediately'],
+    state: 'ready',
+    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: false },
+  },
+  {
+    id: 'new-plan',
+    command: '/new plan',
+    aliases: [],
+    hint: 'Start fresh in plan mode, optionally with <prompt>',
+    actionLabel: 'New + Plan',
+    tips: ['/new plan [<prompt>]', 'A non-empty prompt starts the routed plan session immediately'],
+    state: 'ready',
+    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: true },
+  },
+  {
+    id: 'new-wp',
+    command: '/new wp',
+    aliases: [],
+    hint: 'Start fresh with Worktree and Plan, optionally with <prompt>',
+    actionLabel: 'New + Both',
+    tips: ['/new wp [<prompt>]', 'A non-empty prompt starts with both chips enabled'],
+    state: 'ready',
+    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: true },
   },
   {
     id: 'task',
     command: '/task',
     aliases: [],
-    hint: 'Queue a durable AI task for Swarm',
-    actionLabel: 'Queue AI Task',
-    tips: ['/task <request> (auto)', '/task plan <request>', 'The task opens a managed worktree session'],
+    hint: 'Start an automatic background Router task with <prompt>',
+    actionLabel: 'Start Background Router Session',
+    tips: ['/task <prompt>', 'Runs in auto mode through the background Router endpoint'],
     state: 'ready',
-    action: { kind: 'queue-ai-task' },
+    action: { kind: 'start-background-router-session' },
+  },
+  {
+    id: 'task-plan',
+    command: '/task plan',
+    aliases: [],
+    hint: 'Start a planned background Router task with <prompt>',
+    actionLabel: 'Start Background Router Plan',
+    tips: ['/task plan <prompt>', 'Requests plan mode through the background Router endpoint'],
+    state: 'ready',
+    action: { kind: 'start-background-router-session' },
   },
   {
     id: 'agents',
@@ -133,6 +182,26 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['Generic MCP management is coming later', 'Exa web access requires an active Exa API key', 'Add one in Settings → Providers'],
     state: 'coming-soon',
     action: { kind: 'show-help' },
+  },
+  {
+    id: 'tips',
+    command: '/tips',
+    aliases: [],
+    hint: 'Hide, show, or check workspace home tips',
+    actionLabel: 'Toggle Home Tips',
+    tips: ['/tips [on|off|toggle|status]', 'Bare /tips toggles the persisted setting'],
+    state: 'ready',
+    action: { kind: 'toggle-tips' },
+  },
+  {
+    id: 'thinking',
+    command: '/thinking',
+    aliases: [],
+    hint: 'Turn off to hide thinking summary',
+    actionLabel: 'Toggle Thinking Summary',
+    tips: ['/thinking', 'Turn off to hide thinking summary', 'Toggle thinking summaries without opening Agent Setup'],
+    state: 'ready',
+    action: { kind: 'toggle-thinking' },
   },
   {
     id: 'models',
@@ -183,6 +252,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/plan', '/plan show', 'Review, copy, and edit the active session plan'],
     state: 'ready',
     action: { kind: 'open-plan-modal' },
+  },
+  {
+    id: 'actions',
+    command: '/actions',
+    aliases: ['/actions list'],
+    hint: 'Choose a saved workspace Action without leaving chat',
+    actionLabel: 'Open Workspace Actions',
+    tips: ['/actions', '/actions list', 'Pinned Actions appear first; choosing one opens a review step before it runs'],
+    state: 'ready',
+    action: { kind: 'open-action-chooser' },
   },
   {
     id: 'keybindings',
@@ -264,6 +343,28 @@ export function getDesktopSlashCommands(): DesktopSlashCommand[] {
   return DESKTOP_SLASH_COMMANDS.slice()
 }
 
+export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionCommandRequest | null {
+  const match = input.trim().match(/^\/new(?:\s+([\s\S]*))?$/i)
+  if (!match) return null
+
+  const body = (match[1] ?? '').trim()
+  if (!body) return { prompt: '', worktreeRequested: false, planModeRequested: false }
+
+  const firstToken = body.match(/^(\S+)(?:\s+([\s\S]*))?$/)
+  const directive = firstToken?.[1].toLowerCase() ?? ''
+  const promptAfterDirective = (firstToken?.[2] ?? '').trim()
+  switch (directive) {
+    case 'worktree':
+      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: false }
+    case 'plan':
+      return { prompt: promptAfterDirective, worktreeRequested: false, planModeRequested: true }
+    case 'wp':
+      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: true }
+    default:
+      return { prompt: body, worktreeRequested: false, planModeRequested: false }
+  }
+}
+
 export function parseDesktopTaskCommand(input: string): DesktopTaskCommandRequest {
   const taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
   if (!taskBody) {
@@ -293,11 +394,18 @@ export function buildDesktopSlashPaletteState(input: string): DesktopSlashPalett
   const parts = trimmedBody === '' ? [] : trimmedBody.split(/\s+/)
   const query = normalizeSlashToken(parts[0] ?? '')
   const hasArguments = parts.length > 1
+  const fullQuery = normalizeSlashToken(trimmedBody)
   const exactMatch = query === ''
     ? null
-    : DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(query)) ?? null
+    : DESKTOP_SLASH_COMMANDS
+        .flatMap((command) => commandTokens(command).map((token) => ({ command, token })))
+        .filter(({ token }) => fullQuery === token || fullQuery.startsWith(`${token} `))
+        .sort((left, right) => right.token.length - left.token.length)[0]?.command
+      ?? DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(query))
+      ?? null
 
-  const matches = (hasArguments && exactMatch
+  const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `)))
+  const matches = (hasArguments && exactMatch && exactMatchHasPrefix
     ? [exactMatch]
     : DESKTOP_SLASH_COMMANDS
         .filter((command) => commandMatchRank(command, query) > 0)

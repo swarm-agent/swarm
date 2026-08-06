@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { Plus } from 'lucide-react'
+import { ChevronRight, Plus } from 'lucide-react'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
@@ -14,6 +14,9 @@ import { upsertAuthCredential } from '../../settings/mutations/upsert-auth-crede
 import { verifyAuthCredential } from '../../settings/mutations/verify-auth-credential'
 import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
+import { CodexDeviceCode } from '../../settings/auth/components/codex-device-code'
+import { codexSetupRecommendation } from '../../settings/auth/codex-setup-recommendation'
+import { DEFAULT_GLOBAL_THEME_ID } from '../../settings/swarm/types/swarm-settings'
 import { WorkspaceFolderTree } from '../../../workspaces/launcher/components/workspace-folder-tree'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
 import { applyWorkspaceTheme } from '../../../workspaces/launcher/services/workspace-theme'
@@ -25,15 +28,14 @@ import type { WorkspaceDiscoverEntry, WorkspaceResolution } from '../../../works
 
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
 type CodexOAuthMode = StartCodexOAuthInput['method']
-type ProviderSetupMode = 'api' | 'oauth-browser' | 'oauth-manual' | null
-type PendingAction = 'identity' | 'provider-save' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'workspace' | null
+type ProviderSetupMode = 'api' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | null
+type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'workspace' | null
 
 type OnboardingView = OnboardingStep | 'setup'
 
 const SWARM_MARK_SRC = '/favicon.svg'
 const STEP_TRANSITION_MS = 180
 const ONBOARDING_READY_HOLD_MS = 1_000
-const ONBOARDING_THEME_ID = 'crimson'
 
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
   identity: {
@@ -96,6 +98,7 @@ async function refreshAuthDependentQueries(): Promise<void> {
     queryClient.invalidateQueries({ queryKey: modelOptionsQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey }),
     queryClient.invalidateQueries({ queryKey: modelProfilesQueryOptions().queryKey }),
+    queryClient.invalidateQueries({ queryKey: ['agent-model-settings'] }),
     queryClient.invalidateQueries({ queryKey: ['auth-credentials'] }),
   ])
 }
@@ -106,6 +109,8 @@ function pendingMessage(action: PendingAction): string | null {
       return 'Saving identity…'
     case 'provider-save':
       return 'Saving and verifying provider…'
+    case 'oauth-device':
+      return 'Requesting a device code…'
     case 'oauth-browser':
       return 'Starting browser sign-in…'
     case 'oauth-manual':
@@ -113,8 +118,9 @@ function pendingMessage(action: PendingAction): string | null {
     case 'oauth-complete':
       return 'Completing sign-in…'
     case 'finalize':
-    case 'workspace':
       return 'Setting up your Swarm…'
+    case 'workspace':
+      return 'Setting up your workspace…'
     default:
       return null
   }
@@ -229,7 +235,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [providerID, setProviderID] = useState(status.auth.activeProviders[0] || providerOptions[0]?.id || '')
   const [providerSetupMode, setProviderSetupMode] = useState<ProviderSetupMode>(null)
   const [credentialValue, setCredentialValue] = useState('')
-  const [codexOAuthMode, setCodexOAuthMode] = useState<CodexOAuthMode>('browser')
+  const [codexOAuthMode, setCodexOAuthMode] = useState<CodexOAuthMode>('device')
   const [oauthSession, setOAuthSession] = useState<CodexOAuthSession | null>(null)
   const [callbackInput, setCallbackInput] = useState('')
   const [workspaceSearch, setWorkspaceSearch] = useState('')
@@ -267,10 +273,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const providerAlreadyConnected = Boolean(selectedProvider && status.auth.activeProviders.includes(selectedProvider.id))
   const canStartOAuth = supportsCodexOAuth(selectedProvider)
   const canQuickAuthenticate = Boolean(selectedManualMethod || canStartOAuth)
-  const providerSetupOptionCount = (selectedManualMethod ? 1 : 0) + (canStartOAuth ? 2 : 0)
+  const recommendedCodexSetup = codexSetupRecommendation()
+  const providerSetupOptionCount = (selectedManualMethod ? 1 : 0) + (canStartOAuth ? 3 : 0)
   const showProviderSetupChoices = providerSetupOptionCount > 1
   const showCredentialSection = (providerSetupMode === 'api' || (!showProviderSetupChoices && Boolean(selectedManualMethod))) && Boolean(selectedManualMethod)
-  const showOAuthSection = providerSetupMode === 'oauth-browser' || providerSetupMode === 'oauth-manual'
+  const showOAuthSection = providerSetupMode === 'oauth-device' || providerSetupMode === 'oauth-browser' || providerSetupMode === 'oauth-manual'
   const submitting = pendingAction !== null
   const progress = pendingMessage(pendingAction)
   const mustUseOnboardingProviderAPI = status.heuristics.credentialCount === 0 && status.heuristics.agentCount === 0
@@ -303,7 +310,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         : 'Skip for now'
 
   useEffect(() => {
-    applyWorkspaceTheme(ONBOARDING_THEME_ID)
+    applyWorkspaceTheme(DEFAULT_GLOBAL_THEME_ID)
   }, [])
 
   useEffect(() => {
@@ -366,7 +373,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }, [providerReloadNonce, step, status.identity.bootstrapped])
 
   useEffect(() => {
-    if (codexOAuthMode !== 'browser' || !oauthSession?.sessionID || oauthSession.status === 'success' || oauthSession.status === 'error') {
+    if ((codexOAuthMode !== 'browser' && codexOAuthMode !== 'device') || !oauthSession?.sessionID || oauthSession.status === 'success' || oauthSession.status === 'error') {
       return
     }
 
@@ -374,6 +381,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       void getCodexOAuthStatus(oauthSession.sessionID)
         .then((next) => {
           setOAuthSession(next)
+          if (next.status === 'error') {
+            setError(next.error || 'Codex sign-in failed. Choose a fallback below if device authorization is unavailable.')
+          }
           if (next.status === 'success') {
             setError(null)
             void reloadStatus()
@@ -540,17 +550,15 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setWorkspaceError(null)
       transitionToSetup()
       try {
-        const savedWorkspace = savedWorkspaceByPath.get(entry.path)
-        if (!savedWorkspace) {
-          await saveWorkspace({
-            path: entry.path,
-            name: entry.name || fallbackWorkspaceNameFromPath(entry.path),
-            themeId: 'inherit',
-            makeCurrent: true,
-          })
-        }
-        const resolution = await openWorkspace(entry.path)
-        await finishWithWorkspace(resolution, entry.path)
+        await saveWorkspace({
+          path: entry.path,
+          name: entry.name || fallbackWorkspaceNameFromPath(entry.path),
+          themeId: 'inherit',
+          makeCurrent: true,
+        })
+        await refreshWorkspaces()
+        const selectedResolution = await openWorkspace(entry.path)
+        await finishWithWorkspace(selectedResolution, entry.path)
       } catch (err) {
         transitionToStep('workspace')
         setWorkspaceError(err instanceof Error ? err.message : 'Failed to save and open workspace')
@@ -668,24 +676,27 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setError('Choose a provider first.')
       return
     }
-    setPendingAction(method === 'browser' ? 'oauth-browser' : 'oauth-manual')
+    setPendingAction(method === 'device' ? 'oauth-device' : method === 'browser' ? 'oauth-browser' : 'oauth-manual')
     setError(null)
     setNotice(null)
     setCallbackInput('')
+    setCodexOAuthMode(method)
+    setOAuthSession(null)
     try {
       const session = await startCodexOAuth({
         provider: selectedProvider.id,
         active: true,
         method,
       })
-      setCodexOAuthMode(method)
       setOAuthSession(session)
       if (method === 'browser' && session.authURL && typeof window !== 'undefined') {
         window.open(session.authURL, '_blank', 'noopener,noreferrer')
       }
-      setNotice(method === 'browser'
-        ? 'Finish local sign-in in your browser. Swarm will continue when it sees the callback.'
-        : 'Open the remote auth URL in a new tab, finish Codex sign-in, then paste the full localhost callback URL here. Click Remote browser sign-in again if you need a fresh link.')
+      setNotice(method === 'device'
+        ? 'Open OpenAI’s verification page and enter the one-time code. Swarm will continue automatically after approval.'
+        : method === 'browser'
+          ? 'Finish local sign-in in your browser. Swarm will continue when it sees the callback.'
+          : 'Open the auth URL in a new tab, finish Codex sign-in, then paste the full localhost callback URL here. Click Manual callback again if you need a fresh link.')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start Codex sign-in')
     } finally {
@@ -876,7 +887,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                         ) : canQuickAuthenticate ? (
                           <div className="grid gap-4">
                             {showProviderSetupChoices ? (
-                              <div className="grid gap-2 sm:grid-cols-3">
+                              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                                 {selectedManualMethod ? (
                                   <button
                                     type="button"
@@ -897,6 +908,25 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                     <button
                                       type="button"
                                       onClick={() => {
+                                        setProviderSetupMode('oauth-device')
+                                        void handleStartOAuth('device')
+                                      }}
+                                      disabled={submitting}
+                                      className={[
+                                        'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
+                                        providerSetupMode === 'oauth-device'
+                                          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
+                                          : recommendedCodexSetup === 'device'
+                                            ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_6%,transparent)] text-[var(--app-text)] hover:bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)]'
+                                            : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
+                                      ].join(' ')}
+                                    >
+                                      <span className="block font-semibold">{pendingAction === 'oauth-device' ? 'Preparing…' : 'Device Code'}</span>
+                                      {recommendedCodexSetup === 'device' ? <span className="mt-1 block text-xs text-[var(--app-text-muted)]">Recommended for remote setup</span> : null}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
                                         setProviderSetupMode('oauth-browser')
                                         void handleStartOAuth('browser')
                                       }}
@@ -905,10 +935,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                         'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
                                         providerSetupMode === 'oauth-browser'
                                           ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] text-[var(--app-text)]'
-                                          : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
+                                          : recommendedCodexSetup === 'browser'
+                                            ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_6%,transparent)] text-[var(--app-text)] hover:bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)]'
+                                            : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      {pendingAction === 'oauth-browser' ? 'Opening…' : 'Local browser sign-in'}
+                                      <span className="block font-semibold">{pendingAction === 'oauth-browser' ? 'Opening…' : 'Local Setup'}</span>
+                                      {recommendedCodexSetup === 'browser' ? <span className="mt-1 block text-xs text-[var(--app-text-muted)]">Recommended on this device</span> : null}
                                     </button>
                                     <button
                                       type="button"
@@ -924,7 +957,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                           : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Remote browser sign-in'}
+                                      {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Manual callback fallback'}
                                     </button>
                                   </>
                                 ) : null}
@@ -965,18 +998,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             {showOAuthSection && oauthSession ? (
                               <div className="grid gap-4 text-sm leading-6 text-[var(--app-text-muted)]">
                                 <div>
-                                  {codexOAuthMode === 'browser' ? 'Local browser sign-in' : 'Remote browser sign-in'} status:{' '}
-                                  <span className={oauthSession.status === 'success' ? 'font-medium text-[var(--app-success)]' : 'font-medium text-[var(--app-text)]'}>
+                                  {codexOAuthMode === 'device' ? 'Device-code sign-in' : codexOAuthMode === 'browser' ? 'Local browser fallback' : 'Manual callback fallback'} status:{' '}
+                                  <span className={oauthSession.status === 'success' ? 'font-medium text-[var(--app-success)]' : oauthSession.status === 'error' ? 'font-medium text-[var(--app-danger)]' : 'font-medium text-[var(--app-text)]'}>
                                     {oauthSession.status || 'waiting'}
                                   </span>
                                   {oauthSession.error ? <div className="text-[var(--app-danger)]">{oauthSession.error}</div> : null}
                                 </div>
+                                {codexOAuthMode === 'device' ? <CodexDeviceCode session={oauthSession} disabled={submitting} /> : null}
                                 {codexOAuthMode === 'manual' ? (
                                   <div className="rounded-xl border border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_62%,transparent)] px-4 py-3 text-sm leading-6 text-[var(--app-text-muted)]">
-                                    Open the auth URL in a new tab and finish Codex / ChatGPT sign-in there. When it lands on <span className="font-mono text-[var(--app-text)]">http://localhost:1455/auth/callback?code=...</span>, copy the full address-bar URL back here; click Remote browser sign-in again if you need a fresh link.
+                                    Open the auth URL in a new tab and finish Codex / ChatGPT sign-in there. When it lands on <span className="font-mono text-[var(--app-text)]">http://localhost:1455/auth/callback?code=...</span>, copy the full address-bar URL back here; click Manual callback fallback again if you need a fresh link.
                                   </div>
                                 ) : null}
-                                {oauthSession.authURL ? (
+                                {codexOAuthMode !== 'device' && oauthSession.authURL ? (
                                   <label className="grid gap-2">
                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                       <span className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Auth URL</span>
@@ -1075,7 +1109,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                           className="sm:max-w-56"
                         />
                       </div>
-                      <div className="grid gap-2 lg:grid-cols-2">
+                      <div className="grid gap-2 lg:grid-cols-3">
                         {visibleSavedWorkspaces.map((workspace) => (
                           <button
                             key={workspace.path}
@@ -1097,11 +1131,21 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             type="button"
                             onClick={() => (savedWorkspace ? handleOpenWorkspace(savedWorkspace.path) : handleSaveAndOpenFolder(entry))}
                             disabled={submitting || selectingPath === entry.path || savingPath === entry.path}
-                            className="grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent px-4 py-3 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60"
+                            className={`group relative grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent py-3 pl-4 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60 ${savedWorkspace ? 'pr-4' : 'pr-12'}`}
                           >
                             <span className="flex min-w-0 items-center justify-between gap-3">
                               <span className="truncate text-sm font-medium text-[var(--app-text)]">{savedWorkspace?.workspaceName || entry.name}</span>
-                              <span className="shrink-0 text-xs text-[var(--app-text-muted)]">{savedWorkspace ? 'Open' : 'Add'}</span>
+                              {savedWorkspace ? (
+                                <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
+                              ) : (
+                                <span
+                                  className="absolute right-4 top-1/2 grid size-8 -translate-y-1/2 place-items-center text-[var(--app-text-muted)] opacity-0 transition-[color,opacity] group-hover:text-[var(--app-text)] group-hover:opacity-100 group-focus-visible:text-[var(--app-text)] group-focus-visible:opacity-100"
+                                  title="Add workspace"
+                                >
+                                  <ChevronRight size={18} strokeWidth={2} aria-hidden="true" />
+                                  <span className="sr-only">Add workspace</span>
+                                </span>
+                              )}
                             </span>
                             <span className="truncate text-xs text-[var(--app-text-muted)]">{formatWorkspacePath(entry.path)}</span>
                           </button>

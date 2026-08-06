@@ -21,6 +21,46 @@ func workspaceModalTestEntries() []WorkspaceModalWorkspace {
 	}
 }
 
+func TestWorkspaceManagerIncludesNewWorkspaceCardStartingAtHome(t *testing.T) {
+	p := NewHomePage(model.EmptyHome())
+	p.SetWorkspaceModalData(workspaceModalTestEntries())
+	p.ShowWorkspaceModal()
+	p.workspaceModal.Focus = workspaceModalFocusList
+	p.workspaceModal.SelectedWorkspace = len(p.workspaceModal.Workspaces)
+
+	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if p.workspaceModal.Editor == nil {
+		t.Fatal("expected New Workspace card to open editor")
+	}
+	if len(p.workspaceModal.Editor.Fields) == 0 || p.workspaceModal.Editor.Fields[0].Key != "path" || p.workspaceModal.Editor.Fields[0].Value != "~/" {
+		t.Fatalf("new workspace path field = %#v, want ~/", p.workspaceModal.Editor.Fields)
+	}
+}
+
+func TestWorkspaceModalEditShowsAndAddsLinkedDirectories(t *testing.T) {
+	p := NewHomePage(model.EmptyHome())
+	p.SetWorkspaceModalData(workspaceModalTestEntries())
+	p.ShowWorkspaceModal()
+	p.workspaceModal.Focus = workspaceModalFocusList
+
+	p.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', tcell.ModNone))
+
+	if p.workspaceModal.Editor == nil {
+		t.Fatal("expected workspace editor")
+	}
+	fields := map[string]workspaceModalEditorField{}
+	for _, field := range p.workspaceModal.Editor.Fields {
+		fields[field.Key] = field
+	}
+	if !strings.Contains(fields["linked_directories"].Value, "/tmp/ws-one-linked-a") {
+		t.Fatalf("linked directory summary = %q", fields["linked_directories"].Value)
+	}
+	if field, ok := fields["linked_directory"]; !ok || !field.Editable || field.Placeholder != "~/" {
+		t.Fatalf("add linked directory field = %#v, ok=%v", field, ok)
+	}
+}
+
 func TestWorkspaceModalEnterEditsSelectedWorkspace(t *testing.T) {
 	p := NewHomePage(model.EmptyHome())
 	p.SetWorkspaceModalData(workspaceModalTestEntries())

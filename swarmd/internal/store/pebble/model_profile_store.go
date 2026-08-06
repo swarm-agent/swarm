@@ -13,30 +13,19 @@ import (
 var ErrModelProfileNameConflict = errors.New("model profile name already exists")
 var ErrModelProfileNotFound = errors.New("model profile not found")
 
-const (
-	ModelProfileModeSingle = "single"
-	ModelProfileModeSplit  = "split"
-)
-
-type ModelProfileSelection struct {
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	Thinking    string `json:"thinking"`
-	ServiceTier string `json:"service_tier"`
-	ContextMode string `json:"context_mode"`
-}
-
 type ModelProfileRecord struct {
-	ProfileID      string                 `json:"profile_id"`
-	AccountScopeID string                 `json:"account_scope_id"`
-	Name           string                 `json:"name"`
-	ModelMode      string                 `json:"model_mode"`
-	Single         *ModelProfileSelection `json:"single,omitempty"`
-	Plan           *ModelProfileSelection `json:"plan,omitempty"`
-	Auto           *ModelProfileSelection `json:"auto,omitempty"`
-	CreatedAt      int64                  `json:"created_at"`
-	UpdatedAt      int64                  `json:"updated_at"`
-	IsDefault      bool                   `json:"-"`
+	ProfileID      string `json:"profile_id"`
+	AccountScopeID string `json:"account_scope_id"`
+	Name           string `json:"name"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	Thinking       string `json:"thinking"`
+	ServiceTier    string `json:"service_tier"`
+	ContextMode    string `json:"context_mode"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
+	SortOrder      int    `json:"sort_order"`
+	IsDefault      bool   `json:"-"`
 }
 
 type ModelProfileListState struct {
@@ -73,7 +62,7 @@ func (s *ModelProfileStore) ListForAccount(accountScopeID string, limit int) ([]
 	return state.Profiles, err
 }
 
-// ListStateForAccount returns profiles and repairs legacy missing/dangling defaults atomically.
+// ListStateForAccount returns flat favorites and fails if the required default is missing or dangling.
 func (s *ModelProfileStore) ListStateForAccount(accountScopeID string, limit int) (ModelProfileListState, error) {
 	if s == nil || s.store == nil {
 		return ModelProfileListState{}, errors.New("model profile store is not configured")
@@ -92,18 +81,14 @@ func (s *ModelProfileStore) ListStateForAccount(accountScopeID string, limit int
 	if err != nil {
 		return ModelProfileListState{}, err
 	}
-	if !containsModelProfile(profiles, defaultID) {
-		if len(profiles) == 0 {
-			defaultID = ""
-			if err := s.store.Delete(KeyModelProfileDefaultForAccount(accountScopeID)); err != nil {
-				return ModelProfileListState{}, err
-			}
-		} else {
-			defaultID = profiles[0].ProfileID
-			if err := s.store.PutBytes(KeyModelProfileDefaultForAccount(accountScopeID), []byte(defaultID)); err != nil {
-				return ModelProfileListState{}, err
-			}
+	if len(profiles) == 0 {
+		if defaultID != "" {
+			return ModelProfileListState{}, errors.New("model profile default is dangling")
 		}
+	} else if defaultID == "" {
+		return ModelProfileListState{}, errors.New("model profile default is required")
+	} else if !containsModelProfile(profiles, defaultID) {
+		return ModelProfileListState{}, errors.New("model profile default is dangling")
 	}
 	for i := range profiles {
 		profiles[i].IsDefault = profiles[i].ProfileID == defaultID
@@ -129,7 +114,10 @@ func (s *ModelProfileStore) listUnlocked(accountScopeID string, limit int) ([]Mo
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
 		left, right := NormalizeModelProfileName(out[i].Name), NormalizeModelProfileName(out[j].Name)
 		if left != right {
 			return left < right
@@ -173,6 +161,15 @@ func (s *ModelProfileStore) putForAccount(record ModelProfileRecord, onlyIfEmpty
 		return ModelProfileRecord{}, errModelProfileAccountNotEmpty
 	}
 	existing, exists := findModelProfile(profiles, record.ProfileID)
+	if !exists && len(profiles) > 0 {
+		maxOrder := profiles[0].SortOrder
+		for _, profile := range profiles[1:] {
+			if profile.SortOrder > maxOrder {
+				maxOrder = profile.SortOrder
+			}
+		}
+		record.SortOrder = maxOrder + 1
+	}
 	nameKey := KeyModelProfileNameForAccount(record.AccountScopeID, NormalizeModelProfileName(record.Name))
 	indexedID, indexed, err := s.store.GetBytes(nameKey)
 	if err != nil {
@@ -189,11 +186,15 @@ func (s *ModelProfileStore) putForAccount(record ModelProfileRecord, onlyIfEmpty
 	if err != nil {
 		return ModelProfileRecord{}, err
 	}
-	if !containsModelProfile(profiles, defaultID) {
-		defaultID = ""
-	}
-	if defaultID == "" {
+	if len(profiles) == 0 {
+		if defaultID != "" && defaultID != record.ProfileID {
+			return ModelProfileRecord{}, errors.New("model profile default is dangling")
+		}
 		defaultID = record.ProfileID
+	} else if defaultID == "" {
+		return ModelProfileRecord{}, errors.New("model profile default is required")
+	} else if !containsModelProfile(profiles, defaultID) {
+		return ModelProfileRecord{}, errors.New("model profile default is dangling")
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
@@ -241,6 +242,64 @@ func (s *ModelProfileStore) SetDefaultForAccount(accountScopeID, profileID strin
 	}
 	record.IsDefault = true
 	return record, nil
+}
+
+func (s *ModelProfileStore) ReorderForAccount(accountScopeID string, profileIDs []string) ([]ModelProfileRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("model profile store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope id is required")
+	}
+	s.store.modelProfilesMu.Lock()
+	defer s.store.modelProfilesMu.Unlock()
+	profiles, err := s.listUnlocked(accountScopeID, 500)
+	if err != nil {
+		return nil, err
+	}
+	if len(profileIDs) != len(profiles) {
+		return nil, errors.New("profile_ids must include every model profile exactly once")
+	}
+	byID := make(map[string]ModelProfileRecord, len(profiles))
+	for _, profile := range profiles {
+		byID[profile.ProfileID] = profile
+	}
+	ordered := make([]ModelProfileRecord, 0, len(profiles))
+	seen := make(map[string]struct{}, len(profiles))
+	for index, rawID := range profileIDs {
+		profileID := strings.TrimSpace(rawID)
+		profile, ok := byID[profileID]
+		if !ok {
+			return nil, ErrModelProfileNotFound
+		}
+		if _, duplicate := seen[profileID]; duplicate {
+			return nil, errors.New("profile_ids must include every model profile exactly once")
+		}
+		seen[profileID] = struct{}{}
+		profile.SortOrder = index
+		ordered = append(ordered, profile)
+	}
+	defaultID, _, err := s.defaultIDUnlocked(accountScopeID)
+	if err != nil {
+		return nil, err
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	for i := range ordered {
+		ordered[i].IsDefault = ordered[i].ProfileID == defaultID
+		payload, err := json.Marshal(ordered[i])
+		if err != nil {
+			return nil, fmt.Errorf("marshal model profile: %w", err)
+		}
+		if err := batch.Set([]byte(KeyModelProfileForAccount(accountScopeID, ordered[i].ProfileID)), payload, nil); err != nil {
+			return nil, err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return nil, err
+	}
+	return ordered, nil
 }
 
 func (s *ModelProfileStore) DeleteForAccount(accountScopeID, profileID string) (bool, error) {

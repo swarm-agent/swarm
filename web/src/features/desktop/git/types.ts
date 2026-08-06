@@ -44,6 +44,7 @@ export interface GitSnapshot {
   files: GitFileStatus[]
   remotes?: GitRemote[]
   recent_commits?: GitCommit[]
+  session_commits?: GitCommit[]
   refreshed_at: string
   duration_ms: number
 }
@@ -51,6 +52,13 @@ export interface GitSnapshot {
 export interface GitStatusResponse {
   ok: boolean
   status: GitSnapshot
+}
+
+export interface GitCommitSuggestionResponse {
+  ok: boolean
+  workspace_path: string
+  cwd: string
+  message: string
 }
 
 export interface GitRealtimeDiagnostics {

@@ -503,7 +503,7 @@ func TestApplyV3SessionMutationUsageSummaryUsesLatestProviderTotal(t *testing.T)
 	}
 }
 
-func TestApplyV3SessionMutationFireworksUsageSummaryAccumulates(t *testing.T) {
+func TestApplyV3SessionMutationFireworksUsageSummaryUsesLatestContextSnapshot(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "session-fireworks-usage")
@@ -535,11 +535,11 @@ func TestApplyV3SessionMutationFireworksUsageSummaryAccumulates(t *testing.T) {
 		summary = *result.UsageSummary
 	}
 
-	if summary.TurnCount != 2 || summary.TotalTokens != 230 || summary.InputTokens != 180 || summary.OutputTokens != 50 || summary.CacheReadTokens != 50 {
-		t.Fatalf("fireworks summary should accumulate token counts across turns, got %+v", summary)
+	if summary.TurnCount != 2 || summary.TotalTokens != 110 || summary.InputTokens != 80 || summary.OutputTokens != 30 || summary.CacheReadTokens != 10 {
+		t.Fatalf("fireworks summary should reflect the latest request context, got %+v", summary)
 	}
-	if summary.RemainingTokens != 770 {
-		t.Fatalf("fireworks remaining tokens = %d, want 770", summary.RemainingTokens)
+	if summary.RemainingTokens != 890 {
+		t.Fatalf("fireworks remaining tokens = %d, want 890", summary.RemainingTokens)
 	}
 
 	replacement := SessionTurnUsageSnapshot{RunID: "v3run_fireworks_2", Provider: "fireworks", Model: "accounts/fireworks/models/glm-4.5", Source: "fireworks_api_usage", ContextWindow: 1000, InputTokens: 70, OutputTokens: 10, CacheReadTokens: 5, TotalTokens: 80}
@@ -561,8 +561,8 @@ func TestApplyV3SessionMutationFireworksUsageSummaryAccumulates(t *testing.T) {
 		t.Fatal("replace fireworks usage missing usage summary")
 	}
 	summary = *result.UsageSummary
-	if summary.TurnCount != 2 || summary.TotalTokens != 200 || summary.InputTokens != 170 || summary.OutputTokens != 30 || summary.CacheReadTokens != 45 || summary.RemainingTokens != 800 {
-		t.Fatalf("fireworks replacement should update accumulated totals by run id, got %+v", summary)
+	if summary.TurnCount != 2 || summary.TotalTokens != 80 || summary.InputTokens != 70 || summary.OutputTokens != 10 || summary.CacheReadTokens != 5 || summary.RemainingTokens != 920 {
+		t.Fatalf("fireworks replacement should remain the latest request context, got %+v", summary)
 	}
 }
 

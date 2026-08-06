@@ -178,11 +178,20 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		}
 		preference := resolution.preferenceForMode(parent.Preference, proposal.Mode)
 		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
-		if aiTask != nil && parent.ModelProfile != nil {
-			modelProfile = cloneManageSessionsDeployModelProfile(parent.ModelProfile)
+		if aiTask != nil && parent.ModelProfile == nil {
+			return "", fmt.Errorf("proposal %q queued AI task is missing its immutable model profile", proposal.ID)
+		}
+		if parent.ModelProfile != nil {
+			modelProfile, err = inheritedSessionModelProfile(parent.ModelProfile, proposal.Mode)
+			if err != nil {
+				return "", fmt.Errorf("proposal %q model profile: %w", proposal.ID, err)
+			}
 			preference, err = manageSessionsDeployModelProfilePreference(modelProfile, proposal.Mode)
 			if err != nil {
 				return "", fmt.Errorf("proposal %q model profile: %w", proposal.ID, err)
+			}
+			if !equalSessionModelProfiles(proposal.ModelProfile, modelProfile) || proposal.Provider != preference.Provider || proposal.Model != preference.Model || proposal.Thinking != preference.Thinking || proposal.ServiceTier != preference.ServiceTier || proposal.ContextMode != preference.ContextMode {
+				return "", fmt.Errorf("proposal %q approved model selection does not match its immutable profile", proposal.ID)
 			}
 		}
 		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, proposal.WorkspacePath)
@@ -191,7 +200,10 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		}
 		proposal.AgentName, proposal.AgentMode, proposal.RuntimeMode = profile.Name, profile.Mode, executionMode
 		proposal.Provider, proposal.Model, proposal.Thinking = preference.Provider, preference.Model, preference.Thinking
-		proposal.ServiceTier, proposal.ContextMode, proposal.ModelProfile = preference.ServiceTier, preference.ContextMode, modelProfile
+		proposal.ServiceTier, proposal.ContextMode = preference.ServiceTier, preference.ContextMode
+		if modelProfile == nil {
+			proposal.ModelProfile = nil
+		}
 		proposal.WorkspaceID, proposal.WorkspaceGeneration = scope.WorkspaceID, scope.WorkspaceGeneration
 		proposal.WorkspacePath, proposal.WorkspaceName = scope.WorkspacePath, scope.WorkspaceName
 		approved.Proposals[i] = proposal

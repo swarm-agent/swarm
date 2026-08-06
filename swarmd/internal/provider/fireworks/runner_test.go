@@ -2,11 +2,13 @@ package fireworks
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	toolruntime "swarm/packages/swarmd/internal/tool"
 )
 
 func TestFireworksDebugChunkMetadataExcludesPrivateContent(t *testing.T) {
@@ -99,6 +101,240 @@ func TestSanitizeFireworksToolParametersDefaultsEmptyObjectSchema(t *testing.T) 
 	}
 	if len(properties) != 0 {
 		t.Fatalf("properties = %#v, want empty", properties)
+	}
+}
+
+func TestBuildChatCompletionRequestNormalizesPlanCheckpointCompositionBranches(t *testing.T) {
+	definitions := toolruntime.NewRuntime(1).Definitions()
+	planTools := make([]provideriface.ToolDefinition, 0, 2)
+	canonicalParameters := make(map[string][]byte, 2)
+	for _, definition := range definitions {
+		if definition.Name != "exit_plan_mode" && definition.Name != "plan_manage" {
+			continue
+		}
+		if !hasFireworksRequiredOnlyCompositionBranch(definition.Parameters) {
+			t.Fatalf("canonical %s schema no longer reproduces a required-only composition branch", definition.Name)
+		}
+		encoded, err := json.Marshal(definition.Parameters)
+		if err != nil {
+			t.Fatalf("marshal canonical %s parameters: %v", definition.Name, err)
+		}
+		canonicalParameters[definition.Name] = encoded
+		planTools = append(planTools, provideriface.ToolDefinition{
+			Type: definition.Type, Name: definition.Name, Description: definition.Description, Parameters: definition.Parameters,
+		})
+	}
+	if len(planTools) != 2 {
+		t.Fatalf("found %d plan tools, want exit_plan_mode and plan_manage", len(planTools))
+	}
+
+	request, err := buildChatCompletionRequest(provideriface.Request{
+		Model: "test-model",
+		Input: []map[string]any{{"role": "user", "content": "plan the change"}},
+		Tools: planTools,
+	})
+	if err != nil {
+		t.Fatalf("build Fireworks request with plan tools: %v", err)
+	}
+	checkpointRequired := []string{"id", "title", "status", "order", "acceptance_criteria"}
+	for _, tool := range request.Tools {
+		assertFireworksCompositionRequiredSchemasHaveProperties(t, tool.Function.Parameters, "$.tools."+tool.Function.Name)
+		if !hasFireworksRequiredAlternatives(tool.Function.Parameters, "objective", "tasks") {
+			t.Fatalf("serialized %s parameters lost the checkpoint objective-or-tasks requirement", tool.Function.Name)
+		}
+		if !hasFireworksAlternativeRequiringAll(tool.Function.Parameters, append(checkpointRequired, "objective")...) {
+			t.Fatalf("serialized %s parameters lost complete checkpoint fields from its objective alternative", tool.Function.Name)
+		}
+		if !hasFireworksAlternativeRequiringAll(tool.Function.Parameters, append(checkpointRequired, "tasks")...) {
+			t.Fatalf("serialized %s parameters lost complete checkpoint fields from its tasks alternative", tool.Function.Name)
+		}
+		if !hasFireworksObjectPropertyWithFields(tool.Function.Parameters, "acceptance_criteria", "type", "minItems", "items") {
+			t.Fatalf("serialized %s parameters lost the checkpoint acceptance_criteria schema", tool.Function.Name)
+		}
+		if tool.Function.Name == "plan_manage" && !hasFireworksObjectPropertyWithFields(tool.Function.Parameters, "subtask", "type", "properties") {
+			t.Fatalf("serialized plan_manage parameters lost the nested subtask schema")
+		}
+	}
+	for _, definition := range planTools {
+		after, err := json.Marshal(definition.Parameters)
+		if err != nil {
+			t.Fatalf("marshal canonical %s parameters after request: %v", definition.Name, err)
+		}
+		if !reflect.DeepEqual(after, canonicalParameters[definition.Name]) {
+			t.Fatalf("Fireworks serialization mutated canonical %s parameters", definition.Name)
+		}
+	}
+}
+
+func hasFireworksRequiredOnlyCompositionBranch(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if required := sanitizeFireworksRequired(typed["required"]); len(required) > 0 {
+			if _, hasProperties := typed["properties"]; !hasProperties {
+				return true
+			}
+		}
+		for _, child := range typed {
+			if hasFireworksRequiredOnlyCompositionBranch(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasFireworksRequiredOnlyCompositionBranch(child) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, child := range typed {
+			if hasFireworksRequiredOnlyCompositionBranch(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasFireworksRequiredAlternatives(value any, requiredNames ...string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+			alternatives, ok := typed[key].([]any)
+			if !ok {
+				continue
+			}
+			matched := make(map[string]bool, len(requiredNames))
+			for _, alternative := range alternatives {
+				schema, ok := alternative.(map[string]any)
+				if !ok || schema["type"] != "object" {
+					continue
+				}
+				properties, _ := schema["properties"].(map[string]any)
+				for _, name := range sanitizeFireworksRequired(schema["required"]) {
+					if _, ok := properties[name]; ok {
+						matched[name] = true
+					}
+				}
+			}
+			allMatched := true
+			for _, name := range requiredNames {
+				allMatched = allMatched && matched[name]
+			}
+			if allMatched {
+				return true
+			}
+		}
+		for _, child := range typed {
+			if hasFireworksRequiredAlternatives(child, requiredNames...) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasFireworksRequiredAlternatives(child, requiredNames...) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasFireworksAlternativeRequiringAll(value any, requiredNames ...string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+			alternatives, ok := typed[key].([]any)
+			if !ok {
+				continue
+			}
+			for _, alternative := range alternatives {
+				schema, ok := alternative.(map[string]any)
+				if !ok {
+					continue
+				}
+				required := make(map[string]bool, len(requiredNames))
+				for _, name := range sanitizeFireworksRequired(schema["required"]) {
+					required[name] = true
+				}
+				allRequired := true
+				for _, name := range requiredNames {
+					allRequired = allRequired && required[name]
+				}
+				if allRequired {
+					return true
+				}
+			}
+		}
+		for _, child := range typed {
+			if hasFireworksAlternativeRequiringAll(child, requiredNames...) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasFireworksAlternativeRequiringAll(child, requiredNames...) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasFireworksObjectPropertyWithFields(value any, propertyName string, fieldNames ...string) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		if properties, ok := typed["properties"].(map[string]any); ok {
+			if property, ok := properties[propertyName].(map[string]any); ok {
+				allPresent := true
+				for _, fieldName := range fieldNames {
+					_, present := property[fieldName]
+					allPresent = allPresent && present
+				}
+				if allPresent {
+					return true
+				}
+			}
+		}
+		for _, child := range typed {
+			if hasFireworksObjectPropertyWithFields(child, propertyName, fieldNames...) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if hasFireworksObjectPropertyWithFields(child, propertyName, fieldNames...) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func assertFireworksCompositionRequiredSchemasHaveProperties(t *testing.T, value any, path string) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		if required := sanitizeFireworksRequired(typed["required"]); len(required) > 0 {
+			if typed["type"] != "object" {
+				t.Fatalf("%s required schema type = %#v, want object", path, typed["type"])
+			}
+			properties, ok := typed["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s required schema properties = %T, want object", path, typed["properties"])
+			}
+			for _, name := range required {
+				if _, ok := properties[name]; !ok {
+					t.Fatalf("%s requires %q without defining it in properties", path, name)
+				}
+			}
+		}
+		for key, child := range typed {
+			assertFireworksCompositionRequiredSchemasHaveProperties(t, child, path+"."+key)
+		}
+	case []any:
+		for _, child := range typed {
+			assertFireworksCompositionRequiredSchemasHaveProperties(t, child, path+"[]")
+		}
 	}
 }
 
@@ -358,8 +594,8 @@ func TestParseUsageCapturesCachedTokensAndCost(t *testing.T) {
 	if usage.APIUsageRaw["uncached_prompt_tokens"] != int64(700) {
 		t.Fatalf("uncached prompt tokens raw = %#v", usage.APIUsageRaw["uncached_prompt_tokens"])
 	}
-	if usage.ServiceTier != "priority" || usage.APIUsageRaw["service_tier"] != "priority" || usage.APIUsageRaw["provider_model"] != "accounts/fireworks/models/glm-5p1" {
-		t.Fatalf("usage annotations = usage=%+v raw=%#v", usage, usage.APIUsageRaw)
+	if usage.ServiceTier != "" || usage.APIUsageRaw["service_tier"] != nil || usage.APIUsageRaw["provider_model"] != "accounts/fireworks/models/glm-5p1" {
+		t.Fatalf("usage annotations must not claim an unreturned served tier: usage=%+v raw=%#v", usage, usage.APIUsageRaw)
 	}
 	if usage.EstimatedCostUSD <= 0 || usage.APIUsageRaw["estimated_cost_usd"] == nil {
 		t.Fatalf("estimated cost missing from usage: usage=%+v raw=%#v", usage, usage.APIUsageRaw)

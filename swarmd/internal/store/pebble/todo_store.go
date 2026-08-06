@@ -227,23 +227,7 @@ func (s *WorkspaceTodoStore) ListForAccount(accountScopeID, workspacePath string
 }
 
 func cloneWorkspaceTodoModelProfile(profile *SessionModelProfileSnapshot) *SessionModelProfileSnapshot {
-	if profile == nil {
-		return nil
-	}
-	cloned := *profile
-	if profile.Single != nil {
-		selection := *profile.Single
-		cloned.Single = &selection
-	}
-	if profile.Plan != nil {
-		selection := *profile.Plan
-		cloned.Plan = &selection
-	}
-	if profile.Auto != nil {
-		selection := *profile.Auto
-		cloned.Auto = &selection
-	}
-	return &cloned
+	return CloneSessionModelProfileSnapshot(profile)
 }
 
 func workspaceTodoModelProfileHash(profile *SessionModelProfileSnapshot) (string, error) {

@@ -308,23 +308,7 @@ func (s *Service) CreateAITaskWithReplay(input CreateAITaskInput) (TodoItem, Tod
 }
 
 func cloneAITaskModelProfile(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
-	if profile == nil {
-		return nil
-	}
-	cloned := *profile
-	if profile.Single != nil {
-		selection := *profile.Single
-		cloned.Single = &selection
-	}
-	if profile.Plan != nil {
-		selection := *profile.Plan
-		cloned.Plan = &selection
-	}
-	if profile.Auto != nil {
-		selection := *profile.Auto
-		cloned.Auto = &selection
-	}
-	return &cloned
+	return pebblestore.CloneSessionModelProfileSnapshot(profile)
 }
 
 func hashAITaskValue(value string) string {

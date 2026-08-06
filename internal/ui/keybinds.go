@@ -31,8 +31,6 @@ const (
 	KeybindGlobalVoiceInput      KeybindID = "global.voice_input"
 	KeybindGlobalShowBackground  KeybindID = "global.show_background"
 	KeybindGlobalWorkspaceSelect KeybindID = "global.workspace_select"
-	KeybindGlobalWorkspacePrev   KeybindID = "global.workspace_prev"
-	KeybindGlobalWorkspaceNext   KeybindID = "global.workspace_next"
 	KeybindGlobalWorkspaceSlot1  KeybindID = "global.workspace_slot_1"
 	KeybindGlobalWorkspaceSlot2  KeybindID = "global.workspace_slot_2"
 	KeybindGlobalWorkspaceSlot3  KeybindID = "global.workspace_slot_3"
@@ -85,6 +83,7 @@ const (
 	KeybindAuthEdit                  KeybindID = "auth.edit"
 
 	KeybindWorkspaceFocusList       KeybindID = "workspace.focus_list"
+	KeybindWorkspaceActions         KeybindID = "workspace.actions"
 	KeybindWorkspaceClearSearchAlt  KeybindID = "workspace.clear_search_alt"
 	KeybindWorkspaceRefresh         KeybindID = "workspace.refresh"
 	KeybindWorkspaceSaveCurrent     KeybindID = "workspace.save_current"
@@ -125,10 +124,10 @@ const (
 	KeybindAgentsToggleEnabled   KeybindID = "agents.toggle_enabled"
 	KeybindAgentsEdit            KeybindID = "agents.edit"
 	KeybindAgentsEditAlt         KeybindID = "agents.edit_alt"
-	KeybindAgentsNew             KeybindID = "agents.new"
 	KeybindAgentsFilterAll       KeybindID = "agents.filter_all"
 	KeybindAgentsFilterPrimary   KeybindID = "agents.filter_primary"
 	KeybindAgentsFilterSubagent  KeybindID = "agents.filter_subagent"
+	KeybindAgentsProfileDefault  KeybindID = "agents.profile_default"
 
 	KeybindThemeJumpHomeAlt KeybindID = "theme.jump_home_alt"
 	KeybindThemeJumpEndAlt  KeybindID = "theme.jump_end_alt"
@@ -214,8 +213,6 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindGlobalVoiceInput, Group: "Global", Action: "Voice input capture", Default: "f9", Editable: true},
 	{ID: KeybindGlobalShowBackground, Group: "Global", Action: "Go home", Default: "ctrl+b", Editable: true},
 	{ID: KeybindGlobalWorkspaceSelect, Group: "Global", Action: "Open workspace selector (/workspace select)", Default: "alt+w", Editable: true},
-	{ID: KeybindGlobalWorkspacePrev, Group: "Global", Action: "Cycle workspace previous", Default: "", Editable: true},
-	{ID: KeybindGlobalWorkspaceNext, Group: "Global", Action: "Cycle workspace next", Default: "", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot1, Group: "Global", Action: "Activate workspace slot 1", Default: "alt+1", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot2, Group: "Global", Action: "Activate workspace slot 2", Default: "alt+2", Editable: true},
 	{ID: KeybindGlobalWorkspaceSlot3, Group: "Global", Action: "Activate workspace slot 3", Default: "alt+3", Editable: true},
@@ -268,6 +265,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindAuthEdit, Group: "Auth Modal", Action: "Edit credential", Default: "e", Editable: true},
 
 	{ID: KeybindWorkspaceFocusList, Group: "Workspace Modal", Action: "Focus list", Default: "w", Editable: true},
+	{ID: KeybindWorkspaceActions, Group: "Workspace Modal", Action: "Open workspace actions", Default: "m", Editable: true},
 	{ID: KeybindWorkspaceClearSearchAlt, Group: "Workspace Modal", Action: "Clear search (alt)", Default: "x", Editable: true},
 	{ID: KeybindWorkspaceRefresh, Group: "Workspace Modal", Action: "Refresh", Default: "r", Editable: true},
 	{ID: KeybindWorkspaceSaveCurrent, Group: "Workspace Modal", Action: "Save current directory", Default: "s", Editable: true},
@@ -308,10 +306,10 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindAgentsToggleEnabled, Group: "Agents Modal", Action: "Toggle selected enabled", Default: "t", Editable: true},
 	{ID: KeybindAgentsEdit, Group: "Agents Modal", Action: "Edit selected", Default: "e", Editable: true},
 	{ID: KeybindAgentsEditAlt, Group: "Agents Modal", Action: "Edit selected (alt)", Default: "p", Editable: true},
-	{ID: KeybindAgentsNew, Group: "Agents Modal", Action: "Create new agent", Default: "n", Editable: true},
 	{ID: KeybindAgentsFilterAll, Group: "Agents Modal", Action: "Filter all", Default: "0", Editable: true},
 	{ID: KeybindAgentsFilterPrimary, Group: "Agents Modal", Action: "Filter primary", Default: "1", Editable: true},
 	{ID: KeybindAgentsFilterSubagent, Group: "Agents Modal", Action: "Filter subagent", Default: "2", Editable: true},
+	{ID: KeybindAgentsProfileDefault, Group: "Agents Modal", Action: "Set selected profile as account default", Default: "d", Editable: true},
 
 	{ID: KeybindThemeJumpHomeAlt, Group: "Theme Modal", Action: "Jump home (alt)", Default: "g", Editable: true},
 	{ID: KeybindThemeJumpEndAlt, Group: "Theme Modal", Action: "Jump end (alt)", Default: "shift+g", Editable: true},
@@ -326,7 +324,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindEditorBackspace, Group: "Editors", Action: "Backspace", Default: "backspace", Editable: true},
 	{ID: KeybindEditorClear, Group: "Editors", Action: "Clear field", Default: "ctrl+u", Editable: true},
 	{ID: KeybindEditorSubmit, Group: "Editors", Action: "Submit/next", Default: "enter", Editable: true},
-	{ID: KeybindAgentsEditorSave, Group: "Editors", Action: "Save profile changes", Default: "ctrl+y", Editable: true},
+	{ID: KeybindAgentsEditorSave, Group: "Editors", Action: "Save agent model changes", Default: "ctrl+y", Editable: true},
 	{ID: KeybindAgentsEditorInsertNewline, Group: "Editors", Action: "Insert prompt newline", Default: "ctrl+j", Editable: true},
 
 	{ID: KeybindChatEscape, Group: "Chat", Action: "Escape / leave chat", Default: "esc", Editable: true},

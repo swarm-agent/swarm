@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -106,6 +107,7 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 	stream := client.Messages.NewStreaming(ctx, params, requestOptions...)
 	message := anthropicapi.Message{}
 	streamState := newAnthropicStreamState()
+	streamState.SetContext("anthropic", modelName)
 	for stream.Next() {
 		event := stream.Current()
 		if err := message.Accumulate(event); err != nil {
@@ -134,10 +136,40 @@ type anthropicStreamState struct {
 	thinkingByKey map[int64]string
 	thinkingOrder []int64
 	activeIndex   int64
+	providerID    string
+	model         string
+	toolCalls     map[int64]*anthropicToolCallConstruction
+}
+
+type anthropicToolCallConstruction struct {
+	callID       string
+	toolName     string
+	arguments    strings.Builder
+	started      bool
+	completed    bool
+	startedAt    int64
+	lastRecorded int64
 }
 
 func newAnthropicStreamState() *anthropicStreamState {
-	return &anthropicStreamState{activeIndex: -1, thinkingByKey: make(map[int64]string, 4)}
+	return &anthropicStreamState{
+		activeIndex:   -1,
+		providerID:    "anthropic",
+		thinkingByKey: make(map[int64]string, 4),
+		toolCalls:     make(map[int64]*anthropicToolCallConstruction, 4),
+	}
+}
+
+func (s *anthropicStreamState) SetContext(providerID, model string) {
+	if s == nil {
+		return
+	}
+	if providerID = strings.TrimSpace(providerID); providerID != "" {
+		s.providerID = providerID
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		s.model = model
+	}
 }
 
 func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEventUnion, onEvent func(provideriface.StreamEvent)) {
@@ -145,6 +177,10 @@ func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEvent
 		return
 	}
 	switch variant := event.AsAny().(type) {
+	case anthropicapi.MessageStartEvent:
+		if model := strings.TrimSpace(string(variant.Message.Model)); model != "" {
+			s.model = model
+		}
 	case anthropicapi.ContentBlockStartEvent:
 		s.activeIndex = variant.Index
 		switch block := variant.ContentBlock.AsAny().(type) {
@@ -155,6 +191,11 @@ func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEvent
 					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventReasoningSummaryDelta, Delta: next, DeltaMode: provideriface.StreamEventDeltaModeReplace, ReasoningKey: anthropicReasoningKey(variant.Index)})
 				}
 			}
+		case anthropicapi.ToolUseBlock:
+			call := s.toolCall(variant.Index)
+			call.callID = firstNonEmpty(strings.TrimSpace(block.ID), call.callID)
+			call.toolName = firstNonEmpty(strings.TrimSpace(block.Name), call.toolName)
+			s.emitToolCallStarted(variant.Index, call, "content_block_start", onEvent)
 		}
 	case anthropicapi.ContentBlockDeltaEvent:
 		if s.activeIndex < 0 {
@@ -169,6 +210,15 @@ func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEvent
 					onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: delta.Text})
 				}
 			}
+		case anthropicapi.InputJSONDelta:
+			call := s.toolCall(variant.Index)
+			s.emitToolCallStarted(variant.Index, call, "content_block_delta", onEvent)
+			if delta.PartialJSON != "" {
+				call.arguments.WriteString(delta.PartialJSON)
+				if onEvent != nil {
+					onEvent(s.toolCallEvent(provideriface.StreamEventToolCallArgumentsDelta, variant.Index, call, "content_block_delta", delta.PartialJSON))
+				}
+			}
 		case anthropicapi.ThinkingDelta:
 			if strings.TrimSpace(delta.Thinking) != "" {
 				next := s.appendThinking(variant.Index, delta.Thinking)
@@ -181,9 +231,80 @@ func (s *anthropicStreamState) HandleEvent(event anthropicapi.MessageStreamEvent
 			// transport verification metadata, not user-visible reasoning text.
 		}
 	case anthropicapi.ContentBlockStopEvent:
+		if call, ok := s.toolCalls[variant.Index]; ok && !call.completed {
+			s.emitToolCallStarted(variant.Index, call, "content_block_stop", onEvent)
+			call.completed = true
+			if onEvent != nil {
+				onEvent(s.toolCallEvent(provideriface.StreamEventToolCallCompleted, variant.Index, call, "content_block_stop", ""))
+			}
+		}
 		if variant.Index == s.activeIndex {
 			s.activeIndex = -1
 		}
+	}
+}
+
+func (s *anthropicStreamState) toolCall(index int64) *anthropicToolCallConstruction {
+	if s.toolCalls == nil {
+		s.toolCalls = make(map[int64]*anthropicToolCallConstruction, 4)
+	}
+	call := s.toolCalls[index]
+	if call == nil {
+		call = &anthropicToolCallConstruction{}
+		s.toolCalls[index] = call
+	}
+	return call
+}
+
+func (s *anthropicStreamState) emitToolCallStarted(index int64, call *anthropicToolCallConstruction, nativeEvent string, onEvent func(provideriface.StreamEvent)) {
+	if s == nil || call == nil || call.started || onEvent == nil {
+		return
+	}
+	call.started = true
+	onEvent(s.toolCallEvent(provideriface.StreamEventToolCallStarted, index, call, nativeEvent, ""))
+}
+
+func (s *anthropicStreamState) toolCallEvent(eventType provideriface.StreamEventType, index int64, call *anthropicToolCallConstruction, nativeEvent, argumentsDelta string) provideriface.StreamEvent {
+	now := time.Now().UnixMilli()
+	if now <= call.lastRecorded {
+		now = call.lastRecorded + 1
+	}
+	call.lastRecorded = now
+	if call.startedAt == 0 {
+		call.startedAt = now
+	}
+	toolCallIndex := int(index)
+	status := "building"
+	arguments := call.arguments.String()
+	if eventType == provideriface.StreamEventToolCallCompleted && strings.TrimSpace(arguments) == "" {
+		arguments = "{}"
+	}
+	if eventType == provideriface.StreamEventToolCallStarted {
+		status = "started"
+	} else if eventType == provideriface.StreamEventToolCallCompleted {
+		status = "completed"
+	}
+	metadata := map[string]any{
+		"provider_content_block_index": index,
+		"provider_event_type":          nativeEvent,
+		"provider_content_block_type":  "tool_use",
+	}
+	if eventType != provideriface.StreamEventToolCallCompleted {
+		arguments = ""
+	}
+	return provideriface.StreamEvent{
+		Type:             eventType,
+		ToolCallID:       call.callID,
+		ToolCallIndex:    &toolCallIndex,
+		ToolName:         call.toolName,
+		Arguments:        arguments,
+		ArgumentsDelta:   argumentsDelta,
+		ProviderID:       s.providerID,
+		Model:            s.model,
+		RecordedAtUnixMs: now,
+		StartedAtUnixMs:  call.startedAt,
+		Status:           status,
+		Metadata:         metadata,
 	}
 }
 
@@ -565,9 +686,11 @@ func validateAnthropicImagePayload(contract provideriface.SessionMediaContract, 
 	if strings.TrimSpace(contract.Hash) == "" || !strings.EqualFold(strings.TrimSpace(contract.ProviderID), "anthropic") || contract.ProviderSurface != anthropicMediaProviderSurface || contract.CredentialSurface != anthropicMediaCredentialSurface || contract.AdapterID != anthropicMediaAdapterID {
 		return provideriface.MediaContractCapability{}, errors.New("media contract does not match the active Anthropic API-key Messages surface")
 	}
-	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") || strings.TrimSpace(payload.FileType) != "" {
+	if !strings.EqualFold(strings.TrimSpace(payload.Modality), "image") {
 		return provideriface.MediaContractCapability{}, errors.New("anthropic media payload is not a native image input")
 	}
+	// FileType is durable upload metadata (for example, "png"), not a distinct
+	// Anthropic file input. MIME type remains the authority for native images.
 	mimeType := strings.ToLower(strings.TrimSpace(payload.MIMEType))
 	if !containsFold([]string{"image/gif", "image/jpeg", "image/png", "image/webp"}, mimeType) {
 		return provideriface.MediaContractCapability{}, errors.New("anthropic image MIME type is unsupported")
@@ -767,16 +890,18 @@ func anthropicMessageToResponse(message anthropicapi.Message) provideriface.Resp
 }
 
 func anthropicUsageToTokenUsage(usage anthropicapi.Usage) provideriface.TokenUsage {
-	usageRaw := map[string]any{
-		"input_tokens":                usage.InputTokens,
-		"output_tokens":               usage.OutputTokens,
-		"cache_creation_input_tokens": usage.CacheCreationInputTokens,
-		"cache_read_input_tokens":     usage.CacheReadInputTokens,
-		"service_tier":                strings.TrimSpace(string(usage.ServiceTier)),
-		"inference_geo":               strings.TrimSpace(usage.InferenceGeo),
-		"cache_creation":              cloneAnthropicRawJSONMap(usage.CacheCreation.RawJSON()),
-		"server_tool_use":             cloneAnthropicRawJSONMap(usage.ServerToolUse.RawJSON()),
+	usageRaw := cloneAnthropicRawJSONMap(usage.RawJSON())
+	if usageRaw == nil {
+		usageRaw = make(map[string]any, 8)
 	}
+	usageRaw["input_tokens"] = usage.InputTokens
+	usageRaw["output_tokens"] = usage.OutputTokens
+	usageRaw["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
+	usageRaw["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	usageRaw["service_tier"] = strings.TrimSpace(string(usage.ServiceTier))
+	usageRaw["inference_geo"] = strings.TrimSpace(usage.InferenceGeo)
+	usageRaw["cache_creation"] = cloneAnthropicRawJSONMap(usage.CacheCreation.RawJSON())
+	usageRaw["server_tool_use"] = cloneAnthropicRawJSONMap(usage.ServerToolUse.RawJSON())
 	return provideriface.TokenUsage{
 		InputTokens:      maxInt64(usage.InputTokens, 0),
 		OutputTokens:     maxInt64(usage.OutputTokens, 0),

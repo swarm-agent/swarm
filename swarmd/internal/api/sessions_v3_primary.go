@@ -60,11 +60,12 @@ type sessionsV3CreateRequest struct {
 }
 
 type sessionsV3ModelProfileInline struct {
-	Name      string                             `json:"name,omitempty"`
-	ModelMode string                             `json:"model_mode"`
-	Single    *pebblestore.ModelProfileSelection `json:"single,omitempty"`
-	Plan      *pebblestore.ModelProfileSelection `json:"plan,omitempty"`
-	Auto      *pebblestore.ModelProfileSelection `json:"auto,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Thinking    string `json:"thinking"`
+	ServiceTier string `json:"service_tier,omitempty"`
+	ContextMode string `json:"context_mode,omitempty"`
 }
 
 type sessionsV3ModelProfileChoice struct {
@@ -112,12 +113,6 @@ type sessionsV3CompactRequest struct {
 	Instructions    string `json:"instructions,omitempty"`
 }
 
-type sessionsV3ModeRequest struct {
-	Mode            string `json:"mode"`
-	ClientRequestID string `json:"client_request_id,omitempty"`
-	IdempotencyKey  string `json:"idempotency_key,omitempty"`
-}
-
 type sessionsV3AgentRequest struct {
 	AgentName       string `json:"agent_name"`
 	ClientRequestID string `json:"client_request_id,omitempty"`
@@ -137,7 +132,6 @@ type sessionsV3PreferenceRequest struct {
 type sessionsV3SettingsPatchRequest struct {
 	ClientRequestID string                       `json:"client_request_id"`
 	IfProjectionSeq *uint64                      `json:"if_projection_seq,omitempty"`
-	Mode            *string                      `json:"mode,omitempty"`
 	AgentName       *string                      `json:"agent_name,omitempty"`
 	Preference      *sessionsV3PreferenceRequest `json:"preference,omitempty"`
 }
@@ -291,7 +285,7 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			writeSessionNotFound(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated))
+		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session)))
 	case "archive":
 		s.handleSessionV3PrimaryArchive(w, r, principal, sessionID)
 	case "messages":
@@ -310,8 +304,6 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryCompact(w, r, principal, sessionID)
 	case "settings":
 		s.handleSessionV3PrimarySettings(w, r, principal, sessionID)
-	case "mode":
-		s.handleSessionV3PrimaryMode(w, r, principal, sessionID)
 	case "agent":
 		s.handleSessionV3PrimaryAgent(w, r, principal, sessionID)
 	case "preference":
@@ -389,7 +381,41 @@ func sessionsV3SystemSidechatID(parentSessionID, kind string) (string, string) {
 }
 
 func sessionsV3PlanSidechatPreference(parent pebblestore.SessionSnapshot) pebblestore.ModelPreference {
-	return parent.Preference
+	preference, _ := sessionsV3PlanSidechatSnapshotPreference(parent)
+	return preference
+}
+
+func sessionsV3PlanSidechatModelProfile(parent pebblestore.SessionSnapshot) *pebblestore.SessionModelProfileSnapshot {
+	if parent.ModelProfile == nil || parent.ModelProfile.Plan == nil {
+		return nil
+	}
+	profile := pebblestore.CloneSessionModelProfileSnapshot(parent.ModelProfile)
+	// The Plan sidechat is durably auto mode, so its executor-visible current
+	// slot must be the parent's immutable Plan selection. Retaining the parent's
+	// Action slot here would make the auto-mode executor silently run the parent
+	// Action model even though Session.Preference is bound to Plan.
+	profile.Action = *pebblestore.CloneModelProfileSelection(parent.ModelProfile.Plan)
+	profile.ActionFavoriteID = parent.ModelProfile.PlanFavoriteID
+	profile.ActionFavoriteName = parent.ModelProfile.PlanFavoriteName
+	return profile
+}
+
+func sessionsV3PlanSidechatSnapshotPreference(parent pebblestore.SessionSnapshot) (pebblestore.ModelPreference, bool) {
+	if parent.ModelProfile == nil || parent.ModelProfile.Plan == nil {
+		return pebblestore.ModelPreference{}, false
+	}
+	selection := parent.ModelProfile.Plan
+	if strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
+		return pebblestore.ModelPreference{}, false
+	}
+	return pebblestore.ModelPreference{
+		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),
+		Model:       strings.TrimSpace(selection.Model),
+		Thinking:    strings.TrimSpace(selection.Thinking),
+		ServiceTier: strings.TrimSpace(selection.ServiceTier),
+		ContextMode: strings.TrimSpace(selection.ContextMode),
+		UpdatedAt:   parent.ModelProfile.AppliedAt,
+	}, true
 }
 
 func sessionsV3SidechatInt64(value any) int64 {
@@ -494,14 +520,20 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	}
 	var planPreference pebblestore.ModelPreference
 	if kind == "plan" {
-		// The parent session's durable preference is the selected model setup and
-		// therefore the authority for Plan. Do not infer a separate Plan model
-		// from the agent snapshot or re-resolve a model profile here.
-		planPreference = sessionsV3PlanSidechatPreference(parent)
+		// Plan sidechats are bound to the parent's immutable session snapshot.
+		// Never inherit the mutable current preference or re-resolve account
+		// settings, because either can drift after session creation.
+		var planEnabled bool
+		planPreference, planEnabled = sessionsV3PlanSidechatSnapshotPreference(parent)
+		if !planEnabled {
+			writeError(w, http.StatusConflict, errors.New("Plan is disabled for the parent session model snapshot"))
+			return
+		}
 		profile.Provider = planPreference.Provider
 		profile.Model = planPreference.Model
 		profile.Thinking = planPreference.Thinking
-		profile.PlanServiceTier = planPreference.ServiceTier
+		profile.AutoServiceTier = planPreference.ServiceTier
+		profile.ContextMode = planPreference.ContextMode
 		contextJSON, marshalErr := json.Marshal(planContext)
 		if marshalErr != nil {
 			writeError(w, http.StatusConflict, fmt.Errorf("encode pending plan context: %w", marshalErr))
@@ -511,7 +543,10 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	metadata := sessionsV3SystemSidechatMetadata(parentSessionID, kind, profile)
+	var modelProfile *pebblestore.SessionModelProfileSnapshot
 	if kind == "plan" {
+		modelProfile = sessionsV3PlanSidechatModelProfile(parent)
+		metadata = sessionsV3ModelProfileMetadata(metadata, modelProfile)
 		metadata["plan_permission_id"], metadata["plan_id"], metadata["plan_revision"] = req.PermissionID, req.PlanID, req.PlanRevision
 		metadata["plan_context_source"] = "permission_projection"
 	}
@@ -533,15 +568,25 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		next := existing
 		next.Metadata = metadata
 		next.Preference = preference
+		next.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(modelProfile)
 		next.Mode = sessionruntime.ModeAuto
 		next.UpdatedAt = time.Now().UnixMilli()
 		updateKey := fmt.Sprintf("system-sidechat-bind:%s:%s:%d", kind, req.PermissionID, req.PlanRevision)
-		updateHash, hashErr := sessionsV3UpdatePayloadHash(sidecarID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"metadata": metadata, "preference": preference})
+		updateKind := sessionruntime.SessionMutationUpdateMetadata
+		if kind == "plan" {
+			updateKind = sessionruntime.SessionMutationUpdateModelProfile
+		}
+		updateHash, hashErr := sessionsV3UpdatePayloadHash(sidecarID, updateKind, map[string]any{"metadata": metadata, "preference": preference, "model_profile": modelProfile})
 		if hashErr != nil {
 			writeError(w, http.StatusBadRequest, hashErr)
 			return
 		}
-		updateResult, updateErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: updateKey, IdempotencyKey: updateKey, PayloadHash: updateHash, RequestHash: updateHash, Kind: sessionruntime.SessionMutationUpdateMetadata, Session: &next, NowUnixMs: next.UpdatedAt})
+		updateEventPayload, marshalErr := json.Marshal(map[string]any{"session_id": sidecarID, "metadata": metadata, "preference": preference, "model_profile": modelProfile, "updated_at": next.UpdatedAt})
+		if marshalErr != nil {
+			writeError(w, http.StatusBadRequest, marshalErr)
+			return
+		}
+		updateResult, updateErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: updateKey, IdempotencyKey: updateKey, PayloadHash: updateHash, RequestHash: updateHash, Kind: updateKind, EventPayload: updateEventPayload, Session: &next, NowUnixMs: next.UpdatedAt})
 		if updateErr != nil {
 			writeError(w, http.StatusBadRequest, updateErr)
 			return
@@ -549,7 +594,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": updateResult.Replayed})
 		return
 	}
-	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, Metadata: metadata, CreatedAt: now, UpdatedAt: now}
+	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(modelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now}
 	payload, _ := json.Marshal(struct {
 		Parent, Permission, Plan string
 		Revision                 int64
@@ -618,6 +663,9 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	}
 	now := time.Now().UnixMilli()
 	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
+	if err == nil && req.ModelProfile == nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) {
+		modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
+	}
 	if err != nil {
 		writeModelProfileError(w, err)
 		return
@@ -1214,6 +1262,21 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	}
 }
 
+func cloneSessionsV3PlanDocument(doc *pebblestore.SessionPlanDocument) (*pebblestore.SessionPlanDocument, error) {
+	if doc == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	var clone pebblestore.SessionPlanDocument
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return nil, err
+	}
+	return &clone, nil
+}
+
 func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID string, req sessionsV3MessageRequest) (sessionruntime.SessionMutationResult, *sessionV3ExecutorJob, error) {
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
@@ -1256,8 +1319,57 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	var followupEpoch *pebblestore.BeginExecutionEpochResult
+	var reactivatedPlanSave *sessionruntime.PreparedPlanSave
 	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
 		return sessionruntime.SessionMutationResult{}, nil, planErr
+	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateInProgress) && strings.TrimSpace(plan.Document.ExecutionState.CurrentRunID) != "" && strings.TrimSpace(plan.Document.ExecutionState.CurrentRunID) != runIntent.RunID {
+		priorRun, priorRunOK, priorRunErr := s.sessions.GetV3SessionRunIntent(sessionID, strings.TrimSpace(plan.Document.ExecutionState.CurrentRunID))
+		if priorRunErr != nil {
+			return sessionruntime.SessionMutationResult{}, nil, priorRunErr
+		}
+		if priorRunOK && priorRun.Status != sessionruntime.RunIntentPendingExecutor && priorRun.Status != sessionruntime.RunIntentRunning {
+			doc, cloneErr := cloneSessionsV3PlanDocument(plan.Document)
+			if cloneErr != nil {
+				return sessionruntime.SessionMutationResult{}, nil, cloneErr
+			}
+			if _, changed, rebindErr := sessionruntime.RebindInProgressPlanForUserMessage(doc, runIntent.RunID, sessionID, sessionID, now); rebindErr != nil {
+				return sessionruntime.SessionMutationResult{}, nil, rebindErr
+			} else if changed {
+				prepared, prepareErr := s.sessions.PreparePlanSaveWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "Transferred in-progress checkpoint to user message run", UpdateScope: strings.TrimSpace(doc.ActiveCheckpointID), UpdateKind: "rebind_in_progress_user_message", RevisionKind: sessionruntime.PlanRevisionKindExecution, Checkpoint: true, Document: doc})
+				if prepareErr != nil {
+					return sessionruntime.SessionMutationResult{}, nil, prepareErr
+				}
+				reactivatedPlanSave = &prepared
+				runIntent.PlanID = strings.TrimSpace(plan.ID)
+				runIntent.CheckpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+				runIntent.AttemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
+				runIntent.RunSessionID = sessionID
+				runIntent.ParentSessionID = sessionID
+				runIntent.ResumeContext = true
+				markSessionsV3CheckpointResumeRouting(&message, runIntent.RunID, doc.ActiveCheckpointID, "rebind_in_progress_user_message")
+			}
+		}
+	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStatePaused) {
+		doc, cloneErr := cloneSessionsV3PlanDocument(plan.Document)
+		if cloneErr != nil {
+			return sessionruntime.SessionMutationResult{}, nil, cloneErr
+		}
+		if _, changed, reactivateErr := sessionruntime.ReactivatePausedPlanForUserMessage(doc, runIntent.RunID, sessionID, sessionID, now); reactivateErr != nil {
+			return sessionruntime.SessionMutationResult{}, nil, reactivateErr
+		} else if changed {
+			prepared, prepareErr := s.sessions.PreparePlanSaveWithMetadata(sessionID, plan.ID, plan.Title, plan.Plan, plan.Status, plan.ApprovalState, true, sessionruntime.PlanSaveMetadata{UpdateSummary: "Reactivated paused checkpoint for user message", UpdateScope: strings.TrimSpace(doc.ActiveCheckpointID), UpdateKind: "resume_paused_user_message", RevisionKind: sessionruntime.PlanRevisionKindExecution, Checkpoint: true, Document: doc})
+			if prepareErr != nil {
+				return sessionruntime.SessionMutationResult{}, nil, prepareErr
+			}
+			reactivatedPlanSave = &prepared
+			runIntent.PlanID = strings.TrimSpace(plan.ID)
+			runIntent.CheckpointID = strings.TrimSpace(doc.ActiveCheckpointID)
+			runIntent.AttemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
+			runIntent.RunSessionID = sessionID
+			runIntent.ParentSessionID = sessionID
+			runIntent.ResumeContext = true
+			markSessionsV3CheckpointResumeRouting(&message, runIntent.RunID, doc.ActiveCheckpointID, "resume_paused_user_message")
+		}
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
 		epochResult, epochErr := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
 			SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
@@ -1289,7 +1401,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		}
 		result = sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: epochResult.TriggerEvent.Seq, FirstSeq: epochResult.TriggerEvent.Seq, LastSeq: epochResult.TriggerEvent.Seq, EventIDs: []string{epochResult.TriggerEvent.ID}, PayloadHash: payloadHash, Event: *epochResult.TriggerEvent, Message: epochResult.TriggerMessage, RunIntent: &intent, Projection: epochResult.Projection, RealtimeOutbox: epochResult.TriggerOutbox, Replayed: epochResult.Replayed}
 	} else {
-		result, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		mutation := sessionruntime.SessionMutationInput{
 			SessionID:       sessionID,
 			UserID:          principal.UserID,
 			AccountScopeID:  principal.AccountScopeID,
@@ -1301,15 +1413,20 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 			Message:         &message,
 			RunIntent:       runIntent,
 			NowUnixMs:       now,
-		})
+		}
+		if reactivatedPlanSave != nil {
+			prepared := *reactivatedPlanSave
+			mutation.PlanSave = &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, ArchivedRevision: prepared.ArchivedRevision, Activate: prepared.Activate, ExpectedParentVersion: prepared.Plan.ParentRevision}
+		}
+		result, err = s.applySessionV3PrimaryMutation(mutation)
 	}
 	if err != nil {
 		return result, nil, err
 	}
 	var enqueueJob *sessionV3ExecutorJob
 	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
-		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID}
-		if checkpointJob, ok, err := s.sessionsV3ActiveCheckpointMessageRunJob(principal, sessionID, result.RunIntent.RunID); err != nil {
+		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID, EpochID: result.RunIntent.EpochID}
+		if checkpointJob, ok, err := s.sessionsV3ActiveCheckpointMessageRunJob(principal, sessionID, result.RunIntent.RunID, result.RunIntent.EpochID); err != nil {
 			return result, nil, err
 		} else if ok {
 			enqueueJob = &checkpointJob
@@ -1318,8 +1435,8 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	return result, enqueueJob, nil
 }
 
-func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID string) (sessionV3ExecutorJob, bool, error) {
-	job := sessionV3ExecutorJob{Principal: principal, SessionID: strings.TrimSpace(sessionID), RunID: strings.TrimSpace(runID)}
+func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID, epochID string) (sessionV3ExecutorJob, bool, error) {
+	job := sessionV3ExecutorJob{Principal: principal, SessionID: strings.TrimSpace(sessionID), RunID: strings.TrimSpace(runID), EpochID: strings.TrimSpace(epochID)}
 	if s == nil || s.sessions == nil || job.SessionID == "" || job.RunID == "" {
 		return job, false, nil
 	}
@@ -1337,7 +1454,7 @@ func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Prin
 	if !strings.EqualFold(strings.TrimSpace(doc.ExecutionPolicy.Shape), sessionruntime.PlanExecutionShapeCheckpointed) {
 		return job, false, nil
 	}
-	if doc.ExecutionState == nil || strings.TrimSpace(doc.ExecutionState.LastCheckpointID) == "" {
+	if doc.ExecutionState == nil {
 		return job, false, nil
 	}
 	stateStatus := strings.TrimSpace(doc.ExecutionState.Status)
@@ -1365,18 +1482,19 @@ func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Prin
 	}
 	if activeRun, ok, err := s.sessions.GetSessionActiveRunIntent(job.SessionID); err != nil {
 		return job, false, err
-	} else if ok && strings.TrimSpace(activeRun.RunID) != "" && strings.TrimSpace(activeRun.RunID) != job.RunID {
-		switch strings.TrimSpace(activeRun.Status) {
-		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
-			return job, false, nil
+	} else if ok {
+		if strings.TrimSpace(activeRun.RunID) != "" && strings.TrimSpace(activeRun.RunID) != job.RunID {
+			switch strings.TrimSpace(activeRun.Status) {
+			case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
+				return job, false, nil
+			}
+		} else {
+			job.ResumeContext = activeRun.ResumeContext
 		}
 	}
 	job.PlanID = strings.TrimSpace(plan.ID)
 	job.CheckpointID = checkpointID
 	job.AttemptID = strings.TrimSpace(checkpoint.AttemptID)
-	if job.AttemptID == "" && doc.ExecutionState != nil {
-		job.AttemptID = strings.TrimSpace(doc.ExecutionState.ActiveAttemptID)
-	}
 	job.ParentSessionID = job.SessionID
 	if doc.ExecutionState != nil && strings.TrimSpace(doc.ExecutionState.ParentSessionID) != "" {
 		job.ParentSessionID = strings.TrimSpace(doc.ExecutionState.ParentSessionID)
@@ -1447,89 +1565,6 @@ func (s *Server) rejectSystemSidechatMutation(w http.ResponseWriter, session peb
 	}
 	writeError(w, http.StatusConflict, errors.New("reserved system sidechat settings, mode, agent, and plan lifecycle are parent-owned and locked"))
 	return true
-}
-
-func (s *Server) handleSessionV3PrimaryMode(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	var req sessionsV3ModeRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	clientRequestID, ok := sessionsV3MutationClientRequestID(w, r, req.ClientRequestID, req.IdempotencyKey)
-	if !ok {
-		return
-	}
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if !sessionruntime.IsValidMode(mode) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", req.Mode))
-		return
-	}
-	mode = sessionruntime.NormalizeMode(mode)
-	session, found, err := s.requireSessionV3Access(principal, sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if !found {
-		writeSessionNotFound(w)
-		return
-	}
-	if s.rejectSystemSidechatMutation(w, session) {
-		return
-	}
-	next := session
-	transition, err := s.resolveSessionsV3ModeTransition(session, mode)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolve %s model policy: %w", mode, err))
-		return
-	}
-	next.Mode = mode
-	next.Preference = transition.Preference
-	next.Metadata = cloneSessionsV3Metadata(next.Metadata)
-	next.Metadata["agent_profile"] = cloneSessionsV3AgentProfile(transition.ActiveProfile)
-	next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-	next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-	next.UpdatedAt = time.Now().UnixMilli()
-	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMode, map[string]any{"mode": mode})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	eventPayload, err := json.Marshal(map[string]any{
-		"session_id": sessionID, "mode": mode, "updated_at": next.UpdatedAt,
-		"preference": transition.Preference, "context_window": transition.ContextWindow, "max_output_tokens": transition.MaxOutputTokens,
-		"agent_model_policy": transition.AgentModelPolicy,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          principal.UserID,
-		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationUpdateMode,
-		EventPayload:    eventPayload,
-		Session:         &next,
-		NowUnixMs:       next.UpdatedAt,
-	})
-	if err != nil {
-		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
-			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "conflict": result.Conflict})
-			return
-		}
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, s.sessionV3ModeMutationResponseWithPolicy(next, mode, &result))
 }
 
 func (s *Server) handleSessionV3PrimaryAgent(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -1626,7 +1661,7 @@ func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required"))
 		return
 	}
-	if req.Mode == nil && req.AgentName == nil && req.Preference == nil {
+	if req.AgentName == nil && req.Preference == nil {
 		writeError(w, http.StatusBadRequest, errors.New("at least one setting field is required"))
 		return
 	}
@@ -1655,31 +1690,6 @@ func (s *Server) handleSessionV3PrimarySettings(w http.ResponseWriter, r *http.R
 		payload["resolved_agent_name"] = resolvedAgent.ResolvedName
 		payload["agent_mode"] = resolvedAgent.Mode
 		payload["runtime_mode"] = resolvedAgent.RuntimeMode
-		payload["metadata"] = next.Metadata
-	}
-	if req.Mode != nil {
-		mode := strings.ToLower(strings.TrimSpace(*req.Mode))
-		if !sessionruntime.IsValidMode(mode) {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid mode %q", *req.Mode))
-			return
-		}
-		mode = sessionruntime.NormalizeMode(mode)
-		transition, resolveErr := s.resolveSessionsV3ModeTransition(next, mode)
-		if resolveErr != nil {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("resolve %s model policy: %w", mode, resolveErr))
-			return
-		}
-		next.Mode = mode
-		next.Preference = transition.Preference
-		next.Metadata = cloneSessionsV3Metadata(next.Metadata)
-		next.Metadata["agent_profile"] = cloneSessionsV3AgentProfile(transition.ActiveProfile)
-		next.Metadata["agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-		next.Metadata["resolved_agent_name"] = strings.TrimSpace(transition.ActiveProfile.Name)
-		payload["mode"] = mode
-		payload["preference"] = transition.Preference
-		payload["context_window"] = transition.ContextWindow
-		payload["max_output_tokens"] = transition.MaxOutputTokens
-		payload["agent_model_policy"] = transition.AgentModelPolicy
 		payload["metadata"] = next.Metadata
 	}
 	if req.Preference != nil {
@@ -1909,12 +1919,7 @@ func (s *Server) handleSessionV3PrimaryTitle(w http.ResponseWriter, r *http.Requ
 	}
 	next := session
 	next.Title = title
-	next.Metadata = cloneSessionsV3Metadata(session.Metadata)
-	if next.Metadata == nil {
-		next.Metadata = map[string]any{}
-	}
-	next.Metadata["title_locked"] = true
-	next.Metadata["title_source"] = "manual"
+	next.Metadata = authoritativeSessionTitleMetadata(session.Metadata, "manual")
 	next.UpdatedAt = time.Now().UnixMilli()
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateTitle, map[string]any{"title": title, "metadata": next.Metadata})
 	if err != nil {
@@ -2576,35 +2581,6 @@ func (s *Server) requireArchivedSessionV3Access(principal identity.Principal, se
 	return session, true, nil
 }
 
-func sessionV3ModeMutationResponse(sessionID, mode string, mutation *sessionruntime.SessionMutationResult) map[string]any {
-	response := map[string]any{
-		"ok":              true,
-		"session_id":      sessionID,
-		"mode":            mode,
-		"mutation":        nil,
-		"realtime_outbox": nil,
-	}
-	if mutation != nil {
-		response["mutation"] = sessionV3MutationResultResponse(*mutation)
-		response["realtime_outbox"] = mutation.RealtimeOutbox
-	}
-	return response
-}
-
-func (s *Server) sessionV3ModeMutationResponseWithPolicy(session pebblestore.SessionSnapshot, mode string, mutation *sessionruntime.SessionMutationResult) map[string]any {
-	response := sessionV3ModeMutationResponse(session.ID, mode, mutation)
-	preference := normalizeSessionsV3ModelPreference(session.Preference)
-	agentModelPolicy := s.sessionsV3AgentModelPolicy(session, preference, 0, 0)
-	if agentModelPolicy.Locked {
-		preference = agentModelPolicy.Preference
-		response["context_window"] = agentModelPolicy.ContextWindow
-		response["max_output_tokens"] = agentModelPolicy.MaxOutputTokens
-	}
-	response["preference"] = preference
-	response["agent_model_policy"] = agentModelPolicy
-	return response
-}
-
 func (s *Server) validateSessionsV3PrimaryStopTarget(principal identity.Principal, sessionID, targetSwarmID string) (bool, error) {
 	session, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil || !ok {
@@ -2897,10 +2873,10 @@ func sessionV3CreateResultResponse(result sessionruntime.SessionMutationResult) 
 	}, nil
 }
 
-func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession) map[string]any {
+func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession, fields gitStatusResponseFields) map[string]any {
 	response := map[string]any{
 		"ok":                       true,
-		"session":                  hydrated.Session,
+		"session":                  hydratedSessionSummaryResponse(hydrated.Session, fields),
 		"projection":               hydrated.Projection,
 		"messages":                 hydrated.Messages,
 		"events":                   hydrated.Events,
@@ -3222,6 +3198,9 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 	}
 	if strings.TrimSpace(binding.AccessMode) != pebblestore.TopologyWorkspaceBindingAccessModeReadWrite || !binding.Writable {
 		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding must be read_write and writable")
+	}
+	if strings.TrimSpace(binding.MaterializationKind) != pebblestore.TopologyWorkspaceBindingMaterializationSource {
+		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding must be a local source materialization")
 	}
 	if strings.TrimSpace(binding.DestinationRuntimeSwarmID) != swarmID || strings.TrimSpace(binding.DestinationAuthorityHostSwarmID) != swarmID {
 		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary workspace binding does not match selected self authority")

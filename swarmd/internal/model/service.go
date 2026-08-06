@@ -230,6 +230,11 @@ func normalizeServiceTierForProvider(providerID, serviceTier string) string {
 			return ""
 		}
 		return serviceTier
+	case "google":
+		if serviceTier == "fast" || serviceTier == "priority" {
+			return serviceTier
+		}
+		return ""
 	case "codex", "fireworks", "openai", "openrouter":
 		return serviceTier
 	default:
@@ -271,7 +276,7 @@ func serviceTierListedForModel(serviceTier string, record pebblestore.ModelCatal
 	// providers (Anthropic) expose it only as provider-specific mapping metadata,
 	// not as a normal serving tier in service_tiers.
 	for _, mapping := range record.ServiceTierMappings {
-		if normalizeServiceTier(mapping.Tier) == serviceTier || normalizeServiceTier(mapping.SwarmSetting) == serviceTier {
+		if normalizeServiceTier(mapping.Tier) == serviceTier {
 			return true
 		}
 	}
@@ -425,6 +430,13 @@ func (s *Service) RecommendedCatalogDefaults(providerID string) (pebblestore.Mod
 		return pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, pebblestore.ModelCatalogRecord{}, false, nil
 	}
 	return s.catalog.RecommendedDefaults(providerID)
+}
+
+func (s *Service) RecommendedCatalogRoleDefaults(providerID string, roles ...string) (map[string]pebblestore.ModelCatalogRecord, bool, error) {
+	if s.catalog == nil {
+		return nil, false, nil
+	}
+	return s.catalog.RecommendedRoleDefaults(providerID, roles...)
 }
 
 func (s *Service) RefreshCatalog(ctx context.Context) (CatalogRefreshResult, error) {

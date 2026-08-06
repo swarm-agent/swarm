@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { defaultModelThinking, displayModelName, modelAllowedByProviderPreset, modelServiceTierOptions, modelThinkingOptions, normalizeModelID, normalizeModelServiceTier, normalizeProviderID, supportsModelServiceTier } from './model-options'
+import { defaultModelThinking, displayModelName, modelAllowedByProviderPreset, modelOptionGroupKey, modelOptionRouteLabel, modelServiceTierOptions, modelThinkingOptions, modelUpstreamFamily, normalizeModelID, normalizeModelServiceTier, normalizeProviderID, supportsModelServiceTier } from './model-options'
 
 test('displayModelName strips Fireworks account model prefix', () => {
   assert.equal(displayModelName('fireworks', 'accounts/fireworks/models/kimi-k2p6', ''), 'kimi-k2p6')
@@ -56,6 +56,28 @@ test('Codex service tier options come from catalog tiers and keep priority disti
   assert.equal(supportsModelServiceTier('codex', 'gpt-5.5', [], 'fast'), false)
 })
 
+test('Google service tier options preserve catalog-backed priority selection', () => {
+  assert.deepEqual(modelServiceTierOptions('google', 'gemini-3.1-pro-preview', {
+    serviceTiers: ['standard', 'priority', 'fast', 'batch', 'flex'],
+    serviceTierMappings: [
+      { tier: 'standard', swarm_setting: 'off', provider_parameter: 'service_tier', provider_value: '' },
+      { tier: 'priority', swarm_setting: 'fast', provider_parameter: 'service_tier', provider_value: 'priority' },
+    ],
+  }), [
+    { label: 'Off / standard', value: '' },
+    { label: 'Priority', value: 'priority' },
+    { label: 'Fast', value: 'fast' },
+  ])
+  assert.equal(normalizeModelServiceTier('google', 'priority'), 'priority')
+  assert.equal(normalizeModelServiceTier('google', 'fast'), 'fast')
+  assert.equal(normalizeModelServiceTier('google', 'batch'), '')
+  assert.equal(normalizeModelServiceTier('google', 'flex'), '')
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'priority'], 'priority'), true)
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'fast'], 'fast'), true)
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'priority', 'fast', 'batch', 'flex'], 'batch'), false)
+  assert.equal(supportsModelServiceTier('google', 'gemini-3.1-pro-preview', ['standard', 'priority', 'fast', 'batch', 'flex'], 'flex'), false)
+})
+
 test('OpenAI API provider stays distinct from Codex and exposes catalog models', () => {
   assert.equal(normalizeProviderID('openai'), 'openai')
   assert.equal(normalizeModelID('openai', 'gpt-5.5'), 'gpt-5.5')
@@ -70,6 +92,18 @@ test('OpenAI API provider stays distinct from Codex and exposes catalog models',
   assert.equal(normalizeModelServiceTier('openai', 'batch'), '')
   assert.equal(supportsModelServiceTier('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch'], 'priority'), true)
   assert.equal(supportsModelServiceTier('openai', 'gpt-5.5', ['standard', 'priority', 'flex', 'batch'], 'batch'), false)
+})
+
+test('OpenRouter upstream families remain routed and distinct from direct providers', () => {
+  const routedGoogle = { provider: 'openrouter', model: 'google/gemini-3.1-pro', upstreamFamily: 'google' }
+  const directGoogle = { provider: 'google', model: 'gemini-3.1-pro', upstreamFamily: '' }
+  assert.equal(modelUpstreamFamily(routedGoogle.provider, routedGoogle.model), 'google')
+  assert.equal(modelUpstreamFamily(directGoogle.provider, directGoogle.model), '')
+  assert.equal(modelOptionRouteLabel(routedGoogle), 'OpenRouter → Google')
+  assert.equal(modelOptionRouteLabel(directGoogle), 'google')
+  assert.equal(modelOptionGroupKey(routedGoogle), 'openrouter::upstream::google')
+  assert.equal(modelOptionGroupKey(directGoogle), 'google::direct')
+  assert.notEqual(modelOptionGroupKey(routedGoogle), modelOptionGroupKey(directGoogle))
 })
 
 test('Codex catalog models are not filtered by the local sorting presets', () => {
@@ -95,13 +129,33 @@ test('GLM 5.2 thinking options come directly from catalog metadata', () => {
 })
 
 
-test('Anthropic service tier options expose priority but hide asynchronous batch', () => {
-  assert.deepEqual(modelServiceTierOptions('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch']), [
+test('Anthropic service tier options expose only explicit snapshot tiers', () => {
+  const priorityOnly = {
+    serviceTiers: ['standard', 'priority', 'batch'],
+    serviceTierMappings: [
+      { tier: 'standard', swarm_setting: 'off', provider_parameter: 'service_tier', provider_value: 'standard_only' },
+      { tier: 'priority', swarm_setting: 'fast', provider_parameter: 'service_tier', provider_value: 'auto' },
+    ],
+  }
+  assert.deepEqual(modelServiceTierOptions('anthropic', 'claude-sonnet-4-6', priorityOnly), [
     { label: 'Off / standard', value: '' },
     { label: 'Priority', value: 'priority' },
   ])
+  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-4-6', priorityOnly, 'fast'), false)
+
+  const opus48 = {
+    ...priorityOnly,
+    serviceTierMappings: [
+      ...priorityOnly.serviceTierMappings,
+      { tier: 'fast', swarm_setting: '', provider_parameter: 'speed', provider_value: 'fast' },
+    ],
+  }
+  assert.deepEqual(modelServiceTierOptions('anthropic', 'claude-opus-4-8', opus48), [
+    { label: 'Off / standard', value: '' },
+    { label: 'Priority', value: 'priority' },
+    { label: 'Fast', value: 'fast' },
+  ])
+  assert.equal(supportsModelServiceTier('anthropic', 'claude-opus-4-8', opus48, 'fast'), true)
   assert.equal(normalizeModelServiceTier('anthropic', 'priority'), 'priority')
   assert.equal(normalizeModelServiceTier('anthropic', 'batch'), '')
-  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch'], 'priority'), true)
-  assert.equal(supportsModelServiceTier('anthropic', 'claude-sonnet-5', ['standard', 'priority', 'batch'], 'batch'), false)
 })

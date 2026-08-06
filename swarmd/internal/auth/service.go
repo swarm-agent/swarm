@@ -10,9 +10,10 @@ import (
 )
 
 type Service struct {
-	authStore *pebblestore.AuthStore
-	events    *pebblestore.EventLog
-	publish   func(pebblestore.EventEnvelope)
+	authStore        *pebblestore.AuthStore
+	events           *pebblestore.EventLog
+	publish          func(pebblestore.EventEnvelope)
+	credentialChange func(string, pebblestore.EventEnvelope)
 }
 
 var errAccountScopeRequired = errors.New("account scope is required")
@@ -68,6 +69,16 @@ func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
 		return
 	}
 	s.publish = publish
+}
+
+// SetCredentialChangePublisher configures the canonical downstream signal for
+// committed provider credential changes. The event contains only redacted
+// credential status metadata from the durable auth event log.
+func (s *Service) SetCredentialChangePublisher(publish func(string, pebblestore.EventEnvelope)) {
+	if s == nil {
+		return
+	}
+	s.credentialChange = publish
 }
 
 type AutoDefaultsStatus struct {
@@ -230,10 +241,23 @@ func (s *Service) ImportCredentials(bundlePassword, vaultPassword string, payloa
 }
 
 func (s *Service) ImportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword string, payload []byte) (CredentialImportResult, error) {
+	accountScopeID, err := requireAccountScopeID(accountScopeID)
+	if err != nil {
+		return CredentialImportResult{}, err
+	}
 	if s == nil || s.authStore == nil {
 		return CredentialImportResult{}, errors.New("auth store is not configured")
 	}
-	return s.authStore.ImportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword, payload)
+	result, err := s.authStore.ImportCredentialsForAccount(accountScopeID, bundlePassword, vaultPassword, payload)
+	if err != nil {
+		return CredentialImportResult{}, err
+	}
+	if result.Imported > 0 {
+		if _, eventErr := s.appendAuthEvent(accountScopeID, "auth.credentials.imported", "credentials", result); eventErr != nil {
+			return CredentialImportResult{}, eventErr
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) SetCodexKey(rawKey string) (CodexStatus, *pebblestore.EventEnvelope, error) {
@@ -269,7 +293,7 @@ func (s *Service) SetCodexOAuthForAccount(accountScopeID, accessToken, refreshTo
 	}
 
 	status := s.statusFromRecord(record)
-	env, err := s.appendCodexUpdatedEvent(status)
+	env, err := s.appendCodexUpdatedEvent(accountScopeID, status)
 	if err != nil {
 		return CodexStatus{}, nil, err
 	}
@@ -391,7 +415,7 @@ func (s *Service) UpsertCredential(input CredentialUpsertInput) (CredentialStatu
 	isActive := ok && active.ID == record.ID
 	status := s.credentialStatusFromRecord(record, isActive)
 
-	env, err := s.appendCredentialEvent("auth.credential.upserted", status)
+	env, err := s.appendCredentialEvent(accountScopeID, "auth.credential.upserted", status)
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
@@ -413,7 +437,7 @@ func (s *Service) SetActiveCredentialForAccount(accountScopeID, provider, creden
 		return CredentialStatus{}, nil, err
 	}
 	status := s.credentialStatusFromRecord(record, true)
-	env, err := s.appendCredentialEvent("auth.credential.activated", status)
+	env, err := s.appendCredentialEvent(accountScopeID, "auth.credential.activated", status)
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
@@ -438,7 +462,7 @@ func (s *Service) UpdateCredentialConnectionForAccount(accountScopeID, provider,
 		return CredentialStatus{}, nil, err
 	}
 	status := s.credentialStatusFromRecord(record, ok && active.ID == record.ID)
-	env, err := s.appendCredentialEvent("auth.credential.connection.updated", status)
+	env, err := s.appendCredentialEvent(accountScopeID, "auth.credential.connection.updated", status)
 	if err != nil {
 		return CredentialStatus{}, nil, err
 	}
@@ -467,7 +491,7 @@ func (s *Service) DeleteCredentialForAccount(accountScopeID, provider, credentia
 		"provider": provider,
 		"id":       credentialID,
 	}
-	env, err := s.appendAuthEvent("auth.credential.deleted", provider, payload)
+	env, err := s.appendAuthEvent(accountScopeID, "auth.credential.deleted", provider, payload)
 	if err != nil {
 		return false, nil, err
 	}
@@ -563,15 +587,15 @@ func connectionRecordFromStatus(status *ConnectionStatus) *pebblestore.AuthCrede
 	}
 }
 
-func (s *Service) appendCodexUpdatedEvent(status CodexStatus) (*pebblestore.EventEnvelope, error) {
-	return s.appendAuthEvent("auth.codex.updated", "codex", status)
+func (s *Service) appendCodexUpdatedEvent(accountScopeID string, status CodexStatus) (*pebblestore.EventEnvelope, error) {
+	return s.appendAuthEvent(accountScopeID, "auth.codex.updated", "codex", status)
 }
 
-func (s *Service) appendCredentialEvent(eventType string, status CredentialStatus) (*pebblestore.EventEnvelope, error) {
-	return s.appendAuthEvent(eventType, status.Provider, status)
+func (s *Service) appendCredentialEvent(accountScopeID, eventType string, status CredentialStatus) (*pebblestore.EventEnvelope, error) {
+	return s.appendAuthEvent(accountScopeID, eventType, status.Provider, status)
 }
 
-func (s *Service) appendAuthEvent(eventType, entity string, payloadObj any) (*pebblestore.EventEnvelope, error) {
+func (s *Service) appendAuthEvent(accountScopeID, eventType, entity string, payloadObj any) (*pebblestore.EventEnvelope, error) {
 	payload, err := json.Marshal(payloadObj)
 	if err != nil {
 		return nil, fmt.Errorf("marshal auth event payload: %w", err)
@@ -582,6 +606,9 @@ func (s *Service) appendAuthEvent(eventType, entity string, payloadObj any) (*pe
 	}
 	if s.publish != nil {
 		s.publish(env)
+	}
+	if s.credentialChange != nil {
+		s.credentialChange(accountScopeID, env)
 	}
 	return &env, nil
 }
@@ -761,7 +788,7 @@ func (s *Service) applyInferredCapabilityTags(accountScopeID, provider, credenti
 	}
 	status := s.credentialStatusFromRecord(updated, activeSet && active.ID == updated.ID)
 	if s.events != nil {
-		_, _ = s.appendCredentialEvent("auth.credential.capabilities.updated", status)
+		_, _ = s.appendCredentialEvent(accountScopeID, "auth.credential.capabilities.updated", status)
 	}
 }
 

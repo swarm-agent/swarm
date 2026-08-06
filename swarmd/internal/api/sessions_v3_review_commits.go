@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,11 +12,8 @@ import (
 	"sync"
 	"time"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/gitstatus"
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/permission"
-	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	"swarm/packages/swarmd/internal/sessionreview"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -24,8 +22,8 @@ import (
 const reviewCommitMetadataKey = "review_commit_job"
 
 func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal identity.Principal, workspacePath string, requested []string, searchItems []pebblestore.V3SessionSearchItem, now time.Time) (string, error) {
-	if s == nil || s.runner == nil || s.agents == nil || s.sessions == nil {
-		return "", errors.New("review commit agent is not configured")
+	if s == nil || s.providers == nil || s.model == nil || s.agents == nil || s.agentModelSettings == nil || s.sessions == nil {
+		return "", errors.New("review commit AI utility is not configured")
 	}
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
@@ -38,17 +36,6 @@ func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal ide
 	allowed := make(map[string]struct{}, len(searchItems))
 	for _, item := range searchItems {
 		allowed[item.ID] = struct{}{}
-	}
-	parent, err := s.resolveSessionsV3ReviewCommitParent(principal.AccountScopeID)
-	if err != nil {
-		return "", err
-	}
-	profile, err := s.agents.ResolveSystemAgent(agentruntime.ReviewCommitAgentID, parent)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
-		return "", errors.New("review commit agent requires a configured auto model")
 	}
 	batchID := reviewCommitBatchID(principal, workspacePath, ids, now)
 	type candidate struct {
@@ -106,7 +93,7 @@ func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal ide
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s.runSessionsV3ReviewCommit(runCtx, principal, batchID, profile, item.session, item.path)
+				s.runSessionsV3ReviewCommit(runCtx, principal, batchID, item.session, item.path)
 			}()
 		}
 		wg.Wait()
@@ -114,71 +101,25 @@ func (s *Server) startSessionsV3ReviewCommits(ctx context.Context, principal ide
 	return batchID, nil
 }
 
-func (s *Server) resolveSessionsV3ReviewCommitParent(accountScopeID string) (pebblestore.AgentProfile, error) {
-	state, err := s.agents.ListStateForAccount(accountScopeID, 2000)
-	if err != nil {
-		return pebblestore.AgentProfile{}, err
-	}
-	for _, profile := range state.Profiles {
-		if strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.SwarmAgentID) && profile.Enabled && pebblestore.AgentProfileRuntimeMode(profile) == pebblestore.AgentRuntimeModePlanAuto {
-			return profile, nil
-		}
-	}
-	eligible := make([]pebblestore.AgentProfile, 0, 1)
-	for _, profile := range state.Profiles {
-		if profile.Enabled && !profile.Protected && !agentruntime.IsReservedSystemAgentName(profile.Name) && (profile.Mode == agentruntime.ModePrimary || profile.Mode == agentruntime.ModeBackground) {
-			eligible = append(eligible, profile)
-		}
-	}
-	if len(eligible) != 1 {
-		return pebblestore.AgentProfile{}, errors.New("review commits require configured Swarm plan/auto or exactly one enabled agent")
-	}
-	return eligible[0], nil
-}
-
-func (s *Server) runSessionsV3ReviewCommit(ctx context.Context, principal identity.Principal, batchID string, profile pebblestore.AgentProfile, session pebblestore.SessionSnapshot, path string) {
-	runSessionID := "review-commit-" + reviewCommitHash(batchID+"\x00"+session.ID)
+func (s *Server) runSessionsV3ReviewCommit(ctx context.Context, principal identity.Principal, batchID string, session pebblestore.SessionSnapshot, path string) {
 	now := time.Now().UnixMilli()
-	job := sessionreview.CommitJob{BatchID: batchID, Status: "running", RunSessionID: runSessionID, UpdatedAt: now}
+	job := sessionreview.CommitJob{BatchID: batchID, Status: "running", UpdatedAt: now}
 	if err := s.updateSessionsV3ReviewCommitJob(session, job); err != nil {
 		return
 	}
-	preference := pebblestore.ModelPreference{Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier}
-	metadata := map[string]any{"system_session": true, "navigation_hidden": true, "source": "review_commit", "review_commit_batch_id": batchID, "review_commit_source_session_id": session.ID, "agent_name": profile.Name, "resolved_agent_name": profile.Name}
-	runSession := pebblestore.SessionSnapshot{ID: runSessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: path, WorkspaceName: session.WorkspaceName, Title: agentruntime.ReviewCommitAgentName, Mode: sessionruntime.ModeAuto, Preference: preference, Metadata: metadata, CreatedAt: now, UpdatedAt: now}
-	key := "review-commit:create:" + batchID + ":" + session.ID
-	if existing, found, getErr := s.sessions.GetSession(runSessionID); getErr != nil {
-		s.finishSessionsV3ReviewCommit(session, job, "", getErr)
-		return
-	} else if found {
-		if existing.AccountScopeID != principal.AccountScopeID || existing.UserID != principal.UserID || reviewCommitString(existing.Metadata["review_commit_batch_id"]) != batchID || reviewCommitString(existing.Metadata["review_commit_source_session_id"]) != session.ID {
-			s.finishSessionsV3ReviewCommit(session, job, "", errors.New("review commit run session binding mismatch"))
-			return
-		}
-	} else if _, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: runSessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: reviewCommitHash(key), RequestHash: reviewCommitHash(key), Kind: sessionruntime.SessionMutationCreateSession, Session: &runSession, NowUnixMs: now}); err != nil {
-		s.finishSessionsV3ReviewCommit(session, job, "", err)
+	initialSnapshot, snapshotErr := gitstatus.SnapshotForPath(ctx, path, gitstatus.Options{})
+	if snapshotErr != nil {
+		s.finishSessionsV3ReviewCommit(session, job, "", snapshotErr)
 		return
 	}
-	prompt := buildSessionsV3ReviewCommitPrompt(session, path)
-	policy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{
-		{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "read"},
-		{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "git_status"},
-		{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "git_diff"},
-		{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "git_add"},
-		{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "git_commit"},
-	}})
-	runID := "review-commit-run:" + reviewCommitHash(batchID+":"+session.ID)
-	initialSnapshot, _ := gitstatus.SnapshotForPath(ctx, path, gitstatus.Options{})
-	result, runErr := s.runner.RunTurn(ctx, runSessionID, runruntime.RunRequest{Prompt: prompt, AgentName: profile.Name, Instructions: profile.Prompt, TargetKind: runruntime.RunTargetKindSubagent, TargetName: profile.Name, Background: true, ExecutionContext: &runruntime.RunExecutionContext{WorkspacePath: path, CWD: path, WorktreeMode: runruntime.RunWorktreeModeOff}}, runruntime.RunStartMeta{AllowSubagent: true, TrustedAgentProfile: &profile, RunID: runID, PermissionSessionID: runSessionID, CompiledPolicy: &policy, Principal: principal, ApplySessionMutation: s.applySessionV3PrimaryMutation})
-	_ = result
-	if runErr != nil {
-		s.finishSessionsV3ReviewCommit(session, job, "", runErr)
+	if err := s.commitSessionsV3ReviewChanges(ctx, principal, path); err != nil {
+		s.finishSessionsV3ReviewCommit(session, job, "", err)
 		return
 	}
 	snapshot, snapshotErr := gitstatus.SnapshotForPath(ctx, path, gitstatus.Options{})
 	if snapshotErr != nil || !snapshot.HasGit || !snapshot.Clean || strings.TrimSpace(snapshot.HeadOID) == strings.TrimSpace(initialSnapshot.HeadOID) {
 		if snapshotErr == nil {
-			snapshotErr = errors.New("agent completed without creating a clean new commit")
+			snapshotErr = errors.New("AI utility completed without creating a clean new commit")
 		}
 		s.finishSessionsV3ReviewCommit(session, job, "", snapshotErr)
 		return
@@ -186,8 +127,34 @@ func (s *Server) runSessionsV3ReviewCommit(ctx context.Context, principal identi
 	s.finishSessionsV3ReviewCommit(session, job, snapshot.HeadOID, nil)
 }
 
-func buildSessionsV3ReviewCommitPrompt(session pebblestore.SessionSnapshot, path string) string {
-	return fmt.Sprintf("Create the one review commit for session %q in the bound repository. Repository: %s\nInspect status and the complete working-tree diff first. Include all intended dirty changes in this isolated worktree, choose the commit message yourself, commit exactly once, then verify status is clean.", session.Title, path)
+func (s *Server) commitSessionsV3ReviewChanges(ctx context.Context, principal identity.Principal, path string) error {
+	changes, err := collectWorkspaceGitSuggestionContext(ctx, path)
+	if err != nil {
+		return fmt.Errorf("collect review commit changes: %w", err)
+	}
+	input, err := json.Marshal(changes)
+	if err != nil {
+		return fmt.Errorf("encode review commit changes: %w", err)
+	}
+	response, err := s.invokeConfiguredRouterOnce(ctx, principal, workspaceGitCommitSuggestionInstructions(), string(input), maxWorkspaceGitSuggestionOutputBytes)
+	if err != nil {
+		return fmt.Errorf("generate review commit message: %w", err)
+	}
+	message, err := decodeConfiguredRouterGitCommitSuggestion(response.Text)
+	if err != nil {
+		return err
+	}
+	result, err := runWorkspaceGitCommit(ctx, path, message, true)
+	if err != nil {
+		return err
+	}
+	if !result.OK {
+		return errors.New("review commit did not complete")
+	}
+	if s.gitRealtime != nil {
+		s.gitRealtime.signal(path)
+	}
+	return nil
 }
 
 func (s *Server) finishSessionsV3ReviewCommit(session pebblestore.SessionSnapshot, job sessionreview.CommitJob, commitHash string, runErr error) {

@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
@@ -28,6 +30,7 @@ import (
 	"swarm/packages/swarmd/internal/lock"
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
+	"swarm/packages/swarmd/internal/mediastaging"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
@@ -164,6 +167,16 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
+	if _, err := pebblestore.RunModelProfileFlatMigration(store); err != nil {
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("migrate model profiles to flat favorites: %w", err)
+	}
+	if _, err := pebblestore.RunAgentModelSettingsMigration(store); err != nil {
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("migrate unified agent model settings: %w", err)
+	}
 	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
 		_ = store.Close()
@@ -198,6 +211,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
 	if err := sessionSvc.EnsureSessionRunStateIndex(); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()
@@ -270,6 +284,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		voice.NewWhisperLocalAdapter(),
 	)
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	agentModelSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	agentModelSettingsSvc := agentmodelsettings.NewService(agentModelSettingsStore)
 	uiSettingsSvc.SetEventPublisher(events, hub.Publish)
 	planLifecycleSvc := sessionruntime.NewPlanLifecycleService(sessionSvc)
 	planLifecycleSvc.SetApplySessionMutation(sessionSvc.ApplySessionMutation)
@@ -282,6 +298,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	})
 	swarmDesktopTargetSelectionStore := pebblestore.NewSwarmDesktopTargetSelectionStore(store)
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(store), events, hub.Publish, sessionSvc)
+	actionSvc := actionruntime.NewService(pebblestore.NewWorkspaceActionStore(store))
 	integrationSvc := integrationruntime.NewService(pebblestore.NewIntegrationStore(store))
 	startupCfg, startupCfgErr := startupconfig.Load(cfg.ConfigPath)
 	if startupCfgErr != nil {
@@ -315,6 +332,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageAgentService(agentSvc)
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
+	toolRuntime.SetManageActionService(actionSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
 		cfg := tool.ExaRuntimeConfig{
@@ -360,9 +378,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(google.NewRunner(authStore))
 	providers.RegisterRunner(openai.NewRunner(authStore, codexClient))
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
+	modelProfileStore := pebblestore.NewModelProfileStore(store)
+	modelProfileSvc := modelprofile.NewService(modelProfileStore)
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
+	runSvc.SetModelProfileService(modelProfileSvc)
 	runSvc.SetWorkspaceService(workspaceSvc)
 	runSvc.SetUISettingsService(uiSettingsSvc)
+	runSvc.SetAgentModelSettingsService(agentModelSettingsSvc)
 	runSvc.SetWorktreeService(worktreeSvc)
 	runSvc.SetEventPublisher(hub.Publish)
 
@@ -412,8 +434,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 	startV3SessionRetention(bgCtx, sessionSvc)
+	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	apiServer.SetMediaStagingService(mediaStagingSvc)
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)
@@ -429,8 +453,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
-	apiServer.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(store)))
-	apiServer.SetSwarmProfileService(modelprofile.NewSwarmService(pebblestore.NewSwarmProfileStore(store)))
+	apiServer.SetModelProfileService(modelProfileSvc)
+	apiServer.SetAgentModelSettingsService(agentModelSettingsSvc, agentModelSettingsStore)
 	apiServer.SetIdentityService(identitySvc)
 	apiServer.SetIdentitySessionService(identitySessionSvc)
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
@@ -448,6 +472,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)
+	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
 	apiServer.SetSwarmStore(swarmStore)
@@ -790,6 +815,8 @@ func (d *Daemon) Run() error {
 	return d.waitForShutdown()
 }
 
+var ErrReleaseUpdateRestart = errors.New("release update activated; restart required")
+
 func (d *Daemon) waitForShutdown() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -842,7 +869,9 @@ func (d *Daemon) waitForShutdown() error {
 	if err := d.cleanup(); err != nil {
 		errs = append(errs, err)
 	}
-	_ = reason
+	if strings.EqualFold(strings.TrimSpace(reason), "api:update-release") {
+		errs = append(errs, ErrReleaseUpdateRestart)
+	}
 	return errors.Join(errs...)
 }
 

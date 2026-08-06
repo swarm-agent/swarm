@@ -84,6 +84,20 @@ func (p *HomePage) HomepageState() HomepageState {
 	return state
 }
 
+// SetWorktreeRequested primes the next routed start locally. It does not alter
+// workspace worktree settings.
+func (p *HomePage) SetWorktreeRequested(requested bool) {
+	if p == nil {
+		return
+	}
+	p.sessionIntent.WorktreeRequested = requested
+	p.statusLine = "Worktree: " + map[bool]string{true: "on", false: "off"}[requested]
+}
+
+func (p *HomePage) WorktreeRequested() bool {
+	return p != nil && p.sessionIntent.WorktreeRequested
+}
+
 func (p *HomePage) SetSessionIntent(intent HomeSessionIntent) {
 	if p == nil {
 		return

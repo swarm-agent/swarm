@@ -18,10 +18,18 @@ import (
 )
 
 const (
-	codexOAuthAuthorizeURL = "https://auth.openai.com/oauth/authorize"
-	codexOAuthRedirectURL  = "http://localhost:1455/auth/callback"
-	codexOAuthScopes       = "openid profile email offline_access"
-	codexOAuthListenHost   = "127.0.0.1:1455"
+	codexOAuthAuthorizeURL     = "https://auth.openai.com/oauth/authorize"
+	codexOAuthRedirectURL      = "http://localhost:1455/auth/callback"
+	codexDeviceRedirectURL     = "https://auth.openai.com/deviceauth/callback"
+	codexDeviceUserCodeURL     = "https://auth.openai.com/api/accounts/deviceauth/usercode"
+	codexDeviceTokenURL        = "https://auth.openai.com/api/accounts/deviceauth/token"
+	codexDeviceVerificationURL = "https://auth.openai.com/codex/device"
+	codexOAuthScopes           = "openid profile email offline_access"
+	codexOAuthListenHost       = "127.0.0.1:1455"
+	codexDeviceAuthWindow      = 15 * time.Minute
+	codexDevicePollDefault     = 5 * time.Second
+	codexDevicePollMinimum     = 2 * time.Second
+	codexDevicePollMaximum     = 10 * time.Second
 )
 
 type OAuthLogin struct {
@@ -34,6 +42,223 @@ type OAuthTokens struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    int64
+}
+
+// DeviceAuthorization contains the user-visible portion of an in-flight device
+// login. Its protocol credentials remain private so API responses cannot expose
+// the device auth ID or PKCE verifier.
+type DeviceAuthorization struct {
+	VerificationURL string
+	UserCode        string
+	ExpiresAt       time.Time
+
+	deviceAuthID string
+	interval     time.Duration
+}
+
+type deviceAuthEndpoints struct {
+	userCodeURL     string
+	pollURL         string
+	verificationURL string
+	tokenURL        string
+	redirectURL     string
+}
+
+var defaultDeviceAuthEndpoints = deviceAuthEndpoints{
+	userCodeURL:     codexDeviceUserCodeURL,
+	pollURL:         codexDeviceTokenURL,
+	verificationURL: codexDeviceVerificationURL,
+	tokenURL:        tokenURL,
+	redirectURL:     codexDeviceRedirectURL,
+}
+
+// RequestDeviceAuthorization starts OpenAI's device authorization protocol.
+// A 404 is a policy signal and is reported explicitly so callers can present
+// browser/manual login as a real fallback rather than pretending device login
+// succeeded.
+func RequestDeviceAuthorization(ctx context.Context) (DeviceAuthorization, error) {
+	return requestDeviceAuthorization(ctx, &http.Client{Timeout: 20 * time.Second}, defaultDeviceAuthEndpoints)
+}
+
+func requestDeviceAuthorization(ctx context.Context, client *http.Client, endpoints deviceAuthEndpoints) (DeviceAuthorization, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload, err := json.Marshal(struct {
+		ClientID string `json:"client_id"`
+	}{ClientID: clientID})
+	if err != nil {
+		return DeviceAuthorization{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoints.userCodeURL, strings.NewReader(string(payload)))
+	if err != nil {
+		return DeviceAuthorization{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return DeviceAuthorization{}, fmt.Errorf("request codex device code: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return DeviceAuthorization{}, fmt.Errorf("read codex device code response: %w", err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return DeviceAuthorization{}, errors.New("codex device authorization is unavailable or disabled; use browser or manual login")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return DeviceAuthorization{}, fmt.Errorf("codex device code request failed status=%d", resp.StatusCode)
+	}
+
+	var decoded struct {
+		DeviceAuthID string          `json:"device_auth_id"`
+		UserCode     string          `json:"user_code"`
+		UserCodeAlt  string          `json:"usercode"`
+		Interval     json.RawMessage `json:"interval"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return DeviceAuthorization{}, fmt.Errorf("decode codex device code response: %w", err)
+	}
+	userCode := strings.TrimSpace(decoded.UserCode)
+	if userCode == "" {
+		userCode = strings.TrimSpace(decoded.UserCodeAlt)
+	}
+	if strings.TrimSpace(decoded.DeviceAuthID) == "" || userCode == "" {
+		return DeviceAuthorization{}, errors.New("codex device code response missing device_auth_id or user_code")
+	}
+	return DeviceAuthorization{
+		VerificationURL: endpoints.verificationURL,
+		UserCode:        userCode,
+		ExpiresAt:       time.Now().Add(codexDeviceAuthWindow),
+		deviceAuthID:    strings.TrimSpace(decoded.DeviceAuthID),
+		interval:        parseDevicePollInterval(decoded.Interval),
+	}, nil
+}
+
+// CompleteDeviceAuthorization polls the private OpenAI device endpoint until
+// approval or expiry, then exchanges the issued code using the returned PKCE
+// verifier and the device callback URI.
+func CompleteDeviceAuthorization(ctx context.Context, authorization DeviceAuthorization) (OAuthTokens, error) {
+	return completeDeviceAuthorization(ctx, &http.Client{Timeout: 20 * time.Second}, defaultDeviceAuthEndpoints, authorization)
+}
+
+func completeDeviceAuthorization(ctx context.Context, client *http.Client, endpoints deviceAuthEndpoints, authorization DeviceAuthorization) (OAuthTokens, error) {
+	return completeDeviceAuthorizationWithSleep(ctx, client, endpoints, authorization, func(ctx context.Context, delay time.Duration) error {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		}
+	})
+}
+
+func completeDeviceAuthorizationWithSleep(ctx context.Context, client *http.Client, endpoints deviceAuthEndpoints, authorization DeviceAuthorization, sleep func(context.Context, time.Duration) error) (OAuthTokens, error) {
+	if sleep == nil {
+		return OAuthTokens{}, errors.New("device authorization sleep function is required")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline := authorization.ExpiresAt
+	if deadline.IsZero() || deadline.After(time.Now().Add(codexDeviceAuthWindow)) {
+		deadline = time.Now().Add(codexDeviceAuthWindow)
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	interval := sanitizeDevicePollInterval(authorization.interval)
+	for {
+		payload, err := json.Marshal(struct {
+			DeviceAuthID string `json:"device_auth_id"`
+			UserCode     string `json:"user_code"`
+		}{DeviceAuthID: authorization.deviceAuthID, UserCode: authorization.UserCode})
+		if err != nil {
+			return OAuthTokens{}, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoints.pollURL, strings.NewReader(string(payload)))
+		if err != nil {
+			return OAuthTokens{}, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return OAuthTokens{}, errors.New("codex device authorization expired after 15 minutes")
+			}
+			return OAuthTokens{}, fmt.Errorf("poll codex device authorization: %w", err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if readErr != nil {
+			return OAuthTokens{}, fmt.Errorf("read codex device authorization response: %w", readErr)
+		}
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			var approved struct {
+				AuthorizationCode string `json:"authorization_code"`
+				CodeChallenge     string `json:"code_challenge"`
+				CodeVerifier      string `json:"code_verifier"`
+			}
+			if err := json.Unmarshal(body, &approved); err != nil {
+				return OAuthTokens{}, fmt.Errorf("decode codex device authorization response: %w", err)
+			}
+			if strings.TrimSpace(approved.AuthorizationCode) == "" || strings.TrimSpace(approved.CodeChallenge) == "" || strings.TrimSpace(approved.CodeVerifier) == "" {
+				return OAuthTokens{}, errors.New("codex device authorization response missing authorization code or PKCE values")
+			}
+			if oauthCodeChallenge(approved.CodeVerifier) != strings.TrimSpace(approved.CodeChallenge) {
+				return OAuthTokens{}, errors.New("codex device authorization PKCE challenge mismatch")
+			}
+			return exchangeOAuthCode(ctx, client, endpoints.tokenURL, endpoints.redirectURL, approved.AuthorizationCode, approved.CodeVerifier)
+		}
+		if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusNotFound {
+			return OAuthTokens{}, fmt.Errorf("codex device authorization failed status=%d", resp.StatusCode)
+		}
+
+		if err := sleep(ctx, interval); err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return OAuthTokens{}, errors.New("codex device authorization expired after 15 minutes")
+			}
+			return OAuthTokens{}, err
+		}
+	}
+}
+
+func parseDevicePollInterval(raw json.RawMessage) time.Duration {
+	if len(raw) == 0 || string(raw) == "null" {
+		return codexDevicePollDefault
+	}
+	var seconds int64
+	if err := json.Unmarshal(raw, &seconds); err != nil {
+		var text string
+		if json.Unmarshal(raw, &text) != nil {
+			return codexDevicePollDefault
+		}
+		parsed, parseErr := time.ParseDuration(strings.TrimSpace(text) + "s")
+		if parseErr != nil {
+			return codexDevicePollDefault
+		}
+		return sanitizeDevicePollInterval(parsed)
+	}
+	return sanitizeDevicePollInterval(time.Duration(seconds) * time.Second)
+}
+
+func sanitizeDevicePollInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return codexDevicePollDefault
+	}
+	if interval < codexDevicePollMinimum {
+		return codexDevicePollMinimum
+	}
+	if interval > codexDevicePollMaximum {
+		return codexDevicePollMaximum
+	}
+	return interval
 }
 
 func StartOAuthLogin() (OAuthLogin, error) {
@@ -161,20 +386,29 @@ func WaitForOAuthCallback(ctx context.Context, codeVerifier, expectedState strin
 }
 
 func ExchangeOAuthCode(ctx context.Context, code, codeVerifier string) (OAuthTokens, error) {
+	return exchangeOAuthCode(ctx, &http.Client{Timeout: 20 * time.Second}, tokenURL, codexOAuthRedirectURL, code, codeVerifier)
+}
+
+func exchangeOAuthCode(ctx context.Context, client *http.Client, endpoint, redirectURI, code, codeVerifier string) (OAuthTokens, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
 	values := url.Values{}
 	values.Set("grant_type", "authorization_code")
 	values.Set("client_id", clientID)
 	values.Set("code", strings.TrimSpace(code))
-	values.Set("redirect_uri", codexOAuthRedirectURL)
+	values.Set("redirect_uri", strings.TrimSpace(redirectURI))
 	values.Set("code_verifier", strings.TrimSpace(codeVerifier))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(values.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(values.Encode()))
 	if err != nil {
 		return OAuthTokens{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return OAuthTokens{}, err

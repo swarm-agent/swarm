@@ -23,7 +23,7 @@ export function ThemesSettingsPage() {
   const [savingGlobalTheme, setSavingGlobalTheme] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [globalThemeId, setGlobalThemeId] = useState(DEFAULT_GLOBAL_THEME_ID)
-  const [globalThemeLabel, setGlobalThemeLabel] = useState('Kanagawa Wave')
+  const [globalThemeLabel, setGlobalThemeLabel] = useState('Tide')
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
 
   useEffect(() => {

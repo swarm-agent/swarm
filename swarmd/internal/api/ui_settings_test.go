@@ -15,7 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 )
 
-func TestUISettingsPostPersistsDesignerModelSettings(t *testing.T) {
+func TestUISettingsPostRejectsAgentModelSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-designer-api.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -36,27 +36,38 @@ func TestUISettingsPostPersistsDesignerModelSettings(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var response uisettings.UISettings
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Agents.Designer.Provider != "openai" || response.Agents.Designer.Model != "utility-model" || response.Agents.Designer.Thinking != "medium" || response.Agents.Designer.ServiceTier != "priority" {
-		t.Fatalf("response Designer settings = %#v", response.Agents.Designer)
-	}
-	stored, err := settingsSvc.Get()
-	if err != nil {
-		t.Fatalf("reload settings: %v", err)
-	}
-	if stored.Agents.Designer != response.Agents.Designer {
-		t.Fatalf("stored Designer settings = %#v, want %#v", stored.Agents.Designer, response.Agents.Designer)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
-func TestUISettingsPostPersistsCoderModelSettings(t *testing.T) {
+func TestUISettingsPostRejectsRouterModelSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-router-api.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"agents":{"router":{"provider":"OPENAI","model":"router-model","thinking":"medium","service_tier":"PRIORITY"}}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestUISettingsPostRejectsCoderModelSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-coder-api.pebble"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -77,23 +88,8 @@ func TestUISettingsPostPersistsCoderModelSettings(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	var response uisettings.UISettings
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Agents.Coder.Provider != "codex" || response.Agents.Coder.Model != "gpt-5.6" || response.Agents.Coder.Thinking != "high" || response.Agents.Coder.ServiceTier != "priority" {
-		t.Fatalf("response Coder settings = %#v", response.Agents.Coder)
-	}
-	stored, err := settingsSvc.Get()
-	if err != nil {
-		t.Fatalf("reload settings: %v", err)
-	}
-	if stored.Agents.Coder != response.Agents.Coder {
-		t.Fatalf("stored Coder settings = %#v, want %#v", stored.Agents.Coder, response.Agents.Coder)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 
@@ -173,6 +169,72 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	}
 	if renamedState.Node.SwarmID != localState.Node.SwarmID {
 		t.Fatalf("swarm id changed on rename: got %q want %q", renamedState.Node.SwarmID, localState.Node.SwarmID)
+	}
+}
+
+func TestUISettingsPostPatchesShowTipsWithoutOverwritingOtherSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-show-tips.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	seed := uisettings.UISettings{
+		Chat: uisettings.ChatSettings{
+			ShowHeader:             true,
+			ShowTips:               true,
+			ThinkingTags:           false,
+			DefaultNewSessionMode:  "plan",
+			DefaultWorkspaceRoutes: map[string]string{"/repo": "swarm:self:/repo"},
+			ToolStream:             uisettings.ChatToolStreamSettings{ShowAnchor: true, RunningSymbol: "•"},
+		},
+		Theme: uisettings.ThemeSettings{ActiveID: "crimson"},
+	}
+	if _, err := settingsSvc.SetForAccount("tips-account", seed); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"chat":{"show_tips":false}}`)))
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), identity.Principal{
+		Type: identity.PrincipalTypeUser, AccountScopeID: "tips-account",
+	}))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Chat.ShowTips {
+		t.Fatal("response show tips = true, want false")
+	}
+	if response.Chat.ThinkingTags || response.Chat.DefaultNewSessionMode != "plan" || response.Theme.ActiveID != "crimson" {
+		t.Fatalf("partial patch overwrote settings: %+v", response)
+	}
+	if response.Chat.DefaultWorkspaceRoutes["/repo"] != "swarm:self:/repo" || !response.Chat.ToolStream.ShowAnchor {
+		t.Fatalf("partial patch overwrote chat settings: %+v", response.Chat)
+	}
+
+	loaded, err := settingsSvc.GetForAccount("tips-account")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Chat.ShowTips {
+		t.Fatal("persisted show tips = true, want false")
 	}
 }
 

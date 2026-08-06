@@ -46,6 +46,48 @@ test('durableClientEffectsFromRealtimeFrame parses only typed successful tool co
   assert.equal(durableClientEffectsFromRealtimeFrame(toolCompletedFrame({ effects: [] })), null)
 })
 
+test('auth realtime frames produce a durable provider refresh effect', () => {
+  assert.deepEqual(durableClientEffectsFromRealtimeFrame({
+    kind: 'auth.credentials.updated',
+    auth: {
+      account_scope_id: 'account-1',
+      event_type: 'auth.credential.activated',
+      provider: 'openai',
+      recorded_at: 10,
+      event_sequence: 42,
+    },
+  }), {
+    eventIdentity: 'auth:account-1:42',
+    effects: [{ type: 'refresh_providers' }],
+  })
+})
+
+test('default provider effect force-fetches model options without waiting for stale time', async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  queryClient.setQueryData(['model-options'], { providers: [{ id: 'old-provider' }] })
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    calls.push(url)
+    if (url === '/v1/providers') {
+      return new Response(JSON.stringify({ providers: [{ id: 'new-provider', models: [] }] }), { headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v1/model') {
+      return new Response(JSON.stringify({ preference: {} }), { headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ ok: true, state: { active_primary: '', active_subagent: {}, profiles: [] }, tool_inventory: { tools: [], presets: [] } }), { headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+
+  try {
+    await createDefaultDesktopV3ClientEffectRunnerDeps(queryClient).refreshProviders()
+    assert.ok(calls.includes('/v1/providers'))
+    assert.deepEqual(queryClient.getQueryData(['model-options']), { providers: [{ id: 'new-provider', models: [] }] })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('default agent effect force-fetches canonical active-agent state and invalidates profile contracts', async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   queryClient.setQueryData(['agent-tool-contract', 'deleted-agent'], { tools: {} })
@@ -86,6 +128,7 @@ test('client effect runner refreshes agent caches once across replayed durable e
   const runner = new DesktopV3ClientEffectRunner({
     refreshAgents: async () => { refreshAgents += 1 },
     refreshThemes: async () => { refreshThemes += 1 },
+    refreshProviders: async () => undefined,
     reportError: () => assert.fail('effect should not fail'),
   })
   const frame = toolCompletedFrame()
@@ -108,6 +151,7 @@ test('client effect runner serializes and coalesces refreshes while preserving l
       if (refreshAgents === 1) await firstRefresh
     },
     refreshThemes: async () => undefined,
+    refreshProviders: async () => undefined,
     reportError: () => assert.fail('effect should not fail'),
   })
 
@@ -126,6 +170,7 @@ test('client effect failures are reported without retry storms', async () => {
   const runner = new DesktopV3ClientEffectRunner({
     refreshAgents: async () => { throw new Error('offline') },
     refreshThemes: async () => undefined,
+    refreshProviders: async () => undefined,
     reportError: (effect, error) => {
       failures += 1
       assert.equal(effect, 'refresh_agents')

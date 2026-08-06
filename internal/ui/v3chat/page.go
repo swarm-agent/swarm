@@ -91,7 +91,8 @@ type Page struct {
 	rowCache                     map[string]cachedRows
 	lastWidth                    int
 	lastHeight                   int
-	modelTarget                  footerbar.Rect
+	agentModelTarget             footerbar.Rect
+	openAgentsRequested          bool
 	routeLabel                   string
 	profileLabel                 string
 	showHeader                   bool
@@ -268,6 +269,8 @@ func (p *Page) SetRouteLabel(label string) {
 	p.mu.Unlock()
 }
 
+// SetProfileLabel is retained for session hydration compatibility; footer
+// presentation no longer exposes model-profile semantics.
 func (p *Page) SetProfileLabel(label string) {
 	if p == nil {
 		return
@@ -292,6 +295,19 @@ func (p *Page) SetHeaderVisible(show bool) {
 	p.mu.Lock()
 	p.showHeader = show
 	p.mu.Unlock()
+}
+
+// SetGitStatus updates the open page from the app shell's event-driven Git
+// watcher. Draw remains a pure read of cached state and never invokes Git.
+func (p *Page) SetGitStatus(branch string, hasGit bool, dirtyCount int) {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return
+	}
+	p.runtime.Store().Dispatch(GitStatusAction{
+		Branch:     branch,
+		HasGit:     hasGit,
+		DirtyCount: dirtyCount,
+	})
 }
 
 func (p *Page) SetThinkingTagsVisible(show bool) {
@@ -343,6 +359,24 @@ func (p *Page) Status() string {
 	return p.status
 }
 
+// SetInput replaces the local composer value without creating or mutating a
+// durable session. App command dispatch uses this when opening a bare primer.
+func (p *Page) SetInput(value string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.input = []rune(value)
+	if len(p.input) > maxComposerRunes {
+		p.input = p.input[:maxComposerRunes]
+	}
+	p.cursor = len(p.input)
+	p.pasteBuffer = nil
+	p.syncCommandPaletteSelectionLocked()
+	p.resetCommandPaletteOptionSelectionLocked()
+	p.mu.Unlock()
+}
+
 func (p *Page) InputValue() string {
 	if p == nil {
 		return ""
@@ -368,6 +402,17 @@ func (p *Page) ConsumeCommand() string {
 	command := p.pendingCommand
 	p.pendingCommand = ""
 	return command
+}
+
+func (p *Page) ConsumeOpenAgentsRequest() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	requested := p.openAgentsRequested
+	p.openAgentsRequested = false
+	return requested
 }
 
 func (p *Page) permissionVisibleLocked() bool {
@@ -507,6 +552,86 @@ func (p *Page) handlePasteKeyLocked(ev *tcell.EventKey) bool {
 		return true
 	}
 	return false
+}
+
+// PrimeRoutedDraft opens the local Router primer with source workspace
+// authority captured before Router execution. Router may allocate a worktree,
+// but it cannot select or replace the source workspace.
+func (p *Page) PrimeRoutedDraft(draft RoutedDraft) error {
+	if p == nil || p.runtime == nil {
+		return fmt.Errorf("v3 chat runtime is not configured")
+	}
+	if err := p.runtime.PrimeRoutedDraft(draft); err != nil {
+		return err
+	}
+	p.SetInput(draft.Prompt)
+	p.SetStatus("Waiting...")
+	return nil
+}
+
+// OpenRoutedNew applies one parsed /new command. Bare commands leave an
+// editable primer; prompt forms begin routing immediately.
+func (p *Page) OpenRoutedNew(command NewCommand, authority RoutedDraft) error {
+	authority.Prompt = command.Prompt
+	authority.PlanModeRequested = command.PlanModeRequested
+	authority.ManagedWorktreeRequested = command.ManagedWorktreeRequested
+	if err := p.PrimeRoutedDraft(authority); err != nil {
+		return err
+	}
+	if strings.TrimSpace(command.Prompt) != "" {
+		p.ClearInput()
+		p.StartRoutedDraft()
+	}
+	return nil
+}
+
+// StartRoutedDraft submits the primed local intent asynchronously.
+func (p *Page) StartRoutedDraft() {
+	if p == nil || p.runtime == nil {
+		return
+	}
+	p.setBusy("Routing...", true)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := p.runtime.StartRoutedDraft(ctx)
+		p.finishAsync("", err)
+	}()
+}
+
+// RetryRoutedDraft retries the same failed operation identity.
+func (p *Page) RetryRoutedDraft() {
+	if p == nil || p.runtime == nil {
+		return
+	}
+	p.setBusy("Routing...", true)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := p.runtime.RetryRoutedDraft(ctx)
+		p.finishAsync("", err)
+	}()
+}
+
+// ApplyWorktreeCommand changes only the ready local primer flag.
+func (p *Page) ApplyWorktreeCommand(input string) (bool, error) {
+	command, matched, err := ParseWorktreeCommand(input)
+	if !matched || err != nil {
+		return matched, err
+	}
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return true, fmt.Errorf("v3 chat runtime is not configured")
+	}
+	state := p.runtime.Store().Snapshot()
+	draft, routed := SelectRoutedDraft(state)
+	if !routed || strings.TrimSpace(state.Session.ID) != "" || draft.Status != RoutedDraftReady {
+		return true, fmt.Errorf("worktree priming is available only for a new session draft")
+	}
+	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, draft.PlanModeRequested, command.Enabled); err != nil {
+		return true, err
+	}
+	p.SetStatus("Worktree: " + map[bool]string{true: "on", false: "off"}[command.Enabled])
+	return true, nil
 }
 
 func (p *Page) OpenNew(request NewSessionRequest) {
@@ -705,6 +830,13 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			return PageActionCommand
 		}
 		text := strings.TrimSpace(string(p.input))
+		if text == "" && !p.busy && p.runtime != nil && p.runtime.Store() != nil {
+			state := p.runtime.Store().Snapshot()
+			if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status == RoutedDraftFailed {
+				go p.RetryRoutedDraft()
+				break
+			}
+		}
 		if strings.HasPrefix(text, "/") {
 			p.pendingCommand = text
 			p.input = nil
@@ -713,6 +845,21 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			return PageActionCommand
 		}
 		if text != "" && !p.busy {
+			if p.runtime != nil && p.runtime.Store() != nil {
+				state := p.runtime.Store().Snapshot()
+				if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status == RoutedDraftReady {
+					if err := p.runtime.UpdateRoutedDraftIntent(text, draft.PlanModeRequested, draft.ManagedWorktreeRequested); err != nil {
+						p.errText = err.Error()
+						break
+					}
+					p.input = nil
+					p.cursor = 0
+					p.follow = true
+					p.scroll = 0
+					go p.StartRoutedDraft()
+					break
+				}
+			}
 			p.input = nil
 			p.cursor = 0
 			p.follow = true
@@ -932,37 +1079,24 @@ func (p *Page) handlePlanModalKeyLocked(ev *tcell.EventKey) PageAction {
 }
 
 func (p *Page) cycleModeLocked() {
-	if p.runtime == nil || p.busy {
+	if p.runtime == nil || p.busy || p.runtime.Store() == nil {
 		return
 	}
 	state := p.runtime.Store().Snapshot()
-	next := "plan"
-	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
-		next = "auto"
-	}
-	if strings.TrimSpace(state.Session.ID) == "" {
-		if err := p.runtime.SetDraftMode(next); err != nil {
-			p.errText = err.Error()
-			p.status = ""
-			return
-		}
-		p.errText = ""
-		p.status = "Plan: " + map[bool]string{true: "on", false: "off"}[next == "plan"]
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || strings.TrimSpace(state.Session.ID) != "" || draft.Status != RoutedDraftReady {
+		p.errText = "Plan toggle is available only for a new session draft"
+		p.status = ""
 		return
 	}
-	p.busy = true
-	p.status = "switching Plan " + map[bool]string{true: "on", false: "off"}[next == "plan"] + "…"
+	next := !draft.PlanModeRequested
+	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, next, draft.ManagedWorktreeRequested); err != nil {
+		p.errText = err.Error()
+		p.status = ""
+		return
+	}
 	p.errText = ""
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		resolved, err := p.runtime.SetMode(ctx, next)
-		if err != nil {
-			p.finishAsync("", err)
-			return
-		}
-		p.finishAsync("Plan: "+map[bool]string{true: "on", false: "off"}[strings.EqualFold(resolved.Mode, "plan")], nil)
-	}()
+	p.status = "Plan: " + map[bool]string{true: "on", false: "off"}[next]
 }
 
 func (p *Page) openModelPickerLocked() {
@@ -1072,6 +1206,10 @@ func (p *Page) ensurePermissionPrefixLocked() {
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
+	if taskIndex := p.taskLaunchPermissionIndexLocked(permissions); taskIndex >= 0 {
+		p.permissionIndex = taskIndex
+		permission = permissions[taskIndex]
+	}
 	p.syncPermissionInteractionLocked(permission)
 	p.syncPermissionContentLocked(permission)
 	if intent, ok := parsePlanPermissionIntent(permission); ok && p.permissionPlanReviewID != permission.ID {
@@ -1122,8 +1260,15 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 	}
 	p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
 	permission := permissions[p.permissionIndex]
+	if taskIndex := p.taskLaunchPermissionIndexLocked(permissions); taskIndex >= 0 {
+		p.permissionIndex = taskIndex
+		permission = permissions[taskIndex]
+	}
 	p.syncPermissionInteractionLocked(permission)
 	p.syncPermissionContentLocked(permission)
+	if isTaskLaunchPermission(permission) {
+		return p.handleTaskLaunchPermissionKeyLocked(permission, ev)
+	}
 	if isAskUserPermission(permission) {
 		return p.handleAskUserPermissionKeyLocked(permission, ev)
 	}
@@ -1250,7 +1395,9 @@ func (p *Page) resolvePermissionWithReasonLocked(permission client.PermissionRec
 		defer cancel()
 		approvedArguments := ""
 		if strings.HasPrefix(action, "allow") {
-			if _, ok := parsePlanPermissionIntent(permission); ok && normalizePermissionToolName(permission.ToolName) == "exit_plan_mode" {
+			if _, ok := parseTaskLaunchPermissionIntent(permission); ok {
+				approvedArguments = taskLaunchApprovedArguments(permission)
+			} else if _, ok := parsePlanPermissionIntent(permission); ok && normalizePermissionToolName(permission.ToolName) == "exit_plan_mode" {
 				approvedArguments = planPermissionApprovedArguments(permission, manualReview)
 			} else if _, ok := parseManageSessionsPermissionIntent(permission); ok {
 				approvedArguments = strings.TrimSpace(permission.ApprovedArguments)
@@ -1306,6 +1453,9 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			return
 		}
 		p.permissionIndex = maxInt(0, minInt(p.permissionIndex, len(permissions)-1))
+		if taskIndex := p.taskLaunchPermissionIndexLocked(permissions); taskIndex >= 0 {
+			p.permissionIndex = taskIndex
+		}
 		if buttons&tcell.Button1 != 0 {
 			permission := permissions[p.permissionIndex]
 			switch {
@@ -1334,7 +1484,7 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		permission := permissions[p.permissionIndex]
 		p.syncPermissionContentLocked(permission)
 		if buttons&tcell.WheelUp != 0 {
-			if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+			if (isBashPermissionRequest(permission) || isTaskLaunchPermission(permission)) && p.permissionContentMaxScroll > 0 {
 				p.permissionContentScroll = maxInt(0, p.permissionContentScroll-3)
 			} else {
 				p.scroll += 3
@@ -1342,7 +1492,7 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			}
 		}
 		if buttons&tcell.WheelDown != 0 {
-			if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
+			if (isBashPermissionRequest(permission) || isTaskLaunchPermission(permission)) && p.permissionContentMaxScroll > 0 {
 				p.permissionContentScroll = minInt(p.permissionContentMaxScroll, p.permissionContentScroll+3)
 			} else {
 				p.scroll = maxInt(0, p.scroll-3)
@@ -1355,8 +1505,8 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		if action := finalHandoffTargetAt(p.handoffTargets, x, y); action != "" && p.activateFinalHandoffTargetLocked(action) {
 			return
 		}
-		if containsFooterPoint(p.modelTarget, x, y) {
-			p.openModelPickerLocked()
+		if containsFooterPoint(p.agentModelTarget, x, y) {
+			p.openAgentsRequested = true
 			return
 		}
 	}
@@ -1421,7 +1571,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	cursor := p.cursor
 	scroll := p.scroll
 	errText, status := p.errText, p.status
-	routeLabel, profileLabel := p.routeLabel, p.profileLabel
+	routeLabel := p.routeLabel
 	showHeader, commandEmission := p.showHeader, p.commandEmission
 	p.lastWidth, p.lastHeight = width, height
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
@@ -1436,6 +1586,12 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
 	p.ensurePermissionPrefixLocked()
+	pendingPermissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+	taskLaunchModalIndex := p.taskLaunchPermissionIndexLocked(pendingPermissions)
+	if taskLaunchModalIndex >= 0 {
+		p.permissionIndex = taskLaunchModalIndex
+	}
+	permissionContentScroll := p.permissionContentScroll
 	commandPaletteIndex := p.commandPaletteIndex
 	commandPaletteOptionIndex := p.commandPaletteOptionIndex
 	commandPaletteOptionOwner := p.commandPaletteOptionOwner
@@ -1448,13 +1604,21 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	}
 	title := strings.TrimSpace(SelectTitle(state))
 	if title == "" {
-		title = "New V3 session"
+		if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
+			title = "Waiting..."
+		} else {
+			title = "New V3 session"
+		}
 	}
 	workspaceName := strings.TrimSpace(state.Session.WorkspaceName)
 	_, stale, reason := SelectReconnect(state)
 	transcriptTop := 0
 	if showHeader {
-		transcriptTop = drawCanonicalHeader(screen, width, height, styles, title, workspaceName, SelectPlanHeader(state))
+		transcriptTop = drawCanonicalHeader(screen, width, height, styles, title, workspaceName, gitHeader{
+			Branch:     state.Session.GitBranch,
+			HasGit:     state.Session.GitHasGit,
+			DirtyCount: state.Session.GitDirtyCount,
+		}, SelectPlanHeader(state))
 	}
 	runStatus, hasRunStatus := BuildRunStatus(state, now)
 	statusLine := ""
@@ -1462,6 +1626,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if stale {
 		statusLine = "stale • Ctrl-R to rehydrate • " + reason
 		statusStyle = styles.Warning
+	} else if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
+		statusLine = routedDraftStatusLine(draft)
+		if draft.Status == RoutedDraftFailed {
+			statusStyle = styles.Error
+		}
 	} else {
 		switch composerNoticeKind(status) {
 		case "stop":
@@ -1553,7 +1722,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	}
 	modelState := SelectModel(state)
 	footerY := height - footerHeight
-	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel, profileLabel)
+	p.drawCanonicalFooter(screen, footerbar.Rect{X: 0, Y: footerY, W: width, H: footerHeight}, state, routeLabel)
 	composerEnd := minInt(len(composerLines), composerStart+composerVisibleRows)
 	for i := composerStart; i < composerEnd; i++ {
 		drawText(screen, 0, composerY+1+i-composerStart, width, styles.Prompt, composerLines[i])
@@ -1568,7 +1737,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		}
 		screen.SetContent(cursorX, cursorY, r, nil, styles.Cursor)
 	}
-	if handoffDetailsModal {
+	if taskLaunchModalIndex >= 0 && taskLaunchModalIndex < len(pendingPermissions) {
+		p.drawTaskLaunchPermissionModal(screen, width, height, styles, pendingPermissions[taskLaunchModalIndex], permissionContentScroll)
+	} else if handoffDetailsModal {
 		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsScroll)
 	} else if planModal {
 		plan := state.Plan.ActivePlan
@@ -1789,13 +1960,21 @@ func drawConversationStatus(screen tcell.Screen, width, y int, styles PageStyles
 	drawText(screen, 0, y, minInt(width, utf8.RuneCountInString(label)), styleWithForeground(styles.Background, style).Bold(status.Active), label)
 }
 
-func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyles, title, workspaceName string, plan PlanHeader) int {
+type gitHeader struct {
+	Branch     string
+	HasGit     bool
+	DirtyCount int
+}
+
+func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyles, title, workspaceName string, git gitHeader, plan PlanHeader) int {
 	if width <= 0 || height <= 0 {
 		return 0
 	}
 	panel := styles.Panel.Bold(true)
 	text := styleWithForeground(panel, styles.Text)
 	muted := styleWithForeground(panel, styles.Muted)
+	secondary := styleWithForeground(panel, styles.Secondary)
+	warning := styleWithForeground(panel, styles.Warning)
 	accent := styleWithForeground(panel, styles.Accent).Bold(true)
 
 	spans := []renderSpan{{text: strings.TrimSpace(title), style: text}}
@@ -1803,6 +1982,23 @@ func drawCanonicalHeader(screen tcell.Screen, width, height int, styles PageStyl
 		spans = append(spans,
 			renderSpan{text: "  /  ", style: muted},
 			renderSpan{text: workspaceName, style: muted},
+		)
+	}
+	if branch := strings.TrimSpace(git.Branch); git.HasGit || branch != "" {
+		if branch == "" {
+			branch = "detached"
+		}
+		dirtyCount := maxInt(0, git.DirtyCount)
+		dirtyStyle := muted
+		if dirtyCount > 0 {
+			dirtyStyle = warning
+		}
+		spans = append(spans,
+			renderSpan{text: "  /  ", style: muted},
+			renderSpan{text: "git ", style: muted},
+			renderSpan{text: branch, style: secondary},
+			renderSpan{text: "  /  ", style: muted},
+			renderSpan{text: fmt.Sprintf("uncommitted %d", dirtyCount), style: dirtyStyle},
 		)
 	}
 	if plan.Active {
@@ -1960,35 +2156,61 @@ func (p *Page) scheduleRunTimer(active bool) {
 	})
 }
 
-func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel, profileLabel string) {
+func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, state State, routeLabel string) {
 	modelState := SelectModel(state)
 	usage := SelectUsage(state)
 	displayedMode := "off"
+	planToggle := true
+	worktreeRequested := false
 	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
 		displayedMode = "on"
 	}
-	resolvedProfileLabel := modelProfileLabel(modelState)
-	if resolvedProfileLabel == "" {
-		resolvedProfileLabel = strings.TrimSpace(profileLabel)
+	if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status != RoutedDraftResolved {
+		worktreeRequested = draft.ManagedWorktreeRequested
+		if draft.PlanModeRequested {
+			displayedMode = "on"
+		} else {
+			displayedMode = "off"
+		}
+	}
+	localRoutedDraft := false
+	if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved && strings.TrimSpace(state.Session.ID) == "" {
+		localRoutedDraft = true
 	}
 	footerState := footerbar.State{
-		RouteLabel:     strings.TrimSpace(routeLabel),
-		DisplayedMode:  displayedMode,
-		ProfileLabel:   resolvedProfileLabel,
-		ModelLabel:     displayModelLabel(modelState.Preference),
-		Thinking:       strings.TrimSpace(modelState.Preference.Thinking),
-		ServiceTier:    strings.TrimSpace(modelState.Preference.ServiceTier),
-		UnifiedProfile: true,
-		PlanToggle:     true,
-		RightFacts:     conversationContextFacts(usage, modelState.ContextWindow),
+		RouteLabel:        strings.TrimSpace(routeLabel),
+		DisplayedMode:     displayedMode,
+		Agent:             "swarm",
+		ModelLabel:        displayModelLabel(modelState.Preference),
+		Thinking:          strings.TrimSpace(modelState.Preference.Thinking),
+		ServiceTier:       strings.TrimSpace(modelState.Preference.ServiceTier),
+		PlanToggle:        planToggle,
+		WorktreeRequested: worktreeRequested,
+		HideAgentModel:    localRoutedDraft,
+		RightFacts:        conversationContextFacts(usage, modelState.ContextWindow),
 	}
 	footerbar.Draw(screen, footerbar.Styles{Border: p.styles.Border, Accent: p.styles.Accent, Secondary: p.styles.Secondary, Text: p.styles.Text}, rect, footerState, func(target footerbar.Rect, token footerbar.Token) {
-		if token.Action == "open-profiles-modal" {
+		if token.Action == "open-agents-modal" {
 			p.mu.Lock()
-			p.modelTarget = target
+			p.agentModelTarget = target
 			p.mu.Unlock()
 		}
 	})
+}
+
+func routedDraftStatusLine(draft RoutedDraft) string {
+	switch draft.Status {
+	case RoutedDraftRouting:
+		return "Routing..."
+	case RoutedDraftFailed:
+		message := strings.TrimSpace(draft.Error)
+		if message == "" {
+			message = "Router start failed"
+		}
+		return message + " • press Enter to retry the same request"
+	default:
+		return "Waiting..."
+	}
 }
 
 func conversationContextFacts(usage UsageState, fallbackWindow int) []string {
@@ -2010,21 +2232,6 @@ func conversationContextFacts(usage UsageState, fallbackWindow int) []string {
 	}
 	percentage := int(math.Round(float64(remaining) * 100 / float64(window)))
 	return []string{fmt.Sprintf("ctx %d%%", percentage)}
-}
-
-func modelProfileLabel(state ModelState) string {
-	source := strings.ToLower(strings.TrimSpace(state.ProfileSource))
-	switch source {
-	case "saved":
-		if name := strings.TrimSpace(state.ProfileName); name != "" {
-			return name
-		}
-		return "Saved profile"
-	case "temporary":
-		return "Temporary/customized"
-	default:
-		return ""
-	}
 }
 
 func displayModelLabel(preference client.ModelPreference) string {
@@ -2278,6 +2485,9 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		items = append(items, timelineRenderItem{kind: "reasoning", seq: segment.GlobalSeq, createdAt: segment.StartedAt, order: len(items), reasoning: segment})
 	}
 	for _, permission := range permissions {
+		if taskPermissionReplacedByTool(permission.Record, items) {
+			continue
+		}
 		createdAt := firstPositiveInt64(permission.Record.PermissionRequestedAt, permission.Record.CreatedAt)
 		items = append(items, timelineRenderItem{kind: "permission", seq: permission.GlobalSeq, createdAt: createdAt, order: len(items), permission: permission})
 	}
@@ -2318,7 +2528,19 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		selectedPermissionID = pendingPermissions[permissionIndex].ID
 	}
 
-	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2)
+	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2+4)
+	if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
+		if strings.TrimSpace(draft.Prompt) != "" {
+			rows = append(rows, p.renderUserRows("routed-draft:"+draft.ClientRequestID, draft.Prompt, width, styles)...)
+		}
+		flags := []string{"Plan: " + map[bool]string{true: "on", false: "off"}[draft.PlanModeRequested], "Worktree: " + map[bool]string{true: "on", false: "off"}[draft.ManagedWorktreeRequested]}
+		statusStyle := styles.Muted
+		if draft.Status == RoutedDraftFailed {
+			statusStyle = styles.Error
+		}
+		rows = append(rows, renderRow{text: routedDraftStatusLine(draft), style: statusStyle})
+		rows = append(rows, renderRow{text: strings.Join(flags, " • "), style: styles.Muted}, renderRow{text: "", style: styles.Text})
+	}
 	boundedPermissionID, boundedPermissionMaxScroll := "", 0
 	copyBlockBaseIndex := 0
 	for _, item := range items {
@@ -2400,7 +2622,7 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 // execution; a correlated tool-history item would produce a duplicate card.
 func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []PermissionTimelineItem) bool {
 	toolName := normalizeToolDisplayName(tool.Name)
-	if toolName != "plan-manage" && toolName != "exit-plan-mode" && toolName != "manage-sessions" {
+	if toolName != "plan-manage" && toolName != "exit-plan-mode" && toolName != "manage-sessions" && toolName != "task" {
 		return false
 	}
 	callID := strings.TrimSpace(tool.CallID)
@@ -2418,6 +2640,28 @@ func toolCoalescedWithPermission(tool ToolTimelineItem, permissions []Permission
 			}
 		}
 		if toolName == "manage-sessions" && normalizePermissionToolName(record.ToolName) == "manage_sessions" && isManageSessionsApprovalRequirement(record.Requirement) {
+			return true
+		}
+		if toolName == "task" && isTaskLaunchPermission(record) {
+			// While approval is pending, the permission card owns this timeline
+			// position. Once approved, the canonical task stream replaces it so
+			// live subagent cards and their animation can render.
+			return permissionPending(record)
+		}
+	}
+	return false
+}
+
+func taskPermissionReplacedByTool(record client.PermissionRecord, items []timelineRenderItem) bool {
+	if permissionPending(record) || !isTaskLaunchPermission(record) {
+		return false
+	}
+	callID := strings.TrimSpace(record.CallID)
+	if callID == "" {
+		return false
+	}
+	for _, item := range items {
+		if item.kind == "tool" && normalizeToolDisplayName(item.tool.Name) == "task" && strings.TrimSpace(item.tool.CallID) == callID {
 			return true
 		}
 	}
@@ -2479,12 +2723,12 @@ func (p *Page) renderAssistantRows(content string, width int, styles PageStyles)
 }
 
 func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyles) []renderRow {
-	status := strings.ToLower(strings.TrimSpace(tool.Status))
+	status := canonicalToolStatus(tool.Status)
 	symbol, headerStyle := "•", styles.Accent
 	switch status {
-	case "completed", "done", "success":
+	case "completed":
 		symbol, headerStyle = "✓", styles.Success
-	case "failed", "error", "cancelled", "canceled":
+	case "failed", "cancelled":
 		symbol, headerStyle = "✕", styles.Error
 	}
 

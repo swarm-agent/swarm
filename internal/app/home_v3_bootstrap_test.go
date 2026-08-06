@@ -1,11 +1,86 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
+
+func TestBootstrapHomeWorkspaceResolvesLaunchCWDEvenWithSavedWorkspaces(t *testing.T) {
+	var mu sync.Mutex
+	resolvedCWDs := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspace/current":
+			_ = json.NewEncoder(w).Encode(client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"})
+		case "/v1/workspace/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspaces": []client.WorkspaceEntry{{Path: "/default", WorkspaceName: "Default"}, {Path: "/launch", WorkspaceName: "Launch"}}})
+		case "/v1/workspace/cwd/resolve":
+			cwd := r.URL.Query().Get("cwd")
+			mu.Lock()
+			resolvedCWDs = append(resolvedCWDs, cwd)
+			mu.Unlock()
+			workspace := "/default"
+			if cwd == "/launch/nested" {
+				workspace = "/launch"
+			}
+			_ = json.NewEncoder(w).Encode(client.WorkspaceCWDResolveResponse{OK: true, ResolvedPath: cwd, Workspace: &client.WorkspaceResolution{WorkspacePath: workspace, ResolvedPath: cwd}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), startupCWD: "/launch/nested"}
+	data := app.bootstrapHomeWorkspace(context.Background(), true)
+	if data.launchErr != nil || !data.launchChecked || data.launchResolve.Workspace == nil || data.launchResolve.Workspace.WorkspacePath != "/launch" {
+		t.Fatalf("launch resolution = checked:%v resolve:%#v err:%v", data.launchChecked, data.launchResolve, data.launchErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(resolvedCWDs) != 2 {
+		t.Fatalf("resolved CWDs = %#v, want selected and launch paths", resolvedCWDs)
+	}
+}
+
+func TestBootstrapHomeWorkspaceSkipsLaunchCWDOnLaterRefresh(t *testing.T) {
+	var mu sync.Mutex
+	resolvedCWDs := make([]string, 0, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspace/current":
+			_ = json.NewEncoder(w).Encode(client.WorkspaceResolution{WorkspacePath: "/manual", ResolvedPath: "/manual", WorkspaceName: "Manual"})
+		case "/v1/workspace/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "workspaces": []client.WorkspaceEntry{{Path: "/launch"}, {Path: "/manual"}}})
+		case "/v1/workspace/cwd/resolve":
+			cwd := r.URL.Query().Get("cwd")
+			mu.Lock()
+			resolvedCWDs = append(resolvedCWDs, cwd)
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(client.WorkspaceCWDResolveResponse{OK: true, ResolvedPath: cwd, Workspace: &client.WorkspaceResolution{WorkspacePath: cwd, ResolvedPath: cwd}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), startupCWD: "/launch"}
+	data := app.bootstrapHomeWorkspace(context.Background(), false)
+	if data.launchChecked {
+		t.Fatal("later refresh unexpectedly resolved launch CWD")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(resolvedCWDs) != 1 || resolvedCWDs[0] != "/manual" {
+		t.Fatalf("resolved CWDs = %#v, want explicit current workspace only", resolvedCWDs)
+	}
+}
 
 func TestApplyHomeWorkspaceBootstrapSelectsRegisteredLaunchCWD(t *testing.T) {
 	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
@@ -17,11 +92,35 @@ func TestApplyHomeWorkspaceBootstrapSelectsRegisteredLaunchCWD(t *testing.T) {
 		},
 		selectedResolve: client.WorkspaceCWDResolveResponse{ResolvedPath: "/default", Workspace: &client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default"}},
 		launchChecked:   true,
-		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: "/launch", Workspace: &client.WorkspaceResolution{WorkspacePath: "/launch", ResolvedPath: "/launch"}},
+		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: "/launch/nested", Workspace: &client.WorkspaceResolution{WorkspacePath: "/launch", ResolvedPath: "/launch"}},
 	}, "/launch")
 
 	if selected != "/launch" {
 		t.Fatalf("selected path = %q, want /launch", selected)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(next.Workspaces) != 2 || next.Workspaces[0].Active || !next.Workspaces[1].Active {
+		t.Fatalf("workspace selection = %#v", next.Workspaces)
+	}
+}
+
+func TestApplyHomeWorkspaceBootstrapSelectsLinkedLaunchDirectoryWorkspace(t *testing.T) {
+	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
+		current:    client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
+		hasCurrent: true,
+		workspaces: []client.WorkspaceEntry{
+			{Path: "/default", WorkspaceName: "Default"},
+			{Path: "/workspace", WorkspaceName: "Workspace", Directories: []string{"/workspace", "/linked"}},
+		},
+		selectedResolve: client.WorkspaceCWDResolveResponse{ResolvedPath: "/default", Workspace: &client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default"}},
+		launchChecked:   true,
+		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: "/linked/pkg", Workspace: &client.WorkspaceResolution{WorkspacePath: "/workspace", ResolvedPath: "/linked/pkg", WorkspaceName: "Workspace"}},
+	}, "/linked/pkg")
+
+	if selected != "/workspace" {
+		t.Fatalf("selected path = %q, want /workspace", selected)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %#v, want none", warnings)
@@ -63,8 +162,29 @@ func TestApplyHomeWorkspaceBootstrapKeepsCurrentWorkspaceAfterLaunchBootstrap(t 
 	}
 }
 
+func TestApplyHomeWorkspaceBootstrapRejectsResolverPseudoWorkspace(t *testing.T) {
+	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
+		current:         client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
+		hasCurrent:      true,
+		workspaces:      []client.WorkspaceEntry{{Path: "/default", WorkspaceName: "Default"}},
+		selectedResolve: client.WorkspaceCWDResolveResponse{ResolvedPath: "/default", Workspace: &client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default"}},
+		launchChecked:   true,
+		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: "/other", Workspace: &client.WorkspaceResolution{WorkspacePath: "/other", ResolvedPath: "/other", WorkspaceName: "Other"}},
+	}, "/other")
+
+	if selected != "/default" {
+		t.Fatalf("selected path = %q, want /default", selected)
+	}
+	if len(next.Workspaces) != 1 || !next.Workspaces[0].Active || next.Workspaces[0].Path != "/default" {
+		t.Fatalf("pseudo-workspace was added: %#v", next.Workspaces)
+	}
+	if len(warnings) != 0 || next.WorkspaceSetupPath != "/other" {
+		t.Fatalf("warnings = %#v, setup path = %q", warnings, next.WorkspaceSetupPath)
+	}
+}
+
 func TestApplyHomeWorkspaceBootstrapGuidesUnregisteredLaunchCWD(t *testing.T) {
-	_, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
+	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
 		current:         client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
 		hasCurrent:      true,
 		workspaces:      []client.WorkspaceEntry{{Path: "/default", WorkspaceName: "Default"}},
@@ -76,7 +196,7 @@ func TestApplyHomeWorkspaceBootstrapGuidesUnregisteredLaunchCWD(t *testing.T) {
 	if selected != "/default" {
 		t.Fatalf("selected path = %q, want /default", selected)
 	}
-	if len(warnings) != 1 || warnings[0] != "launch directory is not registered; use /workspace to add it" {
-		t.Fatalf("warnings = %#v", warnings)
+	if len(warnings) != 0 || next.WorkspaceSetupPath != "/other" {
+		t.Fatalf("warnings = %#v, setup path = %q", warnings, next.WorkspaceSetupPath)
 	}
 }

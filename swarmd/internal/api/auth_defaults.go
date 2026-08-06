@@ -7,95 +7,80 @@ import (
 	"strings"
 	"time"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/auth"
-	"swarm/packages/swarmd/internal/modelprofile"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/defaults"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount has one job:
-// after a provider credential has been verified and activated, create the
-// account's built-in agents already hydrated with verified snapshot defaults.
+// after a provider credential has been verified and activated, initialize the
+// account's direct Swarm models and compiled system-agent settings from verified defaults.
 func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(accountScopeID, userID, activatedProvider string) (*auth.AutoDefaultsStatus, error) {
-	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.modelProfiles == nil {
+	if s == nil || s.model == nil || s.agents == nil || s.providers == nil || s.agentModelSettings == nil || s.agentModelSettingsStore == nil {
 		return nil, errors.New("onboarding provider hydration is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
 		return nil, errors.New("account scope ID is required")
 	}
+	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{
+		Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(userID), AccountScopeID: accountScopeID,
+	})
+	if _, settingsErr := s.agentModelSettings.Get(ctx); settingsErr == nil {
+		return nil, nil
+	} else if !errors.Is(settingsErr, agentmodelsettings.ErrNotFound) {
+		return nil, fmt.Errorf("read onboarding agent model settings: %w", settingsErr)
+	}
 
-	providerID, providerDefaults, ok, err := s.resolveUtilityModelProvider(activatedProvider)
+	providerID, providerDefaults, ok, err := s.resolveOnboardingModelProvider(activatedProvider)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, fmt.Errorf("provider %q is not available for onboarding defaults", strings.TrimSpace(activatedProvider))
 	}
-	if err := s.applyRequiredSnapshotRecommendedDefaults(providerID, &providerDefaults); err != nil {
-		return nil, err
+	recommended, ok, recommendationsErr := s.recommendedOnboardingSubagentSettings(providerID)
+	if recommendationsErr != nil {
+		return nil, recommendationsErr
 	}
-
+	if !ok {
+		return nil, fmt.Errorf("missing required snapshot system-agent recommendations for provider %q", providerID)
+	}
+	// The complete record is installed in one synced store write so a partial
+	// Action/Plan or system-agent assignment set is never externally visible.
+	if _, err := s.agentModelSettingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
+		AccountScopeID: accountScopeID,
+		Swarm: pebblestore.SwarmAgentModelAssignments{
+			Action: pebblestore.AgentModelAssignment{Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking},
+			Plan:   pebblestore.AgentModelAssignment{Provider: providerID, Model: providerDefaults.PlanModel, Thinking: providerDefaults.PlanThinking},
+		},
+		SystemAgents: recommended,
+		UpdatedAt:    time.Now().UnixMilli(),
+	}); err != nil {
+		return nil, fmt.Errorf("set onboarding agent model settings: %w", err)
+	}
 	_, event, err := s.model.SetPreferenceForAccount(accountScopeID, userID, providerID, providerDefaults.PrimaryModel, providerDefaults.PrimaryThinking)
 	if err != nil {
 		return nil, fmt.Errorf("set global model default: %w", err)
 	}
-	result, err := s.agents.EnsureHydratedDefaultsForAccount(accountScopeID, agentruntime.DefaultModelHydrationInput{
-		Provider:          providerID,
-		PrimaryModel:      providerDefaults.PrimaryModel,
-		PrimaryThinking:   providerDefaults.PrimaryThinking,
-		PlanModel:         providerDefaults.PlanModel,
-		PlanThinking:      providerDefaults.PlanThinking,
-		AutoModel:         providerDefaults.AutoModel,
-		AutoThinking:      providerDefaults.AutoThinking,
-		UtilityModel:      providerDefaults.UtilityModel,
-		UtilityThinking:   providerDefaults.UtilityThinking,
-		UtilityAgentNames: providerDefaults.UtilitySubagents,
-	})
+	result, err := s.agents.EnsureHydratedDefaultsForAccount(accountScopeID)
 	if err != nil {
 		return nil, fmt.Errorf("create hydrated agent defaults: %w", err)
-	}
-	if s.uiSettings != nil {
-		settings, settingsErr := s.uiSettings.GetForAccount(accountScopeID)
-		if settingsErr != nil {
-			return nil, fmt.Errorf("read onboarding system-agent model settings: %w", settingsErr)
-		}
-		finderDefaults := settings.Agents.Finder
-		finderDefaults.Provider = providerID
-		finderDefaults.Model = providerDefaults.UtilityModel
-		finderDefaults.Thinking = providerDefaults.UtilityThinking
-		finderDefaults.ServiceTier = ""
-		settings.Agents.Finder = finderDefaults
-		settings.Agents.Compact = finderDefaults
-		settings.Agents.Designer = finderDefaults
-		if _, settingsErr = s.uiSettings.SetForAccount(accountScopeID, settings); settingsErr != nil {
-			return nil, fmt.Errorf("set onboarding system-agent model settings: %w", settingsErr)
-		}
-	}
-	planSelection := modelprofile.Selection{Provider: providerID, Model: providerDefaults.PlanModel, Thinking: providerDefaults.PlanThinking}
-	actionSelection := modelprofile.Selection{Provider: providerID, Model: providerDefaults.AutoModel, Thinking: providerDefaults.AutoThinking}
-	if _, _, err := s.modelProfiles.CreateFirstForAccount(accountScopeID, modelprofile.Input{
-		Name: "Swarm recommended", ModelMode: pebblestore.ModelProfileModeSplit,
-		Plan: &planSelection, Auto: &actionSelection,
-	}); err != nil {
-		return nil, fmt.Errorf("create onboarding recommended model profile: %w", err)
 	}
 	if event != nil && s.hub != nil {
 		s.hub.Publish(*event)
 	}
 
 	return &auth.AutoDefaultsStatus{
-		Applied:         true,
-		Provider:        providerID,
-		Model:           providerDefaults.PrimaryModel,
-		Thinking:        providerDefaults.PrimaryThinking,
-		GlobalModel:     true,
-		Agents:          result.Agents,
-		Subagents:       result.Subagents,
-		UtilityProvider: providerID,
-		UtilityModel:    providerDefaults.UtilityModel,
-		UtilityThinking: providerDefaults.UtilityThinking,
+		Applied:     true,
+		Provider:    providerID,
+		Model:       providerDefaults.PrimaryModel,
+		Thinking:    providerDefaults.PrimaryThinking,
+		GlobalModel: true,
+		Agents:      result.Agents,
+		Subagents:   []string{"compact", "finder", "coder", "designer", "router"},
 	}, nil
 }
 
@@ -191,6 +176,35 @@ func (s *Server) resolveUtilityModelProvider(preferredProvider string) (provider
 	preferredProvider = strings.ToLower(strings.TrimSpace(preferredProvider))
 	if preferredProvider != "" {
 		providerDefaults, ok, err := s.snapshotRecommendedProviderDefaults(preferredProvider, true)
+		if err != nil || !ok {
+			return "", defaults.ProviderDefaults{}, false, err
+		}
+		return providerDefaults.ProviderID, providerDefaults, true, nil
+	}
+	statuses, err := s.providers.ListStatuses(context.Background())
+	if err != nil {
+		return "", defaults.ProviderDefaults{}, false, fmt.Errorf("list provider statuses: %w", err)
+	}
+	for _, status := range statuses {
+		id := strings.ToLower(strings.TrimSpace(status.ID))
+		if id == "" || !status.Runnable {
+			continue
+		}
+		providerDefaults, ok, err := s.snapshotRecommendedProviderDefaults(id, false)
+		if err != nil {
+			return "", defaults.ProviderDefaults{}, false, err
+		}
+		if ok {
+			return providerDefaults.ProviderID, providerDefaults, true, nil
+		}
+	}
+	return "", defaults.ProviderDefaults{}, false, nil
+}
+
+func (s *Server) resolveOnboardingModelProvider(preferredProvider string) (providerID string, providerDefaults defaults.ProviderDefaults, ok bool, err error) {
+	preferredProvider = strings.ToLower(strings.TrimSpace(preferredProvider))
+	if preferredProvider != "" {
+		providerDefaults, ok, err := s.snapshotRecommendedOnboardingDefaults(preferredProvider, true)
 		if err != nil {
 			return "", defaults.ProviderDefaults{}, false, err
 		}
@@ -209,7 +223,7 @@ func (s *Server) resolveUtilityModelProvider(preferredProvider string) (provider
 		if id == "" || !status.Runnable {
 			continue
 		}
-		providerDefaults, ok, err := s.snapshotRecommendedProviderDefaults(id, false)
+		providerDefaults, ok, err := s.snapshotRecommendedOnboardingDefaults(id, false)
 		if err != nil {
 			return "", defaults.ProviderDefaults{}, false, err
 		}
@@ -221,14 +235,101 @@ func (s *Server) resolveUtilityModelProvider(preferredProvider string) (provider
 	return "", defaults.ProviderDefaults{}, false, nil
 }
 
+func (s *Server) snapshotRecommendedOnboardingDefaults(providerID string, required bool) (defaults.ProviderDefaults, bool, error) {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	if providerID == "" {
+		return defaults.ProviderDefaults{}, false, nil
+	}
+	recommended, ok, err := s.model.RecommendedCatalogRoleDefaults(providerID, "auto", "compact", "finder", "coder", "designer", "router")
+	if err != nil {
+		return defaults.ProviderDefaults{}, false, fmt.Errorf("read onboarding model recommendations: %w", err)
+	}
+	if !ok {
+		if required {
+			return defaults.ProviderDefaults{}, false, fmt.Errorf("missing required snapshot recommendations for provider %q", providerID)
+		}
+		return defaults.ProviderDefaults{}, false, nil
+	}
+	autoRec := recommendationForRole(recommended["auto"], "auto", "main")
+	providerDefaults := defaults.ProviderDefaults{
+		ProviderID:      providerID,
+		PrimaryModel:    strings.TrimSpace(recommended["auto"].Model),
+		PrimaryThinking: recommendedThinking(autoRec, ""),
+		AutoModel:       strings.TrimSpace(recommended["auto"].Model),
+		AutoThinking:    recommendedThinking(autoRec, ""),
+	}
+	plan, planOK, planErr := s.model.RecommendedCatalogRoleDefaults(providerID, "plan")
+	if planErr != nil {
+		return defaults.ProviderDefaults{}, false, fmt.Errorf("read onboarding Plan recommendation: %w", planErr)
+	}
+	if !planOK {
+		if required {
+			return defaults.ProviderDefaults{}, false, fmt.Errorf("missing required direct Plan recommendation for provider %q", providerID)
+		}
+		return defaults.ProviderDefaults{}, false, nil
+	}
+	planRec := recommendationForRole(plan["plan"], "plan")
+	providerDefaults.PlanModel = strings.TrimSpace(plan["plan"].Model)
+	providerDefaults.PlanThinking = recommendedThinking(planRec, "")
+	if providerDefaults.PlanModel == "" || providerDefaults.PlanThinking == "" {
+		if required {
+			return defaults.ProviderDefaults{}, false, fmt.Errorf("incomplete required direct Plan recommendation for provider %q", providerID)
+		}
+		return defaults.ProviderDefaults{}, false, nil
+	}
+	return providerDefaults, true, nil
+}
+
+func (s *Server) recommendedOnboardingSubagentSettings(providerID string) (pebblestore.SystemAgentModelAssignments, bool, error) {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	recommended, ok, err := s.model.RecommendedCatalogRoleDefaults(providerID, "compact", "finder", "coder", "designer", "router")
+	if err != nil {
+		return pebblestore.SystemAgentModelAssignments{}, false, fmt.Errorf("read onboarding system-agent recommendations: %w", err)
+	}
+	if !ok {
+		return pebblestore.SystemAgentModelAssignments{}, false, nil
+	}
+	selection := func(role string) pebblestore.AgentModelAssignment {
+		record := recommended[role]
+		rec := recommendationForRole(record, role)
+		return pebblestore.AgentModelAssignment{
+			Provider:    providerID,
+			Model:       strings.TrimSpace(record.Model),
+			Thinking:    recommendedThinking(rec, ""),
+			ServiceTier: recommendedServiceTier(rec),
+		}
+	}
+	assignments := pebblestore.SystemAgentModelAssignments{
+		Compact: selection("compact"), Finder: selection("finder"),
+		Coder: selection("coder"), Designer: selection("designer"), Router: selection("router"),
+	}
+	for name, assignment := range map[string]pebblestore.AgentModelAssignment{
+		"compact": assignments.Compact, "finder": assignments.Finder, "coder": assignments.Coder,
+		"designer": assignments.Designer, "router": assignments.Router,
+	} {
+		if err := pebblestore.ValidateAgentModelAssignment(assignment); err != nil {
+			return pebblestore.SystemAgentModelAssignments{}, false, fmt.Errorf("incomplete required %s recommendation for provider %q: %w", name, providerID, err)
+		}
+	}
+	return assignments, true, nil
+}
+
+func recommendedServiceTier(rec pebblestore.ModelCatalogRecommendation) string {
+	switch strings.ToLower(strings.TrimSpace(rec.Serving)) {
+	case "fast", "priority":
+		return "priority"
+	default:
+		return ""
+	}
+}
+
 func (s *Server) snapshotRecommendedProviderDefaults(providerID string, required bool) (defaults.ProviderDefaults, bool, error) {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	if providerID == "" {
 		return defaults.ProviderDefaults{}, false, nil
 	}
 	providerDefaults := defaults.ProviderDefaults{
-		ProviderID:       providerID,
-		UtilitySubagents: builtinUtilityAgentNames(),
+		ProviderID: providerID,
 	}
 	if err := s.applySnapshotRecommendedDefaultsForMode(providerID, &providerDefaults, required); err != nil {
 		return defaults.ProviderDefaults{}, false, err

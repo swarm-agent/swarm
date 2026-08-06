@@ -19,6 +19,7 @@ type Store struct {
 	sessionMutations     *sessionMutationCoordinator
 	modelProfilesMu      sync.Mutex
 	swarmProfilesMu      sync.Mutex
+	agentModelSettingsMu sync.Mutex
 	tailscaleAllowlistMu sync.Mutex
 }
 

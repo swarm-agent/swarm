@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -78,9 +79,8 @@ type manageSessionsDeployInput struct {
 // execution identity from the stored profile that owns model preferences.
 // Swarm's compiled profile is model-less; its account row remains the model
 // selection authority without becoming executable identity metadata. Queued AI
-// tasks additionally preserve the account's active primary profile when it is a
-// plan/auto split profile, so a plan-mode task can switch to that profile's auto
-// lane after exit_plan_mode.
+// tasks execute as Swarm and use the session's explicit model binding or the
+// account's current default model profile.
 type manageSessionsDeployAgentResolution struct {
 	ExecutionProfile  pebblestore.AgentProfile
 	PreferenceProfile pebblestore.AgentProfile
@@ -99,14 +99,7 @@ func (r manageSessionsDeployAgentResolution) preferenceForMode(base pebblestore.
 	return applyAgentPreferenceOverridesForMode(base, source, mode)
 }
 
-func (s *Service) resolveQueuedAITaskDeployAgent(profiles map[string]pebblestore.AgentProfile, activeName string) (manageSessionsDeployAgentResolution, bool, error) {
-	activeName = strings.ToLower(strings.TrimSpace(activeName))
-	if active := profiles[activeName]; active.Enabled && active.Mode == agentruntime.ModePrimary && pebblestore.AgentProfileRuntimeMode(active) == pebblestore.AgentRuntimeModePlanAuto && pebblestore.AgentModelMode(active) == "split" && pebblestore.AgentSupportsSplitModel(active) {
-		if strings.EqualFold(active.Name, agentruntime.SwarmAgentID) {
-			return s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
-		}
-		return manageSessionsDeployAgentResolution{ExecutionProfile: active, PreferenceProfile: active}, true, nil
-	}
+func (s *Service) resolveQueuedAITaskDeployAgent(profiles map[string]pebblestore.AgentProfile, _ string) (manageSessionsDeployAgentResolution, bool, error) {
 	return s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
 }
 
@@ -306,8 +299,14 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 		}
 		preference := resolution.preferenceForMode(parent.Preference, input.Mode)
 		modelProfile := (*pebblestore.SessionModelProfileSnapshot)(nil)
-		if aiTask != nil && parent.ModelProfile != nil {
-			modelProfile = cloneManageSessionsDeployModelProfile(parent.ModelProfile)
+		if aiTask != nil && parent.ModelProfile == nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] queued AI task is missing its immutable model profile", i)
+		}
+		if parent.ModelProfile != nil {
+			modelProfile, err = inheritedSessionModelProfile(parent.ModelProfile, input.Mode)
+			if err != nil {
+				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] model profile: %w", i, err)
+			}
 			preference, err = manageSessionsDeployModelProfilePreference(modelProfile, input.Mode)
 			if err != nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] model profile: %w", i, err)
@@ -324,7 +323,7 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 			}
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
 		}
-		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, ModelProfile: modelProfile, WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
+		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, ModelProfile: cloneManageSessionsDeployModelProfile(modelProfile), WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
 		if input.Worktree {
 			if s.worktrees == nil {
 				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)
@@ -349,40 +348,77 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 	return manifest, nil
 }
 
+func (s *Service) resolveSwarmDefaultModelProfile(accountScopeID string, bound *pebblestore.SessionModelProfileSnapshot, _ int64) (*pebblestore.SessionModelProfileSnapshot, error) {
+	if err := validateManageSessionsDeployModelProfile(bound); err == nil {
+		// A session snapshot is immutable even when it records that the account
+		// default was its source. Re-reading mutable favorites here would change
+		// the model contract inherited by a deployed child.
+		return cloneManageSessionsDeployModelProfile(bound), nil
+	}
+
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope is required to resolve Swarm model assignments")
+	}
+	if s == nil || s.modelProfiles == nil {
+		return nil, errors.New("model profile service is not configured")
+	}
+	// The flat favorites service alone cannot identify the account's required
+	// Action and optional Plan assignments. Do not turn its independently
+	// ordered default favorite into a synthetic Action-only snapshot.
+	return nil, errors.New("calling session has no complete immutable Swarm model snapshot; account Swarm Action/Plan assignments must be resolved before deployment")
+}
+
 func cloneManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) *pebblestore.SessionModelProfileSnapshot {
+	return pebblestore.CloneSessionModelProfileSnapshot(profile)
+}
+
+func inheritedSessionModelProfile(profile *pebblestore.SessionModelProfileSnapshot, mode string) (*pebblestore.SessionModelProfileSnapshot, error) {
+	cloned := cloneManageSessionsDeployModelProfile(profile)
+	if err := validateManageSessionsDeployModelProfile(cloned); err != nil {
+		return nil, fmt.Errorf("parent immutable model profile: %w", err)
+	}
+	if _, err := manageSessionsDeployModelProfilePreference(cloned, mode); err != nil {
+		return nil, err
+	}
+	return cloned, nil
+}
+
+func equalSessionModelProfiles(left, right *pebblestore.SessionModelProfileSnapshot) bool {
+	return reflect.DeepEqual(cloneManageSessionsDeployModelProfile(left), cloneManageSessionsDeployModelProfile(right))
+}
+
+func validateManageSessionsDeployModelProfile(profile *pebblestore.SessionModelProfileSnapshot) error {
 	if profile == nil {
-		return nil
+		return errors.New("model profile is required")
 	}
-	cloned := *profile
-	if profile.Single != nil {
-		selection := *profile.Single
-		cloned.Single = &selection
+	if strings.TrimSpace(profile.Action.Provider) == "" || strings.TrimSpace(profile.Action.Model) == "" {
+		return errors.New("session model profile Action selection has no provider/model")
 	}
-	if profile.Plan != nil {
-		selection := *profile.Plan
-		cloned.Plan = &selection
+	if profile.Plan != nil && (strings.TrimSpace(profile.Plan.Provider) == "" || strings.TrimSpace(profile.Plan.Model) == "") {
+		return errors.New("session model profile Plan selection has no provider/model")
 	}
-	if profile.Auto != nil {
-		selection := *profile.Auto
-		cloned.Auto = &selection
-	}
-	return &cloned
+	return nil
 }
 
 func manageSessionsDeployModelProfilePreference(profile *pebblestore.SessionModelProfileSnapshot, mode string) (pebblestore.ModelPreference, error) {
-	if profile == nil {
-		return pebblestore.ModelPreference{}, errors.New("model profile is required")
+	if err := validateManageSessionsDeployModelProfile(profile); err != nil {
+		return pebblestore.ModelPreference{}, err
 	}
-	selection := profile.Single
-	if strings.EqualFold(strings.TrimSpace(profile.ModelMode), pebblestore.ModelProfileModeSplit) {
-		if sessionruntime.NormalizeMode(mode) == sessionruntime.ModePlan {
-			selection = profile.Plan
-		} else {
-			selection = profile.Auto
+	selection := &profile.Action
+	selectionName := strings.TrimSpace(profile.ActionFavoriteName)
+	if sessionruntime.NormalizeMode(mode) == sessionruntime.ModePlan {
+		selection = profile.Plan
+		selectionName = strings.TrimSpace(profile.PlanFavoriteName)
+		if selection == nil {
+			return pebblestore.ModelPreference{}, errors.New("session model profile has Plan mode disabled")
 		}
 	}
-	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
-		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile %q has no %s provider/model", strings.TrimSpace(profile.Name), sessionruntime.NormalizeMode(mode))
+	if selectionName == "" {
+		selectionName = sessionruntime.NormalizeMode(mode)
+	}
+	if strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
+		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile selection %q has no provider/model", selectionName)
 	}
 	return pebblestore.ModelPreference{
 		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),

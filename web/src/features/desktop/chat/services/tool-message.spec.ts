@@ -1,4 +1,4 @@
-import { buildStructuredToolMessage, parseStructuredToolMessage } from "./tool-message";
+import { buildStructuredToolMessage, describeToolActivity, parseStructuredToolMessage } from "./tool-message";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -537,6 +537,7 @@ function testSearchToolPreservesContentMatchText(): void {
   })
 
   assert(Boolean(message), 'expected structured search tool message')
+  assert(message?.searchData?.queries[0] === 'SearchToolView', `unexpected search query: ${message?.searchData?.queries[0]}`)
   const match = message?.searchData?.files[0]?.queryGroups[0]?.matches[0]
   assert(match?.line === 307, `unexpected search match line: ${match?.line}`)
   assert(match?.column === 12, `unexpected search match column: ${match?.column}`)
@@ -573,6 +574,7 @@ function testSearchToolParsesCompactGroupedResults(): void {
 
   assert(Boolean(message), 'expected compact grouped search tool message')
   assert(message?.searchData?.queryCount === 2, `unexpected compact search query count: ${message?.searchData?.queryCount}`)
+  assert(message?.searchData?.queries.join(' | ') === 'SearchToolView | ManageSessionsCard', `unexpected compact search queries: ${message?.searchData?.queries.join(' | ')}`)
   assert(message?.searchData?.files.length === 1, `unexpected compact search file count: ${message?.searchData?.files.length}`)
   assert(message?.searchData?.files[0]?.matchCount === 2, `unexpected compact search match count: ${message?.searchData?.files[0]?.matchCount}`)
   assert(message?.searchData?.files[0]?.queryGroups[1]?.matches[0]?.line === 1077, 'expected grouped line metadata')
@@ -1090,7 +1092,23 @@ function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
   assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
 }
 
+function testProviderNeutralToolActivityDescriptors(): void {
+  assert(describeToolActivity('edit').kind === 'edit', 'edit should use edit semantics');
+  assert(describeToolActivity('edit').activeLabel === 'Editing', 'edit should expose active label');
+  assert(describeToolActivity('plan_manage').kind === 'plan', 'plan_manage should use plan semantics');
+  assert(describeToolActivity('plan').activeLabel === 'Planning', 'plan should expose planning label');
+  assert(describeToolActivity('task').kind === 'task', 'task should use subagent semantics');
+  assert(describeToolActivity('task').activeLabel === 'Launching subagents', 'task should expose launch label');
+  assert(describeToolActivity('search').kind === 'investigation', 'search should use investigation semantics');
+  assert(describeToolActivity('search').activeLabel === 'Investigating', 'search should expose a stable investigation label');
+  assert(describeToolActivity('read').kind === 'investigation', 'read should use investigation semantics');
+  assert(describeToolActivity('read').label === 'Investigation', 'read should keep the same label as grouped investigation activity');
+  assert(describeToolActivity('custom_tool').kind === 'generic', 'unknown tool should stay generic');
+  assert(describeToolActivity('custom_tool').activeLabel === 'Running Custom Tool', 'generic label should be presentation ready');
+}
+
 function main(): void {
+  testProviderNeutralToolActivityDescriptors();
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
   testExitPlanDefaultApprovalFeedbackIsHidden();

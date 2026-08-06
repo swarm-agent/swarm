@@ -61,7 +61,25 @@ test('existing conversation rows receive a stable suggested-prompt callback', as
   )
 
   assert.match(pane, /const stableSubmit = useCallback\([\s\S]*?, \[\]\)/)
-  assert.match(pane, /const stableSuggestedPrompt = stableSubmit/)
+  assert.match(pane, /const stableSuggestedPrompt = useCallback/)
   assert.match(pane, /onSuggestedPrompt=\{stableSuggestedPrompt\}/)
   assert.doesNotMatch(pane, /onSuggestedPrompt=\{\(prompt\) =>/)
+})
+
+test('existing conversation keeps routed mode read-only and derives header model identity from canonical state', async () => {
+  const source = await readFile(paneSourceUrl, 'utf8')
+  const pane = componentBody(
+    source,
+    'DesktopV3ExistingConversationPane',
+    'DesktopV3RenderItemView',
+  )
+
+  assert.match(pane, /const resolvedModelProfile = useMemo\([\s\S]*modelProfileFromMetadata\(sessionMetadata, mode\)/)
+  assert.match(pane, /const canonicalHeaderPreference = sessionProfilePreference \?\? cachedPreference/)
+  assert.match(pane, /modelLabel=\{canonicalHeaderModelLabel\}/)
+  assert.match(pane, /favoriteName=\{canonicalHeaderModelLabel \? resolvedModelProfile\?\.name : undefined\}/)
+  assert.match(pane, /mode=\{mode\}[\s\S]*showModePicker[\s\S]*resolvedSessionControls/)
+  assert.doesNotMatch(pane, /onModeSelect=\{/)
+  assert.doesNotMatch(pane, /onModeChange\?\.|updateSessionV3Mode[(]/)
+  assert.doesNotMatch(pane, /durableWorktreeActive/)
 })

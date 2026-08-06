@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -152,6 +153,9 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 	}
 	now := time.Now().UnixMilli()
 	modelProfileSnapshot, err := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
+	if err == nil && req.ModelProfile == nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) {
+		modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
+	}
 	if err != nil {
 		writeModelProfileError(w, err)
 		return
@@ -230,9 +234,10 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, errors.New("created sessions v3 tui projection was not found"))
 		return
 	}
+	fields := gitStatusResponseForPath(hydrated.Session.WorkspacePath)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
-		"session":    hydrated.Session,
+		"session":    hydratedSessionSummaryResponse(hydrated.Session, fields),
 		"projection": hydrated.Projection,
 		"messages":   hydrated.Messages,
 		"events":     hydrated.Events,
@@ -258,7 +263,7 @@ func (s *Server) handleSessionV3TUIOpen(w http.ResponseWriter, r *http.Request, 
 		writeSessionNotFound(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated))
+	writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForPath(hydrated.Session.WorkspacePath)))
 }
 
 func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {

@@ -19,13 +19,17 @@ func TestModelProfilesHTTPCRUDIsolationAndBulkDelete(t *testing.T) {
 	accountOne := modelProfileTestPrincipal("account-one")
 	accountTwo := modelProfileTestPrincipal("account-two")
 
-	single := `{"name":"Solo","model_mode":"single","single":{"provider":"codex","model":"single-model","thinking":"high","service_tier":"priority","context_mode":"full"}}`
-	created := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath, single, http.StatusCreated)
+	favorite := `{"name":"Solo","provider":"codex","model":"single-model","thinking":"high","service_tier":"priority","context_mode":"full"}`
+	created := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath, favorite, http.StatusCreated)
 	profileID := modelProfileIDFromResponse(t, created)
 	if !strings.HasPrefix(profileID, "mp_") {
 		t.Fatalf("profile_id = %q, want opaque mp_ id", profileID)
 	}
 	createdProfile := created["model_profile"].(map[string]any)
+	assertFlatModelProfile(t, createdProfile, map[string]string{
+		"name": "Solo", "provider": "codex", "model": "single-model", "thinking": "high",
+		"service_tier": "priority", "context_mode": "full",
+	})
 	if createdProfile["is_default"] != true {
 		t.Fatalf("first profile is_default = %#v", createdProfile["is_default"])
 	}
@@ -33,15 +37,19 @@ func TestModelProfilesHTTPCRUDIsolationAndBulkDelete(t *testing.T) {
 	modelProfileRequestJSON(t, server, accountOne, http.MethodGet, modelProfilesPath+"/"+profileID, "", http.StatusOK)
 	modelProfileRequestJSON(t, server, accountTwo, http.MethodGet, modelProfilesPath+"/"+profileID, "", http.StatusNotFound)
 
-	split := `{"name":"Renamed","model_mode":"split","plan":{"provider":"codex","model":"plan-model","thinking":"high","service_tier":"priority","context_mode":"full"},"auto":{"provider":"codex","model":"auto-model","thinking":"medium","service_tier":"standard","context_mode":"compact"}}`
-	updated := modelProfileRequestJSON(t, server, accountOne, http.MethodPut, modelProfilesPath+"/"+profileID, split, http.StatusOK)
+	renamed := `{"name":"Renamed","provider":"anthropic","model":"updated-model","thinking":"medium","service_tier":"standard","context_mode":"compact"}`
+	updated := modelProfileRequestJSON(t, server, accountOne, http.MethodPut, modelProfilesPath+"/"+profileID, renamed, http.StatusOK)
 	if got := modelProfileIDFromResponse(t, updated); got != profileID {
 		t.Fatalf("updated profile_id = %q, want %q", got, profileID)
 	}
+	assertFlatModelProfile(t, updated["model_profile"].(map[string]any), map[string]string{
+		"name": "Renamed", "provider": "anthropic", "model": "updated-model", "thinking": "medium",
+		"service_tier": "standard", "context_mode": "compact",
+	})
 
-	duplicate := strings.Replace(single, `"Solo"`, `"renamed"`, 1)
+	duplicate := strings.Replace(renamed, `"Renamed"`, `"renamed"`, 1)
 	modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath, duplicate, http.StatusConflict)
-	second := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath, strings.Replace(split, `"Renamed"`, `"Second"`, 1), http.StatusCreated)
+	second := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath, strings.Replace(renamed, `"Renamed"`, `"Second"`, 1), http.StatusCreated)
 	secondID := modelProfileIDFromResponse(t, second)
 	setDefault := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath+"/default", `{"profile_id":"`+secondID+`"}`, http.StatusOK)
 	if setDefault["default_profile_id"] != secondID {
@@ -54,6 +62,12 @@ func TestModelProfilesHTTPCRUDIsolationAndBulkDelete(t *testing.T) {
 	if listed["default_profile_id"] != secondID {
 		t.Fatalf("listed default_profile_id = %#v", listed["default_profile_id"])
 	}
+	modelProfileRequestJSON(t, server, accountOne, http.MethodPatch, modelProfilesPath, `{"profile_ids":["`+secondID+`","`+profileID+`"]}`, http.StatusOK)
+	reordered := modelProfileRequestJSON(t, server, accountOne, http.MethodGet, modelProfilesPath, "", http.StatusOK)
+	profiles := reordered["model_profiles"].([]any)
+	if profiles[0].(map[string]any)["profile_id"] != secondID || profiles[1].(map[string]any)["profile_id"] != profileID {
+		t.Fatalf("model_profiles order = %#v, want [%q %q]", profiles, secondID, profileID)
+	}
 
 	bulk := `{"profile_ids":["` + profileID + `","missing","` + profileID + `"]}`
 	response := modelProfileRequestJSON(t, server, accountOne, http.MethodPost, modelProfilesPath+"/bulk-delete", bulk, http.StatusOK)
@@ -65,7 +79,7 @@ func TestModelProfilesHTTPCRUDIsolationAndBulkDelete(t *testing.T) {
 
 	modelProfileRequestJSON(t, server, accountOne, http.MethodDelete, modelProfilesPath+"/"+secondID, "", http.StatusOK)
 	modelProfileRequestJSON(t, server, accountOne, http.MethodGet, modelProfilesPath+"/"+secondID, "", http.StatusNotFound)
-	modelProfileRequestJSON(t, server, accountTwo, http.MethodPost, modelProfilesPath, single, http.StatusCreated)
+	modelProfileRequestJSON(t, server, accountTwo, http.MethodPost, modelProfilesPath, favorite, http.StatusCreated)
 }
 
 func TestModelProfilesHTTPErrors(t *testing.T) {
@@ -75,8 +89,23 @@ func TestModelProfilesHTTPErrors(t *testing.T) {
 	modelProfileRequestJSON(t, server, identity.Principal{}, http.MethodGet, modelProfilesPath, "", http.StatusUnauthorized)
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath, `{`, http.StatusBadRequest)
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath, `{}`, http.StatusBadRequest)
+
+	for field, value := range map[string]string{
+		"model_mode": `"single"`,
+		"single":     `{}`,
+		"plan":       `{}`,
+		"auto":       `{}`,
+	} {
+		t.Run("reject removed "+field, func(t *testing.T) {
+			body := `{"name":"Old","provider":"codex","model":"model","thinking":"high","` + field + `":` + value + `}`
+			response := modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath, body, http.StatusBadRequest)
+			if message, _ := response["error"].(string); !strings.Contains(message, field) {
+				t.Fatalf("error = %#v, want removed field %q", response["error"], field)
+			}
+		})
+	}
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath+"/bulk-delete", `{"profile_ids":[]}`, http.StatusBadRequest)
-	modelProfileRequestJSON(t, server, principal, http.MethodPatch, modelProfilesPath, `{}`, http.StatusMethodNotAllowed)
+	modelProfileRequestJSON(t, server, principal, http.MethodPatch, modelProfilesPath, `{}`, http.StatusBadRequest)
 	modelProfileRequestJSON(t, server, principal, http.MethodPost, modelProfilesPath+"/unknown/extra", `{}`, http.StatusBadRequest)
 }
 
@@ -125,6 +154,25 @@ func modelProfileIDFromResponse(t *testing.T, response map[string]any) string {
 		t.Fatalf("profile_id = %#v", profile["profile_id"])
 	}
 	return profileID
+}
+
+func assertFlatModelProfile(t *testing.T, profile map[string]any, want map[string]string) {
+	t.Helper()
+	for field, value := range want {
+		if profile[field] != value {
+			t.Fatalf("model_profile[%q] = %#v, want %q", field, profile[field], value)
+		}
+	}
+	for _, removed := range []string{"model_mode", "single", "plan", "auto"} {
+		if _, ok := profile[removed]; ok {
+			t.Fatalf("model_profile contains removed field %q: %#v", removed, profile)
+		}
+	}
+	for _, metadata := range []string{"profile_id", "created_at", "updated_at", "sort_order", "is_default"} {
+		if _, ok := profile[metadata]; !ok {
+			t.Fatalf("model_profile missing metadata field %q: %#v", metadata, profile)
+		}
+	}
 }
 
 func assertStringSlice(t *testing.T, raw any, want []string) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +32,9 @@ type fakeTransport struct {
 	resolvedPermission client.PermissionRecord
 	permissionExplain  client.PermissionExplain
 	messageRequest     client.SessionV3MessageOptions
+	routedRequests     []client.RoutedSessionV3StartRequest
+	routedResponses    []client.RoutedSessionV3StartResponse
+	routedErrors       []error
 	compactRequest     client.SessionV3CompactOptions
 	compactSessionID   string
 	permissionRequest  struct {
@@ -53,6 +57,21 @@ func (f *fakeTransport) record(call string) {
 	f.calls = append(f.calls, call)
 	f.mu.Unlock()
 }
+func (f *fakeTransport) StartRoutedSessionV3(_ context.Context, request client.RoutedSessionV3StartRequest) (client.RoutedSessionV3StartResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "route")
+	f.routedRequests = append(f.routedRequests, request)
+	index := len(f.routedRequests) - 1
+	if index < len(f.routedErrors) && f.routedErrors[index] != nil {
+		return client.RoutedSessionV3StartResponse{}, f.routedErrors[index]
+	}
+	if index < len(f.routedResponses) {
+		return f.routedResponses[index], nil
+	}
+	return client.RoutedSessionV3StartResponse{}, nil
+}
+
 func (f *fakeTransport) CreateSessionV3WithOptions(_ context.Context, options client.SessionCreateOptions) (client.SessionV3Hydrated, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "create")
@@ -174,6 +193,157 @@ func (f *fakeTransport) SendSessionV3Message(_ context.Context, sessionID string
 	f.result.Message.Content = options.Content
 	f.result.Message.Metadata = options.Metadata
 	return f.result, nil
+}
+
+func TestRoutedActivationFailureRestoresRetryableLocalOperation(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{response, response}}
+	runtime := NewRuntime(transport, NewStore(), nil)
+	activationCalls := 0
+	runtime.SetRoutedActivation(func(context.Context, client.RoutedSessionV3StartResponse) error {
+		activationCalls++
+		if activationCalls == 1 {
+			return errors.New("workspace activation failed")
+		}
+		return nil
+	})
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", true)); err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := SelectRoutedDraft(runtime.Store().Snapshot())
+	if _, err := runtime.StartRoutedDraft(context.Background()); err == nil || !strings.Contains(err.Error(), "workspace activation failed") {
+		t.Fatalf("activation error = %v", err)
+	}
+	failed := runtime.Store().Snapshot()
+	draft, ok := SelectRoutedDraft(failed)
+	if !ok || draft.Status != RoutedDraftFailed || draft.ClientRequestID != identity.ClientRequestID || draft.Prompt != "route this" || failed.Session.ID != "" {
+		t.Fatalf("failed activation state = %#v draft=%#v", failed.Session, draft)
+	}
+	if _, err := runtime.RetryRoutedDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	resolved := runtime.Store().Snapshot()
+	if resolved.Session.ID != "session-routed" || resolved.Connection != ConnectionReady {
+		t.Fatalf("retry state = session %#v connection %q", resolved.Session, resolved.Connection)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.routedRequests) != 2 || transport.routedRequests[0].ClientRequestID != transport.routedRequests[1].ClientRequestID {
+		t.Fatalf("retry identities = %#v", transport.routedRequests)
+	}
+}
+
+func TestRoutedTransitionUsesSignedCursorHandshakeInsteadOfMutationStorageCursor(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{response}}
+	runtime := NewRuntime(transport, NewStore(), nil)
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartRoutedDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+
+	transport.mu.Lock()
+	options := append([]client.V3RealtimeResumeOptions(nil), transport.streamOptions...)
+	transport.mu.Unlock()
+	if len(options) != 1 || !options[0].StartAtCurrent || options[0].EndpointCursor != "" {
+		t.Fatalf("routed stream options = %#v", options)
+	}
+	if len(options[0].Subscriptions) != 1 || options[0].Subscriptions[0].EndpointCursor != "" || options[0].Subscriptions[0].SessionID != "session-routed" {
+		t.Fatalf("routed subscription = %#v", options[0].Subscriptions)
+	}
+	state := runtime.Store().Snapshot()
+	if state.Connection != ConnectionReady || state.NeedsRehydrate || state.StaleReason != "" || state.EndpointCursor != "" {
+		t.Fatalf("routed transition state = %#v", state)
+	}
+}
+
+func TestRoutedDraftFailureRestoresLocalIntentAndRetryKeepsIdentity(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	transport := &fakeTransport{routedErrors: []error{errors.New("router unavailable"), nil}, routedResponses: []client.RoutedSessionV3StartResponse{{}, response}}
+	runtime := NewRuntime(transport, nil, nil)
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", true)); err != nil {
+		t.Fatal(err)
+	}
+	pending := runtime.Store().Snapshot()
+	draft, ok := SelectRoutedDraft(pending)
+	if !ok || draft.ClientRequestID == "" || pending.Session.ID != "" || pending.Connection != ConnectionDisconnected {
+		t.Fatalf("local pending state = %#v", pending)
+	}
+	identity := draft.ClientRequestID
+	if _, err := runtime.StartRoutedDraft(context.Background()); err == nil {
+		t.Fatal("expected routed start failure")
+	}
+	failed := runtime.Store().Snapshot()
+	draft, ok = SelectRoutedDraft(failed)
+	if !ok || draft.Status != RoutedDraftFailed || draft.Prompt != "route this" || !draft.PlanModeRequested || !draft.ManagedWorktreeRequested || draft.ClientRequestID != identity || failed.Session.ID != "" {
+		t.Fatalf("failed draft = %#v state=%#v", draft, failed)
+	}
+	if _, err := runtime.RetryRoutedDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+	resolved := runtime.Store().Snapshot()
+	draft, ok = SelectRoutedDraft(resolved)
+	if !ok || draft.Status != RoutedDraftResolved || draft.ClientRequestID != identity || resolved.Session.ID != "session-routed" || resolved.Connection != ConnectionReady {
+		t.Fatalf("resolved state = %#v", resolved)
+	}
+	transport.mu.Lock()
+	requests := append([]client.RoutedSessionV3StartRequest(nil), transport.routedRequests...)
+	calls := append([]string(nil), transport.calls...)
+	transport.mu.Unlock()
+	if len(requests) != 2 || requests[0].ClientRequestID != identity || requests[1].ClientRequestID != identity || requests[1].IdempotencyKey != identity {
+		t.Fatalf("retry requests = %#v", requests)
+	}
+	if !reflect.DeepEqual(calls, []string{"route", "route", "stream", "ready"}) {
+		t.Fatalf("routed calls = %#v", calls)
+	}
+}
+
+func routedTestDraft(prompt string, plan bool) RoutedDraft {
+	return RoutedDraft{
+		Prompt: prompt, PlanModeRequested: plan, ManagedWorktreeRequested: true,
+		AgentName: "swarm", WorkspacePath: "/source", HostWorkspacePath: "/source", RuntimeWorkspacePath: "/source",
+		WorkspaceBindingID: "binding-1", SwarmID: "swarm-1", TargetKind: "host", TargetRelationship: "self",
+		Metadata: map[string]any{"source": "tui"},
+	}
+}
+
+func routedRuntimeResponse(sessionID string) client.RoutedSessionV3StartResponse {
+	projection := client.SessionV3Projection{SessionID: sessionID, LastEventSeq: 1, ProjectionHighWatermarkSeq: 1}
+	message := client.SessionMessage{ID: "message-1", SessionID: sessionID, GlobalSeq: 1, Role: "user", Content: "route this"}
+	run := client.SessionV3RunIntent{SessionID: sessionID, RunID: "run-1", Status: "pending_executor", EventSeq: 1}
+	outbox := &client.SessionV3RealtimeOutboxRow{EndpointCursor: "cursor-1", SessionID: sessionID, Projection: projection, Event: client.SessionV3Event{ID: "event-1", SessionID: sessionID, Seq: 1}}
+	return client.RoutedSessionV3StartResponse{
+		OK: true, SessionID: sessionID, Title: "Routed", StartingMode: "plan",
+		Session: client.SessionSummary{ID: sessionID, Title: "Routed", Mode: "plan", WorkspacePath: "/runtime", WorktreeEnabled: true, WorktreeRootPath: "/runtime"},
+		SessionView: client.RoutedSessionV3SessionView{
+			Identity:        &client.RoutedSessionV3Identity{SessionID: sessionID, Title: "Routed", WorkspaceBindingID: "binding-1", SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime", RuntimeSwarmID: "swarm-1", AuthorityHostSwarmID: "swarm-1", WorktreeEnabled: true, WorktreeRootPath: "/runtime"},
+			AgenticSettings: &client.RoutedSessionV3AgenticSettings{Mode: "plan", EffectivePreference: client.ModelPreference{Provider: "codex", Model: "gpt"}},
+		},
+		FirstMessage: message, Projection: projection,
+		Mutation: client.SessionV3MutationResult{SessionID: sessionID, Event: client.SessionV3Event{ID: "event-1", SessionID: sessionID, Seq: 1}, Message: &message, RunIntent: &run, Projection: projection, RealtimeOutbox: outbox},
+	}
+}
+
+func TestRoutedDraftRejectsChangedSourceAuthority(t *testing.T) {
+	response := routedRuntimeResponse("session-routed")
+	response.SessionView.Identity.SourceWorkspacePath = "/other"
+	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{response}}
+	runtime := NewRuntime(transport, NewStore(), nil)
+	if err := runtime.PrimeRoutedDraft(routedTestDraft("route this", false)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.StartRoutedDraft(context.Background()); err == nil || !strings.Contains(err.Error(), "changed the captured source workspace") {
+		t.Fatalf("authority error = %v", err)
+	}
+	state := runtime.Store().Snapshot()
+	draft, ok := SelectRoutedDraft(state)
+	if !ok || draft.Status != RoutedDraftFailed || state.Session.ID != "" {
+		t.Fatalf("authority rejection state = session %#v draft %#v", state.Session, draft)
+	}
 }
 
 func TestCompactUsesCanonicalSessionAPIWithoutNotes(t *testing.T) {
@@ -450,6 +620,50 @@ func TestCreateSendAndRealtimeSequenceProjectsVisibleCanonicalState(t *testing.T
 	}
 	if cursor, seq := SelectCursor(state); cursor != "cursor-3" || seq != 2 {
 		t.Fatalf("cursor state = %q/%d", cursor, seq)
+	}
+}
+
+func TestCanonicalRuntimeProviderToolStartRendersVisibleToolRow(t *testing.T) {
+	text, err := json.Marshal(map[string]any{
+		"type": "session.provider_tool_call.started", "run_id": "run-1", "step": 1, "step_id": "step-1", "event_index": 1,
+		"output_index": 0, "call_id": "call-edit", "tool_name": "edit", "status": "started", "recorded_at": int64(100),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &fakeTransport{
+		created: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s"}, SnapshotEndpointCursor: "cursor-1"},
+		streamFrames: []client.V3RealtimeFrame{{
+			Kind: "live.patch",
+			Live: &client.V3RealtimeLivePatch{
+				SessionID: "s", RunID: "run-1", StreamID: "provider-tool:run-1:step:1:event:1", StreamKind: "provider_tool_call", Operation: "append",
+				Step: 1, StepID: "step-1", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: uint64(len(text)), Text: string(text), RecordedAt: 100,
+			},
+		}},
+	}
+	runtime := NewRuntime(transport, nil, nil)
+	if err := runtime.Hydrate(context.Background(), "s", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+
+	state := runtime.Store().Snapshot()
+	tools := SelectLiveTools(state)
+	if len(tools) != 1 || tools[0].CallID != "call-edit" || tools[0].Name != "edit" || tools[0].Status != "constructing" {
+		t.Fatalf("canonical runtime tools = %#v", tools)
+	}
+	page := NewPage(runtime, testPageStyles())
+	rows := page.renderRows(state, 80, testPageStyles())
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	if got := rendered.String(); !strings.Contains(got, "• edit") || !strings.Contains(got, "editing…") {
+		t.Fatalf("canonical provider tool start was not visible:\n%s", got)
 	}
 }
 

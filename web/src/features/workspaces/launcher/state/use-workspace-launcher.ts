@@ -10,10 +10,13 @@ import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/
 import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-workspace'
 import { selectWorkspace } from '../mutations/select-workspace'
 import { setWorkspaceTheme as setWorkspaceThemeAPI } from '../mutations/set-workspace-theme'
+import { setWorkspaceIcon as setWorkspaceIconAPI } from '../mutations/set-workspace-icon'
 import { setWorkspaceWorktrees } from '../mutations/set-workspace-worktrees'
+import { refreshWorkspaceDefinitions as refreshWorkspaceDefinitionsAPI } from '../mutations/refresh-workspace-definitions'
 import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../services/discovery-ordering'
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
+import { listWorkspaces } from '../queries/list-workspaces'
 import { uiSettingsQueryKey, uiSettingsQueryOptions, workspaceOverviewQueryKey, workspaceOverviewQueryOptions } from '../../../queries/query-options'
 import type {
   WorkspaceBrowseResult,
@@ -44,6 +47,8 @@ interface UseWorkspaceLauncherState {
   currentWorkspacePath: string | null
   loading: boolean
   refreshing: boolean
+  personalizing: boolean
+  personalizationMessage: string | null
   selectingPath: string | null
   savingPath: string | null
   draggingWorkspacePath: string | null
@@ -57,13 +62,15 @@ interface UseWorkspaceLauncherState {
   deleteWorkspace: (path: string) => Promise<void>
   unlinkWorkspaceDirectory: (workspacePath: string, directoryPath: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
-  saveWorkspace: (input: SaveWorkspaceInput) => Promise<void>
+  saveWorkspace: (input: SaveWorkspaceInput) => Promise<WorkspaceResolution>
   createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
+  setWorkspaceIcon: (path: string, iconPNGDataURL: string) => Promise<void>
   moveWorkspaceToIndex: (path: string, targetIndex: number) => Promise<void>
   swapWorkspacePositions: (sourcePath: string, targetPath: string) => Promise<void>
   setDraggingWorkspacePath: (path: string | null) => void
   refresh: (roots?: string[]) => Promise<void>
+  refreshWorkspaceDefinitions: () => Promise<void>
   browsePath: (path: string) => Promise<void>
 }
 
@@ -159,6 +166,14 @@ function workspacesEqual(left: WorkspaceEntry[], right: WorkspaceEntry[]): boole
       leftWorkspace.path !== rightWorkspace.path
       || leftWorkspace.workspaceName !== rightWorkspace.workspaceName
       || leftWorkspace.themeId !== rightWorkspace.themeId
+      || leftWorkspace.iconPNGDataURL !== rightWorkspace.iconPNGDataURL
+      || leftWorkspace.definitionStatus !== rightWorkspace.definitionStatus
+      || leftWorkspace.definition !== rightWorkspace.definition
+      || leftWorkspace.definitionError !== rightWorkspace.definitionError
+      || leftWorkspace.definitionSuggestion !== rightWorkspace.definitionSuggestion
+      || leftWorkspace.definitionAttempts !== rightWorkspace.definitionAttempts
+      || leftWorkspace.definitionGeneration !== rightWorkspace.definitionGeneration
+      || leftWorkspace.definitionUpdatedAt !== rightWorkspace.definitionUpdatedAt
       || leftWorkspace.isGitRepo !== rightWorkspace.isGitRepo
       || leftWorkspace.sortIndex !== rightWorkspace.sortIndex
       || leftWorkspace.addedAt !== rightWorkspace.addedAt
@@ -225,6 +240,8 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null)
   const [loading, setLoading] = useState(autoRefresh)
   const [refreshing, setRefreshing] = useState(false)
+  const [personalizing, setPersonalizing] = useState(false)
+  const [personalizationMessage, setPersonalizationMessage] = useState<string | null>(null)
   const [selectingPath, setSelectingPath] = useState<string | null>(null)
   const [savingPath, setSavingPath] = useState<string | null>(null)
   const [draggingWorkspacePath, setDraggingWorkspacePath] = useState<string | null>(null)
@@ -330,6 +347,37 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [applyDocumentTheme, currentWorkspacePath, globalThemeId, loading, workspaces])
 
+  const hasPendingWorkspaceDefinition = workspaces.some((workspace) => workspace.definitionStatus === 'pending')
+
+  useEffect(() => {
+    if (!hasPendingWorkspaceDefinition) {
+      return
+    }
+    const timer = window.setInterval(() => {
+      void listWorkspaces()
+        .then((latest) => {
+          const latestByPath = new Map(latest.map((workspace) => [workspace.path, workspace]))
+          setWorkspaces((current) => current.map((workspace) => {
+            const updated = latestByPath.get(workspace.path)
+            return updated
+              ? {
+                  ...workspace,
+                  definitionStatus: updated.definitionStatus,
+                  definition: updated.definition,
+                  definitionError: updated.definitionError,
+                  definitionSuggestion: updated.definitionSuggestion,
+                  definitionAttempts: updated.definitionAttempts,
+                  definitionGeneration: updated.definitionGeneration,
+                  definitionUpdatedAt: updated.definitionUpdatedAt,
+                }
+              : workspace
+          }))
+        })
+        .catch(() => {})
+    }, 2_000)
+    return () => window.clearInterval(timer)
+  }, [hasPendingWorkspaceDefinition])
+
   useEffect(() => {
     const defaultOverviewKey = workspaceOverviewQueryKey([], 25)
     const settingsKey = uiSettingsQueryKey()
@@ -434,6 +482,22 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
 
     try {
       const resolution = await saveWorkspaceAPI(targetPath, input.name.trim(), input.themeId.trim() === 'inherit' ? '' : input.themeId.trim(), input.makeCurrent)
+      setWorkspaces((current) => {
+        const resolvedPath = resolution.resolvedPath.trim() || targetPath
+        const next = current.map((workspace) => workspace.path === resolvedPath
+          ? {
+              ...workspace,
+              definitionStatus: resolution.definitionStatus,
+              definition: resolution.definition,
+              definitionError: resolution.definitionError,
+              definitionSuggestion: resolution.definitionSuggestion,
+              definitionAttempts: resolution.definitionAttempts,
+              definitionGeneration: resolution.definitionGeneration,
+              definitionUpdatedAt: resolution.definitionUpdatedAt,
+            }
+          : workspace)
+        return next
+      })
       const linkedDirectories = [
         ...(input.linkedDirectory && input.linkedDirectory.trim() !== '' ? [input.linkedDirectory.trim()] : []),
         ...((input.linkedDirectories ?? []).map((value) => value.trim()).filter((value) => value !== '')),
@@ -444,6 +508,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       }
       await refresh()
       await browsePath(resolution.resolvedPath)
+      return resolution
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to save workspace')
       throw err
@@ -584,6 +649,55 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [applyDocumentTheme, currentWorkspacePath, globalThemeId, queryClient, workspaces])
 
+  const updateWorkspaceIcon = useCallback(async (path: string, iconPNGDataURL: string) => {
+    const trimmedPath = path.trim()
+    if (trimmedPath === '') return
+    setSavingPath(trimmedPath)
+    setActionError(null)
+    try {
+      const resolution = await setWorkspaceIconAPI(trimmedPath, iconPNGDataURL)
+      setWorkspaces((current) => current.map((workspace) => (
+        workspace.path === trimmedPath
+          ? { ...workspace, iconPNGDataURL: resolution.iconPNGDataURL }
+          : workspace
+      )))
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update workspace icon')
+      throw err
+    } finally {
+      setSavingPath(null)
+    }
+  }, [])
+
+  const refreshWorkspaceDefinitions = useCallback(async () => {
+    setPersonalizing(true)
+    setPersonalizationMessage(null)
+    setActionError(null)
+    try {
+      const result = await refreshWorkspaceDefinitionsAPI()
+      setWorkspaces((current) => {
+        const pendingByPath = new Map(result.workspaces.map((workspace) => [workspace.path, workspace]))
+        return current.map((workspace) => {
+          const pending = pendingByPath.get(workspace.path)
+          return pending ? { ...workspace, ...pending } : workspace
+        })
+      })
+      const launchedLabel = `${result.launchedCount} workspace${result.launchedCount === 1 ? '' : 's'}`
+      setPersonalizationMessage(result.failedCount > 0
+        ? `Started Router personalization for ${launchedLabel}; ${result.failedCount} could not start.`
+        : `Started Router personalization for ${launchedLabel}.`)
+      if (result.failedCount > 0) {
+        const firstFailure = result.failures[0]
+        setActionError(firstFailure?.error || 'Some workspace personalization sessions could not start')
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to personalize workspaces')
+      throw err
+    } finally {
+      setPersonalizing(false)
+    }
+  }, [])
+
   const moveWorkspaceToIndex = useCallback(async (path: string, targetIndex: number) => {
     const trimmedPath = path.trim()
     if (trimmedPath === '') {
@@ -660,6 +774,8 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     currentWorkspacePath,
     loading,
     refreshing,
+    personalizing,
+    personalizationMessage,
     selectingPath,
     savingPath,
     draggingWorkspacePath,
@@ -676,10 +792,12 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     saveWorkspace: persistWorkspace,
     createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,
+    setWorkspaceIcon: updateWorkspaceIcon,
     moveWorkspaceToIndex,
     swapWorkspacePositions,
     setDraggingWorkspacePath,
     refresh,
+    refreshWorkspaceDefinitions,
     browsePath,
   }
 }

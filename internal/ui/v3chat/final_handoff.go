@@ -256,8 +256,13 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 	innerWidth := maxInt(1, width-2)
 	contentWidth := maxInt(1, innerWidth-2)
 	rows := []renderRow{{text: "┌" + strings.Repeat("─", innerWidth) + "┐", style: borderStyle}}
+	bodyRows := 0
 	appendBody := func(text string, style tcell.Style, action string, active bool) {
-		for _, line := range wrapDisplayText(strings.TrimSpace(text), contentWidth) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		for _, line := range wrapText(text, contentWidth) {
 			lineWidth := displayCellWidth(line)
 			padding := strings.Repeat(" ", maxInt(0, contentWidth-lineWidth))
 			bodyStyle := style
@@ -277,7 +282,22 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 				row.actions = []renderActionTarget{{x: 2, width: contentWidth, action: action}}
 			}
 			rows = append(rows, row)
+			bodyRows++
 		}
+	}
+	appendSectionGap := func() {
+		if bodyRows == 0 {
+			return
+		}
+		rows = append(rows, renderRow{
+			text: "│ " + strings.Repeat(" ", contentWidth) + " │",
+			spans: []renderSpan{
+				{text: "│ ", style: borderStyle},
+				{text: strings.Repeat(" ", contentWidth), style: styles.Text},
+				{text: " │", style: borderStyle},
+			},
+		})
+		bodyRows++
 	}
 	outcome := firstNonEmpty(metadataString(message.Metadata, "outcome"), metadataString(message.Metadata, "execution_status"))
 	if outcome == "" && handoff.Recommendation != nil {
@@ -285,12 +305,16 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 	}
 	outcome = strings.ReplaceAll(strings.ReplaceAll(firstNonEmpty(outcome, "completed"), "_", " "), "-", " ")
 	appendBody("FINAL HANDOFF  ·  "+outcome, styles.Primary.Bold(true), "", false)
-	appendBody(handoff.Title, styles.Text.Bold(true), "", false)
-	appendBody(handoff.Overview, styles.Muted, "", false)
-	for _, impact := range handoff.ImpactBullets {
-		appendBody("• "+impact, styles.Muted, "", false)
+	if strings.TrimSpace(handoff.Title) != "" || strings.TrimSpace(handoff.Overview) != "" || len(handoff.ImpactBullets) > 0 {
+		appendSectionGap()
+		appendBody(handoff.Title, styles.Text.Bold(true), "", false)
+		appendBody(handoff.Overview, styles.Muted, "", false)
+		for _, impact := range handoff.ImpactBullets {
+			appendBody("• "+impact, styles.Muted, "", false)
+		}
 	}
 	if recommendation := handoff.Recommendation; recommendation != nil {
+		appendSectionGap()
 		appendBody("RECOMMENDATION", styles.Secondary.Bold(true), "", false)
 		label := strings.TrimSpace(strings.ReplaceAll(recommendation.Decision, "_", " "))
 		if action := strings.TrimSpace(strings.ReplaceAll(recommendation.Action, "_", " ")); action != "" {
@@ -302,6 +326,7 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 		}
 	}
 	if len(handoff.SuggestedPrompts) > 0 {
+		appendSectionGap()
 		appendBody("NEXT STEPS", styles.Secondary.Bold(true), "", false)
 		for index, suggestion := range handoff.SuggestedPrompts {
 			action := finalHandoffPromptAction(message.ID, index)
@@ -309,6 +334,7 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 		}
 	}
 	if finalHandoffHasDetails(handoff) {
+		appendSectionGap()
 		facts := make([]string, 0, 4)
 		if strings.TrimSpace(handoff.Details.Report) != "" {
 			facts = append(facts, "report")
@@ -326,8 +352,10 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 		appendBody("Details  ·  "+strings.Join(facts, "  ·  "), styles.Muted, action, focused && selected == len(handoff.SuggestedPrompts))
 	}
 	if focused {
+		appendSectionGap()
 		appendBody("↑/↓ or Tab move  ·  Enter select  ·  Esc exit", styles.Muted, "", false)
 	} else if finalHandoffControlCount(handoff) > 0 {
+		appendSectionGap()
 		appendBody("Tab focus  ·  1–3 choose next step", styles.Muted, "", false)
 	}
 	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})

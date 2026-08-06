@@ -224,7 +224,7 @@ func (p *ChatPage) drawAskUserModal(s tcell.Screen, screen Rect) {
 	header := fmt.Sprintf("%s  (%d/%d)", title, p.askUserCurrent+1, len(p.askUserQuestions))
 	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, modal.W-4))
 
-	subtitle := "Select options, then press S to submit all answers"
+	subtitle := "Pick a suggestion or use Custom response, then press S to submit"
 	if p.askUserInputMode {
 		subtitle = "Type response, then press Enter to accept"
 	}
@@ -645,7 +645,7 @@ func askUserPayloadFromPermission(record ChatPermissionRecord) (string, string, 
 			{
 				ID:       "q_1",
 				Question: "User input requested",
-				Options:  defaultAskUserOptions(),
+				Options:  ensureAskUserFreeformOption(defaultAskUserOptions()),
 				Required: true,
 			},
 		}
@@ -665,7 +665,7 @@ func askUserPayloadFromPermission(record ChatPermissionRecord) (string, string, 
 			{
 				ID:       "q_1",
 				Question: question,
-				Options:  parseAskUserOptions(args["options"]),
+				Options:  ensureAskUserFreeformOption(parseAskUserOptions(args["options"])),
 				Required: true,
 			},
 		}
@@ -677,9 +677,7 @@ func askUserPayloadFromPermission(record ChatPermissionRecord) (string, string, 
 		if strings.TrimSpace(questions[i].Question) == "" {
 			questions[i].Question = "User input requested"
 		}
-		if len(questions[i].Options) == 0 {
-			questions[i].Options = defaultAskUserOptions()
-		}
+		questions[i].Options = ensureAskUserFreeformOption(questions[i].Options)
 	}
 	return title, context, questions
 }
@@ -804,14 +802,23 @@ func mapBoolArg(payload map[string]any, key string) bool {
 }
 
 func defaultAskUserOptions() []chatAskUserOption {
-	return []chatAskUserOption{
-		{
-			Value:       "__custom__",
-			Label:       "Custom response",
-			Description: "Press Enter to type, then Enter to accept.",
-			AllowCustom: true,
-		},
+	return nil
+}
+
+func ensureAskUserFreeformOption(options []chatAskUserOption) []chatAskUserOption {
+	concrete := make([]chatAskUserOption, 0, len(options)+1)
+	for _, option := range options {
+		if option.AllowCustom || strings.EqualFold(strings.TrimSpace(option.Value), "__custom__") {
+			continue
+		}
+		concrete = append(concrete, option)
 	}
+	return append(concrete, chatAskUserOption{
+		Value:       "__custom__",
+		Label:       "Custom response",
+		Description: "Type your own response.",
+		AllowCustom: true,
+	})
 }
 
 func (p *ChatPage) currentAskUserSelectionAllowsCustom() bool {

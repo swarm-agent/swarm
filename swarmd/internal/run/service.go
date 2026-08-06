@@ -17,10 +17,12 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	compactruntime "swarm/packages/swarmd/internal/compact"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/privacy"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -103,6 +105,7 @@ var (
 type Service struct {
 	sessions                  *sessionruntime.Service
 	model                     *model.Service
+	modelProfiles             *modelprofile.Service
 	providers                 *registry.Registry
 	tools                     *tool.Runtime
 	permissions               *permission.Service
@@ -110,6 +113,7 @@ type Service struct {
 	discovery                 *discovery.Service
 	workspace                 *workspaceruntime.Service
 	uiSettings                *uisettings.Service
+	agentModelSettings        *agentmodelsettings.Service
 	worktrees                 worktreeService
 	events                    *pebblestore.EventLog
 	eventPublish              func(pebblestore.EventEnvelope)
@@ -649,6 +653,18 @@ func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 	s.workspace = workspaceSvc
 }
 
+func (s *Service) SetModelProfileService(modelProfileSvc *modelprofile.Service) {
+	if s != nil {
+		s.modelProfiles = modelProfileSvc
+	}
+}
+
+func (s *Service) SetAgentModelSettingsService(settingsSvc *agentmodelsettings.Service) {
+	if s != nil {
+		s.agentModelSettings = settingsSvc
+	}
+}
+
 func (s *Service) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 	if s == nil {
 		return
@@ -1166,6 +1182,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	ctx = runnerCtx
 	compiledPolicy := options.CompiledPolicy
 	effectiveDisabledTools := cloneDisabledTools(options.DisabledTools)
+	if targetKind == RunTargetKindSubagent || strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModeSubagent) {
+		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{"task": true})
+	}
 	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile); scopeErr != nil {
 		return RunResult{}, scopeErr
 	} else {
@@ -1901,7 +1920,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		// Keep request properties stable across one provider tool loop so native
 		// continuation and prompt caching can reuse the growing prefix.
 		stepRequest = stepRequest.WithRuntimeContext(providerID, runtimeContextAt)
-		response, err := providerRunner.CreateResponseStreaming(runnerCtx, stepRequest, func(event provideriface.StreamEvent) {
+		if options.ApplySessionMutation != nil {
+			runnerCtx = withProviderAttemptObserver(runnerCtx, &durableProviderAttemptObserver{
+				sessionID: sessionID,
+				runID:     runID,
+				principal: options.Principal,
+				apply:     options.ApplySessionMutation,
+			})
+		}
+		response, err := runProviderAttempt(runnerCtx, providerRunner, stepRequest, providerAttemptActivityTimeout, func(event provideriface.StreamEvent) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -3137,7 +3164,7 @@ func (s *Service) resolveCompactPreference(accountScopeID string, basePreference
 	if s == nil {
 		return model.ResolvedPreference{}, pebblestore.AgentProfile{}, errors.New("run service is not configured")
 	}
-	return compactruntime.ResolvePreference(s.model, s.agents, s.uiSettings, accountScopeID, basePreference)
+	return compactruntime.ResolvePreference(s.model, s.agents, s.agentModelSettings, accountScopeID, basePreference)
 }
 
 func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, _ string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
@@ -4178,6 +4205,9 @@ func sessionTitleGenerationLocked(metadata map[string]any) bool {
 	if metadataBoolValue(metadata, "title_locked") || metadataBoolValue(metadata, "background") {
 		return true
 	}
+	if metadataStringValueEquals(metadata, "title_source", "router") {
+		return true
+	}
 	if metadataStringValueEquals(metadata, "lineage_kind", "delegated_subagent") ||
 		metadataStringValueEquals(metadata, "launch_source", "task") ||
 		metadataStringValueEquals(metadata, "launch_source", "targeted_subagent") ||
@@ -4436,6 +4466,14 @@ func (s *Service) applySessionTitleUpdate(sessionID, title, stage string, emit S
 	}
 	title = strings.TrimSpace(title)
 	if title == "" {
+		return
+	}
+	current, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		s.emitSessionTitleWarning(sessionID, stage, err, emit)
+		return
+	}
+	if !ok || sessionTitleGenerationLocked(current.Metadata) {
 		return
 	}
 	updated, env, err := s.sessions.SetTitle(sessionID, title)

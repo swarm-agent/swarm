@@ -7,8 +7,9 @@ const newSessionSource = readFileSync(new URL('./desktop-v3-new-session-pane.tsx
 const existingSessionSource = readFileSync(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
 const controlSource = readFileSync(new URL('./agent-model-control.tsx', import.meta.url), 'utf8')
 
-test('provider onboarding refreshes the canonical profile query while skip remains profile-free', () => {
+test('provider onboarding refreshes unified agent settings and generic profile queries while skip remains profile-free', () => {
   assert.match(onboardingSource, /queryKey: modelProfilesQueryOptions\(\)\.queryKey/)
+  assert.match(onboardingSource, /queryKey: \['agent-model-settings'\]/)
   assert.match(onboardingSource, /Skip for now/)
   assert.doesNotMatch(onboardingSource, /createModelProfile|\/v2\/agent-model-profiles/)
 })
@@ -52,16 +53,15 @@ test('new-session composer resolves the active chosen profile when mode changes'
   assert.match(newSessionSource, /onUseAgentModelDefault=\{\(\) => \{[\s\S]*preferenceFromAgentModelLock\(selectedAgentModelLock, current, modelOptions\)/)
 })
 
-test('profile modal preserves rename, star-default persistence, and explicit action routing', () => {
-  assert.match(controlSource, /setDraftProfileName\(name\)/)
-  assert.match(controlSource, /setDraftMakeDefault\(makeDefault\)/)
-  assert.match(controlSource, /onSetDefaultModelProfile\(profile\.profileId\)/)
-  assert.match(controlSource, /fill=\{profile\.isDefault \? 'currentColor' : 'none'\}/)
-  assert.doesNotMatch(controlSource, /type="checkbox" checked=\{draftMakeDefault\}/)
-  assert.match(controlSource, /persistence: 'temporary' \| 'create' \| 'update' \| 'create-copy'/)
-  assert.match(controlSource, /confirm\('temporary'\)/)
-  assert.match(controlSource, /Continue for this chat only/)
-  assert.match(controlSource, /confirm\(editingProfileId \? 'update' : 'create'\)/)
-  assert.match(controlSource, /Save and apply/)
-  assert.match(controlSource, /Save as new/)
+test('agent setup removes profile management while preserving direct model persistence', () => {
+  assert.doesNotMatch(controlSource, /Saved profiles|Profile settings|onSetDefaultModelProfile|Continue for this chat only|Save as new/)
+  assert.match(controlSource, /title="Default Model"/)
+  assert.match(controlSource, /title="Plan Model"/)
+  assert.match(controlSource, /saveSystemAgentModelSettings/)
+  assert.match(controlSource, /saveSwarmAgentModelSettings/)
+  assert.match(controlSource, /action: \{ provider: action\.provider/)
+  assert.match(controlSource, /agentModelSettingsQueryKey/)
+  assert.doesNotMatch(controlSource, /createModelProfile\(action|updateModelProfile\(currentAction|actionFavoriteId|planFavoriteId/)
+  assert.match(newSessionSource, /input\.agentName\.trim\(\)\.toLowerCase\(\) === 'swarm'/)
+  assert.match(existingSessionSource, /input\.agentName\.trim\(\)\.toLowerCase\(\) === 'swarm'/)
 })

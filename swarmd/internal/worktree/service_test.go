@@ -242,6 +242,84 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestTaskIntegrationSkipsAlreadyIntegratedCommitAndAppliesRemainingCommit(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	childPath := filepath.Join(t.TempDir(), "child")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/partial-batch", childPath, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childPath, "first.txt"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(childPath, "add", "first.txt")
+	_, _ = runGit(childPath, "commit", "-m", "first child commit")
+	first, _ := runGit(childPath, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(childPath, "second.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(childPath, "add", "second.txt")
+	_, _ = runGit(childPath, "commit", "-m", "second child commit")
+	second, _ := runGit(childPath, "rev-parse", "HEAD")
+
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent context\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "parent.txt")
+	_, _ = runGit(repo, "commit", "-m", "parent context")
+	if _, err := runGit(repo, "cherry-pick", first); err != nil {
+		t.Fatalf("integrate first child commit fixture: %v", err)
+	}
+	parentHead, _ := runGit(repo, "rev-parse", "HEAD")
+	if parentHead == first {
+		t.Fatal("fixture must use a patch-equivalent cherry-pick with a distinct commit id")
+	}
+
+	svc := &Service{}
+	plan, err := svc.PrepareTaskIntegration(repo, parentHead, []TaskIntegrationChild{{SessionID: "partial-batch", BaseCommit: base, HeadCommit: second}})
+	if err != nil {
+		t.Fatalf("PrepareTaskIntegration: %v", err)
+	}
+	if got := strings.Join(plan.Commits, " "); got != second {
+		t.Fatalf("required commits = %q, want only %s", got, second)
+	}
+	if got := strings.Join(plan.AlreadyIntegratedCommits, " "); got != first {
+		t.Fatalf("already integrated commits = %q, want %s", got, first)
+	}
+	if len(plan.Entries) != 1 || strings.Join(plan.Entries[0].Commits, " ") != second || strings.Join(plan.Entries[0].AlreadyIntegratedCommits, " ") != first {
+		t.Fatalf("integration entry = %#v", plan.Entries)
+	}
+
+	result, err := svc.ApplyTaskIntegration(repo, plan)
+	if err != nil {
+		t.Fatalf("ApplyTaskIntegration: %v", err)
+	}
+	if result.ResultingParentHead == parentHead {
+		t.Fatalf("parent HEAD did not advance: %#v", result)
+	}
+	if content, err := os.ReadFile(filepath.Join(repo, "second.txt")); err != nil || string(content) != "second\n" {
+		t.Fatalf("remaining commit content = %q, %v", content, err)
+	}
+	status, _ := runGit(repo, "status", "--porcelain=v1")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("parent left dirty after integration: %q", status)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".git", "CHERRY_PICK_HEAD")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cherry-pick state remains after integration: %v", err)
+	}
+}
+
 func TestApplyTaskIntegrationPreservesAuthorAndUsesConfiguredCommitter(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
@@ -424,6 +502,127 @@ func TestDeterministicSessionWorktreePathRejectsUnsafeWorkspaceID(t *testing.T) 
 	if _, err := deterministicSessionWorktreePath(repoRoot, "ws_"); err == nil {
 		t.Fatal("expected empty workspace slug to fail")
 	}
+}
+
+func TestAllocateRequestedWorktreeReturnsTypedConflictForExactBranch(t *testing.T) {
+	repo := newAllocatorTestRepository(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if _, err := runGit(repo, "branch", "agent/existing"); err != nil {
+		t.Fatalf("create conflicting branch: %v", err)
+	}
+
+	_, err := (&Service{}).allocateSessionWorkspaceWithBranchMode(repo, true, "", "agent/existing", "unused", true)
+	var conflict *RequestedWorktreeNameConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("allocation error = %v, want RequestedWorktreeNameConflictError", err)
+	}
+	if conflict.WorktreeName != "agent/existing" || !IsRequestedWorktreeNameConflict(err) {
+		t.Fatalf("typed conflict = %#v, err = %v", conflict, err)
+	}
+	path, pathErr := deterministicSessionWorktreePath(repo, "agent-existing")
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("conflicting allocation left target path %q: %v", path, statErr)
+	}
+}
+
+func TestAllocateRequestedWorktreeReturnsTypedConflictForExactPath(t *testing.T) {
+	repo := newAllocatorTestRepository(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	path, err := deterministicSessionWorktreePath(repo, "agent-requested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = (&Service{}).allocateSessionWorkspaceWithBranchMode(repo, true, "", "agent/requested", "unused", true)
+	var conflict *RequestedWorktreeNameConflictError
+	if !errors.As(err, &conflict) || conflict.WorktreeName != "agent/requested" {
+		t.Fatalf("allocation error = %v, conflict = %#v", err, conflict)
+	}
+}
+
+func TestAllocateRequestedWorktreeDoesNotTypeNonConflictGitFailure(t *testing.T) {
+	repo := newAllocatorTestRepository(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	_, err := (&Service{}).allocateSessionWorkspaceWithBranchMode(repo, false, "missing-base", "agent/requested", "unused", true)
+	if err == nil {
+		t.Fatal("expected missing base allocation to fail")
+	}
+	if IsRequestedWorktreeNameConflict(err) {
+		t.Fatalf("non-conflict failure was typed as requested-name conflict: %v", err)
+	}
+	if !strings.Contains(err.Error(), "create session worktree") {
+		t.Fatalf("allocation error = %v, want explicit creation failure", err)
+	}
+	path, pathErr := deterministicSessionWorktreePath(repo, "agent-requested")
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed allocation left target path %q: %v", path, statErr)
+	}
+	registered, registeredErr := worktreePathRegistered(repo, path)
+	if registeredErr != nil {
+		t.Fatalf("inspect worktree metadata: %v", registeredErr)
+	}
+	if registered {
+		t.Fatalf("failed allocation left registered worktree metadata for %q", path)
+	}
+	if exists, existsErr := localBranchExists(repo, "agent/requested"); existsErr != nil {
+		t.Fatalf("inspect partial branch: %v", existsErr)
+	} else if exists {
+		t.Fatal("failed allocation left partial requested branch")
+	}
+}
+
+func TestAllocateGeneratedWorktreePathCollisionIsOrdinaryError(t *testing.T) {
+	repo := newAllocatorTestRepository(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	path, err := deterministicSessionWorktreePath(repo, sessionWorkspaceID("session-collision"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = (&Service{}).allocateSessionWorkspace(repo, true, "", "agent", "session-collision")
+	if err == nil || !strings.Contains(err.Error(), "target worktree path") {
+		t.Fatalf("generated collision error = %v", err)
+	}
+	if IsRequestedWorktreeNameConflict(err) {
+		t.Fatalf("generated collision incorrectly typed as requested-name conflict: %v", err)
+	}
+}
+
+func newAllocatorTestRepository(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.email", "test@example.invalid"); err != nil {
+		t.Fatalf("configure email: %v", err)
+	}
+	if _, err := runGit(repo, "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("configure name: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if _, err := runGit(repo, "add", "base.txt"); err != nil {
+		t.Fatalf("add fixture: %v", err)
+	}
+	if _, err := runGit(repo, "commit", "-m", "base"); err != nil {
+		t.Fatalf("commit fixture: %v", err)
+	}
+	return repo
 }
 
 func TestWorkspaceIdentityForRequestedBranchUsesLiteralRequestSlug(t *testing.T) {

@@ -1,6 +1,6 @@
-import { buildDesktopSlashPaletteState, type DesktopSlashCommand } from './slash-commands'
+import { buildDesktopSlashPaletteState, parseDesktopTaskCommand, type DesktopSlashCommand } from './slash-commands'
 
-export type DesktopComposerSubmitResult = 'submitted' | 'stopped' | 'task-queued' | 'task-queue-failed'
+export type DesktopComposerSubmitResult = 'submitted' | 'stopped' | 'background-router-started' | 'background-router-failed'
 
 export interface SubmitDesktopComposerInput<TAttachment = never> {
   draft: string
@@ -12,21 +12,28 @@ export interface SubmitDesktopComposerInput<TAttachment = never> {
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
 
-export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopComposerInput<TAttachment>): Promise<DesktopComposerSubmitResult> {
-  const submittedPalette = buildDesktopSlashPaletteState(input.draft)
-  const taskCommand = submittedPalette.exactMatch?.action.kind === 'queue-ai-task'
-    ? submittedPalette.exactMatch
-    : null
+export function desktopComposerBackgroundRouterCommand(draft: string): DesktopSlashCommand | null {
+  const exactMatch = buildDesktopSlashPaletteState(draft).exactMatch
+  return exactMatch?.action.kind === 'start-background-router-session' ? exactMatch : null
+}
 
-  if (taskCommand) {
-    if (!input.onSlashCommand) return 'task-queue-failed'
+export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopComposerInput<TAttachment>): Promise<DesktopComposerSubmitResult> {
+  const backgroundRouterCommand = desktopComposerBackgroundRouterCommand(input.draft)
+
+  if (backgroundRouterCommand) {
+    if (!input.onSlashCommand) return 'background-router-failed'
+    let dispatch: void | Promise<void>
     try {
-      await input.onSlashCommand(taskCommand, input.draft)
-      input.clear()
-      return 'task-queued'
+      dispatch = input.onSlashCommand(backgroundRouterCommand, input.draft)
     } catch {
-      return 'task-queue-failed'
+      return 'background-router-failed'
     }
+    void Promise.resolve(dispatch).catch(() => {
+      // The owning pane reports background launch failures through its toast.
+    })
+    if (!parseDesktopTaskCommand(input.draft).request) return 'background-router-failed'
+    input.clear()
+    return 'background-router-started'
   }
 
   if (input.canStop) {

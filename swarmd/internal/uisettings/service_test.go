@@ -1,65 +1,71 @@
 package uisettings
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestFinderServiceTierRoundTripsThroughUISettings(t *testing.T) {
-	settings := UISettings{Agents: AgentSettings{Finder: CompactAgentSettings{
-		Provider: "CODEX", Model: "gpt-5.4", Thinking: "high", ServiceTier: "PRIORITY",
-	}}}
-	record := agentRecordFromSettings(settings.Agents)
-	if record.Finder.ServiceTier != "priority" {
-		t.Fatalf("stored Finder service tier = %q, want priority", record.Finder.ServiceTier)
-	}
-	got := uiSettingsFromRecord(pebblestore.UISettingsRecord{Agents: *record})
-	if got.Agents.Finder.ServiceTier != "priority" {
-		t.Fatalf("resolved Finder service tier = %q, want priority", got.Agents.Finder.ServiceTier)
-	}
-	if got.Agents.Coder.Provider != "" || got.Agents.Coder.Model != "" {
-		t.Fatalf("default Coder settings = %#v, want empty override", got.Agents.Coder)
-	}
-}
-
-func TestCoderServiceTierRoundTripsThroughUISettings(t *testing.T) {
-	settings := UISettings{Agents: AgentSettings{Coder: CompactAgentSettings{
-		Provider: "CODEX", Model: "gpt-5.4", Thinking: "high", ServiceTier: "PRIORITY",
-	}}}
-	record := agentRecordFromSettings(settings.Agents)
-	if record.Coder.Provider != "codex" || record.Coder.Model != "gpt-5.4" || record.Coder.ServiceTier != "priority" {
-		t.Fatalf("stored Coder settings = %#v", record.Coder)
-	}
-	got := uiSettingsFromRecord(pebblestore.UISettingsRecord{Agents: *record})
-	if got.Agents.Coder.Provider != "codex" || got.Agents.Coder.Model != "gpt-5.4" || got.Agents.Coder.ServiceTier != "priority" {
-		t.Fatalf("resolved Coder settings = %#v", got.Agents.Coder)
-	}
-}
-
-func TestDesignerServiceTierRoundTripsThroughUISettings(t *testing.T) {
-	settings := UISettings{Agents: AgentSettings{Designer: CompactAgentSettings{
-		Provider: "OPENAI", Model: "utility-model", Thinking: "medium", ServiceTier: "PRIORITY",
-	}}}
-	record := agentRecordFromSettings(settings.Agents)
-	if record.Designer.Provider != "openai" || record.Designer.Model != "utility-model" || record.Designer.ServiceTier != "priority" {
-		t.Fatalf("stored Designer settings = %#v", record.Designer)
-	}
-	got := uiSettingsFromRecord(pebblestore.UISettingsRecord{Agents: *record})
-	if got.Agents.Designer.Provider != "openai" || got.Agents.Designer.Model != "utility-model" || got.Agents.Designer.Thinking != "medium" || got.Agents.Designer.ServiceTier != "priority" {
-		t.Fatalf("resolved Designer settings = %#v", got.Agents.Designer)
-	}
-}
-
 func TestDefaultUISettingsEnableThinkingTags(t *testing.T) {
 	settings := defaultUISettings()
-	if !settings.Chat.ThinkingTags {
-		t.Fatal("default thinking tags = false, want true")
+	if !settings.Chat.ShowTips || !settings.Chat.ThinkingTags || !settings.Chat.ShowHeader || !settings.Chat.ToolStream.ShowAnchor {
+		t.Fatalf("unexpected UI defaults: %+v", settings.Chat)
 	}
-	if !settings.Chat.ShowHeader {
-		t.Fatal("default show header = false, want true")
+}
+
+func TestUISettingsServicePreservesExplicitShowTipsOff(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-tips.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
 	}
-	if !settings.Chat.ToolStream.ShowAnchor {
-		t.Fatal("default tool stream anchor = false, want true")
+	t.Cleanup(func() { _ = store.Close() })
+	service := NewService(pebblestore.NewUISettingsStore(store))
+	settings := defaultUISettings()
+	settings.Chat.ShowTips = false
+	if _, err := service.SetForAccount("account-a", settings); err != nil {
+		t.Fatalf("SetForAccount(): %v", err)
+	}
+	loaded, err := service.GetForAccount("account-a")
+	if err != nil {
+		t.Fatalf("GetForAccount(): %v", err)
+	}
+	if loaded.Chat.ShowTips {
+		t.Fatal("show tips = true after explicit false persistence")
+	}
+}
+
+func TestUISettingsServiceDoesNotExposeOrPersistAgentModels(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	service := NewService(pebblestore.NewUISettingsStore(store))
+	stored, err := service.SetForAccount("account-a", defaultUISettings())
+	if err != nil {
+		t.Fatalf("SetForAccount(): %v", err)
+	}
+	payload, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatalf("marshal service response: %v", err)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		t.Fatalf("decode service response: %v", err)
+	}
+	if _, found := object["agents"]; found {
+		t.Fatalf("service response exposed agent models: %s", payload)
+	}
+	persisted, found, err := store.GetBytes(pebblestore.KeyUISettingsForAccount("account-a"))
+	if err != nil || !found {
+		t.Fatalf("read persisted UI settings found=%v err=%v", found, err)
+	}
+	if err := json.Unmarshal(persisted, &object); err != nil {
+		t.Fatalf("decode persisted UI settings: %v", err)
+	}
+	if _, found := object["agents"]; found {
+		t.Fatalf("persisted UI settings retained agent models: %s", persisted)
 	}
 }

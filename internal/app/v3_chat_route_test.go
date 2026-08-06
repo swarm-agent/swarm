@@ -393,6 +393,32 @@ func TestV3ChatDraftSelectionsReuseHomepagePlanAutoProjection(t *testing.T) {
 	}
 }
 
+func TestWorkspaceShortcutsUseGlobalHandlingAndCanonicalActivation(t *testing.T) {
+	appRaw, err := os.ReadFile("app.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(appRaw)
+	for _, required := range []string{
+		"KeybindGlobalWorkspaceSelect",
+		"WorkspaceSlotKeybindID",
+		"workspaceSwitchHotkeyBlocked",
+		"activateWorkspaceSlot",
+		"activateWorkspaceAtIndex",
+		"SelectWorkspace",
+		"syncActiveWorkspaceSelection",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("workspace keyboard route is missing canonical path: %q", required)
+		}
+	}
+	for _, retired := range []string{"KeybindGlobalWorkspacePrev", "KeybindGlobalWorkspaceNext", "cycleWorkspaceBy"} {
+		if strings.Contains(source, retired) {
+			t.Fatalf("unrequested workspace cycling route remains: %q", retired)
+		}
+	}
+}
+
 func TestNewHomepageChatRouteUsesV3PageBoundary(t *testing.T) {
 	appRaw, err := os.ReadFile("app.go")
 	if err != nil {
@@ -404,13 +430,21 @@ func TestNewHomepageChatRouteUsesV3PageBoundary(t *testing.T) {
 	}
 	appSource := string(appRaw)
 	start := strings.Index(appSource, "func (a *App) openChatSessionWithWorktree")
-	end := strings.Index(appSource[start:], "func (a *App) openLegacyChatSessionWithWorktree")
+	end := strings.Index(appSource[start:], "func (a *App) openExistingSession")
 	if start < 0 || end < 0 {
 		t.Fatal("new homepage route boundary not found")
 	}
 	productionRoute := appSource[start : start+end]
 	if !strings.Contains(productionRoute, "openNewV3Chat") {
 		t.Fatal("new homepage route does not open V3 page")
+	}
+	for _, required := range []string{"newV3ChatCreateOptions", "a.v3Chat.OpenNew(", "openRoutedV3Primer", "ManagedWorktreeRequested", "PlanModeRequested", "canonicalSelfChatRoute"} {
+		if !strings.Contains(string(routeRaw), required) {
+			t.Fatalf("new homepage route is missing direct/routed V3 boundary %q", required)
+		}
+	}
+	if strings.Contains(appSource, "openLegacyChatSessionWithWorktree") {
+		t.Fatal("new homepage route still exposes legacy session wiring")
 	}
 	for _, forbidden := range []string{"ui.NewChatPage", "startSessionEventStream", "StreamEvents", "time.NewTicker"} {
 		if strings.Contains(productionRoute, forbidden) || strings.Contains(string(routeRaw), forbidden) {

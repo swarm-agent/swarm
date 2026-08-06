@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TASK_ELAPSED_TICK_MS, ToolMessageView, bashCopyText, indexBashOutput, taskActivityLabel, taskSwarmLayout } from "./chat-markdown";
+import { TASK_ELAPSED_TICK_MS, SearchReadToolGroupView, ToolMessageView, bashCopyText, indexBashOutput, taskActivityLabel, taskSwarmLayout } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
 function assert(condition: boolean, message: string): void {
@@ -157,13 +157,24 @@ function testPlanManageSubtaskUsesCanonicalUpdatedMetadata(): void {
 }
 
 function testTaskSwarmLayoutProgressivelyCompacts(): void {
-  const five = taskSwarmLayout(5, 420, 720);
-  const twenty = taskSwarmLayout(20, 420, 720);
+  const eleven = taskSwarmLayout(11, 420, 720);
+  const twelve = taskSwarmLayout(12, 420, 720);
+  const twentyFive = taskSwarmLayout(25, 420, 720);
+  const twentySix = taskSwarmLayout(26, 420, 720);
+  const fifty = taskSwarmLayout(50, 420, 720);
+  const fiftyOne = taskSwarmLayout(51, 420, 720);
+  const seventyFive = taskSwarmLayout(75, 420, 720);
+  const seventySix = taskSwarmLayout(76, 420, 720);
   const hundred = taskSwarmLayout(100, 420, 720);
-  assert(five.density === "detailed", `five rows should remain detailed, got ${five.density}`);
-  assert(twenty.density === "compact", `twenty rows should compact, got ${twenty.density}`);
-  assert(hundred.density === "signal", `one hundred rows should use signal density, got ${hundred.density}`);
-  assert(hundred.columns > twenty.columns, "extreme density should add columns instead of scrolling");
+  const hundredOne = taskSwarmLayout(101, 420, 720);
+
+  assert(eleven.stage === 11 && eleven.density === "detailed", "eleven agents should preserve the spacious box treatment");
+  assert(twelve.stage === 25 && twentyFive.stage === 25 && twelve.density === "compact", "12–25 agents should share one stable compact stage");
+  assert(twentySix.stage === 50 && fifty.stage === 50 && twentySix.density === "micro", "26–50 agents should share the next stacking stage");
+  assert(fiftyOne.stage === 75 && seventyFive.stage === 75 && fiftyOne.density === "dense", "51–75 agents should share the dense stacking stage");
+  assert(seventySix.stage === 100 && hundred.stage === 100 && seventySix.density === "signal", "76–100 agents should share the final bounded stage");
+  assert(eleven.columns < twelve.columns && twelve.columns < twentySix.columns && twentySix.columns < fiftyOne.columns && fiftyOne.columns < seventySix.columns, "each boundary should add columns progressively rather than flip layouts");
+  assert(hundredOne.stage === 101 && hundredOne.maxHeight !== undefined, "only swarms above one hundred should become vertically bounded and scrollable");
 }
 
 function testTaskSwarmUsesCompactPreview(): void {
@@ -191,9 +202,9 @@ function testTaskSwarmUsesCompactPreview(): void {
   const markup = renderToolMarkup(message!);
   assert(markup.includes("SWARM MODE"), "expected the post-five swarm mode label");
   assert((markup.match(/SWARM MODE/g) ?? []).length === 1, "swarm mode heading should render once");
-  assert(markup.includes("12 AI"), "expected the visible swarm population count");
-  assert(markup.includes("finder"), "expected compact row model or agent label");
-  assert(markup.includes("search"), "expected compact row current tool");
+  assert(!markup.includes("12 AI"), "swarm mode should omit the redundant AI population badge");
+  assert(!markup.includes("finder"), "swarm rows should not show provider or agent metadata");
+  assert(markup.includes("search"), "12–25 agent rows should retain the current tool");
   assert(markup.includes("RUN"), "expected compact row status");
   assert(!markup.includes("Subagent stream"), "swarm mode should replace the regular stream heading");
   assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
@@ -280,6 +291,34 @@ function testBashOutputIndexBoundsPreviewWithoutChangingCanonicalOutput(): void 
   assert(bashCopyText(output) === output, "copy-all must preserve canonical output byte-for-byte");
 }
 
+function testRunningBashUsesDedicatedStreamingCard(): void {
+  const command = "for i in 1 2 3; do echo line-$i; sleep 1; done";
+  const startedMessage = buildStructuredToolMessage({
+    tool: "bash",
+    callId: "call_bash_started",
+    argumentsText: JSON.stringify({ command }),
+    state: "running",
+    lifecycleStatus: "started",
+  });
+  const streamingMessage = buildStructuredToolMessage({
+    tool: "bash",
+    callId: "call_bash_streaming",
+    argumentsText: JSON.stringify({ command }),
+    outputText: "line-1",
+    state: "running",
+    lifecycleStatus: "running",
+  });
+  assert(Boolean(startedMessage && streamingMessage), "expected running bash tool messages");
+
+  const startedMarkup = renderToolMarkup(startedMessage!);
+  const streamingMarkup = renderToolMarkup(streamingMessage!);
+  assert(startedMarkup.includes("Waiting for output…"), "tool.start should render the bash card before output arrives");
+  assert(startedMarkup.includes("running"), "tool.start should identify bash as running");
+  assert(streamingMarkup.includes("line-1"), "streaming bash output should render immediately");
+  assert(streamingMarkup.includes("streaming"), "bash should visibly identify active streamed output");
+  assert(streamingMarkup.includes('aria-label="Copy Bash output"'), "streaming bash should keep its output controls");
+}
+
 function testBashToolUsesDedicatedFullWidthCard(): void {
   const command = "for i in {1..80}; do echo line-$i; done";
   const output = Array.from({ length: 80 }, (_, index) => `line-${index + 1}`).join("\n");
@@ -304,6 +343,27 @@ function testBashToolUsesDedicatedFullWidthCard(): void {
   assert(markup.includes("overflow-x-hidden"), "bash output should not overflow horizontally");
   assert(markup.includes("line-80"), "bash card should render final output line without data truncation");
   assert(!markup.includes("odd:bg"), "bash output should not use striped preview rows");
+}
+
+function testManageThemeBatchShowsGeneratedMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-theme",
+    callId: "call_manage_theme_batch",
+    argumentsText: JSON.stringify({ action: "create_batch" }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "create_batch",
+      generated_count: 3,
+      generated_names: ["Dawn", "Dusk", "Aurora"],
+      summary: "generated 3 themes: Dawn, Dusk, Aurora",
+    }),
+  });
+  assert(Boolean(message), "expected structured manage-theme message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("theme") && markup.includes("generated 3 themes: Dawn, Dusk, Aurora"), "expected generated count and names in the visible tool header");
+  assert(markup.includes("Generated 3 themes.") && markup.includes("Dawn") && markup.includes("Dusk") && markup.includes("Aurora"), "expected concise result metadata lines");
+  assert(!markup.includes("&quot;generated_count&quot;"), "manage-theme should not expose raw result JSON");
 }
 
 function testManageSessionsUsesRelativeDesktopNavigation(): void {
@@ -407,37 +467,75 @@ function testManageSessionsReviewWorktreesHydratesCandidates(): void {
   assert(!markup.includes("Session details"), "review_worktrees must not fall back to the generic empty card");
 }
 
-function testSearchToolRendersCompactGroupedList(): void {
-  const longPath = `web/src/features/desktop/${"nested/".repeat(12)}chat-markdown.tsx`;
-  const longMatch = `const compactSearchResult = ${"largeMatchText".repeat(40)}`;
+function testSearchToolRendersSimpleSummary(): void {
   const message = buildStructuredToolMessage({
     tool: "search",
-    callId: "call_compact_search_render",
+    callId: "call_simple_search_render",
+    argumentsText: JSON.stringify({ query: "compactSearchResult", path: "web/src" }),
     outputText: JSON.stringify({
       tool: "search",
       search_mode: "content",
       path: "web/src",
       count: 2,
       total_matched: 8,
+      truncated: true,
       query_results: [{ query: "compactSearchResult" }],
       results: [{
-        path: longPath,
+        path: "web/src/features/desktop/chat-markdown.tsx",
         items: [
-          { line: 88, column: 4, text: longMatch },
+          { line: 88, column: 4, text: "const compactSearchResult = true" },
           { line: 93, column: 7, text: "return compactSearchResult" },
         ],
       }],
     }),
   });
-  assert(Boolean(message), "expected compact search tool message");
+  assert(Boolean(message), "expected simple search tool message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("2 matches · 8 total"), "expected useful search counts");
-  assert(markup.includes("88:4") && markup.includes("93:7"), "expected line and column locations");
-  assert(markup.includes("2 matches") && markup.includes("truncate font-mono"), "expected grouped file header with truncated path");
-  assert(markup.includes("line-clamp-2") && markup.includes("max-h-[50vh]"), "expected clamped previews in a bounded scroll body");
-  assert(markup.includes("overflow-y-auto") && markup.includes("overflow-x-hidden"), "expected internal vertical scrolling without horizontal overflow");
-  assert(!markup.includes(longMatch), "large raw match text should be compacted before rendering");
+  assert(markup.includes("Searched “compactSearchResult” · Found 8 matches · Partial results"), "expected a plain-language searched/found summary");
+  assert(markup.includes("web/src/features/desktop/chat-markdown.tsx") && markup.includes("2 matches"), "search cards should expose matched files and counts");
+  assert(!markup.includes("88:4") && !markup.includes("93:7"), "line-level results should stay out of the Desktop card");
+  assert(!markup.includes("return compactSearchResult"), "match snippets should remain omitted from the compact card");
+
+  const empty = buildStructuredToolMessage({
+    tool: "search",
+    argumentsText: JSON.stringify({ queries: ["first query", "second query"] }),
+    outputText: JSON.stringify({ search_mode: "files", query_count: 2, count: 0, timed_out: true, path: "web/src" }),
+  });
+  assert(Boolean(empty), "expected zero-result search tool message");
+  const emptyMarkup = renderToolMarkup(empty!);
+  assert(emptyMarkup.includes("Searched 2 queries · Found 0 files · Timed out"), "expected understandable multi-query, zero-result, and timeout copy");
+}
+
+function testSearchActivityKeepsInvestigationLabelAcrossSingleAndGroupedCalls(): void {
+  const search = buildStructuredToolMessage({
+    tool: "search",
+    callId: "call-single-search",
+    argumentsText: JSON.stringify({ query: "needle", path: "web/src" }),
+    outputText: JSON.stringify({ search_mode: "content", count: 1, total_matched: 1, results: [{ path: "web/src/file.tsx", items: [{ line: 10, column: 2, text: "needle" }] }] }),
+  });
+  assert(Boolean(search), "expected single search message");
+  if (!search) return;
+  const markup = renderToolMarkup(search);
+  assert(markup.includes("Investigation") && !markup.includes(">Search<"), "single search should use the stable investigation label");
+}
+
+function testSearchReadGroupRendersCompactFileAggregation(): void {
+  const tools = Array.from({ length: 16 }, (_, index) => buildStructuredToolMessage({
+    tool: index % 3 === 0 ? "search" : "read",
+    callId: `call-group-${index}`,
+    argumentsText: JSON.stringify({ path: `web/src/file-${index}.tsx`, query: "needle" }),
+    outputText: index % 3 === 0 ? JSON.stringify({
+      search_mode: "content",
+      count: 1,
+      total_matched: 2,
+      results: [{ path: `web/src/file-${index}.tsx`, items: [{ line: 10, column: 2, text: "needle" }, { line: 20, column: 1, text: "needle again" }] }],
+    }) : JSON.stringify({ path: `web/src/file-${index}.tsx`, count: 10 }),
+  })).filter((message): message is NonNullable<ReturnType<typeof buildStructuredToolMessage>> => Boolean(message));
+  const markup = renderToStaticMarkup(<SearchReadToolGroupView toolMessages={tools} />);
+  assert(markup.includes('data-search-read-group="true"') && markup.includes("Investigation") && markup.includes("6 searches · 10 reads · 16 files · 12 matches"), "group should keep the investigation label while summarizing consecutive search/read calls");
+  assert(markup.includes("web/src/file-0.tsx") && markup.includes("2 matches") && markup.includes("web/src/file-1.tsx") && markup.includes("1 read"), "group should preserve search files and read paths");
+  assert(markup.includes("Show 4 more files"), "large groups should cap the initial file list but preserve expandable detail");
 }
 
 function testManageSessionsDurableLogRendersTechnicalEvents(): void {
@@ -676,11 +774,15 @@ function main(): void {
   testTaskActivityPrefersSummaryOnlyForActiveRows();
   testBashCopyUsesOutputOnly();
   testBashOutputIndexBoundsPreviewWithoutChangingCanonicalOutput();
+  testRunningBashUsesDedicatedStreamingCard();
   testBashToolUsesDedicatedFullWidthCard();
+  testManageThemeBatchShowsGeneratedMetadata();
   testManageSessionsUsesRelativeDesktopNavigation();
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsReviewWorktreesHydratesCandidates();
-  testSearchToolRendersCompactGroupedList();
+  testSearchToolRendersSimpleSummary();
+  testSearchActivityKeepsInvestigationLabelAcrossSingleAndGroupedCalls();
+  testSearchReadGroupRendersCompactFileAggregation();
   testManageSessionsListRendersCardsWithoutRawJson();
   testManageSessionsDurableLogRendersTechnicalEvents();
   testWebSearchUsesDedicatedResponsiveCard();

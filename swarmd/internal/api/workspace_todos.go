@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/todo"
 )
@@ -161,6 +162,18 @@ func (s *Server) handleWorkspaceTodoMutation(w http.ResponseWriter, r *http.Requ
 				return
 			}
 			originModelProfile = cloneSessionsV3ModelProfileSnapshotPointer(origin.ModelProfile)
+			if originModelProfile == nil || strings.TrimSpace(originModelProfile.Action.Provider) == "" || strings.TrimSpace(originModelProfile.Action.Model) == "" {
+				writeError(w, http.StatusBadRequest, errors.New("origin session is missing its immutable Action model selection"))
+				return
+			}
+			mode := strings.ToLower(strings.TrimSpace(req.Mode))
+			if mode == "" {
+				mode = sessionruntime.ModeAuto
+			}
+			if mode == sessionruntime.ModePlan && (originModelProfile.Plan == nil || strings.TrimSpace(originModelProfile.Plan.Provider) == "" || strings.TrimSpace(originModelProfile.Plan.Model) == "") {
+				writeError(w, http.StatusBadRequest, errors.New("origin session has Plan mode disabled"))
+				return
+			}
 		}
 		item, summary, _, replayed, err := s.todos.CreateAITaskWithReplay(todo.CreateAITaskInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspaceID: workspaceScope.WorkspaceID, WorkspacePath: workspacePath, OriginSessionID: originSessionID, ModelProfile: originModelProfile, Request: req.Text, Mode: req.Mode, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))})
 		if err != nil {

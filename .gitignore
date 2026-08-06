@@ -53,6 +53,7 @@ coverage.out
 !.env.example
 
 # Local investigation/tooling artifacts
+/.agents/
 /tmp/
 /swarmd/tmp/
 /.codex

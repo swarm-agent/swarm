@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
@@ -17,7 +18,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
-	"swarm/packages/swarmd/internal/uisettings"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -597,6 +597,9 @@ func TestDelegatedSubagentRunStartMetaKeepsPreparedProfileSnapshot(t *testing.T)
 	if !meta.AllowSubagent || meta.PermissionSessionID != "parent-session" || meta.Principal.AccountScopeID != "account-a" {
 		t.Fatalf("delegated run meta lost trusted context: %#v", meta)
 	}
+	if !taskDisabledTools(true)["task"] || !taskDisabledTools(false)["task"] {
+		t.Fatal("every delegated launch must disable recursive task regardless of bash policy")
+	}
 }
 
 func TestApprovedFinderInheritsParentWorktreeScopeWithoutAllocation(t *testing.T) {
@@ -642,7 +645,7 @@ func TestApprovedFinderInheritsParentWorktreeScopeWithoutAllocation(t *testing.T
 	}
 }
 
-func TestDesignerResolvesUtilityModelAndExplicitAccountOverride(t *testing.T) {
+func TestDesignerResolvesConfiguredAccountModel(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
@@ -652,25 +655,21 @@ func TestDesignerResolvesUtilityModelAndExplicitAccountOverride(t *testing.T) {
 
 	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
 	if err != nil || virtual || source != "" {
-		t.Fatalf("resolve Designer default: virtual=%t source=%q err=%v", virtual, source, err)
+		t.Fatalf("resolve configured Designer: virtual=%t source=%q err=%v", virtual, source, err)
 	}
-	if profile.Name != agentruntime.DesignerAgentID || profile.Provider != "codex" || profile.Model == "" || profile.Thinking == "" {
-		t.Fatalf("Designer utility default = %+v", profile)
+	if profile.Name != agentruntime.DesignerAgentID || profile.Provider != "codex" || profile.Model != "gpt-5.4" || profile.Thinking != "high" || profile.AutoServiceTier != "" {
+		t.Fatalf("configured Designer profile = %+v", profile)
 	}
 
-	settings, err := svc.uiSettings.GetForAccount(parent.AccountScopeID)
-	if err != nil {
-		t.Fatalf("read Designer settings: %v", err)
-	}
-	settings.Agents.Designer = uisettings.CompactAgentSettings{Provider: "codex", Model: profile.Model, Thinking: "medium", ServiceTier: "priority"}
-	if _, err := svc.uiSettings.SetForAccount(parent.AccountScopeID, settings); err != nil {
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID})
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentDesigner, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}); err != nil {
 		t.Fatalf("save Designer override: %v", err)
 	}
 	overridden, _, _, err := svc.resolveTaskLaunchProfile(parent, agentruntime.DesignerAgentID)
 	if err != nil {
 		t.Fatalf("resolve Designer override: %v", err)
 	}
-	if overridden.Model != profile.Model || overridden.Thinking != "medium" || overridden.AutoServiceTier != "priority" {
+	if overridden.Model != profile.Model || overridden.Thinking != "medium" || overridden.AutoServiceTier != "" {
 		t.Fatalf("Designer explicit override = %+v, default=%+v", overridden, profile)
 	}
 }
@@ -934,7 +933,7 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 }
 
-func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+func TestPrepareDelegatedSubagentLaunchUsesFlatProfileInPlanMode(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
@@ -943,15 +942,10 @@ func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t 
 	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
 		Name:                "split-reviewer",
 		Mode:                agentruntime.ModeSubagent,
-		Description:         "Split review specialist",
-		ModelMode:           "split",
-		PlanProvider:        "fireworks",
-		PlanModel:           "accounts/fireworks/models/glm-5p1",
-		PlanThinking:        "high",
-		PlanServiceTier:     "priority",
-		AutoProvider:        "static",
-		AutoModel:           "auto-review-model",
-		AutoThinking:        "low",
+		Description:         "Flat review specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Thinking:            "high",
 		Prompt:              "Review according to mode.",
 		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
@@ -1001,8 +995,8 @@ func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t 
 	if got := launch.ChildSession.Preference.Thinking; got != "high" {
 		t.Fatalf("child thinking = %q, want high", got)
 	}
-	if got := launch.ChildSession.Preference.ServiceTier; got != "priority" {
-		t.Fatalf("child service tier = %q, want priority", got)
+	if got := launch.ChildSession.Preference.ServiceTier; got != "" {
+		t.Fatalf("child service tier = %q, want standard", got)
 	}
 	if launch.SubagentProvider != "fireworks" || launch.SubagentModel != "accounts/fireworks/models/glm-5p1" {
 		t.Fatalf("launch display preference = %q/%q, want plan profile settings", launch.SubagentProvider, launch.SubagentModel)
@@ -1017,12 +1011,12 @@ func TestPrepareDelegatedSubagentLaunchUsesSplitProfilePlanSettingsInPlanMode(t 
 	if child.Mode != sessionruntime.ModePlan {
 		t.Fatalf("persisted child mode = %q, want plan", child.Mode)
 	}
-	if child.Preference.Provider != "fireworks" || child.Preference.Model != "accounts/fireworks/models/glm-5p1" || child.Preference.ServiceTier != "priority" {
-		t.Fatalf("persisted child preference = %#v, want plan split profile settings", child.Preference)
+	if child.Preference.Provider != "fireworks" || child.Preference.Model != "accounts/fireworks/models/glm-5p1" || child.Preference.ServiceTier != "" {
+		t.Fatalf("persisted child preference = %#v, want flat profile settings", child.Preference)
 	}
 }
 
-func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(t *testing.T) {
+func TestBuildTaskLaunchPermissionPayloadUsesFlatProfileInPlanMode(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
@@ -1030,15 +1024,10 @@ func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(
 	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
 		Name:                "split-manifest-reviewer",
 		Mode:                agentruntime.ModeSubagent,
-		Description:         "Split manifest specialist",
-		ModelMode:           "split",
-		PlanProvider:        "fireworks",
-		PlanModel:           "accounts/fireworks/models/glm-5p1",
-		PlanThinking:        "high",
-		PlanServiceTier:     "priority",
-		AutoProvider:        "static",
-		AutoModel:           "auto-review-model",
-		AutoThinking:        "low",
+		Description:         "Flat manifest specialist",
+		Provider:            "fireworks",
+		Model:               "accounts/fireworks/models/glm-5p1",
+		Thinking:            "high",
 		Prompt:              "Review according to mode.",
 		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
@@ -1090,7 +1079,7 @@ func TestBuildTaskLaunchPermissionPayloadUsesSplitProfilePlanSettingsInPlanMode(
 		t.Fatalf("row child mode = %q, want plan", row.ChildMode)
 	}
 	if row.SubagentProvider != "fireworks" || row.SubagentModel != "accounts/fireworks/models/glm-5p1" {
-		t.Fatalf("row preference = %q/%q, want plan split profile settings", row.SubagentProvider, row.SubagentModel)
+		t.Fatalf("row preference = %q/%q, want flat profile settings", row.SubagentProvider, row.SubagentModel)
 	}
 }
 
@@ -1242,7 +1231,7 @@ func TestPrepareTargetedSubagentLaunchPreservesSupportedPriorityServiceTier(t *t
 	}
 }
 
-func TestApplyAgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
+func TestApplyAgentPreferenceOverridesFlatProfileKeepsInheritedPriorityServiceTier(t *testing.T) {
 	base := pebblestore.ModelPreference{
 		Provider:    "codex",
 		Model:       "gpt-5.4",
@@ -1251,15 +1240,9 @@ func TestApplyAgentPreferenceOverridesSplitProfileKeepsInheritedPriorityServiceT
 		ContextMode: "1m",
 	}
 	profile := pebblestore.AgentProfile{
-		ModelMode:       "split",
-		AutoProvider:    "fireworks",
-		AutoModel:       "accounts/fireworks/models/glm-5p1",
-		AutoThinking:    "high",
-		PlanProvider:    "static",
-		PlanModel:       "plan-review-model",
-		PlanThinking:    "low",
-		PlanServiceTier: "",
-		AutoServiceTier: "",
+		Provider: "fireworks",
+		Model:    "accounts/fireworks/models/glm-5p1",
+		Thinking: "high",
 	}
 
 	got := applyAgentPreferenceOverridesForMode(base, profile, sessionruntime.ModeAuto)
@@ -1529,7 +1512,7 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: "swarm", Mode: agentruntime.ModePrimary, RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
-		AutoProvider: "codex", AutoModel: "swarm-auto-model", AutoThinking: "high", AutoServiceTier: "priority",
+		Provider: "codex", Model: "swarm-auto-model", Thinking: "high", AutoServiceTier: "priority",
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), Prompt: "trusted parent prompt",
 		ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}, Enabled: true,
 	})
@@ -1542,6 +1525,7 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	if _, _, err := svc.sessions.UpdateMetadata(parentSessionID, metadata); err != nil {
 		t.Fatalf("update parent metadata: %v", err)
 	}
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
 	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
 		"prompt": "implement independent scope", "launches": []any{map[string]any{"subagent_type": "coder", "meta_prompt": "implement backend"}},
 	})})
@@ -1557,8 +1541,11 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	if !slices.Equal(manifest.Launches[0].OwnedScope, []string{"."}) {
 		t.Fatalf("Coder manifest owned scope = %#v, want canonical whole-worktree scope", manifest.Launches[0].OwnedScope)
 	}
-	if manifest.Launches[0].ProfileSnapshot.Provider != "codex" || manifest.Launches[0].ProfileSnapshot.Model != "swarm-auto-model" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "priority" {
-		t.Fatalf("Coder did not inherit active Swarm auto preference and service tier: %#v", manifest.Launches[0])
+	if manifest.Launches[0].ProfileSnapshot.Provider != "codex" || manifest.Launches[0].ProfileSnapshot.Model != "gpt-5.4" || manifest.Launches[0].SubagentThinking != "high" || manifest.Launches[0].SubagentServiceTier != "" {
+		t.Fatalf("Coder did not use the configured account model: %#v", manifest.Launches[0])
+	}
+	if manifest.Launches[0].ModelProfileSnapshot != nil {
+		t.Fatalf("Coder inherited the parent model profile: %#v", manifest.Launches[0].ModelProfileSnapshot)
 	}
 	coderTools := manifest.Launches[0].ProfileSnapshot.ToolContract.Tools
 	for _, name := range []string{"git_status", "git_diff", "git_add", "git_commit"} {
@@ -1574,18 +1561,91 @@ func TestCoderPermissionSnapshotsCurrentCaller(t *testing.T) {
 	}
 }
 
-func TestCoderLaunchDoesNotRequirePersistedProfile(t *testing.T) {
+func bindTaskInheritanceModelProfile(t *testing.T, svc *Service, sessionID string) pebblestore.SessionSnapshot {
+	t.Helper()
+	parent, ok, err := svc.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%t err=%v", ok, err)
+	}
+	parent.ModelProfile = &pebblestore.SessionModelProfileSnapshot{
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		ActionFavoriteID:   "test-action",
+		ActionFavoriteName: "Test Action",
+		Action:             pebblestore.ModelProfileSelection{Provider: "parent-provider", Model: "parent-model", Thinking: "high"},
+		PlanFavoriteID:     "test-plan",
+		PlanFavoriteName:   "Test Plan",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "parent-plan-provider", Model: "parent-plan-model", Thinking: "medium"},
+		AppliedAt:          1,
+	}
+	payloadHash := "test-parent-model-profile:" + sessionID
+	updated, updateErr := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: payloadHash, IdempotencyKey: payloadHash, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationUpdateModelProfile, Session: &parent})
+	if updateErr != nil || updated.Session == nil {
+		t.Fatalf("bind parent model profile: result=%#v err=%v", updated, updateErr)
+	}
+	return *updated.Session
+}
+
+func TestFinderTaskChildUsesConfiguredModelInsteadOfParentModelProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
-	if _, ok, err := svc.agents.GetProfileForAccount("test-account", "coder"); err != nil || ok {
-		t.Fatalf("persisted Coder profile ok=%v err=%v, want absent", ok, err)
+	parent := bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModePlan, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "finder", MetaPrompt: "review model inheritance"}, "review inheritance", "", nil)
+	if err != nil {
+		t.Fatalf("prepare plan child: %v", err)
 	}
+	if launch.ChildSession.ModelProfile != nil {
+		t.Fatalf("Finder child inherited parent model profile: %#v", launch.ChildSession.ModelProfile)
+	}
+	if launch.ChildSession.Preference.Provider != "codex" || launch.ChildSession.Preference.Model != "gpt-5.4" || launch.ChildSession.Preference.Thinking != "high" || launch.ChildSession.Preference.ServiceTier != "" {
+		t.Fatalf("Finder child preference = %#v, want configured account model", launch.ChildSession.Preference)
+	}
+}
+
+func TestFinderTaskManifestOmitsParentModelProfile(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"review","subagent_type":"finder","meta_prompt":"review"}`})
+	if err != nil {
+		t.Fatalf("build manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("manifest launches = %#v", manifest.Launches)
+	}
+	launch := manifest.Launches[0]
+	if launch.ModelProfileSnapshot != nil {
+		t.Fatalf("Finder manifest inherited parent model profile: %#v", launch.ModelProfileSnapshot)
+	}
+	if launch.SubagentProvider != "codex" || launch.SubagentModel != "gpt-5.4" || launch.SubagentThinking != "high" || launch.SubagentServiceTier != "" {
+		t.Fatalf("Finder manifest preference = %#v, want configured account model", launch)
+	}
+	if manifest.ManifestHash == "" || manifest.ApprovedArguments == nil {
+		t.Fatalf("Finder manifest binding missing: %#v", manifest)
+	}
+}
+
+func TestCoderLaunchUsesConfiguredModelInsteadOfParentActionModel(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"})
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCoder, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "priority"}); err != nil {
+		t.Fatalf("save Coder settings: %v", err)
+	}
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
 	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"prompt":"x","subagent_type":"coder","meta_prompt":"y"}`})
 	if err != nil {
 		t.Fatalf("build compiled Coder manifest: %v", err)
 	}
 	if len(manifest.Launches) != 1 || manifest.Launches[0].ProfileSnapshot == nil || manifest.Launches[0].ProfileSnapshot.Name != agentruntime.CoderAgentID || !manifest.Launches[0].ParentCopy {
 		t.Fatalf("compiled Coder manifest = %#v", manifest.Launches)
+	}
+	launch := manifest.Launches[0]
+	if launch.SubagentProvider != "codex" || launch.SubagentModel != "gpt-5.4" || launch.SubagentThinking != "medium" || launch.SubagentServiceTier != "" {
+		t.Fatalf("compiled Coder model = %#v, want configured Coder settings", launch)
+	}
+	if launch.ModelProfileSnapshot != nil {
+		t.Fatalf("compiled Coder inherited parent Action/Plan model profile: %#v", launch.ModelProfileSnapshot)
 	}
 }
 
@@ -1635,6 +1695,48 @@ func TestApprovedFinderWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.
 	}
 	if digest != envelope.ManifestHash || digest != envelope.Manifest.ManifestHash {
 		t.Fatalf("approved manifest hash mismatch: digest=%q envelope=%q manifest=%q", digest, envelope.ManifestHash, envelope.Manifest.ManifestHash)
+	}
+}
+
+func TestApprovedTaskManifestContractAcceptsAllSupportedSubagents(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+
+	call := tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "Complete independent supported scopes.",
+		"launches": []any{
+			map[string]any{"subagent_type": "finder", "meta_prompt": "Inspect the contract."},
+			map[string]any{"subagent_type": "coder", "meta_prompt": "Implement the contract."},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Design the contract.", "owned_scope": []any{"web/src/variants/contract.tsx"}},
+		},
+	})}
+	parsed, err := parseTaskCallArguments(call.Arguments)
+	if err != nil {
+		t.Fatalf("parse task call: %v", err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, call)
+	if err != nil {
+		t.Fatalf("build task manifest: %v", err)
+	}
+	if len(manifest.Launches) != len(parsed.Launches) {
+		t.Fatalf("manifest launches = %d, want %d", len(manifest.Launches), len(parsed.Launches))
+	}
+	for i, launch := range manifest.Launches {
+		if launch.ModelProfileSnapshot != nil {
+			t.Fatalf("launch %d retained obsolete parent model profile: %#v", i, launch.ModelProfileSnapshot)
+		}
+	}
+	approved, err := json.Marshal(manifest.ApprovedArguments)
+	if err != nil {
+		t.Fatalf("marshal approved manifest: %v", err)
+	}
+	validated, err := parseApprovedTaskLaunchManifest(string(approved), parsed.Launches)
+	if err != nil {
+		t.Fatalf("validate approved task manifest: %v", err)
+	}
+	if len(validated.Launches) != 3 {
+		t.Fatalf("validated launches = %d, want 3", len(validated.Launches))
 	}
 }
 
@@ -1724,6 +1826,7 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         "test-user",
 		AccountScopeID: "test-account",
 		Title:          "Parent",
 		WorkspacePath:  t.TempDir(),
@@ -1750,7 +1853,19 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 		t.Fatalf("set account model preference: %v", err)
 	}
 	service := NewService(sessions, models, nil, tool.NewRuntime(1), nil, agents, nil, events)
-	service.SetUISettingsService(uisettings.NewService(pebblestore.NewUISettingsStore(store)))
+	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	configured := pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}
+	if _, err := agentSettingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
+		AccountScopeID: "test-account",
+		Swarm:          pebblestore.SwarmAgentModelAssignments{Action: configured, Plan: configured},
+		SystemAgents: pebblestore.SystemAgentModelAssignments{
+			Compact: configured, Finder: configured, Coder: configured, Designer: configured, Router: configured,
+		},
+	}); err != nil {
+		cleanup()
+		t.Fatalf("configure system-agent models: %v", err)
+	}
+	service.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
 	return service, parent.ID, cleanup
 }
 

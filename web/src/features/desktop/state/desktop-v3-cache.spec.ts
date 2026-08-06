@@ -983,6 +983,32 @@ test('hydrate explicit empty message list is authoritative when messages are in 
   assert.deepEqual(state.messagesBySession[sessionB.id].items, [])
 })
 
+test('routed first message survives an empty route-triggered hydrate and reconciles without duplication', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById[sessionB.id] = { kind: 'full', session: { ...sessionB, message_count: 1 }, needsHydrate: false }
+  state.projectionsBySession[sessionB.id] = { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 }
+  upsertCommittedMessage(state, sessionB.id, messageB1)
+
+  assert.equal(state.messagesBySession[sessionB.id].source, 'mutation')
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...sessionB, message_count: 1 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+    messages_by_session: { [sessionB.id]: [] },
+  }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), [messageB1.id])
+  assert.equal(state.messagesBySession[sessionB.id].source, 'mutation')
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...sessionB, message_count: 1 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+    messages_by_session: { [sessionB.id]: [messageB1] },
+  }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), [messageB1.id])
+  assert.equal(state.messagesBySession[sessionB.id].source, 'network')
+})
+
 test('metadata-only hydrate validates subset but ignores empty message payload when messages are out of scope', () => {
   const state = bootstrappedState()
   applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
@@ -2379,6 +2405,74 @@ test('progressive live answer prefixes reconcile to one assistant row and one re
   ])
 })
 
+test('durable provider tool construction follows reasoning without later row movement', () => {
+  const state = bootstrappedState()
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.started', {
+      reasoning_key: 'summary-1',
+      step: 1,
+      step_id: 'step-1',
+    }, 3, 'cursor-causal-reasoning-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.delta', {
+      reasoning_key: 'summary-1',
+      step: 1,
+      step_id: 'step-1',
+      delta: 'inspect the relevant files',
+      delta_mode: 'replace',
+    }, 4, 'cursor-causal-reasoning-delta'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.reasoning.completed', {
+      reasoning_key: 'summary-1',
+      step: 1,
+      step_id: 'step-1',
+      summary: 'inspect the relevant files',
+    }, 5, 'cursor-causal-reasoning-complete'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.provider_tool_call.started', {
+      call_id: 'call-causal',
+      event_index: 1,
+      step: 1,
+      step_id: 'step-1',
+      tool_name: 'search',
+    }, 6, 'cursor-causal-provider-tool'),
+  })
+
+  const signature = () => buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
+    .filter((item) => (item.type === 'message' && item.message.role === 'reasoning') || item.type === 'live-tool')
+    .map((item) => item.type === 'message'
+      ? `reasoning:${item.message.content}:${item.timelineSeq ?? item.message.global_seq}`
+      : `tool:${item.tool.callId}:${item.timelineSeq}`)
+
+  assert.deepEqual(signature(), [
+    'reasoning:inspect the relevant files:5',
+    'tool:call-causal:6',
+  ])
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-causal',
+      tool_instance_id: 'tool-causal',
+      step: 1,
+      step_id: 'step-1',
+      tool_name: 'search',
+    }, 7, 'cursor-causal-tool-start'),
+  })
+
+  assert.deepEqual(signature(), [
+    'reasoning:inspect the relevant files:5',
+    'tool:call-causal:6',
+  ])
+  const run = state.liveRunsBySession[sessionA.id]['run-live']
+  assert.equal(run.reasoning, undefined)
+  assert.equal(run.reasoningByKey, undefined)
+  assert.equal(run.toolActivitiesById?.['call:call-causal']?.phase, 'running')
+})
+
 test('realtime stream objects retain backend ordering sequence on live overlays', () => {
   const state = bootstrappedState()
 
@@ -2663,7 +2757,7 @@ test('realtime session.tool.delta appends output and terminal event replaces fin
   assert.equal(tool.outputText, '{"summary":"done"}')
   assert.equal(tool.status, 'completed')
   assert.equal(tool.durationMs, 42)
-  assert.equal(tool.timelineSeq, 7)
+  assert.equal(tool.timelineSeq, 5)
 })
 
 test('realtime terminal tool event keeps completed live tool after later assistant text', () => {
@@ -2696,8 +2790,8 @@ test('realtime terminal tool event keeps completed live tool after later assista
     .map((item) => item.type === 'live-assistant' ? `assistant:${item.content}` : `tool:${item.tool.callId}`)
 
   assert.deepEqual(rendered, [
-    'assistant:after write start',
     'tool:call-write',
+    'assistant:after write start',
   ])
 })
 

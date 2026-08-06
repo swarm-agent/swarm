@@ -80,6 +80,7 @@ export type { WorkspaceThemeOption }
 
 const BUILTIN_WORKSPACE_THEME_OPTIONS: WorkspaceThemeOption[] = [
   { id: 'black', label: 'Black' },
+  { id: 'tide', label: 'Tide' },
   { id: 'crimson', label: 'Crimson' },
   { id: 'nord', label: 'Nord' },
   { id: 'solarized-dark', label: 'Solarized Dark' },
@@ -138,6 +139,25 @@ const THEME_PALETTES: Record<string, WorkspaceThemeBasePalette> = {
     primary: '#88C0D0',
     warning: '#D08770',
     error: '#BF616A',
+  },
+  tide: {
+    background: '#29323A',
+    panel: '#333E47',
+    border: '#586774',
+    text: '#F1F6F7',
+    textMuted: '#AFBBC1',
+    primary: '#64BDD0',
+    warning: '#EBC268',
+    error: '#F2737C',
+    codeBackground: '#242C33',
+    codeText: '#E9F0F2',
+    codeKeyword: '#72C8D7',
+    codeString: '#83D1A4',
+    codeNumber: '#EBCB7B',
+    codeComment: '#8D9BA3',
+    codeFunction: '#B5A0E0',
+    codeType: '#F4A080',
+    codeOperator: '#C3CED3',
   },
   crimson: {
     background: '#1E1418',

@@ -147,9 +147,7 @@ func TestAskUserModalCustomInputOptionSubmitsTypedResponse(t *testing.T) {
 		ToolName:  "ask-user",
 		ToolArguments: `{
 			"question":"Any custom notes?",
-			"options":[
-				{"label":"Type your response","value":"__custom__","allowCustom":true}
-			]
+			"options":["Use the first suggestion","Use the second suggestion"]
 		}`,
 		Status: "pending",
 	})
@@ -180,24 +178,24 @@ func TestAskUserModalCustomInputOptionSubmitsTypedResponse(t *testing.T) {
 	}
 }
 
-func TestAskUserPayloadDefaultsToTypedResponseOption(t *testing.T) {
+func TestAskUserPayloadProgrammaticallyAppendsFreeformOption(t *testing.T) {
 	record := ChatPermissionRecord{
 		ToolName:      "ask-user",
-		ToolArguments: `{"question":"Need details"}`,
+		ToolArguments: `{"question":"Need details","options":["First","Second"]}`,
 	}
 	_, _, questions := askUserPayloadFromPermission(record)
 	if len(questions) != 1 {
 		t.Fatalf("len(questions) = %d, want 1", len(questions))
 	}
-	if len(questions[0].Options) != 1 {
-		t.Fatalf("len(options) = %d, want 1", len(questions[0].Options))
+	if len(questions[0].Options) != 3 {
+		t.Fatalf("len(options) = %d, want 3", len(questions[0].Options))
 	}
-	option := questions[0].Options[0]
+	option := questions[0].Options[2]
 	if !option.AllowCustom {
 		t.Fatalf("option.AllowCustom = false, want true")
 	}
-	if option.Value != "__custom__" {
-		t.Fatalf("option.Value = %q, want __custom__", option.Value)
+	if option.Value != "__custom__" || option.Label != "Custom response" {
+		t.Fatalf("freeform option = %#v", option)
 	}
 }
 

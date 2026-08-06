@@ -38,8 +38,8 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
 		Artifacts:       []pebblestore.SessionPlanArtifactReference{{Path: "docs/plan-brief.md", Role: "input", Description: "plan context"}},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/uncited-prior.json", Role: "deliverable"}, {Path: "out/shared-result.json", Role: "deliverable"}}},
-			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/shared-result.json", Role: "input", Description: "consume the cited prior checkpoint result", MediaType: "application/json"}, {Path: "out/user-summary.md", Role: "deliverable", Description: "user-visible deliverable", MediaType: "text/markdown"}}},
+			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1, Handoff: &pebblestore.SessionPlanCheckpointHandoff{Overview: "Prior handoff details must stay canonical"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/uncited-prior.json", Role: "deliverable"}, {Path: "out/shared-result.json", Role: "deliverable"}}},
+			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Order: 2, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/shared-result.json", Role: "input", Description: "consume the cited prior checkpoint result", MediaType: "application/json"}, {Path: "out/user-summary.md", Role: "deliverable", Description: "user-visible deliverable", MediaType: "text/markdown"}}},
 		},
 		ActiveCheckpointID: "cp-2",
 	}}); err != nil {
@@ -72,6 +72,34 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if !strings.Contains(text, `"objective": "Use plan context only"`) {
 		t.Fatalf("prompt missing selected checkpoint objective: %s", text)
 	}
+	for _, want := range []string{
+		`"checkpoint_index": [`,
+		`"id": "cp-1"`,
+		`"title": "Done"`,
+		`"status": "completed"`,
+		`"order": 1`,
+		`"has_handoff": true`,
+		`"id": "cp-2"`,
+		"lightweight orientation list",
+		"It is not the full plan, scope, context, checkpoint details, or handoff content",
+		"must not assume omitted context was supplied",
+		"Treat compact checkpoint context as orientation, not proof of plan or checkpoint facts",
+		"Before answering any user question whose answer depends on plan or checkpoint state or content",
+		"status, blocked/failed/review state, details, prior results, or handoffs",
+		"retrieve the canonical active plan with plan_manage get-active and base the answer on that tool result",
+		"even when the compact payload appears sufficient",
+		"Never guess or present an inference from compact context as verified fact",
+		"If canonical retrieval is unavailable or fails, state that the answer could not be verified",
+		"report the specific limitation or error instead of assuming",
+		"do not introduce or use a duplicate plan or handoff retrieval path",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt missing checkpoint orientation contract %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Prior handoff details must stay canonical") {
+		t.Fatalf("prompt embedded prior checkpoint handoff content instead of the orientation index: %s", text)
+	}
 	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "Create every role=deliverable artifact in the workspace", "reference its path from the terminal structured handoff", "Do not emit a separate assistant completion report"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("prompt missing artifact contract %q: %s", want, text)
@@ -92,8 +120,9 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"Do not call complete_subtask for discovery-only activity or for a single-step checkpoint",
 		"route it by contract impact",
 		"inquiry/guidance only requires no plan mutation",
-		"bounded same-deliverable refinement that preserves this checkpoint objective and acceptance criteria uses add_subtask",
+		"bounded same-deliverable refinement whose existing checklist remains valid uses add_subtask",
 		"without changing checkpoint identity or attempt history",
+		"feedback that supersedes the checklist uses replace_subtasks with the complete authoritative list",
 		"feedback that invalidates the objective or acceptance criteria requires parent-owned restart_checkpoint",
 		"independently shippable work or a separate review/failure boundary requires a later parent-owned request_followup_checkpoint",
 		"Prefer the least disruptive valid route and do not classify by imperative wording alone",
@@ -113,6 +142,11 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"a missing interface or API, scope growth, uncertainty, or an incomplete/failed first approach is implementation work",
 		"Use mark_needs_review only when user or audit judgment is inherently required",
 		"Use mark_blocked only for a named external dependency, required input, or unavailable permission",
+		"Blocked checkpoint handoff required when using mark_blocked",
+		"handoff_overview that identifies the external dependency/input/permission",
+		"impact_bullets led by the exact resolution required",
+		"suggested_prompts as ordinary user messages for likely next steps",
+		"client presents that evidence collapsed beneath the compact blocked handoff",
 		"Use mark_failed only for a nonrecoverable execution error after reasonable recovery attempts",
 		"backend durable plan state decides continuation",
 	} {

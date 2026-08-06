@@ -21,8 +21,10 @@ import { listAuthCredentials } from '../../queries/list-auth-credentials'
 import { listProviders } from '../../queries/list-providers'
 import type { AuthCredential, AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../types/auth'
 import { createPortal } from 'react-dom'
+import { CodexDeviceCode } from './codex-device-code'
+import { codexSetupRecommendation } from '../codex-setup-recommendation'
 
-type OAuthIntent = 'browser' | 'manual'
+type OAuthIntent = StartCodexOAuthInput['method']
 
 const fallbackMethod: AuthMethod = {
   id: 'api',
@@ -201,7 +203,7 @@ export function AuthSettingsPage() {
   const [apiKey, setAPIKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
-  const [oauthIntent, setOAuthIntent] = useState<OAuthIntent>('browser')
+  const [oauthIntent, setOAuthIntent] = useState<OAuthIntent>('device')
   const [oauthSession, setOAuthSession] = useState<CodexOAuthSession | null>(null)
   const [callbackInput, setCallbackInput] = useState('')
   const { data: agentState } = useQuery(agentStateQueryOptions())
@@ -244,6 +246,7 @@ export function AuthSettingsPage() {
     [availableMethods, selectedMethodKey],
   )
   const sortedCredentials = useMemo(() => sortCredentials(credentials), [credentials])
+  const recommendedCodexSetup = codexSetupRecommendation()
 
   useEffect(() => {
     if (!selectedProvider && providerOptions.length > 0) {
@@ -263,7 +266,7 @@ export function AuthSettingsPage() {
   }, [availableMethods, selectedMethodKey])
 
   useEffect(() => {
-    if (!composerOpen || oauthIntent !== 'browser' || !oauthSession?.sessionID) {
+    if (!composerOpen || (oauthIntent !== 'browser' && oauthIntent !== 'device') || !oauthSession?.sessionID) {
       return
     }
     if (oauthSession.status === 'success' || oauthSession.status === 'error') {
@@ -274,6 +277,9 @@ export function AuthSettingsPage() {
       void getCodexOAuthStatus(oauthSession.sessionID)
         .then(async (next) => {
           setOAuthSession(next)
+          if (next.status === 'error') {
+            setFormError(next.error || 'Codex sign-in failed.')
+          }
           if (next.status === 'success') {
             setStatus('Credential is now active.')
             setComposerOpen(false)
@@ -386,9 +392,10 @@ export function AuthSettingsPage() {
     setSaving(true)
     setFormError(null)
     setStatus(null)
+    setOAuthIntent(intent)
+    setOAuthSession(null)
     try {
       const session = await startCodexOAuth(payload)
-      setOAuthIntent(intent)
       setOAuthSession(session)
       if (intent === 'browser' && session.authURL && typeof window !== 'undefined') {
         window.open(session.authURL, '_blank', 'noopener,noreferrer')
@@ -521,13 +528,25 @@ export function AuthSettingsPage() {
 
             {selectedMethod.credentialType === 'oauth' ? (
               <div className="grid gap-3 p-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button className={authButtonAccentClass} onClick={() => void startOAuth('browser')} disabled={saving}>
-                    <LogIn size={16} className="mr-2" /> Browser login
-                  </Button>
-                  <Button className={authButtonNeutralClass} onClick={() => void startOAuth('manual')} disabled={saving}>
-                    <Key size={16} className="mr-2" /> Manual login
-                  </Button>
+                <div className="grid gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button className={recommendedCodexSetup === 'browser' ? authButtonAccentClass : authButtonNeutralClass} onClick={() => void startOAuth('browser')} disabled={saving}>
+                      <LogIn size={16} className="mr-2" /> Local Setup
+                    </Button>
+                    {recommendedCodexSetup === 'browser' ? <Badge tone="live">Recommended on this device</Badge> : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button className={recommendedCodexSetup === 'device' ? authButtonAccentClass : authButtonNeutralClass} onClick={() => void startOAuth('device')} disabled={saving}>
+                      Sign in with device code
+                    </Button>
+                    {recommendedCodexSetup === 'device' ? <Badge tone="live">Recommended for remote setup</Badge> : null}
+                  </div>
+                  <p className="text-sm text-[var(--app-text-muted)]">Device code uses a short one-time code without a localhost callback. Device sign-in will not silently switch methods if policy disables it.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button className={authButtonNeutralClass} onClick={() => void startOAuth('manual')} disabled={saving}>
+                      <Key size={16} className="mr-2" /> Manual callback fallback
+                    </Button>
+                  </div>
                 </div>
 
                 {oauthSession ? (
@@ -538,21 +557,26 @@ export function AuthSettingsPage() {
                       </Badge>
                       {oauthSession.error ? <span className="text-sm text-[var(--app-danger)]">{oauthSession.error}</span> : null}
                     </div>
-                    {oauthSession.authURL ? (
+                    {oauthIntent === 'device' ? <CodexDeviceCode session={oauthSession} disabled={saving} /> : null}
+                    {oauthIntent !== 'device' && oauthSession.authURL ? (
                       <label className="grid gap-2">
                         <span className="text-sm font-medium text-[var(--app-text)]">Auth URL</span>
                         <Textarea value={oauthSession.authURL} readOnly className="min-h-[96px] bg-[var(--app-surface-subtle)]" />
                       </label>
                     ) : null}
-                    <label className="grid gap-2">
-                      <span className="text-sm font-medium text-[var(--app-text)]">Callback input</span>
-                      <Textarea value={callbackInput} onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setCallbackInput(event.target.value)} placeholder="Paste the callback URL, query string, or authorization code" className="bg-[var(--app-surface-subtle)]" />
-                    </label>
-                    <div>
-                      <Button className={authButtonAccentClass} onClick={() => void finishOAuth()} disabled={saving || !oauthSession.sessionID}>
-                        <Check size={16} className="mr-2" /> {saving ? 'Waiting…' : 'Complete login'}
-                      </Button>
-                    </div>
+                    {oauthIntent === 'manual' ? (
+                      <>
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium text-[var(--app-text)]">Callback input</span>
+                          <Textarea value={callbackInput} onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setCallbackInput(event.target.value)} placeholder="Paste the callback URL, query string, or authorization code" className="bg-[var(--app-surface-subtle)]" />
+                        </label>
+                        <div>
+                          <Button className={authButtonAccentClass} onClick={() => void finishOAuth()} disabled={saving || !oauthSession.sessionID}>
+                            <Check size={16} className="mr-2" /> {saving ? 'Waiting…' : 'Complete login'}
+                          </Button>
+                        </div>
+                      </>
+                    ) : null}
                   </>
                 ) : null}
               </div>

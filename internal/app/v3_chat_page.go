@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -68,7 +69,9 @@ func (a *App) consumeV3ChatRender() {
 
 func (a *App) newV3Runtime() *v3chat.Runtime {
 	store := v3chat.NewStore()
-	return v3chat.NewRuntime(a.api, store, a.requestV3ChatRender)
+	runtime := v3chat.NewRuntime(a.api, store, a.requestV3ChatRender)
+	runtime.SetRoutedActivation(a.activateRoutedV3Session)
+	return runtime
 }
 
 func (a *App) v3ChatFooterRouteLabel(route model.ChatRoute) string {
@@ -263,7 +266,23 @@ func (a *App) v3ChatDraftModeSelections() map[string]v3chat.DraftModeSelection {
 	return selections
 }
 
-func (a *App) newV3ChatCreateOptions(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) (client.SessionCreateOptions, error) {
+func (a *App) canonicalSelfChatRoute(workspacePath string) (model.ChatRoute, error) {
+	if a == nil {
+		return model.ChatRoute{}, errors.New("app is not configured")
+	}
+	routes := a.homeModel.ChatRoutes
+	if len(routes) == 0 {
+		routes = buildChatRoutesForHomeModel(a.homeModel, workspacePath)
+	}
+	for _, route := range routes {
+		if isPrimaryHostChatRoute(route) {
+			return route, nil
+		}
+	}
+	return model.ChatRoute{}, errors.New("workspace has no canonical self route")
+}
+
+func (a *App) newV3ChatCreateOptions(intent ui.HomeSessionIntent, route model.ChatRoute) (client.SessionCreateOptions, error) {
 	if a == nil || a.api == nil {
 		return client.SessionCreateOptions{}, errors.New("api client is not configured")
 	}
@@ -278,79 +297,203 @@ func (a *App) newV3ChatCreateOptions(intent ui.HomeSessionIntent, route model.Ch
 		return client.SessionCreateOptions{}, errors.New("workspace path is required")
 	}
 	knownWorkspace := strings.TrimSpace(a.activeWorkspacePath()) != ""
-	useTUIPrimaryCWD := !knownWorkspace
-	if knownWorkspace && strings.TrimSpace(route.WorkspaceBindingID) == "" {
-		return client.SessionCreateOptions{}, errors.New("workspace binding id is required")
-	}
-
-	worktreeMode := "off"
-	var useCurrent *bool
-	baseBranch, branchName := "", ""
 	if knownWorkspace {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		settings, err := a.api.GetWorktreeSettings(ctx, workspacePath)
-		cancel()
+		var err error
+		route, err = a.canonicalSelfChatRoute(workspacePath)
 		if err != nil {
 			return client.SessionCreateOptions{}, err
 		}
-		if settings.Enabled || strings.TrimSpace(worktreeSuffix) != "" {
-			worktreeMode = "on"
-			value := settings.UseCurrentBranch
-			if !settings.Enabled && strings.TrimSpace(worktreeSuffix) != "" {
-				value = true
-			}
-			useCurrent = &value
-			if !value {
-				baseBranch = strings.TrimSpace(settings.BaseBranch)
-			}
-			branchName = normalizeWorktreeBranchPrefix(settings.BranchName)
-			if suffix := strings.Trim(strings.TrimSpace(worktreeSuffix), "/"); suffix != "" {
-				branchName = strings.Trim(branchName, "/") + "/" + suffix
-			}
+		if strings.TrimSpace(route.WorkspaceBindingID) == "" {
+			return client.SessionCreateOptions{}, errors.New("workspace binding id is required")
 		}
 	}
-
 	mode := normalizeAppSessionMode(intent.Mode)
 	if mode != "auto" {
 		mode = "plan"
 	}
 	cwdPath := ""
-	if useTUIPrimaryCWD {
+	if !knownWorkspace {
 		cwdPath = workspacePath
 	}
 	return client.SessionCreateOptions{
 		Title:                    emptyFallback(strings.TrimSpace(intent.Title), "New Session"),
 		WorkspacePath:            workspacePath,
 		CWDPath:                  cwdPath,
+		HostWorkspacePath:        strings.TrimSpace(route.HostWorkspacePath),
+		RuntimeWorkspacePath:     strings.TrimSpace(route.RuntimeWorkspacePath),
 		WorkspaceName:            intent.Workspace.Name,
-		WorkspaceBindingID:       route.WorkspaceBindingID,
-		TUIPrimaryCWD:            useTUIPrimaryCWD,
+		WorkspaceBindingID:       strings.TrimSpace(route.WorkspaceBindingID),
+		TUIPrimaryCWD:            !knownWorkspace,
 		Mode:                     mode,
 		AgentName:                emptyFallback(strings.TrimSpace(intent.Agent), "swarm"),
 		SwarmID:                  createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget),
-		TargetKind:               route.TargetKind,
-		TargetRelationship:       route.TargetRelationship,
+		TargetKind:               strings.TrimSpace(route.TargetKind),
+		TargetRelationship:       strings.TrimSpace(route.TargetRelationship),
 		Preference:               intent.Preference,
 		ModelProfile:             v3ChatCreateModelProfile(intent.Profile),
-		WorktreeMode:             worktreeMode,
-		WorktreeUseCurrentBranch: useCurrent,
-		WorktreeBaseBranch:       baseBranch,
-		WorktreeBranchName:       branchName,
+		WorktreeMode:             "off",
+		WorktreeUseCurrentBranch: nil,
 	}, nil
 }
 
 func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) error {
-	create, err := a.newV3ChatCreateOptions(intent, route, worktreeSuffix)
+	worktreeRequested := intent.WorktreeRequested || strings.TrimSpace(worktreeSuffix) != ""
+	command := v3chat.NewCommand{
+		Prompt:                   strings.TrimSpace(intent.InitialPrompt),
+		PlanModeRequested:        strings.EqualFold(strings.TrimSpace(intent.Mode), "plan"),
+		ManagedWorktreeRequested: worktreeRequested,
+	}
+	if worktreeRequested {
+		return a.openRoutedV3Primer(command)
+	}
+	directRoute := route
+	if strings.TrimSpace(a.activeWorkspacePath()) != "" {
+		var err error
+		directRoute, err = a.canonicalSelfChatRoute(intent.Workspace.Path)
+		if err != nil {
+			return err
+		}
+	}
+	create, err := a.newV3ChatCreateOptions(intent, directRoute)
 	if err != nil {
 		return err
 	}
 	runtime := a.newV3Runtime()
 	a.closeV3Chat()
-	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(route), v3ChatHomeProfileLabel(intent.Profile))
+	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(directRoute), v3ChatHomeProfileLabel(intent.Profile))
 	a.route = "v3chat"
 	a.home.ClearPrompt()
-	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections(), InitialPrompt: strings.TrimSpace(intent.InitialPrompt)})
+	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections(), InitialPrompt: command.Prompt})
 	return nil
+}
+
+// openRoutedV3Primer opens one local-only Router primer for an explicit
+// managed-worktree start. Prompt-bearing forms submit immediately; bare forms
+// remain editable and have no durable identity.
+func (a *App) openRoutedV3Primer(command v3chat.NewCommand) error {
+	if a == nil || a.api == nil {
+		return errors.New("api client is not configured")
+	}
+	if a.home == nil {
+		return errors.New("home page is not configured")
+	}
+	if !command.ManagedWorktreeRequested {
+		return errors.New("routed new session requires explicit worktree intent")
+	}
+	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
+	if workspacePath == "" {
+		return errors.New("routed worktree start requires a registered workspace")
+	}
+	route, err := a.canonicalSelfChatRoute(workspacePath)
+	if err != nil {
+		return err
+	}
+	swarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
+	if strings.TrimSpace(route.WorkspaceBindingID) == "" || strings.TrimSpace(swarmID) == "" {
+		return errors.New("routed worktree start requires canonical workspace binding and swarm authority")
+	}
+	runtime := a.newV3Runtime()
+	page := a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(route), v3ChatHomeProfileLabel(a.home.SessionIntent().Profile))
+	a.closeV3Chat()
+	a.v3Chat = page
+	a.route = "v3chat"
+	a.home.ClearPrompt()
+	authority := v3chat.RoutedDraft{
+		AgentName:            emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
+		WorkspacePath:        workspacePath,
+		HostWorkspacePath:    firstNonEmpty(strings.TrimSpace(route.HostWorkspacePath), workspacePath),
+		RuntimeWorkspacePath: firstNonEmpty(strings.TrimSpace(route.RuntimeWorkspacePath), workspacePath),
+		WorkspaceBindingID:   strings.TrimSpace(route.WorkspaceBindingID),
+		SwarmID:              strings.TrimSpace(swarmID),
+		TargetKind:           "host",
+		TargetRelationship:   "self",
+		Metadata:             map[string]any{"source": "tui"},
+	}
+	if err := page.OpenRoutedNew(command, authority); err != nil {
+		a.closeV3Chat()
+		a.route = "home"
+		a.home.SelectNextHomeTip()
+		return err
+	}
+	return nil
+}
+
+func (a *App) activateRoutedV3Session(ctx context.Context, response client.RoutedSessionV3StartResponse) error {
+	if a == nil || a.api == nil || a.home == nil || a.v3Chat == nil || a.v3Chat.Runtime() == nil || a.v3Chat.Runtime().Store() == nil {
+		return errors.New("routed TUI activation is not configured")
+	}
+	captured, ok := v3chat.SelectRoutedDraft(a.v3Chat.Runtime().Store().Snapshot())
+	if !ok {
+		return errors.New("routed TUI activation has no captured source authority")
+	}
+	identity := response.SessionView.Identity
+	if identity == nil {
+		return errors.New("Router response has no canonical identity")
+	}
+	sourcePath := normalizePath(identity.SourceWorkspacePath)
+	if sourcePath == "" {
+		return errors.New("Router response has no source workspace path")
+	}
+	if !pathsEqual(sourcePath, captured.WorkspacePath) || !strings.EqualFold(strings.TrimSpace(identity.WorkspaceBindingID), strings.TrimSpace(captured.WorkspaceBindingID)) {
+		return errors.New("routed response does not match the captured source workspace authority")
+	}
+	resolve, err := a.api.WorkspaceCWDResolve(ctx, sourcePath)
+	if err != nil {
+		return fmt.Errorf("resolve routed source workspace: %w", err)
+	}
+	if resolve.Workspace == nil {
+		return errors.New("captured source workspace is not registered")
+	}
+	resolvedSourcePath := firstNonEmpty(normalizePath(resolve.Workspace.WorkspacePath), normalizePath(resolve.ResolvedPath))
+	if resolvedSourcePath == "" || !pathsEqual(sourcePath, resolvedSourcePath) {
+		return errors.New("routed response source workspace resolved to a different workspace")
+	}
+	resolution := *resolve.Workspace
+	if strings.TrimSpace(resolution.WorkspaceName) == "" {
+		resolution.WorkspaceName = strings.TrimSpace(identity.SourceWorkspaceName)
+	}
+	if strings.TrimSpace(resolution.ResolvedPath) == "" {
+		resolution.ResolvedPath = sourcePath
+	}
+	a.homeModel = applyCWDResolverToHomeModel(a.homeModel, resolve)
+	a.syncActiveWorkspaceSelection(resolution)
+	a.selectedChatRouteID = a.resolveSelectedChatRouteIDForRoutedIdentity(sourcePath, identity)
+	a.homeModel.SelectedChatRouteID = a.selectedChatRouteID
+	a.home.SetModel(a.homeModel)
+	a.home.SetSessionIntent(buildHomeSessionIntent(a.home, a.selectedChatRouteForWorkspace(sourcePath)))
+	a.v3Chat.SetRouteLabel(a.v3ChatSessionFooterRouteLabel(sessionSummaryFromClient(response.Session)))
+	a.v3Chat.SetProfileLabel(strings.TrimSpace(response.SessionView.AgenticSettings.AgentModelPolicy.ProfileName))
+	a.v3Chat.SetStyles(a.v3ChatStyles())
+	return nil
+}
+
+func (a *App) resolveSelectedChatRouteIDForRoutedIdentity(sourcePath string, identity *client.RoutedSessionV3Identity) string {
+	if identity == nil {
+		return a.resolveSelectedChatRouteIDForWorkspace(sourcePath, a.homeModel.ChatRoutes)
+	}
+	bindingID := strings.TrimSpace(identity.WorkspaceBindingID)
+	runtimeSwarmID := strings.TrimSpace(identity.RuntimeSwarmID)
+	for _, route := range a.homeModel.ChatRoutes {
+		if bindingID != "" && !strings.EqualFold(strings.TrimSpace(route.WorkspaceBindingID), bindingID) {
+			continue
+		}
+		if runtimeSwarmID != "" && !strings.EqualFold(strings.TrimSpace(route.SwarmID), runtimeSwarmID) {
+			continue
+		}
+		if routeID := strings.TrimSpace(route.ID); routeID != "" {
+			return routeID
+		}
+	}
+	return a.resolveSelectedChatRouteIDForWorkspace(sourcePath, a.homeModel.ChatRoutes)
+}
+
+func sessionSummaryFromClient(summary client.SessionSummary) model.SessionSummary {
+	return model.SessionSummary{
+		ID:            strings.TrimSpace(summary.ID),
+		Title:         strings.TrimSpace(summary.Title),
+		WorkspacePath: strings.TrimSpace(summary.WorkspacePath),
+		Metadata:      cloneMetadataMap(summary.Metadata),
+	}
 }
 
 func (a *App) v3ChatDraftActive() bool {
@@ -362,13 +505,26 @@ func (a *App) syncPrimedV3ChatFromHomeDraft() {
 		return
 	}
 	runtime := a.v3Chat.Runtime()
+	state := runtime.Store().Snapshot()
 	intent := a.home.SessionIntent()
-	create, err := a.newV3ChatCreateOptions(intent, a.selectedChatRouteForWorkspace(a.activeContextPath()), "")
+	if draft, routed := v3chat.SelectRoutedDraft(state); routed {
+		if draft.Status != v3chat.RoutedDraftReady {
+			return
+		}
+		if err := runtime.UpdateRoutedDraftIntent(draft.Prompt, strings.EqualFold(strings.TrimSpace(intent.Mode), "plan"), draft.ManagedWorktreeRequested); err != nil {
+			a.v3Chat.SetStatus("refresh routed worktree draft failed: " + err.Error())
+		}
+		return
+	}
+	create, err := a.newV3ChatCreateOptions(intent, a.selectedChatRouteForWorkspace(a.activeContextPath()))
 	if err != nil {
 		a.v3Chat.SetStatus("refresh new session draft failed: " + err.Error())
 		return
 	}
-	_ = runtime.PrimeNewSession(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections()})
+	if err := runtime.PrimeNewSession(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections()}); err != nil {
+		a.v3Chat.SetStatus("refresh new session draft failed: " + err.Error())
+		return
+	}
 	a.v3Chat.SetProfileLabel(v3ChatHomeProfileLabel(intent.Profile))
 }
 

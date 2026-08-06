@@ -4,9 +4,9 @@ import test from 'node:test'
 import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
 import { saveShowCompactButtonSetting } from './save-show-compact-button-setting'
+import { saveShowTipsSetting } from './save-show-tips-setting'
 import { saveSwarmSettings } from './save-swarm-settings'
 import { saveDefaultWorkspaceRoute } from './save-default-workspace-route'
-import { saveSystemAgentSettings } from './save-system-agent-settings'
 
 function installFetchMock(handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) {
   const original = globalThis.fetch
@@ -30,6 +30,25 @@ test('saveThinkingTagsSetting sends only thinking_tags patch', async () => {
     const response = await saveThinkingTagsSetting(false)
     assert.equal(response.chat?.thinking_tags, false)
     assert.deepEqual(JSON.parse(capturedBody), { chat: { thinking_tags: false } })
+  } finally {
+    restore()
+  }
+})
+
+test('saveShowTipsSetting sends only show_tips patch', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({ chat: { show_tips: false } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await saveShowTipsSetting(false)
+    assert.equal(response.chat?.show_tips, false)
+    assert.deepEqual(JSON.parse(capturedBody), { chat: { show_tips: false } })
   } finally {
     restore()
   }
@@ -113,34 +132,6 @@ test('saveDefaultNewSessionMode preserves existing chat fields and writes defaul
         thinking_tags: false,
         default_workspace_routes: { '/repo': 'self' },
         default_new_session_mode: 'plan',
-      },
-    })
-  } finally {
-    restore()
-  }
-})
-
-test('saveSystemAgentSettings sends the Compact model patch through the canonical UI settings API', async () => {
-  let capturedBody = ''
-  const restore = installFetchMock(async (_input, init) => {
-    capturedBody = String(init?.body ?? '')
-    return new Response(JSON.stringify({ agents: { compact: { provider: 'codex', model: 'gpt-5.6', thinking: 'high', service_tier: 'priority' } } }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  })
-
-  try {
-    const response = await saveSystemAgentSettings({
-      current: { agents: { finder: { provider: 'anthropic', model: 'claude-sonnet-4-5' } } },
-      agent: 'compact',
-      settings: { provider: 'CODEX', model: 'gpt-5.6', thinking: 'high', service_tier: 'PRIORITY' },
-    })
-    assert.equal(response.agents?.compact?.model, 'gpt-5.6')
-    assert.deepEqual(JSON.parse(capturedBody), {
-      agents: {
-        finder: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
-        compact: { provider: 'codex', model: 'gpt-5.6', thinking: 'high', service_tier: 'priority' },
       },
     })
   } finally {

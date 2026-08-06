@@ -1,5 +1,5 @@
 interface WorkspaceStatusProps {
-  kind: 'error' | 'empty'
+  kind: 'error' | 'empty' | 'success'
   title: string
   message: string
   actionLabel?: string
@@ -9,6 +9,7 @@ interface WorkspaceStatusProps {
 const statusToneClass: Record<WorkspaceStatusProps['kind'], string> = {
   error: 'border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]',
   empty: 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
+  success: 'border-[var(--app-success)]/35 bg-[var(--app-success)]/10 text-[var(--app-text-muted)]',
 }
 
 export function WorkspaceStatus({ kind, title, message, actionLabel, onAction }: WorkspaceStatusProps) {

@@ -95,6 +95,17 @@ func TestSanitizeConfigKeybindMapDropsBareEnterOverrides(t *testing.T) {
 	}
 }
 
+func TestAppConfigPreservesCanonicalShowTipsSetting(t *testing.T) {
+	cfg := appConfigFromUISettings(client.UISettings{Chat: client.UIChatSettings{ShowTips: false}})
+	if cfg.Chat.ShowTips {
+		t.Fatal("app config show tips = true, want canonical false")
+	}
+	cfg.Chat.ShowTips = true
+	if settings := uiSettingsFromAppConfig(cfg); !settings.Chat.ShowTips {
+		t.Fatal("ui settings show tips = false, want true")
+	}
+}
+
 func TestAppConfigFromUISettingsDropsBareEnterKeybindOverrides(t *testing.T) {
 	cfg := appConfigFromUISettings(client.UISettings{
 		Input: client.UIInputSettings{Keybinds: map[string]string{

@@ -4,103 +4,102 @@ import { modelProfilesQueryKey } from '../../../queries/query-options'
 import type {
   ModelProfileInput,
   ModelProfileRecord,
-  ModelProfileSelectionRecord,
   ModelProfileState,
 } from '../types/chat'
 
-type SelectionWire = {
-  provider?: unknown
-  model?: unknown
-  thinking?: unknown
-  service_tier?: unknown
-  context_mode?: unknown
+function requireRecord(value: unknown, message: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(message)
+  return value as Record<string, unknown>
 }
 
-type ProfileWire = {
-  profile_id?: unknown
-  name?: unknown
-  model_mode?: unknown
-  single?: SelectionWire | null
-  plan?: SelectionWire | null
-  auto?: SelectionWire | null
-  created_at?: unknown
-  updated_at?: unknown
-  is_default?: unknown
+function requireString(value: unknown, field: string, allowEmpty = false): string {
+  if (typeof value !== 'string') throw new Error(`Model profile response has invalid ${field}`)
+  const normalized = value.trim()
+  if (!allowEmpty && !normalized) throw new Error(`Model profile response is missing ${field}`)
+  return normalized
 }
 
-function selectionFromWire(value: SelectionWire | null | undefined): ModelProfileSelectionRecord | null {
-  if (!value) return null
+function requireNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`Model profile response has invalid ${field}`)
+  return value
+}
+
+function profileFromWire(value: unknown): ModelProfileRecord {
+  const profile = requireRecord(value, 'Model profile response is malformed')
   return {
-    provider: String(value.provider ?? '').trim(),
-    model: String(value.model ?? '').trim(),
-    thinking: String(value.thinking ?? '').trim(),
-    serviceTier: String(value.service_tier ?? '').trim(),
-    contextMode: String(value.context_mode ?? '').trim(),
+    profileId: requireString(profile.profile_id, 'profile_id'),
+    name: requireString(profile.name, 'name'),
+    provider: requireString(profile.provider, 'provider'),
+    model: requireString(profile.model, 'model'),
+    thinking: requireString(profile.thinking, 'thinking'),
+    serviceTier: requireString(profile.service_tier, 'service_tier', true),
+    contextMode: requireString(profile.context_mode, 'context_mode', true).toLowerCase(),
+    createdAt: requireNumber(profile.created_at, 'created_at'),
+    updatedAt: requireNumber(profile.updated_at, 'updated_at'),
+    sortOrder: requireNumber(profile.sort_order, 'sort_order'),
+    isDefault: typeof profile.is_default === 'boolean'
+      ? profile.is_default
+      : (() => { throw new Error('Model profile response has invalid is_default') })(),
   }
-}
-
-function profileFromWire(value: ProfileWire): ModelProfileRecord {
-  const modelMode = String(value.model_mode ?? '').trim()
-  if (modelMode !== 'single' && modelMode !== 'split') throw new Error('Model profile response has an invalid model_mode')
-  const profileId = String(value.profile_id ?? '').trim()
-  if (!profileId) throw new Error('Model profile response is missing profile_id')
-  return {
-    profileId,
-    name: String(value.name ?? '').trim(),
-    modelMode,
-    single: selectionFromWire(value.single),
-    plan: selectionFromWire(value.plan),
-    auto: selectionFromWire(value.auto),
-    createdAt: typeof value.created_at === 'number' ? value.created_at : 0,
-    updatedAt: typeof value.updated_at === 'number' ? value.updated_at : 0,
-    isDefault: value.is_default === true,
-  }
-}
-
-function selectionToWire(value: ModelProfileSelectionRecord | null) {
-  return value ? {
-    provider: value.provider.trim(),
-    model: value.model.trim(),
-    thinking: value.thinking.trim(),
-    service_tier: value.serviceTier.trim(),
-    context_mode: value.contextMode.trim(),
-  } : undefined
 }
 
 function inputToWire(input: ModelProfileInput) {
   return {
     name: input.name.trim(),
-    model_mode: input.modelMode,
-    single: selectionToWire(input.single),
-    plan: selectionToWire(input.plan),
-    auto: selectionToWire(input.auto),
+    provider: input.provider.trim(),
+    model: input.model.trim(),
+    thinking: input.thinking.trim(),
+    service_tier: input.serviceTier.trim(),
+    context_mode: input.contextMode.trim().toLowerCase(),
   }
 }
 
+function responseProfile(response: unknown): ModelProfileRecord {
+  const body = requireRecord(response, 'Model profile response is malformed')
+  return profileFromWire(body.model_profile)
+}
+
+function responseProfiles(response: unknown): ModelProfileRecord[] {
+  const body = requireRecord(response, 'Model profiles response is malformed')
+  if (!Array.isArray(body.model_profiles)) throw new Error('Model profiles response is missing model_profiles')
+  return body.model_profiles.map(profileFromWire)
+}
+
 export async function fetchModelProfiles(signal?: AbortSignal): Promise<ModelProfileState> {
-  const response = await requestJson<{ model_profiles?: ProfileWire[]; default_profile_id?: unknown }>('/v1/model-profiles', { signal })
-  const profiles = Array.isArray(response.model_profiles) ? response.model_profiles.map(profileFromWire) : []
-  const defaultProfileId = String(response.default_profile_id ?? '').trim()
+  const response = await requestJson<unknown>('/v1/model-profiles', { signal })
+  const body = requireRecord(response, 'Model profiles response is malformed')
+  const profiles = responseProfiles(body)
+  const defaultProfileId = requireString(body.default_profile_id, 'default_profile_id', true)
+  if (defaultProfileId && !profiles.some((profile) => profile.profileId === defaultProfileId)) {
+    throw new Error('Model profiles response default_profile_id does not identify a returned profile')
+  }
   return {
-    profiles: profiles.map((profile) => ({ ...profile, isDefault: profile.profileId === defaultProfileId || profile.isDefault })),
+    profiles: profiles.map((profile) => ({ ...profile, isDefault: profile.profileId === defaultProfileId })),
     defaultProfileId,
   }
 }
 
+export async function reorderModelProfiles(profileIds: string[]): Promise<ModelProfileRecord[]> {
+  const response = await requestJson<unknown>('/v1/model-profiles', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile_ids: profileIds }),
+  })
+  return responseProfiles(response)
+}
+
 export async function createModelProfile(input: ModelProfileInput): Promise<ModelProfileRecord> {
-  const response = await requestJson<{ model_profile: ProfileWire }>('/v1/model-profiles', {
+  const response = await requestJson<unknown>('/v1/model-profiles', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inputToWire(input)),
   })
-  return profileFromWire(response.model_profile)
+  return responseProfile(response)
 }
 
 export async function updateModelProfile(profileId: string, input: ModelProfileInput): Promise<ModelProfileRecord> {
   const normalized = profileId.trim()
   if (!normalized) throw new Error('Model profile update requires profile_id')
-  const response = await requestJson<{ model_profile: ProfileWire }>(`/v1/model-profiles/${encodeURIComponent(normalized)}`, {
+  const response = await requestJson<unknown>(`/v1/model-profiles/${encodeURIComponent(normalized)}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(inputToWire(input)),
   })
-  return profileFromWire(response.model_profile)
+  return responseProfile(response)
 }
 
 export async function deleteModelProfile(profileId: string): Promise<void> {
@@ -112,10 +111,10 @@ export async function deleteModelProfile(profileId: string): Promise<void> {
 export async function setDefaultModelProfile(profileId: string): Promise<ModelProfileRecord> {
   const normalized = profileId.trim()
   if (!normalized) throw new Error('Default model profile requires profile_id')
-  const response = await requestJson<{ model_profile: ProfileWire }>('/v1/model-profiles/default', {
+  const response = await requestJson<unknown>('/v1/model-profiles/default', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profile_id: normalized }),
   })
-  return profileFromWire(response.model_profile)
+  return responseProfile(response)
 }
 
 export async function invalidateModelProfiles(queryClient: QueryClient): Promise<void> {

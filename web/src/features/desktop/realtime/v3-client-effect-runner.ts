@@ -4,13 +4,13 @@ import { queryClient as desktopQueryClient } from '../../../app/query-client'
 import { refreshAgentModelMutationCaches } from '../chat/queries/agent-preference-mutations'
 import { applyDesktopRouteTheme } from '../layout/desktop-theme-controller'
 import type { RealtimeMessage } from '../state/desktop-v3-cache-types'
-import { uiSettingsQueryOptions, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, uiSettingsQueryOptions, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { resolveWorkspaceBySlug } from '../../workspaces/launcher/services/workspace-route'
 import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/services/workspace-theme'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 
-export type DesktopV3ClientEffectType = 'refresh_agents' | 'refresh_themes'
+export type DesktopV3ClientEffectType = 'refresh_agents' | 'refresh_themes' | 'refresh_providers'
 
 export interface DesktopV3ClientEffect {
   type: DesktopV3ClientEffectType
@@ -24,13 +24,23 @@ export interface DesktopV3DurableClientEffects {
 export interface DesktopV3ClientEffectRunnerDeps {
   refreshAgents: () => Promise<void>
   refreshThemes: () => Promise<void>
+  refreshProviders: () => Promise<void>
   reportError: (effect: DesktopV3ClientEffectType, error: unknown) => void
 }
 
 const MAX_SEEN_DURABLE_EFFECT_EVENTS = 256
-const CLIENT_EFFECT_TYPES = new Set<DesktopV3ClientEffectType>(['refresh_agents', 'refresh_themes'])
+const CLIENT_EFFECT_TYPES = new Set<DesktopV3ClientEffectType>(['refresh_agents', 'refresh_themes', 'refresh_providers'])
 
 export function durableClientEffectsFromRealtimeFrame(frame: RealtimeMessage): DesktopV3DurableClientEffects | null {
+  if (frame.kind === 'auth.credentials.updated') {
+    const eventSequence = numberValue(frame.auth?.event_sequence)
+    const accountScopeID = stringValue(frame.auth?.account_scope_id)
+    if (eventSequence <= 0 || !accountScopeID) return null
+    return {
+      eventIdentity: `auth:${accountScopeID}:${eventSequence}`,
+      effects: [{ type: 'refresh_providers' }],
+    }
+  }
   if (frame.kind !== 'event') return null
   const event = recordValue(frame.event)
   if (!event) return null
@@ -111,6 +121,7 @@ export class DesktopV3ClientEffectRunner {
         try {
           if (effect === 'refresh_agents') await this.deps.refreshAgents()
           if (effect === 'refresh_themes') await this.deps.refreshThemes()
+          if (effect === 'refresh_providers') await this.deps.refreshProviders()
         } catch (error) {
           this.deps.reportError(effect, error)
         }
@@ -136,6 +147,16 @@ export function createDefaultDesktopV3ClientEffectRunnerDeps(
       queryClient.setQueryData(settingsOptions.queryKey, settings)
       queryClient.setQueryData(overviewOptions.queryKey, overview)
       applyCanonicalDesktopTheme(settings, overview)
+    },
+    refreshProviders: async () => {
+      const options = modelOptionsQueryOptions()
+      const modelOptions = await queryClient.fetchQuery({ ...options, staleTime: 0 })
+      queryClient.setQueryData(options.queryKey, modelOptions)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: draftModelQueryOptions().queryKey, refetchType: 'active' }),
+        queryClient.invalidateQueries({ queryKey: agentStateQueryOptions().queryKey, refetchType: 'active' }),
+        queryClient.invalidateQueries({ queryKey: ['auth-credentials'], refetchType: 'active' }),
+      ])
     },
     reportError: (effect, error) => {
       console.error(`[desktop-v3] client effect ${effect} failed`, error)

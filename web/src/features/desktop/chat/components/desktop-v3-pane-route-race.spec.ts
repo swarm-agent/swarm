@@ -21,18 +21,10 @@ import {
 } from './desktop-v3-existing-conversation-pane'
 import { resolveDesktopV3AgentModelLock } from '../services/agent-model-preferences'
 import {
-  completeDesktopV3NewSessionStarted,
-} from './desktop-v3-new-session-pane'
-import {
   createDesktopV3ExistingMessageOperation,
   persistDesktopV3ExistingMessageOperation,
   loadDesktopV3ExistingMessageOperation,
 } from '../../session-v3/existing-session-flow'
-import {
-  createDesktopV3NewSessionOperation,
-  persistDesktopV3NewSessionOperation,
-  loadDesktopV3NewSessionOperation,
-} from '../../session-v3/new-session-flow'
 import type { DesktopChatRoute } from '../services/chat-routing'
 import type { AgentProfileRecord } from '../types/chat'
 
@@ -129,91 +121,6 @@ test('Existing message completion clears the mounted composer draft after send',
   assert.equal(loadDesktopV3ExistingMessageOperation('session-a'), null)
   assert.equal(operationRef, null)
   assert.equal(draft, '')
-}))
-
-test('Workspace A creation completion after navigation does not navigate away from workspace B or clear B retained operation', () => withSessionStorage(() => {
-  const operationA = createDesktopV3NewSessionOperation({
-    workspacePath: '/workspace-a',
-    workspaceName: 'workspace-a',
-    route,
-    prompt: 'blocked A',
-    agentName: 'swarm',
-  })
-  const operationB = createDesktopV3NewSessionOperation({
-    workspacePath: '/workspace-b',
-    workspaceName: 'workspace-b',
-    route: {
-      ...route,
-      hostWorkspacePath: '/workspace-b',
-      runtimeWorkspacePath: '/workspace-b',
-      workspaceName: 'workspace-b',
-    },
-    prompt: 'retained B',
-    agentName: 'swarm',
-  })
-  persistDesktopV3NewSessionOperation(operationA)
-  persistDesktopV3NewSessionOperation(operationB)
-
-  let draftA = operationA.firstMessageRequest.content
-  let visibleWorkspacePath = '/workspace-b'
-  let operationRefB = operationB
-  const navigations: string[] = []
-  completeDesktopV3NewSessionStarted({
-    workspacePath: '/workspace-a',
-    operation: operationA,
-    mountedRef: { current: false },
-    setOperation: () => {
-      operationRefB = operationA
-    },
-    setDraft: (nextDraft) => {
-      draftA = nextDraft
-    },
-    navigateToSession: (sessionId) => {
-      visibleWorkspacePath = '/workspace-a'
-      navigations.push(sessionId)
-    },
-  })
-
-  assert.equal(loadDesktopV3NewSessionOperation('/workspace-a'), null)
-  assert.equal(draftA, operationA.firstMessageRequest.content)
-  assert.equal(loadDesktopV3NewSessionOperation('/workspace-b')?.operationId, operationB.operationId)
-  assert.equal(operationRefB.operationId, operationB.operationId)
-  assert.equal(visibleWorkspacePath, '/workspace-b')
-  assert.deepEqual(navigations, [])
-}))
-
-test('New session completion clears the mounted composer draft after send', () => withSessionStorage(() => {
-  const operation = createDesktopV3NewSessionOperation({
-    workspacePath: '/workspace-a',
-    workspaceName: 'workspace-a',
-    route,
-    prompt: 'sent text',
-    agentName: 'swarm',
-  })
-  persistDesktopV3NewSessionOperation(operation)
-
-  let draft = operation.firstMessageRequest.content
-  let operationRef: typeof operation | null = operation
-  const navigations: string[] = []
-  completeDesktopV3NewSessionStarted({
-    workspacePath: '/workspace-a',
-    operation,
-    mountedRef: { current: true },
-    setOperation: (nextOperation) => {
-      operationRef = nextOperation
-    },
-    setDraft: (nextDraft) => {
-      draft = nextDraft
-    },
-    navigateToSession: (sessionId) => {
-      navigations.push(sessionId)
-    },
-  })
-
-  assert.equal(loadDesktopV3NewSessionOperation('/workspace-a'), null)
-  assert.equal(operationRef, null)
-  assert.equal(draft, '')
-  assert.deepEqual(navigations, [operation.sessionId])
 }))
 
 
@@ -514,14 +421,31 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
 })
 
 
-test('Desktop V3 blocked checkpoint handoff renders as one standalone handoff', () => {
+test('Desktop V3 blocked checkpoint handoff renders a compact summary with collapsed evidence', () => {
+  const resumePrompt = 'PR #28 is merged. Resume the deployment checkpoint.'
   const handoff = {
     id: 'plan-handoff-blocked',
     session_id: 'session-a',
     global_seq: 10,
     role: 'system',
-    content: 'Blocked checkpoint handoff\n\nStatus: BLOCKED\nPlan: Demo plan\nCheckpoint: Checkpoint 1 — API\nResolution required: resolve the named external dependency, input, or permission in the report before continuing checkpoint execution.\n\nReport:\n## Blocker\n- waiting on dependency\nResult: blocked\nValidation:\n- not run; blocked by dependency',
-    metadata: { source: 'plan_execution_blocked_handoff', kind: 'plan_blocked_checkpoint_handoff' },
+    content: 'PR #28 must be merged\n\nProduction deployment cannot continue because the reviewed commit is not in canonical main.\n- Resolution: merge PR #28, then resume this checkpoint.\n- No production state changed.',
+    metadata: {
+      source: 'plan_execution_blocked_handoff',
+      kind: 'plan_blocked_checkpoint_handoff',
+      blocked_handoff: {
+        schema_version: 1,
+        title: 'PR #28 must be merged',
+        overview: 'Production deployment cannot continue because the reviewed commit is not in canonical main.',
+        impact_bullets: ['Resolution: merge PR #28, then resume this checkpoint.', 'No production state changed.'],
+        suggested_prompts: [{ label: 'Resume deployment', prompt: resumePrompt }],
+        details: {
+          report: 'Full source-gate report',
+          result: 'Blocked on source promotion',
+          changed_files: [],
+          validation: ['origin/main does not contain the reviewed commit'],
+        },
+      },
+    },
     created_at: 10,
   }
 
@@ -531,19 +455,22 @@ test('Desktop V3 blocked checkpoint handoff renders as one standalone handoff', 
   const items = buildDesktopV3ConversationRenderItems({ committed: [handoff], pendingUser: [], liveRuns: [], runIntents: [] })
   assert.deepEqual(items.map((item) => item.type), ['plan-blocked-handoff'])
   if (items[0]?.type === 'plan-blocked-handoff') {
-    assert.equal(items[0].headline, 'Blocked checkpoint handoff')
-    assert.equal(items[0].summary, '')
-    assert.match(items[0].body, /Status: BLOCKED/)
-    assert.match(items[0].body, /Plan: Demo plan/)
-    assert.match(items[0].body, /Checkpoint: Checkpoint 1 — API/)
-    assert.match(items[0].body, /Resolution required:/)
-    assert.match(items[0].body, /Report:\n## Blocker\n- waiting on dependency/)
-    assert.match(items[0].body, /Result: blocked/)
-    assert.match(items[0].body, /Validation:\n- not run; blocked by dependency/)
+    assert.equal(items[0].headline, 'PR #28 must be merged')
+    assert.equal(items[0].body, '')
+    assert.equal(items[0].finalHandoff?.overview, 'Production deployment cannot continue because the reviewed commit is not in canonical main.')
     const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
       item: items[0], thinkingTagsEnabled: true, timerNow: 0, index: 0,
+      onSuggestedPrompt: () => undefined,
     }))
     assert.match(markup, /data-testid="desktop-v3-plan-blocked-handoff"/)
+    assert.match(markup, /PR #28 must be merged/)
+    assert.match(markup, /Resolution: merge PR #28/)
+    assert.match(markup, /Next steps/)
+    assert.match(markup, /Resume deployment/)
+    assert.match(markup, /<summary[^>]*>Details<\/summary>/)
+    assert.match(markup, /Full source-gate report/)
+    assert.match(markup, /origin\/main does not contain the reviewed commit/)
+    assert.doesNotMatch(markup, /<details open/)
     assert.doesNotMatch(markup, /At a glance/)
   }
 })

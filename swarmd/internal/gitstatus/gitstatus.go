@@ -68,6 +68,7 @@ type Snapshot struct {
 	Files          []FileStatus `json:"files"`
 	Remotes        []Remote     `json:"remotes,omitempty"`
 	RecentCommits  []Commit     `json:"recent_commits,omitempty"`
+	SessionCommits []Commit     `json:"session_commits,omitempty"`
 	RefreshedAt    time.Time    `json:"refreshed_at"`
 	DurationMS     int64        `json:"duration_ms"`
 }
@@ -454,11 +455,43 @@ func listRemotes(ctx context.Context, target string) []Remote {
 }
 
 func listRecentCommits(ctx context.Context, target string, limit int) []Commit {
+	return listCommits(ctx, target, "", limit)
+}
+
+// ListCommitsSince returns commits created after baseRef on the current worktree
+// branch. Resolve the caller-provided ref to an object ID first so it can never
+// be interpreted as a Git option. Git remains the authority for the commit list.
+func ListCommitsSince(ctx context.Context, target, baseRef string, limit int) []Commit {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, CommandTimeout)
+	defer cancel()
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef == "" {
+		return nil
+	}
+	resolved, err := gitOutputContext(ctx, target, "rev-parse", "--verify", "--end-of-options", baseRef+"^{commit}")
+	if err != nil {
+		return nil
+	}
+	baseOID := strings.TrimSpace(string(resolved))
+	if baseOID == "" {
+		return nil
+	}
+	return listCommits(ctx, target, baseOID+"..HEAD", limit)
+}
+
+func listCommits(ctx context.Context, target, revision string, limit int) []Commit {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	format := "%H%x1f%h%x1f%an%x1f%at%x1f%s"
-	raw, err := gitOutputContext(ctx, target, "log", "-n", strconv.Itoa(limit), "--date=unix", "--format="+format)
+	args := []string{"log", "-n", strconv.Itoa(limit), "--date=unix", "--format=" + format}
+	if strings.TrimSpace(revision) != "" {
+		args = append(args, revision)
+	}
+	raw, err := gitOutputContext(ctx, target, args...)
 	if err != nil {
 		return nil
 	}

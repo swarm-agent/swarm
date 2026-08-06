@@ -95,9 +95,10 @@ type sessionV3ProviderStreamState struct {
 	streamEventCount           int
 	progressErr                error
 
-	activeReasoningKey string
-	reasoningByKey     map[string]string
-	reasoningOrder     []string
+	activeReasoningKey     string
+	reasoningByKey         map[string]string
+	reasoningOrder         []string
+	providerToolEventIndex int
 }
 
 func newSessionV3ProviderStreamState(exec *sessionV3Executor, job sessionV3ExecutorJob, sink *sessionV3DurableProgressSink, step int) *sessionV3ProviderStreamState {
@@ -153,7 +154,44 @@ func (s *sessionV3ProviderStreamState) Handle(event provideriface.StreamEvent) {
 		s.progressErr = s.sink.TryAppendAssistant(durable)
 	case provideriface.StreamEventReasoningSummaryDelta:
 		s.handleReasoningLocked(event)
+	case provideriface.StreamEventToolCallStarted,
+		provideriface.StreamEventToolCallArgumentsDelta,
+		provideriface.StreamEventToolCallArgumentsSnapshot,
+		provideriface.StreamEventToolCallCompleted:
+		if event.Type == provideriface.StreamEventToolCallStarted {
+			s.completeActiveReasoningLocked()
+			if s.progressErr != nil {
+				return
+			}
+		}
+		s.providerToolEventIndex++
+		s.progressErr = s.sink.TryRecordProviderToolConstruction(s.tracker.Step, s.providerToolEventIndex, event)
 	}
+}
+
+func sessionV3ProviderToolConstructionEventType(eventType provideriface.StreamEventType) string {
+	switch eventType {
+	case provideriface.StreamEventToolCallStarted:
+		return "session.provider_tool_call.started"
+	case provideriface.StreamEventToolCallArgumentsDelta:
+		return "session.provider_tool_call.arguments.delta"
+	case provideriface.StreamEventToolCallArgumentsSnapshot:
+		return "session.provider_tool_call.arguments.snapshot"
+	case provideriface.StreamEventToolCallCompleted:
+		return "session.provider_tool_call.completed"
+	default:
+		return ""
+	}
+}
+
+func cloneSessionV3ProviderToolStreamEvent(event provideriface.StreamEvent) provideriface.StreamEvent {
+	cloned := event
+	if event.ToolCallIndex != nil {
+		index := *event.ToolCallIndex
+		cloned.ToolCallIndex = &index
+	}
+	cloned.Metadata = cloneSessionsV3Metadata(event.Metadata)
+	return cloned
 }
 
 func (s *sessionV3ProviderStreamState) handleReasoningLocked(event provideriface.StreamEvent) {
@@ -200,6 +238,17 @@ func sessionV3ApplyReasoningUpdate(previous, incoming string, mode provideriface
 	}
 }
 
+func (s *sessionV3ProviderStreamState) completeActiveReasoningLocked() {
+	if s == nil || s.activeReasoningKey == "" {
+		return
+	}
+	summary := strings.TrimSpace(s.reasoningByKey[s.activeReasoningKey])
+	s.progressErr = s.sink.TryCompleteReasoning(s.tracker.Step, s.activeReasoningKey, summary)
+	if s.progressErr == nil {
+		s.activeReasoningKey = ""
+	}
+}
+
 func (s *sessionV3ProviderStreamState) FinishStep() error {
 	if s == nil {
 		return nil
@@ -209,14 +258,7 @@ func (s *sessionV3ProviderStreamState) FinishStep() error {
 	if s.progressErr != nil {
 		return s.progressErr
 	}
-	if s.activeReasoningKey != "" {
-		summary := strings.TrimSpace(s.reasoningByKey[s.activeReasoningKey])
-		s.progressErr = s.sink.TryCompleteReasoning(s.tracker.Step, s.activeReasoningKey, summary)
-		if s.progressErr != nil {
-			return s.progressErr
-		}
-		s.activeReasoningKey = ""
-	}
+	s.completeActiveReasoningLocked()
 	return s.progressErr
 }
 

@@ -69,6 +69,7 @@ type sessionsV3WorksetResources struct {
 	Notifications       bool `json:"notifications,omitempty"`
 	NotificationSummary bool `json:"notification_summary,omitempty"`
 	Tasks               bool `json:"tasks,omitempty"`
+	Auth                bool `json:"auth,omitempty"`
 	ActivePlan          bool `json:"active_plan,omitempty"`
 	PlanRevisions       bool `json:"plan_revisions,omitempty"`
 }
@@ -256,7 +257,7 @@ func (s *Server) writeSessionsV3Workset(w http.ResponseWriter, options sessionsV
 }
 
 func (s *Server) sessionsV3WorksetResponseForResult(_ sessionsV3ResolvedWorksetOptions, workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) (map[string]any, error) {
-	return sessionsV3WorksetResponse(workset, snapshotEndpointCursor), nil
+	return sessionsV3WorksetResponse(workset, snapshotEndpointCursor)
 }
 
 func canonicalSessionsV3WorksetWorkspacePaths(workspace sessionsV3WorksetWorkspace) ([]string, error) {
@@ -317,12 +318,16 @@ func appendCanonicalSessionsV3WorksetPath(paths []string, seen map[string]struct
 	return append(paths, cleaned), nil
 }
 
-func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) map[string]any {
+func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) (map[string]any, error) {
+	sessionShells, err := sessionsV3SyncSessionShells(workset.SessionsByID)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"ok":                           true,
 		"rev":                          workset.Rev,
 		"snapshot_endpoint_cursor":     snapshotEndpointCursor,
-		"sessions_by_id":               sessionsV3SyncSessionShells(workset.SessionsByID),
+		"sessions_by_id":               sessionShells,
 		"projections_by_session":       workset.ProjectionsBySession,
 		"messages_by_session":          workset.MessagesBySession,
 		"events_by_session":            workset.EventsBySession,
@@ -335,5 +340,5 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snaps
 		"pagination":                   workset.Pagination,
 		"watermarks":                   workset.Watermarks,
 		"session_order":                workset.SessionOrder,
-	}
+	}, nil
 }

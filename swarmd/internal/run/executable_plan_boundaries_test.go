@@ -67,6 +67,23 @@ func TestRequestNewPlanPermissionRoundTripPreservesValidatedDocument(t *testing.
 	}
 }
 
+func TestMasterHarnessPromptSeparatesStoppedRedirectionFromTerminalConversation(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"A user message after an explicit pause/stop already reactivates the paused checkpoint",
+		"treat the checkpoint as nonterminal",
+		"you must call restart_checkpoint with the complete replacement contract",
+		"do not refuse or dismiss the redirection",
+		"emit a final handoff instead of restarting",
+		"Terminal checkpoint actions only finish the current checkpoint",
+		"re-complete a plan already waiting for final review",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness prompt missing %q", want)
+		}
+	}
+}
+
 func TestRejectedExitPlanModeCreatesNoLifecycleEffects(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()

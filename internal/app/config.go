@@ -41,6 +41,7 @@ type StartupConfig struct {
 
 type ChatConfig struct {
 	ShowHeader             bool
+	ShowTips               bool
 	ThinkingTags           bool
 	ShowCompactButton      bool
 	DefaultNewSessionMode  string
@@ -91,6 +92,7 @@ func defaultAppConfig() AppConfig {
 	return AppConfig{
 		Chat: ChatConfig{
 			ShowHeader:            true,
+			ShowTips:              true,
 			ThinkingTags:          true,
 			ShowCompactButton:     false,
 			DefaultNewSessionMode: "auto",
@@ -235,6 +237,25 @@ func saveHeaderSetting(api *client.API, enabled bool) error {
 	})
 }
 
+func saveTipsSetting(api *client.API, enabled bool) error {
+	if api == nil {
+		return fmt.Errorf("ui settings client not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), uiSettingsRequestLimit)
+	defer cancel()
+	if strings.TrimSpace(api.Token()) == "" {
+		if err := api.EnsureLocalAuth(ctx); err != nil {
+			return fmt.Errorf("bootstrap ui settings auth: %w", err)
+		}
+	}
+	if _, err := api.PatchUISettings(ctx, client.UISettingsPatch{
+		Chat: &client.UIChatSettingsPatch{ShowTips: boolPtr(enabled)},
+	}); err != nil {
+		return fmt.Errorf("persist ui settings: %w", err)
+	}
+	return nil
+}
+
 func saveThinkingTagsSetting(api *client.API, enabled bool) error {
 	if api == nil {
 		return fmt.Errorf("ui settings client not configured")
@@ -292,6 +313,7 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 	cfg.Input.Keybinds = sanitizeConfigKeybindMap(settings.Input.Keybinds)
 
 	cfg.Chat.ShowHeader = settings.Chat.ShowHeader
+	cfg.Chat.ShowTips = settings.Chat.ShowTips
 	cfg.Chat.ThinkingTags = settings.Chat.ThinkingTags
 	cfg.Chat.ShowCompactButton = settings.Chat.ShowCompactButton
 	cfg.Chat.DefaultNewSessionMode = emptyFallback(strings.TrimSpace(settings.Chat.DefaultNewSessionMode), "auto")
@@ -327,6 +349,7 @@ func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 		},
 		Chat: client.UIChatSettings{
 			ShowHeader:             cfg.Chat.ShowHeader,
+			ShowTips:               cfg.Chat.ShowTips,
 			ThinkingTags:           cfg.Chat.ThinkingTags,
 			ShowCompactButton:      cfg.Chat.ShowCompactButton,
 			DefaultNewSessionMode:  emptyFallback(strings.TrimSpace(cfg.Chat.DefaultNewSessionMode), "auto"),

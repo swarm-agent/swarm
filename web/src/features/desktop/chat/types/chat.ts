@@ -73,6 +73,7 @@ export interface SearchToolFileGroup {
 export interface SearchToolData {
   mode: string;
   path: string;
+  queries: string[];
   queryCount: number;
   count: number;
   totalMatched: number;
@@ -175,6 +176,7 @@ export interface StructuredToolMessage {
   durationMs: number;
   summary: string;
   state: ToolMessageState;
+  lifecycleStatus?: string;
   timelineSeq?: number;
   editDiff: EditDiffPreview | null;
   searchData?: SearchToolData | null;
@@ -223,15 +225,12 @@ export interface ModelProfileSelectionRecord {
   contextMode: string;
 }
 
-export interface ModelProfileRecord {
+export interface ModelProfileRecord extends ModelProfileSelectionRecord {
   profileId: string;
   name: string;
-  modelMode: 'single' | 'split';
-  single: ModelProfileSelectionRecord | null;
-  plan: ModelProfileSelectionRecord | null;
-  auto: ModelProfileSelectionRecord | null;
   createdAt: number;
   updatedAt: number;
+  sortOrder: number;
   isDefault: boolean;
 }
 
@@ -240,12 +239,8 @@ export interface ModelProfileState {
   defaultProfileId: string;
 }
 
-export interface ModelProfileInput {
+export interface ModelProfileInput extends ModelProfileSelectionRecord {
   name: string;
-  modelMode: 'single' | 'split';
-  single: ModelProfileSelectionRecord | null;
-  plan: ModelProfileSelectionRecord | null;
-  auto: ModelProfileSelectionRecord | null;
 }
 
 export type ModelProfileChoice =
@@ -258,7 +253,6 @@ export interface ActiveModelProfileState {
   source: 'saved' | 'temporary' | 'agent-default' | '';
   profileId: string;
   name: string;
-  modelMode: 'single' | 'split' | '';
 }
 
 export interface ResolvedSessionPreference {
@@ -331,15 +325,6 @@ export interface AgentProfileRecord {
   provider: string;
   model: string;
   thinking: string;
-  modelMode: "single" | "split";
-  planProvider: string;
-  planModel: string;
-  planThinking: string;
-  planServiceTier: string;
-  autoProvider: string;
-  autoModel: string;
-  autoThinking: string;
-  autoServiceTier: string;
   prompt: string;
   runtimeMode: "plan_auto" | "read" | "readwrite" | "";
   defaultSessionMode: DesktopSessionMode;
@@ -439,10 +424,27 @@ export interface ModelContextModeRecord {
   default?: boolean;
 }
 
+export interface ModelMediaDirectionRecord {
+  modality: string;
+  state: 'supported' | 'unsupported' | 'unknown' | string;
+  semantics: string;
+  mimeTypes: string[];
+  fileTypes: string[];
+}
+
+export interface ModelMediaCapabilitiesRecord {
+  state: 'supported' | 'unsupported' | 'unknown' | string;
+  providerSurface: string;
+  credentialSurface: string;
+  inputs: ModelMediaDirectionRecord[];
+}
+
 export interface ModelOptionRecord {
   key: string;
   provider: string;
   model: string;
+  /** Upstream model namespace for routed providers; empty for direct providers. */
+  upstreamFamily?: string;
   contextMode: string;
   label: string;
   thinking: string;
@@ -457,6 +459,7 @@ export interface ModelOptionRecord {
   defaultServiceTier: string;
   serviceTierMappings: ModelServiceTierMappingRecord[];
   contextModes: ModelContextModeRecord[];
+  media?: ModelMediaCapabilitiesRecord | null;
 }
 
 export interface DesktopSessionPlanInfo {

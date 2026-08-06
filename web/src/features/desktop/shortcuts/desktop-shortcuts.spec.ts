@@ -4,7 +4,7 @@ import test from 'node:test'
 
 import { DESKTOP_SHORTCUTS, resolveWorkspaceShortcutIndex } from './desktop-shortcuts'
 
-test('workspace picker uses Alt+W', async () => {
+test('workspace picker uses Alt+W while compact sidebar selection remains available', async () => {
   const shortcut = DESKTOP_SHORTCUTS.find((definition) => definition.id === 'workspace-picker')
   assert.deepEqual(shortcut?.keys, ['Alt', 'W'])
 
@@ -12,6 +12,8 @@ test('workspace picker uses Alt+W', async () => {
   assert.match(desktopSource, /event\.altKey[^\n]*normalizedCode === 'keyw'/)
   assert.match(desktopSource, /handleOpenWorkspacePicker\(\)/)
   assert.match(desktopSource, /<DesktopWorkspacePicker/)
+  assert.match(desktopSource, /aria-haspopup="menu"/)
+  assert.match(desktopSource, /aria-label=\{`Current workspace: \$\{topWorkspaceLabel\}`\}/)
 })
 
 test('workspace picker numbers select workspaces 1 through 10', () => {

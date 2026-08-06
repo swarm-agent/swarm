@@ -74,6 +74,34 @@ func TestServeDesktopAssetFallsBackToIndexForRoutes(t *testing.T) {
 	}
 }
 
+func TestServeDesktopAssetReturnsNotFoundForMissingVersionedAsset(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>shell</html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/bot-stale.js", nil)
+	rec := httptest.NewRecorder()
+
+	serveDesktopAsset(rec, req, dir, os.DirFS(dir), http.FileServer(http.Dir(dir)))
+
+	resp := rec.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if got := resp.Header.Get("Content-Type"); got == "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, must not serve the app shell for a missing JavaScript asset", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) == "<html>shell</html>" {
+		t.Fatal("missing JavaScript asset served the app shell")
+	}
+}
+
 func TestServeDesktopAssetSetsServiceWorkerScopeHeaders(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>ok</html>"), 0o644); err != nil {

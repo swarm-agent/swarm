@@ -2,6 +2,7 @@ package session
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -29,6 +30,29 @@ func TestPlanSubtasksNormalizeLegacyAndAdvanceWithoutCompletingCheckpoint(t *tes
 	}
 	if checkpoint.ActiveSubtaskID != "task-2" || checkpoint.Status != PlanCheckpointStatusInProgress {
 		t.Fatalf("completion crossed checkpoint boundary: %#v", checkpoint)
+	}
+}
+
+func TestPlanSubtaskCompletionRejectsLastTaskWithoutCheckpointCloseout(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{
+		ID: "plan-1", Title: "Plan", ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: "automatic", Shape: "checkpointed"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Tasks: []string{"first", "second"}}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{CheckpointID: "cp-1", StartedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskID: "task-1", CompletedAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := &doc.Checkpoints[0]
+	err = completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskID: "task-2", CompletedAt: 3})
+	if err == nil || !strings.Contains(err.Error(), "complete_checkpoint=true") {
+		t.Fatalf("expected formal checkpoint closeout error, got %v", err)
+	}
+	if checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.ActiveSubtaskID != "task-2" || checkpoint.Subtasks[1].Status != PlanSubtaskStatusInProgress {
+		t.Fatalf("rejected final subtask completion mutated checkpoint: %#v", checkpoint)
 	}
 }
 
@@ -131,6 +155,54 @@ func TestAddPlanSubtaskReopensSameCheckpointWithoutResettingAttempt(t *testing.T
 	}
 	if len(checkpoint.Subtasks) != 2 || checkpoint.ActiveSubtaskID != "task-2" || checkpoint.Subtasks[1].Status != PlanSubtaskStatusInProgress {
 		t.Fatalf("localized subtask was not appended and focused: %#v", checkpoint.Subtasks)
+	}
+}
+
+func TestReplacePlanSubtasksMakesSubmittedListAuthoritativeAndPreservesContract(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{
+		ID: "plan-1", Title: "Plan", ExecutionState: &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateWaitingReview, ActiveAttemptID: "attempt-1", CurrentRunID: "old-run", CurrentSessionID: "session-1", ParentSessionID: "parent-1"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID: "cp-1", Title: "Landing page", Status: PlanCheckpointStatusCompleted, Objective: "Polish the landing page", AcceptanceCriteria: []string{"Landing page is polished"},
+			AttemptID: "attempt-1", RunID: "old-run", SessionID: "session-1", CompletedAt: 10,
+			Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusCompleted, RunID: "old-run", SessionID: "session-1", ParentSessionID: "parent-1"}},
+			Subtasks: []pebblestore.SessionPlanSubtask{{ID: "stale-1", Title: "Obsolete audit", Status: PlanSubtaskStatusCompleted}, {ID: "stale-2", Title: "Obsolete fix", Status: PlanSubtaskStatusPending}},
+		}}, ActiveCheckpointID: "cp-1",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := doc.Checkpoints[0]
+	err = replacePlanCheckpointSubtasks(doc, PlanDocumentPatchOperation{
+		CheckpointID: "cp-1", RunID: "new-run", RunSessionID: "session-1", ParentSessionID: "parent-1", StartedAt: 11,
+		Subtasks: []pebblestore.SessionPlanSubtask{{ID: "new-1", Title: "Apply revised spacing"}, {ID: "new-2", Title: "Inspect result"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.ID != before.ID || checkpoint.Objective != before.Objective || !reflect.DeepEqual(checkpoint.AcceptanceCriteria, before.AcceptanceCriteria) || checkpoint.AttemptID != before.AttemptID || !reflect.DeepEqual(checkpoint.Attempts, before.Attempts) {
+		t.Fatalf("replace_subtasks changed checkpoint contract or attempt history: before=%#v after=%#v", before, checkpoint)
+	}
+	if len(checkpoint.Subtasks) != 2 || checkpoint.Subtasks[0].ID != "new-1" || checkpoint.Subtasks[1].ID != "new-2" || checkpoint.ActiveSubtaskID != "new-1" || checkpoint.Subtasks[0].Status != PlanSubtaskStatusInProgress {
+		t.Fatalf("replacement checklist = %#v active=%q", checkpoint.Subtasks, checkpoint.ActiveSubtaskID)
+	}
+	if checkpoint.RunID != "new-run" || doc.ExecutionState.CurrentRunID != "new-run" || checkpoint.Status != PlanCheckpointStatusInProgress {
+		t.Fatalf("replacement ownership/state not resumed: checkpoint=%#v state=%#v", checkpoint, doc.ExecutionState)
+	}
+}
+
+func TestReplacePlanSubtasksRejectsInvalidListAtomically(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{ID: "plan-1", Title: "Plan", Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Tasks: []string{"existing"}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := doc.Checkpoints[0]
+	err = replacePlanCheckpointSubtasks(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", Subtasks: []pebblestore.SessionPlanSubtask{{ID: "dup", Title: "One"}, {ID: "dup", Title: "Two"}}})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate validation error, got %v", err)
+	}
+	if !reflect.DeepEqual(doc.Checkpoints[0], before) {
+		t.Fatalf("invalid replacement partially mutated checkpoint: before=%#v after=%#v", before, doc.Checkpoints[0])
 	}
 }
 

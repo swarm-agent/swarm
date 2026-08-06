@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -443,6 +444,42 @@ func TestNormalizeV3RealtimeResumeStillRequiresCursorOutsideNewSessionStart(t *t
 	_, _, err := normalizeV3RealtimeResumeOptions(V3RealtimeResumeOptions{Subscriptions: []V3RealtimeSubscription{{SessionID: "session-a", SubscriptionID: "sub-a"}}})
 	if err == nil || err.Error() != "v3 realtime endpoint cursor is required" {
 		t.Fatalf("normalize error = %v", err)
+	}
+}
+
+func TestStreamV3RealtimeDeliversProviderToolStartPatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, rw, err := hijackLifecycleTestWebsocket(w, r)
+		if err != nil {
+			t.Fatalf("hijack websocket: %v", err)
+		}
+		defer conn.Close()
+		if _, _, err := readClientLifecycleTestFrame(rw); err != nil {
+			t.Fatalf("read resume: %v", err)
+		}
+		text := `{"type":"session.provider_tool_call.started","run_id":"run-1","step":1,"step_id":"step-1","event_index":1,"output_index":0,"call_id":"call-edit","tool_name":"edit","status":"started","recorded_at":100}`
+		writeServerLifecycleTestFrame(t, conn, map[string]any{"protocol": "v3.realtime", "protocol_version": 1, "kind": "live.patch", "session_id": "session-a", "live": map[string]any{"session_id": "session-a", "run_id": "run-1", "stream_id": "provider-tool:run-1:step:1:event:1", "stream_kind": "provider_tool_call", "operation": "append", "step": 1, "step_id": "step-1", "live_seq_start": 1, "live_seq_end": 1, "offset_start": 0, "offset_end": len([]byte(text)), "text": text, "recorded_at": 100}})
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var frames []V3RealtimeFrame
+	err := api.StreamV3Realtime(ctx, V3RealtimeResumeOptions{
+		EndpointCursor: "cursor-1",
+		Subscriptions:  []V3RealtimeSubscription{{SessionID: "session-a", EndpointCursor: "cursor-1", SubscriptionID: "sub-a"}},
+		Capabilities:   []string{V3RealtimeCapabilityLivePatchV1},
+	}, func(frame V3RealtimeFrame) {
+		frames = append(frames, frame)
+		cancel()
+	})
+	if err != nil {
+		t.Fatalf("StreamV3Realtime() error = %v", err)
+	}
+	if len(frames) != 1 || frames[0].Live == nil || frames[0].Live.StreamKind != "provider_tool_call" || !strings.Contains(frames[0].Live.Text, "session.provider_tool_call.started") {
+		t.Fatalf("frames = %#v", frames)
 	}
 }
 

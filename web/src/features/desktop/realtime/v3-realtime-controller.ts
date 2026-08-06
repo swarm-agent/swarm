@@ -623,7 +623,7 @@ export function buildDesktopV3InitialRealtimeResume(
     subscription_id: `${clientId}:workset:${sidebarScopeId}`,
     surface: 'desktop',
     selector: cloneDesktopV3SyncSelector(sidebarScope.selector),
-    resources: ['membership', 'projections', 'current_run_state', 'permission_summaries', 'notifications', 'notification_summary', 'tasks', 'sessions', 'tombstones'],
+    resources: ['membership', 'projections', 'current_run_state', 'permission_summaries', 'notifications', 'notification_summary', 'tasks', 'auth', 'sessions', 'tombstones'],
     auto_subscribe_sessions: false,
   }]
   const resume: RealtimeMessage = {
@@ -760,6 +760,7 @@ export function buildDesktopV3ReconnectInput(
         notifications: true,
         notification_summary: true,
         tasks: true,
+        auth: true,
         active_plan: true,
         plan_revisions: false,
       },

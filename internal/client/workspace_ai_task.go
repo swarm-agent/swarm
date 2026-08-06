@@ -6,64 +6,80 @@ import (
 	"strings"
 )
 
-const (
-	WorkspaceAITaskModeAuto = "auto"
-	WorkspaceAITaskModePlan = "plan"
-)
+const routedTaskSessionsPath = "/v3/sessions:routed"
 
-type WorkspaceAITaskItem struct {
-	ID               string `json:"id"`
-	Text             string `json:"text"`
-	AIState          string `json:"ai_state"`
-	AIError          string `json:"ai_error,omitempty"`
-	AIDisplayTitle   string `json:"ai_display_title,omitempty"`
-	ManagedSessionID string `json:"managed_session_id,omitempty"`
+type RoutedTaskSessionResponse struct {
+	OK           bool           `json:"ok"`
+	SessionID    string         `json:"session_id"`
+	Title        string         `json:"title"`
+	StartingMode string         `json:"starting_mode"`
+	Replayed     bool           `json:"replayed"`
+	Session      SessionSummary `json:"session"`
 }
 
-type WorkspaceAITaskResponse struct {
-	OK       bool                `json:"ok"`
-	Item     WorkspaceAITaskItem `json:"item"`
-	Status   string              `json:"status"`
-	Replayed bool                `json:"replayed"`
+type RoutedTaskWorkspaceAuthority struct {
+	WorkspacePath      string
+	WorkspaceBindingID string
+	SwarmID            string
 }
 
-func (c *API) CreateWorkspaceAITask(ctx context.Context, workspacePath, request, idempotencyKey, mode, originSessionID string) (WorkspaceAITaskResponse, error) {
-	workspacePath = strings.TrimSpace(workspacePath)
+// CreateRoutedTaskSession asks the Router to create and start a background
+// session. The caller supplies canonical source-workspace authority while the
+// Router owns task naming and worktree routing. Task commands always authorize
+// and require a managed worktree; Plan remains an explicit caller-owned intent.
+func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyKey string, planMode bool, originSessionID string, authority RoutedTaskWorkspaceAuthority) (RoutedTaskSessionResponse, error) {
 	request = strings.TrimSpace(request)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
-	mode = strings.ToLower(strings.TrimSpace(mode))
 	originSessionID = strings.TrimSpace(originSessionID)
-	if workspacePath == "" {
-		return WorkspaceAITaskResponse{}, errors.New("workspace path is required")
-	}
+	authority.WorkspacePath = strings.TrimSpace(authority.WorkspacePath)
+	authority.WorkspaceBindingID = strings.TrimSpace(authority.WorkspaceBindingID)
+	authority.SwarmID = strings.TrimSpace(authority.SwarmID)
 	if request == "" {
-		return WorkspaceAITaskResponse{}, errors.New("enter a task request after /task")
+		return RoutedTaskSessionResponse{}, errors.New("enter a task request after /task")
 	}
 	if idempotencyKey == "" {
-		return WorkspaceAITaskResponse{}, errors.New("AI task idempotency key is required")
+		return RoutedTaskSessionResponse{}, errors.New("routed task idempotency key is required")
 	}
-	if mode == "" {
-		mode = WorkspaceAITaskModeAuto
-	}
-	if mode != WorkspaceAITaskModeAuto && mode != WorkspaceAITaskModePlan {
-		return WorkspaceAITaskResponse{}, errors.New("AI task mode must be auto or plan")
+	if authority.WorkspacePath == "" || authority.WorkspaceBindingID == "" || authority.SwarmID == "" {
+		return RoutedTaskSessionResponse{}, errors.New("routed task requires source workspace path, binding, and swarm authority")
 	}
 	payload := map[string]any{
-		"action":         "ai_task",
-		"workspace_path": workspacePath,
-		"owner_kind":     "user",
-		"text":           request,
-		"mode":           mode,
+		"input":                      request,
+		"client_request_id":          idempotencyKey,
+		"idempotency_key":            idempotencyKey,
+		"agent_name":                 "swarm",
+		"managed_worktree_requested": true,
+		"plan_mode_requested":        planMode,
+		"workspace_path":             authority.WorkspacePath,
+		"host_workspace_path":        authority.WorkspacePath,
+		"runtime_workspace_path":     authority.WorkspacePath,
+		"workspace_binding_id":       authority.WorkspaceBindingID,
+		"swarm_id":                   authority.SwarmID,
+		"target_kind":                "host",
+		"target_relationship":        "self",
+		"metadata": map[string]any{
+			"task_command": true,
+		},
 	}
 	if originSessionID != "" {
-		payload["origin_session_id"] = originSessionID
+		payload["metadata"].(map[string]any)["task_origin_session_id"] = originSessionID
 	}
-	var response WorkspaceAITaskResponse
-	if err := c.postJSONWithHeaders(ctx, "/v1/workspace/todos", payload, &response, true, map[string]string{"Idempotency-Key": idempotencyKey}); err != nil {
-		return WorkspaceAITaskResponse{}, err
+	var response RoutedTaskSessionResponse
+	if err := c.postJSONWithHeaders(ctx, routedTaskSessionsPath, payload, &response, true, map[string]string{"Idempotency-Key": idempotencyKey}); err != nil {
+		return RoutedTaskSessionResponse{}, err
 	}
-	if strings.TrimSpace(response.Item.ID) == "" {
-		return WorkspaceAITaskResponse{}, errors.New("AI task request returned no task")
+	if strings.TrimSpace(response.SessionID) == "" || strings.TrimSpace(response.Session.ID) != strings.TrimSpace(response.SessionID) {
+		return RoutedTaskSessionResponse{}, errors.New("routed task returned no canonical session")
+	}
+	if !response.Session.WorktreeEnabled {
+		return RoutedTaskSessionResponse{}, errors.New("routed task did not create the required worktree session")
+	}
+	wantMode := "auto"
+	if planMode {
+		wantMode = "plan"
+	}
+	if strings.ToLower(strings.TrimSpace(response.StartingMode)) != wantMode || strings.ToLower(strings.TrimSpace(response.Session.Mode)) != wantMode {
+		return RoutedTaskSessionResponse{}, errors.New("routed task returned an unexpected starting mode")
 	}
 	return response, nil
 }

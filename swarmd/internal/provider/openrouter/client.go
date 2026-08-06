@@ -54,11 +54,12 @@ type chatCompletionToolFunction struct {
 }
 
 type chatCompletionResponse struct {
-	ID      string                 `json:"id"`
-	Model   string                 `json:"model"`
-	Choices []chatCompletionChoice `json:"choices"`
-	Usage   *chatCompletionUsage   `json:"usage,omitempty"`
-	Error   *streamErrorPayload    `json:"error,omitempty"`
+	ID          string                 `json:"id"`
+	Model       string                 `json:"model"`
+	Choices     []chatCompletionChoice `json:"choices"`
+	Usage       *chatCompletionUsage   `json:"usage,omitempty"`
+	ServiceTier string                 `json:"service_tier,omitempty"`
+	Error       *streamErrorPayload    `json:"error,omitempty"`
 }
 
 type chatCompletionChoice struct {
@@ -108,11 +109,12 @@ type chatCompletionToolFunctionDelta struct {
 }
 
 type chatCompletionChunk struct {
-	ID      string                 `json:"id,omitempty"`
-	Model   string                 `json:"model,omitempty"`
-	Choices []chatCompletionChoice `json:"choices,omitempty"`
-	Usage   *chatCompletionUsage   `json:"usage,omitempty"`
-	Error   *streamErrorPayload    `json:"error,omitempty"`
+	ID          string                 `json:"id,omitempty"`
+	Model       string                 `json:"model,omitempty"`
+	Choices     []chatCompletionChoice `json:"choices,omitempty"`
+	Usage       *chatCompletionUsage   `json:"usage,omitempty"`
+	ServiceTier string                 `json:"service_tier,omitempty"`
+	Error       *streamErrorPayload    `json:"error,omitempty"`
 }
 
 type chatCompletionUsage struct {
@@ -310,14 +312,15 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 
 type openRouterStreamState struct {
 	merged            chatCompletionResponse
-	toolCalls         map[int]*chatCompletionToolCall
+	toolCalls         map[openRouterToolCallKey]*chatCompletionToolCall
+	toolCallOrder     []openRouterToolCallKey
 	eventCount        int
 	outputBytes       int
 	toolArgumentBytes int
 }
 
 func newOpenRouterStreamState() *openRouterStreamState {
-	return &openRouterStreamState{toolCalls: make(map[int]*chatCompletionToolCall)}
+	return &openRouterStreamState{toolCalls: make(map[openRouterToolCallKey]*chatCompletionToolCall)}
 }
 
 func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
@@ -354,6 +357,9 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 	if chunk.Usage != nil {
 		s.merged.Usage = chunk.Usage
 	}
+	if strings.TrimSpace(chunk.ServiceTier) != "" {
+		s.merged.ServiceTier = chunk.ServiceTier
+	}
 	if chunk.Error != nil {
 		s.merged.Error = chunk.Error
 	}
@@ -380,20 +386,22 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 				choice.Message.ReasoningDetails = append(choice.Message.ReasoningDetails, next.Delta.ReasoningDetails...)
 			}
 			for _, delta := range next.Delta.ToolCalls {
-				call := s.toolCalls[delta.Index]
+				key := openRouterToolCallKey{choiceIndex: next.Index, toolIndex: delta.Index}
+				call := s.toolCalls[key]
 				if call == nil {
 					call = &chatCompletionToolCall{}
-					s.toolCalls[delta.Index] = call
+					s.toolCalls[key] = call
+					s.toolCallOrder = append(s.toolCallOrder, key)
 				}
 				if strings.TrimSpace(delta.ID) != "" {
-					call.ID = delta.ID
+					call.ID = mergeOpenRouterToolCallField(call.ID, delta.ID)
 				}
 				if strings.TrimSpace(delta.Type) != "" {
 					call.Type = delta.Type
 				}
 				if delta.Function != nil {
 					if delta.Function.Name != "" {
-						call.Function.Name += delta.Function.Name
+						call.Function.Name = mergeOpenRouterToolCallField(call.Function.Name, delta.Function.Name)
 					}
 					if delta.Function.Arguments != "" {
 						call.Function.Arguments += delta.Function.Arguments
@@ -406,16 +414,10 @@ func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 		}
 	}
 	if len(s.toolCalls) > 0 {
-		maxIndex := -1
-		for index := range s.toolCalls {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		}
-		calls := make([]chatCompletionToolCall, 0, maxIndex+1)
-		for i := 0; i <= maxIndex; i++ {
-			call, ok := s.toolCalls[i]
-			if !ok || call == nil {
+		calls := make([]chatCompletionToolCall, 0, len(s.toolCallOrder))
+		for _, key := range s.toolCallOrder {
+			call := s.toolCalls[key]
+			if call == nil {
 				continue
 			}
 			calls = append(calls, *call)
@@ -493,11 +495,15 @@ func apiErrorMessage(raw []byte) string {
 	}
 	var payload struct {
 		Error struct {
-			Message string `json:"message"`
-			Code    any    `json:"code"`
+			Message  string          `json:"message"`
+			Code     any             `json:"code"`
+			Metadata json.RawMessage `json:"metadata"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &payload); err == nil {
+		if detail := openRouterMetadataRawMessage(payload.Error.Metadata); detail != "" {
+			return boundedProviderError(privacy.SanitizeText(detail))
+		}
 		if msg := strings.TrimSpace(payload.Error.Message); msg != "" {
 			return boundedProviderError(privacy.SanitizeText(msg))
 		}
@@ -509,6 +515,60 @@ func apiErrorMessage(raw []byte) string {
 		}
 	}
 	return message
+}
+
+func openRouterMetadataRawMessage(metadata json.RawMessage) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		return ""
+	}
+	raw, ok := fields["raw"]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return openRouterRawErrorMessage(value, 0)
+}
+
+func openRouterRawErrorMessage(value any, depth int) string {
+	if depth > 8 {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		message := strings.TrimSpace(typed)
+		if message == "" {
+			return ""
+		}
+		if strings.HasPrefix(message, "{") || strings.HasPrefix(message, "[") {
+			var nested any
+			if err := json.Unmarshal([]byte(message), &nested); err == nil {
+				if extracted := openRouterRawErrorMessage(nested, depth+1); extracted != "" {
+					return extracted
+				}
+			}
+		}
+		return message
+	case map[string]any:
+		for _, field := range []string{"message", "error", "detail", "details", "msg"} {
+			if extracted := openRouterRawErrorMessage(typed[field], depth+1); extracted != "" {
+				return extracted
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if extracted := openRouterRawErrorMessage(item, depth+1); extracted != "" {
+				return extracted
+			}
+		}
+	}
+	return ""
 }
 
 func boundedProviderError(value string) string {

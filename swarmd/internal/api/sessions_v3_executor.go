@@ -49,6 +49,13 @@ const (
 	sessionV3TitleGenerationTimeout           = 20 * time.Second
 	sessionV3TitleFinalWordsMin               = 0
 	sessionV3TitleFinalWordsMax               = 5
+	sessionV3StaleRecoveryMinInactivity       = 2 * time.Minute
+	sessionV3StaleRecoveryConfirmInterval     = 10 * time.Second
+	sessionV3StaleRecoveryScanInterval        = 30 * time.Second
+	sessionV3StaleRecoveryScanLimit           = 100
+	sessionV3StaleRecoveryCooldown            = 15 * time.Minute
+	sessionV3StaleRecoveryMinUtilization      = 85.0
+	sessionV3StaleRecoveryMaxUtilization      = 99.0
 	sessionV3HandoffDefaultTailMessages       = 24
 	sessionV3HandoffDefaultToolOutputChars    = 1200
 	sessionV3HandoffDefaultTotalChars         = 60000
@@ -68,12 +75,14 @@ type sessionV3ExecutorJob struct {
 	ParentSessionID string
 	ResumeContext   bool
 	enqueuedAt      time.Time
+	activity        *sessionV3RunActivity
 }
 
 type sessionV3ExecutorRunState struct {
 	cancel   context.CancelFunc
 	canceled bool
 	reason   string
+	job      sessionV3ExecutorJob
 }
 
 func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64) pebblestore.V3SessionRunIntent {
@@ -107,10 +116,12 @@ type sessionV3Executor struct {
 	reasoningDeltaFlushMaxDelay  time.Duration
 	durableProgressWriterForTest sessionV3DurableProgressWriter
 
-	mu              sync.Mutex
-	inFlightRuns    map[string]bool
-	activeBySession map[string]string
-	runStates       map[string]*sessionV3ExecutorRunState
+	mu               sync.Mutex
+	inFlightRuns     map[string]bool
+	activeBySession  map[string]string
+	runStates        map[string]*sessionV3ExecutorRunState
+	recoveryConfirm  map[string]int64
+	recoveryCooldown map[string]int64
 }
 
 func newSessionV3Executor(server *Server) *sessionV3Executor {
@@ -130,8 +141,11 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 		inFlightRuns:                make(map[string]bool),
 		activeBySession:             make(map[string]string),
 		runStates:                   make(map[string]*sessionV3ExecutorRunState),
+		recoveryConfirm:             make(map[string]int64),
+		recoveryCooldown:            make(map[string]int64),
 	}
 	exec.recoverDurableRuns(ctx)
+	exec.startStaleRecoveryBackstop(ctx)
 	return exec
 }
 
@@ -165,6 +179,9 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if job.enqueuedAt.IsZero() {
 		job.enqueuedAt = time.Now()
 	}
+	if job.activity == nil {
+		job.activity = newSessionV3RunActivity()
+	}
 	if job.SessionID == "" || job.RunID == "" {
 		return false
 	}
@@ -193,6 +210,7 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if e.runStates[runKey] == nil {
 		e.runStates[runKey] = &sessionV3ExecutorRunState{}
 	}
+	e.runStates[runKey].job = job
 	e.mu.Unlock()
 
 	go e.run(ctx, job)
@@ -204,6 +222,7 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 	e.mu.Lock()
 	delete(e.inFlightRuns, runKey)
 	delete(e.runStates, runKey)
+	delete(e.recoveryConfirm, runKey)
 	if e.activeBySession[job.SessionID] == job.RunID {
 		delete(e.activeBySession, job.SessionID)
 	}
@@ -296,6 +315,15 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	}
 	if ok {
 		job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
+		if job.PlanID == "" || job.CheckpointID == "" || job.AttemptID == "" {
+			checkpointJob, checkpointOwned, ownershipErr := e.server.sessionsV3ActiveCheckpointMessageRunJob(job.Principal, job.SessionID, job.RunID, intent.EpochID)
+			if ownershipErr != nil {
+				return sessionruntime.SessionMutationResult{}, tracked, ownershipErr
+			}
+			if checkpointOwned {
+				job = checkpointJob
+			}
+		}
 		switch intent.Status {
 		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
 			result, err := e.recordCancelledRunAndReconcilePlan(job, reason)
@@ -505,6 +533,9 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		}
 	}
 	response, err := e.assistantResponse(runCtx, job)
+	if errors.Is(err, errSessionV3StaleProviderAttempt) {
+		response, job, err = e.staleCompactedAssistantResponse(runCtx, job, err)
+	}
 	if err != nil {
 		if !e.isRunCanceled(job) {
 			if sessionV3IsContextOverflowDiagnostic(err.Error()) {
@@ -813,6 +844,96 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, progress
 	})
 }
 
+func (e *sessionV3Executor) recordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error) {
+	if e.isRunCanceled(job) {
+		return sessionruntime.SessionMutationResult{}, context.Canceled
+	}
+	eventType = strings.TrimSpace(eventType)
+	if eventType == "" || step <= 0 || eventIndex <= 0 {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 provider tool construction identity is incomplete")
+	}
+	callID := strings.TrimSpace(event.ToolCallID)
+	toolName := strings.TrimSpace(event.ToolName)
+	if callID == "" && event.ToolCallIndex == nil {
+		return sessionruntime.SessionMutationResult{}, errors.New("v3 provider tool construction call identity is required")
+	}
+	now := time.Now().UnixMilli()
+	recordedAt := event.RecordedAtUnixMs
+	if recordedAt <= 0 {
+		recordedAt = now
+	}
+	startedAt := event.StartedAtUnixMs
+	if startedAt <= 0 {
+		startedAt = recordedAt
+	}
+	status := strings.TrimSpace(event.Status)
+	if status == "" {
+		switch event.Type {
+		case provideriface.StreamEventToolCallStarted:
+			status = "started"
+		case provideriface.StreamEventToolCallCompleted:
+			status = "completed"
+		default:
+			status = "building"
+		}
+	}
+	payload := map[string]any{
+		"path_id":     "run.v3.provider-tool-construction.v1",
+		"type":        eventType,
+		"run_id":      strings.TrimSpace(job.RunID),
+		"epoch_id":    strings.TrimSpace(job.EpochID),
+		"step":        step,
+		"step_id":     sessionV3ProviderToolStepID(step),
+		"event_index": eventIndex,
+		"call_id":     callID,
+		"tool_name":   toolName,
+		"provider":    strings.TrimSpace(event.ProviderID),
+		"model":       strings.TrimSpace(event.Model),
+		"recorded_at": recordedAt,
+		"started_at":  startedAt,
+		"status":      status,
+	}
+	if event.ToolCallIndex != nil {
+		payload["output_index"] = *event.ToolCallIndex
+	}
+	if arguments := strings.TrimSpace(event.Arguments); arguments != "" {
+		payload["arguments"] = arguments
+	}
+	if event.ArgumentsDelta != "" {
+		payload["arguments_delta"] = event.ArgumentsDelta
+	}
+	if snapshot := strings.TrimSpace(event.ArgumentsSnapshot); snapshot != "" {
+		payload["arguments_snapshot"] = snapshot
+	}
+	if len(event.Metadata) > 0 {
+		payload["metadata"] = cloneSessionsV3Metadata(event.Metadata)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", eventType, string(raw))
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	clientRequestID := sessionV3ProviderToolConstructionClientRequestID(eventType, job.RunID, step, callID, event.ToolCallIndex, eventIndex)
+	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       eventType,
+		EventPayload:    raw,
+		RunIntent:       &intent,
+		NowUnixMs:       now,
+	})
+}
+
 func sessionV3ReasoningEventID(step int, reasoningKey string) string {
 	if step <= 0 {
 		step = 1
@@ -924,6 +1045,9 @@ type sessionV3AssistantResponse struct {
 	ExecutorKind                  string
 	ProviderID                    string
 	Model                         string
+	Thinking                      string
+	ServiceTier                   string
+	ContextMode                   string
 	ProviderLineageID             string
 	ProviderConfigurationHash     string
 	ContextBranchID               string
@@ -972,6 +1096,15 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 	}
 	if model := strings.TrimSpace(r.Model); model != "" {
 		metadata["model"] = model
+	}
+	if thinking := strings.TrimSpace(r.Thinking); thinking != "" {
+		metadata["thinking"] = thinking
+	}
+	if serviceTier := strings.TrimSpace(r.ServiceTier); serviceTier != "" {
+		metadata["service_tier"] = serviceTier
+	}
+	if contextMode := strings.TrimSpace(r.ContextMode); contextMode != "" {
+		metadata["context_mode"] = contextMode
 	}
 	if lineageID := strings.TrimSpace(r.ProviderLineageID); lineageID != "" {
 		metadata["provider_lineage_id"] = lineageID
@@ -1237,7 +1370,7 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	now := time.Now().UnixMilli()
 	current.Title = title
 	current.UpdatedAt = now
-	current.Metadata = cloneSessionsV3Metadata(current.Metadata)
+	current.Metadata = authoritativeSessionTitleMetadata(current.Metadata, "compact")
 	payload, err := json.Marshal(map[string]any{
 		"session_id": job.SessionID,
 		"title":      title,
@@ -1274,10 +1407,10 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 }
 
 func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.SessionSnapshot, promptContext string, principal identity.Principal) (string, error) {
-	if e == nil || e.server == nil || e.server.providers == nil || e.server.model == nil || e.server.agents == nil {
-		return "", errors.New("Compact provider, model, and agent services are not configured")
+	if e == nil || e.server == nil || e.server.providers == nil || e.server.model == nil || e.server.agents == nil || e.server.agentModelSettings == nil {
+		return "", errors.New("Compact provider, model, agent, and agent model settings services are not configured")
 	}
-	resolvedCompact, compactProfile, err := compactruntime.ResolvePreference(e.server.model, e.server.agents, e.server.uiSettings, principal.AccountScopeID, session.Preference)
+	resolvedCompact, compactProfile, err := compactruntime.ResolvePreference(e.server.model, e.server.agents, e.server.agentModelSettings, principal.AccountScopeID, session.Preference)
 	if err != nil {
 		return "", err
 	}
@@ -1572,10 +1705,6 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if strings.TrimSpace(content) == "" {
 		return sessionV3AssistantResponse{}, errors.New("provider returned empty assistant response")
 	}
-	model := strings.TrimSpace(response.Model)
-	if model == "" {
-		model = modelName
-	}
 	providerRunnerID := strings.TrimSpace(runner.ID())
 	if providerRunnerID == "" {
 		providerRunnerID = providerID
@@ -1586,8 +1715,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		AgentName:                     agentName,
 		ResolvedAgentName:             agentName,
 		ExecutorKind:                  "v3_provider",
-		ProviderID:                    providerRunnerID,
-		Model:                         model,
+		ProviderID:                    providerID,
+		Model:                         modelName,
+		Thinking:                      strings.TrimSpace(loopResult.FinalRequest.Thinking),
+		ServiceTier:                   strings.TrimSpace(loopResult.FinalRequest.ServiceTier),
+		ContextMode:                   strings.TrimSpace(loopResult.FinalRequest.ContextMode),
 		ProviderResponseID:            strings.TrimSpace(response.ID),
 		StopReason:                    strings.TrimSpace(response.StopReason),
 		Usage:                         response.Usage,
@@ -1859,6 +1991,9 @@ func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3Executor
 	appendLine("- context_branch_id: " + strings.TrimSpace(req.ContextBranchID))
 	appendLine("- target_provider: " + strings.TrimSpace(resolved.Preference.Provider))
 	appendLine("- target_model: " + strings.TrimSpace(resolved.Preference.Model))
+	appendLine("- target_thinking: " + strings.TrimSpace(resolved.Preference.Thinking))
+	appendLine("- target_service_tier: " + strings.TrimSpace(resolved.Preference.ServiceTier))
+	appendLine("- target_context_mode: " + strings.TrimSpace(resolved.Preference.ContextMode))
 	appendLine("- previous_provider: " + strings.TrimSpace(req.PreviousProviderID))
 	appendLine("- previous_model: " + strings.TrimSpace(req.PreviousModel))
 	appendLine("- new_provider: " + strings.TrimSpace(req.NewProviderID))
@@ -2304,7 +2439,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		streamState := newSessionV3ProviderStreamState(e, job, sink, step)
 		providerStart := time.Now()
 		var firstEventOnce sync.Once
-		response, providerErr := runner.CreateResponseStreaming(ctx, req, func(event provideriface.StreamEvent) {
+		response, providerErr := e.runStaleSupervisedProviderAttempt(ctx, job, runner, req, func(event provideriface.StreamEvent) {
 			firstEventOnce.Do(func() {
 				pebblestore.ObserveExecutionEpochFirstEvent(providerStart)
 				if recorder := e.server.longSessionDiagnostics; recorder != nil {
@@ -2432,8 +2567,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				AgentName:                     agentName,
 				ResolvedAgentName:             agentName,
 				ExecutorKind:                  "v3_provider",
-				ProviderID:                    strings.TrimSpace(runner.ID()),
-				Model:                         strings.TrimSpace(firstNonEmpty(response.Model, baseReq.Model)),
+				ProviderID:                    strings.TrimSpace(resolved.Preference.Provider),
+				Model:                         strings.TrimSpace(baseReq.Model),
+				Thinking:                      strings.TrimSpace(baseReq.Thinking),
+				ServiceTier:                   strings.TrimSpace(baseReq.ServiceTier),
+				ContextMode:                   strings.TrimSpace(baseReq.ContextMode),
 				ProviderLineageID:             baseReq.ProviderLineageID,
 				ContextBranchID:               baseReq.ContextBranchID,
 				ProviderCacheKey:              baseReq.ProviderCacheKey,
@@ -2472,10 +2610,17 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		restartAfterTools := false
 		permissionWaited := false
 		for _, call := range response.FunctionCalls {
+			if job.activity != nil {
+				job.activity.toolActive.Store(true)
+			}
 			if identicalCount, key := identicalCalls.Observe(call); identicalCount >= sessionV3ProviderIdenticalToolCallLimit {
 				return sessionV3ProviderLoopResult{}, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
 			}
 			result, err := toolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: strings.TrimSpace(call.CallID), Name: strings.TrimSpace(call.Name), Arguments: strings.TrimSpace(call.Arguments), Metadata: cloneSessionsV3Metadata(call.Metadata)})
+			if job.activity != nil {
+				job.activity.toolActive.Store(false)
+				job.activity.touch()
+			}
 			if err != nil {
 				return sessionV3ProviderLoopResult{}, err
 			}
@@ -3023,6 +3168,7 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 		if err != nil {
 			return nil, err
 		}
+		messages = sessionsV3InjectCheckpointResumeRoutingMessage(messages, job.RunID)
 	}
 	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "post_checkpoint_followup") {
 		if activePlan, planOK, planErr := e.server.sessions.GetActivePlan(job.SessionID); planErr != nil {
@@ -3126,6 +3272,12 @@ func sessionV3PlanFreshContextBoundarySummary(plan pebblestore.SessionPlanSnapsh
 	}
 	doc := plan.Document
 	lines := []string{"Automatic checkpoint fresh-context boundary."}
+	if doc.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(doc.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
+		lines = append(lines,
+			"Post-handoff conversation: the checkpoint is already terminal and its handoff has already been emitted.",
+			"Interpret the current user message as a new conversation turn. Praise, agreement, commentary, questions, and non-deliverable guidance remain conversational: do not continue, complete, re-complete, or otherwise mutate the checkpoint merely to acknowledge them. If the message explicitly requests changes or new work, classify that request against the active plan instead of dismissing it as acknowledgment.",
+		)
+	}
 	if title := strings.TrimSpace(firstNonEmptyString(doc.Title, plan.Title)); title != "" {
 		lines = append(lines, "Plan: "+title)
 	}
@@ -3237,12 +3389,9 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	effectivePreference := session.Preference
-	if !strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
-		effectivePreference = applySessionV3AgentPreferenceOverridesForMode(effectivePreference, agentProfile, session.Mode)
-	}
-	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
-		effectivePreference = profilePreference
+	effectivePreference, err := resolveSessionV3EffectivePreference(session, agentProfile)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
 	}
 	pref, contextWindow, err := e.resolveSessionV3ProviderPreference(effectivePreference)
 	if err != nil {
@@ -3263,6 +3412,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
+	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
 	}
@@ -4173,6 +4323,9 @@ func sessionV3TitleGenerationLocked(metadata map[string]any) bool {
 	if sessionV3MetadataBool(metadata, "title_locked") || sessionV3MetadataBool(metadata, "background") {
 		return true
 	}
+	if strings.EqualFold(sessionV3MetadataString(metadata, "title_source"), routedSessionTitleSourceRouter) {
+		return true
+	}
 	for _, pair := range []struct{ key, value string }{
 		{"lineage_kind", "delegated_subagent"},
 		{"launch_source", "task"},
@@ -4226,32 +4379,45 @@ func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) str
 	return strings.Join(lines, "\n")
 }
 
-func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile) pebblestore.ModelPreference {
-	return applySessionV3AgentPreferenceOverridesForMode(base, agentProfile, sessionruntime.ModeAuto)
+func resolveSessionV3EffectivePreference(session pebblestore.SessionSnapshot, agentProfile pebblestore.AgentProfile) (pebblestore.ModelPreference, error) {
+	if session.ModelProfile != nil {
+		preference, err := sessionV3ModelProfilePreferenceForMode(*session.ModelProfile, session.Mode)
+		if err != nil {
+			return pebblestore.ModelPreference{}, err
+		}
+		return preference, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
+		return normalizeSessionsV3ModelPreference(session.Preference), nil
+	}
+	return applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile), nil
 }
 
-func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile, mode string) pebblestore.ModelPreference {
+func sessionV3ModelProfilePreferenceForMode(profile pebblestore.SessionModelProfileSnapshot, mode string) (pebblestore.ModelPreference, error) {
+	selection := &profile.Action
+	if sessionruntime.NormalizeMode(mode) == sessionruntime.ModePlan {
+		selection = profile.Plan
+		if selection == nil {
+			return pebblestore.ModelPreference{}, errors.New("session model profile has Plan mode disabled")
+		}
+	}
+	if selection == nil || strings.TrimSpace(selection.Provider) == "" || strings.TrimSpace(selection.Model) == "" {
+		return pebblestore.ModelPreference{}, fmt.Errorf("session model profile %s selection has no provider/model", sessionruntime.NormalizeMode(mode))
+	}
+	return normalizeSessionsV3ModelPreference(pebblestore.ModelPreference{
+		Provider:    strings.ToLower(strings.TrimSpace(selection.Provider)),
+		Model:       selection.Model,
+		Thinking:    selection.Thinking,
+		ServiceTier: selection.ServiceTier,
+		ContextMode: selection.ContextMode,
+		UpdatedAt:   profile.AppliedAt,
+	}), nil
+}
+
+func applySessionV3AgentPreferenceOverrides(base pebblestore.ModelPreference, agentProfile pebblestore.AgentProfile) pebblestore.ModelPreference {
 	providerOverride := strings.ToLower(strings.TrimSpace(agentProfile.Provider))
 	modelOverride := strings.TrimSpace(agentProfile.Model)
 	thinkingOverride := strings.TrimSpace(agentProfile.Thinking)
-	if pebblestore.AgentModelMode(agentProfile) == "split" && pebblestore.AgentSupportsSplitModel(agentProfile) {
-		mode = sessionruntime.NormalizeMode(mode)
-		if mode == sessionruntime.ModePlan {
-			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.PlanProvider))
-			modelOverride = strings.TrimSpace(agentProfile.PlanModel)
-			thinkingOverride = strings.TrimSpace(agentProfile.PlanThinking)
-			if serviceTierOverride := strings.TrimSpace(agentProfile.PlanServiceTier); serviceTierOverride != "" {
-				base.ServiceTier = serviceTierOverride
-			}
-		} else if mode == sessionruntime.ModeAuto {
-			providerOverride = strings.ToLower(strings.TrimSpace(agentProfile.AutoProvider))
-			modelOverride = strings.TrimSpace(agentProfile.AutoModel)
-			thinkingOverride = strings.TrimSpace(agentProfile.AutoThinking)
-			if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
-				base.ServiceTier = serviceTierOverride
-			}
-		}
-	}
 	if providerOverride != "" && modelOverride != "" {
 		base.Provider = providerOverride
 		base.Model = modelOverride
@@ -4260,6 +4426,12 @@ func applySessionV3AgentPreferenceOverridesForMode(base pebblestore.ModelPrefere
 	}
 	if thinkingOverride != "" {
 		base.Thinking = thinkingOverride
+	}
+	if serviceTierOverride := strings.TrimSpace(agentProfile.AutoServiceTier); serviceTierOverride != "" {
+		base.ServiceTier = serviceTierOverride
+	}
+	if contextModeOverride := strings.TrimSpace(agentProfile.ContextMode); contextModeOverride != "" {
+		base.ContextMode = contextModeOverride
 	}
 	base.Thinking = normalizeSessionV3ThinkingWithProvider(base.Provider, base.Thinking)
 	base.ServiceTier = modelruntime.NormalizeServiceTierForProvider(base.Provider, base.ServiceTier)
@@ -4421,6 +4593,16 @@ func sessionV3ProviderToolEventClientRequestID(eventType, runID string, step int
 		return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, callID, deltaIndex)
 	}
 	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s", label, strings.TrimSpace(runID), step, callID)
+}
+
+func sessionV3ProviderToolConstructionClientRequestID(eventType, runID string, step int, callID string, outputIndex *int, eventIndex int) string {
+	identity := strings.TrimSpace(callID)
+	if identity == "" && outputIndex != nil {
+		identity = fmt.Sprintf("output-%d", *outputIndex)
+	}
+	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
+	identity = strings.NewReplacer(".", "_", "/", "_", " ", "_", ":", "_").Replace(identity)
+	return fmt.Sprintf("v3-executor-%s-%s-%04d-%s-%04d", label, strings.TrimSpace(runID), step, identity, eventIndex)
 }
 
 func sessionV3ReasoningEventClientRequestID(eventType, runID string, step int, reasoningKey string, deltaIndex int) string {

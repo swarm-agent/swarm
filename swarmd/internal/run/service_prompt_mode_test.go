@@ -57,6 +57,12 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 		"Current agent runtime contract: plan_auto",
 		"Current agent exit-plan-mode enabled: true.",
 		"Plan-mode expectation:",
+		"Plan-mode Coder-wave assessment:",
+		"do not overload one Coder with several independent systems or deliverables",
+		"do not split a cohesive change into tiny artificial assignments",
+		"do not create a separate dependency graph, planning file, wave manifest artifact, or orchestration document",
+		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
+		"place them in sequential waves after parent integration",
 		"Because the current session mode is plan",
 	} {
 		if !strings.Contains(instructions, want) {
@@ -65,6 +71,42 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 	}
 	if strings.Contains(instructions, "Current execution mode:") {
 		t.Fatalf("plan-enabled instructions should not advertise static execution mode\n--- instructions ---\n%s", instructions)
+	}
+}
+
+func TestModeCapabilityInstructionsKeepCoderWavePlanningOutOfAutoMode(t *testing.T) {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name:                "swarm",
+		Mode:                "primary",
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+	})
+
+	instructions := modeCapabilityInstructions(sessionruntime.ModeAuto, false, profile)
+	for _, forbidden := range []string{
+		"Plan-mode Coder-wave assessment:",
+		"do not create a separate dependency graph",
+		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
+	} {
+		if strings.Contains(instructions, forbidden) {
+			t.Fatalf("auto instructions unexpectedly contain plan-only wave guidance %q\n--- instructions ---\n%s", forbidden, instructions)
+		}
+	}
+}
+
+func TestMasterHarnessAllowsApprovedPlanCoderWavesWithoutGenericSessionDelegation(t *testing.T) {
+	instructions := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"approved structured-plan checkpoint that calls for a dependency-ready Coder wave",
+		"Concurrent Coder assignments must have non-overlapping owned scopes",
+		"sequence dependent or overlapping implementation work into later waves after the parent integrates the prerequisite wave",
+		"Never reinterpret a generic new-session request as delegation",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("master harness missing Coder-wave contract %q\n--- instructions ---\n%s", want, instructions)
+		}
+	}
+	if strings.Contains(instructions, "Intentional overlapping Coder scopes are allowed") {
+		t.Fatalf("master harness still permits concurrent overlapping Coder scopes\n--- instructions ---\n%s", instructions)
 	}
 }
 
@@ -113,6 +155,25 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 	for _, removed := range []string{"absolute_wave_maximum", "max_depth"} {
 		if strings.Contains(instructions, removed) {
 			t.Fatalf("subagent policy instructions still contain removed field %q:\n%s", removed, instructions)
+		}
+	}
+}
+
+func TestAppendResolvedModelPolicyInstructionsReportsRequestFacts(t *testing.T) {
+	instructions := AppendResolvedModelPolicyInstructions("base", sessionruntime.ModePlan, pebblestore.ModelPreference{
+		Provider: "Codex", Model: "gpt-5.4", Thinking: "high", ServiceTier: "priority", ContextMode: "1m",
+	})
+	for _, want := range []string{
+		"Resolved model policy (authoritative for this run):",
+		"- session_mode: plan",
+		"- provider: codex",
+		"- model: gpt-5.4",
+		"- thinking: high",
+		"- service_tier: priority",
+		"- context_mode: 1m",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("instructions missing %q:\n%s", want, instructions)
 		}
 	}
 }
@@ -212,7 +273,8 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"not by whether it is phrased as an imperative",
 		"choose the least disruptive valid route",
 		"inquiry or guidance only means answer or acknowledge without plan mutation",
-		"localized additive patch that preserves the checkpoint objective and acceptance criteria means add_subtask",
+		"localized additive patch whose existing checklist remains valid means add_subtask",
+		"same-contract feedback that supersedes the checklist means replace_subtasks with the complete authoritative list",
 		"Make the hero headline blue",
 		"Add 8px below the card title",
 		"checkpoint redefinition that invalidates the objective or acceptance criteria means restart_checkpoint",
@@ -224,12 +286,16 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"never completes the blocked checkpoint and never selects a later checkpoint",
 		"leave the checkpoint blocked and explain the exact resolution still needed",
 		"Never restart an unchanged checkpoint merely to clear a block",
-		"plan_manage localized-feedback example",
-		`"action":"add_subtask"`,
+		"plan_manage add_subtask exact call shape",
+		`"action":"add_subtask","checkpoint_id":"cp-1","subtask":{"title":"Measure Swarm hosting capacity"}`,
+		"subtask as a JSON object with a non-empty title",
+		"Do not pass title at the top level",
+		"do not pass subtask as bare text",
+		"do not issue a partial call before this complete call",
 		"continuing the same non-blocked/non-failed checkpoint without resetting its attempt history",
 		"plan_manage requirement-changing restart example",
 		"use restart only when feedback invalidates the current objective or acceptance criteria",
-		"Use no plan mutation for inquiry/guidance, add_subtask for localized additive edits, and request_followup_checkpoint for independently shippable work",
+		"Use no plan mutation for inquiry/guidance, add_subtask for localized additive edits, replace_subtasks for a superseded same-contract checklist, and request_followup_checkpoint for independently shippable work",
 		"do not call resolve_blocked_checkpoint first",
 		"Failed checkpoints remain stopped",
 		"Never use add_subtask to clear a blocked or failed checkpoint",

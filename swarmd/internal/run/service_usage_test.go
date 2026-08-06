@@ -71,16 +71,19 @@ func TestRecordProviderUsageSnapshotCommitsAtomicMutationAndOutbox(t *testing.T)
 	}
 }
 
-func TestMergeTokenUsagePreservesSnapshotReplacementAndAdditiveAccumulation(t *testing.T) {
+func TestMergeTokenUsagePreservesCurrentRequestOccupancyAndCumulativeFireworksCost(t *testing.T) {
 	snapshot := provideriface.TokenUsage{Source: "codex_api_usage", InputTokens: 100, OutputTokens: 10, TotalTokens: 110}
 	snapshot = mergeTokenUsage(snapshot, provideriface.TokenUsage{Source: "codex_api_usage", InputTokens: 180, OutputTokens: 20, TotalTokens: 200})
 	if snapshot.InputTokens != 180 || snapshot.OutputTokens != 20 || snapshot.TotalTokens != 200 {
 		t.Fatalf("provider snapshot should replace counters: %+v", snapshot)
 	}
 
-	accumulated := provideriface.TokenUsage{Source: "fireworks_api_usage", InputTokens: 100, OutputTokens: 10, TotalTokens: 110}
-	accumulated = mergeTokenUsage(accumulated, provideriface.TokenUsage{Source: "fireworks_api_usage", InputTokens: 80, OutputTokens: 20, TotalTokens: 100})
-	if accumulated.InputTokens != 180 || accumulated.OutputTokens != 30 || accumulated.TotalTokens != 210 {
-		t.Fatalf("additive usage should accumulate counters: %+v", accumulated)
+	fireworks := provideriface.TokenUsage{Source: "fireworks_api_usage", InputTokens: 100, OutputTokens: 10, TotalTokens: 110, EstimatedCostUSD: 0.01}
+	fireworks = mergeTokenUsage(fireworks, provideriface.TokenUsage{Source: "fireworks_api_usage", InputTokens: 80, OutputTokens: 20, TotalTokens: 100, EstimatedCostUSD: 0.02})
+	if fireworks.InputTokens != 80 || fireworks.OutputTokens != 20 || fireworks.TotalTokens != 100 {
+		t.Fatalf("fireworks current-request counters should replace the prior snapshot: %+v", fireworks)
+	}
+	if fireworks.EstimatedCostUSD != 0.03 {
+		t.Fatalf("fireworks cost should accumulate across requests: %+v", fireworks)
 	}
 }

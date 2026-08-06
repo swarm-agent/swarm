@@ -13,6 +13,8 @@ func TestShouldGenerateMemorySessionTitleSkipsLockedSessions(t *testing.T) {
 	}{
 		{name: "explicit lock", metadata: map[string]any{"title_locked": true}},
 		{name: "string explicit lock", metadata: map[string]any{"title_locked": "true"}},
+		{name: "Router title source", metadata: map[string]any{"title_source": "router"}},
+		{name: "normalized Router title source", metadata: map[string]any{"title_source": " ROUTER "}},
 		{name: "background marker", metadata: map[string]any{"background": true}},
 		{name: "background launch mode", metadata: map[string]any{"launch_mode": "background"}},
 		{name: "delegated subagent lineage", metadata: map[string]any{"lineage_kind": "delegated_subagent"}},

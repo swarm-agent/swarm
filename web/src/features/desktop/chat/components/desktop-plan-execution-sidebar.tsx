@@ -1,8 +1,5 @@
 import {
   memo,
-  useCallback,
-  useLayoutEffect,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -153,32 +150,16 @@ function checkpointTaskView(value: string): CheckpointTaskView {
   };
 }
 
-const DEFAULT_VISIBLE_PENDING_TASKS = 1;
-const MIN_TASK_VIEWPORT_HEIGHT = 88;
-const MAX_TASK_VIEWPORT_HEIGHT = 240;
+const COLLAPSED_VISIBLE_PENDING_TASKS = 1;
 
 type SidebarTask = CheckpointTaskView & { active: boolean };
-
-function taskViewportHeight(sidebarHeight: number): number {
-  return Math.max(
-    MIN_TASK_VIEWPORT_HEIGHT,
-    Math.min(MAX_TASK_VIEWPORT_HEIGHT, Math.floor(sidebarHeight * 0.28)),
-  );
-}
 
 function CheckpointDetails({
   checkpoint,
 }: {
   checkpoint?: DesktopSessionPlanCheckpoint;
 }) {
-  const taskSectionRef = useRef<HTMLElement | null>(null);
-  const taskViewportRef = useRef<HTMLDivElement | null>(null);
-  const taskProbeRef = useRef<HTMLUListElement | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [viewportHeight, setViewportHeight] = useState(MIN_TASK_VIEWPORT_HEIGHT);
-  const [visiblePendingCount, setVisiblePendingCount] = useState(
-    DEFAULT_VISIBLE_PENDING_TASKS,
-  );
 
   const tasks: SidebarTask[] = checkpoint
     ? (checkpoint.subtasks?.length ?? 0) > 0
@@ -195,107 +176,29 @@ function CheckpointDetails({
           .map((task) => ({ ...task, active: false }))
     : [];
 
-  const taskSignature = tasks
-    .map((task) => `${task.active}:${task.checked}:${task.text}`)
-    .join("\u0000");
   const activeTasks = tasks.filter((task) => task.active && task.checked !== true);
   const pendingTasks = tasks.filter((task) => !task.active && task.checked !== true);
   const completedTasks = tasks.filter((task) => task.checked === true);
-  const reservedPendingCount = Math.min(
-    visiblePendingCount,
-    Math.max(0, pendingTasks.length - 1),
-  );
-  const visiblePendingTasks = pendingTasks.slice(0, reservedPendingCount);
-  const overflowPendingTasks = pendingTasks.slice(reservedPendingCount);
-  const visibleTasks = [...activeTasks, ...visiblePendingTasks];
+  const visiblePendingTasks = pendingTasks.slice(0, COLLAPSED_VISIBLE_PENDING_TASKS);
+  const overflowPendingTasks = pendingTasks.slice(COLLAPSED_VISIBLE_PENDING_TASKS);
+  const collapsedTasks = [...activeTasks, ...visiblePendingTasks];
+  const displayedTasks = expanded
+    ? [...activeTasks, ...pendingTasks, ...completedTasks]
+    : collapsedTasks;
   const disclosureCount = overflowPendingTasks.length + completedTasks.length;
-
-  const updateTaskFit = useCallback(() => {
-    const viewport = taskViewportRef.current;
-    const probe = taskProbeRef.current;
-    if (!viewport || !probe) return;
-
-    const sidebar = viewport.closest<HTMLElement>(
-      '[data-testid="desktop-plan-execution-sidebar"]',
-    );
-    const scrollRegion = viewport.closest<HTMLElement>("[data-plan-scroll-region]");
-    const sidebarHeight = sidebar?.clientHeight || window.innerHeight;
-    const sectionTop = taskSectionRef.current?.getBoundingClientRect().top ?? 0;
-    const regionBottom =
-      scrollRegion?.getBoundingClientRect().bottom ??
-      sidebar?.getBoundingClientRect().bottom ??
-      window.innerHeight;
-    const availableBelowSection = Math.max(
-      MIN_TASK_VIEWPORT_HEIGHT,
-      Math.floor(regionBottom - sectionTop - 60),
-    );
-    const nextViewportHeight = Math.min(
-      taskViewportHeight(sidebarHeight),
-      availableBelowSection,
-    );
-    setViewportHeight(nextViewportHeight);
-
-    const rows = Array.from(
-      probe.querySelectorAll<HTMLElement>("[data-plan-task-probe-row]"),
-    );
-    const activeHeight = rows
-      .slice(0, activeTasks.length)
-      .reduce((height, row) => height + row.getBoundingClientRect().height + 6, 0);
-    const disclosureHeight =
-      pendingTasks.length > 0 || completedTasks.length > 0 ? 30 : 0;
-    const availablePendingHeight = Math.max(
-      0,
-      nextViewportHeight - activeHeight - disclosureHeight,
-    );
-    let usedHeight = 0;
-    let nextVisiblePendingCount = 0;
-    for (const row of rows.slice(activeTasks.length)) {
-      const rowHeight = row.getBoundingClientRect().height + 6;
-      if (usedHeight + rowHeight > availablePendingHeight) break;
-      usedHeight += rowHeight;
-      nextVisiblePendingCount += 1;
-    }
-    if (activeTasks.length === 0 && pendingTasks.length > 0) {
-      nextVisiblePendingCount = Math.max(1, nextVisiblePendingCount);
-    }
-    setVisiblePendingCount(
-      Math.min(pendingTasks.length, nextVisiblePendingCount),
-    );
-  }, [
-    activeTasks.length,
-    completedTasks.length,
-    pendingTasks.length,
-    taskSignature,
-    tasks.length,
-  ]);
-
-  useLayoutEffect(() => {
-    updateTaskFit();
-    const viewport = taskViewportRef.current;
-    const sidebar = viewport?.closest<HTMLElement>(
-      '[data-testid="desktop-plan-execution-sidebar"]',
-    );
-    const scrollRegion = viewport?.closest<HTMLElement>("[data-plan-scroll-region]");
-    if (!viewport || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(updateTaskFit);
-    observer.observe(viewport);
-    if (sidebar) observer.observe(sidebar);
-    if (scrollRegion) observer.observe(scrollRegion);
-    return () => observer.disconnect();
-  }, [updateTaskFit]);
 
   if (tasks.length === 0) return null;
 
-  const renderTask = (task: SidebarTask, index: number, probe = false) => (
+  const renderTask = (task: SidebarTask, index: number) => (
     <li
       key={`${index}:${task.text}`}
       className={cn(
-        "flex min-w-0 items-start gap-2 leading-4",
-        task.active && "font-medium text-[var(--app-primary)]",
-        "flex min-w-0 items-start gap-2.5 py-0.5 leading-relaxed",
+        "flex min-w-0 items-start gap-2.5 rounded-lg px-2 py-1.5 leading-relaxed",
+        task.active
+          ? "bg-[var(--app-primary-soft)] font-medium text-[var(--app-primary)]"
+          : "text-[var(--app-text-muted)]",
       )}
       data-plan-task-active={task.active ? "true" : undefined}
-      data-plan-task-probe-row={probe ? "" : undefined}
     >
       {task.checked === null ? (
         <span
@@ -326,34 +229,25 @@ function CheckpointDetails({
 
   return (
     <section
-      ref={taskSectionRef}
-      className="mt-4 min-h-0 border-t border-[var(--app-border)]/35 pt-4 text-xs text-[var(--app-text-muted)]/90"
+      className="mt-4 min-h-0 rounded-xl bg-[var(--app-bg-alt)] p-3 text-xs text-[var(--app-text-muted)]/90"
     >
       <div className="text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--app-text-subtle)]/80">
         Tasks
       </div>
       <div
-        ref={taskViewportRef}
-        className="relative mt-1.5 flex min-h-0 flex-col overflow-hidden"
-        style={{
-          maxHeight: viewportHeight,
-          ...(expanded ? { height: viewportHeight } : {}),
-        }}
+        className="relative mt-1.5 flex min-h-0 max-h-[min(28vh,240px)] flex-col overflow-hidden"
         data-plan-task-list
         data-plan-task-mode="bounded"
         data-plan-task-viewport
       >
-        {visibleTasks.length > 0 ? (
+        {displayedTasks.length > 0 ? (
           <ul
-            className={cn(
-              "grid min-h-0 gap-1.5 pr-1 [scrollbar-gutter:stable]",
-              activeTasks.length > 0 && visiblePendingTasks.length === 0
-                ? "overflow-y-auto"
-                : "shrink-0 overflow-hidden",
-            )}
+            id="desktop-plan-task-list"
+            className="grid min-h-0 flex-1 gap-1.5 overflow-y-auto pr-1 [scrollbar-gutter:stable]"
             data-plan-visible-tasks
+            data-plan-task-list-scroll="single"
           >
-            {visibleTasks.map((task, index) => renderTask(task, index))}
+            {displayedTasks.map((task, index) => renderTask(task, index))}
           </ul>
         ) : (
           <div className="shrink-0 text-[var(--app-text-subtle)]">
@@ -362,18 +256,15 @@ function CheckpointDetails({
         )}
         {disclosureCount > 0 ? (
           <div
-            className={cn(
-              "mt-1.5 flex min-h-0 flex-col border-t border-[var(--app-border)] pt-1",
-              expanded ? "flex-1 overflow-hidden" : "shrink-0",
-            )}
+            className="mt-1.5 shrink-0"
             data-plan-task-expansion
             data-plan-completed-tasks={completedTasks.length > 0 ? "" : undefined}
           >
             <button
               type="button"
-              className="mt-2.5 flex w-full shrink-0 items-center gap-1 py-1 text-left text-[10px] font-medium text-[var(--app-text-subtle)]/80 transition-colors hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
+              className="flex w-full items-center gap-1 py-1 text-left text-[10px] font-medium text-[var(--app-text-subtle)]/80 transition-colors hover:text-[var(--app-text-muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
               aria-expanded={expanded}
-              aria-controls="desktop-plan-overflow-tasks"
+              aria-controls="desktop-plan-task-list"
               onClick={() => setExpanded((current) => !current)}
             >
               <ChevronDown
@@ -386,48 +277,8 @@ function CheckpointDetails({
               />
               {disclosureLabel}
             </button>
-            {expanded ? (
-              <div
-                id="desktop-plan-overflow-tasks"
-                className="min-h-0 flex-1 overflow-y-auto pb-1 pr-1 [scrollbar-gutter:stable]"
-                data-plan-task-overflow
-                data-plan-task-overflow-scroll="conditional"
-              >
-                {overflowPendingTasks.length > 0 ? (
-                  <ul className="mt-1 grid gap-1.5">
-                    {overflowPendingTasks.map((task, index) =>
-                      renderTask(task, index + visibleTasks.length),
-                    )}
-                  </ul>
-                ) : null}
-                {completedTasks.length > 0 ? (
-                  <div className="mt-2 border-t border-[var(--app-border)] pt-1.5">
-                    <div className="mb-1 text-[10px] font-medium text-[var(--app-text-subtle)]">
-                      {completedTasks.length} completed
-                    </div>
-                    <ul className="grid gap-1.5">
-                      {completedTasks.map((task, index) =>
-                        renderTask(
-                          task,
-                          index + visibleTasks.length + overflowPendingTasks.length,
-                        ),
-                      )}
-                    </ul>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         ) : null}
-        <ul
-          ref={taskProbeRef}
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 -z-10 grid gap-1.5 opacity-0"
-        >
-          {[...activeTasks, ...pendingTasks].map((task, index) =>
-            renderTask(task, index, true),
-          )}
-        </ul>
       </div>
     </section>
   );
@@ -470,12 +321,10 @@ function CurrentCheckpointTitle({
   title: string;
 }) {
   return (
-    <div className="mt-2.5 min-w-0 pt-2" data-plan-checkpoint-box-wrapper>
+    <div className="mt-3 min-w-0" data-plan-checkpoint-box-wrapper>
       <h3
         className={cn(
-          "min-w-0 line-clamp-3 break-words text-sm font-semibold leading-5 text-[var(--app-text)] [overflow-wrap:anywhere]",
-          "bg-[var(--app-surface-subtle)] px-2.5 py-2 font-mono",
-          "break-words text-sm font-medium leading-relaxed text-[var(--app-text)]/95",
+          "min-w-0 line-clamp-3 break-words rounded-xl border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-3 py-2.5 font-mono text-sm font-medium leading-relaxed text-[var(--app-text)]/95 [overflow-wrap:anywhere]",
         )}
         title={activeTitle}
         data-plan-checkpoint-title
@@ -542,6 +391,7 @@ function ActiveCheckpointSection({
   totalCount,
   activeIndex,
   onOpenPlan,
+  unified = false,
 }: {
   view: DesktopPlanExecutionView;
   checkpoints: DesktopSessionPlanCheckpoint[];
@@ -549,6 +399,7 @@ function ActiveCheckpointSection({
   totalCount: number;
   activeIndex: number;
   onOpenPlan?: () => void;
+  unified?: boolean;
 }) {
   const checkpoint = view.activeCheckpoint;
   const activePosition = activeIndex >= 0 ? activeIndex : -1;
@@ -575,7 +426,16 @@ function ActiveCheckpointSection({
   );
 
   return (
-    <section className="min-w-0 border-b border-[var(--app-border)]/40 pb-5" data-plan-section="checkpoint">
+    <section
+      className={cn(
+        "min-w-0 p-4",
+        unified
+          ? ""
+          : "rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
+      )}
+      data-plan-section="checkpoint"
+      data-plan-section-treatment={unified ? "unified-stack" : "inset-card"}
+    >
       <CurrentCheckpointRow
         activeTitle={activeTitle}
         checkpointId={checkpointId}
@@ -584,7 +444,7 @@ function ActiveCheckpointSection({
         tone={tone}
       />
 
-      <div className="mt-3" data-plan-progress>
+      <div className="mt-4" data-plan-progress>
         <div className="mb-1.5 flex items-center justify-between text-[10px] text-[var(--app-text-subtle)]/90">
           <span>Progress</span>
           <span className="font-medium text-[var(--app-text-muted)]">
@@ -600,7 +460,7 @@ function ActiveCheckpointSection({
       </div>
 
       <div
-        className="mt-5 min-w-0 border-t border-[var(--app-border)]/35 pt-4 text-xs"
+        className="mt-4 min-w-0 rounded-xl border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)] p-3 text-xs"
         data-plan-next-up
       >
         <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
@@ -608,7 +468,7 @@ function ActiveCheckpointSection({
         </div>
         {nextCheckpoint ? (
           <div
-            className="mt-3 flex min-w-0 items-start gap-3 border-l-2 border-[var(--app-primary-border)]/50 pl-3"
+            className="mt-2.5 flex min-w-0 items-start gap-2.5"
             data-plan-next-checkpoint
             title={`${displayCheckpointId(nextCheckpoint.id, nextIndex)} ${nextCheckpoint.title || "Untitled checkpoint"}`}
           >
@@ -640,11 +500,11 @@ function ActiveCheckpointSection({
         variant="outline"
         onClick={onOpenPlan}
         disabled={!onOpenPlan}
-        className="mt-4 h-8 w-full rounded-md border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)] text-xs font-medium text-[var(--app-text-muted)] transition-all hover:bg-[var(--app-surface)] hover:text-[var(--app-text)]"
+        className="mt-4 h-9 w-full rounded-xl border border-[var(--app-border)]/70 bg-transparent text-xs font-medium text-[var(--app-text-muted)] transition-all hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
       >
         Open full plan
       </Button>
-      <p className="mt-2 px-1 text-[11px] leading-4 text-[var(--app-text-muted)]">
+      <p className="mt-2 px-1 text-[11px] leading-4 text-[var(--app-text-subtle)]">
         You can ask Swarm to remake a plan at any time, just pause and ask.
       </p>
     </section>
@@ -669,7 +529,8 @@ function ActionsSection({
   canStop,
   onAction,
   canonicalRecommendation,
-}: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView }) {
+  unified = false,
+}: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView; unified?: boolean }) {
   const checkpointId =
     view.activeCheckpointId || view.activeCheckpoint?.id || "";
   const acceptBusy =
@@ -708,7 +569,7 @@ function ActionsSection({
 
   if (view.paused) {
     return (
-      <section className="mt-4 min-w-0 border-t border-[var(--app-border)]/30 pt-1" data-plan-section="actions">
+      <section className={cn("min-w-0 p-3", unified ? "border-t border-[var(--app-border)]/60" : "rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]")} data-plan-section="actions" data-plan-section-treatment={unified ? "unified-stack" : "inset-card"}>
         <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           Actions
         </div>
@@ -738,7 +599,7 @@ function ActionsSection({
 
   if (view.blocked) {
     return (
-      <section className="mt-4 min-w-0 border-t border-[var(--app-border)]/30 pt-1" data-plan-section="actions">
+      <section className={cn("min-w-0 p-3", unified ? "border-t border-[var(--app-border)]/60" : "rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]")} data-plan-section="actions" data-plan-section-treatment={unified ? "unified-stack" : "inset-card"}>
         <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
           Blocked
         </div>
@@ -767,7 +628,7 @@ function ActionsSection({
   }
 
   return (
-    <section className="mt-4 min-w-0 border-t border-[var(--app-border)]/30 pt-1" data-plan-section="actions">
+    <section className={cn("min-w-0 p-3", unified ? "border-t border-[var(--app-border)]/60" : "rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]")} data-plan-section="actions" data-plan-section-treatment={unified ? "unified-stack" : "inset-card"}>
       <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
         Actions
       </div>
@@ -857,12 +718,12 @@ export const DesktopPlanExecutionSidebar = memo(
         className={embedded
           ? "min-h-0 min-w-0 w-full overflow-visible bg-[var(--app-surface)]"
           : cn(
-              "hidden h-full min-h-0 min-w-0 flex-1 flex-col gap-6 overflow-hidden border-l border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)] font-sans shadow-sm min-[1300px]:flex",
+              "hidden h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-l border-[var(--app-border)]/60 bg-[var(--app-bg-alt)] font-sans min-[1300px]:flex",
               thin
                 ? "w-[56px] max-w-[56px] px-2 py-3"
                 : compact
-                  ? "w-[280px] max-w-[280px] px-3 py-4"
-                  : "w-[360px] max-w-[360px] px-6 py-6",
+                  ? "w-[292px] max-w-[292px] p-3"
+                  : "w-[372px] max-w-[372px] p-4",
             )}
         aria-label="Plan execution sidebar"
         data-testid="desktop-plan-execution-sidebar"
@@ -873,19 +734,16 @@ export const DesktopPlanExecutionSidebar = memo(
             "min-w-0 max-w-full [&_*]:min-w-0",
             embedded
               ? "grid content-start gap-4 overflow-visible"
-              : "flex min-h-0 flex-1 flex-col gap-5 overflow-hidden",
+              : "flex min-h-0 flex-1 flex-col gap-3 overflow-hidden",
           )}
         >
-          {!embedded ? (
-            <header className="shrink-0 border-b border-[var(--app-border)]/40 pb-4">
+          {!embedded && thin ? (
+            <header className="shrink-0 pb-1 text-center">
               <div
-                className={cn(
-                  "font-semibold tracking-tight text-[var(--app-text)]",
-                  thin ? "text-center text-xs" : "text-base",
-                )}
+                className="text-center text-xs font-semibold tracking-tight text-[var(--app-text)]"
                 title="Plan execution"
               >
-                {thin ? "P" : "Plan"}
+                P
               </div>
             </header>
           ) : null}
@@ -918,35 +776,48 @@ export const DesktopPlanExecutionSidebar = memo(
                 "grid content-start",
                 embedded
                   ? "gap-4"
-                  : "min-h-0 shrink basis-auto gap-5 overflow-hidden pr-1",
+                  : "min-h-0 shrink overflow-hidden rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
               )}
               data-plan-scroll-region
+              data-plan-top-stack={!embedded ? "unified" : undefined}
             >
-            <ActiveCheckpointSection
-              view={view}
-              checkpoints={checkpoints}
-              completedCount={completedCount}
-              totalCount={totalCount}
-              activeIndex={activeIndex}
-              onOpenPlan={onEditPlan}
-            />
-            {taskChildren.length > 0 ? <DesktopPlanSubagentList children={taskChildren} actions={taskChildActions} mode={compact ? "compact" : "full"} /> : null}
-            <ActionsSection
-              view={view}
-              busyAction={busyAction}
-              canStop={canStop}
-              onAction={onAction}
-              onEditPlan={onEditPlan}
-              canonicalRecommendation={canonicalRecommendation}
-            />
+              <div
+                className={cn(
+                  "grid content-start",
+                  embedded
+                    ? "gap-4"
+                    : "min-h-0 max-h-full overflow-y-auto [scrollbar-gutter:stable]",
+                )}
+                data-plan-top-stack-content={!embedded ? "scrollable" : undefined}
+              >
+                <ActiveCheckpointSection
+                  view={view}
+                  checkpoints={checkpoints}
+                  completedCount={completedCount}
+                  totalCount={totalCount}
+                  activeIndex={activeIndex}
+                  onOpenPlan={onEditPlan}
+                  unified={!embedded}
+                />
+                {taskChildren.length > 0 ? <DesktopPlanSubagentList children={taskChildren} actions={taskChildActions} mode={compact ? "compact" : "full"} /> : null}
+                <ActionsSection
+                  view={view}
+                  busyAction={busyAction}
+                  canStop={canStop}
+                  onAction={onAction}
+                  onEditPlan={onEditPlan}
+                  canonicalRecommendation={canonicalRecommendation}
+                  unified={!embedded}
+                />
+              </div>
             </div>
           )}
           {!thin && belowActions ? (
             <div
               className={cn(
-                "border-t border-[var(--app-border)] pt-4",
-                !embedded &&
-                  "flex min-h-[160px] flex-1 flex-col overflow-hidden",
+                embedded
+                  ? ""
+                  : "flex min-h-[7rem] flex-1 flex-col overflow-hidden rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3 shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
               )}
               data-plan-section="session"
             >

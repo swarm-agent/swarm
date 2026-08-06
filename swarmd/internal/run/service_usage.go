@@ -23,9 +23,12 @@ func (s *Service) newRunID() string {
 
 func mergeTokenUsage(acc, next provideriface.TokenUsage) provideriface.TokenUsage {
 	source := strings.ToLower(strings.TrimSpace(next.Source))
-	if source == "codex_api_usage" || source == "google_api_usage" || source == "copilot_session_usage" || source == "anthropic_api_usage" || source == "openrouter_api_usage" {
+	if source == "codex_api_usage" || source == "google_api_usage" || source == "copilot_session_usage" || source == "anthropic_api_usage" || source == "fireworks_api_usage" || source == "openrouter_api_usage" {
 		if !hasConcreteUsageSnapshot(next) {
 			return acc
+		}
+		if source == "fireworks_api_usage" {
+			return mergeFireworksTokenUsage(acc, next)
 		}
 		return mergeSnapshotTokenUsage(acc, next)
 	}
@@ -73,6 +76,17 @@ func hasConcreteUsageSnapshot(next provideriface.TokenUsage) bool {
 		next.EstimatedCostUSD > 0 ||
 		strings.TrimSpace(next.Transport) != "" ||
 		next.ConnectedViaWS != nil
+}
+
+func mergeFireworksTokenUsage(acc, next provideriface.TokenUsage) provideriface.TokenUsage {
+	// Fireworks reports the usage for the current Chat Completions request on
+	// every tool-loop response. Those token counters are current context
+	// occupancy, not deltas to add across requests. Cost is per request, so keep
+	// accumulating it while replacing the token counters with the latest sample.
+	accumulatedCost := acc.EstimatedCostUSD + next.EstimatedCostUSD
+	merged := mergeSnapshotTokenUsage(acc, next)
+	merged.EstimatedCostUSD = accumulatedCost
+	return merged
 }
 
 func mergeSnapshotTokenUsage(acc, next provideriface.TokenUsage) provideriface.TokenUsage {

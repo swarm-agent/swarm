@@ -67,6 +67,7 @@ export function normalizeBashApprovalProfile(value: unknown): BashApprovalProfil
 }
 
 const SESSION_MUTATION_POLICIES = [
+  { tool: 'skill_change', title: 'Skill changes', description: 'Create, update, or delete workspace skills. Updates still enforce their prepared revision.' },
   { tool: 'session_commit', title: 'Session commits', description: 'Create Git commits only for approved session-attributed files.' },
   { tool: 'session_archive', title: 'Session archives', description: 'Move active sessions into durable archive history.' },
   { tool: 'session_unarchive', title: 'Session unarchives', description: 'Restore archived sessions to the active workspace view.' },
@@ -504,8 +505,8 @@ export function PermissionsSettingsPage() {
         </section>
 
         <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
-          <div className="text-sm font-semibold text-[var(--app-text)]">Session mutations</div>
-          <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Each operation has an isolated persistent identity. A generic <span className="font-mono">manage_sessions</span> rule does not authorize commits, archives, or unarchives.</div>
+          <div className="text-sm font-semibold text-[var(--app-text)]">Protected changes</div>
+          <div className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">Each operation has an isolated persistent identity. Skill changes use <span className="font-mono">skill_change</span>; a generic <span className="font-mono">manage_sessions</span> rule does not authorize commits, archives, or unarchives.</div>
           <div className="mt-4 grid gap-3">
             {SESSION_MUTATION_POLICIES.map((item) => {
               const selected = sessionMutationDecision(policy.rules, item.tool)

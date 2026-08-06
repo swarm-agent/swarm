@@ -88,16 +88,21 @@ test('subagent settings expose an automatic wave budget and independent concurre
   assert.doesNotMatch(settingsSource, /absolute_wave_maximum|max_depth|MAX_SUBAGENT_DEPTH/)
 })
 
-test('session mutation settings keep commit, archive, and unarchive policies isolated', () => {
+test('protected change settings keep skill and session mutation policies isolated', () => {
   const rules: PermissionRule[] = [
+    { id: 'skill', kind: 'tool', decision: 'allow', tool: 'skill_change' },
     { id: 'commit', kind: 'tool', decision: 'allow', tool: 'session_commit' },
     { id: 'archive', kind: 'tool', decision: 'deny', tool: 'session_archive' },
     { id: 'generic', kind: 'tool', decision: 'allow', tool: 'manage_sessions' },
   ]
 
+  assert.equal(sessionMutationDecision(rules, 'skill_change'), 'allow')
   assert.equal(sessionMutationDecision(rules, 'session_commit'), 'allow')
   assert.equal(sessionMutationDecision(rules, 'session_archive'), 'deny')
   assert.equal(sessionMutationDecision(rules, 'session_unarchive'), 'ask')
+  assert.match(settingsSource, /Skill changes/)
+  assert.match(settingsSource, /prepared revision/)
+  assert.match(settingsSource, /skill_change/)
 })
 
 test('capability settings default session deployment and plan acceptance to ask', () => {

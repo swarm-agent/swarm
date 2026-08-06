@@ -79,6 +79,7 @@ type V3SessionMutationInput struct {
 	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
 	PlanAcceptance       *V3PlanAcceptanceMutation `json:"plan_acceptance,omitempty"`
 	PlanSave             *V3PlanSaveMutation       `json:"plan_save,omitempty"`
+	MediaStagingBindings []MediaStagingBinding     `json:"media_staging_bindings,omitempty"`
 	EpochID              string                    `json:"epoch_id,omitempty"`
 	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
 	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
@@ -235,7 +236,11 @@ type V3RealtimeOutboxMembership struct {
 	AccountScopeID          string         `json:"account_scope_id,omitempty"`
 	WorkspacePath           string         `json:"workspace_path,omitempty"`
 	WorkspaceName           string         `json:"workspace_name,omitempty"`
+	WorktreeEnabled         bool           `json:"worktree_enabled,omitempty"`
+	RequestedWorktreeName   string         `json:"requested_worktree_name,omitempty"`
 	WorktreeRootPath        string         `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch      string         `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch          string         `json:"worktree_branch,omitempty"`
 	TemporaryWorkspaceRoots []string       `json:"temporary_workspace_roots,omitempty"`
 	Metadata                map[string]any `json:"metadata,omitempty"`
 	Deleted                 bool           `json:"deleted,omitempty"`
@@ -287,11 +292,26 @@ func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64
 		AccountScopeID:          strings.TrimSpace(session.AccountScopeID),
 		WorkspacePath:           strings.TrimSpace(session.WorkspacePath),
 		WorkspaceName:           strings.TrimSpace(session.WorkspaceName),
+		WorktreeEnabled:         session.WorktreeEnabled,
+		RequestedWorktreeName:   v3RealtimeMembershipMetadataString(session.Metadata, "routed_worktree_name"),
 		WorktreeRootPath:        strings.TrimSpace(session.WorktreeRootPath),
+		WorktreeBaseBranch:      strings.TrimSpace(session.WorktreeBaseBranch),
+		WorktreeBranch:          strings.TrimSpace(session.WorktreeBranch),
 		TemporaryWorkspaceRoots: append([]string(nil), session.TemporaryWorkspaceRoots...),
 		Metadata:                v3RealtimeMembershipMetadata(session.Metadata),
 		CapturedAt:              now,
 	}
+}
+
+func v3RealtimeMembershipMetadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
@@ -301,7 +321,7 @@ func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, key := range []string{
 		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
-		"swarm_v3_source_workspace_path",
+		"swarm_v3_source_workspace_path", "routed_worktree_name",
 		"swarm_v3_tui_cwd_path", "swarm_v3_tui_original_cwd_path", "swarm_v3_tui_worktree_path",
 	} {
 		if value, ok := metadata[key]; ok {
@@ -416,6 +436,8 @@ type v3SessionEventReplayPayload struct {
 	Status        string                    `json:"status,omitempty"`
 	BlockedReason string                    `json:"blocked_reason,omitempty"`
 	Error         string                    `json:"error,omitempty"`
+	HasActivePlan bool                      `json:"has_active_plan,omitempty"`
+	ActivePlan    *SessionPlanSnapshot      `json:"active_plan,omitempty"`
 }
 
 func KeyV3SessionSequence(sessionID string) string {
@@ -534,6 +556,17 @@ func V3RealtimeOutboxCursor(endpointSeq uint64) string {
 	return fmt.Sprintf("cursor-%d", endpointSeq)
 }
 
+// SetMediaStagingBindCommitHookForTest installs a failure seam immediately
+// before the atomic routed media/session authority batch commits.
+func (s *SessionStore) SetMediaStagingBindCommitHookForTest(hook func(sessionID string) error) func() {
+	if s == nil || s.store == nil {
+		return func() {}
+	}
+	previous := s.store.sessionMutations.beforeMediaStagingBindCommit
+	s.store.sessionMutations.beforeMediaStagingBindCommit = hook
+	return func() { s.store.sessionMutations.beforeMediaStagingBindCommit = previous }
+}
+
 func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
@@ -549,6 +582,12 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 
 	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
 	defer unlockSession()
+
+	if len(input.MediaStagingBindings) > 0 {
+		mediaStaging := NewMediaStagingStore(s.store)
+		mediaStaging.mu.Lock()
+		defer mediaStaging.mu.Unlock()
+	}
 
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
 
@@ -697,6 +736,23 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	mediaAssets, err := s.prepareV3MessageMediaAssets(input, message, messageProvided)
 	if err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	var mediaStagingRecords []MediaStagingRecord
+	if len(input.MediaStagingBindings) > 0 {
+		var replayed bool
+		var bindErr error
+		mediaStagingRecords, replayed, bindErr = NewMediaStagingStore(s.store).prepareBindLocked(BindMediaStagingInput{
+			AccountScopeID: input.AccountScopeID,
+			SessionID:      input.SessionID,
+			Bindings:       input.MediaStagingBindings,
+			NowUnixMs:      now,
+		})
+		if bindErr != nil {
+			return V3SessionMutationResult{}, bindErr
+		}
+		if replayed {
+			return V3SessionMutationResult{}, errors.New("media staging bindings already committed without routed mutation authority")
+		}
 	}
 	turnUsage, usageSummary, usageProvided, err := s.prepareV3UsageForMutation(input, now)
 	if err != nil {
@@ -882,6 +938,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if len(mediaStagingRecords) > 0 {
+		if err := setMediaStagingBindingsInBatch(batch, mediaStagingRecords, input.MediaStagingBindings, input.SessionID, now); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if messageProvided {
 		messagePayload, err := json.Marshal(message)
 		if err != nil {
@@ -965,6 +1026,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if err := batch.Set([]byte(idempotencyStoreKey), idempotencyPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if len(mediaStagingRecords) > 0 {
+		if hook := s.store.sessionMutations.beforeMediaStagingBindCommit; hook != nil {
+			if err := hook(input.SessionID); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
 	}
 	if hook := s.store.sessionMutations.beforeDurableCommit; hook != nil {
 		hook(input.SessionID)
@@ -1135,6 +1203,7 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 			session := normalizeSessionOwnership(*payload.Session)
 			session.ID = sessionID
 			session.Metadata = cloneSessionMetadataMap(session.Metadata)
+			session.ModelProfile = CloneSessionModelProfileSnapshot(session.ModelProfile)
 			replay.Session = &session
 		}
 		if payload.Lifecycle != nil {
@@ -2340,20 +2409,7 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 				session.Metadata = cloneSessionMetadataMap(current.Metadata)
 			}
 			if input.Kind != V3SessionMutationUpdateModelProfile && session.ModelProfile == nil && current.ModelProfile != nil {
-				profile := *current.ModelProfile
-				if profile.Single != nil {
-					selection := *profile.Single
-					profile.Single = &selection
-				}
-				if profile.Plan != nil {
-					selection := *profile.Plan
-					profile.Plan = &selection
-				}
-				if profile.Auto != nil {
-					selection := *profile.Auto
-					profile.Auto = &selection
-				}
-				session.ModelProfile = &profile
+				session.ModelProfile = CloneSessionModelProfileSnapshot(current.ModelProfile)
 			}
 		}
 		if session.UserID == "" {
@@ -2367,6 +2423,7 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 		}
 		session.UpdatedAt = now
 		session.Metadata = cloneSessionMetadataMap(session.Metadata)
+		session.ModelProfile = CloneSessionModelProfileSnapshot(session.ModelProfile)
 		return session, true, nil
 	}
 	if input.Message != nil {
@@ -2587,6 +2644,18 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
+	if len(input.MediaStagingBindings) > 0 {
+		if input.Kind != V3SessionMutationCreateSession || input.Message == nil || len(input.Message.Media) != len(input.MediaStagingBindings) {
+			return errors.New("media staging bindings require a create-session mutation with matching message media")
+		}
+		bindings := normalizeMediaStagingBindings(input.MediaStagingBindings)
+		for index, binding := range bindings {
+			reference := input.Message.Media[index]
+			if binding.AuthorityAssetID != strings.TrimSpace(reference.AssetID) || binding.DigestSHA256 != strings.ToLower(strings.TrimSpace(reference.DigestSHA256)) {
+				return fmt.Errorf("media staging binding %d does not match message authority", index)
+			}
+		}
+	}
 	if err := validateCanonicalSessionID(input.SessionID); err != nil {
 		return err
 	}
@@ -2781,6 +2850,7 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if session.ID != "" {
 		snapshot := session
 		snapshot.Metadata = cloneSessionMetadataMap(snapshot.Metadata)
+		snapshot.ModelProfile = CloneSessionModelProfileSnapshot(snapshot.ModelProfile)
 		payload.Session = &snapshot
 	}
 	if message.ID != "" {
@@ -2811,6 +2881,12 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if usageSummary.SessionID != "" {
 		summary := usageSummary
 		payload.UsageSummary = &summary
+	}
+	if input.PlanSave != nil {
+		plan := input.PlanSave.Plan
+		plan.Active = input.PlanSave.Activate
+		payload.HasActivePlan = input.PlanSave.Activate
+		payload.ActivePlan = &plan
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

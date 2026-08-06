@@ -263,12 +263,6 @@ Group=%s
 ExecStart=%s main server run
 Restart=on-failure
 RestartSec=2
-Delegate=cpu memory pids
-PrivateTmp=yes
-TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=8G,mode=1777
-TemporaryFileSystem=/var/tmp:rw,nosuid,nodev,size=8G,mode=1777
-MemoryMax=90%%
-TasksMax=80%%
 StateDirectory=swarmd
 StateDirectoryMode=0700
 CacheDirectory=swarmd
@@ -281,7 +275,6 @@ LogsDirectory=swarmd
 LogsDirectoryMode=0755
 Environment=SWARM_SYSTEMD_SCOPE=system
 Environment=SWARM_SYSTEMD_UNIT=swarm.service
-Environment=SWARMD_BASH_CONTAINMENT_POLICY=required
 Environment=SWARMD_DATA_DIR=%s
 Environment=SWARMD_CACHE_DIR=%s
 Environment=SWARMD_RUNTIME_DIR=%s

@@ -17,7 +17,6 @@ var (
 	ErrNotFound      = errors.New("model profile not found")
 )
 
-type Selection = pebblestore.ModelProfileSelection
 type Profile = pebblestore.ModelProfileRecord
 type BulkDeleteResult = pebblestore.ModelProfileBulkDeleteResult
 
@@ -26,12 +25,14 @@ type ListState struct {
 	DefaultProfileID string
 }
 
+// Input is one flat favorite model selection.
 type Input struct {
-	Name      string
-	ModelMode string
-	Single    *Selection
-	Plan      *Selection
-	Auto      *Selection
+	Name        string
+	Provider    string
+	Model       string
+	Thinking    string
+	ServiceTier string
+	ContextMode string
 }
 
 type Service struct {
@@ -56,7 +57,7 @@ func (s *Service) Create(ctx context.Context, input Input) (Profile, error) {
 	return s.createForAccount(principal.AccountScopeID, input)
 }
 
-// CreateFirstForAccount atomically creates the profile only if the account still has none.
+// CreateFirstForAccount atomically creates the favorite only if the account still has none.
 func (s *Service) CreateFirstForAccount(accountScopeID string, input Input) (Profile, bool, error) {
 	if s == nil || s.store == nil {
 		return Profile{}, false, ErrNotConfigured
@@ -67,9 +68,16 @@ func (s *Service) CreateFirstForAccount(accountScopeID string, input Input) (Pro
 	}
 	now := s.now().UnixMilli()
 	return s.store.PutForAccountIfEmpty(Profile{
-		ProfileID: s.newID(), AccountScopeID: strings.TrimSpace(accountScopeID), Name: input.Name,
-		ModelMode: input.ModelMode, Single: cloneSelection(input.Single), Plan: cloneSelection(input.Plan),
-		Auto: cloneSelection(input.Auto), CreatedAt: now, UpdatedAt: now,
+		ProfileID:      s.newID(),
+		AccountScopeID: strings.TrimSpace(accountScopeID),
+		Name:           input.Name,
+		Provider:       input.Provider,
+		Model:          input.Model,
+		Thinking:       input.Thinking,
+		ServiceTier:    input.ServiceTier,
+		ContextMode:    input.ContextMode,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	})
 }
 
@@ -82,8 +90,18 @@ func (s *Service) createForAccount(accountScopeID string, input Input) (Profile,
 		return Profile{}, err
 	}
 	now := s.now().UnixMilli()
-	record := Profile{ProfileID: s.newID(), AccountScopeID: strings.TrimSpace(accountScopeID), Name: input.Name, ModelMode: input.ModelMode, Single: cloneSelection(input.Single), Plan: cloneSelection(input.Plan), Auto: cloneSelection(input.Auto), CreatedAt: now, UpdatedAt: now}
-	return s.store.PutForAccount(record)
+	return s.store.PutForAccount(Profile{
+		ProfileID:      s.newID(),
+		AccountScopeID: strings.TrimSpace(accountScopeID),
+		Name:           input.Name,
+		Provider:       input.Provider,
+		Model:          input.Model,
+		Thinking:       input.Thinking,
+		ServiceTier:    input.ServiceTier,
+		ContextMode:    input.ContextMode,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
 }
 
 func (s *Service) List(ctx context.Context) ([]Profile, error) {
@@ -101,18 +119,38 @@ func (s *Service) ListState(ctx context.Context) (ListState, error) {
 	}
 	state, err := s.store.ListStateForAccount(principal.AccountScopeID, 500)
 	if err != nil {
-		return ListState{}, err
+		return ListState{}, mapStoreError(err)
 	}
 	return ListState{Profiles: state.Profiles, DefaultProfileID: state.DefaultProfileID}, nil
 }
 
+func (s *Service) Reorder(ctx context.Context, profileIDs []string) ([]Profile, error) {
+	principal, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil || s.store == nil {
+		return nil, ErrNotConfigured
+	}
+	profiles, err := s.store.ReorderForAccount(principal.AccountScopeID, profileIDs)
+	return profiles, mapStoreError(err)
+}
+
 func (s *Service) GetDefault(ctx context.Context) (Profile, bool, error) {
-	state, err := s.ListState(ctx)
+	principal, err := requirePrincipal(ctx)
 	if err != nil {
 		return Profile{}, false, err
 	}
-	if strings.TrimSpace(state.DefaultProfileID) == "" {
-		return Profile{}, false, nil
+	return s.GetDefaultForAccount(principal.AccountScopeID)
+}
+
+func (s *Service) GetDefaultForAccount(accountScopeID string) (Profile, bool, error) {
+	if s == nil || s.store == nil {
+		return Profile{}, false, ErrNotConfigured
+	}
+	state, err := s.store.ListStateForAccount(strings.TrimSpace(accountScopeID), 500)
+	if err != nil {
+		return Profile{}, false, mapStoreError(err)
 	}
 	for _, profile := range state.Profiles {
 		if profile.ProfileID == state.DefaultProfileID {
@@ -131,10 +169,7 @@ func (s *Service) SetDefault(ctx context.Context, profileID string) (Profile, er
 		return Profile{}, ErrNotConfigured
 	}
 	profile, err := s.store.SetDefaultForAccount(principal.AccountScopeID, profileID)
-	if errors.Is(err, pebblestore.ErrModelProfileNotFound) {
-		return Profile{}, ErrNotFound
-	}
-	return profile, err
+	return profile, mapStoreError(err)
 }
 
 func (s *Service) Get(ctx context.Context, profileID string) (Profile, error) {
@@ -147,7 +182,7 @@ func (s *Service) Get(ctx context.Context, profileID string) (Profile, error) {
 	}
 	profile, ok, err := s.store.GetForAccount(principal.AccountScopeID, profileID)
 	if err != nil {
-		return Profile{}, err
+		return Profile{}, mapStoreError(err)
 	}
 	if !ok {
 		return Profile{}, ErrNotFound
@@ -165,12 +200,14 @@ func (s *Service) Update(ctx context.Context, profileID string, input Input) (Pr
 		return Profile{}, err
 	}
 	current.Name = input.Name
-	current.ModelMode = input.ModelMode
-	current.Single = cloneSelection(input.Single)
-	current.Plan = cloneSelection(input.Plan)
-	current.Auto = cloneSelection(input.Auto)
+	current.Provider = input.Provider
+	current.Model = input.Model
+	current.Thinking = input.Thinking
+	current.ServiceTier = input.ServiceTier
+	current.ContextMode = input.ContextMode
 	current.UpdatedAt = s.now().UnixMilli()
-	return s.store.PutForAccount(current)
+	profile, err := s.store.PutForAccount(current)
+	return profile, mapStoreError(err)
 }
 
 func (s *Service) Delete(ctx context.Context, profileID string) (bool, error) {
@@ -181,7 +218,8 @@ func (s *Service) Delete(ctx context.Context, profileID string) (bool, error) {
 	if s == nil || s.store == nil {
 		return false, ErrNotConfigured
 	}
-	return s.store.DeleteForAccount(principal.AccountScopeID, profileID)
+	deleted, err := s.store.DeleteForAccount(principal.AccountScopeID, profileID)
+	return deleted, mapStoreError(err)
 }
 
 func (s *Service) BulkDelete(ctx context.Context, profileIDs []string) (BulkDeleteResult, error) {
@@ -192,7 +230,8 @@ func (s *Service) BulkDelete(ctx context.Context, profileIDs []string) (BulkDele
 	if s == nil || s.store == nil {
 		return BulkDeleteResult{}, ErrNotConfigured
 	}
-	return s.store.BulkDeleteForAccount(principal.AccountScopeID, profileIDs)
+	result, err := s.store.BulkDeleteForAccount(principal.AccountScopeID, profileIDs)
+	return result, mapStoreError(err)
 }
 
 func requirePrincipal(ctx context.Context) (identity.Principal, error) {
@@ -203,62 +242,30 @@ func requirePrincipal(ctx context.Context) (identity.Principal, error) {
 	return principal, nil
 }
 
-// ValidateInput normalizes and validates an inline model profile without saving it.
+// ValidateInput normalizes and validates a flat favorite without saving it.
 func ValidateInput(input Input) (Input, error) {
 	return validateInput(input)
 }
 
 func validateInput(input Input) (Input, error) {
 	input.Name = strings.TrimSpace(input.Name)
-	input.ModelMode = strings.ToLower(strings.TrimSpace(input.ModelMode))
+	input.Provider = strings.TrimSpace(input.Provider)
+	input.Model = strings.TrimSpace(input.Model)
+	input.Thinking = strings.TrimSpace(input.Thinking)
+	input.ServiceTier = strings.TrimSpace(input.ServiceTier)
+	input.ContextMode = strings.TrimSpace(input.ContextMode)
 	if input.Name == "" {
-		return Input{}, errors.New("model profile name is required")
+		return Input{}, errors.New("model favorite name is required")
 	}
-	switch input.ModelMode {
-	case pebblestore.ModelProfileModeSingle:
-		if input.Single == nil || input.Plan != nil || input.Auto != nil {
-			return Input{}, errors.New("single model profile requires only a single selection")
-		}
-		selection, err := normalizeSelection(*input.Single)
-		if err != nil {
-			return Input{}, err
-		}
-		input.Single = &selection
-	case pebblestore.ModelProfileModeSplit:
-		if input.Single != nil || input.Plan == nil || input.Auto == nil {
-			return Input{}, errors.New("split model profile requires only plan and auto selections")
-		}
-		plan, err := normalizeSelection(*input.Plan)
-		if err != nil {
-			return Input{}, err
-		}
-		auto, err := normalizeSelection(*input.Auto)
-		if err != nil {
-			return Input{}, err
-		}
-		input.Plan, input.Auto = &plan, &auto
-	default:
-		return Input{}, errors.New("model mode must be single or split")
+	if input.Provider == "" || input.Model == "" || input.Thinking == "" {
+		return Input{}, errors.New("model favorite provider, model, and thinking are required")
 	}
 	return input, nil
 }
 
-func normalizeSelection(selection Selection) (Selection, error) {
-	selection.Provider = strings.TrimSpace(selection.Provider)
-	selection.Model = strings.TrimSpace(selection.Model)
-	selection.Thinking = strings.TrimSpace(selection.Thinking)
-	selection.ServiceTier = strings.TrimSpace(selection.ServiceTier)
-	selection.ContextMode = strings.TrimSpace(selection.ContextMode)
-	if selection.Provider == "" || selection.Model == "" || selection.Thinking == "" {
-		return Selection{}, errors.New("model selection provider, model, and thinking are required")
+func mapStoreError(err error) error {
+	if errors.Is(err, pebblestore.ErrModelProfileNotFound) {
+		return ErrNotFound
 	}
-	return selection, nil
-}
-
-func cloneSelection(selection *Selection) *Selection {
-	if selection == nil {
-		return nil
-	}
-	copy := *selection
-	return &copy
+	return err
 }

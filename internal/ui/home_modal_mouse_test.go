@@ -88,7 +88,43 @@ func TestModelsModalChatOverlayMouseRoutesToModelTargets(t *testing.T) {
 	}
 }
 
-func TestAgentsModalMouseClickSelectedProfileOpensDetails(t *testing.T) {
+func TestAgentsModalMouseOpensCanonicalAgentEditor(t *testing.T) {
+	p := NewHomePage(model.EmptyHome())
+	p.ShowAgentsModal()
+	p.SetAgentsModalData(canonicalAgentsModalTestData())
+	screen := newModalMouseTestScreen(t, 110, 36)
+	defer screen.Fini()
+	p.drawAgentsModal(screen)
+	target := findClickTarget(t, p.agentsModalTargets, "agents-agent", 2)
+	p.HandleMouse(tcell.NewEventMouse(target.Rect.X, target.Rect.Y, tcell.Button1, 0))
+	if got := p.selectedAgentsModalName(); got != "finder" {
+		t.Fatalf("selected agent = %q, want finder", got)
+	}
+	if p.agentsModal.Focus != agentsModalFocusAssignments {
+		t.Fatalf("mouse focus = %v, want assignment selector", p.agentsModal.Focus)
+	}
+}
+
+func TestAgentsModalMouseClickFieldStartsCanonicalEditor(t *testing.T) {
+	p := NewHomePage(model.EmptyHome())
+	p.ShowAgentsModal()
+	p.SetAgentsModalData(canonicalAgentsModalTestData())
+	p.agentsModal.Focus = agentsModalFocusFields
+	p.agentsModal.SelectedAssignment = 0
+
+	screen := newModalMouseTestScreen(t, 110, 36)
+	defer screen.Fini()
+	p.drawAgentsModal(screen)
+
+	target := findClickTarget(t, p.agentsModalTargets, "agents-field", 1)
+	p.HandleChatOverlayMouse(tcell.NewEventMouse(target.Rect.X, target.Rect.Y, tcell.Button1, 0))
+	if p.agentsModal.Focus != agentsModalFocusFields || p.agentsModal.SelectedField != 1 || !p.agentsModal.EditingField {
+		t.Fatalf("field click state = focus %v field %d editing %v", p.agentsModal.Focus, p.agentsModal.SelectedField, p.agentsModal.EditingField)
+	}
+}
+
+/* Legacy profile-oriented mouse tests removed with the old /agents workflow.
+func TestAgentsModalMouseOpensAgentInV2Editor(t *testing.T) {
 	p := NewHomePage(model.EmptyHome())
 	p.ShowAgentsModal()
 	p.SetAgentsModalData(AgentsModalData{
@@ -103,14 +139,57 @@ func TestAgentsModalMouseClickSelectedProfileOpensDetails(t *testing.T) {
 	defer screen.Fini()
 	p.drawAgentsModal(screen)
 
-	target := findClickTarget(t, p.agentsModalTargets, "agents-profile", 0)
+	target := findClickTarget(t, p.agentsModalTargets, "agents-profile", 1)
 	p.HandleMouse(tcell.NewEventMouse(target.Rect.X, target.Rect.Y, tcell.Button1, 0))
 
-	if p.agentsModal.Focus != agentsModalFocusDetails {
-		t.Fatalf("focus = %v, want details", p.agentsModal.Focus)
+	if got := p.selectedAgentsModalName(); got != "finder" {
+		t.Fatalf("selected profile = %q, want finder", got)
 	}
-	if p.agentsModal.Editor != nil {
-		t.Fatalf("profile click should open details, not editor")
+	if p.agentsModal.Focus != agentsModalFocusDetails || p.agentsModal.Screen != agentsV2ScreenEditor {
+		t.Fatalf("focus/screen = %v/%v, want V2 editor", p.agentsModal.Focus, p.agentsModal.Screen)
+	}
+	if p.agentsModal.Editor == nil || p.agentsModal.Editor.TargetName != "finder" {
+		t.Fatalf("editor = %#v, want finder settings", p.agentsModal.Editor)
+	}
+}
+
+func TestAgentsModalMouseSelectsCreateFromRightProfileDropdown(t *testing.T) {
+	p := NewHomePage(model.EmptyHome())
+	p.ShowAgentsModal()
+	p.SetAgentsModalData(AgentsModalData{
+		Profiles: []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true}},
+		ModelProfiles: []client.ModelProfile{{
+			ProfileID: "standard", Name: "Standard", ModelMode: "single",
+			Single: &client.ModelProfileSelection{Provider: "codex", Model: "gpt-standard"},
+		}},
+		ActiveModelProfileID: "standard",
+	})
+	p.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	screen := newModalMouseTestScreen(t, 110, 34)
+	defer screen.Fini()
+	p.drawAgentsModal(screen)
+
+	target := findClickTarget(t, p.agentsModalTargets, "agents-model-profile-option", 0)
+	if target.Meta != agentsModalCreateProfileOption {
+		for _, candidate := range p.agentsModalTargets {
+			if candidate.Action == "agents-model-profile-option" && candidate.Meta == agentsModalCreateProfileOption {
+				target = candidate
+				break
+			}
+		}
+	}
+	if target.Meta != agentsModalCreateProfileOption {
+		t.Fatalf("create profile mouse target not found: %v", p.agentsModalTargets)
+	}
+	p.HandleMouse(tcell.NewEventMouse(target.Rect.X, target.Rect.Y, tcell.Button1, 0))
+
+	if p.agentsModal.Editor == nil || !p.agentsModal.Editor.CreateModelProfile || p.agentsModal.Editor.Mode != "model" {
+		t.Fatalf("profile dropdown click did not prime saved model-profile creation editor: %#v", p.agentsModal.Editor)
+	}
+	if p.agentsModal.Focus != agentsModalFocusDetails {
+		t.Fatalf("focus = %v, want right settings pane", p.agentsModal.Focus)
 	}
 }
 
@@ -120,11 +199,10 @@ func TestAgentsModalMouseClickEditorFieldStartsEditing(t *testing.T) {
 	p.SetAgentsModalData(AgentsModalData{
 		Profiles: []AgentModalProfile{{Name: "swarm", Mode: "primary", Enabled: true}},
 	})
-	profile, ok := p.selectedAgentsModalProfile()
-	if !ok {
+	if _, ok := p.selectedAgentsModalProfile(); !ok {
 		t.Fatalf("expected selected profile")
 	}
-	p.openAgentsModalEditEditor(profile)
+	p.openAgentsV2Editor()
 
 	screen := newModalMouseTestScreen(t, 110, 30)
 	defer screen.Fini()
@@ -143,3 +221,5 @@ func TestAgentsModalMouseClickEditorFieldStartsEditing(t *testing.T) {
 		t.Fatalf("expected clicked editor field to enter editing mode")
 	}
 }
+
+*/

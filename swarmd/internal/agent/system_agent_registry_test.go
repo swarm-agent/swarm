@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, PlanSidechatAgentID, ReviewCommitAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -73,7 +73,7 @@ func TestBuiltinSystemAgentRegistryUserVisibleIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuiltinSystemAgentRegistry() error = %v", err)
 	}
-	want := []string{SwarmAgentID, CoderAgentID, DesignerAgentID, FinderAgentID}
+	want := []string{SwarmAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID}
 	if got := registry.UserVisibleIDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("UserVisibleIDs() = %v, want %v", got, want)
 	}
@@ -153,14 +153,14 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	planPrompt := PlanSidechatAgentPromptWithContext(`{"plan_id":"plan-1","proposal_revision":7}`)
 	plan, err := registry.ReconcileSnapshot(PlanSidechatAgentID, pebblestore.AgentProfile{
-		Name: PlanSidechatAgentID, Provider: "codex", Model: "plan-model", Thinking: "high", PlanServiceTier: "priority",
+		Name: PlanSidechatAgentID, Provider: "codex", Model: "plan-model", Thinking: "high", AutoServiceTier: "priority",
 		Prompt: planPrompt, RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, Enabled: false,
 		ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(true)}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Prompt != planPrompt || plan.Provider != "codex" || plan.Model != "plan-model" || plan.PlanServiceTier != "priority" {
+	if plan.Prompt != planPrompt || plan.Provider != "codex" || plan.Model != "plan-model" || plan.AutoServiceTier != "priority" {
 		t.Fatalf("dynamic Plan data was not preserved: %+v", plan)
 	}
 	if !plan.Enabled || plan.RuntimeMode != pebblestore.AgentRuntimeModeRead || plan.ExitPlanModeEnabled == nil || *plan.ExitPlanModeEnabled {
@@ -188,12 +188,12 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("AI mandatory denial %q was not restored", denied)
 		}
 	}
-	reviewCommit, err := registry.Materialize(ReviewCommitAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "base-model", AutoProvider: "openai", AutoModel: "auto-model", AutoThinking: "high", AutoServiceTier: "priority"})
+	reviewCommit, err := registry.Materialize(ReviewCommitAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "base-model", Thinking: "high", AutoServiceTier: "priority"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewCommit.Provider != "openai" || reviewCommit.Model != "auto-model" || reviewCommit.Thinking != "high" || reviewCommit.AutoServiceTier != "priority" || reviewCommit.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
-		t.Fatalf("Review Commit auto model inheritance mismatch: %+v", reviewCommit)
+	if reviewCommit.Provider != "codex" || reviewCommit.Model != "base-model" || reviewCommit.Thinking != "high" || reviewCommit.AutoServiceTier != "priority" || reviewCommit.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+		t.Fatalf("Review Commit canonical model inheritance mismatch: %+v", reviewCommit)
 	}
 	for _, allowed := range []string{"read", "git_status", "git_diff", "git_add", "git_commit"} {
 		if cfg := reviewCommit.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
@@ -202,6 +202,35 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	if len(reviewCommit.ToolContract.Tools) != 5 {
 		t.Fatalf("Review Commit tool contract is not least privilege: %+v", reviewCommit.ToolContract)
+	}
+
+	router, err := registry.ReconcileSnapshot(RouterAgentID, pebblestore.AgentProfile{Name: RouterAgentID, Provider: "codex", Model: "router-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if router.Name != RouterAgentID || router.Provider != "codex" || router.Model != "router-model" || router.Thinking != "high" || router.AutoServiceTier != "priority" || router.Prompt != RouterAgentPrompt() || router.RuntimeMode != pebblestore.AgentRuntimeModeRead || router.ToolContract == nil || router.ToolContract.Preset != "custom" || len(router.ToolContract.Tools) != 0 {
+		t.Fatalf("Router immutable tool-free contract was not restored: %+v", router)
+	}
+
+	workspaceDefinition, err := registry.ReconcileSnapshot(WorkspaceDefinitionAgentID, pebblestore.AgentProfile{Name: WorkspaceDefinitionAgentID, Provider: "codex", Model: "router-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspaceDefinition.Name != WorkspaceDefinitionAgentID || workspaceDefinition.Provider != "codex" || workspaceDefinition.Model != "router-model" || workspaceDefinition.Thinking != "high" || workspaceDefinition.AutoServiceTier != "priority" {
+		t.Fatalf("Workspace Definition model snapshot mismatch: %+v", workspaceDefinition)
+	}
+	if workspaceDefinition.Prompt != WorkspaceDefinitionAgentPrompt() || workspaceDefinition.RuntimeMode != pebblestore.AgentRuntimeModeRead || workspaceDefinition.ToolContract == nil || workspaceDefinition.ToolContract.Preset != "custom" || len(workspaceDefinition.ToolContract.Tools) != 3 {
+		t.Fatalf("Workspace Definition immutable contract was not restored: %+v", workspaceDefinition)
+	}
+	for _, allowed := range []string{"read", "search", "list"} {
+		if cfg := workspaceDefinition.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Workspace Definition tool %q unavailable: %+v", allowed, workspaceDefinition.ToolContract)
+		}
+	}
+	for _, instruction := range []string{"First decide whether", "answer directly in one shot without calling tools", "If and only if they are insufficient"} {
+		if !strings.Contains(workspaceDefinition.Prompt, instruction) {
+			t.Fatalf("Workspace Definition prompt missing decision instruction %q: %s", instruction, workspaceDefinition.Prompt)
+		}
 	}
 
 	compact, err := registry.Materialize(CompactAgentID, pebblestore.AgentProfile{Provider: "codex", Model: "utility-model", Thinking: "medium"})
@@ -263,7 +292,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
 	}
-	if swarm.Provider != "" || swarm.Model != "" || swarm.ModelMode != "" || swarm.PlanProvider != "" || swarm.PlanModel != "" || swarm.AutoProvider != "" || swarm.AutoModel != "" {
+	if swarm.Provider != "" || swarm.Model != "" || swarm.Thinking != "" || swarm.AutoServiceTier != "" {
 		t.Fatalf("Swarm system identity retained model-bearing profile fields: %+v", swarm)
 	}
 
@@ -300,7 +329,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)

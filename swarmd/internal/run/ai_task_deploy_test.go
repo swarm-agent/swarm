@@ -3,7 +3,6 @@ package run
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,7 +16,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/todo"
-	"swarm/packages/swarmd/internal/uisettings"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -132,6 +130,8 @@ type principalCapturingAITaskRunner struct {
 	id                   string
 	principal            identity.Principal
 	request              provideriface.Request
+	requests             []provideriface.Request
+	responses            []string
 	calls                int
 	convertedServiceTier string
 }
@@ -149,9 +149,14 @@ func (r *principalCapturingAITaskRunner) CreateResponse(ctx context.Context, req
 		return provideriface.Response{}, identity.ErrPrincipalRequired
 	}
 	r.principal, r.request = principal, req
+	r.requests = append(r.requests, req)
 	r.calls++
 	r.convertedServiceTier = codex.ToRequest(req).ServiceTier
-	return provideriface.Response{Text: `{"title":"Fix trusted task","worktree_name":"fix-trusted-task"}`}, nil
+	response := `{"title":"Fix trusted task","worktree_name":"fix-trusted-task"}`
+	if len(r.responses) >= r.calls {
+		response = r.responses[r.calls-1]
+	}
+	return provideriface.Response{Text: response}, nil
 }
 
 func (r *principalCapturingAITaskRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
@@ -166,12 +171,8 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	svc.providers = registry.New()
 	svc.providers.RegisterRunner(runner)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account", SessionID: "origin-session", AccountScopeSource: identity.AccountScopeSourceSession}
-	settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
-	if err != nil {
-		t.Fatalf("read Compact settings: %v", err)
-	}
-	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "fast"}
-	if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), principal)
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCompact, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium", ServiceTier: "fast"}); err != nil {
 		t.Fatalf("set Compact settings: %v", err)
 	}
 	preparation, err := svc.PrepareAITaskMetadata(context.Background(), "task-1", "preserve this exact request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
@@ -210,7 +211,7 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	if runner.request.BoundaryReason != "ai_task_metadata" || !runner.request.ForceFreshProviderContext || runner.request.NativeContinuationAllowed {
 		t.Fatalf("Compact request boundary = %#v", runner.request)
 	}
-	if !strings.Contains(runner.request.Instructions, "only title and worktree_name") {
+	if !strings.Contains(runner.request.Instructions, "only title and worktree_name") || !strings.Contains(runner.request.Instructions, "preferably 3-5 words") || !strings.Contains(runner.request.Instructions, "not a hard word-count restriction") {
 		t.Fatalf("Compact metadata instructions = %q", runner.request.Instructions)
 	}
 	if len(runner.request.Input) != 1 {
@@ -218,6 +219,34 @@ func TestPrepareAITaskMetadataPropagatesTrustedPrincipalToCompact(t *testing.T) 
 	}
 	if _, err := svc.PrepareAITaskMetadata(context.Background(), "task-2", "request", pebblestore.ModelPreference{Provider: "codex"}, identity.Principal{}); !errors.Is(err, identity.ErrPrincipalRequired) {
 		t.Fatalf("untrusted preparation error = %v, want %v", err, identity.ErrPrincipalRequired)
+	}
+}
+
+func TestPrepareAITaskMetadataRetryNamesTakenWorktreeInSecondPrompt(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	runner := &principalCapturingAITaskRunner{responses: []string{
+		`{"title":"First task title","worktree_name":"taken-worktree"}`,
+		`{"title":"Alternate task title","worktree_name":"alternate-worktree"}`,
+	}}
+	svc.providers = registry.New()
+	svc.providers.RegisterRunner(runner)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
+
+	first, err := svc.PrepareAITaskMetadata(context.Background(), "task-retry", "request", pebblestore.ModelPreference{Provider: "codex"}, principal)
+	if err != nil {
+		t.Fatalf("prepare first metadata: %v", err)
+	}
+	second, err := svc.PrepareAITaskMetadataRetry(context.Background(), "task-retry", "request", pebblestore.ModelPreference{Provider: "codex"}, principal, first.WorktreeName)
+	if err != nil {
+		t.Fatalf("prepare retry metadata: %v", err)
+	}
+	if runner.calls != 2 || second.WorktreeName != "alternate-worktree" {
+		t.Fatalf("retry preparation=%#v calls=%d", second, runner.calls)
+	}
+	if len(runner.requests) != 2 || strings.Contains(runner.requests[0].Instructions, "already taken") || !strings.Contains(runner.requests[1].Instructions, `"taken-worktree" is already taken`) || !strings.Contains(runner.requests[1].Instructions, `do not return "taken-worktree" again`) {
+		t.Fatalf("retry instructions=%#v", runner.requests)
 	}
 }
 
@@ -241,13 +270,9 @@ func TestPrepareAITaskMetadataAttachesSelectedCatalogForEveryRunnableModelProvid
 			runner := &principalCapturingAITaskRunner{id: providerID}
 			svc.providers = registry.New()
 			svc.providers.RegisterRunner(runner)
-			principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account-" + providerID}
-			settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
-			if err != nil {
-				t.Fatalf("read Compact settings: %v", err)
-			}
-			settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: providerID, Model: utility.Model, Thinking: thinking}
-			if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+			principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
+			settingsCtx := identity.ContextWithPrincipal(context.Background(), principal)
+			if _, err = svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCompact, pebblestore.AgentModelAssignment{Provider: providerID, Model: utility.Model, Thinking: thinking}); err != nil {
 				t.Fatalf("set Compact settings: %v", err)
 			}
 
@@ -273,16 +298,12 @@ func TestPrepareAITaskMetadataRejectsMissingSelectedModelCatalogBeforeDispatch(t
 	svc.providers = registry.New()
 	svc.providers.RegisterRunner(runner)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"}
-	settings, err := svc.uiSettings.GetForAccount(principal.AccountScopeID)
-	if err != nil {
-		t.Fatalf("read Compact settings: %v", err)
-	}
-	settings.Agents.Compact = uisettings.CompactAgentSettings{Provider: "codex", Model: "missing-compact-model", Thinking: "medium", ServiceTier: "fast"}
-	if _, err = svc.uiSettings.SetForAccount(principal.AccountScopeID, settings); err != nil {
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), principal)
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentCompact, pebblestore.AgentModelAssignment{Provider: "codex", Model: "missing-compact-model", Thinking: "medium", ServiceTier: "fast"}); err != nil {
 		t.Fatalf("set Compact settings: %v", err)
 	}
 
-	_, err = svc.PrepareAITaskMetadata(context.Background(), "task-missing-catalog", "request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
+	_, err := svc.PrepareAITaskMetadata(context.Background(), "task-missing-catalog", "request", pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"}, principal)
 	if err == nil || !strings.Contains(err.Error(), `Compact model catalog record for provider "codex" model "missing-compact-model" is unavailable`) {
 		t.Fatalf("missing catalog error = %v", err)
 	}
@@ -302,31 +323,11 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	if _, _, _, err := svc.agents.RestoreDefaultsForAccount(accountScopeID); err != nil {
 		t.Fatalf("restore account agents: %v", err)
 	}
-	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
-		Name: "swarm", Mode: agentruntime.ModePrimary, ModelMode: "split",
-		PlanProvider: "codex", PlanModel: "configured-plan-model", PlanThinking: "high",
-		AutoProvider: "openai", AutoModel: "configured-auto-model", AutoThinking: "medium",
-		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, Enabled: pebblestore.BoolPtr(true),
-	}); err != nil {
-		t.Fatalf("configure account Swarm: %v", err)
-	}
-	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
-		Name: "other-primary", Mode: agentruntime.ModePrimary, ModelMode: "split",
-		PlanProvider: "codex", PlanModel: "other-plan-model", PlanThinking: "low",
-		AutoProvider: "openai", AutoModel: "other-auto-model", AutoThinking: "high",
-		Prompt: "Other primary.", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
-		ToolContract: &pebblestore.AgentToolContract{Preset: "read_only"}, Enabled: pebblestore.BoolPtr(true),
-	}); err != nil {
-		t.Fatalf("configure alternate account primary: %v", err)
-	}
-	if _, _, _, err := svc.agents.ActivatePrimaryForAccount(accountScopeID, "other-primary"); err != nil {
-		t.Fatalf("activate alternate account primary: %v", err)
-	}
 	state, err := svc.agents.ListStateForAccount(accountScopeID, 20)
 	if err != nil {
 		t.Fatalf("list account agents: %v", err)
 	}
-	if state.ActivePrimary != "other-primary" {
+	if state.ActivePrimary != agentruntime.SwarmAgentID {
 		t.Fatalf("active account primary = %q, profiles=%#v", state.ActivePrimary, state.Profiles)
 	}
 	resolvedSwarm, err := svc.agents.ResolveSystemAgent("swarm", pebblestore.AgentProfile{})
@@ -370,7 +371,8 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("open todo event log: %v", err)
 	}
 	todoSvc := todo.NewService(pebblestore.NewWorkspaceTodoStore(todoStore), todoEvents, nil, svc.sessions)
-	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, Request: "Fix the queued task", Mode: sessionruntime.ModeAuto, IdempotencyKey: "request-1"})
+	queuedProfile := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, Action: pebblestore.ModelProfileSelection{Provider: "openai", Model: "other-auto-model", Thinking: "high"}, Plan: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "other-plan-model", Thinking: "high"}, AppliedAt: 1}
+	queued, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, ModelProfile: queuedProfile, Request: "Fix the queued task", Mode: sessionruntime.ModeAuto, IdempotencyKey: "request-1"})
 	if err != nil {
 		t.Fatalf("create queued AI task: %v", err)
 	}
@@ -433,10 +435,10 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("managed worktree session = %#v", managed)
 	}
 	if managed.Mode != sessionruntime.ModeAuto || managed.Preference.Provider != "openai" || managed.Preference.Model != "other-auto-model" || managed.Preference.Thinking != "high" {
-		t.Fatalf("active split-primary auto session = %#v", managed)
+		t.Fatalf("active flat-favorite auto session = %#v", managed)
 	}
-	if len(canonicalProfiles) == 0 || canonicalProfiles[0].Name != "other-primary" || canonicalProfiles[0].Mode != agentruntime.ModePrimary || canonicalProfiles[0].RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || canonicalProfiles[0].ToolContract == nil {
-		t.Fatalf("AI task active split execution profile = %#v", canonicalProfiles)
+	if len(canonicalProfiles) == 0 || canonicalProfiles[0].Name != agentruntime.SwarmAgentID || canonicalProfiles[0].Mode != agentruntime.ModePrimary || canonicalProfiles[0].RuntimeMode != pebblestore.AgentRuntimeModePlanAuto {
+		t.Fatalf("AI task compiled Swarm execution profile = %#v", canonicalProfiles)
 	}
 	if worktrees.requestedBase != "release" || worktrees.requestedBranch != "feature/fix-queued-task" {
 		t.Fatalf("worktree allocation used base=%q branch=%q", worktrees.requestedBase, worktrees.requestedBranch)
@@ -460,9 +462,15 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	}
 
 	originModelProfile := &pebblestore.SessionModelProfileSnapshot{
-		Source: pebblestore.SessionModelProfileSourceSaved, SavedProfileID: "profile-standard", Name: "standard", ModelMode: pebblestore.ModelProfileModeSplit, AppliedAt: 77,
-		Plan: &pebblestore.ModelProfileSelection{Provider: "codex", Model: "saved-plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "full"},
-		Auto: &pebblestore.ModelProfileSelection{Provider: "openai", Model: "saved-auto-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"},
+		Source:             pebblestore.SessionModelProfileSourceSaved,
+		UseAccountDefault:  false,
+		ActionFavoriteID:   "favorite-action",
+		ActionFavoriteName: "Action Favorite",
+		Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "saved-auto-model", Thinking: "medium", ServiceTier: "flex", ContextMode: "compact"},
+		PlanFavoriteID:     "favorite-plan",
+		PlanFavoriteName:   "Plan Favorite",
+		Plan:               &pebblestore.ModelProfileSelection{Provider: "codex", Model: "saved-plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "full"},
+		AppliedAt:          77,
 	}
 	linkedOriginTask, _, _, err := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, OriginSessionID: parent.ID, ModelProfile: originModelProfile, Request: "Fix a linked task", Mode: sessionruntime.ModePlan, IdempotencyKey: "request-2"})
 	if err != nil {
@@ -484,8 +492,8 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 	if originLinkedSession.Preference.Provider != "codex" || originLinkedSession.Preference.Model != "saved-plan-model" || originLinkedSession.Preference.Thinking != "xhigh" || originLinkedSession.Preference.ServiceTier != "fast" || originLinkedSession.Preference.ContextMode != "full" {
 		t.Fatalf("saved model-profile plan session = %#v", originLinkedSession)
 	}
-	if originLinkedSession.ModelProfile == nil || originLinkedSession.ModelProfile.SavedProfileID != "profile-standard" || originLinkedSession.ModelProfile.Auto == nil || originLinkedSession.ModelProfile.Auto.Model != "saved-auto-model" {
-		t.Fatalf("saved model profile was not persisted on child: %#v", originLinkedSession.ModelProfile)
+	if originLinkedSession.ModelProfile == nil || originLinkedSession.ModelProfile.Plan == nil || originLinkedSession.ModelProfile.ActionFavoriteID != "favorite-action" || originLinkedSession.ModelProfile.Action.Model != "saved-auto-model" || originLinkedSession.ModelProfile.Plan.Model != "saved-plan-model" {
+		t.Fatalf("saved model profile was not persisted on child: child=%#v origin=%#v", originLinkedSession.ModelProfile, originModelProfile)
 	}
 	transition, transitionErr := modelpolicy.ResolveModeTransition(originLinkedSession, pebblestore.AgentProfile{Name: "other-primary"}, sessionruntime.ModeAuto, func(preference pebblestore.ModelPreference) (modelpolicy.ResolvedPreference, error) {
 		return modelpolicy.ResolvedPreference{Preference: preference, ContextWindow: 180000, MaxOutputTokens: 12000}, nil
@@ -500,36 +508,15 @@ func TestExecutePreparedAITaskWithoutOriginCreatesManagedWorktreeSessionAndDurab
 		t.Fatalf("optional origin linkage was not preserved: parent=%q metadata=%#v", enqueuedParentID, originLinkedSession.Metadata)
 	}
 
-	if _, _, _, err := svc.agents.UpsertForAccount(accountScopeID, agentruntime.UpsertInput{
-		Name: "swarm", Mode: agentruntime.ModePrimary, ModelMode: "single",
-		Provider: "anthropic", Model: "configured-single-model", Thinking: "low",
-		RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, Enabled: pebblestore.BoolPtr(true),
-	}); err != nil {
-		t.Fatalf("configure single-model Swarm: %v", err)
+	planDisabled := &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSaved, Action: pebblestore.ModelProfileSelection{Provider: "anthropic", Model: "action-only", Thinking: "low"}, AppliedAt: 88}
+	disabledTask, _, _, createErr := todoSvc.CreateAITask(todo.CreateAITaskInput{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath, ModelProfile: planDisabled, Request: "reject disabled Plan", Mode: sessionruntime.ModePlan, IdempotencyKey: "plan-disabled"})
+	if createErr != nil {
+		t.Fatalf("create Plan-disabled task: %v", createErr)
 	}
-	if _, _, _, err := svc.agents.ActivatePrimaryForAccount(accountScopeID, "swarm"); err != nil {
-		t.Fatalf("activate single-model Swarm: %v", err)
+	if bindErr := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, disabledTask.ID, "queued", "preparing", "", false, "", ""); bindErr != nil {
+		t.Fatalf("claim Plan-disabled task: %v", bindErr)
 	}
-	for index, mode := range []string{sessionruntime.ModePlan, sessionruntime.ModeAuto} {
-		task, _, _, createErr := todoSvc.CreateAITask(todo.CreateAITaskInput{
-			AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, WorkspaceID: "workspace-test", WorkspacePath: workspacePath,
-			Request: "Use single model in " + mode, Mode: mode, IdempotencyKey: fmt.Sprintf("single-%d", index),
-		})
-		if createErr != nil {
-			t.Fatalf("create single-model %s task: %v", mode, createErr)
-		}
-		if bindErr := todoSvc.BindAITask(parent.AccountScopeID, workspacePath, task.ID, "queued", "preparing", "", false, "", ""); bindErr != nil {
-			t.Fatalf("claim single-model %s task: %v", mode, bindErr)
-		}
-		if _, executeErr := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, task.ID, task.AIRequest, task.AIMode, task.AIModelProfile, AITaskPreparation{Title: "Single " + mode, WorktreeName: "single-" + mode}, svc.sessions.ApplySessionMutation); executeErr != nil {
-			t.Fatalf("execute single-model %s task: %v", mode, executeErr)
-		}
-		deployed, exists, getErr := svc.sessions.GetSession(enqueuedSessionID)
-		if getErr != nil || !exists {
-			t.Fatalf("load single-model %s session: exists=%t err=%v", mode, exists, getErr)
-		}
-		if deployed.Mode != mode || deployed.Preference.Provider != "anthropic" || deployed.Preference.Model != "configured-single-model" || deployed.Preference.Thinking != "low" {
-			t.Fatalf("single-model %s session = %#v", mode, deployed)
-		}
+	if _, executeErr := svc.ExecutePreparedAITask(context.Background(), "", parent.UserID, parent.AccountScopeID, workspacePath, disabledTask.ID, disabledTask.AIRequest, disabledTask.AIMode, disabledTask.AIModelProfile, AITaskPreparation{Title: "Disabled Plan", WorktreeName: "disabled-plan"}, svc.sessions.ApplySessionMutation); executeErr == nil || !strings.Contains(executeErr.Error(), "Plan mode disabled") {
+		t.Fatalf("Plan-disabled execution error = %v", executeErr)
 	}
 }

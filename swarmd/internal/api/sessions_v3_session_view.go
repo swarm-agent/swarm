@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -79,6 +80,16 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 	}
 
 	storedPreference := normalizeSessionsV3ModelPreference(session.Preference)
+	if session.ModelProfile != nil {
+		profilePreference, ok := sessionsV3ProfilePreference(session)
+		if !ok {
+			if strings.EqualFold(strings.TrimSpace(session.Mode), sessionruntime.ModePlan) && session.ModelProfile.Plan == nil {
+				return sessionsV3SessionView{}, errors.New("session model profile has Plan mode disabled")
+			}
+			return sessionsV3SessionView{}, errors.New("session model profile current mode selection has no provider/model")
+		}
+		storedPreference = normalizeSessionsV3ModelPreference(profilePreference)
+	}
 	effectivePreference := storedPreference
 	contextWindow := 0
 	maxOutputTokens := 0
@@ -126,7 +137,12 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 			activePlan = &plan
 		}
 	}
+	identity, err := sessionsV3SessionIdentityFromSnapshot(session)
+	if err != nil {
+		return sessionsV3SessionView{}, err
+	}
 	return sessionsV3SessionView{
+		Identity: &identity,
 		AgenticSettings: sessionsV3AgenticSettings{
 			Mode:                strings.TrimSpace(session.Mode),
 			AgentName:           sessionsV3MetadataString(session.Metadata, "agent_name"),

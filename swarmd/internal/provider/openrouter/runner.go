@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -92,7 +93,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	if err != nil {
 		return provideriface.Response{}, err
 	}
-	toolState := newOpenRouterToolCallConstructionState()
+	toolState := newOpenRouterToolCallConstructionState("openrouter", modelID)
 	reasoningByKey := make(map[string]string, 4)
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
 		for _, choice := range chunk.Choices {
@@ -360,21 +361,51 @@ func mapToolChoice(choice string) any {
 	}
 }
 
-type openRouterToolCallConstructionState struct {
-	seenStarted   map[int]bool
-	seenCompleted map[int]bool
-	arguments     map[int]string
-	ids           map[int]string
-	names         map[int]string
+type openRouterToolCallKey struct {
+	choiceIndex int
+	toolIndex   int
 }
 
-func newOpenRouterToolCallConstructionState() *openRouterToolCallConstructionState {
+type openRouterToolCallConstruction struct {
+	id               string
+	name             string
+	arguments        string
+	normalizedIndex  int
+	started          bool
+	completed        bool
+	startedAt        int64
+	lastRecorded     int64
+	pendingArguments []openRouterPendingToolArguments
+	metadata         map[string]any
+}
+
+type openRouterPendingToolArguments struct {
+	delta    string
+	metadata map[string]any
+}
+
+type openRouterToolCallConstructionState struct {
+	providerID string
+	model      string
+	calls      map[openRouterToolCallKey]*openRouterToolCallConstruction
+	order      []openRouterToolCallKey
+	now        func() int64
+}
+
+func newOpenRouterToolCallConstructionState(context ...string) *openRouterToolCallConstructionState {
+	providerID := "openrouter"
+	model := ""
+	if len(context) > 0 && strings.TrimSpace(context[0]) != "" {
+		providerID = strings.TrimSpace(context[0])
+	}
+	if len(context) > 1 {
+		model = strings.TrimSpace(context[1])
+	}
 	return &openRouterToolCallConstructionState{
-		seenStarted:   make(map[int]bool),
-		seenCompleted: make(map[int]bool),
-		arguments:     make(map[int]string),
-		ids:           make(map[int]string),
-		names:         make(map[int]string),
+		providerID: providerID,
+		model:      model,
+		calls:      make(map[openRouterToolCallKey]*openRouterToolCallConstruction),
+		now:        func() int64 { return time.Now().UnixMilli() },
 	}
 }
 
@@ -382,65 +413,164 @@ func emitOpenRouterToolCallConstructionEvents(state *openRouterToolCallConstruct
 	if state == nil || onEvent == nil || len(chunk.Choices) == 0 {
 		return
 	}
+	if model := strings.TrimSpace(chunk.Model); model != "" {
+		state.model = model
+	}
 	for _, choice := range chunk.Choices {
 		if choice.Delta != nil {
 			for _, delta := range choice.Delta.ToolCalls {
-				index := delta.Index
+				key := openRouterToolCallKey{choiceIndex: choice.Index, toolIndex: delta.Index}
+				call := state.calls[key]
+				if call == nil {
+					call = &openRouterToolCallConstruction{normalizedIndex: state.nextNormalizedIndex(key)}
+					state.calls[key] = call
+					state.order = append(state.order, key)
+				}
 				if id := strings.TrimSpace(delta.ID); id != "" {
-					state.ids[index] = id
+					call.id = mergeOpenRouterToolCallField(call.id, id)
 				}
 				if name := strings.TrimSpace(openRouterToolCallDeltaName(delta)); name != "" {
-					state.names[index] = name
+					call.name = mergeOpenRouterToolCallField(call.name, name)
 				}
-				if !state.seenStarted[index] {
-					state.seenStarted[index] = true
-					onEvent(provideriface.StreamEvent{
-						Type:          provideriface.StreamEventToolCallStarted,
-						ToolCallID:    state.ids[index],
-						ToolCallIndex: openRouterIntPointer(index),
-						ToolName:      state.names[index],
-						Metadata:      openRouterToolCallDeltaMetadata(choice.Index, delta, "openrouter.chat.completions.chunk.delta"),
-					})
+				call.metadata = openRouterToolCallDeltaMetadata(choice.Index, delta, "openrouter.chat.completions.chunk.delta")
+				argumentDelta := ""
+				if delta.Function != nil {
+					argumentDelta = delta.Function.Arguments
 				}
-				if delta.Function != nil && delta.Function.Arguments != "" {
-					state.arguments[index] += delta.Function.Arguments
-					onEvent(provideriface.StreamEvent{
-						Type:           provideriface.StreamEventToolCallArgumentsDelta,
-						Delta:          delta.Function.Arguments,
-						ToolCallID:     state.ids[index],
-						ToolCallIndex:  openRouterIntPointer(index),
-						ToolName:       state.names[index],
-						ArgumentsDelta: delta.Function.Arguments,
-						Metadata:       openRouterToolCallDeltaMetadata(choice.Index, delta, "openrouter.chat.completions.chunk.delta"),
-					})
+				if argumentDelta != "" {
+					call.arguments += argumentDelta
+				}
+				if !call.started && call.id == "" && call.name == "" {
+					if argumentDelta != "" {
+						call.pendingArguments = append(call.pendingArguments, openRouterPendingToolArguments{delta: argumentDelta, metadata: cloneMap(call.metadata)})
+					}
+					continue
+				}
+				flushedPending := false
+				if !call.started {
+					call.started = true
+					onEvent(state.event(key, call, provideriface.StreamEventToolCallStarted, "started", call.metadata))
+					flushedPending = len(call.pendingArguments) > 0
+					for _, pending := range call.pendingArguments {
+						event := state.event(key, call, provideriface.StreamEventToolCallArgumentsDelta, "building", pending.metadata)
+						event.Delta = pending.delta
+						event.ArgumentsDelta = pending.delta
+						onEvent(event)
+					}
+					call.pendingArguments = nil
+				}
+				if argumentDelta != "" && !flushedPending {
+					event := state.event(key, call, provideriface.StreamEventToolCallArgumentsDelta, "building", call.metadata)
+					event.Delta = argumentDelta
+					event.ArgumentsDelta = argumentDelta
+					onEvent(event)
 				}
 			}
 		}
 		if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "tool_calls") {
-			emitCompletedOpenRouterToolCallConstructionEvents(state, choice.Index, onEvent)
+			emitCompletedOpenRouterToolCallConstructionEvents(state, choice.Index, choice.FinishReason, onEvent)
 		}
 	}
 }
 
-func emitCompletedOpenRouterToolCallConstructionEvents(state *openRouterToolCallConstructionState, choiceIndex int, onEvent func(provideriface.StreamEvent)) {
-	for index := range state.seenStarted {
-		if state.seenCompleted[index] {
+func emitCompletedOpenRouterToolCallConstructionEvents(state *openRouterToolCallConstructionState, choiceIndex int, finishReason string, onEvent func(provideriface.StreamEvent)) {
+	if state == nil || onEvent == nil {
+		return
+	}
+	for _, key := range state.order {
+		if key.choiceIndex != choiceIndex {
 			continue
 		}
-		state.seenCompleted[index] = true
-		onEvent(provideriface.StreamEvent{
-			Type:          provideriface.StreamEventToolCallCompleted,
-			ToolCallID:    state.ids[index],
-			ToolCallIndex: openRouterIntPointer(index),
-			ToolName:      state.names[index],
-			Arguments:     strings.TrimSpace(state.arguments[index]),
-			Metadata: map[string]any{
-				"provider":     "openrouter",
-				"source":       "openrouter.chat.completions.chunk.finish",
-				"choice_index": choiceIndex,
-			},
-		})
+		call := state.calls[key]
+		if call == nil || call.completed {
+			continue
+		}
+		if !call.started && (call.id != "" || call.name != "") {
+			call.started = true
+			onEvent(state.event(key, call, provideriface.StreamEventToolCallStarted, "started", call.metadata))
+			for _, pending := range call.pendingArguments {
+				event := state.event(key, call, provideriface.StreamEventToolCallArgumentsDelta, "building", pending.metadata)
+				event.Delta = pending.delta
+				event.ArgumentsDelta = pending.delta
+				onEvent(event)
+			}
+			call.pendingArguments = nil
+		}
+		if !call.started {
+			continue
+		}
+		call.completed = true
+		metadata := cloneMap(call.metadata)
+		if metadata == nil {
+			metadata = make(map[string]any, 5)
+		}
+		metadata["provider"] = state.providerID
+		metadata["source"] = "openrouter.chat.completions.chunk.finish"
+		metadata["choice_index"] = choiceIndex
+		metadata["finish_reason"] = strings.TrimSpace(finishReason)
+		event := state.event(key, call, provideriface.StreamEventToolCallCompleted, "completed", metadata)
+		event.Arguments = strings.TrimSpace(call.arguments)
+		onEvent(event)
 	}
+}
+
+func (state *openRouterToolCallConstructionState) event(_ openRouterToolCallKey, call *openRouterToolCallConstruction, eventType provideriface.StreamEventType, status string, metadata map[string]any) provideriface.StreamEvent {
+	recordedAt := state.recordedAt(call)
+	startedAt := call.startedAt
+	if startedAt == 0 {
+		startedAt = recordedAt
+		call.startedAt = startedAt
+	}
+	return provideriface.StreamEvent{
+		Type:             eventType,
+		ToolCallID:       call.id,
+		ToolCallIndex:    openRouterIntPointer(call.normalizedIndex),
+		ToolName:         call.name,
+		ProviderID:       state.providerID,
+		Model:            state.model,
+		RecordedAtUnixMs: recordedAt,
+		StartedAtUnixMs:  startedAt,
+		Status:           status,
+		Metadata:         cloneMap(metadata),
+	}
+}
+
+func (state *openRouterToolCallConstructionState) nextNormalizedIndex(key openRouterToolCallKey) int {
+	candidate := key.toolIndex
+	for _, existingKey := range state.order {
+		existing := state.calls[existingKey]
+		if existing != nil && existing.normalizedIndex == candidate {
+			candidate++
+		}
+	}
+	return candidate
+}
+
+func (state *openRouterToolCallConstructionState) recordedAt(call *openRouterToolCallConstruction) int64 {
+	now := time.Now().UnixMilli()
+	if state != nil && state.now != nil {
+		now = state.now()
+	}
+	if now < call.lastRecorded {
+		now = call.lastRecorded
+	}
+	call.lastRecorded = now
+	return now
+}
+
+func mergeOpenRouterToolCallField(current, next string) string {
+	current = strings.TrimSpace(current)
+	next = strings.TrimSpace(next)
+	if next == "" || next == current || strings.HasSuffix(current, next) {
+		return current
+	}
+	if current == "" || strings.HasPrefix(next, current) {
+		return next
+	}
+	if strings.HasSuffix(current, "_") {
+		return current + next
+	}
+	return next
 }
 
 func openRouterToolCallDeltaName(delta chatCompletionToolCallDelta) string {
@@ -452,9 +582,10 @@ func openRouterToolCallDeltaName(delta chatCompletionToolCallDelta) string {
 
 func openRouterToolCallDeltaMetadata(choiceIndex int, delta chatCompletionToolCallDelta, source string) map[string]any {
 	metadata := map[string]any{
-		"provider":     "openrouter",
-		"source":       source,
-		"choice_index": choiceIndex,
+		"provider":          "openrouter",
+		"source":            source,
+		"choice_index":      choiceIndex,
+		"native_tool_index": delta.Index,
 	}
 	if typeName := strings.TrimSpace(delta.Type); typeName != "" {
 		metadata["tool_call_type"] = typeName
@@ -475,10 +606,19 @@ func openRouterIntPointer(value int) *int {
 }
 
 func parseChatCompletionResponse(resp chatCompletionResponse) provideriface.Response {
+	usage := parseUsage(resp.Usage)
+	if serviceTier := strings.TrimSpace(resp.ServiceTier); serviceTier != "" {
+		usage.ServiceTier = serviceTier
+		if usage.APIUsageRaw == nil {
+			usage.APIUsageRaw = map[string]any{}
+		}
+		usage.APIUsageRaw["service_tier"] = serviceTier
+		usage.APIUsageHistory = []map[string]any{cloneMap(usage.APIUsageRaw)}
+	}
 	out := provideriface.Response{
 		ID:    strings.TrimSpace(resp.ID),
 		Model: strings.TrimSpace(resp.Model),
-		Usage: parseUsage(resp.Usage),
+		Usage: usage,
 	}
 	if len(resp.Choices) == 0 {
 		return out

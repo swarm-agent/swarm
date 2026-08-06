@@ -44,6 +44,35 @@ func (p *HomePage) SetTheme(theme Theme) {
 	p.theme = theme
 }
 
+func (p *HomePage) SetHomeTipsVisible(visible bool) {
+	if p == nil {
+		return
+	}
+	p.showHomeTips = visible
+}
+
+func (p *HomePage) HomeTipsVisible() bool {
+	return p != nil && p.showHomeTips
+}
+
+func (p *HomePage) SelectNextHomeTip() {
+	if p == nil {
+		return
+	}
+	p.homeTipIndex = randomHomeTipIndex(p.homeTipIndex)
+}
+
+func (p *HomePage) CurrentHomeTip() string {
+	if p == nil || len(homeTips) == 0 {
+		return ""
+	}
+	index := p.homeTipIndex % len(homeTips)
+	if index < 0 {
+		index = 0
+	}
+	return homeTips[index]
+}
+
 func (p *HomePage) AcceptCommandPaletteEnter() bool {
 	return p.acceptCommandPaletteEnter()
 }
@@ -67,9 +96,7 @@ func (p *HomePage) SetModel(next model.HomeModel) {
 	p.sessionMode = normalizeHomeSessionMode(p.sessionMode)
 	p.applySessionModeModel()
 	if next.OnboardingRequired {
-		p.ShowOnboardingLocked("Complete required identity setup before using Swarm.")
-	} else if p.onboarding.Visible && !p.identityOnboardingComplete() {
-		p.onboarding = onboardingState{}
+		p.ShowOnboardingLocked("Complete required setup before using Swarm.")
 	}
 }
 
@@ -247,10 +274,11 @@ func currentHomeAgentModeCapability(page *HomePage) string {
 	return homeAgentModeCapability(page.model, page.sessionMode)
 }
 
+// CanCycleSessionMode reports whether the home composer can prime Plan intent.
+// Home has no durable session yet, so Router remains authoritative for the
+// eventual agent, model, workspace, and worktree selected at routed start.
 func (p *HomePage) CanCycleSessionMode() bool {
-	return p != nil && p.model.ActiveAgentExitPlanMode &&
-		strings.TrimSpace(p.model.PlanModelProvider) != "" && strings.TrimSpace(p.model.PlanModelName) != "" &&
-		strings.TrimSpace(p.model.AutoModelProvider) != "" && strings.TrimSpace(p.model.AutoModelName) != ""
+	return p != nil
 }
 
 func (p *HomePage) SetVoiceInputState(state VoiceInputState) {

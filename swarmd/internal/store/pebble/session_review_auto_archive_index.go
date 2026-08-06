@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
@@ -37,6 +38,15 @@ func normalizeSessionForReactivation(session SessionSnapshot) SessionSnapshot {
 type SessionReviewAutoArchiveDue struct {
 	SessionID string `json:"session_id"`
 	DueAt     int64  `json:"due_at"`
+}
+
+// SessionReviewAutoArchiveCandidate is a session whose active plan needs review
+// or whose durable archive deadline must be reconciled (for example, after the
+// setting is disabled). Candidate discovery walks only the active-plan and due
+// indexes rather than a capped page of unrelated sessions.
+type SessionReviewAutoArchiveCandidate struct {
+	Session     SessionSnapshot
+	NeedsReview bool
 }
 
 func KeySessionReviewAutoArchiveDue(dueAt int64, sessionID string) string {
@@ -89,6 +99,84 @@ func replaceSessionReviewAutoArchiveDueInBatch(batch *pebble.Batch, previous, ne
 		return err
 	}
 	return batch.Set([]byte(KeySessionReviewAutoArchiveDue(dueAt, next.ID)), payload, nil)
+}
+
+// ListSessionReviewAutoArchiveCandidates returns the complete indexed candidate
+// set for the requested account scope. An empty account scans all active-plan
+// pointers; account-scoped reconciliation uses the account index directly.
+func (s *SessionStore) ListSessionReviewAutoArchiveCandidates(accountScopeID string) ([]SessionReviewAutoArchiveCandidate, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	snapshot := s.store.db.NewSnapshot()
+	defer snapshot.Close()
+
+	candidates := map[string]SessionReviewAutoArchiveCandidate{}
+	activePrefix := SessionPlanActivePrefix()
+	if accountScopeID != "" {
+		activePrefix = SessionPlanActiveByAccountPrefix(accountScopeID)
+	}
+	if err := iteratePrefixFromReader(snapshot, activePrefix, sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
+		var active SessionPlanActive
+		if err := json.Unmarshal(value, &active); err != nil {
+			return fmt.Errorf("decode active plan for review auto-archive: %w", err)
+		}
+		sessionID := strings.TrimSpace(active.SessionID)
+		planID := strings.TrimSpace(active.PlanID)
+		if sessionID == "" || planID == "" {
+			return nil
+		}
+		attention, err := v3SessionAttentionFromReader(snapshot, sessionID)
+		if err != nil {
+			return err
+		}
+		if attention.State != "needs_review" {
+			return nil
+		}
+		session, ok, err := s.getSessionFromReader(snapshot, sessionID)
+		if err != nil || !ok {
+			return err
+		}
+		if accountScopeID != "" && strings.TrimSpace(session.AccountScopeID) != accountScopeID {
+			return nil
+		}
+		candidates[sessionID] = SessionReviewAutoArchiveCandidate{Session: session, NeedsReview: true}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := iteratePrefixFromReader(snapshot, keySessionReviewAutoArchiveDuePrefix, sessionRecentIndexScanLimit(), func(_ string, value []byte) error {
+		var due SessionReviewAutoArchiveDue
+		if err := json.Unmarshal(value, &due); err != nil {
+			return fmt.Errorf("decode review auto-archive due row: %w", err)
+		}
+		sessionID := strings.TrimSpace(due.SessionID)
+		if sessionID == "" {
+			return nil
+		}
+		session, ok, err := s.getSessionFromReader(snapshot, sessionID)
+		if err != nil || !ok {
+			return err
+		}
+		if accountScopeID != "" && strings.TrimSpace(session.AccountScopeID) != accountScopeID {
+			return nil
+		}
+		candidate := candidates[sessionID]
+		candidate.Session = session
+		candidates[sessionID] = candidate
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	result := make([]SessionReviewAutoArchiveCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		result = append(result, candidate)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Session.ID < result[j].Session.ID })
+	return result, nil
 }
 
 // ListDueSessionReviewAutoArchives reads at most limit time-ordered due rows.

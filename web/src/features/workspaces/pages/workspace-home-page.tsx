@@ -4,7 +4,6 @@ import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
-import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { WorkspaceStatus } from '../launcher/components/workspace-status'
 import { WorkspaceFolderTree } from '../launcher/components/workspace-folder-tree'
 import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory } from '../launcher/components/workspace-editor-modal'
@@ -571,6 +570,8 @@ export function WorkspaceHomePage() {
     browserLoading,
     browserError,
     refreshing,
+    personalizing,
+    personalizationMessage,
     draggingWorkspacePath,
     setDraggingWorkspacePath,
     swapWorkspacePositions,
@@ -582,6 +583,7 @@ export function WorkspaceHomePage() {
     createFolder,
     moveWorkspaceToIndex,
     refresh,
+    refreshWorkspaceDefinitions,
     browsePath,
   } = useWorkspaceLauncher()
 
@@ -695,6 +697,7 @@ export function WorkspaceHomePage() {
     setDraftName(workspace.workspaceName)
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setDeleteTargetPath(null)
   }
 
   const closeModal = () => {
@@ -702,6 +705,7 @@ export function WorkspaceHomePage() {
     setDraftName('')
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setDeleteTargetPath(null)
   }
 
   const addLinkedDirectories = (paths: string[]) => {
@@ -1133,8 +1137,17 @@ export function WorkspaceHomePage() {
         browserLoading={browserLoading}
         browserError={browserError}
         canRemoveLinkedDirectories={Boolean(modalState)}
-        error={modalError}
+        error={modalError || (personalizationMessage ? actionError : null)}
         saving={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
+        workspace={editingWorkspace}
+        personalizing={personalizing}
+        personalizationMessage={personalizationMessage}
+        onPersonalize={() => {
+          setModalError(null)
+          void refreshWorkspaceDefinitions().catch((err) => {
+            setModalError(err instanceof Error ? err.message : 'Failed to personalize workspaces')
+          })
+        }}
         onWorkspacePathChange={(value) => setModalState((current) => (current ? { ...current, workspacePath: value } : current))}
         onPickWorkspaceFolder={pickWorkspaceFolder}
         onNameChange={setDraftNameTouched}
@@ -1150,7 +1163,10 @@ export function WorkspaceHomePage() {
           void moveWorkspaceToIndex(path, index)
         }}
         onDeleteWorkspace={setDeleteTargetPath}
+        deleteConfirmationPath={deleteTargetWorkspace?.path ?? null}
         deletingWorkspacePath={savingPath}
+        onCancelDeleteWorkspace={() => setDeleteTargetPath(null)}
+        onConfirmDeleteWorkspace={handleConfirmDelete}
         onAddLinkedDirectory={addLinkedDirectory}
         onAddLinkedDirectories={addLinkedDirectories}
         onRemoveLinkedDirectory={removeLinkedDirectory}
@@ -1181,31 +1197,6 @@ export function WorkspaceHomePage() {
         onCreateFolder={createFolder}
       />
 
-      <Dialog className={deleteTargetWorkspace ? undefined : 'hidden'} aria-hidden={!deleteTargetWorkspace}>
-        <DialogBackdrop onClick={() => setDeleteTargetPath(null)} />
-        <DialogPanel className="max-w-xl gap-4">
-          <div className="grid gap-2">
-            <div className="flex items-center gap-2">
-              <Badge tone="warning">!</Badge>
-              <h2 className="text-lg font-semibold text-[var(--app-text)]">Remove workspace from Swarm?</h2>
-            </div>
-            <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-              This only removes Swarm’s saved workspace metadata. It does not delete the folder or any files on disk.
-            </p>
-          </div>
-          <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text)]">
-            {deleteTargetWorkspace ? deleteTargetWorkspace.path : ''}
-          </div>
-          <div className="flex justify-end gap-3">
-            <Button type="button" onClick={() => setDeleteTargetPath(null)}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={handleConfirmDelete} disabled={!deleteTargetWorkspace || savingPath === deleteTargetWorkspace.path}>
-              {deleteTargetWorkspace && savingPath === deleteTargetWorkspace.path ? 'Removing…' : 'Remove from Swarm'}
-            </Button>
-          </div>
-        </DialogPanel>
-      </Dialog>
     </>
   )
 }

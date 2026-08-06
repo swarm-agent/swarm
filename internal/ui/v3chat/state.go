@@ -36,6 +36,9 @@ type Session struct {
 	WorkspacePath string
 	WorkspaceName string
 	Mode          string
+	GitBranch     string
+	GitHasGit     bool
+	GitDirtyCount int
 	TargetSwarmID string
 	CreatedAt     int64
 	UpdatedAt     int64
@@ -80,6 +83,33 @@ type Message struct {
 type PendingMessage struct {
 	Message
 	ClientRequestID string
+}
+
+type RoutedDraftStatus string
+
+const (
+	RoutedDraftReady    RoutedDraftStatus = "ready"
+	RoutedDraftRouting  RoutedDraftStatus = "routing"
+	RoutedDraftResolved RoutedDraftStatus = "resolved"
+	RoutedDraftFailed   RoutedDraftStatus = "failed"
+)
+
+type RoutedDraft struct {
+	Prompt                   string
+	PlanModeRequested        bool
+	ManagedWorktreeRequested bool
+	ClientRequestID          string
+	AgentName                string
+	WorkspacePath            string
+	HostWorkspacePath        string
+	RuntimeWorkspacePath     string
+	WorkspaceBindingID       string
+	SwarmID                  string
+	TargetKind               string
+	TargetRelationship       string
+	Metadata                 map[string]any
+	Status                   RoutedDraftStatus
+	Error                    string
 }
 
 type PermissionTimelineItem struct {
@@ -288,6 +318,7 @@ type State struct {
 	Usage          UsageState
 	Plan           PlanState
 	Permissions    PermissionState
+	RoutedDraft    *RoutedDraft
 }
 
 type Action interface{ isV3ChatAction() }
@@ -313,6 +344,24 @@ func (DraftModeAction) isV3ChatAction() {}
 type PendingUserAction struct{ Pending PendingMessage }
 
 func (PendingUserAction) isV3ChatAction() {}
+
+type PrimeRoutedDraftAction struct{ Draft RoutedDraft }
+
+func (PrimeRoutedDraftAction) isV3ChatAction() {}
+
+type RoutedDraftRoutingAction struct{}
+
+func (RoutedDraftRoutingAction) isV3ChatAction() {}
+
+type RoutedDraftFailedAction struct{ Error string }
+
+func (RoutedDraftFailedAction) isV3ChatAction() {}
+
+type RoutedDraftResolvedAction struct {
+	Response client.RoutedSessionV3StartResponse
+}
+
+func (RoutedDraftResolvedAction) isV3ChatAction() {}
 
 type MessageResultAction struct{ Result client.SessionV3MessageResult }
 
@@ -347,6 +396,18 @@ type ModeAction struct {
 
 func (ModeAction) isV3ChatAction() {}
 
+// GitStatusAction applies an app-shell Git watcher snapshot to the V3 render
+// cache. It is intentionally local presentation state: durable session state
+// remains authoritative for hydration, while filesystem events keep the open
+// header current between hydrations.
+type GitStatusAction struct {
+	Branch     string
+	HasGit     bool
+	DirtyCount int
+}
+
+func (GitStatusAction) isV3ChatAction() {}
+
 type PermissionsAction struct {
 	Records []client.PermissionRecord
 }
@@ -371,6 +432,43 @@ func Reduce(current State, action Action) State {
 	case DraftModeAction:
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
 		applyDraftModeSelection(&next.Model, value.Selection)
+	case PrimeRoutedDraftAction:
+		draft := value.Draft
+		draft.Prompt = strings.TrimSpace(draft.Prompt)
+		draft.ClientRequestID = strings.TrimSpace(draft.ClientRequestID)
+		draft.AgentName = strings.TrimSpace(draft.AgentName)
+		draft.WorkspacePath = strings.TrimSpace(draft.WorkspacePath)
+		draft.HostWorkspacePath = strings.TrimSpace(draft.HostWorkspacePath)
+		draft.RuntimeWorkspacePath = strings.TrimSpace(draft.RuntimeWorkspacePath)
+		draft.WorkspaceBindingID = strings.TrimSpace(draft.WorkspaceBindingID)
+		draft.SwarmID = strings.TrimSpace(draft.SwarmID)
+		draft.TargetKind = strings.TrimSpace(draft.TargetKind)
+		draft.TargetRelationship = strings.TrimSpace(draft.TargetRelationship)
+		draft.Metadata = cloneAnyMap(draft.Metadata)
+		draft.Status = RoutedDraftReady
+		draft.Error = ""
+		next = NewState()
+		next.RoutedDraft = &draft
+	case RoutedDraftRoutingAction:
+		if next.RoutedDraft != nil && next.RoutedDraft.Status != RoutedDraftResolved {
+			next.RoutedDraft.Status = RoutedDraftRouting
+			next.RoutedDraft.Error = ""
+		}
+	case RoutedDraftFailedAction:
+		if next.RoutedDraft != nil && next.RoutedDraft.Status != RoutedDraftResolved {
+			next.RoutedDraft.Status = RoutedDraftFailed
+			next.RoutedDraft.Error = strings.TrimSpace(value.Error)
+		}
+	case RoutedDraftResolvedAction:
+		draft := next.RoutedDraft
+		next = reduceHydrated(NewState(), value.Response.Hydrated())
+		if draft != nil {
+			resolved := *draft
+			resolved.Metadata = cloneAnyMap(draft.Metadata)
+			resolved.Status = RoutedDraftResolved
+			resolved.Error = ""
+			next.RoutedDraft = &resolved
+		}
 	case PendingUserAction:
 		pending := value.Pending
 		if id := strings.TrimSpace(pending.ID); id != "" {
@@ -399,6 +497,10 @@ func Reduce(current State, action Action) State {
 	case ModeAction:
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Resolved.Mode))
 		applyAgentModelPolicy(&next.Model, value.Resolved.Preference, value.Resolved.ContextWindow, value.Resolved.MaxOutputTokens, value.Resolved.AgentModelPolicy)
+	case GitStatusAction:
+		next.Session.GitBranch = strings.TrimSpace(value.Branch)
+		next.Session.GitHasGit = value.HasGit
+		next.Session.GitDirtyCount = maxInt(0, value.DirtyCount)
 	case PermissionsAction:
 		next.Permissions = permissionsFromClient(value.Records)
 	case PermissionAction:
@@ -475,6 +577,9 @@ func reduceMessageResult(state State, result client.SessionV3MessageResult) Stat
 		if incoming.Mode != "" {
 			state.Session.Mode = incoming.Mode
 		}
+		state.Session.GitBranch = incoming.GitBranch
+		state.Session.GitHasGit = incoming.GitHasGit
+		state.Session.GitDirtyCount = incoming.GitDirtyCount
 		if incoming.CreatedAt != 0 {
 			state.Session.CreatedAt = incoming.CreatedAt
 		}
@@ -492,9 +597,9 @@ func reduceMessageResult(state State, result client.SessionV3MessageResult) Stat
 	if strings.TrimSpace(result.RunIntent.RunID) != "" {
 		state = applyRunIntent(state, result.RunIntent, result.RunIntent.EventSeq)
 	}
-	if result.RealtimeOutbox != nil && strings.TrimSpace(result.RealtimeOutbox.EndpointCursor) != "" {
-		state.EndpointCursor = strings.TrimSpace(result.RealtimeOutbox.EndpointCursor)
-	}
+	// RealtimeOutbox.EndpointCursor is an internal durable outbox cursor. Only
+	// signed cursors received from hydration or realtime frames may advance the
+	// transport resume cursor retained by this store.
 	state = reconcilePending(state)
 	state = reconcileDurableTools(state)
 	return reconcileDurableLive(state)
@@ -640,6 +745,17 @@ func applySessionModeUpdatedEvent(state State, payload map[string]json.RawMessag
 func applyLivePatch(state State, patch *client.V3RealtimeLivePatch) State {
 	if patch == nil || strings.TrimSpace(patch.StreamID) == "" {
 		return state
+	}
+	if strings.EqualFold(strings.TrimSpace(patch.StreamKind), "provider_tool_call") {
+		var payload map[string]json.RawMessage
+		if json.Unmarshal([]byte(patch.Text), &payload) != nil {
+			return state
+		}
+		eventType := rawString(payload, "type")
+		if eventType == "" {
+			return state
+		}
+		return applyToolEvent(state, clientSessionV3Event{EventType: eventType, Timestamp: patch.RecordedAt}, payload)
 	}
 	key := liveKey(patch.RunID, patch.StreamID)
 	current := state.Live[key]
@@ -809,6 +925,9 @@ func sessionFromClient(value client.SessionSummary, fallbackID string) Session {
 		WorkspacePath: strings.TrimSpace(value.WorkspacePath),
 		WorkspaceName: strings.TrimSpace(value.WorkspaceName),
 		Mode:          strings.TrimSpace(value.Mode),
+		GitBranch:     strings.TrimSpace(value.GitBranch),
+		GitHasGit:     value.GitHasGit,
+		GitDirtyCount: maxInt(0, value.GitDirtyCount),
 		TargetSwarmID: metadataString(value.Metadata, "swarm_v3_runtime_swarm_id"),
 		CreatedAt:     value.CreatedAt,
 		UpdatedAt:     value.UpdatedAt,
@@ -991,6 +1110,11 @@ func cloneState(value State) State {
 	if value.Plan.ActivePlan != nil {
 		plan := cloneSessionPlan(*value.Plan.ActivePlan)
 		out.Plan.ActivePlan = &plan
+	}
+	if value.RoutedDraft != nil {
+		draft := *value.RoutedDraft
+		draft.Metadata = cloneAnyMap(value.RoutedDraft.Metadata)
+		out.RoutedDraft = &draft
 	}
 	return out
 }

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -86,15 +88,15 @@ func TestHomeModelStateAndFooterUseEffectiveModeSelection(t *testing.T) {
 	}
 }
 
-func TestHomePlanToggleRequiresBothEffectiveSelections(t *testing.T) {
-	page := NewHomePage(model.HomeModel{ActiveAgentExitPlanMode: true})
-	if page.CanCycleSessionMode() {
-		t.Fatal("plan toggle must wait for both effective selections")
-	}
-	page.model.PlanModelProvider, page.model.PlanModelName = "codex", "plan-model"
-	page.model.AutoModelProvider, page.model.AutoModelName = "codex", "auto-model"
+func TestHomePlanTogglePrimesRouterWithoutEffectiveSelections(t *testing.T) {
+	page := NewHomePage(model.HomeModel{})
 	if !page.CanCycleSessionMode() {
-		t.Fatal("plan toggle should be available when both effective selections are known")
+		t.Fatal("home Plan toggle should prime routed intent before agent and model selections are known")
+	}
+
+	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
+	if page.SessionMode() != "plan" || page.SessionIntent().Mode != "plan" {
+		t.Fatalf("Shift+Tab did not prime Plan intent: mode=%q intent=%#v", page.SessionMode(), page.SessionIntent())
 	}
 }
 
@@ -109,7 +111,7 @@ func TestHomeAgentModeCapabilitySingleMode(t *testing.T) {
 	}
 
 	page := NewHomePage(m)
-	if page.CanCycleSessionMode() {
-		t.Fatal("single-mode agent must not cycle plan/auto mode")
+	if !page.CanCycleSessionMode() {
+		t.Fatal("home Plan toggle should remain a Router primer for single-mode home state")
 	}
 }

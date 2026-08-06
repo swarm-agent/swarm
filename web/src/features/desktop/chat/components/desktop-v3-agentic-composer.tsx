@@ -1,12 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
-import { AlertTriangle, ArrowUp, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Paperclip, Square, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
-import { buildDesktopSlashPaletteState, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
-import { submitDesktopComposer } from '../services/composer-submit'
+import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
+import { buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
+import { desktopComposerBackgroundRouterCommand, submitDesktopComposer } from '../services/composer-submit'
+import {
+  DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
+  DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES,
+  admitComposerFile,
+  appendComposerTextFile,
+  composerFileType,
+  desktopComposerStagedMediaInput,
+  isComposerTextFile,
+  type DesktopComposerStagedAttachment,
+} from '../services/composer-attachments'
 import {
   chatMentionCandidates,
   mentionPaletteActive,
@@ -14,17 +26,30 @@ import {
   normalizeMentionSubagents,
 } from '../services/subagent-mentions'
 import { AgentModelControl, type AgentModelControlConfirmInput } from './agent-model-control'
-import { ProfileAgentPicker } from './profile-agent-picker'
 import { ComposerPlanModelControl } from './composer-plan-model-control'
 import { DesktopMentionPanel } from './desktop-mention-panel'
 import { DesktopSlashCommandPanel } from './desktop-slash-command-panel'
 import { DesktopComposerActionMenu, type DesktopComposerTaskMode } from './desktop-composer-action-menu'
+import { DesktopWorkspaceActionPanel } from './desktop-workspace-action-panel'
+import { DesktopWorkspaceActionChooser } from './desktop-workspace-action-chooser'
+import type { WorkspaceAction } from '../../../workspaces/actions/types'
+import type { WorkspaceSkill } from '../services/workspace-skills'
+import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
+import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
 const TODO_DRAG_MIME = 'application/x-swarm-workspace-todo'
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+
+type DesktopComposerTextAttachment = {
+  id: number
+  name: string
+  fileType?: string
+  size: number
+  content: string
+}
 
 type SpeechRecognitionWindow = Window & typeof globalThis & {
   SpeechRecognition?: SpeechRecognitionConstructor
@@ -105,11 +130,6 @@ function speechRecognitionErrorMessage(error: string, message = ''): string {
   }
 }
 
-function clampContextUsagePercent(value?: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
-  return Math.max(0, Math.min(100, value))
-}
-
 export interface DesktopV3AgenticComposerProps {
   draft: string
   onDraftChange: (draft: string) => void
@@ -122,26 +142,30 @@ export interface DesktopV3AgenticComposerProps {
   submitLabel?: string
   error?: string | null
   onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>
+  onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState>
+  routedStagedAttachments?: readonly DesktopComposerStagedAttachment[]
+  onRoutedStageAttachments?: (files: File[], signal: AbortSignal) => Promise<void>
+  onRoutedRemoveStagedAttachment?: (stagingId: string) => void
+  routedComposerSnapshot?: DesktopV3RoutedComposerSnapshot | null
+  routedWorktreeRequested?: boolean
+  onRoutedWorktreeRequestedChange?: (requested: boolean) => void
+  modelStatusLabel?: string
   mediaCapability?: DesktopV3MediaCapability | null
   onUploadAttachment?: (file: File, signal: AbortSignal) => Promise<DesktopV3MediaReference>
   onStop?: () => void | Promise<void>
-  mode: DesktopSessionMode
+  mode?: DesktopSessionMode
   onModeSelect?: (mode: DesktopSessionMode) => void
   showModePicker?: boolean
+  resolvedSessionControls?: boolean
   executionLabel?: string
-  currentAgent: string
-  selectedPrimaryAgent: string
-  agents: AgentProfileRecord[]
+  currentAgent?: string
+  selectedPrimaryAgent?: string
+  agents?: AgentProfileRecord[]
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
-  onModelProfileSelect?: (profileId: string) => void | Promise<void>
-  onModelProfileSetDefault?: (profileId: string) => void | Promise<void>
-  onModelProfileDelete?: (profileId: string) => void | Promise<void>
-  modelProfilesLoading?: boolean
-  modelProfilesError?: string | null
   onUseAgentModelDefault?: () => void | Promise<void>
-  modelOptions: ModelOptionRecord[]
-  selectedModelKey: string
+  modelOptions?: ModelOptionRecord[]
+  selectedModelKey?: string
   selectedServiceTier?: string
   agentSettingsOpenSignal?: number
   agentSettingsInitialAgent?: string
@@ -155,22 +179,24 @@ export interface DesktopV3AgenticComposerProps {
   onOpenAuthSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   agentModelControlBusy?: boolean
-  thinking: string
+  thinking?: string
   thinkingTagsEnabled?: boolean
   onThinkingTagsToggle?: (enabled: boolean) => void
   thinkingTagsBusy?: boolean
-  showCompactButton?: boolean
-  onShowCompactButtonToggle?: (enabled: boolean) => void
-  showCompactButtonBusy?: boolean
   contextLabel?: string
   contextTooltip?: string
-  contextUsagePercent?: number
   onCompact?: (draft: string) => void | Promise<void>
   compactDisabled?: boolean
   subagents?: string[]
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   onMentionSelect?: (agent: string) => void
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
+  focusSignal?: number
+  workspacePath?: string
+  onOpenActionSettings?: () => void
+  /** Pre-route composer state; agent/model controls remain visible before the first send. */
+  routedNewSession?: boolean
+  slashCommandContext?: 'existing-session' | 'new-session'
 }
 
 export const DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME = "mx-auto grid w-full min-w-0 max-w-[70rem] gap-3 px-4 pb-[calc(0.75rem+var(--app-safe-area-bottom))] pt-4 sm:px-6 sm:pb-[calc(1.25rem+var(--app-safe-area-bottom))] sm:pt-5";
@@ -213,26 +239,30 @@ export function DesktopV3AgenticComposer({
   submitLabel: _submitLabel,
   error,
   onSubmit,
+  onRoutedSubmit,
+  routedStagedAttachments = [],
+  onRoutedStageAttachments,
+  onRoutedRemoveStagedAttachment,
+  routedComposerSnapshot = null,
+  routedWorktreeRequested = false,
+  onRoutedWorktreeRequestedChange,
+  modelStatusLabel = '',
   mediaCapability = null,
   onUploadAttachment,
   onStop,
-  mode,
+  mode = 'auto',
   onModeSelect,
   showModePicker = true,
+  resolvedSessionControls = false,
   executionLabel,
-  currentAgent,
-  selectedPrimaryAgent,
-  agents,
+  currentAgent = '',
+  selectedPrimaryAgent = '',
+  agents = [],
   modelProfiles = [],
   activeModelProfile,
-  onModelProfileSelect,
-  onModelProfileSetDefault,
-  onModelProfileDelete,
-  modelProfilesLoading = false,
-  modelProfilesError = null,
   onUseAgentModelDefault: _onUseAgentModelDefault,
-  modelOptions,
-  selectedModelKey,
+  modelOptions = [],
+  selectedModelKey = '',
   selectedServiceTier = '',
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = '',
@@ -241,32 +271,37 @@ export function DesktopV3AgenticComposer({
   modelLockNotice = '',
   modelControlDetail = '',
   onOpenAgentSettings,
-  onAgentSelect,
+  onAgentSelect: _onAgentSelect,
   needsAuth = false,
   onOpenAuthSettings,
   onConfirmAgentSettings,
   agentModelControlBusy = false,
-  thinking,
+  thinking = '',
   thinkingTagsEnabled,
   onThinkingTagsToggle,
   thinkingTagsBusy = false,
-  showCompactButton = false,
-  onShowCompactButtonToggle,
-  showCompactButtonBusy = false,
   contextLabel,
   contextTooltip,
-  contextUsagePercent,
   onCompact,
   compactDisabled = false,
   subagents = [],
   onSlashCommand,
   onMentionSelect,
   onDropTodo,
+  focusSignal = 0,
+  workspacePath = '',
+  onOpenActionSettings,
+  routedNewSession = false,
+  slashCommandContext = 'existing-session',
 }: DesktopV3AgenticComposerProps) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const composerRootRef = useRef<HTMLDivElement | null>(null)
+  const fileDragDepthRef = useRef(0)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const uploadAbortRef = useRef<AbortController | null>(null)
+  const textAttachmentSequenceRef = useRef(0)
+  const routedSubmissionRef = useRef(false)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -285,15 +320,20 @@ export function DesktopV3AgenticComposer({
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
-  const [agentSetupInitialAgent, setAgentSetupInitialAgent] = useState('')
-  const [agentSetupProfileId, setAgentSetupProfileId] = useState<string | null | undefined>(undefined)
-  const [createProfileSignal, setCreateProfileSignal] = useState(0)
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
+  const [textAttachments, setTextAttachments] = useState<DesktopComposerTextAttachment[]>([])
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
+  const [fileDropZone, setFileDropZone] = useState<HTMLElement | null>(null)
+  const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
+  const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
+  const [workspaceActionChooserOpen, setWorkspaceActionChooserOpen] = useState(false)
+  const [workspaceActionAutoLaunch, setWorkspaceActionAutoLaunch] = useState(false)
+  const [workspaceActionLaunchToken, setWorkspaceActionLaunchToken] = useState(0)
+  const [selectedWorkspaceSkill, setSelectedWorkspaceSkill] = useState<WorkspaceSkill | null>(null)
 
-  const effectiveMediaCapability = mediaCapability?.status === 'available' && mediaCapability.contract_token && mediaCapability.capabilities.length > 0
+  const effectiveMediaCapability = mediaCapability?.status === 'available' && mediaCapability.capabilities.length > 0
     ? mediaCapability
     : null
   const composerDisabled = disabled
@@ -305,23 +345,19 @@ export function DesktopV3AgenticComposer({
     [selectableAgents, subagents],
   )
   const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft), [draft])
-  const slashCommands = useMemo(() => slashPalette.matches.filter((command) => command.state === 'ready'), [slashPalette.matches])
+  const slashCommands = useMemo(
+    () => slashPalette.matches.filter((command) => command.state === 'ready'
+      && (slashCommandContext !== 'new-session' || command.action.kind !== 'new-session')),
+    [slashCommandContext, slashPalette.matches],
+  )
   const mentionPaletteIsActive = useMemo(() => mentionPaletteActive(draft, mentionSubagents), [draft, mentionSubagents])
   const mentionPaletteMatches = useMemo(() => chatMentionCandidates(mentionPaletteQuery(draft), mentionSubagents), [draft, mentionSubagents])
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
   const selectedThinking = thinking.trim() || 'off'
-  const effectiveAgentSetupOpenSignal = agentSettingsOpenSignal + agentSetupOpenSignal
-  const effectiveAgentSetupInitialAgent = agentSetupInitialAgent || agentSettingsInitialAgent
-  const openAgentSetup = useCallback((agent?: string) => {
-    setAgentSetupProfileId(undefined)
-    setAgentSetupInitialAgent(agent?.trim() || currentAgent)
+  void _onAgentSelect
+  const openAgentSetup = useCallback(() => {
     setAgentSetupOpenSignal((current) => current + 1)
-  }, [currentAgent])
-  const addModelProfile = useCallback(() => {
-    setAgentSetupProfileId('')
-    setAgentSetupInitialAgent(currentAgent)
-    setCreateProfileSignal((current) => current + 1)
-  }, [currentAgent])
+  }, [])
   const dictationComposer = dictationEnabled
     ? appendDictationText(appendDictationText(dictationBaseDraftRef.current, dictationFinalTranscriptRef.current), dictationInterimTranscriptRef.current)
     : draft
@@ -424,6 +460,8 @@ export function DesktopV3AgenticComposer({
     }
     onDraftChange('')
     setAttachments([])
+    setTextAttachments([])
+    setSelectedWorkspaceSkill(null)
     setAttachmentError(null)
   }, [clearDictationRestartTimer, clearFinalFlushTimer, onDraftChange, resizeTextareaElement])
 
@@ -512,8 +550,29 @@ export function DesktopV3AgenticComposer({
   }, [dictationComposer, resizeComposerTextarea])
 
   useEffect(() => {
+    if (focusSignal <= 0 || composerDisabled || typeof window === 'undefined') return
+    const frame = window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      textarea.focus()
+      const cursorPosition = textarea.value.length
+      textarea.setSelectionRange(cursorPosition, cursorPosition)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [composerDisabled, focusSignal])
+
+  useEffect(() => {
     if (!error) setDismissedComposerError(null)
-  }, [error])
+    if (routedNewSession && error) routedSubmissionRef.current = false
+  }, [error, routedNewSession])
+
+  useEffect(() => {
+    if (!routedNewSession || !routedComposerSnapshot) return
+    routedSubmissionRef.current = false
+    setSelectedWorkspaceAction((routedComposerSnapshot.selectedAction as WorkspaceAction | null) ?? null)
+    setWorkspaceActionAutoLaunch(false)
+    setSelectedWorkspaceSkill((routedComposerSnapshot.selectedSkill as WorkspaceSkill | null) ?? null)
+  }, [routedComposerSnapshot, routedNewSession])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -549,6 +608,13 @@ export function DesktopV3AgenticComposer({
 
   const handlePrimeTask = useCallback((taskMode: DesktopComposerTaskMode) => {
     if (dictationEnabledRef.current) stopDictation(false)
+    if (routedNewSession) {
+      onRoutedWorktreeRequestedChange?.(true)
+      if (typeof window !== 'undefined') {
+        window.requestAnimationFrame(() => textareaRef.current?.focus())
+      }
+      return
+    }
     setPrimedTaskMode(taskMode)
     if (typeof window === 'undefined') return
     window.requestAnimationFrame(() => {
@@ -559,16 +625,97 @@ export function DesktopV3AgenticComposer({
       textarea.setSelectionRange(cursorPosition, cursorPosition)
       resizeTextareaElement(textarea)
     })
-  }, [resizeTextareaElement, stopDictation])
+  }, [onRoutedWorktreeRequestedChange, resizeTextareaElement, routedNewSession, stopDictation])
+
+  const handleWorkspaceActionSelect = useCallback((action: WorkspaceAction, confirmedLaunch: boolean) => {
+    setSelectedWorkspaceAction(action)
+    setWorkspaceActionAutoLaunch(confirmedLaunch)
+    setWorkspaceActionLaunchToken((current) => current + 1)
+  }, [])
+
+  const closeWorkspaceActionPanel = useCallback(() => {
+    setSelectedWorkspaceAction(null)
+    setWorkspaceActionAutoLaunch(false)
+  }, [])
 
   const handleSubmitClick = useCallback(async () => {
-    const visibleDraft = textareaRef.current?.value ?? dictationComposer
+    if (uploadingAttachment) {
+      setAttachmentError('Wait for all attachments to finish uploading before sending the message.')
+      return
+    }
+    if (routedNewSession && routedSubmissionRef.current) return
+    const rawDraft = textareaRef.current?.value ?? dictationComposer
+    const newSessionCommand = routedNewSession ? parseDesktopNewSessionCommand(rawDraft) : null
+    if (newSessionCommand && !newSessionCommand.prompt) {
+      onRoutedWorktreeRequestedChange?.(newSessionCommand.worktreeRequested)
+      onModeSelect?.(newSessionCommand.planModeRequested ? 'plan' : 'auto')
+      onDraftChange('')
+      const textarea = textareaRef.current
+      if (textarea) {
+        textarea.value = ''
+        resizeTextareaElement(textarea)
+      }
+      return
+    }
+    const commandDraft = newSessionCommand?.prompt ?? rawDraft
+    const textAttachmentDraft = textAttachments.reduce(
+      (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
+      commandDraft,
+    )
+    const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 || routedStagedAttachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
+    const skillInstruction = selectedWorkspaceSkill
+      ? `Use the skill-use tool to load "${selectedWorkspaceSkill.canonicalName}" before executing this request.`
+      : ''
+    const visibleDraft = skillInstruction
+      ? `${skillInstruction}${attachmentDraft.trim() ? `\n\n${attachmentDraft}` : ''}`
+      : attachmentDraft
     const submittedDraft = primedTaskMode === 'plan'
       ? `/task plan ${visibleDraft}`
       : primedTaskMode === 'action'
         ? `/task ${visibleDraft}`
         : visibleDraft
-    await submitDesktopComposer({
+    const submittedBackgroundRouterCommand = desktopComposerBackgroundRouterCommand(submittedDraft)
+    if (routedNewSession && submittedBackgroundRouterCommand) {
+      void submitDesktopComposer({
+        draft: submittedDraft,
+        canStop,
+        clear: clearComposerForSubmit,
+        attachments,
+        onSubmit,
+        onStop,
+        onSlashCommand,
+      })
+      return
+    }
+    if (routedNewSession && onRoutedSubmit) {
+      routedSubmissionRef.current = true
+      const routedSnapshot = {
+        prompt: submittedDraft,
+        attachments: desktopComposerStagedMediaInput(routedStagedAttachments),
+        selectedAction: selectedWorkspaceAction,
+        selectedSkill: selectedWorkspaceSkill,
+        worktreePrimed: newSessionCommand?.worktreeRequested ?? routedWorktreeRequested,
+        planModeRequested: newSessionCommand?.planModeRequested ?? mode === 'plan',
+      }
+      let routedSubmit: Promise<DesktopV3RoutedNewSessionState>
+      try {
+        routedSubmit = onRoutedSubmit(routedSnapshot)
+      } catch (cause) {
+        routedSubmissionRef.current = false
+        setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
+        return
+      }
+      clearComposerForSubmit()
+      setSelectedWorkspaceAction(null)
+      void routedSubmit.then((state) => {
+        if (state.phase === 'failed') routedSubmissionRef.current = false
+      }).catch((cause) => {
+        routedSubmissionRef.current = false
+        setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
+      })
+      return
+    }
+    void submitDesktopComposer({
       draft: submittedDraft,
       canStop,
       clear: clearComposerForSubmit,
@@ -577,7 +724,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, onSlashCommand, onStop, onSubmit, primedTaskMode])
+  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -591,19 +738,36 @@ export function DesktopV3AgenticComposer({
     onMentionSelect?.(agent)
   }, [draft, onDraftChange, onMentionSelect])
 
+  const openWorkspaceActionChooser = useCallback(() => {
+    setWorkspaceActionChooserOpen(true)
+    setSelectedWorkspaceAction(null)
+  }, [])
+
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
-    if (command.action.kind === 'queue-ai-task') {
-      void Promise.resolve(onSlashCommand?.(command, draft))
-        .then(() => onDraftChange(''))
-        .catch(() => {
-          // The owning pane surfaces the error and the task request stays editable.
-        })
+    if (command.action.kind === 'open-action-chooser') {
+      openWorkspaceActionChooser()
+      onDraftChange('')
+      return
+    }
+    if (command.action.kind === 'start-background-router-session') {
+      void handleSubmitClick()
+      return
+    }
+    if (command.action.kind === 'toggle-thinking') {
+      if (thinkingTagsEnabled !== undefined && onThinkingTagsToggle && !thinkingTagsBusy) {
+        onThinkingTagsToggle(!thinkingTagsEnabled)
+      }
+      onDraftChange('')
       return
     }
     void onSlashCommand?.(command, draft)
+    if (command.action.kind === 'toggle-tips') {
+      onDraftChange('')
+      return
+    }
     if (command.action.kind === 'open-model-picker') {
-      openAgentSetup(currentAgent)
+      if (!routedNewSession) openAgentSetup()
       onDraftChange('')
       return
     }
@@ -613,7 +777,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, onCompact, onDraftChange, onSlashCommand, openAgentSetup, slashPalette.hasArguments])
+  }, [currentAgent, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionPaletteIsActive && mentionPaletteMatches.length > 0) {
@@ -650,9 +814,9 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'queue-ai-task')) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'toggle-tips' || slashPalette.exactMatch?.action.kind === 'open-action-chooser')) {
         event.preventDefault()
-        if (slashPalette.exactMatch?.action.kind === 'queue-ai-task') {
+        if (slashPalette.exactMatch?.action.kind === 'start-background-router-session') {
           void handleSubmitClick()
           return
         }
@@ -663,22 +827,94 @@ export function DesktopV3AgenticComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (canSubmit || canStop) handleSubmitClick()
+      if (canSubmit || attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
     }
-  }, [canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, slashCommands, slashPalette.active, slashPalette.hasArguments, slashSelectionIndex])
+  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
-    if (!effectiveMediaCapability || !onUploadAttachment) {
+    if (uploadingAttachment) {
+      setAttachmentError('Wait for the current attachment batch to finish before adding more files.')
+      return
+    }
+    if (routedNewSession) {
+      const routedTextFiles = files.filter(isComposerTextFile)
+      const routedMediaFiles = files.filter((file) => !isComposerTextFile(file))
+      if (textAttachments.length + routedTextFiles.length > DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT) {
+        setAttachmentError(`Add at most ${DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT} text or code files per message.`)
+        return
+      }
+      const existingTextBytes = textAttachments.reduce((total, item) => total + item.size, 0)
+      const routedTextBytes = routedTextFiles.reduce((total, file) => total + file.size, 0)
+      const draftBytes = new TextEncoder().encode(draft).byteLength
+      if (draftBytes + existingTextBytes + routedTextBytes > DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES) {
+        setAttachmentError('The message and selected text/code files exceed the 4 MB combined limit.')
+        return
+      }
+      if (routedMediaFiles.length > 0 && !onRoutedStageAttachments) {
+        setAttachmentError('Pre-session attachment staging is unavailable.')
+        return
+      }
+      setAttachmentError(null)
+      setUploadingAttachment(true)
+      const controller = new AbortController()
+      uploadAbortRef.current = controller
+      try {
+        const pendingTextAttachments = await Promise.all(routedTextFiles.map(async (file) => {
+          textAttachmentSequenceRef.current += 1
+          return {
+            id: textAttachmentSequenceRef.current,
+            name: file.name.trim() || 'attachment.txt',
+            fileType: composerFileType(file),
+            size: file.size,
+            content: await file.text(),
+          } satisfies DesktopComposerTextAttachment
+        }))
+        if (routedMediaFiles.length > 0) {
+          await onRoutedStageAttachments!(routedMediaFiles, controller.signal)
+        }
+        if (pendingTextAttachments.length > 0) {
+          setTextAttachments((current) => [...current, ...pendingTextAttachments])
+        }
+      } catch (error) {
+        setAttachmentError(error instanceof Error ? error.message : 'Attachment staging failed.')
+      } finally {
+        if (uploadAbortRef.current === controller) uploadAbortRef.current = null
+        setUploadingAttachment(false)
+      }
+      return
+    }
+    const admissions = files.map((file) => ({ file, admission: admitComposerFile(file, effectiveMediaCapability) }))
+    const rejected = admissions.find((item) => item.admission.kind === 'rejected')
+    if (rejected?.admission.kind === 'rejected') {
+      setAttachmentError(rejected.admission.reason)
+      return
+    }
+    const mediaFiles = admissions.filter((item) => item.admission.kind === 'media')
+    const textFiles = admissions.filter((item) => item.admission.kind === 'text')
+    if (textAttachments.length + textFiles.length > DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT) {
+      setAttachmentError(`Add at most ${DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT} text or code files per message.`)
+      return
+    }
+    const existingTextBytes = textAttachments.reduce((total, item) => total + item.size, 0)
+    const textBytes = textFiles.reduce((total, item) => total + item.file.size, 0)
+    const draftBytes = new TextEncoder().encode(draft).byteLength
+    if (draftBytes + existingTextBytes + textBytes > DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES) {
+      setAttachmentError('The message and selected text/code files exceed the 4 MB combined limit.')
+      return
+    }
+    if (mediaFiles.length > 0 && !onUploadAttachment) {
       const reasons = mediaCapability?.denial_reasons?.filter(Boolean) ?? []
       setAttachmentError(reasons.length > 0
         ? `Attachments are unavailable: ${reasons.join('; ')}.`
-        : 'Attachments are unavailable for the current model, credential, agent, or session mode.')
+        : 'Media uploads are unavailable for the current model, credential, agent, or session mode.')
       return
     }
-    const maxCount = Math.min(...effectiveMediaCapability.capabilities.map((capability) => capability.max_count || 1))
-    if (attachments.length + files.length > maxCount) {
-      setAttachmentError(`This model allows at most ${maxCount} attachments per message.`)
+    const maxCount = effectiveMediaCapability?.capabilities.length
+      ? Math.min(...effectiveMediaCapability.capabilities.map((capability) => capability.max_count || 1))
+      : 0
+    if (mediaFiles.length > 0 && attachments.length + mediaFiles.length > maxCount) {
+      setAttachmentError(`This model allows at most ${maxCount} media attachments per message.`)
       return
     }
     setAttachmentError(null)
@@ -686,16 +922,74 @@ export function DesktopV3AgenticComposer({
     const controller = new AbortController()
     uploadAbortRef.current = controller
     try {
-      const uploaded: DesktopV3MediaReference[] = []
-      for (const file of files) uploaded.push(await onUploadAttachment(file, controller.signal))
-      setAttachments((current) => [...current, ...uploaded])
+      for (const item of textFiles) {
+        if (item.admission.kind !== 'text') continue
+        const content = await item.file.text()
+        textAttachmentSequenceRef.current += 1
+        const pendingAttachment: DesktopComposerTextAttachment = {
+          id: textAttachmentSequenceRef.current,
+          name: item.file.name.trim() || 'attachment.txt',
+          fileType: item.admission.fileType,
+          size: item.file.size,
+          content,
+        }
+        setTextAttachments((current) => [...current, pendingAttachment])
+      }
+      for (const item of mediaFiles) {
+        const uploaded = await onUploadAttachment!(item.file, controller.signal)
+        setAttachments((current) => [...current, uploaded])
+      }
     } catch (error) {
       setAttachmentError(error instanceof Error ? error.message : 'Attachment upload failed.')
     } finally {
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null
       setUploadingAttachment(false)
     }
-  }, [attachments.length, effectiveMediaCapability, onUploadAttachment])
+  }, [attachments.length, draft, effectiveMediaCapability, mediaCapability?.denial_reasons, onRoutedStageAttachments, onUploadAttachment, routedNewSession, textAttachments, uploadingAttachment])
+
+  useEffect(() => {
+    const dropZone = composerRootRef.current?.closest<HTMLElement>('[data-desktop-chat-drop-zone]') ?? null
+    setFileDropZone(dropZone)
+    if (!dropZone) return
+
+    const hasFiles = (event: globalThis.DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+    const handleDragEnter = (event: globalThis.DragEvent) => {
+      if (!hasFiles(event)) return
+      event.preventDefault()
+      fileDragDepthRef.current += 1
+      setFilesDraggingOverChat(true)
+    }
+    const handleDragOverChat = (event: globalThis.DragEvent) => {
+      if (!hasFiles(event)) return
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+      setFilesDraggingOverChat(true)
+    }
+    const handleDragLeave = () => {
+      fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1)
+      if (fileDragDepthRef.current === 0) setFilesDraggingOverChat(false)
+    }
+    const handleDrop = (event: globalThis.DragEvent) => {
+      if (!hasFiles(event)) return
+      event.preventDefault()
+      fileDragDepthRef.current = 0
+      setFilesDraggingOverChat(false)
+      const files = Array.from(event.dataTransfer?.files ?? [])
+      if (files.length > 0) void handleAttachmentFiles(files)
+    }
+    dropZone.addEventListener('dragenter', handleDragEnter)
+    dropZone.addEventListener('dragover', handleDragOverChat)
+    dropZone.addEventListener('dragleave', handleDragLeave)
+    dropZone.addEventListener('drop', handleDrop)
+    return () => {
+      fileDragDepthRef.current = 0
+      setFilesDraggingOverChat(false)
+      dropZone.removeEventListener('dragenter', handleDragEnter)
+      dropZone.removeEventListener('dragover', handleDragOverChat)
+      dropZone.removeEventListener('dragleave', handleDragLeave)
+      dropZone.removeEventListener('drop', handleDrop)
+    }
+  }, [handleAttachmentFiles])
 
   useEffect(() => {
     if (!effectiveMediaCapability && attachments.length > 0) {
@@ -705,17 +999,12 @@ export function DesktopV3AgenticComposer({
 
   const handleDragOver = useCallback((event: ReactDragEvent<HTMLTextAreaElement>) => {
     const hasTodo = Array.from(event.dataTransfer.types).includes(TODO_DRAG_MIME) || Array.from(event.dataTransfer.types).includes('text/plain')
-    const hasFiles = Boolean(effectiveMediaCapability) && Array.from(event.dataTransfer.types).includes('Files')
+    const hasFiles = Array.from(event.dataTransfer.types).includes('Files')
     if (!hasTodo && !hasFiles) return
     event.preventDefault()
     event.dataTransfer.dropEffect = 'copy'
   }, [effectiveMediaCapability])
 
-  const hasContextUsagePercent = typeof contextUsagePercent === 'number' && Number.isFinite(contextUsagePercent)
-  const normalizedContextUsagePercent = clampContextUsagePercent(contextUsagePercent)
-  const contextButtonLabel = hasContextUsagePercent
-    ? `${Math.round(normalizedContextUsagePercent)}%`
-    : contextLabel?.replace(/\s*ctx$/i, '') || ''
   const dictationButton = () => showDictationButton ? (
     <button
       type="button"
@@ -732,18 +1021,15 @@ export function DesktopV3AgenticComposer({
     </button>
   ) : null
 
-  const planToggle = () => onModeSelect?.(mode === 'plan' ? 'auto' : 'plan')
   const renderComposerControl = (openPicker: () => void, open: boolean) => <ComposerPlanModelControl
-    mode={mode}
     provider={selectedModel?.provider}
     model={selectedModel?.model}
     thinking={selectedThinking}
     serviceTier={selectedServiceTier}
-    planDisabled={composerDisabled || agentModelControlBusy || !onModeSelect}
-    pickerDisabled={composerDisabled || agentModelControlBusy}
+    statusLabel={modelStatusLabel}
+    disabled={composerDisabled || agentModelControlBusy}
     open={open}
-    onPlanToggle={planToggle}
-    onPickerOpen={openPicker}
+    onOpen={openPicker}
   />
 
   const visibleComposerError = error && error !== dismissedComposerError ? error : null
@@ -776,18 +1062,34 @@ export function DesktopV3AgenticComposer({
     </div>
   ) : null
 
-  const compactButton = () => (
-    <DesktopV3CompactButton
-      contextLabel={contextButtonLabel}
-      contextTooltip={contextTooltip}
-      disabled={compactDisabled || !onCompact}
-      onClick={() => { void onCompact?.(draft) }}
-    />
-  )
-
   return (
-    <div className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
+    <div ref={composerRootRef} className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
+      {fileDropZone && filesDraggingOverChat ? createPortal(
+        <div className="pointer-events-none absolute inset-3 z-50 grid place-items-center rounded-2xl border-2 border-dashed border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-bg))] p-6 shadow-xl" data-testid="desktop-chat-file-drop-overlay" role="status" aria-live="polite">
+          <div className="flex max-w-md flex-col items-center gap-3 rounded-2xl bg-[var(--app-surface-elevated)] px-8 py-6 text-center shadow-lg">
+            <UploadCloud size={34} className="text-[var(--app-primary)]" aria-hidden="true" />
+            <div>
+              <div className="text-base font-semibold text-[var(--app-text)]">Drop files to attach</div>
+              <div className="mt-1 text-sm text-[var(--app-text-muted)]">Images, Markdown, and supported code or text files will be added to this message.</div>
+            </div>
+          </div>
+        </div>,
+        fileDropZone,
+      ) : null}
       <div className={DESKTOP_V3_COMPOSER_FRAME_CLASS_NAME}>
+        {workspaceActionChooserOpen && workspacePath.trim() ? (
+          <DesktopWorkspaceActionChooser
+            workspacePath={workspacePath}
+            onSelect={(action) => {
+              setWorkspaceActionChooserOpen(false)
+              handleWorkspaceActionSelect(action, false)
+            }}
+            onOpenSettings={onOpenActionSettings}
+            onClose={() => setWorkspaceActionChooserOpen(false)}
+          />
+        ) : selectedWorkspaceAction && workspacePath.trim() ? (
+          <DesktopWorkspaceActionPanel key={`${selectedWorkspaceAction.id}:${workspaceActionLaunchToken}`} workspacePath={workspacePath} action={selectedWorkspaceAction} autoLaunch={workspaceActionAutoLaunch} onClose={closeWorkspaceActionPanel} />
+        ) : null}
         {visibleComposerError ? (
           <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-danger)]" role="alert">
             <span className="min-w-0 flex-1">{visibleComposerError}</span>
@@ -819,7 +1121,7 @@ export function DesktopV3AgenticComposer({
         {mentionPaletteIsActive ? (
           <DesktopMentionPanel matches={mentionPaletteMatches} selectedIndex={mentionSelectionIndex} onHover={setMentionSelectionIndex} onSelect={handleMentionInsert} />
         ) : slashPalette.active ? (
-          <DesktopSlashCommandPanel palette={slashPalette as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
+          <DesktopSlashCommandPanel palette={{ ...slashPalette, matches: slashCommands } as DesktopSlashPaletteState} selectedIndex={slashSelectionIndex} onHover={setSlashSelectionIndex} onSelect={handleSlashSelect} />
         ) : null}
         <div className="relative min-w-0 overflow-visible rounded-2xl border border-[var(--app-border)]/40 bg-[var(--app-bg-alt)] shadow-[0_4px_16px_rgba(0,0,0,0.04)] transition-all duration-300 ease-out focus-within:border-transparent focus-within:ring-2 focus-within:ring-[var(--app-border-accent)]/60 focus-within:shadow-[0_8px_24px_rgba(0,0,0,0.06),0_0_12px_rgba(59,130,246,0.1)]">
           <div className="flex min-w-0 items-end gap-3 px-4 py-2 sm:py-3 lg:py-2.5" data-composer-input-row>
@@ -839,15 +1141,13 @@ export function DesktopV3AgenticComposer({
                 onKeyDown={handleKeyDown}
                 onDragOver={handleDragOver}
                 onDrop={(event) => {
-                  if (effectiveMediaCapability && event.dataTransfer.files.length > 0) {
+                  if (event.dataTransfer.files.length > 0) {
                     event.preventDefault()
-                    void handleAttachmentFiles(Array.from(event.dataTransfer.files))
                     return
                   }
                   onDropTodo?.(event)
                 }}
                 onPaste={(event) => {
-                  if (!effectiveMediaCapability) return
                   const files = Array.from(event.clipboardData.files)
                   if (files.length > 0) {
                     event.preventDefault()
@@ -862,14 +1162,39 @@ export function DesktopV3AgenticComposer({
               />
             </div>
           </div>
-          {attachments.length > 0 ? (
+          {attachments.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
             <div className="flex flex-wrap gap-2 border-t border-[var(--app-border)] px-4 py-2" data-testid="desktop-media-attachments">
+              {selectedWorkspaceSkill ? (
+                <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-selected-skill">
+                  <Sparkles size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={selectedWorkspaceSkill.description || selectedWorkspaceSkill.name}>{selectedWorkspaceSkill.name}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">Skill</span>
+                  <button type="button" aria-label={`Remove ${selectedWorkspaceSkill.name} skill`} onClick={() => setSelectedWorkspaceSkill(null)}><X size={13} /></button>
+                </span>
+              ) : null}
+              {routedStagedAttachments.map((attachment) => (
+                <span key={attachment.stagingId} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
+                  <FileImage size={13} aria-hidden="true" />
+                  <span className="max-w-48 truncate">{attachment.name}</span>
+                  <span className="text-[var(--app-text-muted)]">{Math.ceil(attachment.size / 1024)} KB</span>
+                  {onRoutedRemoveStagedAttachment ? <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => onRoutedRemoveStagedAttachment(attachment.stagingId)}><X size={13} /></button> : null}
+                </span>
+              ))}
               {attachments.map((attachment, index) => (
                 <span key={`${attachment.asset_id}:${index}`} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
                   <FileImage size={13} aria-hidden="true" />
                   <span>{attachment.file_type?.toUpperCase() || attachment.mime_type}</span>
                   <span className="text-[var(--app-text-muted)]">{Math.ceil(attachment.size / 1024)} KB</span>
                   <button type="button" aria-label="Remove attachment" onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button>
+                </span>
+              ))}
+              {textAttachments.map((attachment) => (
+                <span key={`text:${attachment.id}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
+                  <FileCode2 size={13} className="shrink-0" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={attachment.name}>{attachment.name}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{attachment.fileType || 'text'}</span>
+                  <span className="text-[var(--app-text-muted)]">{Math.max(1, Math.ceil(attachment.size / 1024))} KB</span>
+                  <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => setTextAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={13} /></button>
                 </span>
               ))}
             </div>
@@ -881,21 +1206,53 @@ export function DesktopV3AgenticComposer({
             </div>
           ) : null}
           <div className="flex min-w-0 items-center gap-2 overflow-visible bg-transparent px-4 py-3 text-[11px]" data-composer-bottom-row>
-            <DesktopComposerActionMenu disabled={composerDisabled} onPrimeTask={handlePrimeTask} />
-            {effectiveMediaCapability ? (
-              <>
-                <input ref={fileInputRef} type="file" hidden multiple accept={effectiveMediaCapability.capabilities.flatMap((capability) => capability.mime_types ?? []).join(',')} onChange={(event) => { void handleAttachmentFiles(Array.from(event.target.files ?? [])); event.target.value = '' }} />
-                <button type="button" className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[var(--app-text-muted)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={composerDisabled || uploadingAttachment} onClick={() => fileInputRef.current?.click()} aria-label="Attach media" title="Attach media">
-                  {uploadingAttachment ? <LoaderCircle size={15} className="animate-spin" /> : <Paperclip size={15} />}
-                </button>
-                {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
-              </>
+            {effectiveMediaCapability || (routedNewSession && onRoutedStageAttachments) ? (
+              <input
+                ref={fileInputRef}
+                type="file"
+                hidden
+                multiple
+                accept={effectiveMediaCapability?.capabilities.flatMap((capability) => [
+                  ...(capability.mime_types ?? []),
+                  ...(capability.file_types ?? []).map((fileType) => `.${fileType.replace(/^\./, '')}`),
+                ]).join(',')}
+                onChange={(event) => { void handleAttachmentFiles(Array.from(event.target.files ?? [])); event.target.value = '' }}
+              />
+            ) : null}
+            <DesktopComposerActionMenu
+              disabled={composerDisabled}
+              onPrimeTask={handlePrimeTask}
+              onAttach={routedNewSession ? (onRoutedStageAttachments ? () => fileInputRef.current?.click() : undefined) : effectiveMediaCapability ? () => fileInputRef.current?.click() : undefined}
+              attachDisabled={(routedNewSession ? !onRoutedStageAttachments : !effectiveMediaCapability) || composerDisabled || uploadingAttachment}
+              attaching={uploadingAttachment}
+              contextLabel={contextLabel}
+              contextTooltip={contextTooltip}
+              onCompact={onCompact ? () => { void onCompact(draft) } : undefined}
+              compactDisabled={compactDisabled || !onCompact}
+              workspacePath={workspacePath}
+              onActionSelect={handleWorkspaceActionSelect}
+              onOpenActionSettings={onOpenActionSettings}
+              onSkillSelect={setSelectedWorkspaceSkill}
+            />
+            {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
+            {routedNewSession && onRoutedWorktreeRequestedChange ? (
+              <DesktopRoutedWorktreePrime requested={routedWorktreeRequested} onRequestedChange={onRoutedWorktreeRequestedChange} disabled={composerDisabled || uploadingAttachment} />
+            ) : null}
+            {routedNewSession && showModePicker ? (
+              <DesktopComposerPlanToggle
+                active={mode === 'plan'}
+                onActiveChange={(active) => onModeSelect?.(active ? 'plan' : 'auto')}
+                disabled={composerDisabled || agentModelControlBusy || !onModeSelect}
+                allowDisable
+              />
+            ) : resolvedSessionControls && showModePicker && mode === 'plan' ? (
+              <DesktopComposerPlanToggle active readOnly />
             ) : null}
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : showModePicker ? (
-                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
-                ) : executionLabel ? (
+                {primedTaskMode ? taskModeIndicator() : (resolvedSessionControls || routedNewSession) ? (
+                  renderComposerControl(openAgentSetup, false)
+                ) : executionLabel && !routedNewSession ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
                     <span className="font-semibold uppercase tracking-wider text-[var(--app-primary)]">{executionLabel}</span>
@@ -908,28 +1265,26 @@ export function DesktopV3AgenticComposer({
                     Needs auth!
                   </button>
                 ) : null}
-                {showCompactButton && onCompact ? compactButton() : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
             </div>
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {primedTaskMode ? taskModeIndicator() : showModePicker ? (
-                  <ProfileAgentPicker currentAgent={currentAgent} selectedPrimaryAgent={selectedPrimaryAgent} agents={selectableAgents} profiles={modelProfiles} activeProfile={activeModelProfile} mode={mode} loading={modelProfilesLoading} error={modelProfilesError} busy={agentModelControlBusy} disabled={composerDisabled || agentModelControlBusy} compact modelDetail={modelControlDetail} renderTrigger={({ openPicker, open }) => renderComposerControl(openPicker, open)} onAgentSelect={onAgentSelect} onProfileSelect={onModelProfileSelect} onAddProfile={addModelProfile} onOpenAgentSetup={openAgentSetup} onSetDefault={async (profileId) => { if (!onModelProfileSetDefault) throw new Error('Default profile management is unavailable'); await onModelProfileSetDefault(profileId) }} onDeleteProfile={async (profileId) => { if (!onModelProfileDelete) throw new Error('Profile deletion is unavailable'); await onModelProfileDelete(profileId) }} />
-                ) : (
+                {primedTaskMode ? taskModeIndicator() : (resolvedSessionControls || routedNewSession) ? (
+                  renderComposerControl(openAgentSetup, false)
+                ) : !routedNewSession ? (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
-                )}
+                ) : null}
 
-                {showCompactButton && onCompact ? compactButton() : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (!canSubmit || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
@@ -946,24 +1301,15 @@ export function DesktopV3AgenticComposer({
         selectedServiceTier={selectedServiceTier}
         selectedThinking={selectedThinking}
         modelOptions={modelOptions}
-        thinkingTagsEnabled={thinkingTagsEnabled}
-        onThinkingTagsToggle={onThinkingTagsToggle}
-        thinkingTagsBusy={thinkingTagsBusy}
-        showCompactButton={showCompactButton}
-        onShowCompactButtonToggle={onShowCompactButtonToggle}
-        showCompactButtonBusy={showCompactButtonBusy}
         modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}
-        openSignal={effectiveAgentSetupOpenSignal}
-        initialAgentName={effectiveAgentSetupInitialAgent}
-        onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSetupInitialAgent || currentAgent) : undefined}
+        openSignal={agentSettingsOpenSignal + agentSetupOpenSignal}
+        initialAgentName={agentSettingsInitialAgent}
+        onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
-        onSetDefaultModelProfile={onModelProfileSetDefault}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}
-        initialModelProfileId={agentSetupProfileId}
-        createModelProfileSignal={createProfileSignal}
         busy={agentModelControlBusy}
         showTrigger={false}
       />

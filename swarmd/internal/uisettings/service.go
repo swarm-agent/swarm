@@ -62,6 +62,7 @@ type ChatToolStreamSettings struct {
 
 type ChatSettings struct {
 	ShowHeader                      bool                   `json:"show_header"`
+	ShowTips                        bool                   `json:"show_tips"`
 	ThinkingTags                    bool                   `json:"thinking_tags"`
 	ShowCompactButton               bool                   `json:"show_compact_button"`
 	DefaultNewSessionMode           string                 `json:"default_new_session_mode,omitempty"`
@@ -95,20 +96,6 @@ type ToolSettings struct {
 	Image ToolImageSettings `json:"image,omitempty"`
 }
 
-type CompactAgentSettings struct {
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Thinking    string `json:"thinking,omitempty"`
-	ServiceTier string `json:"service_tier,omitempty"`
-}
-
-type AgentSettings struct {
-	Compact  CompactAgentSettings `json:"compact,omitempty"`
-	Finder   CompactAgentSettings `json:"finder,omitempty"`
-	Coder    CompactAgentSettings `json:"coder,omitempty"`
-	Designer CompactAgentSettings `json:"designer,omitempty"`
-}
-
 type UISettings struct {
 	Theme     ThemeSettings    `json:"theme,omitempty"`
 	Input     InputSettings    `json:"input,omitempty"`
@@ -116,7 +103,6 @@ type UISettings struct {
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
 	Tools     ToolSettings     `json:"tools,omitempty"`
-	Agents    AgentSettings    `json:"agents,omitempty"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
@@ -171,7 +157,6 @@ func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UIS
 		Swarming: swarmingRecordFromSettings(settings.Swarming),
 		Swarm:    swarmRecordFromSettings(settings.Swarm),
 		Tools:    toolRecordFromSettings(settings.Tools),
-		Agents:   agentRecordFromSettings(settings.Agents),
 	})
 	if err != nil {
 		return UISettings{}, fmt.Errorf("persist ui settings: %w", err)
@@ -216,6 +201,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		},
 		Chat: ChatSettings{
 			ShowHeader:                      record.Chat.ShowHeader,
+			ShowTips:                        *record.Chat.ShowTips,
 			ThinkingTags:                    record.Chat.ThinkingTags,
 			ShowCompactButton:               record.Chat.ShowCompactButton,
 			DefaultNewSessionMode:           strings.TrimSpace(record.Chat.DefaultNewSessionMode),
@@ -242,32 +228,6 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		Tools: ToolSettings{
 			Image: ToolImageSettings{
 				DefaultModel: strings.TrimSpace(record.Tools.Image.DefaultModel),
-			},
-		},
-		Agents: AgentSettings{
-			Compact: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Compact.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Compact.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier)),
-			},
-			Finder: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Finder.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Finder.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Finder.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Finder.ServiceTier)),
-			},
-			Coder: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Coder.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Coder.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Coder.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Coder.ServiceTier)),
-			},
-			Designer: CompactAgentSettings{
-				Provider:    strings.ToLower(strings.TrimSpace(record.Agents.Designer.Provider)),
-				Model:       strings.TrimSpace(record.Agents.Designer.Model),
-				Thinking:    strings.TrimSpace(record.Agents.Designer.Thinking),
-				ServiceTier: strings.ToLower(strings.TrimSpace(record.Agents.Designer.ServiceTier)),
 			},
 		},
 		UpdatedAt: record.UpdatedAt,
@@ -316,6 +276,7 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 	return &pebblestore.UIChatSettingsRecord{
 		ShowHeader:                      settings.ShowHeader,
 		ShowHeaderSet:                   true,
+		ShowTips:                        boolPointer(settings.ShowTips),
 		ThinkingTags:                    settings.ThinkingTags,
 		ThinkingTagsSet:                 true,
 		ShowCompactButton:               settings.ShowCompactButton,
@@ -338,6 +299,10 @@ func intPointer(value int) *int {
 	return &value
 }
 
+func boolPointer(value bool) *bool {
+	return &value
+}
+
 func swarmingRecordFromSettings(settings SwarmingSettings) *pebblestore.UISwarmingSettingsRecord {
 	return &pebblestore.UISwarmingSettingsRecord{
 		Title:  strings.TrimSpace(settings.Title),
@@ -356,35 +321,6 @@ func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRe
 	return &pebblestore.UIToolSettingsRecord{
 		Image: pebblestore.UIToolImageSettingsRecord{
 			DefaultModel: strings.TrimSpace(settings.Image.DefaultModel),
-		},
-	}
-}
-
-func agentRecordFromSettings(settings AgentSettings) *pebblestore.UIAgentSettingsRecord {
-	return &pebblestore.UIAgentSettingsRecord{
-		Compact: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Compact.Provider)),
-			Model:       strings.TrimSpace(settings.Compact.Model),
-			Thinking:    strings.TrimSpace(settings.Compact.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Compact.ServiceTier)),
-		},
-		Finder: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Finder.Provider)),
-			Model:       strings.TrimSpace(settings.Finder.Model),
-			Thinking:    strings.TrimSpace(settings.Finder.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Finder.ServiceTier)),
-		},
-		Coder: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Coder.Provider)),
-			Model:       strings.TrimSpace(settings.Coder.Model),
-			Thinking:    strings.TrimSpace(settings.Coder.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Coder.ServiceTier)),
-		},
-		Designer: pebblestore.UICompactAgentSettingsRecord{
-			Provider:    strings.ToLower(strings.TrimSpace(settings.Designer.Provider)),
-			Model:       strings.TrimSpace(settings.Designer.Model),
-			Thinking:    strings.TrimSpace(settings.Designer.Thinking),
-			ServiceTier: strings.ToLower(strings.TrimSpace(settings.Designer.ServiceTier)),
 		},
 	}
 }

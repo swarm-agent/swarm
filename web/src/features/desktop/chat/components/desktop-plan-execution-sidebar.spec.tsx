@@ -276,7 +276,19 @@ function view(
   };
 }
 
-test("plan sidebar renders session content without a passive run-state section", () => {
+test("plan sidebar does not render a Settings Actions shortcut", () => {
+  const full = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} displayMode="full" />,
+  );
+  const thin = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={view()} onAction={() => undefined} displayMode="thin" />,
+  );
+
+  assert.doesNotMatch(full, /Settings → Actions|desktop-plan-open-action-settings/);
+  assert.doesNotMatch(thin, /Open Settings → Actions/);
+});
+
+test("plan sidebar renders one execution stack followed by a flexing Git card", () => {
   const html = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
@@ -289,16 +301,15 @@ test("plan sidebar renders session content without a passive run-state section",
   assert.doesNotMatch(html, /data-plan-section="actions"/);
   assert.match(html, /data-plan-section="session"/);
   assert.match(html, /data-plan-scroll-region=""/);
+  assert.match(html, /data-plan-section-treatment="unified-stack"/);
+  assert.match(html, /data-plan-top-stack="unified"/);
+  assert.match(html, /data-plan-top-stack-content="scrollable"/);
+  assert.match(html, /min-h-0 max-h-full overflow-y-auto/);
   assert.match(
     html,
-    /class="border-t[^\"]*flex min-h-\[160px\] flex-1 flex-col overflow-hidden" data-plan-section="session"/,
+    /class="flex min-h-\[7rem\] flex-1 flex-col overflow-hidden rounded-2xl[^\"]*p-3[^\"]*" data-plan-section="session"/,
   );
-  assert.match(
-    html,
-    /data-plan-scroll-region=""/,
-  );
-  assert.match(html, /shrink basis-auto gap-5 overflow-hidden/);
-  assert.doesNotMatch(html, /data-plan-scroll-region=""[^>]*overflow-y-auto/);
+  assert.match(html, /data-plan-scroll-region=""/);
   assert.doesNotMatch(html, /max-h-\[40%\]/);
   assert.doesNotMatch(html, /shadow-\[0_12px_34px/);
   assert.doesNotMatch(html, /Run state/);
@@ -317,11 +328,11 @@ test("active checkpoint heading has balanced spacing before Progress", () => {
     <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} />,
   );
 
-  assert.match(markup, /class="pt-2" data-plan-checkpoint-box-wrapper/);
-  assert.match(markup, /class="mt-2" data-plan-progress/);
+  assert.match(markup, /class="mt-3 min-w-0" data-plan-checkpoint-box-wrapper/);
+  assert.match(markup, /class="mt-4" data-plan-progress/);
 });
 
-test("checkpoint sidebar bounds overflow while prioritizing active work and preserving full task text", () => {
+test("checkpoint sidebar expands into one scrollable task list while prioritizing active work", () => {
   const base = view();
   const longTask =
     "Render the complete task text even when it is long enough that the old sidebar would have truncated it";
@@ -353,16 +364,16 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
 
   assert.match(markup, />Tasks</);
   assert.match(markup, /Render sidebar state/);
-  assert.match(markup, new RegExp(longTask));
+  assert.doesNotMatch(markup, new RegExp(longTask));
   assert.match(markup, /data-plan-task-mode="bounded"/);
   assert.match(markup, /data-plan-task-viewport=""/);
-  assert.match(markup, /style="max-height:88px"/);
+  assert.match(markup, /max-h-\[min\(28vh,240px\)\]/);
   assert.match(markup, /data-plan-visible-tasks=""/);
   assert.match(markup, /data-plan-task-active="true"/);
   assert.match(markup, /data-plan-task-expansion="" data-plan-completed-tasks=""/);
   assert.match(markup, /data-plan-task-chevron=""/);
   assert.match(markup, /aria-expanded="false"/);
-  assert.match(markup, /aria-controls="desktop-plan-overflow-tasks"/);
+  assert.match(markup, /aria-controls="desktop-plan-task-list"/);
   assert.match(markup, /Show 3 more tasks and 1 completed/);
   assert.ok(
     markup.indexOf("Render sidebar state") < markup.indexOf("Keep the layout compact"),
@@ -370,14 +381,15 @@ test("checkpoint sidebar bounds overflow while prioritizing active work and pres
   );
   assert.match(markup, /overflow-y-auto/);
   assert.match(markup, /break-words \[overflow-wrap:anywhere\]/);
-  assert.match(source, /\.\.\.\(expanded \? \{ height: viewportHeight \} : \{\}\)/);
-  assert.match(source, /Math\.floor\(regionBottom - sectionTop - 60\)/);
+  assert.doesNotMatch(source, /ResizeObserver|getBoundingClientRect|viewportHeight/);
   assert.doesNotMatch(source, /setExpanded\(false\)/);
-  assert.match(source, /expanded \? "flex-1 overflow-hidden" : "shrink-0"/);
-  assert.match(source, /className="min-h-0 flex-1 overflow-y-auto/);
-  assert.match(source, /data-plan-task-overflow-scroll="conditional"/);
-  assert.match(source, /data-plan-scroll-region[\s\S]*?overflow-hidden/);
-  assert.doesNotMatch(source, /data-plan-scroll-region[\s\S]{0,160}?overflow-y-auto/);
+  assert.match(source, /const displayedTasks = expanded/);
+  assert.match(source, /\.\.\.activeTasks, \.\.\.pendingTasks, \.\.\.completedTasks/);
+  assert.match(source, /data-plan-task-list-scroll="single"/);
+  assert.match(source, /id="desktop-plan-task-list"[\s\S]*?overflow-y-auto/);
+  assert.doesNotMatch(source, /data-plan-task-overflow/);
+  assert.doesNotMatch(source, /desktop-plan-overflow-tasks/);
+  assert.match(source, /data-plan-scroll-region[\s\S]*?overflow-y-auto/);
   assert.doesNotMatch(markup, /\[x\] Persist task changes/);
   assert.doesNotMatch(markup, /\[ \] Render sidebar state/);
   assert.match(markup, /Open full plan/);
@@ -420,11 +432,11 @@ test("pending-only overflow always exposes a keyboard-accessible chevron disclos
   assert.match(markup, /<button[^>]*type="button"[^>]*aria-expanded="false"/);
   assert.match(markup, /data-plan-task-chevron=""/);
   assert.match(markup, /Show 4 more tasks/);
-  assert.match(source, /Math\.floor\(sidebarHeight \* 0\.28\)/);
-  assert.match(source, /pendingTasks\.length - 1/);
+  assert.match(source, /COLLAPSED_VISIBLE_PENDING_TASKS = 1/);
+  assert.match(source, /pendingTasks\.slice\(COLLAPSED_VISIBLE_PENDING_TASKS\)/);
 });
 
-test("Git integration reserves a visible bounded region below the plan", () => {
+test("Git integration uses the remaining sidebar height and scrolls at the bottom edge", () => {
   const sidebarSource = readFileSync(
     new URL("./desktop-v3-existing-conversation-pane.tsx", import.meta.url),
     "utf8",
@@ -436,8 +448,16 @@ test("Git integration reserves a visible bounded region below the plan", () => {
 
   assert.match(sidebarSource, /data-plan-sidebar-column/);
   assert.match(sidebarSource, /hidden min-h-0 min-w-0 overflow-hidden min-\[1300px\]:flex min-\[1300px\]:flex-col/);
-  assert.match(appPageSource, /data-plan-git-layout="protected"/);
-  assert.match(appPageSource, /min-h-\[160px\][^'\"]*flex-1[^'\"]*overflow-hidden/);
+  assert.match(appPageSource, /data-plan-git-layout="inset-card"/);
+  assert.match(appPageSource, /data-plan-section-treatment="inset-card"/);
+  assert.match(sidebarSource, /data-plan-scroll-region/);
+  assert.match(appPageSource, /data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"/);
+  assert.match(appPageSource, /flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region/);
+  assert.match(appPageSource, /min-h-0 flex-1 overflow-y-auto rounded-xl bg-\[var\(--app-bg-alt\)\] p-1 \[scrollbar-gutter:stable\]" data-plan-git-file-list data-plan-git-scroll="at-sidebar-edge"/);
+  assert.doesNotMatch(appPageSource, /data-plan-git-file-list[^\n]*max-h-/);
+  assert.doesNotMatch(appPageSource, /data-plan-git-visible-rows/);
+  assert.doesNotMatch(appPageSource, /h-\[calc\(100%-0\.5rem\)\]/);
+  assert.doesNotMatch(appPageSource, /flex-\[0_0_36%\]/);
 });
 
 test("automatic plan sidebar omits passive run state and execution mode controls", () => {
@@ -453,7 +473,7 @@ test("automatic plan sidebar omits passive run state and execution mode controls
   assert.doesNotMatch(markup, /Running automatically/);
   assert.match(markup, /In Progress/);
   assert.doesNotMatch(markup, /data-plan-system-message=""/);
-  assert.doesNotMatch(markup, /border-l-2/);
+  assert.doesNotMatch(markup, /data-plan-next-checkpoint[^>]*border-l-2/);
   assert.doesNotMatch(markup, /Pause for review after each checkpoint/);
   assert.doesNotMatch(markup, /Switch to automatic/);
   assert.doesNotMatch(markup, /Archive plan/);
@@ -513,9 +533,9 @@ test("the selected console checkpoint balances the status and Progress spacing",
   assert.match(markup, /data-plan-checkpoint-treatment="console-block"/);
   assert.match(
     markup,
-    /class="pt-3" data-plan-checkpoint-box-wrapper=""><h3 class="min-w-0 line-clamp-3[^\"]*bg-\[var\(--app-surface-subtle\)\] px-2\.5 py-2 font-mono/,
+    /class="mt-3 min-w-0" data-plan-checkpoint-box-wrapper=""><h3 class="min-w-0 line-clamp-3[^\"]*rounded-xl[^\"]*bg-\[var\(--app-primary-soft\)\] px-3 py-2\.5 font-mono/,
   );
-  assert.match(markup, /class="mt-3" data-plan-progress=""/);
+  assert.match(markup, /class="mt-4" data-plan-progress=""/);
   assert.match(markup, /data-plan-next-checkpoint=""/);
   assert.match(markup, /break-all font-mono/);
   assert.match(markup, /line-clamp-2 break-words/);
@@ -540,7 +560,7 @@ test("the status row stays above the fixed console checkpoint", () => {
   assert.match(markup, /data-plan-checkpoint-treatment="console-block"/);
   assert.match(
     markup,
-    /data-plan-current-checkpoint-row=""><div[^>]*>Current checkpoint<\/div><span[^>]*data-plan-status-treatment="plain-text"[^>]*>.*?<\/span><\/div><div class="pt-3" data-plan-checkpoint-box-wrapper=""><h3/,
+    /data-plan-current-checkpoint-row=""><div[^>]*>Current checkpoint<\/div><span[^>]*data-plan-status-treatment="plain-text"[^>]*>.*?<\/span><\/div><div class="mt-3 min-w-0" data-plan-checkpoint-box-wrapper=""><h3/,
   );
   assert.ok(labelIndex >= 0, "expected the left checkpoint label");
   assert.ok(statusIndex > labelIndex, "expected status after the left label");
@@ -576,22 +596,27 @@ test("active checkpoint title shows three complete lines before truncating", () 
   );
   assert.ok(title, "expected active checkpoint title");
   assert.match(title[1], /line-clamp-3/);
-  assert.match(title[1], /leading-5/);
+  assert.match(title[1], /leading-relaxed/);
   assert.doesNotMatch(title[1], /leading-snug/);
   assert.match(title[1], /break-words/);
   assert.doesNotMatch(title[1], /(?:^|\s)truncate(?:\s|$)/);
   assert.match(markup, new RegExp(longTitle));
 });
 
-test("accepted plan sidebar restores the original execution view without AI helpers", () => {
+test("accepted plan sidebar starts with the current checkpoint without an execution heading", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
       view={view()}
       onAction={() => undefined}
     />,
   );
+  const currentCheckpointIndex = markup.indexOf("data-plan-current-checkpoint-layout");
+  const scrollContentIndex = markup.indexOf("data-plan-top-stack-content");
 
-  assert.match(markup, />Plan</);
+  assert.doesNotMatch(markup, />Execution</);
+  assert.doesNotMatch(markup, /title="Plan execution"/);
+  assert.ok(currentCheckpointIndex > scrollContentIndex, "expected current checkpoint first in the sidebar stack");
+  assert.doesNotMatch(markup.slice(scrollContentIndex, currentCheckpointIndex), /<header|<svg/);
   assert.doesNotMatch(markup, /Plan Agent/);
   assert.doesNotMatch(markup, /New Auto Agent chat/);
   assert.doesNotMatch(markup, /AI helper/);

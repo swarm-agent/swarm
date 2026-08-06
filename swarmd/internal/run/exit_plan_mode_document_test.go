@@ -135,7 +135,7 @@ func TestExecuteExitPlanModeFailsBeforeMutationWhenAutoPolicyCannotResolve(t *te
 			Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Only", Status: "pending", Tasks: []string{"work"}, AcceptanceCriteria: []string{"done"}}},
 		},
 	})
-	profile := pebblestore.AgentProfile{Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ModelMode: "split", AutoProvider: "codex", AutoModel: "action-model"}
+	profile := pebblestore.AgentProfile{Name: "custom", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), Provider: "codex", Model: "action-model"}
 	if _, err := runSvc.executeExitPlanModeTool(sessionID, sessionruntime.ModePlan, profile, args, "", apply); err == nil {
 		t.Fatal("exit_plan_mode unexpectedly succeeded without model policy resolver")
 	}
@@ -167,7 +167,7 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 	sessionID := createPlanManageTestSession(t, sessionSvc)
 	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-exit", "Initial Plan", "# Initial", "draft", "draft", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		Info:        pebblestore.SessionPlanInfo{Goal: "initial goal"},
-		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: "pending"}},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: "pending", Order: 1, Tasks: []string{"initial work"}, AcceptanceCriteria: []string{"initial work completes"}}},
 	}})
 	if err != nil {
 		t.Fatalf("save initial plan: %v", err)
@@ -181,7 +181,7 @@ func TestExitPlanModePermissionPayloadIncludesStructuredDocument(t *testing.T) {
 		"continue_automatically": true,
 		"document": pebblestore.SessionPlanDocument{
 			Info:               pebblestore.SessionPlanInfo{Goal: "approval sees structured goal"},
-			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: sessionruntime.PlanCheckpointStatusCompleted}, {ID: "cp-2", Title: "Next", Status: "pending"}},
+			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Initial", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1, Tasks: []string{"initial work"}, AcceptanceCriteria: []string{"initial work completed"}}, {ID: "cp-2", Title: "Next", Status: "pending", Order: 2, Tasks: []string{"next work"}, AcceptanceCriteria: []string{"next work completes"}}},
 			ActiveCheckpointID: "cp-2",
 		},
 	}

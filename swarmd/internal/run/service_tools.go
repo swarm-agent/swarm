@@ -13,6 +13,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
 	"swarm/packages/swarmd/internal/permission"
@@ -20,7 +21,6 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
-	"swarm/packages/swarmd/internal/uisettings"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -492,7 +492,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		subagentProfile, err = cloneTaskAgentProfile(*trustedProfile)
 		launch.SourceAgentName = strings.TrimSpace(sourceAgentName)
 	} else {
-		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, err = s.resolveTaskLaunchProfile(parentSession, requestedSubagent)
+		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, err = s.resolveTaskLaunchProfileForMode(parentSession, requestedSubagent, effectiveTaskChildMode(sessionMode))
 	}
 	if err != nil {
 		return taskLaunchPrepared{}, err
@@ -502,6 +502,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 
 	childMode := effectiveTaskChildMode(sessionMode)
+	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
@@ -514,7 +515,6 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
-	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
 	isDesignerTarget := agentruntime.IsDesignerAgentName(requestedSubagent)
 	childMetadata := map[string]any{
 		"workspace_id":       worktreeruntime.WorkspaceIdentityForSession(childSessionID),
@@ -1011,6 +1011,8 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageWorktreeTool(ctx, sessionID, call, approvedArguments)
 		result.Output = output
 		return true, result, err
+	case "manage_actions":
+		return false, tool.Result{}, nil
 	case "manage_todos":
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
 		result.Output = output
@@ -1380,6 +1382,120 @@ func (s *Service) executeManageTodosTool(sessionID string, call tool.Call, feedb
 		return output, err
 	}
 	return output, nil
+}
+
+const (
+	askUserCustomResponseLabel = "Custom response"
+	askUserCustomResponseValue = "__custom__"
+)
+
+func isAskUserReservedCustomChoice(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.EqualFold(value, askUserCustomResponseValue) || strings.EqualFold(value, askUserCustomResponseLabel) || strings.EqualFold(value, "Other")
+}
+
+func validateAskUserCallArguments(arguments string) error {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return errors.New("ask-user requires arguments")
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return fmt.Errorf("ask-user arguments invalid: %w", err)
+	}
+	validateOptions := func(raw any, label string) error {
+		items, ok := raw.([]any)
+		if !ok {
+			return fmt.Errorf("%s must contain at least two choices", label)
+		}
+		concrete := 0
+		for _, item := range items {
+			switch option := item.(type) {
+			case string:
+				value := strings.TrimSpace(option)
+				if value == "" {
+					continue
+				}
+				if isAskUserReservedCustomChoice(value) {
+					return fmt.Errorf("%s must not include a custom response option; %q is provided automatically", label, askUserCustomResponseLabel)
+				}
+				concrete++
+			case map[string]any:
+				value := strings.TrimSpace(mapString(option, "value"))
+				optionLabel := strings.TrimSpace(mapString(option, "label"))
+				if mapBool(option, "allow_custom") || mapBool(option, "allowCustom") || isAskUserReservedCustomChoice(value) || isAskUserReservedCustomChoice(optionLabel) {
+					return fmt.Errorf("%s must not include a custom response option; %q is provided automatically", label, askUserCustomResponseLabel)
+				}
+				if value != "" || optionLabel != "" {
+					concrete++
+				}
+			}
+		}
+		if concrete < 2 {
+			return fmt.Errorf("%s must contain at least two concrete choices", label)
+		}
+		return nil
+	}
+
+	if rawQuestions, exists := args["questions"]; exists {
+		questions, ok := rawQuestions.([]any)
+		if !ok || len(questions) == 0 {
+			return errors.New("ask-user questions must contain at least one question")
+		}
+		for index, rawQuestion := range questions {
+			question, ok := rawQuestion.(map[string]any)
+			if !ok {
+				return fmt.Errorf("ask-user question %d must be an object", index+1)
+			}
+			if strings.TrimSpace(mapString(question, "question")) == "" {
+				return fmt.Errorf("ask-user question %d requires question text", index+1)
+			}
+			if err := validateOptions(question["options"], fmt.Sprintf("ask-user question %d options", index+1)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if strings.TrimSpace(mapString(args, "question")) == "" {
+		return errors.New("ask-user requires question text")
+	}
+	return validateOptions(args["options"], "ask-user options")
+}
+
+func normalizeAskUserPermissionArguments(arguments string) (string, error) {
+	if err := validateAskUserCallArguments(arguments); err != nil {
+		return "", err
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return "", fmt.Errorf("ask-user arguments invalid: %w", err)
+	}
+	customResponse := func() map[string]any {
+		return map[string]any{
+			"label":        askUserCustomResponseLabel,
+			"value":        askUserCustomResponseValue,
+			"description":  "Type your own response.",
+			"allow_custom": true,
+		}
+	}
+	appendCustomResponse := func(payload map[string]any) {
+		options, _ := payload["options"].([]any)
+		payload["options"] = append(options, customResponse())
+	}
+	if rawQuestions, exists := args["questions"]; exists {
+		questions, _ := rawQuestions.([]any)
+		for _, rawQuestion := range questions {
+			question, _ := rawQuestion.(map[string]any)
+			appendCustomResponse(question)
+		}
+	} else {
+		appendCustomResponse(args)
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return "", fmt.Errorf("encode ask-user permission arguments: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func executeAskUserTool(arguments, feedback string) (string, error) {
@@ -1927,6 +2043,8 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		action = "mark_failed"
 	case "add-subtask", "add_subtask", "create-subtask", "create_subtask", "upsert-subtask", "upsert_subtask":
 		action = "add_subtask"
+	case "replace-subtasks", "replace_subtasks", "set-subtasks", "set_subtasks":
+		action = "replace_subtasks"
 	case "update-subtask", "update_subtask", "patch-subtask", "patch_subtask":
 		action = "update_subtask"
 	case "remove-subtask", "remove_subtask", "delete-subtask", "delete_subtask":
@@ -2215,7 +2333,7 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 			"details_truncated": false,
 		}
 		return marshalPlanManagePayload(payload)
-	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint", "add_subtask", "update_subtask", "remove_subtask", "reorder_subtasks", "focus_subtask", "complete_subtask":
+	case "patch", "update_section", "update_info", "update_execution_policy", "update_execution_state", "upsert_checkpoint", "update_checkpoint", "start_checkpoint", "continue_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed", "remove_checkpoint", "reorder_checkpoints", "set_active_checkpoint", "add_subtask", "replace_subtasks", "update_subtask", "remove_subtask", "reorder_subtasks", "focus_subtask", "complete_subtask":
 		planID := strings.TrimSpace(mapString(args, "plan_id"))
 		if planID == "" {
 			planID = strings.TrimSpace(mapString(args, "id"))
@@ -2246,6 +2364,19 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		}
 		if documentPatch != nil && documentPatch.Operation == "" {
 			documentPatch.Operation = action
+		}
+		if documentPatch != nil && isTrustedSubtaskResumeAction(action) {
+			if lifecycleRun.Inline {
+				if err := applyTrustedSubtaskResumeOwnership(documentPatch, lifecycleRun); err != nil {
+					return "", err
+				}
+			} else {
+				// Ownership is lifecycle context, never model input. Direct/user-driven
+				// subtask edits may resume work but cannot claim a provider run.
+				documentPatch.RunID = ""
+				documentPatch.RunSessionID = ""
+				documentPatch.ParentSessionID = ""
+			}
 		}
 		if lifecycleRun.Inline && documentPatch != nil && isPlanCheckpointOutcomeAction(action, documentPatch) {
 			if err := s.requireProviderManagedFinalCheckpointHandoff(sessionID, planID, action, documentPatch); err != nil {
@@ -2747,6 +2878,31 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	return marshalPlanManagePayload(payload)
 }
 
+func isTrustedSubtaskResumeAction(action string) bool {
+	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
+	case "add_subtask", "update_subtask", "focus_subtask", "replace_subtasks":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyTrustedSubtaskResumeOwnership(patch *sessionruntime.PlanDocumentPatch, lifecycleRun planLifecycleRunContext) error {
+	if patch == nil {
+		return errors.New("trusted subtask resume requires a document patch")
+	}
+	runID := strings.TrimSpace(lifecycleRun.RunID)
+	runSessionID := strings.TrimSpace(lifecycleRun.RunSessionID)
+	parentSessionID := strings.TrimSpace(lifecycleRun.ParentSessionID)
+	if runID == "" || runSessionID == "" || parentSessionID == "" {
+		return errors.New("trusted subtask resume requires complete provider lifecycle ownership")
+	}
+	patch.RunID = runID
+	patch.RunSessionID = runSessionID
+	patch.ParentSessionID = parentSessionID
+	return nil
+}
+
 func isPlanCheckpointOutcomeAction(action string, patch *sessionruntime.PlanDocumentPatch) bool {
 	if patch != nil && patch.CompleteCheckpoint {
 		return true
@@ -3124,28 +3280,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
 	if approved := strings.TrimSpace(req.ApprovedArguments); approved != "" {
-		var envelope struct {
-			ManifestHash string             `json:"manifest_hash"`
-			Manifest     taskLaunchManifest `json:"manifest"`
-		}
-		if err := json.Unmarshal([]byte(approved), &envelope); err != nil {
-			return "", fmt.Errorf("approved task manifest invalid: %w", err)
-		}
-		digest, err := taskLaunchManifestDigest(envelope.Manifest)
-		if err != nil || digest != strings.TrimSpace(envelope.ManifestHash) || digest != strings.TrimSpace(envelope.Manifest.ManifestHash) {
-			return "", errors.New("approved task manifest snapshot hash mismatch")
-		}
-		if len(envelope.Manifest.Launches) != len(launchSpecs) {
-			return "", errors.New("approved task manifest launch count mismatch")
+		manifest, manifestErr := parseApprovedTaskLaunchManifest(approved, launchSpecs)
+		if manifestErr != nil {
+			return "", manifestErr
 		}
 		for i := range launchSpecs {
-			row := envelope.Manifest.Launches[i]
-			if !strings.EqualFold(strings.TrimSpace(row.RequestedSubagentType), strings.TrimSpace(launchSpecs[i].RequestedSubagentType)) {
-				return "", fmt.Errorf("approved task manifest launch %d target mismatch", i)
-			}
-			if row.ProfileSnapshot == nil {
-				return "", fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
-			}
+			row := manifest.Launches[i]
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
 			if err != nil {
 				return "", err
@@ -3761,10 +3901,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	return string(encoded), nil
 }
 
-func (s *Service) resolveTaskSubagent(nameOrPurpose string) (pebblestore.AgentProfile, error) {
-	return s.resolveTaskSubagentForAccount("", nameOrPurpose)
-}
-
 func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
 	nameOrPurpose = strings.TrimSpace(nameOrPurpose)
 	if nameOrPurpose == "" {
@@ -3774,63 +3910,15 @@ func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose st
 		return pebblestore.AgentProfile{}, errors.New("saved agent service is not configured")
 	}
 	if agentruntime.IsFinderAgentName(nameOrPurpose) || agentruntime.IsDesignerAgentName(nameOrPurpose) {
-		agentLabel := agentruntime.FinderAgentName
 		agentID := agentruntime.FinderAgentID
 		if agentruntime.IsDesignerAgentName(nameOrPurpose) {
-			agentLabel = agentruntime.DesignerAgentName
 			agentID = agentruntime.DesignerAgentID
 		}
 		if s.model == nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("%s model service is not configured", agentLabel)
+			return pebblestore.AgentProfile{}, errors.New("system-agent model service is not configured")
 		}
-		preference, err := s.model.GetPreferenceForAccount(strings.TrimSpace(accountScopeID))
-		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("read %s model preference: %w", agentLabel, err)
-		}
-		providerID := strings.ToLower(strings.TrimSpace(preference.Provider))
-		override := uisettings.CompactAgentSettings{}
-		if s.uiSettings != nil {
-			if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); settingsErr == nil {
-				if agentID == agentruntime.DesignerAgentID {
-					override = settings.Agents.Designer
-				} else {
-					override = settings.Agents.Finder
-				}
-			}
-		}
-		if override.Provider != "" {
-			providerID = strings.ToLower(strings.TrimSpace(override.Provider))
-		}
-		if providerID == "" {
-			return pebblestore.AgentProfile{}, fmt.Errorf("%s utility provider is empty", agentLabel)
-		}
-		_, _, utility, ok, err := s.model.RecommendedCatalogDefaults(providerID)
-		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("resolve %s utility recommendation: %w", agentLabel, err)
-		}
-		if !ok || strings.TrimSpace(utility.Model) == "" {
-			return pebblestore.AgentProfile{}, fmt.Errorf("%s utility recommendation for provider %q is unavailable", agentLabel, providerID)
-		}
-		modelName := strings.TrimSpace(override.Model)
-		if modelName == "" {
-			modelName = strings.TrimSpace(utility.Model)
-		}
-		thinking := strings.TrimSpace(override.Thinking)
-		for _, recommendation := range utility.Recommendations {
-			if thinking == "" && strings.EqualFold(strings.TrimSpace(recommendation.Role), "utility") {
-				thinking = strings.TrimSpace(recommendation.Thinking)
-				break
-			}
-		}
-		resolved, err := s.model.ResolvePreference(pebblestore.ModelPreference{Provider: providerID, Model: modelName, Thinking: thinking, ContextMode: preference.ContextMode})
-		if err != nil {
-			return pebblestore.AgentProfile{}, fmt.Errorf("resolve %s utility preference: %w", agentLabel, err)
-		}
-		serviceTier := strings.TrimSpace(override.ServiceTier)
-		if serviceTier == "" {
-			serviceTier = strings.TrimSpace(preference.ServiceTier)
-		}
-		return s.agents.ResolveSystemAgent(agentID, pebblestore.AgentProfile{Provider: resolved.Preference.Provider, Model: resolved.Preference.Model, Thinking: resolved.Preference.Thinking, AutoServiceTier: serviceTier})
+		_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, accountScopeID, agentID, "")
+		return profile, err
 	}
 	if strings.TrimSpace(accountScopeID) != "" {
 		return s.agents.ResolveSubagentForAccount(accountScopeID, nameOrPurpose)
@@ -4181,6 +4269,8 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"exit-plan-mode": true,
 		"plan_manage":    true,
 		"plan-manage":    true,
+		"manage_actions": true,
+		"manage-actions": true,
 		"manage_todos":   true,
 		"manage-todos":   true,
 		"manage_agent":   true,
@@ -4265,10 +4355,25 @@ func canonicalToolName(name string) string {
 		return "manage_sessions"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-actions", "manage_actions":
+		return "manage_actions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
+	}
+}
+
+func isManageActionsMutation(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(firstNonEmptyString(strings.TrimSpace(arguments), "{}")), &args); err != nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(mapString(args, "action"))) {
+	case "", "list", "get":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -4308,6 +4413,11 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return requirement, true
 		}
 		return toolName, false
+	case "manage_actions":
+		if isManageActionsMutation(arguments) {
+			return "action_change", true
+		}
+		return "manage_actions", false
 	case "manage_skill":
 		if !permission.ShouldApproveManageSkillMutation(arguments) {
 			return "manage_skill", false

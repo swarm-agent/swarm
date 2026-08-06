@@ -35,10 +35,12 @@ const (
 	interruptChatAsync         = "chat-async"
 	interruptReloadReady       = "reload-ready"
 	interruptAuthReady         = "auth-ready"
+	interruptOnboardingReady   = "onboarding-ready"
 	interruptVoiceReady        = "voice-ready"
 	interruptStreamReady       = "stream-ready"
 	interruptGitStatusReady    = "git-status-ready"
 	interruptNotificationReady = "notification-ready"
+	interruptTaskCommandReady  = "task-command-ready"
 	interruptV3Chat            = "v3-chat-ready"
 	interruptQuit              = "quit"
 	defaultDaemonURL           = "http://127.0.0.1:7781"
@@ -59,13 +61,14 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	}
 	items := []ui.CommandSuggestion{
 		{Command: "/add-dir", Hint: "Open linked-directory flow in the workspace manager"},
+		{Command: "/actions", Hint: "Open canonical workspace Actions", QuickTips: []string{"/actions", "/actions list"}},
 		{Command: "/alerts", Hint: "Open alerts / notifications (c clears all, Enter opens session)"},
 		{Command: "/agents", Hint: "Open agent cards and model setup"},
 		{Command: "/profiles", Hint: "Quick-switch the saved model profile used by new sessions"},
 		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/codex", Hint: "Show Codex account usage and reset credits", QuickTips: []string{"/codex", "/codex refresh"}},
-		{Command: "/commit", Hint: "Launch the memory agent in background to review diffs and commit changes", QuickTips: []string{"/commit [instructions]"}},
+		{Command: "/commit", Hint: "Commit all changes with a message, or use AI to generate one", QuickTips: []string{"/commit <message>", "/commit ai"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
 		{Command: "/help", Hint: "Show command help"},
@@ -73,7 +76,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
 		{Command: "/mode", Hint: "Toggle Plan behavior for new chats", QuickTips: []string{"/mode plan", "/mode action", "/mode status"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
-		{Command: "/new", Hint: "Open a new session draft"},
+		{Command: "/new", Hint: "Open a local session draft; explicit worktree forms route", QuickTips: []string{"/new [<prompt>]", "/new worktree [<prompt>]", "/new plan [<prompt>]", "/new wp [<prompt>]"}},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
 		{Command: "/plan", Hint: "Show or close the existing session plan"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
@@ -83,9 +86,11 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
+		{Command: "/tips", Hint: "Show or hide launch tips", QuickTips: []string{"/tips on", "/tips off", "/tips toggle", "/tips status"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
+		{Command: "/worktree", Hint: "Switch a local draft between direct and routed worktree start", QuickTips: []string{"/worktree on", "/worktree off"}},
 		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
-		{Command: "/wt new", Hint: "Create a new worktree session (short alias)"},
+		{Command: "/wt", Hint: "Prime the local draft or manage worktrees", QuickTips: []string{"/wt on", "/wt off", "/wt new"}},
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
@@ -109,6 +114,12 @@ func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
 	})
 	return items
+}
+
+type onboardingWorkspaceResult struct {
+	model model.HomeModel
+	path  string
+	err   error
 }
 
 type homeReloadResult struct {
@@ -164,11 +175,14 @@ type authLoginResult struct {
 }
 
 type codexOAuthLoginSession struct {
-	Provider  string
-	Label     string
-	Active    bool
-	SessionID string
-	AuthURL   string
+	Provider        string
+	Label           string
+	Active          bool
+	Method          string
+	SessionID       string
+	AuthURL         string
+	VerificationURL string
+	UserCode        string
 }
 
 type codexCodeLoginState struct {
@@ -244,6 +258,7 @@ type App struct {
 	homeWorkspaceBootstrapped atomic.Bool
 	authLoginCh               chan authLoginResult
 	authLogging               atomic.Bool
+	onboardingWorkspaceCh     chan onboardingWorkspaceResult
 	codexPending              *codexCodeLoginState
 
 	voiceCaptureSeq        int64
@@ -275,6 +290,7 @@ type App struct {
 	gitWatchGeneration     atomic.Uint64
 
 	notificationCountCh    chan notificationCountResult
+	taskCommandCh          chan taskCommandResult
 	swarmNotificationCount int
 
 	pendingChatRender   chan struct{}
@@ -350,38 +366,41 @@ func New() (*App, error) {
 	cfg, cfgErr := loadAppConfig(api)
 
 	app := &App{
-		screen:              s,
-		home:                ui.NewHomePage(initial),
-		route:               "home",
-		api:                 api,
-		startupCWD:          cwd,
-		activePath:          cwd,
-		workspacePath:       "",
-		selectedChatRouteID: "",
-		homeModel:           initial,
-		config:              cfg,
-		settingsLabel:       settingsBackendLabel,
-		keybinds:            ui.NewDefaultKeyBindings(),
-		lastReloadAt:        time.Now(),
-		reloadCh:            make(chan homeReloadResult, 1),
-		authLoginCh:         make(chan authLoginResult, 1),
-		voiceCaptureCh:      make(chan voiceCaptureEvent, 4),
-		streamEvents:        make(chan client.StreamEventEnvelope, 256),
-		gitStatusCh:         make(chan gitStatusRefreshResult, 8),
-		gitWatcherReady:     make(chan gitWatcherStartResult, 1),
-		notificationCountCh: make(chan notificationCountResult, 1),
-		pendingChatRender:   make(chan struct{}, 1),
-		pendingV3ChatRender: make(chan struct{}, 1),
-		pendingStreamReady:  make(chan struct{}, 1),
-		tuiSessionStore:     newTUISessionStore(),
-		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 256),
-		tuiRealtimeStatuses: make(chan tuiRealtimeStatus, 32),
-		tuiRealtimeClientID: fmt.Sprintf("tui:%d", time.Now().UnixNano()),
-		workspaceCandidates: make([]workspaceCandidate, 0, 128),
+		screen:                s,
+		home:                  ui.NewHomePage(initial),
+		route:                 "home",
+		api:                   api,
+		startupCWD:            cwd,
+		activePath:            cwd,
+		workspacePath:         "",
+		selectedChatRouteID:   "",
+		homeModel:             initial,
+		config:                cfg,
+		settingsLabel:         settingsBackendLabel,
+		keybinds:              ui.NewDefaultKeyBindings(),
+		lastReloadAt:          time.Now(),
+		reloadCh:              make(chan homeReloadResult, 1),
+		authLoginCh:           make(chan authLoginResult, 1),
+		onboardingWorkspaceCh: make(chan onboardingWorkspaceResult, 1),
+		voiceCaptureCh:        make(chan voiceCaptureEvent, 4),
+		streamEvents:          make(chan client.StreamEventEnvelope, 256),
+		gitStatusCh:           make(chan gitStatusRefreshResult, 8),
+		gitWatcherReady:       make(chan gitWatcherStartResult, 1),
+		notificationCountCh:   make(chan notificationCountResult, 1),
+		taskCommandCh:         make(chan taskCommandResult, 8),
+		pendingChatRender:     make(chan struct{}, 1),
+		pendingV3ChatRender:   make(chan struct{}, 1),
+		pendingStreamReady:    make(chan struct{}, 1),
+		tuiSessionStore:       newTUISessionStore(),
+		tuiRealtimeFrames:     make(chan client.V3RealtimeFrame, 256),
+		tuiRealtimeStatuses:   make(chan tuiRealtimeStatus, 32),
+		tuiRealtimeClientID:   fmt.Sprintf("tui:%d", time.Now().UnixNano()),
+		workspaceCandidates:   make([]workspaceCandidate, 0, 128),
 	}
 	app.keybinds.ApplyOverrides(cfg.Input.Keybinds)
 	app.home.SetKeyBindings(app.keybinds)
 	app.home.SetSessionMode(app.config.Chat.DefaultNewSessionMode)
+	app.home.SetHomeTipsVisible(app.config.Chat.ShowTips)
 	app.home.SetPasteActive(app.pasteActive)
 	mouseEnabled := cfg.Input.MouseEnabled
 	app.config.Input.MouseEnabled = mouseEnabled
@@ -483,6 +502,9 @@ func (a *App) Run() error {
 			case interruptAuthReady:
 				a.consumeAuthLoginResult()
 				dirty = true
+			case interruptOnboardingReady:
+				a.consumeOnboardingWorkspaceResult()
+				dirty = true
 			case interruptVoiceReady:
 				a.consumeVoiceCaptureEvents()
 				dirty = true
@@ -496,6 +518,9 @@ func (a *App) Run() error {
 				}
 			case interruptNotificationReady:
 				a.consumeNotificationCountResult()
+				dirty = true
+			case interruptTaskCommandReady:
+				a.consumeTaskCommandResults()
 				dirty = true
 			case interruptV3Chat:
 				a.consumeV3ChatRender()
@@ -550,6 +575,9 @@ func (a *App) Run() error {
 			}
 			if a.route == "v3chat" && a.v3Chat != nil {
 				a.v3Chat.HandleMouse(e)
+				if a.v3Chat.ConsumeOpenAgentsRequest() {
+					a.openAgentsModal()
+				}
 				dirty = true
 				continue
 			}
@@ -647,6 +675,7 @@ func (a *App) Run() error {
 				case v3chat.PageActionHome:
 					a.closeV3Chat()
 					a.route = "home"
+					a.home.SelectNextHomeTip()
 					a.home.SetStatus("home")
 				case v3chat.PageActionCommand:
 					a.handleV3ChatCommand()
@@ -1259,36 +1288,7 @@ func (a *App) applyAgentStreamEvent(event client.StreamEventEnvelope) bool {
 		}
 		state = fetched
 	}
-	changed := a.applyAgentStateToRuntime(state)
-	if a.home.AgentsModalVisible() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		hints := make([]string, 0, len(state.Profiles)+2)
-		homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
-		hints = append(hints, homeProvider)
-		for _, profile := range state.Profiles {
-			hints = append(hints, profile.Provider)
-		}
-		settings, err := a.api.GetUISettings(ctx)
-		if err != nil {
-			return false
-		}
-		modalState := enrichSystemAgentModels(state, settings, a.homeModel)
-		resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
-		a.home.SetAgentsModalData(mapAgentsModalData(
-			modalState,
-			resolvedModels,
-			strings.TrimSpace(homeProvider),
-			strings.TrimSpace(homeModelName),
-			strings.TrimSpace(homeThinking),
-			a.homeModel.ModelProfiles,
-			a.homeModel.DefaultModelProfileID,
-			a.homeModel.ActiveModelProfile.ProfileID,
-		))
-		a.home.SetAgentsModalLoading(false)
-		changed = true
-	}
-	return changed
+	return a.applyAgentStateToRuntime(state)
 }
 
 func decodeAgentStateFromStreamEvent(event client.StreamEventEnvelope) client.AgentState {
@@ -1839,6 +1839,7 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 		if a.route == "chat" {
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			a.chat = nil
 		}
 		if a.route == "home" {
@@ -1874,50 +1875,27 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 	}
 	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceSelect) {
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
+		if a.homeInteractionActive() {
+			return true
 		}
-		if a.workspaceCycleHotkeyBlocked() {
+		if a.workspaceSwitchHotkeyBlocked() {
 			return true
 		}
 		a.showWorkspaceSelector()
 		return true
 	}
-	if keybinds.Match(ev, ui.KeybindGlobalWorkspacePrev) {
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
-		}
-		if a.workspaceCycleHotkeyBlocked() {
-			return true
-		}
-		a.cycleWorkspaceBy(-1)
-		return true
-	}
 	for slot := 1; slot <= ui.WorkspaceSlotCount; slot++ {
 		id, ok := ui.WorkspaceSlotKeybindID(slot)
-		if !ok {
+		if !ok || !keybinds.Match(ev, id) {
 			continue
 		}
-		if !keybinds.Match(ev, id) {
-			continue
+		if a.homeInteractionActive() {
+			return true
 		}
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
-		}
-		if a.workspaceCycleHotkeyBlocked() {
+		if a.workspaceSwitchHotkeyBlocked() {
 			return true
 		}
 		a.activateWorkspaceSlot(slot)
-		return true
-	}
-	if keybinds.Match(ev, ui.KeybindGlobalWorkspaceNext) {
-		if a.route == "home" && a.homeInteractionActive() {
-			return false
-		}
-		if a.workspaceCycleHotkeyBlocked() {
-			return true
-		}
-		a.cycleWorkspaceBy(1)
 		return true
 	}
 	if keybinds.Match(ev, ui.KeybindGlobalCycleProfiles) {
@@ -1959,12 +1937,14 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 	if keybinds.Match(ev, ui.KeybindGlobalShowBackground) {
 		if a.route == "chat" {
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			a.chat = nil
 			return true
 		}
 		if a.route == "v3chat" {
 			a.closeV3Chat()
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			return true
 		}
 	}
@@ -2138,6 +2118,7 @@ func (a *App) executeCommand(raw string) {
 		if a.route == "v3chat" && a.v3Chat != nil {
 			a.closeV3Chat()
 			a.route = "home"
+			a.home.SelectNextHomeTip()
 			a.home.SetStatus("home")
 			return
 		}
@@ -2146,6 +2127,7 @@ func (a *App) executeCommand(raw string) {
 			return
 		}
 		a.route = "home"
+		a.home.SelectNextHomeTip()
 		a.chat = nil
 		a.home.SetStatus("home")
 	case "reload":
@@ -2162,8 +2144,10 @@ func (a *App) executeCommand(raw string) {
 		a.handleSessionsCommand(args)
 	case "alerts", "notifications":
 		a.handleAlertsCommand(args)
+	case "actions":
+		a.handleActionsCommand(args)
 	case "new":
-		a.handleNewCommand()
+		a.handleNewCommand(raw)
 	case "plan":
 		a.handlePlanCommand(args)
 	case "task":
@@ -2178,7 +2162,7 @@ func (a *App) executeCommand(raw string) {
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus("unknown command: /compact")
 	case "commit":
-		a.handleCommitCommand(args)
+		a.handleCommitCommand(raw)
 	case "codex":
 		a.handleCodexCommand(args)
 	case "workspace":
@@ -2191,8 +2175,16 @@ func (a *App) executeCommand(raw string) {
 		a.handlePermissionsCommand(args)
 	case "output":
 		a.handleOutputCommand(args)
-	case "worktrees", "wt":
+	case "worktree":
+		a.handleWorktreePrimerCommand(raw)
+	case "worktrees":
 		a.handleWorktreesCommand(args)
+	case "wt":
+		if _, matched, err := v3chat.ParseWorktreeCommand(raw); matched && err == nil {
+			a.handleWorktreePrimerCommand(raw)
+		} else {
+			a.handleWorktreesCommand(args)
+		}
 	case "mode":
 		a.handleModeCommand(args)
 	case "profiles":
@@ -2207,6 +2199,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleHeaderCommand(args)
 	case "thinking":
 		a.handleThinkingCommand(args)
+	case "tips":
+		a.handleTipsCommand(args)
 	case "theme", "themes":
 		a.handleThemesCommand(args)
 	case "mouse":
@@ -2235,18 +2229,23 @@ func (a *App) showHelp() {
 	keybinds := a.activeKeyBindings()
 	lines := []string{
 		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
-		"/new   (open a new session draft; create on first message)",
+		"/new [<prompt>]   (open a local session draft; a prompt starts immediately)",
+		"/new plan [<prompt>]   (open a direct Plan-mode draft or start)",
+		"/new worktree|wp [<prompt>]   (route an explicit worktree start)",
 		"/home   (return to home from chat)",
 		"/plan   (show or close the existing session plan)",
 		"/task <request>   (queue a durable AI task in automatic mode)",
 		"/task plan <request>   (queue a durable AI task in plan mode)",
-		"/commit [instructions]   (launch memory agent in background to review diffs and commit)",
+		"/commit <message>   (stage all changes and commit with the supplied message)",
+		"/commit ai   (generate a commit message with the existing AI Commit workflow, then commit)",
 		"/git   (show authoritative Git status for the active workspace)",
 		"/codex [refresh]   (Codex account usage and reset credits)",
 		"/workspace   (open workspace manager)",
 		"/workspaces   (alias for /workspace)",
 		"/workspace save [path|#n]   (open workspace setup)",
 		"/add-dir [path]   (open workspace linked-directory flow)",
+		"/actions   (open the active workspace Action quick list)",
+		"/actions list   (alias for /actions)",
 		"/workspace scan [query]",
 		"/output   (open full bash output viewer)",
 		"/permissions [on|off]   (toggle global permission prompts)",
@@ -2259,8 +2258,9 @@ func (a *App) showHelp() {
 		"/permissions reset",
 		"/permissions explain <tool> [arguments json or text]",
 		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
+		"/worktree on|off   (switch the current local draft between direct and routed worktree start)",
+		"/wt on|off   (short local draft control; other forms use /worktrees management)",
 		"/worktrees   (open worktrees menu)",
-		"/wt   (alias for /worktrees)",
 		"/worktrees new   (create a worktree session with title and editable branch)",
 		"/worktrees [new|open|off|status|branch <name>]",
 		"/agents   (open agent cards and model setup)",
@@ -2268,19 +2268,6 @@ func (a *App) showHelp() {
 		"/mode [plan|action|status]   (Plan on/off for new chats)",
 		"/profiles   (quick-switch the saved model profile used by new sessions)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
-		fmt.Sprintf("%s   (open workspace selector)", keybinds.Label(ui.KeybindGlobalWorkspaceSelect)),
-		fmt.Sprintf("%s   (cycle workspace previous)", keybinds.Label(ui.KeybindGlobalWorkspacePrev)),
-		fmt.Sprintf("%s   (cycle workspace next)", keybinds.Label(ui.KeybindGlobalWorkspaceNext)),
-		fmt.Sprintf("%s   (activate workspace slot 1)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot1)),
-		fmt.Sprintf("%s   (activate workspace slot 2)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot2)),
-		fmt.Sprintf("%s   (activate workspace slot 3)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot3)),
-		fmt.Sprintf("%s   (activate workspace slot 4)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot4)),
-		fmt.Sprintf("%s   (activate workspace slot 5)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot5)),
-		fmt.Sprintf("%s   (activate workspace slot 6)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot6)),
-		fmt.Sprintf("%s   (activate workspace slot 7)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot7)),
-		fmt.Sprintf("%s   (activate workspace slot 8)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot8)),
-		fmt.Sprintf("%s   (activate workspace slot 9)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot9)),
-		fmt.Sprintf("%s   (activate workspace slot 10)", keybinds.Label(ui.KeybindGlobalWorkspaceSlot10)),
 		fmt.Sprintf("%s   (cycle saved model profiles)", keybinds.Label(ui.KeybindGlobalCycleProfiles)),
 		"/themes   (open theme modal with live preview)",
 		"/themes [open|list|set|next|prev|status|create|edit|delete|slots]",
@@ -2291,6 +2278,7 @@ func (a *App) showHelp() {
 		"/swarm [set <name>|name <name>|<name>]   (change primary swarm display name)",
 		updateHelpLine(a.startupDevMode()),
 		"/thinking [on|off|toggle|status]   (show or hide reasoning/thinking tags)",
+		"/tips [on|off|toggle|status]   (show or hide launch tips)",
 		"/mouse [on|off|toggle|status]   (mouse click capture)",
 		fmt.Sprintf("%s   (toggle mouse click capture)", keybinds.Label(ui.KeybindGlobalToggleMouse)),
 		"/voice [open|device <id>|stt [provider] [model]|profile [list|use <id>|upsert <id> <adapter> [model]|whisper [id] [model]|delete <id>]|tts [provider] [voice]|test [seconds]]",
@@ -2517,12 +2505,63 @@ func firstNonZeroInt64(values ...int64) int64 {
 	return 0
 }
 
-func (a *App) handleNewCommand() {
-	if err := a.openChatSession("New Session", ""); err != nil {
+func (a *App) handleNewCommand(raw string) {
+	command, matched := v3chat.ParseNewCommand(raw)
+	if !matched {
 		a.home.ClearCommandOverlay()
-		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
+		a.home.SetStatus("usage: /new [worktree|plan|wp] [<prompt>]")
 		return
 	}
+	intent := a.home.SessionIntent()
+	intent.InitialPrompt = strings.TrimSpace(command.Prompt)
+	intent.Mode = map[bool]string{true: "plan", false: "auto"}[command.PlanModeRequested]
+	intent.WorktreeRequested = command.ManagedWorktreeRequested
+	route := a.selectedChatRouteForWorkspace(a.activeContextPath())
+	if err := a.openNewV3Chat(intent, route, ""); err != nil {
+		a.home.ClearCommandOverlay()
+		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
+	}
+}
+
+func (a *App) handleWorktreePrimerCommand(raw string) {
+	command, matched, err := v3chat.ParseWorktreeCommand(raw)
+	if !matched {
+		return
+	}
+	if err != nil {
+		a.home.ClearCommandOverlay()
+		a.home.SetStatus(err.Error())
+		return
+	}
+	if a.route == "home" {
+		a.home.ClearCommandOverlay()
+		a.home.SetWorktreeRequested(command.Enabled)
+		return
+	}
+	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil {
+		state := a.v3Chat.Runtime().Store().Snapshot()
+		if strings.TrimSpace(state.Session.ID) != "" {
+			a.home.SetStatus("worktree priming is available only on home or a new session draft")
+			a.v3Chat.SetStatus(a.home.Status())
+			return
+		}
+		intent := a.home.SessionIntent()
+		intent.InitialPrompt = ""
+		intent.Mode = emptyFallback(strings.TrimSpace(state.Session.Mode), intent.Mode)
+		intent.WorktreeRequested = command.Enabled
+		route := a.selectedChatRouteForWorkspace(a.activeContextPath())
+		if err = a.openNewV3Chat(intent, route, ""); err != nil {
+			a.home.SetStatus(err.Error())
+			a.v3Chat.SetStatus(a.home.Status())
+			return
+		}
+		status := "Worktree: " + map[bool]string{true: "on", false: "off"}[command.Enabled]
+		a.home.SetStatus(status)
+		a.v3Chat.SetStatus(status)
+		return
+	}
+	a.home.ClearCommandOverlay()
+	a.home.SetStatus("worktree priming is available only on home or a new session draft")
 }
 
 func (a *App) handlePlanCommand(args []string) {
@@ -2643,6 +2682,7 @@ func (a *App) handleArchiveCommand(args []string) {
 			return
 		}
 		a.route = "home"
+		a.home.SelectNextHomeTip()
 		a.home.SetStatus("session archived")
 		a.requestV3ChatRender()
 	}()
@@ -2692,92 +2732,101 @@ func (a *App) handleCompactCommand(args []string) {
 	a.home.SetStatus("compacting session context")
 }
 
-func (a *App) handleCommitCommand(args []string) {
+func (a *App) handleCommitCommand(raw string) {
 	a.home.ClearCommandOverlay()
-	if a.route != "chat" || a.chat == nil {
-		a.home.SetStatus("commit command is available in chat: /commit [instructions]")
+	command, matched, err := v3chat.ParseCommitCommand(raw)
+	if !matched {
+		return
+	}
+	if err != nil {
+		a.setCommitCommandStatus(err.Error(), true)
+		return
+	}
+	if a.route != "v3chat" || a.v3Chat == nil {
+		a.setCommitCommandStatus("commit command is available in V3 chat: /commit <message>|ai", true)
 		return
 	}
 	if a.api == nil {
-		a.home.SetStatus("/commit failed: api client is not configured")
+		a.setCommitCommandStatus("/commit failed: api client is not configured", true)
 		return
 	}
-	parentSessionID := strings.TrimSpace(a.chat.SessionID())
-	if parentSessionID == "" {
-		a.home.SetStatus("/commit failed: session id is unavailable")
+	sessionID := strings.TrimSpace(a.v3Chat.SessionID())
+	if sessionID == "" {
+		a.setCommitCommandStatus("/commit failed: session id is unavailable", true)
+		return
+	}
+	workspacePath := strings.TrimSpace(a.activeContextPath())
+	if workspacePath == "" {
+		a.setCommitCommandStatus("/commit failed: workspace path is unavailable", true)
 		return
 	}
 
-	instructions := strings.TrimSpace(strings.Join(args, " "))
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	status := "committing changes..."
+	if command.AI {
+		status = "generating AI commit message..."
+	}
+	a.setCommitCommandStatus(status, false)
+	go a.runCommitCommand(command, workspacePath, sessionID)
+}
+
+func (a *App) runCommitCommand(command v3chat.CommitCommand, workspacePath, sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
-	parentSummary, err := a.loadSessionSummary(ctx, parentSessionID)
+	message := command.Message
+	if command.AI {
+		suggestion, err := a.api.SuggestWorkspaceCommitMessage(ctx, workspacePath, sessionID)
+		if err != nil {
+			a.finishCommitCommand("", fmt.Errorf("generate AI commit message: %w", err))
+			return
+		}
+		message = strings.TrimSpace(suggestion.Message)
+		if message == "" {
+			a.finishCommitCommand("", errors.New("AI commit message is empty"))
+			return
+		}
+	}
+	response, err := a.api.CommitWorkspaceChanges(ctx, workspacePath, message, sessionID)
 	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/commit failed: load parent session: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("/commit failed: load parent session: %v", err))
+		a.finishCommitCommand("", err)
 		return
 	}
-	a.upsertHomeSessionSummary(parentSummary)
+	success := "committed changes"
+	if summary := strings.TrimSpace(response.Summary); summary != "" {
+		success = summary
+	}
+	a.finishCommitCommand(success, nil)
+}
 
-	childSummary, err := a.createBackgroundCommitSession(ctx, parentSessionID, parentSummary, instructions)
-	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/commit failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("/commit failed: %v", err))
+func (a *App) setCommitCommandStatus(status string, failed bool) {
+	if a == nil {
 		return
 	}
-	launch, err := a.startBackgroundCommitRun(ctx, childSummary, instructions)
+	if a.home != nil {
+		a.home.SetStatus(status)
+	}
+	if a.v3Chat != nil {
+		a.v3Chat.SetStatus(status)
+	}
+	if failed {
+		a.showToast(ui.ToastError, status)
+	}
+}
+
+func (a *App) finishCommitCommand(status string, err error) {
 	if err != nil {
-		a.home.SetStatus(fmt.Sprintf("/commit failed: %v", err))
-		a.showToast(ui.ToastError, fmt.Sprintf("/commit failed: %v", err))
+		status = fmt.Sprintf("/commit failed: %v", err)
+		a.setCommitCommandStatus(status, true)
+	} else {
+		a.setCommitCommandStatus(status, false)
+		a.showToast(ui.ToastSuccess, status)
+	}
+	if a == nil {
 		return
 	}
-
-	execCtx := a.commitExecutionContext(childSummary)
-	launchRecord := model.BackgroundSessionSummary{
-		ChildSessionID:      strings.TrimSpace(childSummary.ID),
-		ParentSessionID:     parentSessionID,
-		ParentTitle:         strings.TrimSpace(parentSummary.Title),
-		ChildTitle:          strings.TrimSpace(childSummary.Title),
-		TargetKind:          "background",
-		TargetName:          commitBackgroundAgentName,
-		Status:              "running",
-		PendingPermissions:  0,
-		WorkspacePath:       strings.TrimSpace(execCtx.WorkspacePath),
-		WorkspaceName:       strings.TrimSpace(childSummary.WorkspaceName),
-		CWD:                 strings.TrimSpace(execCtx.CWD),
-		WorktreeMode:        strings.TrimSpace(execCtx.WorktreeMode),
-		WorktreeRootPath:    strings.TrimSpace(execCtx.WorktreeRootPath),
-		WorktreeBranch:      strings.TrimSpace(execCtx.WorktreeBranch),
-		WorktreeBaseBranch:  strings.TrimSpace(execCtx.WorktreeBaseBranch),
-		LaunchMode:          "background",
-		Instructions:        instructions,
-		Background:          true,
-		StartedAtUnixMS:     time.Now().UnixMilli(),
-		LastUpdatedAtUnixMS: time.Now().UnixMilli(),
+	if a.screen != nil {
+		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptGitStatusReady))
 	}
-	childSummary.Metadata = mergeMetadataMaps(childSummary.Metadata, map[string]any{
-		"launch_mode": "background",
-		"background":  true,
-		"target_kind": launchRecord.TargetKind,
-		"target_name": launchRecord.TargetName,
-	})
-	a.setBackgroundSessionSummary(launchRecord)
-	a.upsertHomeSessionSummary(childSummary)
-	a.updateHomeSessionLifecycle(childSummary.ID, client.SessionLifecycleSnapshot{
-		SessionID:      childSummary.ID,
-		RunID:          strings.TrimSpace(launch.RunID),
-		Active:         true,
-		Phase:          "running",
-		UpdatedAt:      time.Now().UnixMilli(),
-		StartedAt:      time.Now().UnixMilli(),
-		OwnerTransport: strings.TrimSpace(launch.OwnerTransport),
-	})
-	a.refreshBackgroundSessions()
-
-	status := fmt.Sprintf("background /commit launched: %s", emptyFallback(strings.TrimSpace(childSummary.Title), childSummary.ID))
-	a.home.SetStatus(status)
-	a.chat.SetStatus(status)
-	a.chat.ShowToast(ui.ToastSuccess, status)
+	a.requestV3ChatRender()
 }
 
 const tuiRetiredSessionAPIMessage = "TUI v1/v2 session APIs are retired; use a v3 session"
@@ -2814,163 +2863,6 @@ func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBran
 	intent.InitialPrompt = strings.TrimSpace(initialPrompt)
 	route := a.selectedChatRouteForWorkspace(a.activeContextPath())
 	return a.openNewV3Chat(intent, route, worktreeBranchSuffix)
-}
-
-// openLegacyChatSessionWithWorktree is retained only for old app-shell callers
-// outside the new homepage/V3 page route. It is not used by production home.
-func (a *App) openLegacyChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBranchSuffix string) error {
-	if a.api == nil {
-		return errors.New("api client is not configured")
-	}
-	workspacePath := strings.TrimSpace(a.activeContextPath())
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		return errors.New("workspace path is required")
-	}
-
-	activeWorkspaceName := ""
-	if a.home != nil {
-		activeWorkspaceName = strings.TrimSpace(a.home.ActiveWorkspaceName())
-	}
-	workspaceName := a.contextDisplayNameForPath(workspacePath, activeWorkspaceName)
-	route := a.selectedChatRouteForWorkspace(workspacePath)
-	knownWorkspacePath := strings.TrimSpace(a.activeWorkspacePath())
-	useV3Primary := knownWorkspacePath != "" && isPrimaryHostChatRoute(route) && strings.TrimSpace(route.WorkspaceBindingID) != ""
-	useV3Directory := knownWorkspacePath == ""
-	if !useV3Primary && !useV3Directory && strings.TrimSpace(route.WorkspaceBindingID) == "" {
-		return errors.New("workspace binding id is required")
-	}
-	if !useV3Primary && !useV3Directory {
-		return errTUIRetiredSessionAPI("create session for non-v3 TUI route")
-	}
-	createSwarmID := createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget)
-
-	title := strings.TrimSpace(titleSeed)
-	if title == "" {
-		title = "New Session"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	modelProvider, modelName, thinking, serviceTier, contextMode := a.home.ModelState()
-	preference := client.ModelPreference{
-		Provider:    strings.TrimSpace(modelProvider),
-		Model:       strings.TrimSpace(modelName),
-		Thinking:    strings.TrimSpace(thinking),
-		ServiceTier: strings.TrimSpace(serviceTier),
-		ContextMode: strings.TrimSpace(contextMode),
-	}
-	if strings.TrimSpace(preference.Provider) == "" || strings.TrimSpace(preference.Model) == "" || strings.TrimSpace(preference.Thinking) == "" {
-		return errors.New("new sessions require an explicit draft model selection")
-	}
-	createMode := "auto"
-	if a.home != nil {
-		createMode = a.home.SessionMode()
-	}
-	createMode = normalizeAppSessionMode(createMode)
-	if createMode != "auto" {
-		createMode = "plan"
-	}
-
-	worktreeMode := "off"
-	var worktreeUseCurrentBranch *bool
-	worktreeBaseBranch := ""
-	worktreeBranchName := ""
-	if useV3Primary {
-		settings, err := a.api.GetWorktreeSettings(ctx, workspacePath)
-		if err != nil {
-			return fmt.Errorf("get worktree settings: %w", err)
-		}
-		if settings.Enabled || strings.TrimSpace(worktreeBranchSuffix) != "" {
-			worktreeMode = "on"
-			useCurrentBranch := settings.UseCurrentBranch
-			if !settings.Enabled && strings.TrimSpace(worktreeBranchSuffix) != "" {
-				useCurrentBranch = true
-			}
-			worktreeUseCurrentBranch = &useCurrentBranch
-			if !useCurrentBranch {
-				worktreeBaseBranch = strings.TrimSpace(settings.BaseBranch)
-			}
-			worktreeBranchName = normalizeWorktreeBranchPrefix(settings.BranchName)
-			if suffix := strings.Trim(strings.TrimSpace(worktreeBranchSuffix), "/"); suffix != "" {
-				worktreeBranchName = strings.Trim(worktreeBranchName, "/") + "/" + suffix
-			}
-		}
-	}
-
-	createOptions := client.SessionCreateOptions{
-		Title:                    title,
-		WorkspacePath:            workspacePath,
-		WorkspaceName:            workspaceName,
-		WorkspaceBindingID:       route.WorkspaceBindingID,
-		SwarmID:                  createSwarmID,
-		TargetKind:               route.TargetKind,
-		TargetRelationship:       route.TargetRelationship,
-		Mode:                     createMode,
-		AgentName:                emptyFallback(strings.TrimSpace(a.homeModel.ActiveAgent), "swarm"),
-		Preference:               preference,
-		Metadata:                 nil,
-		WorktreeMode:             worktreeMode,
-		WorktreeUseCurrentBranch: worktreeUseCurrentBranch,
-		WorktreeBaseBranch:       worktreeBaseBranch,
-		WorktreeBranchName:       worktreeBranchName,
-	}
-	var createdV3 client.SessionV3Hydrated
-	var err error
-	if useV3Directory {
-		createOptions.CWDPath = workspacePath
-		createdV3, err = a.api.CreateSessionV3TUIWithOptions(ctx, createOptions)
-	} else {
-		createdV3, err = a.api.CreateSessionV3WithOptions(ctx, createOptions)
-	}
-	if err != nil {
-		return err
-	}
-	session := createdV3.Session
-	activeRunIntent := cloneClientSessionV3RunIntent(createdV3.ActiveRunIntent)
-	warning := strings.TrimSpace(session.Warning)
-	created := model.SessionSummary{
-		ID:                         strings.TrimSpace(session.ID),
-		WorkspacePath:              strings.TrimSpace(session.WorkspacePath),
-		WorkspaceName:              strings.TrimSpace(session.WorkspaceName),
-		Title:                      strings.TrimSpace(session.Title),
-		Mode:                       strings.TrimSpace(session.Mode),
-		Metadata:                   cloneMetadataMap(session.Metadata),
-		Preference:                 session.Preference,
-		WorktreeEnabled:            session.WorktreeEnabled,
-		WorktreeRootPath:           strings.TrimSpace(session.WorktreeRootPath),
-		WorktreeBaseBranch:         strings.TrimSpace(session.WorktreeBaseBranch),
-		WorktreeBranch:             strings.TrimSpace(session.WorktreeBranch),
-		SessionAPI:                 strings.TrimSpace(session.SessionAPI),
-		ActiveRunIntent:            activeRunIntent,
-		LastEventSeq:               session.LastEventSeq,
-		ProjectionHighWatermarkSeq: session.ProjectionHighWatermarkSeq,
-	}
-	if created.WorkspacePath == "" {
-		created.WorkspacePath = workspacePath
-	}
-	if created.WorkspaceName == "" {
-		created.WorkspaceName = workspaceName
-	}
-	created.WorkspaceName = a.contextDisplayNameForPath(created.WorkspacePath, created.WorkspaceName)
-	if lifecycle := v3RunIntentSessionLifecycle(created.ID, activeRunIntent); lifecycle != nil {
-		created.Lifecycle = lifecycle
-	}
-	if created.Title == "" {
-		created.Title = title
-	}
-	if err := a.openSessionSummary(created, strings.TrimSpace(initialPrompt)); err != nil {
-		return err
-	}
-	if warning != "" {
-		if a.chat != nil {
-			a.chat.SetStatus(warning)
-		}
-		a.showToast(ui.ToastWarning, warning)
-	}
-	return nil
 }
 
 func (a *App) openExistingSession(summary model.SessionSummary) error {
@@ -4338,6 +4230,9 @@ func (a *App) consumeHomeOverlayActions() {
 			a.handleWorkspaceModalAction(action)
 			processed = true
 		}
+		if a.consumeWorkspaceActionSelection() {
+			processed = true
+		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {
 			a.handleWorktreesModalAction(action)
 			processed = true
@@ -4410,6 +4305,9 @@ func (a *App) consumeHomeActions() {
 		}
 		if action, ok := a.home.PopWorkspaceModalAction(); ok {
 			a.handleWorkspaceModalAction(action)
+			processed = true
+		}
+		if a.consumeWorkspaceActionSelection() {
 			processed = true
 		}
 		if action, ok := a.home.PopWorktreesModalAction(); ok {
@@ -5315,7 +5213,7 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 	case ui.HomeActionOpenProfilesModal:
 		a.openProfilesModal()
 	case ui.HomeActionSelectModelProfile:
-		a.selectHomeModelProfile(action.ModelProfileID)
+		_ = a.selectHomeModelProfile(action.ModelProfileID)
 	case ui.HomeActionRefreshCodexUsage:
 		a.refreshHomeCodexAccount()
 	case ui.HomeActionConsumeCodexReset:
@@ -5330,6 +5228,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.openAuthModal()
 	case ui.HomeActionSaveOnboarding:
 		a.saveOnboarding(action.Username, action.SwarmName)
+	case ui.HomeActionCreateOnboardingWorkspace:
+		a.createOnboardingWorkspace(action.WorkspacePath)
 	}
 }
 
@@ -5371,7 +5271,7 @@ func (a *App) consumeBackgroundSessionsModalSelection() bool {
 }
 
 func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
-	if !a.home.AuthModalVisible() {
+	if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
 		return
 	}
 	switch action.Kind {
@@ -5450,6 +5350,9 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 			return
 		}
 		a.refreshAuthModalData("")
+		if a.home.OnboardingProviderActive() {
+			a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+		}
 		if record.Connection != nil {
 			method := strings.TrimSpace(record.Connection.Method)
 			if method == "" {
@@ -5535,9 +5438,14 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 			a.home.SetAuthModalError(fmt.Sprintf("copy failed: %v", err))
 			return
 		}
-		if a.home.AuthModalEditorMode() == "codex_browser_pending" {
+		switch a.home.AuthModalEditorMode() {
+		case "codex_browser_pending":
 			a.home.SetAuthModalLoading(true)
 			a.home.SetAuthModalStatus("Auth URL copied to clipboard. Finish sign-in in your browser; this modal will close automatically after confirmation.")
+			return
+		case "codex_device_pending":
+			a.home.SetAuthModalLoading(true)
+			a.home.SetAuthModalStatus("Device sign-in value copied. Complete approval on another device; Swarm is still waiting for confirmation.")
 			return
 		}
 		a.home.SetAuthModalLoading(false)
@@ -5658,12 +5566,19 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			}
 		}
 		if action.MakeCurrent {
+			a.homeModel.WorkspaceSetupPath = ""
 			a.syncActiveWorkspaceSelection(resolution)
 		}
 		a.refreshWorkspaceModalData("")
 		status := fmt.Sprintf("workspace saved: %s", displayPath(resolution.ResolvedPath))
+		if action.MakeCurrent {
+			status = fmt.Sprintf("workspace saved and switched: %s", displayPath(resolution.ResolvedPath))
+		}
 		if linkedDir != "" {
 			status = fmt.Sprintf("workspace saved and directory linked: %s", displayPath(resolution.ResolvedPath))
+			if action.MakeCurrent {
+				status = fmt.Sprintf("workspace saved, directory linked, and switched: %s", displayPath(resolution.ResolvedPath))
+			}
 		}
 		a.home.SetWorkspaceModalDirectory(a.activeContextPath())
 		a.home.SetWorkspaceModalStatus(status)
@@ -5827,231 +5742,58 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 	if !a.home.AgentsModalVisible() {
 		return
 	}
-	switch action.Kind {
-	case ui.AgentsModalActionRefresh:
-		a.refreshAgentsModalData("Refreshing agent profiles...")
-	case ui.AgentsModalActionSetProfileDefault:
-		profileID := strings.TrimSpace(action.ModelProfileID)
-		if profileID == "" {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError("profile id is required")
+	if action.Kind == ui.AgentsModalActionSave {
+		if a.api == nil {
+			a.home.SetAgentsModalError("agent model settings API is unavailable")
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		profile, err := a.api.SetDefaultModelProfile(ctx, profileID)
-		if err != nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("set default profile failed: %v", err))
-			return
-		}
-		state, err := a.api.ListModelProfiles(ctx)
-		if err != nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("default profile saved, but refresh failed: %v", err))
-			a.queueReload(false)
-			return
-		}
-		a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
-		label := emptyFallback(strings.TrimSpace(profile.Name), profileID)
-		a.refreshAgentsModalData("account default profile: " + label)
-		a.queueReload(false)
-	case ui.AgentsModalActionSetUtilityAI:
-		input := action.UtilityAI
-		if input == nil || strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.Model) == "" {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError("choose a provider and model for Utility AI")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		result, err := a.api.RestoreAgentDefaults(ctx, client.ProviderDefaultsPreview{
-			UtilityProvider:   strings.TrimSpace(input.Provider),
-			UtilityModel:      strings.TrimSpace(input.Model),
-			UtilityThinking:   strings.TrimSpace(input.Thinking),
-			OverwriteExplicit: input.OverwriteExplicit,
-		})
-		if err != nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("set Utility AI failed: %v", err))
-			return
-		}
-		status := fmt.Sprintf("set Utility AI baseline %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
-		if input.OverwriteExplicit {
-			status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
-		}
-		if result.ProviderDefaultsPreview != nil {
-			targets := result.ProviderDefaultsPreview.UtilityBaselineAgents
-			if len(targets) == 0 && len(result.ProviderDefaultsPreview.CustomUtilityAgents) == 0 {
-				targets = result.ProviderDefaultsPreview.UtilityAgents
-			}
-			if input.OverwriteExplicit {
-				if len(result.ProviderDefaultsPreview.UtilityAgents) > 0 {
-					status = fmt.Sprintf("cleared Utility AI overrides and set %s/%s for %s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model), strings.Join(result.ProviderDefaultsPreview.UtilityAgents, ", "))
-				}
-			} else {
-				if len(targets) > 0 {
-					status = fmt.Sprintf("set Utility AI baseline %s/%s for %s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model), strings.Join(targets, ", "))
-				} else if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
-					status = fmt.Sprintf("no blank Utility AI agents to set for %s/%s", strings.TrimSpace(input.Provider), model.DisplayModelName(input.Provider, input.Model))
-				}
-				if len(result.ProviderDefaultsPreview.CustomUtilityAgents) > 0 {
-					status += fmt.Sprintf("; preserved overrides for %s", strings.Join(result.ProviderDefaultsPreview.CustomUtilityAgents, ", "))
-				}
-			}
-		}
-		a.home.SetAgentsModalStatus(status)
-		a.refreshAgentsModalData("")
-		a.queueReload(false)
-	case ui.AgentsModalActionResetDefaults:
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		result, err := a.api.ResetAgentDefaults(ctx)
-		if err != nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("reset defaults failed: %v", err))
-			return
-		}
-		a.home.SetAgentsModalStatus(fmt.Sprintf("reset agents to built-in defaults: %d profiles", len(result.Profiles)))
-		a.refreshAgentsModalData("")
-		a.queueReload(false)
-	case ui.AgentsModalActionActivatePrimary:
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		active, _, err := a.api.ActivatePrimaryAgent(ctx, action.Name)
-		if err != nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("activate primary failed: %v", err))
-			return
-		}
-		a.home.SetAgentsModalStatus(fmt.Sprintf("active primary: %s", emptyFallback(active, action.Name)))
-		a.queueReload(false)
-		a.syncChatAgentRuntime()
-		a.refreshAgentsModalData("")
-	case ui.AgentsModalActionUpsert:
-		if action.Upsert == nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError("agent upsert payload is missing")
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		if isCloneSystemAgentName(action.Upsert.Name) || isFinderSystemAgentName(action.Upsert.Name) || isDesignerSystemAgentName(action.Upsert.Name) {
-			label := "Finder"
-			settingsField := "finder"
-			if isCloneSystemAgentName(action.Upsert.Name) {
-				label = "Coder"
-				settingsField = "coder"
-			} else if isDesignerSystemAgentName(action.Upsert.Name) {
-				label = "Designer"
-				settingsField = "designer"
-			}
-			settings, err := a.api.GetUISettings(ctx)
-			if err != nil {
-				a.home.SetAgentsModalLoading(false)
-				a.home.SetAgentsModalError(fmt.Sprintf("load %s settings failed: %v", label, err))
+		patch := client.AgentModelSettingsPatch{}
+		if strings.EqualFold(strings.TrimSpace(action.Agent), "swarm") {
+			if action.Swarm == nil {
+				a.home.SetAgentsModalError("complete Swarm Default and Plan assignments are required")
 				return
 			}
-			selection := client.UICompactAgentSettings{
-				Provider:    strings.TrimSpace(action.Upsert.Provider),
-				Model:       strings.TrimSpace(action.Upsert.Model),
-				Thinking:    strings.TrimSpace(action.Upsert.Thinking),
-				ServiceTier: strings.TrimSpace(action.Upsert.ServiceTier),
-			}
-			if settingsField == "coder" {
-				settings.Agents.Coder = selection
-			} else if settingsField == "designer" {
-				settings.Agents.Designer = selection
-			} else {
-				settings.Agents.Finder = selection
-			}
-			if _, err := a.api.UpdateUISettings(ctx, settings); err != nil {
-				a.home.SetAgentsModalLoading(false)
-				a.home.SetAgentsModalError(fmt.Sprintf("save %s model failed: %v", label, err))
+			patch.Swarm = action.Swarm
+		} else {
+			if action.Assignment == nil {
+				a.home.SetAgentsModalError("system agent assignment is required")
 				return
 			}
-			a.home.SetAgentsModalStatus(label + " single-model settings saved")
-			a.refreshAgentsModalData("")
-			a.queueReload(false)
-			return
+			systemPatch := &client.AgentModelSettingsSystemAgentsPatch{}
+			switch strings.ToLower(strings.TrimSpace(action.Agent)) {
+			case "compact":
+				systemPatch.Compact = action.Assignment
+			case "finder":
+				systemPatch.Finder = action.Assignment
+			case "coder":
+				systemPatch.Coder = action.Assignment
+			case "designer":
+				systemPatch.Designer = action.Assignment
+			case "router":
+				systemPatch.Router = action.Assignment
+			default:
+				a.home.SetAgentsModalError("unknown compiled system agent")
+				return
+			}
+			patch.SystemAgents = systemPatch
 		}
-		req := client.AgentUpsertRequest{
-			Name:        action.Upsert.Name,
-			Mode:        action.Upsert.Mode,
-			Description: action.Upsert.Description,
-			Prompt:      action.Upsert.Prompt,
-			Enabled:     action.Upsert.Enabled,
-		}
-		if strings.TrimSpace(action.Upsert.Mode) != "" ||
-			strings.TrimSpace(action.Upsert.Description) != "" ||
-			strings.TrimSpace(action.Upsert.Prompt) != "" ||
-			strings.TrimSpace(action.Upsert.Provider) != "" ||
-			strings.TrimSpace(action.Upsert.Model) != "" ||
-			strings.TrimSpace(action.Upsert.Thinking) != "" ||
-			strings.TrimSpace(action.Upsert.DefaultSessionMode) != "" ||
-			strings.TrimSpace(action.Upsert.ModelMode) != "" ||
-			strings.TrimSpace(action.Upsert.PlanProvider) != "" ||
-			strings.TrimSpace(action.Upsert.PlanModel) != "" ||
-			strings.TrimSpace(action.Upsert.AutoProvider) != "" ||
-			strings.TrimSpace(action.Upsert.AutoModel) != "" ||
-			action.Upsert.Enabled == nil {
-			// Full editor submits must preserve explicit "inherit" clears for provider/model/thinking.
-			req.Provider = stringPtr(action.Upsert.Provider)
-			req.Model = stringPtr(action.Upsert.Model)
-			req.Thinking = stringPtr(action.Upsert.Thinking)
-			req.DefaultSessionMode = strings.TrimSpace(action.Upsert.DefaultSessionMode)
-			req.ModelMode = strings.TrimSpace(action.Upsert.ModelMode)
-			req.PlanProvider = stringPtr(action.Upsert.PlanProvider)
-			req.PlanModel = stringPtr(action.Upsert.PlanModel)
-			req.PlanThinking = stringPtr(action.Upsert.PlanThinking)
-			req.PlanServiceTier = stringPtr(action.Upsert.PlanServiceTier)
-			req.AutoProvider = stringPtr(action.Upsert.AutoProvider)
-			req.AutoModel = stringPtr(action.Upsert.AutoModel)
-			req.AutoThinking = stringPtr(action.Upsert.AutoThinking)
-			req.AutoServiceTier = stringPtr(action.Upsert.AutoServiceTier)
-		}
-		profile, _, err := a.api.UpsertAgent(ctx, req)
-		if err != nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("save agent failed: %v", err))
-			return
-		}
-		a.home.SetAgentsModalStatus(fmt.Sprintf("agent saved: %s (%s)", profile.Name, profile.Mode))
-		a.refreshAgentsModalData("")
-		a.queueReload(false)
-	case ui.AgentsModalActionDelete:
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		deleted, activePrimary, _, err := a.api.DeleteAgent(ctx, action.Name)
-		if err != nil {
-			a.home.SetAgentsModalLoading(false)
-			a.home.SetAgentsModalError(fmt.Sprintf("delete agent failed: %v", err))
+		if _, err := a.api.PatchAgentModelSettings(ctx, patch); err != nil {
+			a.home.SetAgentsModalError(fmt.Sprintf("save agent model settings failed: %v", err))
 			return
 		}
-		if strings.TrimSpace(activePrimary) == "" {
-			activePrimary = "swarm"
+		a.home.HideAgentsModal()
+		if a.route == "home" {
+			a.showToast(ui.ToastSuccess, "agent model settings saved")
 		}
-		a.home.SetAgentsModalStatus(fmt.Sprintf("agent deleted: %s (active primary: %s)", emptyFallback(deleted, action.Name), activePrimary))
-		a.refreshAgentsModalData("")
-		a.queueReload(false)
-	default:
-		a.home.SetAgentsModalLoading(false)
+		return
 	}
-}
-
-func isCloneSystemAgentName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "clone" || name == "coder" || name == "system-clone"
-}
-
-func isFinderSystemAgentName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "finder" || name == "system-finder"
-}
-
-func isDesignerSystemAgentName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	return name == "designer" || name == "system-designer"
+	if action.Kind == ui.AgentsModalActionRefresh {
+		a.refreshAgentsModalData("Refreshing agent model settings...")
+		return
+	}
+	a.home.SetAgentsModalLoading(false)
 }
 
 func (a *App) handleThemeModalAction(action ui.ThemeModalAction) {
@@ -6109,7 +5851,7 @@ func (a *App) startProviderLogin(login *ui.AuthModalLogin) {
 		return
 	}
 
-	if method != "auto" && method != "code" {
+	if method != "auto" && method != "code" && method != "device" {
 		method = "auto"
 	}
 
@@ -6131,7 +5873,7 @@ func (a *App) startProviderLogin(login *ui.AuthModalLogin) {
 	}
 
 	startCtx, startCancel := context.WithTimeout(context.Background(), 45*time.Second)
-	session, browserWarning, err := a.beginCodexBrowserLogin(startCtx, login, openBrowser)
+	session, browserWarning, err := a.beginCodexOAuthSession(startCtx, login, method, openBrowser)
 	startCancel()
 	if err != nil {
 		a.authLogging.Store(false)
@@ -6139,11 +5881,19 @@ func (a *App) startProviderLogin(login *ui.AuthModalLogin) {
 		a.home.SetAuthModalError(fmt.Sprintf("oauth login failed: %v", err))
 		return
 	}
-	a.home.StartAuthModalCodexBrowserPending(codexBrowserPendingStatus(browserWarning), session.AuthURL)
+	if method == "device" {
+		a.home.StartAuthModalCodexDevicePending(codexDevicePendingStatus(browserWarning), session.VerificationURL, session.UserCode)
+	} else {
+		a.home.StartAuthModalCodexBrowserPending(codexBrowserPendingStatus(browserWarning), session.AuthURL)
+	}
 	a.home.SetAuthModalLoading(true)
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+		timeout := 6 * time.Minute
+		if session.Method == "device" {
+			timeout = 16 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		result := a.runCodexOAuthLogin(ctx, session)
 		select {
@@ -6163,7 +5913,7 @@ func (a *App) consumeAuthLoginResult() {
 		if result.clearCodexPending {
 			a.codexPending = nil
 		}
-		if !a.home.AuthModalVisible() {
+		if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
 			if result.err == nil {
 				if strings.TrimSpace(result.toast) != "" {
 					a.showToast(result.toastLevel, result.toast)
@@ -6184,6 +5934,9 @@ func (a *App) consumeAuthLoginResult() {
 		}
 		if result.hideAuthModal {
 			a.home.HideAuthModal()
+			if a.home.OnboardingProviderActive() {
+				a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+			}
 		} else {
 			a.home.SetAuthModalLoading(false)
 			a.home.SetAuthModalStatus(status)
@@ -6198,7 +5951,7 @@ func (a *App) consumeAuthLoginResult() {
 	}
 }
 
-func (a *App) beginCodexBrowserLogin(ctx context.Context, login *ui.AuthModalLogin, openBrowser bool) (codexOAuthLoginSession, string, error) {
+func (a *App) beginCodexOAuthSession(ctx context.Context, login *ui.AuthModalLogin, method string, openBrowser bool) (codexOAuthLoginSession, string, error) {
 	if a == nil || a.api == nil {
 		return codexOAuthLoginSession{}, "", errors.New("auth api unavailable")
 	}
@@ -6214,18 +5967,28 @@ func (a *App) beginCodexBrowserLogin(ctx context.Context, login *ui.AuthModalLog
 		active = login.Active
 	}
 
+	apiMethod := "manual"
+	if method == "device" {
+		apiMethod = "device"
+	}
 	session, err := a.api.StartCodexOAuth(ctx, client.CodexOAuthStartRequest{
 		Provider: provider,
 		Label:    label,
 		Active:   active,
-		Method:   "manual",
+		Method:   apiMethod,
 	})
 	if err != nil {
 		return codexOAuthLoginSession{}, "", err
 	}
 
 	authURL := strings.TrimSpace(session.AuthURL)
-	if authURL == "" {
+	verificationURL := strings.TrimSpace(session.VerificationURL)
+	userCode := strings.TrimSpace(session.UserCode)
+	if method == "device" {
+		if verificationURL == "" || userCode == "" {
+			return codexOAuthLoginSession{}, "", errors.New("codex device login returned no verification URL or user code; use Remote URL fallback")
+		}
+	} else if authURL == "" {
 		return codexOAuthLoginSession{}, "", errors.New("codex oauth start returned empty auth url")
 	}
 	browserWarning := ""
@@ -6235,31 +5998,68 @@ func (a *App) beginCodexBrowserLogin(ctx context.Context, login *ui.AuthModalLog
 		}
 	}
 	return codexOAuthLoginSession{
-		Provider:  provider,
-		Label:     label,
-		Active:    active,
-		SessionID: strings.TrimSpace(session.SessionID),
-		AuthURL:   authURL,
+		Provider:        provider,
+		Label:           label,
+		Active:          active,
+		Method:          method,
+		SessionID:       strings.TrimSpace(session.SessionID),
+		AuthURL:         authURL,
+		VerificationURL: verificationURL,
+		UserCode:        userCode,
 	}, browserWarning, nil
 }
 
+func codexDevicePendingStatus(warning string) string {
+	status := "Open the verification URL on any device, enter the displayed code, and approve Codex. Device code is recommended for remote TUI sessions."
+	if strings.TrimSpace(warning) != "" {
+		status += " " + strings.TrimSpace(warning)
+	}
+	return status
+}
+
 func codexBrowserPendingStatus(browserWarning string) string {
-	status := "Finish Codex sign-in in your browser. This modal will close automatically after confirmation."
+	status := "Finish local Codex sign-in in your browser. This modal will close automatically after confirmation."
 	if strings.TrimSpace(browserWarning) != "" {
 		status += " " + strings.TrimSpace(browserWarning)
 	}
 	return status
 }
 
-func (a *App) runCodexOAuthLogin(ctx context.Context, session codexOAuthLoginSession) authLoginResult {
-	callbackInput, err := waitForLocalCodexOAuthCallback(ctx, oauthStateFromAuthURL(session.AuthURL))
-	if err != nil {
-		return authLoginResult{err: err, clearCodexPending: true}
+func (a *App) waitForCodexOAuthSession(ctx context.Context, sessionID string) (client.CodexOAuthSessionStatus, error) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		status, err := a.api.GetCodexOAuthStatus(ctx, sessionID)
+		if err != nil {
+			return client.CodexOAuthSessionStatus{}, err
+		}
+		switch strings.ToLower(strings.TrimSpace(status.Status)) {
+		case "success", "error":
+			return status, nil
+		}
+		select {
+		case <-ctx.Done():
+			return client.CodexOAuthSessionStatus{}, ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	completedSession, err := a.api.CompleteCodexOAuth(ctx, client.CodexOAuthCompleteRequest{
-		SessionID:     session.SessionID,
-		CallbackInput: callbackInput,
-	})
+}
+
+func (a *App) runCodexOAuthLogin(ctx context.Context, session codexOAuthLoginSession) authLoginResult {
+	var completedSession client.CodexOAuthSessionStatus
+	var err error
+	if session.Method == "device" {
+		completedSession, err = a.waitForCodexOAuthSession(ctx, session.SessionID)
+	} else {
+		callbackInput, callbackErr := waitForLocalCodexOAuthCallback(ctx, oauthStateFromAuthURL(session.AuthURL))
+		if callbackErr != nil {
+			return authLoginResult{err: callbackErr, clearCodexPending: true}
+		}
+		completedSession, err = a.api.CompleteCodexOAuth(ctx, client.CodexOAuthCompleteRequest{
+			SessionID:     session.SessionID,
+			CallbackInput: callbackInput,
+		})
+	}
 	if err != nil {
 		return authLoginResult{err: err, clearCodexPending: true}
 	}
@@ -6603,9 +6403,11 @@ func (a *App) loadWorkspaceModalEntries(statusHint string) ([]client.WorkspaceEn
 	a.home.SetWorkspaceModalData(mapWorkspaceModalEntries(entries))
 	a.home.SetWorkspaceModalLoading(false)
 	if len(entries) == 0 {
-		status := "No saved workspaces yet. Press s to start workspace setup."
-		if a.home.WorkspaceModalIntent() == "add_dir" {
-			status = "No saved workspaces yet. Press s to create one. On the last field, press Enter to save it and link the directory."
+		status := "No saved workspaces yet. Select the New Workspace card and press Enter to create one from ~/."
+		if a.home.WorkspaceModalIntent() == "select" {
+			status = "No saved workspaces yet. Close quick switch and use /workspaces to create one."
+		} else if a.home.WorkspaceModalIntent() == "add_dir" {
+			status = "No saved workspaces yet. Select New Workspace and press Enter; the setup can create it and link the directory."
 		}
 		a.home.SetWorkspaceModalStatus(status)
 		return entries, nil
@@ -6622,25 +6424,83 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	username = strings.TrimSpace(username)
 	swarmName = strings.TrimSpace(swarmName)
 	if username == "" || swarmName == "" {
-		a.home.SetOnboardingError("Username and swarm name are required.")
+		a.home.SetOnboardingError("Your name and Swarm name are required.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	status, err := a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{Username: username, SwarmName: swarmName})
 	if err != nil {
-		a.home.SetOnboardingError(fmt.Sprintf("onboarding save failed: %v", err))
+		a.home.SetOnboardingError(fmt.Sprintf("identity save failed: %v", err))
 		return
 	}
 	if session, err := a.api.IssueLocalProductSession(ctx); err == nil && strings.TrimSpace(session.Token) != "" {
 		a.api.SetToken(session.Token)
 	}
 	a.home.SetOnboardingRequired(false, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
-	a.home.ShowOnboardingLocked("Identity setup saved. Press Enter to add provider auth, or Esc/s to skip for now.")
-	a.home.SetStatus("Identity setup saved. Provider auth can be added in /auth; Needs auth remains until credentials are added.")
-	a.queueReload(false)
-	if !a.home.AuthModalVisible() {
-		a.openAuthModal()
+	a.home.SetOnboardingWorkspacePath(a.startupCWD)
+	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
+	a.refreshAuthModalData("Loading providers...")
+}
+
+func (a *App) createOnboardingWorkspace(path string) {
+	path = normalizePath(strings.TrimSpace(path))
+	if path == "" {
+		a.home.SetOnboardingError("The launch directory is unavailable; restart Swarm from the workspace you want to use.")
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		resolution, err := a.api.AddWorkspace(ctx, path, "", "", true)
+		if err == nil {
+			a.homeWorkspaceBootstrapped.Store(true)
+		}
+		var next model.HomeModel
+		if err == nil {
+			next, err = a.refreshHomeV3Model(ctx)
+		}
+		readyPath := firstNonEmpty(normalizePath(resolution.WorkspacePath), normalizePath(resolution.ResolvedPath), path)
+		if err == nil && !homeModelHasReadyWorkspace(next, readyPath) {
+			err = fmt.Errorf("workspace API completed but refreshed state does not include %s", displayPath(readyPath))
+		}
+		result := onboardingWorkspaceResult{model: next, path: readyPath, err: err}
+		select {
+		case a.onboardingWorkspaceCh <- result:
+		default:
+		}
+		if a.screen != nil {
+			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptOnboardingReady))
+		}
+	}()
+}
+
+func homeModelHasReadyWorkspace(home model.HomeModel, path string) bool {
+	path = normalizePath(path)
+	if path == "" {
+		return false
+	}
+	for _, workspace := range home.Workspaces {
+		if workspace.Active && pathsEqual(normalizePath(workspace.Path), path) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) consumeOnboardingWorkspaceResult() {
+	select {
+	case result := <-a.onboardingWorkspaceCh:
+		if result.err != nil {
+			a.home.SetOnboardingError(fmt.Sprintf("workspace setup failed: %v", result.err))
+			return
+		}
+		a.syncActiveContextFromHomeModel(result.model)
+		a.applyHomeModel(result.model)
+		a.syncVaultUI()
+		a.home.CompleteOnboardingWorkspace()
+		a.home.SetStatus(fmt.Sprintf("workspace ready: %s", displayPath(result.path)))
+	default:
 	}
 }
 
@@ -6688,7 +6548,7 @@ func (a *App) openAgentsModal() {
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
 	a.home.ShowAgentsModal()
-	a.refreshAgentsModalData("Loading agent profiles...")
+	a.refreshAgentsModalData("Loading agent model settings...")
 }
 
 func (a *App) refreshAgentsModalData(statusHint string) {
@@ -6709,39 +6569,25 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 
-	state, err := a.api.ListAgents(ctx, 500)
+	settings, err := a.api.GetAgentModelSettings(ctx)
 	if err != nil {
 		a.home.SetAgentsModalLoading(false)
-		a.home.SetAgentsModalError(fmt.Sprintf("agent list failed: %v", err))
+		a.home.SetAgentsModalError(fmt.Sprintf("agent model settings failed: %v", err))
 		return
 	}
-	hints := make([]string, 0, len(state.Profiles)+2)
-	homeProvider, homeModelName, homeThinking, _, _ := a.home.ModelState()
-	hints = append(hints, homeProvider)
-	for _, profile := range state.Profiles {
-		hints = append(hints, profile.Provider)
+	hints := []string{
+		settings.Swarm.Action.Provider,
+		settings.Swarm.Plan.Provider,
+		settings.SystemAgents.Compact.Provider,
+		settings.SystemAgents.Finder.Provider,
+		settings.SystemAgents.Coder.Provider,
+		settings.SystemAgents.Designer.Provider,
+		settings.SystemAgents.Router.Provider,
 	}
-	settings, err := a.api.GetUISettings(ctx)
-	if err != nil {
-		a.home.SetAgentsModalLoading(false)
-		a.home.SetAgentsModalError(fmt.Sprintf("system agent model settings failed: %v", err))
-		return
-	}
-	modalState := enrichSystemAgentModels(state, settings, a.homeModel)
 	resolvedModels := a.resolveProviderModelData(ctx, hints, 2000, 1200)
-
-	a.home.SetAgentsModalData(mapAgentsModalData(
-		modalState,
-		resolvedModels,
-		strings.TrimSpace(homeProvider),
-		strings.TrimSpace(homeModelName),
-		strings.TrimSpace(homeThinking),
-		a.homeModel.ModelProfiles,
-		a.homeModel.DefaultModelProfileID,
-		a.homeModel.ActiveModelProfile.ProfileID,
-	))
+	a.home.SetAgentsModalData(mapCanonicalAgentModelSettings(settings, resolvedModels))
 	a.home.SetAgentsModalLoading(false)
-	status := fmt.Sprintf("agent profiles loaded: %d", len(state.Profiles))
+	status := "agent model settings loaded"
 	if len(resolvedModels.Warnings) > 0 {
 		status += " (" + strings.Join(uniqueNonEmpty(resolvedModels.Warnings), "; ") + ")"
 	}
@@ -6749,7 +6595,7 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 }
 
 func (a *App) refreshAuthModalData(statusHint string) {
-	if !a.home.AuthModalVisible() {
+	if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
 		return
 	}
 	a.home.ClearAuthModalSnapshot()
@@ -6975,235 +6821,57 @@ func mapWorkspaceModalEntries(entries []client.WorkspaceEntry) []ui.WorkspaceMod
 	return out
 }
 
-func enrichSystemAgentModels(state client.AgentState, settings client.UISettings, home model.HomeModel) client.AgentState {
-	state.Profiles = append([]client.AgentProfile(nil), state.Profiles...)
-	for i := range state.Profiles {
-		profile := &state.Profiles[i]
-		switch {
-		case isFinderSystemAgentName(profile.Name):
-			override := settings.Agents.Finder
-			if strings.TrimSpace(override.Provider) != "" {
-				profile.Provider = strings.TrimSpace(override.Provider)
-			}
-			if strings.TrimSpace(override.Model) != "" {
-				profile.Model = strings.TrimSpace(override.Model)
-			}
-			if strings.TrimSpace(override.Thinking) != "" {
-				profile.Thinking = strings.TrimSpace(override.Thinking)
-			}
-			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
-			profile.ModelMode = "single"
-		case isDesignerSystemAgentName(profile.Name):
-			override := settings.Agents.Designer
-			if strings.TrimSpace(override.Provider) != "" {
-				profile.Provider = strings.TrimSpace(override.Provider)
-			}
-			if strings.TrimSpace(override.Model) != "" {
-				profile.Model = strings.TrimSpace(override.Model)
-			}
-			if strings.TrimSpace(override.Thinking) != "" {
-				profile.Thinking = strings.TrimSpace(override.Thinking)
-			}
-			profile.AutoServiceTier = strings.TrimSpace(override.ServiceTier)
-			profile.ModelMode = "single"
-		case isCloneSystemAgentName(profile.Name):
-			override := settings.Agents.Coder
-			profile.Provider = emptyFallback(strings.TrimSpace(override.Provider), strings.TrimSpace(home.ModelProvider))
-			profile.Model = emptyFallback(strings.TrimSpace(override.Model), strings.TrimSpace(home.ModelName))
-			profile.Thinking = emptyFallback(strings.TrimSpace(override.Thinking), strings.TrimSpace(home.ThinkingLevel))
-			profile.AutoServiceTier = emptyFallback(strings.TrimSpace(override.ServiceTier), strings.TrimSpace(home.ServiceTier))
-			profile.ModelMode = "single"
+func mapCanonicalAgentModelSettings(settings client.AgentModelSettings, resolved providerModelResolverResult) ui.AgentsModalData {
+	modelsByProvider := make(map[string][]string, len(resolved.ModelsByProvider))
+	for provider, models := range resolved.ModelsByProvider {
+		provider = normalizeModelProviderID(provider)
+		if provider != "" {
+			modelsByProvider[provider] = append([]string(nil), models...)
 		}
 	}
-	return state
-}
-
-func mapAgentsModalData(state client.AgentState, resolved providerModelResolverResult, defaultProvider, defaultModel, defaultThinking string, modelProfiles []client.ModelProfile, defaultModelProfileID, activeModelProfileID string) ui.AgentsModalData {
-	profiles := make([]ui.AgentModalProfile, 0, len(state.Profiles))
-	modelsByProvider := make(map[string][]string, len(resolved.ModelsByProvider)+8)
-	for providerID, models := range resolved.ModelsByProvider {
-		providerID = normalizeModelProviderID(providerID)
-		if providerID == "" {
-			continue
-		}
-		modelsByProvider[providerID] = append([]string(nil), models...)
-	}
-	modelCatalog := make(map[string]client.ModelCatalogRecord, len(resolved.CatalogByKey))
+	catalog := make(map[string]client.ModelCatalogRecord, len(resolved.CatalogByKey))
 	for key, record := range resolved.CatalogByKey {
 		key = strings.ToLower(strings.TrimSpace(key))
 		if key != "" {
-			modelCatalog[key] = record
+			catalog[key] = record
 		}
 	}
-	providerSet := make(map[string]struct{}, len(resolved.ProviderIDs)+8)
-	for _, providerID := range resolved.ProviderIDs {
-		providerID = normalizeModelProviderID(providerID)
-		if providerID != "" {
-			providerSet[providerID] = struct{}{}
-		}
+	providers := append([]string(nil), resolved.ProviderIDs...)
+	assignments := []client.AgentModelAssignment{
+		settings.Swarm.Action,
+		settings.Swarm.Plan,
+		settings.SystemAgents.Compact,
+		settings.SystemAgents.Finder,
+		settings.SystemAgents.Coder,
+		settings.SystemAgents.Designer,
+		settings.SystemAgents.Router,
 	}
-
-	for _, profile := range state.Profiles {
-		providerID := normalizeModelProviderID(profile.Provider)
-		modelID := strings.TrimSpace(profile.Model)
-		configuredModels := [][2]string{
-			{providerID, modelID},
-			{normalizeModelProviderID(profile.PlanProvider), strings.TrimSpace(profile.PlanModel)},
-			{normalizeModelProviderID(profile.AutoProvider), strings.TrimSpace(profile.AutoModel)},
-		}
-		for _, configured := range configuredModels {
-			configuredProvider, configuredModel := configured[0], configured[1]
-			if configuredProvider == "" {
-				continue
-			}
-			providerSet[configuredProvider] = struct{}{}
-			if configuredModel == "" {
-				continue
-			}
-			modelsByProvider[configuredProvider] = append(modelsByProvider[configuredProvider], configuredModel)
-		}
-		profiles = append(profiles, ui.AgentModalProfile{
-			Name:               strings.TrimSpace(profile.Name),
-			Mode:               strings.TrimSpace(profile.Mode),
-			Description:        strings.TrimSpace(profile.Description),
-			Provider:           providerID,
-			Model:              modelID,
-			Thinking:           strings.TrimSpace(profile.Thinking),
-			ServiceTier:        strings.TrimSpace(profile.AutoServiceTier),
-			DefaultSessionMode: strings.TrimSpace(profile.DefaultSessionMode),
-			ModelMode:          strings.TrimSpace(profile.ModelMode),
-			PlanProvider:       normalizeModelProviderID(profile.PlanProvider),
-			PlanModel:          strings.TrimSpace(profile.PlanModel),
-			PlanThinking:       strings.TrimSpace(profile.PlanThinking),
-			PlanServiceTier:    strings.TrimSpace(profile.PlanServiceTier),
-			AutoProvider:       normalizeModelProviderID(profile.AutoProvider),
-			AutoModel:          strings.TrimSpace(profile.AutoModel),
-			AutoThinking:       strings.TrimSpace(profile.AutoThinking),
-			AutoServiceTier:    strings.TrimSpace(profile.AutoServiceTier),
-			Prompt:             strings.TrimSpace(profile.Prompt),
-			ExecutionSetting:   strings.TrimSpace(profile.ExecutionSetting),
-			Enabled:            profile.Enabled,
-			Protected:          profile.Protected,
-			UpdatedAt:          profile.UpdatedAt,
-		})
-	}
-
-	providers := make([]string, 0, len(providerSet))
-	for providerID := range providerSet {
-		providers = append(providers, providerID)
-	}
-	sort.Strings(providers)
-	for providerID, models := range modelsByProvider {
-		modelsByProvider[providerID] = dedupeModelValues(models)
-		defaultModelForProvider := ""
-		if status, ok := resolved.ProviderStatuses[providerID]; ok {
-			defaultModelForProvider = strings.TrimSpace(status.DefaultModel)
-		}
-		sort.SliceStable(modelsByProvider[providerID], func(i, j int) bool {
-			left := strings.TrimSpace(modelsByProvider[providerID][i])
-			right := strings.TrimSpace(modelsByProvider[providerID][j])
-			if defaultModelForProvider != "" {
-				leftIsDefault := strings.EqualFold(left, defaultModelForProvider)
-				rightIsDefault := strings.EqualFold(right, defaultModelForProvider)
-				if leftIsDefault != rightIsDefault {
-					return leftIsDefault
-				}
-			}
-			return modelIDLessForProvider(providerID, left, right)
-		})
-	}
-
-	sort.SliceStable(profiles, func(i, j int) bool {
-		left := strings.ToLower(strings.TrimSpace(profiles[i].Mode))
-		right := strings.ToLower(strings.TrimSpace(profiles[j].Mode))
-		if left != right {
-			if left == "primary" {
-				return true
-			}
-			if right == "primary" {
-				return false
-			}
-		}
-		return strings.ToLower(profiles[i].Name) < strings.ToLower(profiles[j].Name)
-	})
-
-	activeSubagent := make(map[string]string, len(state.ActiveSubagent))
-	for role, name := range state.ActiveSubagent {
-		role = strings.ToLower(strings.TrimSpace(role))
-		name = strings.ToLower(strings.TrimSpace(name))
-		if role == "" || name == "" {
+	for _, assignment := range assignments {
+		provider := normalizeModelProviderID(assignment.Provider)
+		if provider == "" {
 			continue
 		}
-		activeSubagent[role] = name
-	}
-
-	defaultProvider = normalizeModelProviderID(defaultProvider)
-	if defaultProvider != "" && !stringInSlice(providers, defaultProvider) {
-		defaultProvider = ""
-	}
-	defaultModel = strings.TrimSpace(defaultModel)
-	if defaultProvider == "" {
-		defaultModel = ""
-	} else if !hasModelValue(modelsByProvider[defaultProvider], defaultModel) {
-		if status, ok := resolved.ProviderStatuses[defaultProvider]; ok {
-			candidate := strings.TrimSpace(status.DefaultModel)
-			if hasModelValue(modelsByProvider[defaultProvider], candidate) {
-				defaultModel = candidate
-			}
-		}
-		if !hasModelValue(modelsByProvider[defaultProvider], defaultModel) && len(modelsByProvider[defaultProvider]) > 0 {
-			defaultModel = modelsByProvider[defaultProvider][0]
+		providers = append(providers, provider)
+		if modelID := strings.TrimSpace(assignment.Model); modelID != "" {
+			modelsByProvider[provider] = append(modelsByProvider[provider], modelID)
 		}
 	}
-	defaultThinking = strings.ToLower(strings.TrimSpace(defaultThinking))
-	if record, ok := modelCatalog[modelEntryKey(defaultProvider, defaultModel)]; ok && defaultThinking == "" {
-		defaultThinking = strings.ToLower(strings.TrimSpace(record.DefaultThinking))
+	providers = dedupeModelValues(providers)
+	for provider, models := range modelsByProvider {
+		modelsByProvider[provider] = dedupeModelValues(models)
 	}
-
-	data := ui.AgentsModalData{
-		Profiles:              profiles,
-		ActivePrimary:         strings.TrimSpace(state.ActivePrimary),
-		ActiveSubagent:        activeSubagent,
-		Version:               state.Version,
-		Providers:             providers,
-		ModelsByProvider:      modelsByProvider,
-		ModelCatalog:          modelCatalog,
-		DefaultProvider:       defaultProvider,
-		DefaultModel:          defaultModel,
-		DefaultThinking:       defaultThinking,
-		ModelProfiles:         append([]client.ModelProfile(nil), modelProfiles...),
-		DefaultModelProfileID: strings.TrimSpace(defaultModelProfileID),
-		ActiveModelProfileID:  strings.TrimSpace(activeModelProfileID),
+	sort.Strings(providers)
+	return ui.AgentsModalData{
+		Settings:         settings,
+		Providers:        providers,
+		ModelsByProvider: modelsByProvider,
+		ModelCatalog:     catalog,
 	}
-	if state.ProviderDefaultsPreview != nil {
-		preview := state.ProviderDefaultsPreview
-		data.UtilityProvider = emptyFallback(strings.TrimSpace(preview.UtilityProvider), strings.TrimSpace(preview.Provider))
-		data.UtilityModel = strings.TrimSpace(preview.UtilityModel)
-		data.UtilityThinking = strings.TrimSpace(preview.UtilityThinking)
-		data.UtilityAgents = append([]string(nil), preview.UtilityAgents...)
-		data.CustomUtilityAgents = append([]string(nil), preview.CustomUtilityAgents...)
-		data.UtilityBaselineAgents = append([]string(nil), preview.UtilityBaselineAgents...)
-		data.StaleInheritedAgents = append([]string(nil), preview.StaleInheritedAgents...)
-	}
-	return data
-}
-
-func hasModelValue(models []string, target string) bool {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return false
-	}
-	for _, model := range models {
-		if strings.EqualFold(strings.TrimSpace(model), target) {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *App) handleWorkspaceCommand(args []string) {
 	if len(args) == 0 {
-		a.showWorkspaceSelector()
+		a.showWorkspaceManager()
 		return
 	}
 
@@ -7219,7 +6887,12 @@ func (a *App) handleWorkspaceCommand(args []string) {
 			allowPathEdit = true
 		}
 		target = a.resolveWorkspaceTarget(target)
-		a.openWorkspaceModalForSave(target, allowPathEdit)
+		saveAndSwitch := strings.TrimSpace(a.homeModel.WorkspaceSetupPath) != "" && len(args) == 1
+		if saveAndSwitch {
+			target = normalizePath(a.homeModel.WorkspaceSetupPath)
+			allowPathEdit = false
+		}
+		a.openWorkspaceModalForSave(target, allowPathEdit, saveAndSwitch)
 	case "select", "use":
 		if len(args) < 2 {
 			a.showWorkspaceSelector()
@@ -7327,10 +7000,15 @@ func (a *App) showWorkspaceManager() {
 	}
 }
 
-func (a *App) openWorkspaceModalForSave(target string, allowPathEdit bool) {
+func (a *App) openWorkspaceModalForSave(target string, allowPathEdit, saveAndSwitch bool) {
 	a.home.SetWorkspaceModalIntent("", "")
 	if _, err := a.openWorkspaceModal(); err != nil {
 		a.home.SetStatus(fmt.Sprintf("workspace manager failed: %v", err))
+		return
+	}
+	if saveAndSwitch {
+		a.home.OpenWorkspaceModalSaveAndSwitchEditor(target, allowPathEdit)
+		a.home.SetStatus("workspace setup: review and Save and Switch")
 		return
 	}
 	a.home.OpenWorkspaceModalSaveEditor(target, allowPathEdit)
@@ -7890,6 +7568,7 @@ func (a *App) applyLoadedAppConfig(cfg AppConfig) {
 		a.home.SetKeyBindings(a.keybinds)
 		a.home.SetSwarmName(a.config.Swarm.Name)
 		a.home.SetSessionMode(a.config.Chat.DefaultNewSessionMode)
+		a.home.SetHomeTipsVisible(a.config.Chat.ShowTips)
 		a.home.SetCommandSuggestions(buildHomeCommandSuggestions(a.config.Startup.DevMode))
 	}
 	if a.chat != nil {
@@ -8663,16 +8342,20 @@ func (a *App) applyGitStatusRefresh(result gitStatusRefreshResult) bool {
 		}
 		break
 	}
-	if !changed {
-		return false
-	}
-	if a.home != nil {
+	if a.home != nil && changed {
 		a.home.SetModel(a.homeModel)
 	}
-	if a.chat != nil && pathsEqual(a.activePath, target) {
-		a.chat.SetSessionBranch(result.status.Branch)
+	if pathsEqual(a.activeContextPath(), target) {
+		if a.chat != nil {
+			a.chat.SetSessionBranch(result.status.Branch)
+			changed = true
+		}
+		if a.v3Chat != nil {
+			a.v3Chat.SetGitStatus(result.status.Branch, result.status.HasGit, result.status.DirtyCount)
+			changed = true
+		}
 	}
-	return true
+	return changed
 }
 
 func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution) {
@@ -8733,6 +8416,9 @@ func (a *App) syncActiveWorkspaceSelection(resolution client.WorkspaceResolution
 func (a *App) resolveWorkspaceTarget(value string) string {
 	target := strings.TrimSpace(value)
 	if target == "" || target == "." {
+		if setupPath := normalizePath(strings.TrimSpace(a.homeModel.WorkspaceSetupPath)); setupPath != "" {
+			return setupPath
+		}
 		return a.activeContextPath()
 	}
 	if strings.HasPrefix(target, "#") {
@@ -8819,9 +8505,12 @@ func (a *App) workspaceSwitchRunActive() bool {
 	return a.route == "chat" && a.chat != nil && a.chat.RunInProgress()
 }
 
-func (a *App) workspaceCycleHotkeyBlocked() bool {
+func (a *App) workspaceSwitchHotkeyBlocked() bool {
 	if a.workspaceSwitchRunActive() {
 		message := "workspace switching is unavailable while a run is active"
+		if a.home != nil {
+			a.home.SetStatus(message)
+		}
 		if a.v3Chat != nil {
 			a.v3Chat.SetStatus(message)
 		}
@@ -8830,47 +8519,24 @@ func (a *App) workspaceCycleHotkeyBlocked() bool {
 		}
 		return true
 	}
-	if a.route == "v3chat" && a.v3Chat != nil {
+	if a.route == "home" || a.route == "v3chat" {
 		return a.homeInteractionActive()
 	}
-	if a.route != "home" {
-		if a.route == "chat" {
-			message := "To change workspace, do /new or go to the home screen (Ctrl+B)"
-			if a.chat != nil {
-				a.chat.SetStatus("")
-			}
-			a.showToast(ui.ToastInfo, message)
-			return true
+	if a.route == "chat" {
+		message := "To change workspace, do /new or go to the home screen (Ctrl+B)"
+		if a.chat != nil {
+			a.chat.SetStatus("")
 		}
-		return true
+		a.showToast(ui.ToastInfo, message)
 	}
-	return a.homeInteractionActive()
-}
-
-func (a *App) cycleWorkspaceBy(delta int) {
-	if delta == 0 {
-		return
-	}
-	workspaces := a.homeModel.Workspaces
-	if len(workspaces) == 0 {
-		a.home.SetStatus("no saved workspaces to cycle")
-		return
-	}
-	current := activeWorkspaceIndex(workspaces)
-	next := 0
-	if current < 0 {
-		if delta < 0 {
-			next = len(workspaces) - 1
-		}
-	} else {
-		next = (current + delta + len(workspaces)) % len(workspaces)
-	}
-	a.activateWorkspaceAtIndex(next)
+	return true
 }
 
 func (a *App) activateWorkspaceSlot(slot int) {
 	if slot < 1 || slot > len(a.homeModel.Workspaces) {
-		a.home.SetStatus(fmt.Sprintf("workspace slot %d is empty", slot))
+		if a.home != nil {
+			a.home.SetStatus(fmt.Sprintf("workspace slot %d is empty", slot))
+		}
 		return
 	}
 	a.activateWorkspaceAtIndex(slot - 1)
@@ -9197,45 +8863,53 @@ func applyHomeModelResolved(next model.HomeModel, resolved client.ModelResolved)
 	return next
 }
 
-func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
+func refreshHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
 	next.ModelProfiles = append([]client.ModelProfile(nil), state.Profiles...)
 	next.DefaultModelProfileID = strings.TrimSpace(state.DefaultProfileID)
+	return next
+}
+
+func applyHomeModelProfiles(next model.HomeModel, state client.ModelProfileState) model.HomeModel {
+	next = refreshHomeModelProfiles(next, state)
 	next.ActiveModelProfile = model.ActiveModelProfile{Source: "agent-default"}
 	if next.DefaultModelProfileID == "" {
 		return next
 	}
 	for _, profile := range next.ModelProfiles {
-		if strings.TrimSpace(profile.ProfileID) != next.DefaultModelProfileID {
-			continue
+		if strings.TrimSpace(profile.ProfileID) == next.DefaultModelProfileID {
+			return applyHomeModelProfile(next, profile)
 		}
-		next.ActiveModelProfile = model.ActiveModelProfile{
-			Source:    "saved",
-			ProfileID: strings.TrimSpace(profile.ProfileID),
-			Name:      strings.TrimSpace(profile.Name),
-			ModelMode: strings.TrimSpace(profile.ModelMode),
+	}
+	return next
+}
+
+func applyHomeModelProfile(next model.HomeModel, profile client.ModelProfile) model.HomeModel {
+	next.ActiveModelProfile = model.ActiveModelProfile{
+		Source:    "saved",
+		ProfileID: strings.TrimSpace(profile.ProfileID),
+		Name:      strings.TrimSpace(profile.Name),
+		ModelMode: strings.TrimSpace(profile.ModelMode),
+	}
+	applySelection := func(selection *client.ModelProfileSelection) (string, string, string, string, string) {
+		if selection == nil {
+			return "", "", "", "", ""
 		}
-		if strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
-			applySelection := func(selection *client.ModelProfileSelection) (string, string, string, string, string) {
-				if selection == nil {
-					return "", "", "", "", ""
-				}
-				return strings.TrimSpace(selection.Provider), strings.TrimSpace(selection.Model), strings.TrimSpace(selection.Thinking), strings.TrimSpace(selection.ServiceTier), strings.TrimSpace(selection.ContextMode)
-			}
-			next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = applySelection(profile.Plan)
-			next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = applySelection(profile.Auto)
-		} else if profile.Single != nil {
-			next.ModelProvider = strings.TrimSpace(profile.Single.Provider)
-			next.ModelName = strings.TrimSpace(profile.Single.Model)
-			next.ThinkingLevel = strings.TrimSpace(profile.Single.Thinking)
-			next.ServiceTier = strings.TrimSpace(profile.Single.ServiceTier)
-			next.ContextMode = strings.TrimSpace(profile.Single.ContextMode)
-			next.PlanModelProvider, next.AutoModelProvider = next.ModelProvider, next.ModelProvider
-			next.PlanModelName, next.AutoModelName = next.ModelName, next.ModelName
-			next.PlanThinkingLevel, next.AutoThinkingLevel = next.ThinkingLevel, next.ThinkingLevel
-			next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
-			next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
-		}
-		break
+		return strings.TrimSpace(selection.Provider), strings.TrimSpace(selection.Model), strings.TrimSpace(selection.Thinking), strings.TrimSpace(selection.ServiceTier), strings.TrimSpace(selection.ContextMode)
+	}
+	if strings.EqualFold(strings.TrimSpace(profile.ModelMode), "split") {
+		next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = applySelection(profile.Plan)
+		next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = applySelection(profile.Auto)
+	} else if profile.Single != nil {
+		next.ModelProvider = strings.TrimSpace(profile.Single.Provider)
+		next.ModelName = strings.TrimSpace(profile.Single.Model)
+		next.ThinkingLevel = strings.TrimSpace(profile.Single.Thinking)
+		next.ServiceTier = strings.TrimSpace(profile.Single.ServiceTier)
+		next.ContextMode = strings.TrimSpace(profile.Single.ContextMode)
+		next.PlanModelProvider, next.AutoModelProvider = next.ModelProvider, next.ModelProvider
+		next.PlanModelName, next.AutoModelName = next.ModelName, next.ModelName
+		next.PlanThinkingLevel, next.AutoThinkingLevel = next.ThinkingLevel, next.ThinkingLevel
+		next.PlanServiceTier, next.AutoServiceTier = next.ServiceTier, next.ServiceTier
+		next.PlanContextMode, next.AutoContextMode = next.ContextMode, next.ContextMode
 	}
 	return next
 }

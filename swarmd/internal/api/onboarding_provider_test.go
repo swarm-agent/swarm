@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
@@ -19,7 +21,6 @@ import (
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
-	"swarm/packages/swarmd/internal/uisettings"
 )
 
 type onboardingProviderTestAdapter struct {
@@ -58,13 +59,23 @@ func (a onboardingProviderTestAdapter) CreateResponseStreaming(context.Context, 
 	return provideriface.Response{}, nil
 }
 
-func seedOnboardingProviderRecommendations(t *testing.T, catalogStore *pebblestore.ModelCatalogStore, providerID string) {
-	t.Helper()
+func onboardingProviderRecommendationRecords(providerID string, includePlan bool) []pebblestore.ModelCatalogRecord {
 	records := []pebblestore.ModelCatalogRecord{
 		{Provider: providerID, Model: "snapshot-main-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "auto", Thinking: "high"}}, Source: "test"},
-		{Provider: providerID, Model: "snapshot-plan-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "plan", Thinking: "xhigh"}}, Source: "test"},
-		{Provider: providerID, Model: "snapshot-utility-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "utility", Thinking: "medium"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-compact-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "compact", Thinking: "low"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-finder-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "finder", Thinking: "medium"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-coder-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "coder", Thinking: "high"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-designer-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "designer", Thinking: "medium"}}, Source: "test"},
+		{Provider: providerID, Model: "snapshot-router-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "router", Thinking: "low"}}, Source: "test"},
 	}
+	if includePlan {
+		records = append(records, pebblestore.ModelCatalogRecord{Provider: providerID, Model: "snapshot-plan-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "plan", Thinking: "xhigh"}}, Source: "test"})
+	}
+	return records
+}
+
+func seedOnboardingProviderRecommendationRecords(t *testing.T, catalogStore *pebblestore.ModelCatalogStore, records []pebblestore.ModelCatalogRecord) {
+	t.Helper()
 	if err := catalogStore.ReplaceSnapshot(records, pebblestore.ModelCatalogMeta{LiveSnapshotVersion: "test-snapshot", ExpiresAt: 4102444800000, RecordCount: len(records), SourceURL: "test://catalog"}); err != nil {
 		t.Fatalf("seed catalog recommendations: %v", err)
 	}
@@ -112,33 +123,11 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if err != nil {
 		t.Fatalf("list hydrated agents: %v", err)
 	}
-	if len(agents.Profiles) == 0 {
-		t.Fatal("provider acceptance returned before creating agents")
+	if len(agents.Profiles) != 0 {
+		t.Fatalf("onboarding persisted agent rows for compiled Swarm: %+v", agents.Profiles)
 	}
-	var swarmProfile *pebblestore.AgentProfile
-	for i := range agents.Profiles {
-		if strings.EqualFold(agents.Profiles[i].Name, "swarm") {
-			swarmProfile = &agents.Profiles[i]
-			break
-		}
-	}
-	if swarmProfile == nil {
-		t.Fatalf("hydrated agents missing swarm profile: %+v", agents.Profiles)
-	}
-	if swarmProfile.ModelMode != "split" || swarmProfile.PlanProvider != "openai" || swarmProfile.PlanModel != "snapshot-plan-model" || swarmProfile.PlanThinking != "xhigh" || swarmProfile.AutoProvider != "openai" || swarmProfile.AutoModel != "snapshot-main-model" || swarmProfile.AutoThinking != "high" {
-		t.Fatalf("swarm split model defaults not hydrated from snapshot: %+v", *swarmProfile)
-	}
-	if swarmProfile.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || swarmProfile.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto {
-		t.Fatalf("swarm plan/auto runtime defaults not restored: %+v", *swarmProfile)
-	}
-	for _, profile := range agents.Profiles {
-		name := strings.ToLower(strings.TrimSpace(profile.Name))
-		if name != "finder" && name != "memory" && name != "parallel" {
-			continue
-		}
-		if profile.Provider != "openai" || profile.Model != "snapshot-utility-model" || profile.Thinking != "medium" {
-			t.Fatalf("utility agent %q not hydrated from snapshot: %+v", name, profile)
-		}
+	if agents.ActivePrimary != agentruntime.SwarmAgentID {
+		t.Fatalf("onboarding active primary = %q, want compiled Swarm", agents.ActivePrimary)
 	}
 	pref, err := server.model.GetPreferenceForAccount(principal.AccountScopeID)
 	if err != nil {
@@ -151,30 +140,60 @@ func TestOnboardingProviderCredentialVerifiesActivatesHydratesBeforeReturning(t 
 	if err != nil {
 		t.Fatalf("list onboarding model profiles: %v", err)
 	}
-	if len(profileState.Profiles) != 1 || profileState.DefaultProfileID != profileState.Profiles[0].ProfileID || profileState.Profiles[0].Name != "Swarm recommended" || !profileState.Profiles[0].IsDefault {
-		t.Fatalf("onboarding recommended default = %+v", profileState)
+	if len(profileState.Profiles) != 0 || profileState.DefaultProfileID != "" {
+		t.Fatalf("onboarding created Swarm model favorites: %+v", profileState)
 	}
-	recommended := profileState.Profiles[0]
-	if recommended.ModelMode != pebblestore.ModelProfileModeSplit || recommended.Plan == nil || recommended.Auto == nil || recommended.Plan.Provider != "openai" || recommended.Plan.Model != "snapshot-plan-model" || recommended.Plan.Thinking != "xhigh" || recommended.Auto.Provider != "openai" || recommended.Auto.Model != "snapshot-main-model" || recommended.Auto.Thinking != "high" {
-		t.Fatalf("onboarding recommended mapping = %+v", recommended)
-	}
-	uiSettings, err := server.uiSettings.GetForAccount(principal.AccountScopeID)
+	swarmSettings, err := server.agentModelSettings.Get(identity.ContextWithPrincipal(context.Background(), principal))
 	if err != nil {
-		t.Fatalf("get onboarding system-agent settings: %v", err)
+		t.Fatalf("get onboarding Swarm mode settings: %v", err)
 	}
-	if uiSettings.Agents.Compact != uiSettings.Agents.Finder || uiSettings.Agents.Designer != uiSettings.Agents.Finder {
-		t.Fatalf("utility system-agent onboarding settings differ: Compact=%+v Finder=%+v Designer=%+v", uiSettings.Agents.Compact, uiSettings.Agents.Finder, uiSettings.Agents.Designer)
+	if swarmSettings.Swarm.Action.Provider != "openai" || swarmSettings.Swarm.Action.Model != "snapshot-main-model" || swarmSettings.Swarm.Action.Thinking != "high" || swarmSettings.Swarm.Plan.Provider != "openai" || swarmSettings.Swarm.Plan.Model != "snapshot-plan-model" || swarmSettings.Swarm.Plan.Thinking != "xhigh" {
+		t.Fatalf("onboarding Swarm model settings = %+v", swarmSettings)
 	}
-	if configured := uiSettings.Agents.Compact; configured.Provider != "openai" || configured.Model != "snapshot-utility-model" || configured.Thinking != "medium" {
-		t.Fatalf("Compact/Finder system-agent settings not hydrated from snapshot: %+v", configured)
+	wantSystemAgents := map[string]struct {
+		got      pebblestore.AgentModelAssignment
+		model    string
+		thinking string
+	}{
+		"compact":  {swarmSettings.SystemAgents.Compact, "snapshot-compact-model", "low"},
+		"finder":   {swarmSettings.SystemAgents.Finder, "snapshot-finder-model", "medium"},
+		"coder":    {swarmSettings.SystemAgents.Coder, "snapshot-coder-model", "high"},
+		"designer": {swarmSettings.SystemAgents.Designer, "snapshot-designer-model", "medium"},
+		"router":   {swarmSettings.SystemAgents.Router, "snapshot-router-model", "low"},
+	}
+	for name, want := range wantSystemAgents {
+		if want.got.Provider != "openai" || want.got.Model != want.model || want.got.Thinking != want.thinking {
+			t.Fatalf("%s onboarding settings = %+v, want openai/%s/%s", name, want.got, want.model, want.thinking)
+		}
+	}
+}
+
+func TestOnboardingProviderCredentialRejectsLaterCredentialWithoutOverwritingPreferences(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	if _, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-first"}); err != nil {
+		t.Fatalf("accept first onboarding credential: %v", err)
+	}
+	before, err := server.agentModelSettings.Get(identity.ContextWithPrincipal(context.Background(), principal))
+	if err != nil {
+		t.Fatalf("read first onboarding settings: %v", err)
+	}
+
+	if _, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-second"}); err == nil || !strings.Contains(err.Error(), "zero existing credentials") {
+		t.Fatalf("second onboarding credential error = %v, want zero-existing-credentials rejection", err)
+	}
+	after, err := server.agentModelSettings.Get(identity.ContextWithPrincipal(context.Background(), principal))
+	if err != nil {
+		t.Fatalf("read settings after rejected credential: %v", err)
+	}
+	if after.SystemAgents != before.SystemAgents {
+		t.Fatalf("later onboarding credential overwrote system-agent preferences: before=%+v after=%+v", before.SystemAgents, after.SystemAgents)
 	}
 }
 
 func TestOnboardingProviderCredentialPreservesExistingModelProfileAndDefault(t *testing.T) {
 	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)
-	selection := modelprofile.Selection{Provider: "openai", Model: "existing-model", Thinking: "medium", ContextMode: "full"}
-	existing, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "My default", ModelMode: pebblestore.ModelProfileModeSingle, Single: &selection})
+	existing, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "My default", Provider: "openai", Model: "existing-model", Thinking: "medium", ContextMode: "full"})
 	if err != nil {
 		t.Fatalf("create existing profile: %v", err)
 	}
@@ -186,8 +205,80 @@ func TestOnboardingProviderCredentialPreservesExistingModelProfileAndDefault(t *
 	if err != nil {
 		t.Fatalf("list profiles: %v", err)
 	}
-	if len(state.Profiles) != 1 || state.DefaultProfileID != existing.ProfileID || state.Profiles[0].Name != "My default" || !state.Profiles[0].IsDefault {
-		t.Fatalf("onboarding replaced existing profile/default: %+v", state)
+	if len(state.Profiles) != 1 || state.DefaultProfileID != existing.ProfileID {
+		t.Fatalf("onboarding favorites/default = %+v, want only existing favorite", state)
+	}
+	preserved := false
+	for _, favorite := range state.Profiles {
+		if favorite.ProfileID == existing.ProfileID && favorite.Name == "My default" && favorite.IsDefault {
+			preserved = true
+		}
+	}
+	if !preserved {
+		t.Fatalf("onboarding did not preserve existing default: %+v", state)
+	}
+}
+
+func TestOnboardingProviderDefaultsReuseMatchingActionFavoriteIdempotently(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+	existing, err := server.modelProfiles.Create(ctx, modelprofile.Input{Name: "Existing Action", Provider: "openai", Model: "snapshot-main-model", Thinking: "high"})
+	if err != nil {
+		t.Fatalf("create existing Action favorite: %v", err)
+	}
+
+	status, err := server.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(principal.AccountScopeID, principal.UserID, "openai")
+	if err != nil {
+		t.Fatalf("hydrate onboarding defaults: %v", err)
+	}
+	if status == nil || !status.Applied {
+		t.Fatalf("onboarding defaults status = %+v", status)
+	}
+	state, err := server.modelProfiles.ListState(ctx)
+	if err != nil {
+		t.Fatalf("list onboarding favorites: %v", err)
+	}
+	if len(state.Profiles) != 1 || state.Profiles[0].ProfileID != existing.ProfileID {
+		t.Fatalf("onboarding changed existing favorites = %+v", state)
+	}
+	settings, err := server.agentModelSettings.Get(ctx)
+	if err != nil {
+		t.Fatalf("get onboarding settings: %v", err)
+	}
+	if settings.Swarm.Action.Model != "snapshot-main-model" || settings.Swarm.Plan.Model != "snapshot-plan-model" {
+		t.Fatalf("onboarding direct settings = %+v", settings)
+	}
+}
+
+func TestOnboardingProviderCredentialRequiresCompleteDirectPlanRecommendation(t *testing.T) {
+	tests := []struct {
+		name    string
+		records []pebblestore.ModelCatalogRecord
+		wantErr string
+	}{
+		{name: "missing", records: onboardingProviderRecommendationRecords("openai", false), wantErr: "missing required direct Plan recommendation"},
+		{name: "incomplete", records: append(onboardingProviderRecommendationRecords("openai", false), pebblestore.ModelCatalogRecord{Provider: "openai", Model: "snapshot-plan-model", Recommendations: []pebblestore.ModelCatalogRecommendation{{Role: "plan"}}, Source: "test"}), wantErr: "incomplete required direct Plan recommendation"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, principal := newOnboardingProviderCredentialTestServerWithCatalogRecords(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"}, test.records)
+
+			_, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{Provider: "openai", Type: "api", APIKey: "sk-test-valid"})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want %q", err, test.wantErr)
+			}
+			credentials, listErr := server.auth.ListCredentialsForAccount(principal.AccountScopeID, "", "", 200)
+			if listErr != nil {
+				t.Fatalf("list credentials: %v", listErr)
+			}
+			if credentials.Total != 0 {
+				t.Fatalf("invalid Plan recommendation persisted credentials: %+v", credentials)
+			}
+			ctx := identity.ContextWithPrincipal(context.Background(), principal)
+			if _, settingsErr := server.agentModelSettings.Get(ctx); !errors.Is(settingsErr, agentmodelsettings.ErrNotFound) {
+				t.Fatalf("Swarm settings error = %v, want not found", settingsErr)
+			}
+		})
 	}
 }
 
@@ -202,7 +293,7 @@ func TestOnboardingProviderCredentialHydratesPreferredProviderEvenWhenStatusIsNo
 	if err != nil {
 		t.Fatalf("accept fireworks onboarding provider credential: %v", err)
 	}
-	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "fireworks" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "snapshot-utility-model" {
+	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "fireworks" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "" {
 		t.Fatalf("fireworks defaults not applied from catalog: %+v", status.AutoDefaults)
 	}
 }
@@ -218,22 +309,15 @@ func TestOnboardingProviderCredentialHydratesProviderFromSnapshotWithoutLegacyDe
 	if err != nil {
 		t.Fatalf("accept snapshot-only onboarding provider credential: %v", err)
 	}
-	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "snapshot-only" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "snapshot-utility-model" {
+	if status.AutoDefaults == nil || !status.AutoDefaults.Applied || status.AutoDefaults.Provider != "snapshot-only" || status.AutoDefaults.Model != "snapshot-main-model" || status.AutoDefaults.UtilityModel != "" {
 		t.Fatalf("snapshot-only defaults not applied from catalog: %+v", status.AutoDefaults)
 	}
 	agents, err := server.agents.ListStateForAccount(principal.AccountScopeID, 2000)
 	if err != nil {
 		t.Fatalf("list hydrated agents: %v", err)
 	}
-	var swarmProfile *pebblestore.AgentProfile
-	for i := range agents.Profiles {
-		if strings.EqualFold(agents.Profiles[i].Name, "swarm") {
-			swarmProfile = &agents.Profiles[i]
-			break
-		}
-	}
-	if swarmProfile == nil || swarmProfile.PlanModel != "snapshot-plan-model" || swarmProfile.AutoModel != "snapshot-main-model" {
-		t.Fatalf("snapshot-only swarm split defaults not hydrated: %+v", swarmProfile)
+	if agents.ActivePrimary != agentruntime.SwarmAgentID {
+		t.Fatalf("snapshot-only provider active primary = %q, want compiled Swarm", agents.ActivePrimary)
 	}
 }
 
@@ -259,12 +343,15 @@ func TestOnboardingProviderCredentialRequiresSnapshotRecommendationsAndRollsBack
 	if err != nil {
 		t.Fatalf("list agents: %v", err)
 	}
-	if len(agents.Profiles) != 0 {
-		t.Fatalf("missing recommendations hydrated agents: %+v", agents.Profiles)
+	if len(agents.Profiles) != 0 || agents.ActivePrimary != "" {
+		t.Fatalf("missing recommendations hydrated agent state: %+v", agents)
 	}
 	profiles, profileErr := server.modelProfiles.ListState(identity.ContextWithPrincipal(context.Background(), principal))
 	if profileErr != nil || len(profiles.Profiles) != 0 || profiles.DefaultProfileID != "" {
 		t.Fatalf("missing recommendations persisted model profile: %+v err=%v", profiles, profileErr)
+	}
+	if _, settingsErr := server.agentModelSettings.Get(identity.ContextWithPrincipal(context.Background(), principal)); !errors.Is(settingsErr, agentmodelsettings.ErrNotFound) {
+		t.Fatalf("missing recommendations persisted Swarm settings: %v", settingsErr)
 	}
 }
 
@@ -332,15 +419,15 @@ func TestOnboardingProviderCredentialRejectsFailedVerificationWithoutPersisting(
 
 func newOnboardingProviderCredentialTestServer(t *testing.T, adapter onboardingProviderTestAdapter) (*Server, identity.Principal) {
 	t.Helper()
-	return newOnboardingProviderCredentialTestServerWithCatalog(t, adapter, true)
+	return newOnboardingProviderCredentialTestServerWithCatalogRecords(t, adapter, onboardingProviderRecommendationRecords(adapter.id, true))
 }
 
 func newOnboardingProviderCredentialTestServerWithoutRecommendations(t *testing.T, adapter onboardingProviderTestAdapter) (*Server, identity.Principal) {
 	t.Helper()
-	return newOnboardingProviderCredentialTestServerWithCatalog(t, adapter, false)
+	return newOnboardingProviderCredentialTestServerWithCatalogRecords(t, adapter, nil)
 }
 
-func newOnboardingProviderCredentialTestServerWithCatalog(t *testing.T, adapter onboardingProviderTestAdapter, seedRecommendations bool) (*Server, identity.Principal) {
+func newOnboardingProviderCredentialTestServerWithCatalogRecords(t *testing.T, adapter onboardingProviderTestAdapter, recommendations []pebblestore.ModelCatalogRecord) (*Server, identity.Principal) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "onboarding-provider.pebble"))
 	if err != nil {
@@ -359,8 +446,8 @@ func newOnboardingProviderCredentialTestServerWithCatalog(t *testing.T, adapter 
 	authSvc := auth.NewService(pebblestore.NewAuthStore(store), eventLog)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
 	catalogStore := pebblestore.NewModelCatalogStore(store)
-	if seedRecommendations {
-		seedOnboardingProviderRecommendations(t, catalogStore, adapter.id)
+	if len(recommendations) != 0 {
+		seedOnboardingProviderRecommendationRecords(t, catalogStore, recommendations)
 	}
 	catalogSvc := model.NewCatalogService(catalogStore)
 	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, catalogSvc)
@@ -368,8 +455,10 @@ func newOnboardingProviderCredentialTestServerWithCatalog(t *testing.T, adapter 
 	providers.RegisterRunner(adapter)
 	hub := stream.NewHub(eventLog)
 	server := NewServer(authSvc, agentSvc, modelSvc, nil, nil, nil, nil, nil, providers, nil, nil, eventLog, hub)
-	server.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(store)))
-	server.uiSettings = uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	favorites := pebblestore.NewModelProfileStore(store)
+	server.SetModelProfileService(modelprofile.NewService(favorites))
+	agentModelSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
+	server.SetAgentModelSettingsService(agentmodelsettings.NewService(agentModelSettingsStore), agentModelSettingsStore)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_onboarding_test", AccountScopeID: "acct_onboarding_test", AccountScopeSource: identity.AccountScopeSourceServerState}
 	return server, principal
 }

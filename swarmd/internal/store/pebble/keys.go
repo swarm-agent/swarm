@@ -16,6 +16,7 @@ const (
 	KeyAuthCredentialTagPrefix                     = "auth/index/auth_tag/"
 	KeyUISettingsDefault                           = "ui/settings/default"
 	KeyUISettingsAccountPrefix                     = "ui/settings_by_account/"
+	KeyAgentModelSettingsAccountPrefix             = "agent_model_settings/by_account/"
 	KeyUIChatSettingsDefault                       = "ui/chat_settings/default"
 	KeyIdentityPrefix                              = "identity/"
 	KeyIdentityUserPrefix                          = "identity/user/"
@@ -56,6 +57,7 @@ const (
 	KeyWorkspaceEntryByIDAccountPrefix             = "workspace/entry_by_id_by_account/"
 	KeyWorkspaceTodoItemPrefix                     = "workspace_todo/item/" // legacy unscoped records; recovery must terminalize active AI tasks.
 	KeyWorkspaceTodoItemAccountPrefix              = "workspace_todo/item_by_account/"
+	KeyWorkspaceActionAccountPrefix                = "workspace_action/item_by_account/"
 	KeyAITaskIdempotencyAccountPrefix              = "ai_task/idempotency_by_account/"
 	KeyAITaskAuditAccountPrefix                    = "ai_task/audit_by_account/"
 	KeyAITaskV2QueuePrefix                         = "ai_task/v2_queue/"
@@ -664,6 +666,14 @@ func WorkspaceEntryPrefix() string {
 	return KeyWorkspaceEntryPrefix
 }
 
+func KeyWorkspaceActionForAccount(accountScopeID, workspaceID, actionID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyWorkspaceActionAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(actionID))
+}
+
+func WorkspaceActionPrefixForAccount(accountScopeID, workspaceID string) string {
+	return fmt.Sprintf("%s%s/%s/", KeyWorkspaceActionAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID))
+}
+
 func KeyWorkspaceTodoItem(workspacePath, itemID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyWorkspaceTodoItemPrefix, keyPart(workspacePath), keyPart(itemID))
 }
@@ -900,6 +910,10 @@ func KeySessionPlanActive(sessionID string) string {
 	return fmt.Sprintf("session_plan_active/%s", keyPart(sessionID))
 }
 
+func SessionPlanActivePrefix() string {
+	return "session_plan_active/"
+}
+
 func KeySessionPlanActiveByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_plan_active_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }
@@ -1054,6 +1068,10 @@ func RunPermissionPrefix(sessionID, runID string) string {
 
 func KeyUISettingsForAccount(accountScopeID string) string {
 	return KeyUISettingsAccountPrefix + keyPart(accountScopeID)
+}
+
+func KeyAgentModelSettingsForAccount(accountScopeID string) string {
+	return KeyAgentModelSettingsAccountPrefix + keyPart(accountScopeID)
 }
 
 func KeyNotification(swarmID, notificationID string) string {

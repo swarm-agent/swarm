@@ -6,8 +6,9 @@ import type {
 } from '../types/workspace'
 import { mapWorkspaceBrowseResult } from '../types/workspace'
 
-export async function browseWorkspacePath(path: string): Promise<WorkspaceBrowseResult> {
+export async function browseWorkspacePath(path: string, includeFiles = false): Promise<WorkspaceBrowseResult> {
   const query = new URLSearchParams()
+  if (includeFiles) query.set('include_files', 'true')
   if (path.trim() !== '') {
     query.set('path', path)
   }

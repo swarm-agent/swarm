@@ -91,6 +91,10 @@ func serveDesktopAsset(w http.ResponseWriter, r *http.Request, distDir string, s
 		fileServer.ServeHTTP(w, r)
 		return
 	}
+	if isImmutableDesktopAsset(relPath) {
+		http.NotFound(w, r)
+		return
+	}
 	serveDesktopIndex(w, r, staticFS)
 }
 

@@ -17,7 +17,7 @@ export interface DesktopV3ChatHeaderProps {
   title: string
   workspaceName: string
   branchName?: string
-  mode?: string
+  modelLabel?: string
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
@@ -34,19 +34,16 @@ function normalizeWorkspaceName(value: string): string {
   return value.trim() || 'Workspace'
 }
 
-function normalizeMode(value: string | undefined): string {
-  return value?.trim().toLowerCase() === 'plan' ? 'plan' : 'auto'
-}
-
 function normalizeBranchName(value: string | undefined): string {
-  return value?.trim() ?? ''
+  const normalized = value?.trim() ?? ''
+  return ['undefined', 'null'].includes(normalized.toLowerCase()) ? '' : normalized
 }
 
 export function DesktopV3ChatHeader({
   title,
   workspaceName,
   branchName,
-  mode,
+  modelLabel,
   runStatus = null,
   runStatusNow: controlledRunStatusNow,
   sessionActions = null,
@@ -57,7 +54,8 @@ export function DesktopV3ChatHeader({
   const displayTitle = normalizeTitle(title)
   const displayWorkspace = normalizeWorkspaceName(workspaceName)
   const displayBranch = normalizeBranchName(branchName)
-  const displayMode = normalizeMode(mode)
+  const resolvedModelLabel = modelLabel?.trim() ?? ''
+  const resolvedHeaderDetails = [displayBranch, resolvedModelLabel].filter(Boolean).join(' · ')
   const [liveRunStatusNow, setLiveRunStatusNow] = useState(() => Date.now())
   const runStatusNow = controlledRunStatusNow ?? liveRunStatusNow
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
@@ -153,13 +151,10 @@ export function DesktopV3ChatHeader({
               <h1 className="min-w-0 text-[13px] font-semibold leading-tight text-[var(--app-text)]">
                 {editableTitle}
               </h1>
-              <div className="relative mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
-                <span className="min-w-0 truncate text-left">{displayWorkspace}</span>
-                {displayBranch ? (
-                  <span className="pointer-events-none absolute left-1/2 max-w-[42vw] -translate-x-1/2 truncate text-center text-[var(--app-text-muted)]" title={displayBranch}>
-                    {displayBranch}
-                  </span>
-                ) : null}
+              <div className="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
+                <span className="min-w-0 truncate text-left" title={[displayWorkspace, resolvedHeaderDetails].filter(Boolean).join(' · ')}>
+                  {displayWorkspace}{resolvedHeaderDetails ? ` · ${resolvedHeaderDetails}` : ''}
+                </span>
                 {mobileRunTimerLabel ? (
                   <span className="shrink-0 justify-self-end tabular-nums text-[var(--app-text)]" title={runStatus?.label}>
                     {mobileRunTimerLabel}
@@ -175,9 +170,17 @@ export function DesktopV3ChatHeader({
               <span className="shrink-0 font-normal text-[var(--app-text-subtle)]">/</span>
               <span className="truncate font-normal text-[var(--app-text-muted)]" title={displayWorkspace}>{displayWorkspace}</span>
             </h1>
-            <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]">
-              <span>{displayMode}</span>
-            </div>
+            {resolvedHeaderDetails ? (
+              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]" title={resolvedHeaderDetails}>
+                {displayBranch ? (
+                  <span className="truncate" data-testid="desktop-v3-git-branch">{displayBranch}</span>
+                ) : null}
+                {displayBranch && resolvedModelLabel ? <span aria-hidden="true">·</span> : null}
+                {resolvedModelLabel ? (
+                  <span className="truncate" data-testid="desktop-v3-resolved-model">{resolvedModelLabel}</span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
 

@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -36,6 +38,7 @@ type sessionV3DurableProgressWriter interface {
 	RecordRunPhase(job sessionV3ExecutorJob, phase RunPhase, eventType string) (sessionruntime.SessionMutationResult, error)
 	RecordRunProgress(job sessionV3ExecutorJob, progress sessionV3AssistantProgress, deltaIndex int) (sessionruntime.SessionMutationResult, error)
 	RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error)
+	RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error)
 }
 
 type sessionV3ExecutorDurableProgressWriter struct {
@@ -52,6 +55,10 @@ func (w sessionV3ExecutorDurableProgressWriter) RecordRunProgress(job sessionV3E
 
 func (w sessionV3ExecutorDurableProgressWriter) RecordReasoningEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, reasoningKey string, delta string, deltaMode string, summary string) (sessionruntime.SessionMutationResult, error) {
 	return w.exec.recordReasoningEvent(job, eventType, step, eventIndex, reasoningKey, delta, deltaMode, summary)
+}
+
+func (w sessionV3ExecutorDurableProgressWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error) {
+	return w.exec.recordProviderToolConstructionEvent(job, eventType, step, eventIndex, event)
 }
 
 type sessionV3AssistantAcceptedEnd struct {
@@ -88,6 +95,17 @@ type sessionV3ReasoningProgressAggregate struct {
 	FlushRequested bool
 }
 
+type sessionV3ProviderToolProgressAggregate struct {
+	FirstOrder     uint64
+	Step           int
+	EventIndex     int
+	EventType      string
+	Event          provideriface.StreamEvent
+	Bytes          int
+	FirstPendingAt time.Time
+	FlushRequested bool
+}
+
 type sessionV3DurableProgressItemKind string
 
 const (
@@ -96,6 +114,7 @@ const (
 	sessionV3DurableProgressItemReasoningDelta    sessionV3DurableProgressItemKind = "reasoning_delta"
 	sessionV3DurableProgressItemReasoningStarted  sessionV3DurableProgressItemKind = "reasoning_started"
 	sessionV3DurableProgressItemReasoningComplete sessionV3DurableProgressItemKind = "reasoning_completed"
+	sessionV3DurableProgressItemProviderTool      sessionV3DurableProgressItemKind = "provider_tool"
 )
 
 type sessionV3DurableProgressItem struct {
@@ -108,6 +127,8 @@ type sessionV3DurableProgressItem struct {
 	Step         int
 	ReasoningKey string
 	Summary      string
+	ProviderTool *provideriface.StreamEvent
+	EventIndex   int
 }
 
 type sessionV3DurableProgressEpoch struct {
@@ -127,6 +148,7 @@ type sessionV3DurableProgressSink struct {
 
 	currentAssistantByStream  map[string]*sessionV3AssistantProgressAggregate
 	currentReasoningByKey     map[string]*sessionV3ReasoningProgressAggregate
+	currentProviderToolByKey  map[string]*sessionV3ProviderToolProgressAggregate
 	acceptedAssistantEnd      map[string]sessionV3AssistantAcceptedEnd
 	acceptedReasoningSnapshot map[string]string
 	sealedEpochs              []sessionV3DurableProgressEpoch
@@ -168,6 +190,7 @@ func newSessionV3DurableProgressSinkWithWriter(exec *sessionV3Executor, job sess
 		writer:                    writer,
 		currentAssistantByStream:  make(map[string]*sessionV3AssistantProgressAggregate),
 		currentReasoningByKey:     make(map[string]*sessionV3ReasoningProgressAggregate),
+		currentProviderToolByKey:  make(map[string]*sessionV3ProviderToolProgressAggregate),
 		acceptedAssistantEnd:      make(map[string]sessionV3AssistantAcceptedEnd),
 		acceptedReasoningSnapshot: make(map[string]string),
 		waiters:                   make(map[uint64][]chan error),
@@ -266,6 +289,110 @@ func (s *sessionV3DurableProgressSink) TryAppendAssistant(progress sessionV3Assi
 	}
 	s.signalLocked()
 	return nil
+}
+
+func (s *sessionV3DurableProgressSink) TryRecordProviderToolConstruction(step, eventIndex int, event provideriface.StreamEvent) error {
+	if s == nil {
+		return nil
+	}
+	if step <= 0 || eventIndex <= 0 {
+		return errors.New("v3 provider tool construction ordering identity is required")
+	}
+	eventType := sessionV3ProviderToolConstructionEventType(event.Type)
+	if eventType == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if event.Type == provideriface.StreamEventToolCallArgumentsDelta || event.Type == provideriface.StreamEventToolCallArgumentsSnapshot {
+		return s.coalesceProviderToolConstructionLocked(step, eventIndex, eventType, event)
+	}
+	if err := s.reserveControlLocked(1); err != nil {
+		return err
+	}
+	s.sealAllCurrentLocked()
+	if err := s.callbackErrLocked(); err != nil {
+		return err
+	}
+	if err := s.reserveSealedEpochsLocked(1); err != nil {
+		return err
+	}
+	cloned := cloneSessionV3ProviderToolStreamEvent(event)
+	s.addControlEpochLocked(sessionV3DurableProgressItem{Kind: sessionV3DurableProgressItemProviderTool, EventType: eventType, Step: step, EventIndex: eventIndex, ProviderTool: &cloned})
+	s.signalLocked()
+	return nil
+}
+
+func (s *sessionV3DurableProgressSink) coalesceProviderToolConstructionLocked(step, eventIndex int, eventType string, event provideriface.StreamEvent) error {
+	key := sessionV3ProviderToolProgressKey(step, event)
+	agg := s.currentProviderToolByKey[key]
+	if agg != nil && agg.Event.Type == provideriface.StreamEventToolCallArgumentsSnapshot && event.Type == provideriface.StreamEventToolCallArgumentsDelta {
+		// A delta following a snapshot starts a new ordered segment. Persist the
+		// snapshot before collecting subsequent bytes.
+		s.sealAllCurrentLocked()
+		if err := s.callbackErrLocked(); err != nil {
+			return err
+		}
+		agg = nil
+	}
+
+	cloned := cloneSessionV3ProviderToolStreamEvent(event)
+	if agg != nil && agg.Event.Type == provideriface.StreamEventToolCallArgumentsDelta && event.Type == provideriface.StreamEventToolCallArgumentsDelta {
+		cloned.ArgumentsDelta = agg.Event.ArgumentsDelta + event.ArgumentsDelta
+	}
+	newBytes := sessionV3ProviderToolProgressBytes(cloned)
+	oldBytes := 0
+	if agg != nil {
+		oldBytes = agg.Bytes
+	}
+	additionalBytes := newBytes - oldBytes
+	if additionalBytes < 0 {
+		additionalBytes = 0
+	}
+	if err := s.reserveBytesLocked(additionalBytes); err != nil {
+		return err
+	}
+	if agg == nil {
+		s.nextOrder++
+		agg = &sessionV3ProviderToolProgressAggregate{
+			FirstOrder:     s.nextOrder,
+			Step:           step,
+			FirstPendingAt: time.Now(),
+		}
+		s.currentProviderToolByKey[key] = agg
+	}
+	s.pendingBytes += newBytes - agg.Bytes
+	agg.EventIndex = eventIndex
+	agg.EventType = eventType
+	agg.Event = cloned
+	agg.Bytes = newBytes
+	if agg.Bytes >= s.assistantFlushMaxBytesLocked() {
+		agg.FlushRequested = true
+	}
+	s.signalLocked()
+	return nil
+}
+
+func sessionV3ProviderToolProgressKey(step int, event provideriface.StreamEvent) string {
+	if callID := strings.TrimSpace(event.ToolCallID); callID != "" {
+		return strconv.Itoa(step) + ":call:" + callID
+	}
+	if event.ToolCallIndex != nil {
+		return strconv.Itoa(step) + ":index:" + strconv.Itoa(*event.ToolCallIndex)
+	}
+	return strconv.Itoa(step) + ":unknown"
+}
+
+func sessionV3ProviderToolProgressBytes(event provideriface.StreamEvent) int {
+	size := len(event.Arguments) + len(event.ArgumentsDelta) + len(event.ArgumentsSnapshot)
+	size += len(event.ToolCallID) + len(event.ToolName) + len(event.ProviderID) + len(event.Model) + len(event.Status)
+	if size <= 0 {
+		return 1
+	}
+	return size
 }
 
 func (s *sessionV3DurableProgressSink) TryStartReasoning(step int, reasoningKey string) error {
@@ -567,7 +694,7 @@ func (s *sessionV3DurableProgressSink) sealDueCurrentLocked(now time.Time) {
 }
 
 func (s *sessionV3DurableProgressSink) sealMatchingCurrentLocked(shouldSeal func(time.Time, bool) bool) {
-	items := make([]sessionV3DurableProgressItem, 0, len(s.currentAssistantByStream)+len(s.currentReasoningByKey))
+	items := make([]sessionV3DurableProgressItem, 0, len(s.currentAssistantByStream)+len(s.currentReasoningByKey)+len(s.currentProviderToolByKey))
 	bytesInEpoch := 0
 	for key, agg := range s.currentAssistantByStream {
 		if agg == nil || !shouldSeal(agg.FirstPendingAt, agg.FlushRequested) {
@@ -585,6 +712,22 @@ func (s *sessionV3DurableProgressSink) sealMatchingCurrentLocked(shouldSeal func
 		bytesInEpoch += agg.Bytes
 		delete(s.currentReasoningByKey, key)
 	}
+	for key, agg := range s.currentProviderToolByKey {
+		if agg == nil || !shouldSeal(agg.FirstPendingAt, agg.FlushRequested) {
+			continue
+		}
+		event := cloneSessionV3ProviderToolStreamEvent(agg.Event)
+		items = append(items, sessionV3DurableProgressItem{
+			Order:        agg.FirstOrder,
+			Kind:         sessionV3DurableProgressItemProviderTool,
+			EventType:    agg.EventType,
+			Step:         agg.Step,
+			EventIndex:   agg.EventIndex,
+			ProviderTool: &event,
+		})
+		bytesInEpoch += agg.Bytes
+		delete(s.currentProviderToolByKey, key)
+	}
 	if len(items) == 0 {
 		return
 	}
@@ -598,6 +741,18 @@ func (s *sessionV3DurableProgressSink) sealMatchingCurrentLocked(shouldSeal func
 			case sessionV3DurableProgressItemReasoningDelta:
 				if item.Reasoning != nil {
 					s.currentReasoningByKey[item.Reasoning.ReasoningKey] = item.Reasoning
+				}
+			case sessionV3DurableProgressItemProviderTool:
+				if item.ProviderTool != nil {
+					key := sessionV3ProviderToolProgressKey(item.Step, *item.ProviderTool)
+					s.currentProviderToolByKey[key] = &sessionV3ProviderToolProgressAggregate{
+						FirstOrder: item.Order,
+						Step:       item.Step,
+						EventIndex: item.EventIndex,
+						EventType:  item.EventType,
+						Event:      cloneSessionV3ProviderToolStreamEvent(*item.ProviderTool),
+						Bytes:      sessionV3ProviderToolProgressBytes(*item.ProviderTool),
+					}
 				}
 			}
 		}
@@ -619,6 +774,7 @@ func (s *sessionV3DurableProgressSink) worker() {
 		if s.firstErr != nil {
 			s.currentAssistantByStream = make(map[string]*sessionV3AssistantProgressAggregate)
 			s.currentReasoningByKey = make(map[string]*sessionV3ReasoningProgressAggregate)
+			s.currentProviderToolByKey = make(map[string]*sessionV3ProviderToolProgressAggregate)
 			s.sealedEpochs = nil
 			s.pendingBytes = 0
 			s.inFlightBytes = 0
@@ -634,7 +790,7 @@ func (s *sessionV3DurableProgressSink) worker() {
 			s.pendingBytes -= epoch.Bytes
 			s.inFlightBytes += epoch.Bytes
 			haveEpoch = true
-		} else if s.closed && s.pendingBytes == 0 && s.inFlightBytes == 0 && len(s.currentAssistantByStream) == 0 && len(s.currentReasoningByKey) == 0 {
+		} else if s.closed && s.pendingBytes == 0 && s.inFlightBytes == 0 && len(s.currentAssistantByStream) == 0 && len(s.currentReasoningByKey) == 0 && len(s.currentProviderToolByKey) == 0 {
 			s.completeWaitersLocked(nil)
 			s.mu.Unlock()
 			return
@@ -726,6 +882,13 @@ func (s *sessionV3DurableProgressSink) persistEpoch(epoch sessionV3DurableProgre
 			}
 		case sessionV3DurableProgressItemReasoningComplete:
 			if _, err := s.writer.RecordReasoningEvent(s.job, "session.reasoning.completed", item.Step, 0, item.ReasoningKey, "", "", item.Summary); err != nil {
+				return err
+			}
+		case sessionV3DurableProgressItemProviderTool:
+			if item.ProviderTool == nil {
+				continue
+			}
+			if _, err := s.writer.RecordProviderToolConstructionEvent(s.job, item.EventType, item.Step, item.EventIndex, *item.ProviderTool); err != nil {
 				return err
 			}
 		}

@@ -25,7 +25,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
-import { ChatMarkdown } from "./chat-markdown";
+import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
 } from "../services/tool-message";
@@ -76,11 +76,9 @@ import {
 import {
   normalizeSessionMode,
   normalizeThinkingTagsEnabled,
-  normalizeShowCompactButton,
   type DesktopSessionMode,
 } from "../../settings/swarm/types/swarm-settings";
 import { saveThinkingTagsSetting } from "../../settings/swarm/mutations/save-thinking-tags-setting";
-import { saveShowCompactButtonSetting } from "../../settings/swarm/mutations/save-show-compact-button-setting";
 import {
   formatContextWindow,
   effectiveContextWindow,
@@ -93,7 +91,7 @@ import {
   preferenceFromModelProfile,
   preferenceFromModelProfileMetadata,
 } from "../services/model-profiles";
-import { createModelProfile, deleteModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
+import { createModelProfile, invalidateModelProfiles, setDefaultModelProfile, updateModelProfile } from "../queries/model-profile-queries";
 import {
   preferenceFromAgentModelLock,
   resolveDesktopV3AgentModelLock,
@@ -114,14 +112,13 @@ import {
 import type { DesktopSlashCommand } from "../services/slash-commands";
 import {
   sessionV3AgentSettingsMutationResponse,
-  sessionV3ModeSettingsMutationResponse,
   sessionV3ModelProfileSettingsMutationResponse,
   updateSessionV3Agent,
-  updateSessionV3Mode,
   updateSessionV3ModelProfile,
   stopSessionV3Run,
 } from "../../session-v3/api";
 import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from "../../session-v3/write-api";
+import { admitComposerFile } from "../services/composer-attachments";
 import {
   clearDesktopV3ExistingMessageOperation,
   continueDesktopV3Conversation,
@@ -354,15 +351,6 @@ function formatDesktopV3ContextTooltip(
   return "Context window unavailable";
 }
 
-function desktopV3ContextUsagePercent(
-  contextWindow: number,
-  usage: NormalizedUsageSummary | null,
-): number {
-  if (!usage || contextWindow <= 0) return 0;
-  const usedTokens = Math.max(0, contextWindow - usage.remainingTokens);
-  return (usedTokens / contextWindow) * 100;
-}
-
 function serviceTierFromPreference(
   preference: SessionPreferenceRecord,
 ): string {
@@ -420,7 +408,7 @@ function buildDesktopV3ExistingSettingsSnapshot(input: {
 }): DesktopV3InputSettingsSnapshot {
   return {
     sessionId: input.sessionId,
-    mode: normalizeSessionMode(input.session?.mode || input.cacheSession?.mode),
+    mode: normalizeSessionMode(input.cacheSession?.mode || input.session?.mode),
     agent: firstNonEmpty(
       metadataString(input.metadata, "agent_name"),
       metadataString(input.metadata, "resolved_agent_name"),
@@ -589,6 +577,12 @@ export type DesktopV3RenderItem =
       type: "live-tool";
       id: string;
       tool: LiveRunOverlay["toolCallsByCallId"][string];
+      timelineSeq?: number;
+    }
+  | {
+      type: "search-read-group";
+      id: string;
+      toolMessages: StructuredToolMessage[];
       timelineSeq?: number;
     }
   | { type: "live-working"; id: string; timelineSeq?: number };
@@ -870,8 +864,10 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
 }
 
 function committedToolRenderKey(message: MessageSnapshot): string {
-  const identity = metadataString(message.metadata, "tool_instance_id")
-    || metadataString(message.metadata, "call_id");
+  const identity = metadataString(message.metadata, "call_id")
+    || message.toolMessage?.callId?.trim()
+    || metadataString(message.metadata, "tool_instance_id")
+    || message.toolMessage?.toolInstanceId?.trim();
   return identity ? `live-tool:${identity}` : "";
 }
 
@@ -884,6 +880,8 @@ export function desktopV3RenderItemKey(item: DesktopV3RenderItem): string {
       return item.message.id;
     case "message":
       return item.renderKey || item.message.id;
+    case "search-read-group":
+      return item.id;
     case "pending-user":
       return item.message.messageId;
     default:
@@ -913,6 +911,50 @@ export function orderDesktopV3LiveRenderItems(
     .map((entry) => entry.item);
 }
 
+function structuredSearchReadMessage(item: DesktopV3RenderItem): StructuredToolMessage | null {
+  const toolMessage = item.type === "message"
+    ? item.message.toolMessage ?? null
+    : item.type === "live-tool"
+      ? structuredLiveToolMessage(item.tool)
+      : null;
+  const toolName = toolMessage?.tool.trim().toLowerCase();
+  return toolName === "search" || toolName === "read" ? toolMessage : null;
+}
+
+export function groupDesktopV3SearchReadActivity(
+  orderedItems: DesktopV3RenderItem[],
+): DesktopV3RenderItem[] {
+  const grouped: DesktopV3RenderItem[] = [];
+  let pending: Array<{ item: DesktopV3RenderItem; toolMessage: StructuredToolMessage }> = [];
+
+  const flush = () => {
+    if (pending.length === 1) {
+      grouped.push(pending[0].item);
+    } else if (pending.length > 1) {
+      const first = pending[0].item;
+      grouped.push({
+        type: "search-read-group",
+        id: `search-read-group:${desktopV3RenderItemKey(first)}`,
+        toolMessages: pending.map((entry) => entry.toolMessage),
+        timelineSeq: renderItemTimelineSeq(first),
+      });
+    }
+    pending = [];
+  };
+
+  for (const item of orderedItems) {
+    const toolMessage = structuredSearchReadMessage(item);
+    if (toolMessage) {
+      pending.push({ item, toolMessage });
+      continue;
+    }
+    flush();
+    grouped.push(item);
+  }
+  flush();
+  return grouped;
+}
+
 function reasoningElapsedLabel(
   startedAt: number | null,
   completedAt: number | null | undefined,
@@ -927,21 +969,6 @@ function reasoningElapsedLabel(
   if (elapsed < 1000) return `${elapsed}ms`;
   if (elapsed < 60_000) return `${(elapsed / 1000).toFixed(1)}s`;
   return `${(elapsed / 60_000).toFixed(1)}m`;
-}
-
-function reasoningHeadline(
-  state: NonNullable<LiveRunOverlay["reasoning"]>["state"],
-  startedAt: number | null,
-  completedAt: number | null | undefined,
-  now: number,
-): string {
-  const label = state === "error" ? "Thinking failed" : "Thinking";
-  const elapsed = reasoningElapsedLabel(
-    startedAt,
-    state === "running" ? null : completedAt,
-    now,
-  );
-  return elapsed ? `${label} · ${elapsed}` : label;
 }
 
 function reasoningBody(
@@ -1209,7 +1236,9 @@ function buildDesktopV3PlanHandoffItem(
   const rawBody = bodyLines.join("\n").trim() || message.content.trim();
   const finalHandoff = type === "plan-final-handoff"
     ? normalizeDesktopPlanFinalHandoff(message.metadata?.final_handoff)
-    : null;
+    : type === "plan-blocked-handoff"
+      ? normalizeDesktopPlanFinalHandoff(message.metadata?.blocked_handoff)
+      : null;
   const parsed = finalHandoff
     ? { body: "", summary: "" }
     : parseDesktopV3HandoffSummary(rawBody);
@@ -1229,6 +1258,7 @@ export function buildDesktopV3LiveRunRenderItems(
   options: {
     assistantMessages?: Set<string>;
     reasoningMessages?: Set<string>;
+    committedToolKeys?: Set<string>;
   } = {},
 ): DesktopV3RenderItem[] {
   const items: DesktopV3RenderItem[] = [];
@@ -1269,9 +1299,11 @@ export function buildDesktopV3LiveRunRenderItems(
     });
   }
   for (const tool of Object.values(run.toolCallsByCallId)) {
+    const id = `live-tool:${tool.callId || tool.toolInstanceId}`;
+    if (options.committedToolKeys?.has(id)) continue;
     items.push({
       type: "live-tool",
-      id: `live-tool:${tool.toolInstanceId || tool.callId}`,
+      id,
       tool,
       timelineSeq: tool.timelineSeq,
     });
@@ -1315,6 +1347,9 @@ export function buildDesktopV3ConversationRenderItems(
   );
   const assistantMessages = canonicalContentSet(visibleCommittedMessages, "assistant");
   const reasoningMessages = canonicalContentSet(visibleCommittedMessages, "reasoning");
+  const committedToolKeys = new Set<string>(
+    visibleCommittedMessages.map(committedToolRenderKey).filter((key): key is string => Boolean(key)),
+  );
   const items: DesktopV3RenderItem[] = [
     ...visibleCommittedMessages.map((message) =>
       isDesktopV3PlanExecutionBreakMessage(message)
@@ -1343,10 +1378,11 @@ export function buildDesktopV3ConversationRenderItems(
       ...buildDesktopV3LiveRunRenderItems(run, {
         assistantMessages,
         reasoningMessages,
+        committedToolKeys,
       }),
     );
   }
-  return orderDesktopV3LiveRenderItems(items);
+  return groupDesktopV3SearchReadActivity(orderDesktopV3LiveRenderItems(items));
 }
 
 export function resolveDesktopV3StopRunRequest(input: {
@@ -1365,6 +1401,7 @@ export function resolveDesktopV3StopRunRequest(input: {
 }
 
 export interface DesktopV3ExistingConversationPaneProps {
+  /** Compatibility-only command seam; resolved routed mode is read-only here. */
   modeCommand?: "toggle-plan-auto" | null;
   onModeCommandHandled?: () => void;
   onModeChange?: (mode: DesktopSessionMode) => void;
@@ -1386,9 +1423,11 @@ export interface DesktopV3ExistingConversationPaneProps {
   ) => void | Promise<void>;
   agentSettingsOpenSignal?: number;
   agentSettingsInitialAgent?: string;
+  composerFocusSignal?: number;
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
+  onOpenActionSettings?: () => void;
   planSidebarBelowActions?: ReactNode;
 }
 
@@ -1457,7 +1496,6 @@ export function DesktopV3ExistingConversationComposer({
 export function DesktopV3ExistingConversationPane({
   modeCommand = null,
   onModeCommandHandled,
-  onModeChange,
   sessionId,
   initialHydrateStatus,
   renderedMessages,
@@ -1473,9 +1511,11 @@ export function DesktopV3ExistingConversationPane({
   onSlashCommand,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = "",
+  composerFocusSignal = 0,
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
+  onOpenActionSettings,
   planSidebarBelowActions,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
@@ -1501,7 +1541,6 @@ export function DesktopV3ExistingConversationPane({
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(
     uiSettingsQuery.data,
   );
-  const showCompactButton = normalizeShowCompactButton(uiSettingsQuery.data);
   const selectPlanExecutionViewForSession = useCallback(
     (state: DesktopV3CacheState) =>
       selectDesktopPlanExecutionView(state, normalizedSessionId),
@@ -1581,10 +1620,10 @@ export function DesktopV3ExistingConversationPane({
   const sessionMetadata =
     cacheSession?.metadata ?? session?.metadata ?? metadata;
   const headerBranchLabel =
-    metadataString(sessionMetadata, "swarm_v3_branch_label") ||
     session?.worktreeBranch?.trim() ||
-    session?.gitBranch?.trim() ||
     cacheSession?.worktree_branch?.trim() ||
+    session?.gitBranch?.trim() ||
+    metadataString(sessionMetadata, "swarm_v3_branch_label") ||
     metadataString(sessionMetadata, "git_branch") ||
     metadataString(sessionMetadata, "branch");
   const settingsBaseline = useMemo(
@@ -1611,7 +1650,6 @@ export function DesktopV3ExistingConversationPane({
   const [sending, setSending] = useState(false);
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false);
-  const [showCompactButtonSaving, setShowCompactButtonSaving] = useState(false);
   const [agentModelSaving, setAgentModelSaving] = useState(false);
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<
     string | null
@@ -1645,21 +1683,24 @@ export function DesktopV3ExistingConversationPane({
     renderedMessages.pendingUser.length > 0 ||
     renderedMessages.liveRuns.length > 0;
   const sessionAgentModelLock = useMemo(
-    () => resolveDesktopV3SessionAgentModelLock(sessionMetadata, mode),
-    [mode, sessionMetadata],
+    () => resolveDesktopV3SessionAgentModelLock(sessionMetadata),
+    [sessionMetadata],
   );
   const selectedAgentModelLock = useMemo(
     () =>
       sessionAgentModelLock
-      ?? resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent, mode),
-    [agentState.profiles, mode, selectedAgent, sessionAgentModelLock],
+      ?? resolveDesktopV3AgentModelLock(agentState.profiles, selectedAgent),
+    [agentState.profiles, selectedAgent, sessionAgentModelLock],
   );
   const lockedPolicyPreference = useMemo(
     () => policyLockedPreference(cachedAgentModelPolicy),
     [cachedAgentModelPolicy],
   );
   const cachedPolicyMatchesSelectedMode = mode === settingsBaseline.mode;
-  const activeModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const sessionActiveModelProfile = useMemo(() => activeModelProfileFromMetadata(sessionMetadata), [sessionMetadata]);
+  const composerActiveModelProfile = selectedAgent.trim().toLowerCase() === 'swarm'
+    ? { source: 'agent-default' as const, profileId: '', name: 'Swarm model' }
+    : sessionActiveModelProfile;
   const sessionProfilePreference = useMemo(
     () => preferenceFromModelProfileMetadata(sessionMetadata, mode),
     [mode, sessionMetadata],
@@ -1673,6 +1714,21 @@ export function DesktopV3ExistingConversationPane({
   const displayedPreference = cachedPolicyMatchesSelectedMode
     ? (lockedPolicyPreference ?? preference)
     : (sessionProfilePreference ?? sessionAgentPreference ?? preference);
+  // Header identity is presentation-only and must come from the hydrated session
+  // snapshot/view. Local profile-picker state must never appear before resolution.
+  const canonicalHeaderPreference = sessionProfilePreference ?? cachedPreference;
+  const canonicalHeaderModelKey = modelOptionKey(
+    canonicalHeaderPreference.provider,
+    canonicalHeaderPreference.model,
+    canonicalHeaderPreference.contextMode,
+  );
+  const canonicalHeaderModelOption = modelOptions.find(
+    (option) => option.key === canonicalHeaderModelKey,
+  ) ?? null;
+  const canonicalHeaderModelLabel = canonicalHeaderPreference.provider.trim()
+    && canonicalHeaderPreference.model.trim()
+      ? canonicalHeaderModelOption?.label || canonicalHeaderPreference.model
+      : "";
   const selectedModelKey = modelOptionKey(
     displayedPreference.provider,
     displayedPreference.model,
@@ -1743,10 +1799,6 @@ export function DesktopV3ExistingConversationPane({
     displayedUsage?.remainingTokens,
   );
   const contextTooltip = formatDesktopV3ContextTooltip(
-    effectiveContextWindowValue,
-    displayedUsage,
-  );
-  const contextUsagePercent = desktopV3ContextUsagePercent(
     effectiveContextWindowValue,
     displayedUsage,
   );
@@ -2056,11 +2108,8 @@ export function DesktopV3ExistingConversationPane({
   ]);
 
   useEffect(() => {
-    if (modeCommand !== "toggle-plan-auto") return;
-    const nextMode = mode === "plan" ? "auto" : "plan";
-    handleModeSelect(nextMode);
-    onModeCommandHandled?.();
-  }, [mode, modeCommand, onModeCommandHandled]);
+    if (modeCommand === "toggle-plan-auto") onModeCommandHandled?.();
+  }, [modeCommand, onModeCommandHandled]);
 
   function handleOpenAuthSettings() {
     if (routeWorkspaceSlug) {
@@ -2086,8 +2135,8 @@ export function DesktopV3ExistingConversationPane({
       });
       setSelectedAgent(normalizedAgentName);
       localSettingsDirtyRef.current.agent = false;
-      const nextLock = resolveDesktopV3SessionAgentModelLock(agentResponse.metadata, mode)
-        ?? resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName, mode);
+      const nextLock = resolveDesktopV3SessionAgentModelLock(agentResponse.metadata)
+        ?? resolveDesktopV3AgentModelLock(agentState.profiles, normalizedAgentName);
       if (nextLock.locked) {
         setPreference((current) => preferenceFromAgentModelLock(nextLock, current, modelOptions));
       }
@@ -2097,33 +2146,6 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
-  function handleModeSelect(nextMode: DesktopSessionMode) {
-    if (!normalizedSessionId || nextMode === mode) return;
-    localSettingsDirtyRef.current.mode = true;
-    setMode(nextMode);
-    onModeChange?.(nextMode);
-    const nextProfilePreference = preferenceFromModelProfileMetadata(
-      sessionMetadata,
-      nextMode,
-    );
-    if (nextProfilePreference) {
-      setPreference(nextProfilePreference);
-      return;
-    }
-    const nextLock = resolveDesktopV3SessionAgentModelLock(
-      sessionMetadata,
-      nextMode,
-    ) ?? resolveDesktopV3AgentModelLock(
-      agentState.profiles,
-      selectedAgent,
-      nextMode,
-    );
-    if (!nextLock.locked) return;
-    setPreference((current) =>
-      preferenceFromAgentModelLock(nextLock, current, modelOptions),
-    );
-  }
-
   async function handleConfirmAgentSettings(
     input: AgentModelControlConfirmInput,
   ) {
@@ -2131,6 +2153,9 @@ export function DesktopV3ExistingConversationPane({
     setAgentModelSaving(true);
     setSendError(null);
     try {
+      if (input.agentName.trim().toLowerCase() === 'swarm') {
+        throw new Error('Configure Swarm Action and Plan models directly in agent setup.');
+      }
       let appliedProfile = input.modelProfile;
       let profileChoice: { kind: 'temporary'; profile: typeof input.modelProfile } | { kind: 'saved'; profileId: string };
       if (input.persistence === 'create' || input.persistence === 'create-copy') {
@@ -2206,21 +2231,6 @@ export function DesktopV3ExistingConversationPane({
           normalizedSessionId,
         ),
       });
-    }
-    if (mode !== settingsBaseline.mode) {
-      const modeResponse = await updateSessionV3Mode(normalizedSessionId, mode);
-      const settingsResponse = sessionV3ModeSettingsMutationResponse(
-        modeResponse,
-        normalizedSessionId,
-        mode,
-      );
-      dispatchDesktopV3Cache({
-        type: "mutation.sessionSettingsResult",
-        raw: settingsResponse,
-      });
-      if (settingsResponse.preference) {
-        setPreference(normalizePreference(settingsResponse.preference));
-      }
     }
   }
 
@@ -2428,22 +2438,6 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
-  async function handleShowCompactButtonToggle(enabled: boolean) {
-    if (showCompactButtonSaving) return;
-    setShowCompactButtonSaving(true);
-    setSendError(null);
-    try {
-      const updated = await saveShowCompactButtonSetting(enabled);
-      queryClient.setQueryData(uiSettingsQueryKey(), updated);
-    } catch (error) {
-      if (mountedRef.current) {
-        setSendError(error instanceof Error ? error.message : "Failed to update compact button setting");
-      }
-    } finally {
-      if (mountedRef.current) setShowCompactButtonSaving(false);
-    }
-  }
-
   async function handlePlanExecutionAction(
     input: DesktopPlanExecutionSidebarActionInput,
   ) {
@@ -2645,7 +2639,8 @@ export function DesktopV3ExistingConversationPane({
 
   return (
     <div
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]"
+      data-desktop-chat-drop-zone
       data-testid="desktop-v3-existing-conversation-pane"
     >
       <DesktopV3ChatHeader
@@ -2654,7 +2649,7 @@ export function DesktopV3ExistingConversationPane({
           session?.workspaceName || cacheSession?.workspace_name || "Workspace"
         }
         branchName={headerBranchLabel}
-        mode={mode}
+        modelLabel={canonicalHeaderModelLabel}
         runStatus={runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
@@ -2826,7 +2821,9 @@ export function DesktopV3ExistingConversationPane({
 
           <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
+            workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             initialDraft={storedOperation?.request.content ?? ""}
+            focusSignal={composerFocusSignal}
             hasStoredOperation={hasStoredOperation}
             canSubmitWithoutDraft={canSubmitWithoutDraft}
             controllerRef={composerControllerRef}
@@ -2839,19 +2836,11 @@ export function DesktopV3ExistingConversationPane({
             mediaCapability={mediaCapability}
             onUploadAttachment={async (file, signal) => {
               const capability = await getDesktopV3MediaCapability(normalizedSessionId);
-              const fileType = file.name.includes('.') ? file.name.split('.').pop()?.toLowerCase() : undefined;
-              const browserMIME = file.type.trim().toLowerCase();
-              const inferredMIME = fileType ? ({ gif: 'image/gif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' } as Record<string, string>)[fileType] : undefined;
-              const mimeType = browserMIME || inferredMIME || '';
-              const admitted = capability.status === 'available' && capability.contract_token
-                ? capability.capabilities.find((candidate) => {
-                    const acceptsMIME = mimeType !== '' && (candidate.mime_types ?? []).some((value) => value.toLowerCase() === mimeType);
-                    const acceptsFileType = Boolean(fileType && (candidate.file_types ?? []).some((value) => value.replace(/^\./, '').toLowerCase() === fileType));
-                    return acceptsMIME || acceptsFileType;
-                  })
-                : null;
-              if (!admitted || !capability.contract_token) throw new Error('This file type is not supported by the current model and credential.');
-              if (admitted.max_bytes > 0 && file.size > admitted.max_bytes) throw new Error(`This attachment exceeds the ${Math.ceil(admitted.max_bytes / (1024 * 1024))} MB limit.`);
+              const admission = admitComposerFile(file, capability);
+              if (admission.kind !== 'media' || !capability.contract_token) throw new Error('This file type is not supported as media by the current model and credential.');
+              const admitted = admission.capability;
+              const fileType = admission.fileType;
+              const mimeType = admission.mimeType;
               const declaredMIME = mimeType || (fileType ? (admitted.mime_types ?? []).find((value) => value.toLowerCase().endsWith(`/${fileType === 'jpg' ? 'jpeg' : fileType}`)) : undefined);
               if (!declaredMIME) throw new Error('The browser could not determine a supported media type for this attachment.');
               return uploadDesktopV3MediaAsset({ sessionId: normalizedSessionId, file, mimeType: declaredMIME, modality: admitted.modality, fileType, contractToken: capability.contract_token, signal });
@@ -2860,44 +2849,13 @@ export function DesktopV3ExistingConversationPane({
             onStop={handleStop}
             onCompact={handleCompact}
             mode={mode}
-            onModeSelect={handleModeSelect}
+            showModePicker
+            resolvedSessionControls
             currentAgent={selectedAgent || "Agent"}
             selectedPrimaryAgent={selectedAgent || ""}
             agents={agentState.profiles}
             modelProfiles={modelProfileState.profiles}
-            activeModelProfile={activeModelProfile}
-            modelProfilesLoading={modelProfilesQuery.isLoading}
-            modelProfilesError={modelProfilesQuery.error instanceof Error ? modelProfilesQuery.error.message : null}
-            onModelProfileSetDefault={async (profileId) => {
-              await setDefaultModelProfile(profileId);
-              await invalidateModelProfiles(queryClient);
-            }}
-            onModelProfileDelete={async (profileId) => {
-              await deleteModelProfile(profileId);
-              await invalidateModelProfiles(queryClient);
-              if (activeModelProfile.profileId === profileId) {
-                const remaining = modelProfileState.profiles.filter((profile) => profile.profileId !== profileId);
-                const replacement = remaining.find((profile) => profile.isDefault) ?? remaining[0];
-                const response = await updateSessionV3ModelProfile(normalizedSessionId, replacement ? { kind: 'saved', profileId: replacement.profileId } : { kind: 'agent-default' });
-                dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId) });
-              }
-            }}
-            onModelProfileSelect={async (profileId) => {
-              const profile = modelProfileState.profiles.find((candidate) => candidate.profileId === profileId);
-              if (!profile) return;
-              setAgentModelSaving(true);
-              setSendError(null);
-              try {
-                const response = await updateSessionV3ModelProfile(normalizedSessionId, { kind: 'saved', profileId });
-                dispatchDesktopV3Cache({ type: 'mutation.sessionSettingsResult', raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId) });
-                const next = preferenceFromModelProfile(profile, mode, profile.updatedAt);
-                if (next) setPreference(next);
-              } catch (error) {
-                setSendError(error instanceof Error ? error.message : 'Failed to switch model profile');
-              } finally {
-                setAgentModelSaving(false);
-              }
-            }}
+            activeModelProfile={composerActiveModelProfile}
             onUseAgentModelDefault={async () => {
               setAgentModelSaving(true);
               setSendError(null);
@@ -2940,14 +2898,11 @@ export function DesktopV3ExistingConversationPane({
               void handleThinkingTagsToggle(enabled);
             }}
             thinkingTagsBusy={thinkingTagsSaving}
-            showCompactButton={showCompactButton}
-            onShowCompactButtonToggle={(enabled) => { void handleShowCompactButtonToggle(enabled) }}
-            showCompactButtonBusy={showCompactButtonSaving}
             contextLabel={contextLabel}
             contextTooltip={contextTooltip}
-            contextUsagePercent={contextUsagePercent}
             compactDisabled={compacting || sending || Boolean(currentRun)}
             onSlashCommand={onSlashCommand}
+            onOpenActionSettings={onOpenActionSettings}
           />
         </div>
 
@@ -3019,7 +2974,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
     case "plan-final-handoff":
       return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "plan-blocked-handoff":
-      return <DesktopV3PlanBlockedHandoff item={item} />;
+      return <DesktopV3PlanBlockedHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "message":
       return (
         <DesktopV3CommittedMessage
@@ -3043,6 +2998,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
       );
     case "live-tool":
       return <DesktopV3LiveToolCall tool={item.tool} taskChildActions={taskChildActions} />;
+    case "search-read-group":
+      return <SearchReadToolGroupView toolMessages={item.toolMessages} />;
     case "live-working":
       return null;
     default:
@@ -3463,10 +3420,15 @@ function DesktopV3StructuredFinalHandoff({
 
 function DesktopV3PlanBlockedHandoff({
   item,
+  onSuggestedPrompt,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-blocked-handoff" }>;
+  onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
 }) {
   const title = handoffTitleDetail(item.headline, ["Checkpoint blocked", "Blocked checkpoint"]);
+  const handoff = item.finalHandoff;
+  const details = handoff?.details;
+  const hasDetails = Boolean(details?.report || details?.result || details?.changedFiles.length || details?.validation.length);
   return (
     <div
       className="flex w-full min-w-0 justify-start py-1"
@@ -3485,8 +3447,57 @@ function DesktopV3PlanBlockedHandoff({
             <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-warning)]">
               Blocked checkpoint
             </div>
-            {title ? <h3 className="mt-1 break-words font-semibold text-[var(--app-text)]">{title}</h3> : null}
-            <DesktopV3PlanHandoffContent item={item} />
+            {title ? <h3 className="mt-1 break-words text-base font-semibold text-[var(--app-text)]">{title}</h3> : null}
+            {handoff ? (
+              <>
+                <div className="mt-2 text-sm leading-6 text-[var(--app-text-muted)]" data-blocked-handoff-overview>
+                  <ChatMarkdown content={handoff.overview} />
+                </div>
+                {handoff.impactBullets.length > 0 ? (
+                  <ul className="mt-2 grid gap-1.5 text-sm leading-5 text-[var(--app-text-muted)]" data-blocked-handoff-impact>
+                    {handoff.impactBullets.map((impact, index) => (
+                      <li key={`${item.message.id}:blocked-impact:${index}`} className="flex min-w-0 items-start gap-2">
+                        <span aria-hidden="true" className="mt-2 size-1 shrink-0 rounded-full bg-[var(--app-warning)]" />
+                        <span className="min-w-0 break-words">{impact}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {handoff.suggestedPrompts.length > 0 ? (
+                  <div className="mt-3" data-blocked-handoff-suggestions>
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next steps</div>
+                    <div className="mt-1.5 flex flex-wrap gap-2">
+                      {handoff.suggestedPrompts.map((suggestion, index) => (
+                        <button
+                          key={`${item.message.id}:blocked-prompt:${index}`}
+                          type="button"
+                          className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-left text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-warning)] disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={!onSuggestedPrompt}
+                          title={suggestion.prompt}
+                          onClick={() => selectDesktopV3SuggestedPrompt(suggestion.prompt, onSuggestedPrompt)}
+                          data-blocked-handoff-prompt={suggestion.prompt}
+                        >
+                          {suggestion.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {hasDetails ? (
+                  <details className="mt-3 border-t border-[var(--app-border)] pt-2" data-blocked-handoff-evidence>
+                    <summary className="cursor-pointer py-1 text-xs font-medium text-[var(--app-text-muted)]">Details</summary>
+                    <div className="mt-1 border-l border-[var(--app-border)] pl-3 text-xs text-[var(--app-text-muted)]">
+                      {details?.report ? <ChatMarkdown content={details.report} /> : null}
+                      {details?.result ? <div className="mt-2"><div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Result</div><ChatMarkdown content={details.result} /></div> : null}
+                      {details?.changedFiles.length ? <div className="mt-2">Files: {details.changedFiles.join(", ")}</div> : null}
+                      {details?.validation.length ? <div className="mt-2"><div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Validation</div><ul className="grid gap-1">{details.validation.map((entry, index) => <li key={`${item.message.id}:blocked-validation:${index}`}>{entry}</li>)}</ul></div> : null}
+                    </div>
+                  </details>
+                ) : null}
+              </>
+            ) : (
+              <DesktopV3PlanHandoffContent item={item} />
+            )}
           </div>
         </div>
       </section>
@@ -3760,38 +3771,79 @@ function DesktopV3ReasoningMessage({
     return () => window.clearInterval(timer);
   }, [item.state]);
   const body = reasoningBody(item.text, item.summary, thinkingTagsEnabled);
-  const label = reasoningHeadline(
-    item.state,
+  const label = item.state === "error" ? "Thinking failed" : "Thinking";
+  const elapsed = reasoningElapsedLabel(
     item.startedAt,
-    item.completedAt ?? null,
+    item.state === "running" ? null : item.completedAt,
     timerNow,
   );
-  const StateIcon =
-    item.state === "running"
-      ? LoaderCircle
-      : item.state === "error"
-        ? XCircle
-        : CheckCircle2;
+  const StateIcon = item.state === "error" ? XCircle : CheckCircle2;
   return (
     <div className="flex justify-start">
       <div className="min-w-0 max-w-[calc(100%-2rem)] text-sm leading-6 text-[var(--app-text)] opacity-80">
         <div className="mb-1 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">
-          <StateIcon
-            size={12}
-            className={
-              item.state === "running"
-                ? "animate-spin text-[var(--app-primary)]"
-                : item.state === "error"
+          {item.state === "running" ? null : (
+            <StateIcon
+              size={12}
+              className={
+                item.state === "error"
                   ? "text-[var(--app-danger)]"
                   : "text-[var(--app-text-subtle)]"
-            }
-          />
-          {label}
+              }
+            />
+          )}
+          <span
+            className={cn(
+              item.state === "running"
+                && "motion-safe:animate-[pulse_3s_ease-in-out_infinite] motion-reduce:animate-none",
+            )}
+          >
+            {label}
+          </span>
+          {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
         </div>
         {body ? <ChatMarkdown content={body} /> : null}
       </div>
     </div>
   );
+}
+
+function structuredLiveToolMessage(
+  tool: LiveRunOverlay["toolCallsByCallId"][string],
+): StructuredToolMessage | null {
+  const providerReady = Boolean(
+    tool.toolInstanceId?.startsWith("provider-tool:")
+      && !tool.outputText?.trim()
+      && !tool.errorText?.trim(),
+  );
+  const state: ToolMessageState =
+    tool.status === "failed" || tool.status === "error"
+      ? "error"
+      : providerReady
+        ? "running"
+        : tool.status === "completed" ||
+            tool.status === "done" ||
+            tool.status === "cancelled" ||
+            tool.status === "canceled"
+          ? "done"
+          : "running";
+  const output = tool.outputText ?? "";
+  const error = tool.errorText?.trim() || (state === "error" ? output : "");
+  const parsed = buildStructuredToolMessage({
+    pathId: "run.v3.provider-tool-result.v1",
+    tool: tool.toolName || "tool",
+    callId: tool.callId,
+    toolInstanceId: tool.toolInstanceId,
+    argumentsText: tool.argumentsText ?? "",
+    outputText: output,
+    error,
+    durationMs: tool.durationMs,
+    state,
+    lifecycleStatus: tool.status,
+    taskStream: tool.taskStream,
+  });
+  if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq;
+  return parsed;
 }
 
 function DesktopV3LiveToolCall({
@@ -3801,32 +3853,7 @@ function DesktopV3LiveToolCall({
   tool: LiveRunOverlay["toolCallsByCallId"][string];
   taskChildActions?: TaskChildCardActions;
 }) {
-  const state: ToolMessageState =
-    tool.status === "failed" || tool.status === "error"
-      ? "error"
-      : tool.status === "completed" ||
-          tool.status === "done" ||
-          tool.status === "cancelled" ||
-          tool.status === "canceled"
-        ? "done"
-        : "running";
-  const output = tool.outputText ?? "";
-  const args = tool.argumentsText ?? "";
-  const error = tool.errorText?.trim() || (state === "error" ? output : "");
-  const parsed = buildStructuredToolMessage({
-    pathId: "run.v3.provider-tool-result.v1",
-    tool: tool.toolName || "tool",
-    callId: tool.callId,
-    toolInstanceId: tool.toolInstanceId,
-    argumentsText: args,
-    outputText: output,
-    error,
-    durationMs: tool.durationMs,
-    state,
-    taskStream: tool.taskStream,
-  });
-  if (parsed && tool.timelineSeq) parsed.timelineSeq = tool.timelineSeq;
-  return <DesktopV3ToolMessage content="" toolMessage={parsed} taskChildActions={taskChildActions} />;
+  return <DesktopV3ToolMessage content="" toolMessage={structuredLiveToolMessage(tool)} taskChildActions={taskChildActions} />;
 }
 
 export function chatMessageToMessageSnapshot(

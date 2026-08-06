@@ -24,6 +24,8 @@ func TestModeCapabilityInstructions(t *testing.T) {
 				"Session mode can be changed between turns; do not treat an earlier auto/plan state as permanent.",
 				"Current agent runtime contract: plan_auto (exit_plan_mode transitions an approved plan turn to auto; it does not make auto mode irreversible).",
 				"Use ask-user only for true product/decision forks; do not use ask-user to request tool permissions.",
+				"Every question must offer at least two concrete choices.",
+				"The backend automatically appends a protected option labeled exactly \"Custom response\" so the user can answer any question freely",
 				"- tool availability is determined by plan mode until exit_plan_mode switches the session to auto.",
 				"- exit_plan_mode is available for this agent, but still requires explicit approval and only succeeds from session plan mode.",
 				"- plan_manage is available in both plan and auto to inspect or update saved plans; it does not change session mode.",

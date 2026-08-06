@@ -6,6 +6,7 @@ import type { DesktopSessionRecord } from '../types/realtime'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY } from '../session-v3/api'
 import {
   SIDEBAR_SESSION_GROUPS,
+  buildGitSidebarIntegrationHelpPrompt,
   compareSidebarSessions,
   desktopRouteWorkspacePathForSession,
   buildSidebarSessionTree,
@@ -50,20 +51,19 @@ test('sidebar header renders workspace context instead of the swarm role label',
   assert.doesNotMatch(headerSource, /currentSwarmRoleLabel/)
 })
 
-test('plan Git panel stays content-sized and scrolls only its file list when constrained', async () => {
+test('plan Git panel fills the remaining sidebar height and scrolls its file list at the bottom edge', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
   const panelEnd = source.indexOf('const sidebarContent =', panelStart)
   const panelSource = source.slice(panelStart, panelEnd)
 
   assert.ok(panelStart >= 0 && panelEnd > panelStart)
-  assert.match(panelSource, /desktop-plan-git-sidebar[^\n]*flex min-h-0 min-w-0 flex-col overflow-hidden/)
-  assert.doesNotMatch(panelSource, /desktop-plan-git-sidebar[^\n]*(?:h-full|flex-1)/)
-  assert.match(panelSource, /min-h-0 shrink overflow-hidden/)
-  assert.doesNotMatch(panelSource, /min-h-0 flex-1 overflow-hidden/)
-  assert.match(panelSource, /data-plan-git-file-list[^\n]*|overflow-y-auto[^\n]*data-plan-git-file-list/)
+  assert.match(panelSource, /desktop-plan-git-sidebar[^\n]*flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden/)
+  assert.match(panelSource, /flex min-h-0 flex-1 flex-col overflow-hidden[^\n]*data-plan-git-scroll-region/)
+  assert.match(panelSource, /min-h-0 flex-1 overflow-y-auto[^\n]*data-plan-git-file-list[^\n]*data-plan-git-scroll="at-sidebar-edge"/)
   assert.match(panelSource, /shrink-0[^\n]*data-plan-git-commit|data-plan-git-commit[^\n]*shrink-0/)
-  assert.doesNotMatch(panelSource, /max-h-48/)
+  assert.doesNotMatch(panelSource, /data-plan-git-file-list[^\n]*max-h-/)
+  assert.doesNotMatch(panelSource, /data-plan-git-visible-rows/)
 })
 
 test('plan Git commit form submits on Enter through the shared commit handler and shows a success toast', async () => {
@@ -78,11 +78,78 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   assert.match(handlerSource, /await commitWorkspaceChanges/)
   assert.match(handlerSource, /setDesktopToast\(\{ message: 'Changes committed successfully\.', tone: 'success' \}\)/)
+  assert.match(handlerSource, /const archiveAfterCommit = !modal\.worktree && Boolean\(modal\.sessionId\) && gitCommitArchive/)
+  assert.match(handlerSource, /await archiveDesktopV3Sessions\(\[modal\.sessionId\]\)/)
+  assert.match(handlerSource, /Changes committed and session archived\./)
+  assert.match(handlerSource, /commitSucceeded && integration/)
+  assert.match(handlerSource, /setGitIntegrateError\(message\)/)
   assert.ok(modalStart >= 0 && modalEnd > modalStart)
   assert.match(modalSource, /<form[^>]*onSubmit=/)
   assert.match(modalSource, /void handleGitCommit\(\)/)
   assert.match(modalSource, /<Button type="submit"/)
+  assert.match(modalSource, /Archive session after integration/)
+  assert.match(modalSource, /disabled=\{gitCommitBusy \|\| !gitCommitIntegrate\}/)
+  assert.match(modalSource, /!gitCommitModal\.worktree && gitCommitModal\.sessionId/)
+  assert.match(modalSource, /Archive session after commit/)
+  assert.match(modalSource, /Archives this chat only after the commit succeeds\./)
+  assert.match(modalSource, /gitIntegrateModal[\s\S]*void handleGitIntegrate\(\)/)
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
+})
+
+test('Git sidebar integration help prompt carries the actual error without authorizing integration or archive', () => {
+  const prompt = buildGitSidebarIntegrationHelpPrompt({
+    sessionId: 'review-session',
+    workspacePath: '/workspace',
+    worktreeBranch: 'agent/review-help',
+    targetBranch: 'dev',
+    presentation: 'sidebar-popout',
+  }, 'CONFLICT in web/src/app.tsx')
+
+  assert.match(prompt, /Session ID: review-session/)
+  assert.match(prompt, /Source branch: agent\/review-help/)
+  assert.match(prompt, /Target branch: dev/)
+  assert.match(prompt, /Target workspace: \/workspace/)
+  assert.match(prompt, /Integration error:\nCONFLICT in web\/src\/app\.tsx/)
+  assert.match(prompt, /Do not integrate or archive anything unless I explicitly ask/)
+})
+
+test('plan Git sidebar renders session commits and an anchored integration confirmation popout', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(panelStart >= 0 && panelEnd > panelStart)
+  assert.match(source, /activeSessionCommits = activeSessionWorktree \? gitSnapshot\?\.session_commits/)
+  assert.match(panelSource, /data-plan-git-session-commits/)
+  assert.match(panelSource, /Session commits/)
+  assert.match(panelSource, /commit\.short_hash/)
+  assert.match(panelSource, /data-plan-git-integrate-anchor/)
+  assert.match(panelSource, /data-plan-git-integrate-popout/)
+  assert.match(panelSource, /createPortal\(/[\s\S]*document\.body/)
+  assert.match(panelSource, /aria-label="Git sidebar integration options"/)
+  assert.match(panelSource, /Confirm and Archive/)
+  assert.match(panelSource, /\{gitIntegrateError && !gitIntegrateModal\.integrationComplete \? <button[^\n]*Ask Swarm for Help[^\n]*<\/button> : null\}/)
+  assert.doesNotMatch(panelSource, /(^|\n)\s*<button[^\n]*Ask Swarm for Help/)
+  assert.match(panelSource, /handleAskSwarmForGitIntegrationHelp/)
+  assert.match(panelSource, /Confirm integration\?/)
+  assert.match(panelSource, /handleGitIntegrate\(true\)/)
+  assert.match(panelSource, /handleGitIntegrate\(gitIntegrateModal\.integrationComplete \|\| gitIntegrateArchive\)/)
+  assert.match(panelSource, /aria-label="Close Git integration options"/)
+  assert.match(source, /gitIntegrateModal\?\.presentation !== 'sidebar-popout'/)
+  assert.match(source, /window\.addEventListener\('scroll', positionGitSidebarIntegratePopout, true\)/)
+  assert.match(source, /document\.addEventListener\('pointerdown', dismissOnOutsidePointer\)/)
+  assert.match(source, /if \(event\.key === 'Escape'\) closeGitSidebarIntegratePopout\(\)/)
+  assert.match(source, /const DESKTOP_REPAIR_AGENT_NAME = 'swarm'/)
+  assert.match(source, /const resolveDesktopRepairSessionAuthority = useCallback/[\s\S]*sourceBindingId = sessionWorkspaceBindingId\(sourceSession\?\.metadata\)[\s\S]*workspaceByPath\.get\(normalizedOwningPath\)[\s\S]*workspacePathByBindingId\.get\(sourceBindingId\)[\s\S]*metadataStringValue\(sourceSession\?\.metadata, 'swarm_v3_runtime_swarm_id'\)/)
+  assert.match(source, /const launchDesktopRepairSession = useCallback/[\s\S]*agentName: DESKTOP_REPAIR_AGENT_NAME[\s\S]*worktree: \{ mode: 'off' \}[\s\S]*source_session_id: input\.sourceSessionId[\s\S]*to: '\/\$workspaceSlug\/\$sessionId'/)
+  assert.match(source, /const integrationError = gitIntegrateError[\s\S]*modal\.integrationComplete \|\| !integrationError[\s\S]*launchDesktopRepairSession\(\{[\s\S]*owningWorkspacePath: modal\.workspacePath[\s\S]*sourceSessionId: modal\.sessionId[\s\S]*prompt: buildGitSidebarIntegrationHelpPrompt\(modal, integrationError\)/)
+  assert.match(source, /source: 'desktop-v3-git-sidebar-integration-help'/)
+  assert.match(source, /worktree_branch: modal\.worktreeBranch[\s\S]*target_branch: modal\.targetBranch[\s\S]*target_workspace_path: modal\.workspacePath[\s\S]*integration_error: integrationError/)
+  const helpHandlerSource = source.slice(source.indexOf('const handleAskSwarmForGitIntegrationHelp'), source.indexOf('const closeGitSidebarIntegratePopout'))
+  assert.match(helpHandlerSource, /Could not ask Swarm for integration help/)
+  assert.match(helpHandlerSource, /Started a new Swarm session for this integration error/)
+  assert.doesNotMatch(helpHandlerSource, /createDesktopV3ExistingMessageOperation|continueDesktopV3Conversation|setGitIntegrateError|handleGitIntegrate|integrateSessionWorktree|archiveIntegratedSession|archiveDesktopV3Sessions/)
 })
 
 test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {
@@ -142,7 +209,7 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.match(rendererSource, /gitAheadCount: number[\s\S]*gitBehindCount: number[\s\S]*gitDirtyCount: number/)
   assert.match(gitEntrySource, /onClick=\{input\.onOpenGit\}/)
   assert.match(gitEntrySource, /↑\{input\.gitAheadCount\} ↓\{input\.gitBehindCount\}/)
-  assert.match(gitEntrySource, /input\.gitDirtyCount > 0 \? `\$\{input\.gitDirtyCount\} dirty` : 'clean'/)
+  assert.match(gitEntrySource, /input\.gitDirtyCount > 0 \? `\$\{input\.gitDirtyCount\} uncommitted` : 'clean'/)
   assert.doesNotMatch(gitEntrySource, /<GitBranch|\bGit ·|min-h-|border|bg-\[var\(--app-warning-bg\)\]|Commit/)
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   assert.match(handlerSource, /gitStatusQueryKey\(normalizedPath\)/)
@@ -156,28 +223,69 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
 })
 
-test('workspace dropdown rows create chats without icons and the standalone message-square precedes worktree', async () => {
+test('sidebar shows an accessible current-workspace dropdown before chat and worktree actions', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
-  const dropdownStart = source.indexOf('<div ref={workspaceDropdownRef}')
-  const dropdownEnd = source.indexOf('{needsReviewCleanupOpen ?', dropdownStart)
-  const dropdownSource = source.slice(dropdownStart, dropdownEnd)
-  const menuStart = dropdownSource.indexOf('role="menu"')
-  const menuEnd = dropdownSource.indexOf(') : null}', menuStart)
-  const menuSource = dropdownSource.slice(menuStart, menuEnd)
-  const newChatIndex = dropdownSource.indexOf('handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)')
-  const worktreeIndex = dropdownSource.indexOf('openWorktreeSessionModal({')
+  const workspaceLabelIndex = source.indexOf('aria-label={`Current workspace: ${topWorkspaceLabel}`}')
+  const sessionGroupsIndex = source.indexOf('{renderSidebarSessionGroups({', workspaceLabelIndex)
+  const workspaceRowSource = source.slice(workspaceLabelIndex, sessionGroupsIndex)
+  const newChatIndex = workspaceRowSource.indexOf('handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)')
+  const worktreeIndex = workspaceRowSource.indexOf('openRouteWorkspaceWorktree(topWorkspace)')
 
-  assert.ok(dropdownStart >= 0 && dropdownEnd > dropdownStart)
-  assert.ok(menuStart >= 0 && menuEnd > menuStart)
-  assert.doesNotMatch(dropdownSource, /<select|<option/)
-  assert.match(dropdownSource, /bg-\[var\(--app-surface\)\][^\n]*text-\[var\(--app-text\)\]/)
-  assert.match(dropdownSource, /border-\[var\(--app-border\)\]/)
-  assert.match(menuSource, /role="menuitem"[\s\S]*onClick=\{\(\) => \{[\s\S]*setWorkspaceDropdownOpen\(false\)[\s\S]*handleStartNewSessionInWorkspace\(workspace\.path, workspace\.workspaceName\)/)
-  assert.match(menuSource, /aria-label=\{`New chat in \$\{workspace\.workspaceName\}`\}/)
-  assert.doesNotMatch(menuSource, /<Plus/)
+  assert.ok(workspaceLabelIndex >= 0 && sessionGroupsIndex > workspaceLabelIndex)
+  assert.match(workspaceRowSource, /aria-label=\{`Current workspace: \$\{topWorkspaceLabel\}`\}[\s\S]*aria-haspopup="menu"[\s\S]*aria-expanded=\{workspaceDropdownOpen\}[\s\S]*role="menu"[\s\S]*role="menuitemradio"/)
+  assert.match(source, /if \(!workspaceDropdownRef\.current\?\.contains\(event\.target as Node\)\) setWorkspaceDropdownOpen\(false\)/)
+  assert.match(source, /if \(event\.key === 'Escape'\) setWorkspaceDropdownOpen\(false\)/)
   assert.ok(newChatIndex >= 0 && worktreeIndex > newChatIndex)
-  assert.match(dropdownSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<MessageSquare[\s\S]*openWorktreeSessionModal\(\{/)
-  assert.doesNotMatch(dropdownSource, /handleWorkspaceSelect|menuitemradio|aria-checked|event\.stopPropagation\(\)/)
+  assert.match(workspaceRowSource, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)[\s\S]*aria-label=\{`New chat in \$\{topWorkspaceLabel\}`\}[\s\S]*<MessageSquare[\s\S]*openRouteWorkspaceWorktree\(topWorkspace\)/)
+})
+
+test('sidebar metadata icons use semantic colors from the active theme', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const iconClassesStart = source.indexOf('const SIDEBAR_SESSION_ICON_CLASS =')
+  const iconClassesEnd = source.indexOf('const PWA_DEBUG_QUERY_PARAM', iconClassesStart)
+  const iconClassesSource = source.slice(iconClassesStart, iconClassesEnd)
+
+  assert.ok(iconClassesStart >= 0 && iconClassesEnd > iconClassesStart)
+  assert.match(iconClassesSource, /worktree: 'text-\[var\(--app-primary\)\]'/)
+  assert.match(iconClassesSource, /task: 'text-\[var\(--app-warning\)\]'/)
+  assert.match(iconClassesSource, /plan: 'text-\[var\(--app-info\)\]'/)
+  assert.doesNotMatch(iconClassesSource, /green|emerald|#[\da-f]{3,8}/i)
+})
+
+test('sidebar card places compact metadata at the top right and swaps it for actions on hover', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const rowStart = source.indexOf('const SessionRow = memo')
+  const rowEnd = source.indexOf('interface RenderSidebarSessionGroupsInput', rowStart)
+  const rowSource = source.slice(rowStart, rowEnd)
+  const topRowStart = rowSource.indexOf('<div className="flex min-w-0 items-start justify-between gap-2">')
+  const secondRowStart = rowSource.indexOf('<div className="mt-0.5 flex min-w-0 items-center', topRowStart)
+  const topRowSource = rowSource.slice(topRowStart, secondRowStart)
+  const secondRowSource = rowSource.slice(secondRowStart)
+  const metadataIndex = topRowSource.indexOf('data-sidebar-session-metadata-icons')
+  const actionIndex = topRowSource.indexOf('data-sidebar-session-action-icons')
+  const statusIndex = topRowSource.indexOf('{showStatusCircle ? (')
+
+  assert.ok(rowStart >= 0 && rowEnd > rowStart)
+  assert.ok(topRowStart >= 0 && secondRowStart > topRowStart)
+  assert.ok(metadataIndex >= 0 && actionIndex > metadataIndex && statusIndex > actionIndex)
+  assert.match(rowSource, /const workspaceLabel = sessionWorkspaceLabel\(session\)/)
+  assert.match(rowSource, /const branchLabel = sessionBranchLabel\(session\)/)
+  assert.match(rowSource, /const showWorktreeChip = Boolean\(session\.worktreeEnabled\)/)
+  assert.match(rowSource, /const showBranchLabel = !session\.worktreeEnabled && Boolean\(branchLabel\)/)
+  assert.match(secondRowSource, /\{workspaceLabel\}[\s\S]*showBranchLabel \?[\s\S]*\{branchLabel\}/)
+  assert.doesNotMatch(secondRowSource, /data-sidebar-session-metadata-icons|<GitBranch|<ListTodo|<NotepadText/)
+  assert.match(rowSource, /const showTaskChip = Boolean\(backgroundInfo\)/)
+  assert.match(rowSource, /const showActivePlan = session\.mode === 'plan' && sessionHasCanonicalActiveRun\(session\)/)
+  assert.match(topRowSource, /relative inline-flex h-4 w-14 shrink-0 items-center justify-end[^>]*data-sidebar-session-corner-controls/)
+  assert.match(topRowSource, /group-hover:opacity-0 group-focus-within:opacity-0[\s\S]*data-sidebar-session-metadata-icons/)
+  assert.match(topRowSource, /data-sidebar-session-metadata-icons[\s\S]*<GitBranch size=\{12\}[^>]*aria-label="Worktree session"/)
+  assert.match(topRowSource, /data-sidebar-session-metadata-icons[\s\S]*<ListTodo size=\{12\}[^>]*aria-label="Task session"/)
+  assert.match(topRowSource, /data-sidebar-session-metadata-icons[\s\S]*<NotepadText size=\{12\}[^>]*aria-label="Active plan"/)
+  assert.match(topRowSource, /data-sidebar-session-action-icons[\s\S]*\{pinActionControl\}[\s\S]*\{archiveActionControl\}[\s\S]*\{actionMenu\}/)
+  assert.match(rowSource, /opacity-0[^']*group-hover:opacity-100 group-focus-within:opacity-100/)
+  assert.doesNotMatch(rowSource, /rounded-full border[^\n]*(?:Worktree|Task|Active plan)/)
+  assert.doesNotMatch(rowSource, /showDetailsRow|backgroundInfo\.badge|backgroundInfo\?\.targetLabel|>background</)
+  assert.doesNotMatch(rowSource, /fallbackSwarmName|routeOptions|sessionOriginLabel/)
 })
 
 test('sidebar cards use explicit selection mode without hover-driven checkboxes or navigation', async () => {
@@ -191,6 +299,20 @@ test('sidebar cards use explicit selection mode without hover-driven checkboxes 
   assert.match(rowSource, /\{selectionMode && depth === 0 \? \(\s*<input\s*type="checkbox"/)
   assert.doesNotMatch(rowSource, /group-hover:(?:mr-2|w-4|opacity-100)/)
   assert.doesNotMatch(rowSource, /checkboxRevealSuppressed|checkboxPointerInsideRef|checkboxFocusInsideRef/)
+})
+
+test('sidebar rename input keeps space key events away from the row shortcut', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const rowStart = source.indexOf('const SessionRow = memo')
+  const rowEnd = source.indexOf('interface RenderSidebarSessionGroupsInput', rowStart)
+  const rowSource = source.slice(rowStart, rowEnd)
+  const renameInputStart = rowSource.indexOf('value={renameDraft}')
+  const renameInputEnd = rowSource.indexOf('className="h-6 w-full', renameInputStart)
+  const renameInputSource = rowSource.slice(renameInputStart, renameInputEnd)
+
+  assert.ok(renameInputStart >= 0 && renameInputEnd > renameInputStart)
+  assert.match(renameInputSource, /onKeyDown=\{\(event\) => \{\s*event\.stopPropagation\(\)/)
+  assert.match(renameInputSource, /if \(event\.key === 'Escape'\) \{ event\.preventDefault\(\); setRenameError\(null\); setRenaming\(false\) \}/)
 })
 
 test('selection mode exits only through explicit clear or successful archive', async () => {

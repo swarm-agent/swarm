@@ -6,6 +6,7 @@ import {
   modelOptionForSelection,
   modelProfileChoiceForTemporary,
   modelProfileFromMetadata,
+  modelProfileInputFromDraft,
   preferenceFromModelProfile,
   preferenceFromModelProfileMetadata,
   selectionFromModelOption,
@@ -22,73 +23,50 @@ function option(contextMode: string): ModelOptionRecord {
   }
 }
 
-test('model profile helpers preserve context mode and standard tier semantics', () => {
+test('flat favorite helpers preserve context mode and normalize input', () => {
   const full = option('full')
   const selection = selectionFromModelOption(full, { serviceTier: 'standard' })
   assert.equal(selection.contextMode, 'full')
   assert.equal(selection.serviceTier, '')
   assert.equal(modelOptionForSelection(selection, [option(''), full]), full)
+  assert.deepEqual(modelProfileInputFromDraft({ name: ' Favorite ', ...selection }), { name: 'Favorite', ...selection })
 })
 
-test('split model profile resolves the branch for the current mode', () => {
+test('a flat favorite resolves identically in Action and Plan modes', () => {
   const profile: ModelProfileInput = {
-    name: 'Split', modelMode: 'split', single: null,
-    plan: { provider: 'openai', model: 'plan', thinking: 'high', serviceTier: '', contextMode: 'full' },
-    auto: { provider: 'openai', model: 'action', thinking: 'off', serviceTier: 'fast', contextMode: '' },
+    name: 'Fast', provider: 'openai', model: 'action', thinking: 'high', serviceTier: 'fast', contextMode: 'full',
   }
-  assert.equal(preferenceFromModelProfile(profile, 'plan')?.model, 'plan')
-  assert.equal(preferenceFromModelProfile(profile, 'auto')?.serviceTier, 'fast')
-  assert.deepEqual(modelProfileChoiceForTemporary({ ...profile, single: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '' } }), { kind: 'temporary', profile })
+  assert.equal(preferenceFromModelProfile(profile, 'plan').model, 'action')
+  assert.equal(preferenceFromModelProfile(profile, 'auto').serviceTier, 'fast')
+  assert.deepEqual(modelProfileChoiceForTemporary(profile), { kind: 'temporary', profile })
 })
 
-test('active profile state maps the durable session metadata snapshot', () => {
-  assert.deepEqual(activeModelProfileFromMetadata({ model_profile: { source: 'saved', saved_profile_id: 'mp_1', name: 'Recommended', model_mode: 'split' } }), {
-    source: 'saved', profileId: 'mp_1', name: 'Recommended', modelMode: 'split',
-  })
-  assert.deepEqual(activeModelProfileFromMetadata({}), {
-    source: '', profileId: '', name: '', modelMode: '',
-  })
-})
-
-test('durable session metadata is the authoritative mode-specific composer preference', () => {
+test('durable session metadata reads canonical Action and optional Plan snapshots', () => {
   const metadata = {
     model_profile: {
-      source: 'saved',
-      saved_profile_id: 'mp_non_default',
-      name: 'Non-default split',
-      model_mode: 'split',
-      plan: { provider: 'openai', model: 'profile-plan', thinking: 'high', service_tier: '', context_mode: 'full' },
-      auto: { provider: 'anthropic', model: 'profile-action', thinking: 'medium', service_tier: 'fast', context_mode: '' },
+      source: 'saved', action_favorite_id: 'mp_action', action_favorite_name: 'Action',
+      action: { provider: 'openai', model: 'profile-action', thinking: 'high', service_tier: 'fast', context_mode: '' },
+      plan_favorite_id: 'mp_plan', plan_favorite_name: 'Plan',
+      plan: { provider: 'anthropic', model: 'profile-plan', thinking: 'medium', service_tier: '', context_mode: 'full' },
       applied_at: 123,
     },
   }
-
-  assert.deepEqual(modelProfileFromMetadata(metadata), {
-    name: 'Non-default split',
-    modelMode: 'split',
-    single: null,
-    plan: { provider: 'openai', model: 'profile-plan', thinking: 'high', serviceTier: '', contextMode: 'full' },
-    auto: { provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '' },
+  assert.deepEqual(modelProfileFromMetadata(metadata, 'auto'), {
+    name: 'Action', provider: 'openai', model: 'profile-action', thinking: 'high', serviceTier: 'fast', contextMode: '',
   })
   assert.deepEqual(preferenceFromModelProfileMetadata(metadata, 'plan'), {
-    provider: 'openai', model: 'profile-plan', thinking: 'high', serviceTier: '', contextMode: 'full', updatedAt: 123,
+    provider: 'anthropic', model: 'profile-plan', thinking: 'medium', serviceTier: '', contextMode: 'full', updatedAt: 123,
   })
-  assert.deepEqual(preferenceFromModelProfileMetadata(metadata, 'auto'), {
-    provider: 'anthropic', model: 'profile-action', thinking: 'medium', serviceTier: 'fast', contextMode: '', updatedAt: 123,
-  })
+  assert.deepEqual(activeModelProfileFromMetadata(metadata), { source: 'saved', profileId: 'mp_action', name: 'Action' })
 })
 
-test('invalid session profile metadata does not masquerade as an authoritative preference', () => {
-  assert.equal(preferenceFromModelProfileMetadata({
-    model_profile: {
-      source: 'saved', model_mode: 'split',
-      plan: { provider: 'openai', model: 'plan', thinking: 'high' },
-    },
-  }, 'plan'), null)
+test('invalid session snapshot does not masquerade as an authoritative preference', () => {
+  assert.equal(preferenceFromModelProfileMetadata({ model_profile: { source: 'saved', action: { provider: 'openai' } } }, 'auto'), null)
+  assert.deepEqual(activeModelProfileFromMetadata({}), { source: '', profileId: '', name: '' })
 })
 
-test('active profile state maps hydrated snake-case policy fields', () => {
-  assert.deepEqual(activeModelProfileFromPolicy({ profile_source: 'saved', profile_id: 'mp_1', profile_name: 'Recommended', profile_mode: 'split' }), {
-    source: 'saved', profileId: 'mp_1', name: 'Recommended', modelMode: 'split',
+test('active profile state maps hydrated policy identity without bundle mode fields', () => {
+  assert.deepEqual(activeModelProfileFromPolicy({ profile_source: 'saved', profile_id: 'mp_1', profile_name: 'Recommended' }), {
+    source: 'saved', profileId: 'mp_1', name: 'Recommended',
   })
 })

@@ -250,20 +250,26 @@ type SessionV3ModeResult struct {
 	AgentModelPolicy SessionV3AgentModelPolicy `json:"agent_model_policy"`
 }
 
+type ModelCatalogServiceTierMapping struct {
+	Tier         string `json:"tier"`
+	SwarmSetting string `json:"swarm_setting,omitempty"`
+}
+
 type ModelCatalogRecord struct {
-	Provider           string   `json:"provider"`
-	Model              string   `json:"model"`
-	ContextMode        string   `json:"context_mode,omitempty"`
-	ContextWindow      int      `json:"context_window"`
-	MaxOutputTokens    int      `json:"max_output_tokens"`
-	Reasoning          bool     `json:"reasoning"`
-	ThinkingOptions    []string `json:"thinking_options,omitempty"`
-	DefaultThinking    string   `json:"default_thinking,omitempty"`
-	ServiceTiers       []string `json:"service_tiers,omitempty"`
-	DefaultServiceTier string   `json:"default_service_tier,omitempty"`
-	Source             string   `json:"source"`
-	FetchedAt          int64    `json:"fetched_at"`
-	ExpiresAt          int64    `json:"expires_at"`
+	Provider            string                           `json:"provider"`
+	Model               string                           `json:"model"`
+	ContextMode         string                           `json:"context_mode,omitempty"`
+	ContextWindow       int                              `json:"context_window"`
+	MaxOutputTokens     int                              `json:"max_output_tokens"`
+	Reasoning           bool                             `json:"reasoning"`
+	ThinkingOptions     []string                         `json:"thinking_options,omitempty"`
+	DefaultThinking     string                           `json:"default_thinking,omitempty"`
+	ServiceTiers        []string                         `json:"service_tiers,omitempty"`
+	DefaultServiceTier  string                           `json:"default_service_tier,omitempty"`
+	ServiceTierMappings []ModelCatalogServiceTierMapping `json:"service_tier_mappings,omitempty"`
+	Source              string                           `json:"source"`
+	FetchedAt           int64                            `json:"fetched_at"`
+	ExpiresAt           int64                            `json:"expires_at"`
 }
 
 type ModelFavoriteRecord struct {
@@ -551,6 +557,7 @@ type SessionCreateOptions struct {
 type SessionV3ModelProfileChoice struct {
 	UseAccountDefault *bool
 	SavedProfileID    string
+	Temporary         *ModelProfileInput
 	UseAgentDefault   *bool
 }
 
@@ -863,8 +870,12 @@ type SessionV3MutationResult struct {
 	FirstSeq       uint64                      `json:"first_seq"`
 	LastSeq        uint64                      `json:"last_seq"`
 	Event          SessionV3Event              `json:"event"`
+	Session        *SessionSummary             `json:"session,omitempty"`
+	Message        *SessionMessage             `json:"message,omitempty"`
+	RunIntent      *SessionV3RunIntent         `json:"run_intent,omitempty"`
 	Projection     SessionV3Projection         `json:"projection"`
 	RealtimeOutbox *SessionV3RealtimeOutboxRow `json:"realtime_outbox,omitempty"`
+	Events         []SessionV3Event            `json:"events,omitempty"`
 	Replayed       bool                        `json:"replayed,omitempty"`
 }
 
@@ -1286,6 +1297,7 @@ type UIChatToolStreamSettings struct {
 
 type UIChatSettings struct {
 	ShowHeader             bool                     `json:"show_header"`
+	ShowTips               bool                     `json:"show_tips"`
 	ThinkingTags           bool                     `json:"thinking_tags"`
 	ShowCompactButton      bool                     `json:"show_compact_button"`
 	DefaultNewSessionMode  string                   `json:"default_new_session_mode,omitempty"`
@@ -1294,6 +1306,7 @@ type UIChatSettings struct {
 }
 
 type UIChatSettingsPatch struct {
+	ShowTips     *bool `json:"show_tips,omitempty"`
 	ThinkingTags *bool `json:"thinking_tags,omitempty"`
 }
 
@@ -1855,15 +1868,18 @@ type CodexOAuthStartRequest struct {
 }
 
 type CodexOAuthSessionStatus struct {
-	SessionID  string          `json:"session_id"`
-	Provider   string          `json:"provider"`
-	Method     string          `json:"method"`
-	Label      string          `json:"label,omitempty"`
-	Active     bool            `json:"active"`
-	AuthURL    string          `json:"auth_url,omitempty"`
-	Status     string          `json:"status"`
-	Error      string          `json:"error,omitempty"`
-	Credential *AuthCredential `json:"credential,omitempty"`
+	SessionID       string          `json:"session_id"`
+	Provider        string          `json:"provider"`
+	Method          string          `json:"method"`
+	Label           string          `json:"label,omitempty"`
+	Active          bool            `json:"active"`
+	AuthURL         string          `json:"auth_url,omitempty"`
+	VerificationURL string          `json:"verification_url,omitempty"`
+	UserCode        string          `json:"user_code,omitempty"`
+	ExpiresAt       int64           `json:"expires_at,omitempty"`
+	Status          string          `json:"status"`
+	Error           string          `json:"error,omitempty"`
+	Credential      *AuthCredential `json:"credential,omitempty"`
 }
 
 type CodexOAuthCompleteRequest struct {
@@ -2179,10 +2195,24 @@ func (c *API) DeleteModelFavorite(ctx context.Context, provider, model string) e
 }
 
 func (c *API) ListAgents(ctx context.Context, limit int) (AgentState, error) {
+	return c.listAgents(ctx, limit, "")
+}
+
+// ListAgentSummary uses the same compact agent projection as Desktop. Compiled
+// system subagents are intentionally supplied by UI settings instead of agent
+// store rows, so callers can materialize their canonical code-owned identities.
+func (c *API) ListAgentSummary(ctx context.Context, limit int) (AgentState, error) {
+	return c.listAgents(ctx, limit, "summary")
+}
+
+func (c *API) listAgents(ctx context.Context, limit int, view string) (AgentState, error) {
 	if limit <= 0 {
 		limit = 200
 	}
 	path := "/v2/agents?limit=" + strconv.Itoa(limit)
+	if strings.TrimSpace(view) != "" {
+		path += "&view=" + url.QueryEscape(strings.TrimSpace(view))
+	}
 	var resp struct {
 		OK                      bool                     `json:"ok"`
 		State                   AgentState               `json:"state"`
@@ -3027,6 +3057,9 @@ func sessionV3ModelProfileCreateRequest(choice *SessionV3ModelProfileChoice) map
 	if choice.UseAccountDefault != nil && *choice.UseAccountDefault {
 		return map[string]any{"use_account_default": true}
 	}
+	if choice.Temporary != nil {
+		return map[string]any{"temporary": choice.Temporary}
+	}
 	if choice.UseAgentDefault != nil && *choice.UseAgentDefault {
 		return map[string]any{"use_agent_default": true}
 	}
@@ -3586,19 +3619,25 @@ func (c *API) SetSessionV3Preference(ctx context.Context, sessionID string, req 
 }
 
 func (c *API) SetSessionV3ModelProfile(ctx context.Context, sessionID, profileID string) (SessionV3AgentModelPolicy, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return SessionV3AgentModelPolicy{}, errors.New("session id is required")
-	}
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
 		return SessionV3AgentModelPolicy{}, errors.New("model profile id is required")
 	}
+	return c.SetSessionV3ModelProfileChoice(ctx, sessionID, SessionV3ModelProfileChoice{SavedProfileID: profileID})
+}
+
+func (c *API) SetSessionV3ModelProfileChoice(ctx context.Context, sessionID string, choice SessionV3ModelProfileChoice) (SessionV3AgentModelPolicy, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SessionV3AgentModelPolicy{}, errors.New("session id is required")
+	}
+	choiceRequest := sessionV3ModelProfileCreateRequest(&choice)
+	if choiceRequest == nil {
+		return SessionV3AgentModelPolicy{}, errors.New("model profile choice is required")
+	}
 	req := map[string]any{
 		"client_request_id": newSessionV3ClientRequestID("model-profile"),
-		"choice": map[string]any{
-			"saved_profile_id": profileID,
-		},
+		"choice":            choiceRequest,
 	}
 	var resp struct {
 		AgentModelPolicy SessionV3AgentModelPolicy `json:"agent_model_policy"`

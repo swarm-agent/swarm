@@ -18,6 +18,61 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+func TestValidateAskUserCallArguments(t *testing.T) {
+	tests := []struct {
+		name      string
+		arguments string
+		wantError string
+	}{
+		{name: "single question accepts two choices", arguments: `{"question":"Pick one","options":["A","B"]}`},
+		{name: "multi question accepts two choices each", arguments: `{"questions":[{"id":"q1","question":"First?","options":["A","B"]},{"id":"q2","question":"Second?","options":["C","D"]}]}`},
+		{name: "rejects one choice", arguments: `{"question":"Pick one","options":["A"]}`, wantError: "at least two concrete choices"},
+		{name: "rejects model authored custom option", arguments: `{"question":"Pick one","options":["A",{"label":"Other","value":"__custom__","allowCustom":true}]}`, wantError: "must not include a custom response option"},
+		{name: "rejects reserved custom response label", arguments: `{"question":"Pick one","options":["A",{"label":"Custom response","value":"model-custom"}]}`, wantError: "must not include a custom response option"},
+		{name: "rejects other alias", arguments: `{"question":"Pick one","options":["A","Other"]}`, wantError: "must not include a custom response option"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAskUserCallArguments(tt.arguments)
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatalf("validateAskUserCallArguments() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("validateAskUserCallArguments() error = %v, want containing %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestNormalizeAskUserPermissionArgumentsAppendsOwnedCustomResponse(t *testing.T) {
+	normalized, err := normalizeAskUserPermissionArguments(`{"questions":[{"id":"q1","question":"First?","options":["A","B"]},{"id":"q2","question":"Second?","options":["C","D"]}]}`)
+	if err != nil {
+		t.Fatalf("normalizeAskUserPermissionArguments() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(normalized), &payload); err != nil {
+		t.Fatalf("decode normalized arguments: %v", err)
+	}
+	questions, _ := payload["questions"].([]any)
+	if len(questions) != 2 {
+		t.Fatalf("questions = %#v", questions)
+	}
+	for index, rawQuestion := range questions {
+		question, _ := rawQuestion.(map[string]any)
+		options, _ := question["options"].([]any)
+		if len(options) != 3 {
+			t.Fatalf("question %d options = %#v", index+1, options)
+		}
+		custom, _ := options[2].(map[string]any)
+		if custom["label"] != askUserCustomResponseLabel || custom["value"] != askUserCustomResponseValue || custom["allow_custom"] != true {
+			t.Fatalf("question %d custom response = %#v", index+1, custom)
+		}
+	}
+}
+
 func TestProviderManagedV3ClientEffectsOnlyForAppliedManageMutations(t *testing.T) {
 	tests := []struct {
 		name      string

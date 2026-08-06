@@ -12,31 +12,33 @@ import (
 )
 
 type SessionTurnUsageSnapshot struct {
-	SessionID        string           `json:"session_id"`
-	UserID           string           `json:"user_id,omitempty"`
-	AccountScopeID   string           `json:"account_scope_id,omitempty"`
-	RunID            string           `json:"run_id"`
-	Provider         string           `json:"provider"`
-	Model            string           `json:"model"`
-	Source           string           `json:"source"`
-	Transport        string           `json:"transport,omitempty"`
-	ConnectedViaWS   *bool            `json:"connected_via_websocket,omitempty"`
-	ContextWindow    int              `json:"context_window"`
-	Steps            int              `json:"steps"`
-	InputTokens      int64            `json:"input_tokens"`
-	OutputTokens     int64            `json:"output_tokens"`
-	ThinkingTokens   int64            `json:"thinking_tokens"`
-	CacheReadTokens  int64            `json:"cache_read_tokens"`
-	CacheWriteTokens int64            `json:"cache_write_tokens"`
-	TotalTokens      int64            `json:"total_tokens"`
-	ServiceTier      string           `json:"service_tier,omitempty"`
-	EstimatedCostUSD float64          `json:"estimated_cost_usd,omitempty"`
-	APIUsageRaw      map[string]any   `json:"api_usage_raw,omitempty"`
-	APIUsageRawPath  string           `json:"api_usage_raw_path,omitempty"`
-	APIUsageHistory  []map[string]any `json:"api_usage_history,omitempty"`
-	APIUsagePaths    []string         `json:"api_usage_paths,omitempty"`
-	CreatedAt        int64            `json:"created_at"`
-	UpdatedAt        int64            `json:"updated_at"`
+	SessionID            string           `json:"session_id"`
+	UserID               string           `json:"user_id,omitempty"`
+	AccountScopeID       string           `json:"account_scope_id,omitempty"`
+	RunID                string           `json:"run_id"`
+	Provider             string           `json:"provider"`
+	Model                string           `json:"model"`
+	Source               string           `json:"source"`
+	Transport            string           `json:"transport,omitempty"`
+	ConnectedViaWS       *bool            `json:"connected_via_websocket,omitempty"`
+	ContextWindow        int              `json:"context_window"`
+	Steps                int              `json:"steps"`
+	InputTokens          int64            `json:"input_tokens"`
+	OutputTokens         int64            `json:"output_tokens"`
+	ThinkingTokens       int64            `json:"thinking_tokens"`
+	CacheReadTokens      int64            `json:"cache_read_tokens"`
+	CacheWriteTokens     int64            `json:"cache_write_tokens"`
+	TotalTokens          int64            `json:"total_tokens"`
+	RequestedServiceTier string           `json:"requested_service_tier,omitempty"`
+	ServiceTier          string           `json:"service_tier,omitempty"`
+	ServiceTierStatus    string           `json:"service_tier_status,omitempty"`
+	EstimatedCostUSD     float64          `json:"estimated_cost_usd,omitempty"`
+	APIUsageRaw          map[string]any   `json:"api_usage_raw,omitempty"`
+	APIUsageRawPath      string           `json:"api_usage_raw_path,omitempty"`
+	APIUsageHistory      []map[string]any `json:"api_usage_history,omitempty"`
+	APIUsagePaths        []string         `json:"api_usage_paths,omitempty"`
+	CreatedAt            int64            `json:"created_at"`
+	UpdatedAt            int64            `json:"updated_at"`
 }
 
 type SessionUsageSummary struct {
@@ -64,21 +66,15 @@ type SessionUsageSummary struct {
 }
 
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
-	if shouldAccumulateProviderUsage(usage) {
-		summary.InputTokens = clampUsageTokenCount(summary.InputTokens) + clampUsageTokenCount(usage.InputTokens)
-		summary.OutputTokens = clampUsageTokenCount(summary.OutputTokens) + clampUsageTokenCount(usage.OutputTokens)
-		summary.ThinkingTokens = clampUsageTokenCount(summary.ThinkingTokens) + clampUsageTokenCount(usage.ThinkingTokens)
-		summary.CacheReadTokens = clampUsageTokenCount(summary.CacheReadTokens) + clampUsageTokenCount(usage.CacheReadTokens)
-		summary.CacheWriteTokens = clampUsageTokenCount(summary.CacheWriteTokens) + clampUsageTokenCount(usage.CacheWriteTokens)
-		summary.TotalTokens = clampUsageTokenCount(summary.TotalTokens) + clampUsageTokenCount(usage.TotalTokens)
-	} else {
-		summary.InputTokens = clampUsageTokenCount(usage.InputTokens)
-		summary.OutputTokens = clampUsageTokenCount(usage.OutputTokens)
-		summary.ThinkingTokens = clampUsageTokenCount(usage.ThinkingTokens)
-		summary.CacheReadTokens = clampUsageTokenCount(usage.CacheReadTokens)
-		summary.CacheWriteTokens = clampUsageTokenCount(usage.CacheWriteTokens)
-		summary.TotalTokens = clampUsageTokenCount(usage.TotalTokens)
-	}
+	// Provider usage counters describe the latest request's context occupancy.
+	// Billing totals such as EstimatedCostUSD are accumulated separately by the
+	// session service; summing repeated prompt snapshots corrupts remaining context.
+	summary.InputTokens = clampUsageTokenCount(usage.InputTokens)
+	summary.OutputTokens = clampUsageTokenCount(usage.OutputTokens)
+	summary.ThinkingTokens = clampUsageTokenCount(usage.ThinkingTokens)
+	summary.CacheReadTokens = clampUsageTokenCount(usage.CacheReadTokens)
+	summary.CacheWriteTokens = clampUsageTokenCount(usage.CacheWriteTokens)
+	summary.TotalTokens = clampUsageTokenCount(usage.TotalTokens)
 	summary.ServiceTier = strings.ToLower(strings.TrimSpace(usage.ServiceTier))
 	if summary.ContextWindow > 0 {
 		remaining := int64(summary.ContextWindow) - summary.TotalTokens
@@ -92,21 +88,8 @@ func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage Sess
 	return summary
 }
 
-func ApplyProviderUsageSnapshotReplacementToSummary(summary SessionUsageSummary, previous, usage SessionTurnUsageSnapshot) SessionUsageSummary {
-	if !shouldAccumulateProviderUsage(usage) {
-		return ApplyProviderUsageSnapshotToSummary(summary, usage)
-	}
-	summary.InputTokens = clampUsageTokenCount(summary.InputTokens) - clampUsageTokenCount(previous.InputTokens)
-	summary.OutputTokens = clampUsageTokenCount(summary.OutputTokens) - clampUsageTokenCount(previous.OutputTokens)
-	summary.ThinkingTokens = clampUsageTokenCount(summary.ThinkingTokens) - clampUsageTokenCount(previous.ThinkingTokens)
-	summary.CacheReadTokens = clampUsageTokenCount(summary.CacheReadTokens) - clampUsageTokenCount(previous.CacheReadTokens)
-	summary.CacheWriteTokens = clampUsageTokenCount(summary.CacheWriteTokens) - clampUsageTokenCount(previous.CacheWriteTokens)
-	summary.TotalTokens = clampUsageTokenCount(summary.TotalTokens) - clampUsageTokenCount(previous.TotalTokens)
+func ApplyProviderUsageSnapshotReplacementToSummary(summary SessionUsageSummary, _, usage SessionTurnUsageSnapshot) SessionUsageSummary {
 	return ApplyProviderUsageSnapshotToSummary(summary, usage)
-}
-
-func shouldAccumulateProviderUsage(usage SessionTurnUsageSnapshot) bool {
-	return strings.ToLower(strings.TrimSpace(usage.Provider)) == "fireworks" && strings.ToLower(strings.TrimSpace(usage.Source)) == "fireworks_api_usage"
 }
 
 func clampUsageTokenCount(value int64) int64 {
@@ -302,7 +285,9 @@ func sanitizeTurnUsageSnapshot(record SessionTurnUsageSnapshot) SessionTurnUsage
 	record.APIUsagePaths = sanitizeUsagePaths(record.APIUsagePaths)
 	record.Source = privacy.SanitizeText(record.Source)
 	record.Transport = strings.ToLower(strings.TrimSpace(record.Transport))
+	record.RequestedServiceTier = strings.ToLower(strings.TrimSpace(record.RequestedServiceTier))
 	record.ServiceTier = strings.ToLower(strings.TrimSpace(record.ServiceTier))
+	record.ServiceTierStatus = strings.ToLower(strings.TrimSpace(record.ServiceTierStatus))
 	if record.EstimatedCostUSD < 0 {
 		record.EstimatedCostUSD = 0
 	}

@@ -302,7 +302,19 @@ export interface SessionDeployPermissionPayload {
   approvedArguments: Record<string, unknown>
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change'
+export interface SkillChangePermissionPayload {
+  action: 'create' | 'update' | 'delete' | 'change'
+  canonicalName: string
+  displayName: string
+  description: string
+  path: string
+  summary: string
+  before: string
+  after: string
+  approvedArguments: Record<string, unknown>
+}
+
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'skill-change' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -377,15 +389,18 @@ function firstNonEmptyString(...values: string[]): string {
   return ''
 }
 
-function defaultAskUserOptions(): AskUserOption[] {
-  return [
-    {
-      value: '__custom__',
-      label: 'Custom response',
-      description: 'Type your own response.',
-      allowCustom: true,
-    },
-  ]
+
+function backendAskUserCustomResponseOption(): AskUserOption {
+  return {
+    value: '__custom__',
+    label: 'Custom response',
+    description: 'Type your own response.',
+    allowCustom: true,
+  }
+}
+
+function ensureAskUserCustomResponseOption(options: AskUserOption[]): AskUserOption[] {
+  return [...options.filter((option) => !option.allowCustom), backendAskUserCustomResponseOption()]
 }
 
 function parseAskUserOptions(raw: unknown): AskUserOption[] {
@@ -443,7 +458,7 @@ function parseAskUserOptions(raw: unknown): AskUserOption[] {
     })
   }
 
-  return options
+  return options.filter((option) => !option.allowCustom)
 }
 
 function parseAskUserQuestions(args: Record<string, unknown>): AskUserQuestion[] {
@@ -479,7 +494,7 @@ function parseAskUserQuestions(args: Record<string, unknown>): AskUserQuestion[]
       id: mapStringArg(record, 'id') || `q_${index + 1}`,
       header: mapStringArg(record, 'header'),
       question: question || 'User input requested',
-      options: parseAskUserOptions(record.options),
+      options: ensureAskUserCustomResponseOption(parseAskUserOptions(record.options)),
       required,
     })
   }
@@ -591,6 +606,8 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
       }
     case 'manage_todos':
       return 'manage-todos'
+    case 'manage_skill':
+      return requirement === 'skill_change' ? 'skill-change' : 'generic'
     case 'manage_sessions':
       if (requirement === 'session_commit') {
         return 'session-commit'
@@ -662,6 +679,30 @@ export function permissionRequirementLabel(raw: unknown): string {
       return 'workspace access'
     default:
       return value
+  }
+}
+
+export function parseSkillChangePermission(permission: DesktopPermissionRecord): SkillChangePermissionPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const change = mapObjectArg(payload, 'change')
+  const skill = mapObjectArg(payload, 'skill')
+  const rawAction = firstNonEmptyString(mapStringArg(change, 'operation'), mapStringArg(payload, 'action')).toLowerCase()
+  const action = rawAction === 'create' || rawAction === 'update' || rawAction === 'delete' ? rawAction : 'change'
+  return {
+    action,
+    canonicalName: firstNonEmptyString(
+      mapStringArg(skill, 'canonical_name'),
+      mapStringArg(skill, 'name'),
+      mapStringArg(payload, 'skill'),
+      mapStringArg(payload, 'name'),
+    ) || 'unknown skill',
+    displayName: mapStringArg(skill, 'name'),
+    description: mapStringArg(skill, 'description'),
+    path: firstNonEmptyString(mapStringArg(change, 'path'), mapStringArg(skill, 'path')),
+    summary: mapStringArg(payload, 'summary'),
+    before: typeof change.before === 'string' ? change.before : '',
+    after: typeof change.after === 'string' ? change.after : '',
+    approvedArguments: mapObjectArg(payload, 'approved_arguments'),
   }
 }
 
@@ -1715,7 +1756,7 @@ export function parseAskUserPermission(permission: DesktopPermissionRecord): Ask
           id: 'q_1',
           header: '',
           question: 'User input requested',
-          options: defaultAskUserOptions(),
+          options: ensureAskUserCustomResponseOption([]),
           required: true,
         },
       ],
@@ -1729,7 +1770,7 @@ export function parseAskUserPermission(permission: DesktopPermissionRecord): Ask
         id: 'q_1',
         header: '',
         question: mapStringArg(payload, 'question') || 'User input requested',
-        options: parseAskUserOptions(payload.options),
+        options: ensureAskUserCustomResponseOption(parseAskUserOptions(payload.options)),
         required: true,
       },
     ]
@@ -1739,7 +1780,6 @@ export function parseAskUserPermission(permission: DesktopPermissionRecord): Ask
     ...question,
     id: question.id || `q_${index + 1}`,
     question: question.question || 'User input requested',
-    options: question.options.length > 0 ? question.options : defaultAskUserOptions(),
   }))
 
   return {

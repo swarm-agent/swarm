@@ -36,7 +36,7 @@ func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"Talk to Swarm", "Ctrl+X sessions • / for commands"} {
+	for _, want := range []string{"Talk to Swarm", "Waiting...", "Ctrl+X sessions • / for commands"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("homepage missing %q:\n%s", want, text)
 		}
@@ -45,6 +45,97 @@ func TestV3HomepageDrawsSimpleLaunchPromptOnCanonicalHomePage(t *testing.T) {
 		if strings.Contains(text, unwanted) {
 			t.Fatalf("homepage retained obsolete hero treatment %q:\n%s", unwanted, text)
 		}
+	}
+}
+
+func TestHomepageOutsideWorkspaceWarningRendersBelowTipsAndKeepsWorkspaceRow(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(120, 32)
+	page := NewHomePage(model.HomeModel{
+		WorkspaceSetupPath: "/outside/project",
+		Workspaces:         []model.Workspace{{Name: "Default", Path: "/workspace", Active: true}},
+	})
+	page.Draw(screen)
+	text := dumpHomeTestScreen(screen, 120, 32)
+	for _, want := range []string{
+		"Default",
+		"Shift+Tab toggles Plan on/off • Ctrl+X sessions • / for commands",
+		"Detected launch path: /outside/project is not a workspace. Type /workspace save to save this",
+		"directory and switch.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("outside-workspace homepage missing %q:\n%s", want, text)
+		}
+	}
+	if tipsAt, warningAt := strings.Index(text, "Shift+Tab toggles Plan on/off"), strings.Index(text, "Detected launch path:"); tipsAt < 0 || warningAt <= tipsAt {
+		t.Fatalf("outside-workspace warning was not rendered below tips:\n%s", text)
+	}
+}
+
+func TestHomepageWorktreePrimerKeepsWorkspaceRowAndShowsFlag(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+	page := NewHomePage(model.HomeModel{ActiveAgent: "swarm", ModelName: "model", Workspaces: []model.Workspace{{Name: "Alpha", Path: "/workspace/alpha", Active: true}}})
+	page.SetWorktreeRequested(true)
+	page.Draw(screen)
+	text := dumpHomeTestScreen(screen, 100, 30)
+	for _, want := range []string{"Alpha", "Worktree"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("worktree primer missing %q:\n%s", want, text)
+		}
+	}
+	if len(page.topBarTargets) == 0 {
+		t.Fatal("worktree primer removed top-bar mouse targets")
+	}
+}
+
+func TestRequiredOnboardingReplacesHomepageAndAcceptsInput(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
+	if !page.OnboardingVisible() {
+		t.Fatal("required onboarding was not made visible")
+	}
+	page.Draw(screen)
+
+	text := dumpHomeTestScreen(screen, 100, 30)
+	for _, want := range []string{"SWARM  ·  FIRST LAUNCH", "STEP 1 OF 3", "Your name", "Swarm name"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("required onboarding missing %q from home page:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Talk to Swarm") {
+		t.Fatalf("main homepage rendered behind required onboarding:\n%s", text)
+	}
+
+	for _, r := range "alice" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	for _, r := range "Local Swarm" {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	action, ok := page.PopHomeAction()
+	if !ok {
+		t.Fatal("submitting required onboarding did not queue a save action")
+	}
+	if action.Kind != HomeActionSaveOnboarding || action.Username != "alice" || action.SwarmName != "Local Swarm" {
+		t.Fatalf("onboarding action = %+v", action)
 	}
 }
 

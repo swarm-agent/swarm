@@ -5,8 +5,6 @@ import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
 import type {
   StructuredToolMessage,
-  SearchToolFileGroup,
-  SearchToolLineGroup,
   WebFetchToolData,
   WebResourceData,
   WebSearchToolData,
@@ -21,6 +19,9 @@ import { stopSubagentSessionV3Run } from "../../session-v3/api";
 import { getToolTheme, type ToolState } from "../services/tool-theme";
 import { ToolSyntaxLine, inferToolSyntaxLanguage, pathFromToolSummary } from "../services/tool-syntax";
 import { displayAgentName } from "../services/agent-display";
+import { toolActivityStartSummary } from "../services/tool-activity";
+import { describeToolActivity } from "../services/tool-message";
+import { ToolActivityShell } from "./tool-activity-shell";
 
 interface ChatMarkdownProps {
   content: string;
@@ -156,10 +157,10 @@ function downloadBashOutput(output: string): void {
   URL.revokeObjectURL(url);
 }
 
-function bashStatusLabel(state: ToolState): string {
+function bashStatusLabel(state: ToolState, hasOutput: boolean): string {
   switch (state) {
     case "running":
-      return "running";
+      return hasOutput ? "streaming" : "running";
     case "error":
       return "error";
     default:
@@ -188,7 +189,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   const toolTheme = getToolTheme(toolMessage.tool);
   const ToolIcon = toolTheme.icon;
   const state = resolveToolState(toolMessage);
-  const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
+  const StateIcon = state === "error" ? XCircle : state === "running" ? null : CheckCircle2;
   const command = toolMessage.bashData?.command || toolMessage.commandText;
   const output = useMemo(() => bashOutputText(toolMessage), [toolMessage]);
   const outputIndex = useMemo(() => indexBashOutput(output), [output]);
@@ -241,7 +242,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
   }, []);
 
   const accentWash = toolAccentWash(toolTheme.color, 14);
-  const statusText = bashStatusLabel(state);
+  const statusText = bashStatusLabel(state, Boolean(output));
   const exitCode = toolMessage.bashData?.exitCode;
   const previewPrefix = outputIndex.previewStartsMidLine ? "…" : "";
 
@@ -254,7 +255,7 @@ function BashToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToo
             bash
           </span>
           <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--app-text-muted)]">
-            <StateIcon size={12} className={cn(state === "running" ? "animate-spin text-[var(--app-primary)]" : state === "error" ? "text-[var(--app-danger)]" : "text-[var(--app-text-subtle)]")} />
+            {StateIcon ? <StateIcon size={12} className={state === "error" ? "text-[var(--app-danger)]" : "text-[var(--app-text-subtle)]"} /> : null}
             {statusText}
           </span>
           {typeof exitCode === "number" ? <span className="shrink-0 text-[11px] text-[var(--app-text-subtle)]">exit {exitCode}</span> : null}
@@ -361,34 +362,49 @@ const TASK_SWARM_THRESHOLD = 5;
 const TASK_SWARM_MAX_HEIGHT = 560;
 const TASK_SWARM_MIN_HEIGHT = 150;
 
-type TaskSwarmDensity = "detailed" | "compact" | "micro" | "signal";
+type TaskSwarmDensity = "detailed" | "compact" | "micro" | "dense" | "signal";
+type TaskSwarmStage = 11 | 25 | 50 | 75 | 100 | 101;
 
 interface TaskSwarmLayout {
   columns: number;
   density: TaskSwarmDensity;
   gap: number;
   rowHeight: number;
+  stage: TaskSwarmStage;
+  maxHeight?: number;
 }
 
-const TASK_SWARM_TIERS: Array<{ density: TaskSwarmDensity; rowHeight: number; minColumnWidth: number; maxAgents: number; gap: number }> = [
-  { density: "detailed", rowHeight: 42, minColumnWidth: 220, maxAgents: 12, gap: 6 },
-  { density: "compact", rowHeight: 32, minColumnWidth: 158, maxAgents: 40, gap: 4 },
-  { density: "micro", rowHeight: 22, minColumnWidth: 92, maxAgents: 80, gap: 3 },
-  { density: "signal", rowHeight: 14, minColumnWidth: 28, maxAgents: Number.POSITIVE_INFINITY, gap: 2 },
+const TASK_SWARM_TIERS: Array<{
+  density: TaskSwarmDensity;
+  rowHeight: number;
+  minColumnWidth: number;
+  maxAgents: number;
+  targetColumns: number;
+  gap: number;
+  stage: TaskSwarmStage;
+}> = [
+  { density: "detailed", rowHeight: 42, minColumnWidth: 220, maxAgents: 11, targetColumns: 2, gap: 6, stage: 11 },
+  { density: "compact", rowHeight: 34, minColumnWidth: 158, maxAgents: 25, targetColumns: 3, gap: 5, stage: 25 },
+  { density: "micro", rowHeight: 28, minColumnWidth: 112, maxAgents: 50, targetColumns: 5, gap: 4, stage: 50 },
+  { density: "dense", rowHeight: 24, minColumnWidth: 86, maxAgents: 75, targetColumns: 6, gap: 3, stage: 75 },
+  { density: "signal", rowHeight: 20, minColumnWidth: 62, maxAgents: 100, targetColumns: 8, gap: 3, stage: 100 },
+  { density: "signal", rowHeight: 18, minColumnWidth: 48, maxAgents: Number.POSITIVE_INFINITY, targetColumns: 10, gap: 2, stage: 101 },
 ];
 
 export function taskSwarmLayout(rowCount: number, availableHeight: number, availableWidth: number): TaskSwarmLayout {
-  const bodyHeight = Math.max(72, availableHeight - 58);
   const count = Math.max(1, rowCount);
-  for (const tier of TASK_SWARM_TIERS) {
-    if (count > tier.maxAgents) continue;
-    const rowsPerColumn = Math.max(1, Math.floor((bodyHeight + tier.gap) / (tier.rowHeight + tier.gap)));
-    const columns = Math.max(1, Math.ceil(count / rowsPerColumn));
-    if (availableWidth / columns >= tier.minColumnWidth || tier.density === "signal") {
-      return { columns, density: tier.density, gap: tier.gap, rowHeight: tier.rowHeight };
-    }
-  }
-  return { columns: count, density: "signal", gap: 2, rowHeight: 14 };
+  const tier = TASK_SWARM_TIERS.find((candidate) => count <= candidate.maxAgents) ?? TASK_SWARM_TIERS[TASK_SWARM_TIERS.length - 1];
+  const gridWidth = Math.max(1, availableWidth - 16);
+  const widthColumns = Math.max(1, Math.floor((gridWidth + tier.gap) / (tier.minColumnWidth + tier.gap)));
+  const columns = Math.max(1, Math.min(count, tier.targetColumns, widthColumns));
+  return {
+    columns,
+    density: tier.density,
+    gap: tier.gap,
+    rowHeight: tier.rowHeight,
+    stage: tier.stage,
+    maxHeight: count > 100 ? Math.max(120, Math.min(TASK_SWARM_MAX_HEIGHT, availableHeight - 58)) : undefined,
+  };
 }
 
 function PreviewLinesView({
@@ -979,7 +995,6 @@ function TaskRowsHeader({ counts, swarm = false, density = "detailed" }: { count
         <span className="break-words text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)] [overflow-wrap:anywhere]">
           {swarm ? "SWARM MODE" : "Subagent stream"}
         </span>
-        {swarm ? <span className="rounded-full border border-[color-mix(in_srgb,var(--app-primary)_35%,var(--app-border))] px-1.5 py-0.5 font-mono text-[9px] font-bold text-[var(--app-primary)]">{counts.total} AI</span> : null}
       </div>
       <div className={cn("shrink-0 items-center gap-1.5 font-mono text-[10px]", swarm && (density === "micro" || density === "signal") ? "hidden" : "flex")} data-task-card-counts>
         <span className="rounded-md bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-primary)]">RUN {counts.running}</span>
@@ -1010,27 +1025,26 @@ function TaskSwarmCompactRowContent({ row, index, density }: { row: TaskToolRow;
   const statusLabel = taskStatusLabel(row);
   const rowNumber = row.launchIndex || index + 1;
   const agent = displayAgentName(row.agent) || "subagent";
-  const model = row.modelLabel || agent;
   const toolLabel = taskActivityLabel(row);
   const title = row.assignmentLabel || agent;
-  const accessibleLabel = `${rowNumber}. ${title}. ${model}. ${toolLabel}. ${statusLabel}`;
-
-  if (density === "signal") {
-    return (
-      <div className="flex h-full min-w-0 items-center justify-center gap-0.5 px-0.5" title={accessibleLabel} aria-label={accessibleLabel}>
-        <span className={cn("size-1.5 shrink-0 rounded-full", taskStatusDotClass(kind), kind === "running" && "animate-pulse")} aria-hidden="true" />
-        <span className="truncate font-mono text-[8px] leading-none text-[var(--app-text-muted)]">{rowNumber}</span>
-      </div>
-    );
-  }
+  const accessibleLabel = `${rowNumber}. ${title}. ${toolLabel}. ${statusLabel}`;
+  const signal = density === "signal";
+  const dense = density === "dense";
+  const micro = density === "micro";
 
   return (
-    <div className={cn("flex h-full min-w-0 items-center", density === "detailed" ? "gap-2 px-2" : density === "compact" ? "gap-1.5 px-1.5" : "gap-1 px-1")} title={accessibleLabel}>
-      <span className={cn("shrink-0 rounded-full", density === "micro" ? "size-1.5" : "size-2", taskStatusDotClass(kind), kind === "running" && "animate-pulse")} aria-hidden="true" />
-      {density !== "micro" ? <span className="shrink-0 font-mono text-[9px] text-[var(--app-text-subtle)] tabular-nums">{rowNumber.toString().padStart(2, "0")}</span> : null}
-      <span className={cn("min-w-0 flex-[1.35] truncate font-semibold text-[var(--app-text)]", density === "micro" ? "text-[9px]" : "text-[10px]")}>{title}</span>
-      <span className={cn("min-w-0 flex-1 truncate text-[var(--app-text-subtle)]", density === "micro" ? "text-[8px]" : "text-[9px]")}>{model}</span>
-      <span className={cn("min-w-0 flex-1 truncate font-mono text-[var(--app-text-muted)]", density === "micro" ? "text-[8px]" : "text-[9px]")}>{toolLabel}</span>
+    <div
+      className={cn(
+        "flex h-full min-w-0 items-center",
+        density === "detailed" ? "gap-2 px-2" : density === "compact" ? "gap-1.5 px-1.5" : "gap-1 px-1",
+      )}
+      title={accessibleLabel}
+      aria-label={accessibleLabel}
+    >
+      <span className={cn("shrink-0 rounded-full", signal || dense || micro ? "size-1.5" : "size-2", taskStatusDotClass(kind), kind === "running" && "animate-pulse")} aria-hidden="true" />
+      {!signal ? <span className="shrink-0 font-mono text-[9px] text-[var(--app-text-subtle)] tabular-nums">{rowNumber.toString().padStart(2, "0")}</span> : null}
+      <span className={cn("min-w-0 flex-1 truncate font-semibold text-[var(--app-text)]", signal ? "text-[8px]" : dense || micro ? "text-[9px]" : "text-[10px]")}>{title}</span>
+      {!dense && !signal ? <span className={cn("min-w-0 flex-1 truncate font-mono text-[var(--app-text-muted)]", micro ? "text-[8px]" : "text-[9px]")}>{toolLabel}</span> : null}
       {density === "detailed" ? <span className={cn("shrink-0 font-mono text-[9px] tabular-nums", taskStatusTextClass(kind))}><TaskElapsedTime row={row} /></span> : null}
     </div>
   );
@@ -1063,7 +1077,7 @@ function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
       const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
       const availableHeight = Math.max(TASK_SWARM_MIN_HEIGHT, Math.min(TASK_SWARM_MAX_HEIGHT, viewportHeight * 0.58, viewportHeight - Math.max(0, rect.top) - 20));
       const next = taskSwarmLayout(rows.length, availableHeight, Math.max(1, rect.width));
-      setLayout((current) => current.columns === next.columns && current.density === next.density ? current : next);
+      setLayout((current) => current.columns === next.columns && current.density === next.density && current.stage === next.stage && current.maxHeight === next.maxHeight ? current : next);
     };
     measure();
     window.addEventListener("resize", measure);
@@ -1076,11 +1090,11 @@ function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   }, [rows.length]);
 
   return (
-    <div ref={rootRef} className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows data-task-swarm-mode data-swarm-density={layout.density}>
+    <div ref={rootRef} className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows data-task-swarm-mode data-swarm-density={layout.density} data-swarm-stage={layout.stage}>
       <TaskRowsHeader counts={counts} swarm density={layout.density} />
       <div
-        className="task-card-swarm-grid grid min-w-0 overflow-hidden p-2"
-        style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`, gridAutoRows: layout.rowHeight, gap: layout.gap }}
+        className={cn("task-card-swarm-grid grid min-w-0 p-2", layout.maxHeight ? "overflow-y-auto" : "overflow-hidden")}
+        style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`, gridAutoRows: layout.rowHeight, gap: layout.gap, maxHeight: layout.maxHeight }}
       >
         {rows.map((row, index) => (
           <MemoizedTaskSwarmCompactRow
@@ -1131,6 +1145,74 @@ function TaskRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskCh
   return <TaskAgentRowsView rows={rows} actions={actions} />;
 }
 
+const SEARCH_READ_PATH_PREVIEW_LIMIT = 12;
+
+interface SearchReadPathSummary {
+  path: string;
+  readCount: number;
+  matchCount: number;
+  searchCount: number;
+}
+
+function searchReadPathSummaries(toolMessages: StructuredToolMessage[]): SearchReadPathSummary[] {
+  const paths = new Map<string, SearchReadPathSummary>();
+  const ensurePath = (path: string) => {
+    const normalized = path.trim();
+    if (!normalized) return null;
+    const existing = paths.get(normalized);
+    if (existing) return existing;
+    const created = { path: normalized, readCount: 0, matchCount: 0, searchCount: 0 };
+    paths.set(normalized, created);
+    return created;
+  };
+
+  for (const message of toolMessages) {
+    const toolName = message.tool.trim().toLowerCase();
+    if (toolName === "read") {
+      const entry = ensurePath(message.target || toolJsonString(message.argumentsJson, "path"));
+      if (entry) entry.readCount += 1;
+      continue;
+    }
+    if (toolName !== "search") continue;
+    for (const file of message.searchData?.files ?? []) {
+      const entry = ensurePath(file.path);
+      if (!entry) continue;
+      entry.searchCount += 1;
+      entry.matchCount += file.matchCount;
+    }
+  }
+  return Array.from(paths.values());
+}
+
+function SearchReadPathRows({ paths }: { paths: SearchReadPathSummary[] }) {
+  if (paths.length === 0) return null;
+  const visible = paths.slice(0, SEARCH_READ_PATH_PREVIEW_LIMIT);
+  const remaining = paths.slice(SEARCH_READ_PATH_PREVIEW_LIMIT);
+  const rows = (items: SearchReadPathSummary[]) => items.map((item) => {
+    const details = [
+      item.readCount > 0 ? `${item.readCount} ${item.readCount === 1 ? "read" : "reads"}` : "",
+      item.matchCount > 0 ? `${item.matchCount} ${item.matchCount === 1 ? "match" : "matches"}` : item.searchCount > 0 ? `${item.searchCount} ${item.searchCount === 1 ? "search" : "searches"}` : "",
+    ].filter(Boolean).join(" · ");
+    return (
+      <div key={item.path} className="flex min-w-0 items-start gap-3 border-t border-[var(--app-border)] px-3 py-2 first:border-t-0">
+        <span className="min-w-0 flex-1 break-words font-mono text-[11px] leading-4 text-[var(--app-text)] [overflow-wrap:anywhere]" title={item.path}>{item.path}</span>
+        {details ? <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">{details}</span> : null}
+      </div>
+    );
+  });
+  return (
+    <div className="mt-2 min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]" data-search-read-paths>
+      {rows(visible)}
+      {remaining.length > 0 ? (
+        <details className="border-t border-[var(--app-border)]">
+          <summary className="cursor-pointer px-3 py-2 text-[10px] font-semibold text-[var(--app-primary)]">Show {remaining.length} more {remaining.length === 1 ? "file" : "files"}</summary>
+          <div className="border-t border-[var(--app-border)]">{rows(remaining)}</div>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
 function SearchSummaryLine({
   toolMessage,
 }: {
@@ -1139,23 +1221,20 @@ function SearchSummaryLine({
   const data = toolMessage.searchData;
   if (!data) return null;
 
-  const parts: string[] = [];
-  if (data.queryCount > 1) parts.push(`${data.queryCount} queries`);
-  if (data.count > 0) {
-    parts.push(
-      `${data.count} ${data.mode === "files" ? (data.count === 1 ? "file" : "files") : data.count === 1 ? "match" : "matches"}`,
-    );
-  }
-  if (data.totalMatched > data.count) parts.push(`${data.totalMatched} total`);
-  if (data.timedOut) parts.push("timed out");
-  else if (data.truncated) parts.push("partial results");
-
-  const summary = parts.length > 0 ? parts.join(" · ") : "no matches";
+  const searched = data.queries.length === 1
+    ? `“${data.queries[0]}”`
+    : `${data.queryCount || data.queries.length} ${(data.queryCount || data.queries.length) === 1 ? "query" : "queries"}`;
+  const foundCount = Math.max(data.count, data.totalMatched);
+  const foundUnit = data.mode === "files"
+    ? foundCount === 1 ? "file" : "files"
+    : foundCount === 1 ? "match" : "matches";
+  const status = data.timedOut ? " · Timed out" : data.truncated ? " · Partial results" : "";
 
   return (
-    <div className="mt-1 flex min-w-0 items-baseline gap-1 text-[11px] leading-5 text-[var(--app-text-subtle)]">
-      <span className="shrink-0">{summary}</span>
-      {data.path ? <span className="min-w-0 truncate" title={data.path}> · {data.path}</span> : null}
+    <div className="min-w-0 text-[12px] leading-5 text-[var(--app-text-muted)]">
+      <span>Searched {searched}</span>
+      <span> · Found {foundCount} {foundUnit}</span>
+      {status ? <span className="text-[var(--app-text-subtle)]">{status}</span> : null}
     </div>
   );
 }
@@ -1163,72 +1242,6 @@ function SearchSummaryLine({
 function compactSearchPreview(value: string, maxLength = 240): string {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
-}
-
-function SearchLineList({ group }: { group: SearchToolLineGroup }) {
-  const displayMatches = group.matches.length > 0;
-  const items = displayMatches ? group.matches : group.lines.map((line) => ({ line, column: 0, text: "" }));
-
-  return (
-    <div className="min-w-0 text-[11px] leading-4 text-[var(--app-text-muted)]">
-      {group.query ? (
-        <div className="mb-1 truncate font-sans text-[10px] font-medium text-[var(--app-text-subtle)]" title={group.query}>
-          {group.query}
-        </div>
-      ) : null}
-      {items.length > 0 ? (
-        <div className="divide-y divide-[var(--app-border)] overflow-hidden rounded-md border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_72%,transparent)]">
-          {items.map((item, index) => {
-            const location = item.line > 0 ? `${item.line}${item.column > 0 ? `:${item.column}` : ""}` : "";
-            const preview = compactSearchPreview(item.text || (item.line > 0 ? "line match" : "file match"));
-            return (
-              <div key={`${item.line}:${item.column}:${index}`} className="grid min-w-0 grid-cols-[3.75rem_minmax(0,1fr)] gap-2 px-2 py-1">
-                <span className="select-none text-right font-mono text-[10px] tabular-nums text-[var(--app-text-subtle)]">
-                  {location}
-                </span>
-                <span className="line-clamp-2 min-w-0 break-all font-mono text-[var(--app-text-muted)]" title={preview}>
-                  <ToolSyntaxLine text={preview} language={inferToolSyntaxLanguage(group.query)} />
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="font-mono text-[var(--app-text-subtle)]">file match</div>
-      )}
-    </div>
-  );
-}
-
-function SearchFileSection({
-  file,
-  mode,
-}: {
-  file: SearchToolFileGroup;
-  mode: string;
-}) {
-  return (
-    <section className="min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_62%,transparent)]">
-      <div className="flex min-w-0 items-baseline gap-2 border-b border-[var(--app-border)] px-2.5 py-1.5 text-[11px]">
-        <span className="min-w-0 flex-1 truncate font-mono font-medium text-[var(--app-text)]" title={file.path}>
-          {file.path}
-        </span>
-        <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">
-          {mode === "files"
-            ? `${file.matchCount} ${file.matchCount === 1 ? "hit" : "hits"}`
-            : `${file.matchCount} ${file.matchCount === 1 ? "match" : "matches"}`}
-        </span>
-      </div>
-      <div className="grid gap-1.5 p-1.5">
-        {file.queryGroups.map((group, index) => (
-          <SearchLineList
-            key={`${file.path}:${group.query}:${index}`}
-            group={group}
-          />
-        ))}
-      </div>
-    </section>
-  );
 }
 
 function toolJsonString(record: Record<string, unknown> | null | undefined, key: string): string {
@@ -1475,6 +1488,8 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
   switch (toolName.trim().toLowerCase()) {
     case "manage_todos":
     case "manage-todos":
+    case "manage_theme":
+    case "manage-theme":
     case "manage-sessions":
     case "manage_sessions":
     case "websearch":
@@ -1865,7 +1880,7 @@ function WebToolCardHeader({
   const toolTheme = getToolTheme(toolMessage.tool);
   const ToolIcon = toolTheme.icon;
   const state = resolveToolState(toolMessage);
-  const StateIcon = state === "error" ? XCircle : state === "running" ? LoaderCircle : CheckCircle2;
+  const StateIcon = state === "error" ? XCircle : state === "running" ? null : CheckCircle2;
   return (
     <header className="flex min-w-0 flex-wrap items-center gap-2 border-b border-[var(--app-border)] px-3 py-2.5 text-xs">
       <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg" style={{ color: toolTheme.color, backgroundColor: toolAccentWash(toolTheme.color, 14) }}>
@@ -1881,7 +1896,7 @@ function WebToolCardHeader({
         "inline-flex shrink-0 items-center gap-1 text-[10px] font-medium",
         state === "error" ? "text-[var(--app-danger)]" : state === "running" ? "text-[var(--app-primary)]" : "text-[var(--app-text-muted)]",
       )}>
-        <StateIcon size={12} className={cn(state === "running" && "animate-spin")} />
+        {StateIcon ? <StateIcon size={12} /> : null}
         {webStateLabel(state)}
       </span>
     </header>
@@ -1967,22 +1982,48 @@ function SearchToolView({
   const data = toolMessage.searchData;
   if (!data) return null;
 
-  const sections = useMemo(() => data.files, [data.files]);
+  return (
+    <>
+      <SearchSummaryLine toolMessage={toolMessage} />
+      <SearchReadPathRows paths={searchReadPathSummaries([toolMessage])} />
+    </>
+  );
+}
+
+export function SearchReadToolGroupView({ toolMessages }: { toolMessages: StructuredToolMessage[] }) {
+  const paths = searchReadPathSummaries(toolMessages);
+  const searchCount = toolMessages.filter((message) => message.tool.trim().toLowerCase() === "search").length;
+  const readCount = toolMessages.length - searchCount;
+  const runningCount = toolMessages.filter((message) => message.state === "running").length;
+  const errorCount = toolMessages.filter((message) => message.state === "error").length;
+  const totalMatches = toolMessages.reduce((sum, message) => sum + (message.searchData?.files.reduce((fileSum, file) => fileSum + file.matchCount, 0) ?? 0), 0);
+  const summary = [
+    searchCount > 0 ? `${searchCount} ${searchCount === 1 ? "search" : "searches"}` : "",
+    readCount > 0 ? `${readCount} ${readCount === 1 ? "read" : "reads"}` : "",
+    `${paths.length} ${paths.length === 1 ? "file" : "files"}`,
+    totalMatches > 0 ? `${totalMatches} ${totalMatches === 1 ? "match" : "matches"}` : "",
+  ].filter(Boolean).join(" · ");
+  const StateIcon = errorCount > 0 ? XCircle : runningCount > 0 ? null : CheckCircle2;
 
   return (
-    <div className="min-w-0">
-      <SearchSummaryLine toolMessage={toolMessage} />
-      {sections.length > 0 ? (
-        <div className={cn(TOOL_RESULT_BODY_CLASS, "mt-2 grid gap-2 font-mono pr-1")}>
-          {sections.map((file, index) => (
-            <SearchFileSection
-              key={`${file.path}:${index}`}
-              file={file}
-              mode={data.mode}
-            />
-          ))}
+    <div className="flex justify-start" data-search-read-group>
+      <section className="w-full min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]">
+        <header className="flex min-w-0 items-start gap-2 px-3 py-2.5">
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]"><Search size={13} /></span>
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold leading-4 text-[var(--app-text)]">{runningCount > 0 ? "Investigating…" : "Investigation"}</div>
+            <div className="mt-0.5 min-w-0 break-words text-[11px] leading-4 text-[var(--app-text-muted)]">{summary}</div>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
+            {StateIcon ? <StateIcon size={11} className={errorCount > 0 ? "text-[var(--app-danger)]" : ""} /> : null}
+            {errorCount > 0 ? `${errorCount} failed` : runningCount > 0 ? `${runningCount} active` : "done"}
+          </span>
+        </header>
+        <div className="border-t border-[var(--app-border)] px-3 pb-3 pt-1">
+          <SearchReadPathRows paths={paths} />
+          {paths.length === 0 ? <div className="py-2 text-[11px] text-[var(--app-text-subtle)]">Waiting for file details…</div> : null}
         </div>
-      ) : null}
+      </section>
     </div>
   );
 }
@@ -1999,8 +2040,35 @@ export function ToolMessageView({
   taskChildActions?: TaskChildCardActions;
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
+  const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
+  const hasStructuredTaskRows = normalizedToolName === "task" && toolMessage.taskRows.length > 0;
+  const activityOnly = toolMessage.state === "running"
+    && !hasStructuredTaskRows
+    && !toolMessage.output.trim()
+    && !toolMessage.completedOutput.trim()
+    && !toolMessage.error.trim();
+  const terminalWithoutResult = (toolMessage.state === "error"
+    || ["cancelled", "canceled", "interrupted"].includes(lifecycleStatus))
+    && !hasStructuredTaskRows
+    && !toolMessage.output.trim()
+    && !toolMessage.completedOutput.trim();
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
+  }
+  if (activityOnly || terminalWithoutResult) {
+    const errorBody = toolMessage.error.trim();
+    return (
+      <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", "w-full")}>
+        <ToolActivityShell
+          toolMessage={toolMessage}
+          lifecycleStatus={lifecycleStatus}
+          summary={toolActivityStartSummary(toolMessage)}
+          bodyClassName="px-3 py-2 text-[12px] text-[var(--app-danger)]"
+        >
+          {errorBody || null}
+        </ToolActivityShell>
+      </div>
+    );
   }
   if (normalizedToolName === "websearch" && toolMessage.webSearchData) {
     return <WebSearchToolCard toolMessage={toolMessage} data={toolMessage.webSearchData} isGroupItem={isGroupItem} />;
@@ -2016,10 +2084,13 @@ export function ToolMessageView({
     state === "error"
       ? XCircle
       : state === "running"
-        ? LoaderCircle
+        ? null
         : CheckCircle2;
   const normalizedTool = toolMessage.tool.trim().toLowerCase();
-  const label = toolTheme.label || toolMessage.tool || "tool";
+  const activityDescriptor = describeToolActivity(toolMessage.tool);
+  const label = activityDescriptor.kind === "investigation"
+    ? state === "running" ? `${activityDescriptor.activeLabel}…` : activityDescriptor.label
+    : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
   const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
   const isTaskSwarm = hasTaskRows && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
@@ -2034,12 +2105,14 @@ export function ToolMessageView({
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
   const isExitPlanMode = ["exit-plan-mode", "exit_plan_mode"].includes(normalizedTool);
+  const isSearch = normalizedTool === "search";
   const isFileAction = ["read", "list", "search", "edit"].includes(normalizedTool);
-  const fileSummary = isFileAction && toolMessage.target
-    ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
-    : summary;
+  const fileSummary = isSearch
+    ? ""
+    : isFileAction && toolMessage.target
+      ? summary.replace(toolMessage.target, "").replace(/\s+in\s+(?=\()/, " ").trim()
+      : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
-  const isWindup = !isTask && state === "running" && !toolMessage.output.trim() && !toolMessage.error.trim();
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
   const hasBody = Boolean(
@@ -2085,25 +2158,22 @@ export function ToolMessageView({
                   {fileSummary}
                 </div>
               ) : null}
-              {isFileAction && toolMessage.target ? (
+              {isFileAction && !isSearch && toolMessage.target ? (
                 <div className="mt-2 min-w-0 break-words border-t border-[var(--app-border)] pt-2 font-mono text-[11px] leading-4 text-[var(--app-text)] [overflow-wrap:anywhere]">
                   {toolMessage.target}
                 </div>
               ) : null}
             </div>
             <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
-              {isWindup ? <span>starting…</span> : null}
               {toolMessage.durationMs > 0 ? <span>{formatDuration(toolMessage.durationMs)}</span> : null}
-              {!isTask ? (
+              {!isTask && StateIcon ? (
                 <StateIcon
                   size={12}
                   className={cn(
                     "shrink-0",
-                    state === "running"
-                      ? "animate-spin text-[var(--app-primary)]"
-                      : state === "error"
-                        ? "text-[var(--app-danger)]"
-                        : "text-[var(--app-text-subtle)]",
+                    state === "error"
+                      ? "text-[var(--app-danger)]"
+                      : "text-[var(--app-text-subtle)]",
                   )}
                 />
               ) : null}
@@ -2129,12 +2199,12 @@ export function ToolMessageView({
           <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} />
         ) : null}
         {!toolMessage.editDiff &&
-        toolMessage.tool === "search" &&
+        isSearch &&
         toolMessage.searchData ? (
           <SearchToolView toolMessage={toolMessage} />
         ) : null}
         {!toolMessage.editDiff &&
-        toolMessage.tool !== "search" &&
+        !isSearch &&
         !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
         showPreview &&
         !isManageSessions &&

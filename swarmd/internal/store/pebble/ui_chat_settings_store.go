@@ -3,6 +3,8 @@ package pebblestore
 import (
 	"strings"
 	"time"
+
+	sharedtheme "swarm-refactor/swarmtui/theme"
 )
 
 type UIThemePaletteRecord struct {
@@ -60,6 +62,7 @@ type UIChatToolStreamSettingsRecord struct {
 type UIChatSettingsRecord struct {
 	ShowHeader                      bool                           `json:"show_header"`
 	ShowHeaderSet                   bool                           `json:"-"`
+	ShowTips                        *bool                          `json:"show_tips,omitempty"`
 	ThinkingTags                    bool                           `json:"thinking_tags"`
 	ThinkingTagsSet                 bool                           `json:"-"`
 	ShowCompactButton               bool                           `json:"show_compact_button"`
@@ -95,20 +98,6 @@ type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
 }
 
-type UICompactAgentSettingsRecord struct {
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Thinking    string `json:"thinking,omitempty"`
-	ServiceTier string `json:"service_tier,omitempty"`
-}
-
-type UIAgentSettingsRecord struct {
-	Compact  UICompactAgentSettingsRecord `json:"compact,omitempty"`
-	Finder   UICompactAgentSettingsRecord `json:"finder,omitempty"`
-	Coder    UICompactAgentSettingsRecord `json:"coder,omitempty"`
-	Designer UICompactAgentSettingsRecord `json:"designer,omitempty"`
-}
-
 type UISettingsRecord struct {
 	Theme     UIThemeSettingsRecord    `json:"theme,omitempty"`
 	Input     UIInputSettingsRecord    `json:"input,omitempty"`
@@ -116,7 +105,6 @@ type UISettingsRecord struct {
 	Swarming  UISwarmingSettingsRecord `json:"swarming,omitempty"`
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
 	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
-	Agents    UIAgentSettingsRecord    `json:"agents,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
@@ -127,7 +115,6 @@ type UISettingsPatch struct {
 	Swarming *UISwarmingSettingsRecord
 	Swarm    *UISwarmSettingsRecord
 	Tools    *UIToolSettingsRecord
-	Agents   *UIAgentSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -191,9 +178,6 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 	if patch.Tools != nil {
 		record.Tools = *patch.Tools
 	}
-	if patch.Agents != nil {
-		record.Agents = *patch.Agents
-	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt
 	record = normalizeUISettingsRecord(record)
@@ -211,11 +195,12 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 func DefaultUISettingsRecord() UISettingsRecord {
 	return normalizeUISettingsRecord(UISettingsRecord{
 		Theme: UIThemeSettingsRecord{
-			ActiveID: "crimson",
+			ActiveID: sharedtheme.DefaultThemeID(),
 		},
 		Chat: UIChatSettingsRecord{
 			ShowHeader:                      true,
 			ShowHeaderSet:                   true,
+			ShowTips:                        boolPointer(true),
 			ThinkingTags:                    true,
 			ThinkingTagsSet:                 true,
 			ShowCompactButton:               false,
@@ -244,6 +229,9 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	if !record.Chat.ShowHeaderSet && record.Chat.UpdatedAt == 0 {
 		record.Chat.ShowHeader = true
 	}
+	if record.Chat.ShowTips == nil {
+		record.Chat.ShowTips = boolPointer(true)
+	}
 	if !record.Chat.ThinkingTagsSet && record.Chat.UpdatedAt == 0 {
 		record.Chat.ThinkingTags = true
 	}
@@ -254,7 +242,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Chat.UpdatedAt = 0
 	}
 	if record.Theme.ActiveID == "" {
-		record.Theme.ActiveID = "crimson"
+		record.Theme.ActiveID = sharedtheme.DefaultThemeID()
 	}
 	if record.Chat.DefaultNewSessionMode == "" {
 		record.Chat.DefaultNewSessionMode = "auto"
@@ -290,22 +278,6 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	}
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
-	record.Agents.Compact.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Compact.Provider))
-	record.Agents.Compact.Model = strings.TrimSpace(record.Agents.Compact.Model)
-	record.Agents.Compact.Thinking = strings.TrimSpace(record.Agents.Compact.Thinking)
-	record.Agents.Compact.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Compact.ServiceTier))
-	record.Agents.Finder.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Finder.Provider))
-	record.Agents.Finder.Model = strings.TrimSpace(record.Agents.Finder.Model)
-	record.Agents.Finder.Thinking = strings.TrimSpace(record.Agents.Finder.Thinking)
-	record.Agents.Finder.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Finder.ServiceTier))
-	record.Agents.Coder.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Coder.Provider))
-	record.Agents.Coder.Model = strings.TrimSpace(record.Agents.Coder.Model)
-	record.Agents.Coder.Thinking = strings.TrimSpace(record.Agents.Coder.Thinking)
-	record.Agents.Coder.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Coder.ServiceTier))
-	record.Agents.Designer.Provider = strings.ToLower(strings.TrimSpace(record.Agents.Designer.Provider))
-	record.Agents.Designer.Model = strings.TrimSpace(record.Agents.Designer.Model)
-	record.Agents.Designer.Thinking = strings.TrimSpace(record.Agents.Designer.Thinking)
-	record.Agents.Designer.ServiceTier = strings.ToLower(strings.TrimSpace(record.Agents.Designer.ServiceTier))
 	return record
 }
 
@@ -320,6 +292,10 @@ func normalizeReviewAutoArchiveMinutes(value int) int {
 }
 
 func intPointer(value int) *int {
+	return &value
+}
+
+func boolPointer(value bool) *bool {
 	return &value
 }
 

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,5 +36,26 @@ func TestRemoveStaleUnixSocketRejectsSymlink(t *testing.T) {
 	}
 	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("symlink was changed: info=%v err=%v", info, err)
+	}
+}
+
+func TestWaitForShutdownReturnsRestartErrorOnlyForReleaseUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		reason      string
+		wantRestart bool
+	}{
+		{name: "release update", reason: "api:update-release", wantRestart: true},
+		{name: "normal API shutdown", reason: "api:requested", wantRestart: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Daemon{stopCh: make(chan string, 1)}
+			d.requestStop(tt.reason)
+			err := d.waitForShutdown()
+			if got := errors.Is(err, ErrReleaseUpdateRestart); got != tt.wantRestart {
+				t.Fatalf("waitForShutdown error = %v, restart=%v, want %v", err, got, tt.wantRestart)
+			}
+		})
 	}
 }

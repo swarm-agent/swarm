@@ -65,7 +65,6 @@ func TestSessionsV3PrimaryMutationSubresourcesRequireClientRequestID(t *testing.
 		path string
 		body string
 	}{
-		{path: "mode", body: `{"mode":"auto"}`},
 		{path: "agent", body: `{"agent_name":"swarm"}`},
 		{path: "metadata", body: `{"metadata":{"subagent":"clone"}}`},
 	} {
@@ -113,7 +112,7 @@ func TestSessionsV3PrimaryMetadataUpdateIdempotency(t *testing.T) {
 	}
 }
 
-func TestSessionsV3PrimaryModeAndAgentUpdateIdempotency(t *testing.T) {
+func TestSessionsV3PrimaryAgentUpdateIdempotency(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		path         string
@@ -121,7 +120,6 @@ func TestSessionsV3PrimaryModeAndAgentUpdateIdempotency(t *testing.T) {
 		conflictBody string
 		distinctBody string
 	}{
-		{name: "mode", path: "mode", firstBody: `{"client_request_id":"mode-key-1","mode":"auto"}`, conflictBody: `{"client_request_id":"mode-key-1","mode":"plan"}`, distinctBody: `{"client_request_id":"mode-key-2","mode":"auto"}`},
 		{name: "agent", path: "agent", firstBody: `{"client_request_id":"agent-key-1","agent_name":"swarm"}`, conflictBody: `{"client_request_id":"agent-key-1","agent_name":"system-coder"}`, distinctBody: `{"client_request_id":"agent-key-2","agent_name":"swarm"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

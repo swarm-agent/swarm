@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -99,7 +100,10 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 	grace := sessionreview.ParseGraceHours(req.GraceHours)
 	autoArchiveDelay := time.Duration(0)
 	if req.Automatic {
-		autoArchiveDelay = s.reviewAutoArchiveDelay(principal.AccountScopeID)
+		autoArchiveDelay, err = s.reviewAutoArchiveDelay(principal.AccountScopeID)
+		if err != nil {
+			return nil, err
+		}
 		if autoArchiveDelay > 0 {
 			grace = autoArchiveDelay
 		}
@@ -185,7 +189,11 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 				doneAt = now.UnixMilli()
 				metadata := cloneStringAnyMap(session.Metadata)
 				metadata["review_done_at"] = doneAt
-				if delay := s.reviewAutoArchiveDelay(session.AccountScopeID); delay > 0 {
+				delay, delayErr := s.reviewAutoArchiveDelay(session.AccountScopeID)
+				if delayErr != nil {
+					return nil, delayErr
+				}
+				if delay > 0 {
 					metadata["review_auto_archive_after"] = sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 				}
 				updated, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata)
@@ -195,7 +203,10 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 				session = updated
 				classification.UpdatedAt = updated.UpdatedAt
 			}
-			delay := s.reviewAutoArchiveDelay(session.AccountScopeID)
+			delay, delayErr := s.reviewAutoArchiveDelay(session.AccountScopeID)
+			if delayErr != nil {
+				return nil, delayErr
+			}
 			desiredArchiveAfter := sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 			if scheduled := sessionsV3MetadataInt64(session.Metadata, "review_auto_archive_after"); scheduled != desiredArchiveAfter {
 				metadata := cloneStringAnyMap(session.Metadata)
@@ -649,7 +660,11 @@ func (s *Server) integrateSessionsV3ReviewWorktrees(ctx context.Context, princip
 		metadata := cloneStringAnyMap(session.Metadata)
 		doneAt := now.UnixMilli()
 		metadata["review_done_at"] = doneAt
-		if delay := s.reviewAutoArchiveDelay(session.AccountScopeID); delay > 0 {
+		delay, delayErr := s.reviewAutoArchiveDelay(session.AccountScopeID)
+		if delayErr != nil {
+			return delayErr
+		}
+		if delay > 0 {
 			metadata["review_auto_archive_after"] = sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 		}
 		if _, _, err := s.sessions.UpdateDerivedMetadata(session.ID, metadata); err != nil {
@@ -724,7 +739,10 @@ func countCurrentCheckoutBlocked(items []sessionreview.Classification) int {
 }
 
 func (s *Server) runSessionsV3ReviewAutoArchive(ctx context.Context) {
-	// The timer only probes the ordered Pebble due index. It never scans sessions.
+	// Reconciliation discovers needs-review sessions that became eligible through
+	// lifecycle mutations while no review-worktrees client was open. The durable
+	// due index remains the only source of timed archive work between passes.
+	s.runSessionsV3ReviewAutoArchivePass(ctx, time.Now())
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -732,72 +750,170 @@ func (s *Server) runSessionsV3ReviewAutoArchive(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s.archiveDueSessionsV3Review(ctx, now)
+			s.runSessionsV3ReviewAutoArchivePass(ctx, now)
 		}
 	}
 }
 
-func (s *Server) reviewAutoArchiveDelay(accountScopeID string) time.Duration {
-	if s == nil || s.uiSettings == nil {
-		return 0
+func (s *Server) runSessionsV3ReviewAutoArchivePass(ctx context.Context, now time.Time) {
+	if err := s.reconcileSessionsV3ReviewAutoArchive(ctx, now); err != nil {
+		log.Printf("warning: v3 review auto-archive reconciliation failed: %v", err)
 	}
-	settings, err := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID))
-	if err != nil || settings.Chat.ReviewAutoArchiveMinutes <= 0 {
-		return 0
+	if err := s.archiveDueSessionsV3Review(ctx, now); err != nil {
+		log.Printf("warning: v3 review auto-archive worker failed: %v", err)
 	}
-	return time.Duration(settings.Chat.ReviewAutoArchiveMinutes) * time.Minute
 }
 
-func (s *Server) archiveDueSessionsV3Review(ctx context.Context, now time.Time) {
+func (s *Server) reviewAutoArchiveDelay(accountScopeID string) (time.Duration, error) {
+	if s == nil || s.uiSettings == nil {
+		return 0, errors.New("ui settings service is not configured")
+	}
+	settings, err := s.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID))
+	if err != nil {
+		return 0, err
+	}
+	if settings.Chat.ReviewAutoArchiveMinutes <= 0 {
+		return 0, nil
+	}
+	return time.Duration(settings.Chat.ReviewAutoArchiveMinutes) * time.Minute, nil
+}
+
+func (s *Server) reconcileSessionsV3ReviewAutoArchive(ctx context.Context, now time.Time) error {
+	return s.reconcileSessionsV3ReviewAutoArchiveForAccount(ctx, now, "")
+}
+
+func (s *Server) reconcileSessionsV3ReviewAutoArchiveForAccount(ctx context.Context, now time.Time, accountScopeID string) error {
 	if s == nil || s.sessions == nil || s.uiSettings == nil {
-		return
+		return errors.New("review auto-archive reconciliation is not configured")
+	}
+	candidates, err := s.sessions.ListReviewAutoArchiveCandidates(strings.TrimSpace(accountScopeID))
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := s.reconcileSessionV3ReviewAutoArchive(candidate.Session, candidate.NeedsReview, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) reconcileSessionV3ReviewAutoArchive(session pebblestore.SessionSnapshot, needsReview bool, now time.Time) error {
+	delay, err := s.reviewAutoArchiveDelay(session.AccountScopeID)
+	if err != nil {
+		return errors.New("load review auto-archive setting for account " + session.AccountScopeID + ": " + err.Error())
+	}
+	scheduled := sessionsV3MetadataInt64(session.Metadata, "review_auto_archive_after")
+	if delay <= 0 {
+		if scheduled == 0 {
+			return nil
+		}
+		metadata := cloneStringAnyMap(session.Metadata)
+		delete(metadata, "review_auto_archive_after")
+		_, _, err = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+		return err
+	}
+	if !needsReview {
+		if scheduled == 0 {
+			return nil
+		}
+		metadata := cloneStringAnyMap(session.Metadata)
+		delete(metadata, "review_auto_archive_after")
+		_, _, err = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+		return err
+	}
+	doneAt := sessionReviewDoneAt(session)
+	if doneAt <= 0 {
+		doneAt = now.UnixMilli()
+	}
+	desiredArchiveAfter := sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
+	if scheduled == desiredArchiveAfter && sessionReviewDoneAt(session) == doneAt {
+		return nil
+	}
+	metadata := cloneStringAnyMap(session.Metadata)
+	metadata["review_done_at"] = doneAt
+	metadata["review_auto_archive_after"] = desiredArchiveAfter
+	_, _, err = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+	return err
+}
+
+func (s *Server) archiveDueSessionsV3Review(ctx context.Context, now time.Time) error {
+	if s == nil || s.sessions == nil || s.uiSettings == nil {
+		return errors.New("review auto-archive worker is not configured")
 	}
 	due, err := s.sessions.ListDueReviewAutoArchives(now.UnixMilli(), sessionsV3ReviewAutoArchiveBatchSize)
 	if err != nil {
-		return
+		return err
 	}
 	for _, item := range due {
 		session, found, getErr := s.sessions.GetSession(item.SessionID)
-		if getErr != nil || !found {
-			_ = s.sessions.DeleteReviewAutoArchiveDue(item)
+		if getErr != nil {
+			return getErr
+		}
+		if !found {
+			if deleteErr := s.sessions.DeleteReviewAutoArchiveDue(item); deleteErr != nil {
+				return deleteErr
+			}
 			continue
 		}
-		delay := s.reviewAutoArchiveDelay(session.AccountScopeID)
+		delay, delayErr := s.reviewAutoArchiveDelay(session.AccountScopeID)
+		if delayErr != nil {
+			return delayErr
+		}
 		if sessionsV3MetadataInt64(session.Metadata, "review_auto_archive_after") != item.DueAt {
-			_ = s.sessions.DeleteReviewAutoArchiveDue(item)
+			if deleteErr := s.sessions.DeleteReviewAutoArchiveDue(item); deleteErr != nil {
+				return deleteErr
+			}
 			continue
 		}
 		if delay <= 0 {
 			metadata := cloneStringAnyMap(session.Metadata)
 			delete(metadata, "review_auto_archive_after")
-			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+			if _, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata); updateErr != nil {
+				return updateErr
+			}
 			continue
 		}
 		doneAt := sessionReviewDoneAt(session)
 		if doneAt <= 0 {
 			metadata := cloneStringAnyMap(session.Metadata)
 			delete(metadata, "review_auto_archive_after")
-			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+			if _, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata); updateErr != nil {
+				return updateErr
+			}
 			continue
 		}
 		desiredArchiveAfter := sessionsV3ReviewArchiveDeadline(session, doneAt, delay)
 		if desiredArchiveAfter != item.DueAt {
 			metadata := cloneStringAnyMap(session.Metadata)
 			metadata["review_auto_archive_after"] = desiredArchiveAfter
-			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+			if _, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata); updateErr != nil {
+				return updateErr
+			}
 			// A changed deadline represents either newer activity or a setting
 			// change. Re-index it durably and require a later worker pass to
 			// re-read and re-validate the session before archival.
 			continue
 		}
 		if session.Lifecycle != nil && session.Lifecycle.Active {
-			s.deferSessionsV3ReviewAutoArchive(session, now)
+			if deferErr := s.deferSessionsV3ReviewAutoArchive(session, now); deferErr != nil {
+				return deferErr
+			}
 			continue
 		}
-		if !s.sessionNeedsReview(session.ID) {
+		needsReview, needsReviewErr := s.sessionNeedsReview(session.ID)
+		if needsReviewErr != nil {
+			return needsReviewErr
+		}
+		if !needsReview {
 			metadata := cloneStringAnyMap(session.Metadata)
 			delete(metadata, "review_auto_archive_after")
-			_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+			if _, _, updateErr := s.sessions.UpdateDerivedMetadata(session.ID, metadata); updateErr != nil {
+				return updateErr
+			}
 			continue
 		}
 		workspacePath := strings.TrimSpace(session.WorkspacePath)
@@ -805,7 +921,9 @@ func (s *Server) archiveDueSessionsV3Review(ctx context.Context, now time.Time) 
 			workspacePath = strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
 		}
 		if workspacePath == "" {
-			s.deferSessionsV3ReviewAutoArchive(session, now)
+			if deferErr := s.deferSessionsV3ReviewAutoArchive(session, now); deferErr != nil {
+				return deferErr
+			}
 			continue
 		}
 		checkoutSnapshot, checkoutCommonDir := sessionsV3ReviewCheckoutTarget(ctx, workspacePath)
@@ -820,41 +938,51 @@ func (s *Server) archiveDueSessionsV3Review(ctx context.Context, now time.Time) 
 			classification = sessionreview.ClassifyAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, now, delay, targetBranch)
 		}
 		if classification.Classification != "done" {
-			s.deferSessionsV3ReviewAutoArchive(session, now)
+			if deferErr := s.deferSessionsV3ReviewAutoArchive(session, now); deferErr != nil {
+				return deferErr
+			}
 			continue
 		}
 		events, archiveErr := s.sessions.ArchiveSessionsWithEventsIfUnchanged([]string{session.ID}, map[string]int64{session.ID: session.UpdatedAt})
 		if archiveErr != nil {
-			s.deferSessionsV3ReviewAutoArchive(session, now)
+			log.Printf("warning: v3 review auto-archive mutation failed session=%q: %v", session.ID, archiveErr)
+			if deferErr := s.deferSessionsV3ReviewAutoArchive(session, now); deferErr != nil {
+				return deferErr
+			}
 			continue
 		}
 		s.publishSessionsV3ArchiveRealtime([]pebblestore.SessionSnapshot{session}, events)
 	}
+	return nil
 }
 
-func (s *Server) sessionNeedsReview(sessionID string) bool {
+func (s *Server) sessionNeedsReview(sessionID string) (bool, error) {
 	if s == nil || s.sessions == nil {
-		return false
+		return false, errors.New("session service is not configured")
 	}
 	plan, ok, err := s.sessions.GetActivePlan(sessionID)
-	if err != nil || !ok || plan.Document == nil {
-		return false
+	if err != nil {
+		return false, err
+	}
+	if !ok || plan.Document == nil {
+		return false, nil
 	}
 	if plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), "waiting_review") {
-		return true
+		return true, nil
 	}
 	for _, checkpoint := range plan.Document.Checkpoints {
 		if checkpoint.ID == plan.Document.ActiveCheckpointID {
-			return strings.EqualFold(strings.TrimSpace(checkpoint.Status), "needs_review")
+			return strings.EqualFold(strings.TrimSpace(checkpoint.Status), "needs_review"), nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-func (s *Server) deferSessionsV3ReviewAutoArchive(session pebblestore.SessionSnapshot, now time.Time) {
+func (s *Server) deferSessionsV3ReviewAutoArchive(session pebblestore.SessionSnapshot, now time.Time) error {
 	metadata := cloneStringAnyMap(session.Metadata)
 	metadata["review_auto_archive_after"] = now.Add(5 * time.Minute).UnixMilli()
-	_, _, _ = s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+	_, _, err := s.sessions.UpdateDerivedMetadata(session.ID, metadata)
+	return err
 }
 
 func compactStrings(values []string) []string {

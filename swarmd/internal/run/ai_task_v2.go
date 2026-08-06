@@ -15,6 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 const (
@@ -296,41 +297,87 @@ func (s *Service) executeAITaskV2(ctx context.Context, store AITaskV2Store, task
 		}
 	}
 
-	preparation := AITaskPreparation{Title: task.AIDisplayTitle, WorktreeName: task.AIWorktreeName}
-	if preparation.Title == "" || preparation.WorktreeName == "" {
-		basePreference := parent.Preference
-		if strings.TrimSpace(basePreference.Provider) == "" && s.agents != nil {
-			if state, stateErr := s.agents.ListStateForAccount(task.AccountScopeID, 2000); stateErr == nil {
-				for _, profile := range state.Profiles {
-					if strings.EqualFold(profile.Name, state.ActivePrimary) {
-						basePreference = pebblestore.ModelPreference{Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier}
-						break
-					}
+	basePreference := parent.Preference
+	if strings.TrimSpace(basePreference.Provider) == "" && s.agents != nil {
+		if state, stateErr := s.agents.ListStateForAccount(task.AccountScopeID, 2000); stateErr == nil {
+			for _, profile := range state.Profiles {
+				if strings.EqualFold(profile.Name, state.ActivePrimary) {
+					basePreference = pebblestore.ModelPreference{Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking, ServiceTier: profile.AutoServiceTier}
+					break
 				}
 			}
 		}
-		principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: task.UserID, AccountScopeID: task.AccountScopeID, SessionID: parentID, AccountScopeSource: identity.AccountScopeSourceSession}
-		if parentID == "" {
-			principal.AccountScopeSource = identity.AccountScopeSourceServerState
-		}
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: task.UserID, AccountScopeID: task.AccountScopeID, SessionID: parentID, AccountScopeSource: identity.AccountScopeSourceSession}
+	if parentID == "" {
+		principal.AccountScopeSource = identity.AccountScopeSourceServerState
+	}
+
+	preparation := AITaskPreparation{Title: task.AIDisplayTitle, WorktreeName: task.AIWorktreeName}
+	if preparation.Title == "" || preparation.WorktreeName == "" {
 		preparation, err = s.PrepareAITaskMetadata(ctx, task.ID, task.AIRequest, basePreference, principal)
 		if err != nil {
 			return task, err
 		}
-		prepared, persistErr := store.TransitionAITaskV2(AITaskV2Transition{
-			Item: task, ExpectedState: pebblestore.WorkspaceTodoAIStatePreparing, State: pebblestore.WorkspaceTodoAIStatePreparing,
-			Mode: task.AIMode, Worktree: true, WorktreeName: preparation.WorktreeName, DisplayTitle: preparation.Title,
-			RetryCount: task.AIRetryCount, Disposition: "v2_metadata_prepared",
-		})
+		prepared, persistErr := persistAITaskV2Preparation(store, task, preparation, "v2_metadata_prepared")
 		if persistErr != nil {
-			return task, fmt.Errorf("persist AI task Compact metadata: %w", persistErr)
+			return task, persistErr
 		}
 		task = prepared
 	}
-	if _, err := s.ExecutePreparedAITask(ctx, parentID, task.UserID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, task.AIMode, task.AIModelProfile, preparation, apply); err != nil {
-		return task, err
+	_, err = executeAITaskV2WithWorktreeRetry(
+		preparation,
+		func(candidate AITaskPreparation) error {
+			_, deployErr := s.ExecutePreparedAITask(ctx, parentID, task.UserID, task.AccountScopeID, task.WorkspacePath, task.ID, task.AIRequest, task.AIMode, task.AIModelProfile, candidate, apply)
+			return deployErr
+		},
+		func(takenWorktreeName string) (AITaskPreparation, error) {
+			return s.PrepareAITaskMetadataRetry(ctx, task.ID, task.AIRequest, basePreference, principal, takenWorktreeName)
+		},
+		func(candidate AITaskPreparation) error {
+			prepared, persistErr := persistAITaskV2Preparation(store, task, candidate, "v2_worktree_name_retried")
+			if persistErr == nil {
+				task = prepared
+			}
+			return persistErr
+		},
+	)
+	return task, err
+}
+
+func executeAITaskV2WithWorktreeRetry(initial AITaskPreparation, deploy func(AITaskPreparation) error, prepareReplacement func(string) (AITaskPreparation, error), persistReplacement func(AITaskPreparation) error) (AITaskPreparation, error) {
+	if err := deploy(initial); err == nil {
+		return initial, nil
+	} else if !worktreeruntime.IsRequestedWorktreeNameConflict(err) {
+		return initial, err
 	}
-	return task, nil
+
+	replacement, err := prepareReplacement(initial.WorktreeName)
+	if err != nil {
+		return initial, err
+	}
+	if err := persistReplacement(replacement); err != nil {
+		return replacement, err
+	}
+	if err := deploy(replacement); err != nil {
+		if worktreeruntime.IsRequestedWorktreeNameConflict(err) {
+			return replacement, permanentAITaskV2Error(fmt.Errorf("AI task worktree allocation failed after 2 attempts: %w", err))
+		}
+		return replacement, err
+	}
+	return replacement, nil
+}
+
+func persistAITaskV2Preparation(store AITaskV2Store, task pebblestore.WorkspaceTodoItem, preparation AITaskPreparation, disposition string) (pebblestore.WorkspaceTodoItem, error) {
+	prepared, err := store.TransitionAITaskV2(AITaskV2Transition{
+		Item: task, ExpectedState: pebblestore.WorkspaceTodoAIStatePreparing, State: pebblestore.WorkspaceTodoAIStatePreparing,
+		Mode: task.AIMode, Worktree: true, WorktreeName: preparation.WorktreeName, DisplayTitle: preparation.Title,
+		RetryCount: task.AIRetryCount, Disposition: disposition,
+	})
+	if err != nil {
+		return task, fmt.Errorf("persist AI task Compact metadata: %w", err)
+	}
+	return prepared, nil
 }
 
 func (s *Service) validateAITaskV2OriginWorkspace(parent pebblestore.SessionSnapshot, task pebblestore.WorkspaceTodoItem) error {

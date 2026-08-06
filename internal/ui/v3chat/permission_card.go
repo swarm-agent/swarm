@@ -78,6 +78,9 @@ func permissionCardModelForRecord(record client.PermissionRecord, pendingCount, 
 	if normalizePermissionToolName(record.ToolName) == "bash" {
 		return bashPermissionCardModel(record, pendingCount, width, styles, prefixPreview)
 	}
+	if intent, ok := parseTaskLaunchPermissionIntent(record); ok {
+		return taskLaunchPermissionCardModel(record, intent, pendingCount, width, styles)
+	}
 	if intent, ok := parseManageSessionsPermissionIntent(record); ok {
 		return manageSessionsPermissionCardModel(record, intent, pendingCount, width, styles)
 	}
@@ -586,6 +589,7 @@ func inlinePermissionCardRowsWithPlanReview(record client.PermissionRecord, pend
 		}
 	}
 	_, manageSessionsPermission := parseManageSessionsPermissionIntent(record)
+	_, taskLaunchPermission := parseTaskLaunchPermissionIntent(record)
 	actions := []permissionCardAction{
 		{Label: "Enter Approve", Action: "allow_once", Tone: styles.Success},
 		{Label: "Esc Deny", Action: "deny_once", Tone: styles.Error},
@@ -593,7 +597,7 @@ func inlinePermissionCardRowsWithPlanReview(record client.PermissionRecord, pend
 		{Label: "Ctrl+D Always Deny", Action: "deny_always", Tone: styles.Warning},
 	}
 	exitPlanPermission := planPermission && normalizePermissionToolName(record.ToolName) == "exit_plan_mode"
-	if exitPlanPermission || manageSessionsPermission {
+	if exitPlanPermission || manageSessionsPermission || taskLaunchPermission {
 		// These control-plane mutations use one fresh canonical approval;
 		// persistent permission rules are intentionally unavailable.
 		actions = actions[:2]
@@ -609,7 +613,7 @@ func inlinePermissionCardRowsWithPlanReview(record client.PermissionRecord, pend
 		Note:      string(note),
 		Busy:      busy,
 		ErrorText: errorText,
-		HideNote:  planPermission || manageSessionsPermission,
+		HideNote:  planPermission || manageSessionsPermission || taskLaunchPermission,
 		Actions:   actions,
 	}
 	return permissionCardRows(view, width, styles)

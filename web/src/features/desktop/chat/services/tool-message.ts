@@ -43,10 +43,39 @@ interface StructuredToolMessageInput {
   error?: string;
   durationMs?: number;
   state?: StructuredToolMessage["state"];
+  lifecycleStatus?: string;
 }
 
 const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
 const MAX_PREVIEW_LINES = 12;
+
+export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "generic";
+
+export interface ToolActivityDescriptor {
+  kind: ToolActivitySemanticKind;
+  label: string;
+  activeLabel: string;
+}
+
+export function describeToolActivity(toolName: string): ToolActivityDescriptor {
+  const normalized = String(toolName ?? "").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "edit" || normalized === "write") {
+    return { kind: "edit", label: "Edit", activeLabel: "Editing" };
+  }
+  if (normalized === "plan" || normalized === "plan_manage" || normalized === "exit_plan_mode") {
+    return { kind: "plan", label: "Plan", activeLabel: "Planning" };
+  }
+  if (normalized === "task" || normalized === "subagent" || normalized === "launch_subagent") {
+    return { kind: "task", label: "Subagents", activeLabel: "Launching subagents" };
+  }
+  if (normalized === "search" || normalized === "read") {
+    return { kind: "investigation", label: "Investigation", activeLabel: "Investigating" };
+  }
+  const label = normalized
+    ? normalized.split("_").filter(Boolean).map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" ")
+    : "Tool";
+  return { kind: "generic", label, activeLabel: normalized ? `Running ${label}` : "Starting tool" };
+}
 const MAX_PREVIEW_SCAN_BYTES = 32_000;
 const MAX_PREVIEW_LINE_BYTES = 2_000;
 
@@ -522,6 +551,20 @@ function summarizeToolOutput(
     case "plan_manage":
     case "plan-manage": {
       return summarizePlanManageToolOutput(effective);
+    }
+    case "manage_theme":
+    case "manage-theme": {
+      const action = jsonStr(effective, "action").replace(/_/g, " ");
+      const generatedNames = jsonStrArray(effective, "generated_names");
+      const generatedCount = jsonNum(effective, "generated_count") || generatedNames.length;
+      const resultSummary = jsonStr(effective, "summary");
+      if (generatedCount > 0) {
+        const count = countLabel(generatedCount, "theme", "themes");
+        const names = generatedNames.length > 0 ? `: ${generatedNames.join(", ")}` : "";
+        return `theme generated ${count}${names}`;
+      }
+      if (resultSummary) return `theme · ${resultSummary}`;
+      return action ? `theme ${action}` : "theme";
     }
     case "manage_todos":
     case "manage-todos": {
@@ -1010,7 +1053,15 @@ function extractSearchToolData(
 
   const mode = jsonStr(effective, "search_mode").toLowerCase();
   const path = jsonStr(effective, "path");
+  const queries = [
+    ...jsonStrArray(argumentsJson, "queries"),
+    jsonStr(argumentsJson, "query"),
+    ...jsonStrArray(outputJson, "queries"),
+    jsonStr(outputJson, "query"),
+    ...jsonObjectSlice(effective, "query_results").map((result) => jsonStr(result, "query")),
+  ].filter((query, index, all) => query && all.indexOf(query) === index);
   const queryCount = Math.max(
+    queries.length,
     jsonNum(effective, "query_count"),
     jsonObjectSlice(effective, "query_results").length,
   );
@@ -1028,6 +1079,7 @@ function extractSearchToolData(
   return {
     mode,
     path,
+    queries,
     queryCount,
     count,
     totalMatched,
@@ -1317,12 +1369,18 @@ function extractPreviewLines(
       }
       return out;
     }
-    case "manage_todos": {
+    case "manage_theme":
+    case "manage-theme": {
       const out: string[] = [];
-      for (const line of buildManageTodosPreviewLines(effective, 6)) {
-        pushPreviewLine(out, line, 6);
-      }
+      const names = jsonStrArray(effective, "generated_names");
+      const count = jsonNum(effective, "generated_count") || names.length;
+      if (count > 0) pushPreviewLine(out, `Generated ${countLabel(count, "theme", "themes")}.`, 8);
+      for (const name of names) pushPreviewLine(out, name, 8);
+      if (out.length === 0) pushPreviewLine(out, jsonStr(effective, "summary"), 8);
       return out;
+    }
+    case "manage_todos": {
+      return buildManageTodosPreviewLines(effective, 6);
     }
     case "plan_manage":
     case "plan-manage":
@@ -1874,7 +1932,7 @@ export function buildStructuredToolMessage(
       );
   const taskRows =
     toolName.toLowerCase() === "task"
-      ? buildTaskToolRows(outputJson ?? argumentsJson, input.taskStream)
+      ? buildTaskToolRows(outputJson, input.taskStream)
       : [];
   const error = String(input.error ?? "").trim();
 
@@ -1909,6 +1967,7 @@ export function buildStructuredToolMessage(
     durationMs: typeof input.durationMs === "number" ? input.durationMs : 0,
     summary,
     state: input.state ?? (error ? "error" : "done"),
+    lifecycleStatus: String(input.lifecycleStatus ?? "").trim(),
     editDiff,
     searchData,
     webSearchData,

@@ -1115,6 +1115,33 @@ func RunBackend(profile Profile, opts StartBackendOptions) error {
 		_ = os.Remove(profile.PIDFile)
 		return err
 	}
+	if _, pending := resolveRuntimeLink(pendingRuntimeLink(profile.InstallRoot)); pending {
+		if healthErr := waitForHealth(profile, 100); healthErr != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+			_ = os.Remove(profile.PIDFile)
+			rollbackRoot, rollbackErr := rollbackPendingRuntimeUpdate(profile.InstallRoot, healthErr)
+			if rollbackErr != nil {
+				finishReleaseUpdateJobAfterBoot(profile, updateJobStatusFailed, "", errors.Join(healthErr, rollbackErr).Error())
+				return errors.Join(healthErr, fmt.Errorf("rollback failed pending runtime: %w", rollbackErr))
+			}
+			finishReleaseUpdateJobAfterBoot(profile, updateJobStatusFailed, "", fmt.Sprintf("pending runtime failed health confirmation and was rolled back to %s: %v", rollbackRoot, healthErr))
+			return fmt.Errorf("pending runtime failed health confirmation and was rolled back to %s: %w", rollbackRoot, healthErr)
+		}
+		if err := markCurrentRuntimeBootSuccessful(profile.InstallRoot); err != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+			_ = os.Remove(profile.PIDFile)
+			rollbackRoot, rollbackErr := rollbackPendingRuntimeUpdate(profile.InstallRoot, err)
+			if rollbackErr != nil {
+				finishReleaseUpdateJobAfterBoot(profile, updateJobStatusFailed, "", errors.Join(err, rollbackErr).Error())
+				return errors.Join(err, fmt.Errorf("rollback uncommitted pending runtime: %w", rollbackErr))
+			}
+			finishReleaseUpdateJobAfterBoot(profile, updateJobStatusFailed, "", fmt.Sprintf("pending runtime health commit failed and was rolled back to %s: %v", rollbackRoot, err))
+			return fmt.Errorf("pending runtime health commit failed and was rolled back to %s: %w", rollbackRoot, err)
+		}
+		finishReleaseUpdateJobAfterBoot(profile, updateJobStatusCompleted, releaseUpdateCompletedMessage(CurrentRuntimeVersion(profile.InstallRoot)), "")
+	}
 	err = cmd.Wait()
 	_ = os.Remove(profile.PIDFile)
 	if backendExitedAfterTerminateSignal(err) {
@@ -2241,26 +2268,12 @@ func copyDir(sourceDir, targetDir string) error {
 		if info.IsDir() {
 			return os.MkdirAll(targetPath, info.Mode().Perm())
 		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return err
-		}
-		sourceFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer sourceFile.Close()
-		targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(targetFile, sourceFile); err != nil {
-			_ = targetFile.Close()
-			return err
-		}
-		return targetFile.Close()
+		return copyFile(path, targetPath)
 	})
 }
 
+// copyFile writes through a sibling temporary file so readers never observe a
+// partially copied runtime asset during an install or update.
 func copyFile(sourcePath, targetPath string) error {
 	info, err := os.Stat(sourcePath)
 	if err != nil {

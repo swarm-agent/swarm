@@ -460,8 +460,13 @@ func validateV3RealtimeLivePatch(frame V3RealtimeFrame) error {
 	if strings.TrimSpace(live.RunID) == "" || strings.TrimSpace(live.StreamID) == "" {
 		return errors.New("v3 realtime live.patch requires run_id and stream_id")
 	}
-	if strings.TrimSpace(live.StreamKind) != "assistant_text" || strings.TrimSpace(live.Operation) != "append" {
-		return errors.New("v3 realtime live.patch requires append assistant_text stream")
+	switch strings.TrimSpace(live.StreamKind) {
+	case "assistant_text", "provider_tool_call":
+	default:
+		return errors.New("v3 realtime live.patch stream_kind must be assistant_text or provider_tool_call")
+	}
+	if strings.TrimSpace(live.Operation) != "append" {
+		return errors.New("v3 realtime live.patch requires append operation")
 	}
 	if live.Text == "" || live.LiveSeqStart == 0 || live.LiveSeqEnd < live.LiveSeqStart || live.OffsetEnd-live.OffsetStart != uint64(len([]byte(live.Text))) {
 		return errors.New("v3 realtime live.patch has invalid text sequence or offsets")

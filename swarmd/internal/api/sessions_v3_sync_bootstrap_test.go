@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	"testing"
@@ -181,19 +180,126 @@ func TestSessionsV3SyncBootstrapMetadataOnlyDoesNotEmitPerSessionMessageKeys(t *
 	}
 }
 
+func TestSessionsV3SyncSessionShellProjectsImmutableCurrentModePreference(t *testing.T) {
+	plan := pebblestore.ModelProfileSelection{Provider: "codex", Model: "plan-model", Thinking: "xhigh", ServiceTier: "fast", ContextMode: "compact"}
+	session := pebblestore.SessionSnapshot{
+		Mode:       sessionruntime.ModePlan,
+		Preference: pebblestore.ModelPreference{Provider: "stale", Model: "stale-model"},
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Source:             pebblestore.SessionModelProfileSourceSaved,
+			ActionFavoriteID:   "favorite-action",
+			ActionFavoriteName: "Action Favorite",
+			Action:             pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model", Thinking: "high"},
+			PlanFavoriteID:     "favorite-plan",
+			PlanFavoriteName:   "Plan Favorite",
+			Plan:               &plan,
+			AppliedAt:          42,
+		},
+	}
+
+	shell, err := sessionsV3SyncSessionShell(session)
+	if err != nil {
+		t.Fatalf("project plan shell: %v", err)
+	}
+	if shell.Preference.Provider != "codex" || shell.Preference.Model != "plan-model" || shell.Preference.Thinking != "xhigh" || shell.Preference.UpdatedAt != 42 {
+		t.Fatalf("plan shell preference = %+v", shell.Preference)
+	}
+	if shell.ModelProfile == session.ModelProfile || shell.ModelProfile.Plan == session.ModelProfile.Plan {
+		t.Fatalf("sync shell must deep-clone immutable model profile")
+	}
+
+	session.Mode = sessionruntime.ModeAuto
+	shell, err = sessionsV3SyncSessionShell(session)
+	if err != nil {
+		t.Fatalf("project action shell: %v", err)
+	}
+	if shell.Preference.Model != "action-model" {
+		t.Fatalf("action shell preference = %+v", shell.Preference)
+	}
+}
+
+func TestSessionsV3SyncSessionShellRejectsDisabledPlan(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		Mode: sessionruntime.ModePlan,
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Source: pebblestore.SessionModelProfileSourceTemporary,
+			Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model"},
+		},
+	}
+	if _, err := sessionsV3SyncSessionShell(session); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
+		t.Fatalf("disabled Plan shell error = %v", err)
+	}
+}
+
 func TestSessionsV3SyncShellMetadataPreservesModelProfileIdentity(t *testing.T) {
 	metadata := sessionsV3SyncShellMetadata(map[string]any{
 		"agent_name": "swarm",
 		"model_profile": pebblestore.SessionModelProfileSnapshot{
-			Source:         pebblestore.SessionModelProfileSourceSaved,
-			SavedProfileID: "mp_exact",
-			Name:           "Exact",
-			ModelMode:      pebblestore.ModelProfileModeSingle,
+			Source:             pebblestore.SessionModelProfileSourceSaved,
+			ActionFavoriteID:   "mp_exact",
+			ActionFavoriteName: "Exact",
+			Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "same-model"},
 		},
 	})
 	profile, ok := metadata["model_profile"].(pebblestore.SessionModelProfileSnapshot)
-	if !ok || profile.SavedProfileID != "mp_exact" || profile.Name != "Exact" {
+	if !ok || profile.ActionFavoriteID != "mp_exact" || profile.ActionFavoriteName != "Exact" || profile.Action.Model != "same-model" {
 		t.Fatalf("sync shell model profile metadata = %#v", metadata["model_profile"])
+	}
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatalf("marshal sync shell model profile: %v", err)
+	}
+	for _, removed := range []string{`"model_mode"`, `"single"`, `"auto"`, `"saved_profile_id"`} {
+		if strings.Contains(string(raw), removed) {
+			t.Fatalf("sync shell model profile retained removed field %s: %s", removed, raw)
+		}
+	}
+}
+
+func TestSessionsV3AgentModelPolicyIgnoresLegacySplitMetadata(t *testing.T) {
+	server := &Server{}
+	fallback := pebblestore.ModelPreference{Provider: "codex", Model: "durable-model"}
+	session := pebblestore.SessionSnapshot{
+		Mode:       sessionruntime.ModePlan,
+		Preference: fallback,
+		Metadata: map[string]any{
+			"agent_name": "legacy-agent",
+			"agent_profile": map[string]any{
+				"name": "legacy-agent", "model_mode": "split",
+				"plan_provider": "codex", "plan_model": "mutable-plan-model",
+				"auto_provider": "codex", "auto_model": "mutable-action-model",
+			},
+		},
+	}
+	policy := server.sessionsV3AgentModelPolicyWithResolver(session, fallback, 0, 0, nil)
+	if policy.Locked || policy.Source != "default" || policy.Preference.Model != "durable-model" {
+		t.Fatalf("legacy split metadata changed durable projection policy: %+v", policy)
+	}
+}
+
+func TestSessionsV3AgentModelPolicyAttributesCurrentSnapshotFavorite(t *testing.T) {
+	server := &Server{}
+	session := pebblestore.SessionSnapshot{
+		Mode: sessionruntime.ModePlan,
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Source:             pebblestore.SessionModelProfileSourceSaved,
+			ActionFavoriteID:   "favorite-action",
+			ActionFavoriteName: "Action Favorite",
+			Action:             pebblestore.ModelProfileSelection{Provider: "openai", Model: "action-model"},
+			PlanFavoriteID:     "favorite-plan",
+			PlanFavoriteName:   "Plan Favorite",
+			Plan:               &pebblestore.ModelProfileSelection{Provider: "openai", Model: "plan-model"},
+		},
+	}
+	policy := server.sessionsV3AgentModelPolicyWithResolver(session, pebblestore.ModelPreference{}, 0, 0, nil)
+	if policy.ProfileID != "favorite-plan" || policy.ProfileName != "Plan Favorite" || policy.ProfileMode != sessionruntime.ModePlan {
+		t.Fatalf("plan profile attribution = %+v", policy)
+	}
+
+	session.Mode = sessionruntime.ModeAuto
+	policy = server.sessionsV3AgentModelPolicyWithResolver(session, pebblestore.ModelPreference{}, 0, 0, nil)
+	if policy.ProfileID != "favorite-action" || policy.ProfileName != "Action Favorite" || policy.ProfileMode != sessionruntime.ModeAuto {
+		t.Fatalf("action profile attribution = %+v", policy)
 	}
 }
 
@@ -886,26 +992,9 @@ func TestSessionsV3SyncHydrateReturnsLatestSealedExecutionEpoch(t *testing.T) {
 	}
 }
 
-func TestSessionsV3SyncHydrateSwarmUsesSessionPreferenceInsteadOfAgentModelFields(t *testing.T) {
+func TestSessionsV3SyncHydrateUsesSessionPreferenceInsteadOfAgentModelFields(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
-		Name:                "swarm",
-		Mode:                agentruntime.ModePrimary,
-		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		ModelMode:           "split",
-		PlanProvider:        "test-provider",
-		PlanModel:           "plan-model",
-		PlanThinking:        "low",
-		AutoProvider:        "auto-provider",
-		AutoModel:           "auto-model",
-		AutoThinking:        "high",
-		Enabled:             pebblestore.BoolPtr(true),
-		Prompt:              "Swarm split prompt",
-	}); err != nil {
-		t.Fatalf("upsert split swarm agent: %v", err)
-	}
-	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "sync-split-agent-policy-create", "sync split agent policy", pebblestore.ModelPreference{Provider: "test-provider", Model: "stored-model", Thinking: "medium"})
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "sync-session-policy-create", "sync session policy", pebblestore.ModelPreference{Provider: "test-provider", Model: "stored-model", Thinking: "medium"})
 
 	hydrate := func(wantMode, wantSource, wantProvider, wantModel, wantThinking string) {
 		t.Helper()
@@ -934,7 +1023,7 @@ func TestSessionsV3SyncHydrateSwarmUsesSessionPreferenceInsteadOfAgentModelField
 		}
 		view := payload.SessionViewsByID[created.ID]
 		policy := view.AgenticSettings.AgentModelPolicy
-		if view.AgenticSettings.Mode != wantMode || !policy.Locked || policy.Source != wantSource || policy.Preference.Provider != wantProvider || policy.Preference.Model != wantModel || policy.Preference.Thinking != wantThinking {
+		if view.AgenticSettings.Mode != wantMode || policy.Locked || policy.Source != wantSource || policy.Preference.Provider != wantProvider || policy.Preference.Model != wantModel || policy.Preference.Thinking != wantThinking {
 			t.Fatalf("agentic settings = %+v policy=%+v, want mode=%s source=%s preference=%s/%s/%s", view.AgenticSettings, policy, wantMode, wantSource, wantProvider, wantModel, wantThinking)
 		}
 		if view.AgenticSettings.EffectivePreference.Provider != wantProvider || view.AgenticSettings.EffectivePreference.Model != wantModel || view.AgenticSettings.EffectivePreference.Thinking != wantThinking {
@@ -943,14 +1032,6 @@ func TestSessionsV3SyncHydrateSwarmUsesSessionPreferenceInsteadOfAgentModelField
 	}
 
 	hydrate(sessionruntime.ModeAuto, "default", "test-provider", "stored-model", "medium")
-	modeReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/mode", bytes.NewBufferString(`{"mode":"plan"}`))
-	modeReq.Header.Set("Content-Type", "application/json")
-	modeRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(modeRec, withTestPrincipal(modeReq))
-	if modeRec.Code != http.StatusOK {
-		t.Fatalf("set plan mode status = %d body=%s", modeRec.Code, modeRec.Body.String())
-	}
-	hydrate(sessionruntime.ModePlan, "default", "test-provider", "stored-model", "medium")
 }
 
 func TestSessionsV3SyncHydrateCanonicalizesSessionIDSelectorForCursorScope(t *testing.T) {

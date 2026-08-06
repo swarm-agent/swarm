@@ -11,10 +11,12 @@ import (
 )
 
 var (
-	ErrServiceNotConfigured  = errors.New("identity service is not configured")
-	ErrBootstrapExists       = errors.New("identity bootstrap already exists")
-	ErrTeamAlreadyExists     = errors.New("account scope already has a team")
-	ErrTeamOptInUnauthorized = errors.New("team opt-in requires account owner/admin capability")
+	ErrServiceNotConfigured   = errors.New("identity service is not configured")
+	ErrBootstrapExists        = errors.New("identity bootstrap already exists")
+	ErrUsernameAlreadyExists  = errors.New("username already exists")
+	ErrUserRenameUnauthorized = errors.New("user rename requires the current user")
+	ErrTeamAlreadyExists      = errors.New("account scope already has a team")
+	ErrTeamOptInUnauthorized  = errors.New("team opt-in requires account owner/admin capability")
 )
 
 const defaultBackendTeamName = "Personal"
@@ -232,6 +234,37 @@ func (s *Service) EnsureLinkedIdentity(input EnsureLinkedIdentityInput) (Bootstr
 		return BootstrapResult{}, err
 	}
 	return BootstrapResult{User: currentUser, AccountScope: currentAccount, AccountUser: accountUser, CurrentSelection: selection, Counts: counts, Team: pebblestore.TeamRecord{AccountScopeID: currentAccount.ID, Name: defaultBackendTeamName}, Membership: pebblestore.TeamMembershipRecord{UserID: currentUser.ID, Role: pebblestore.TeamRoleOwner}}, nil
+}
+
+func (s *Service) RenameCurrentUser(actor ActorContext, username string) (pebblestore.UserRecord, error) {
+	if err := s.configured(); err != nil {
+		return pebblestore.UserRecord{}, err
+	}
+	username = pebblestore.NormalizeIdentityUsername(username)
+	if username == "" {
+		return pebblestore.UserRecord{}, errors.New("username is required")
+	}
+	userID := strings.TrimSpace(actor.UserID)
+	if userID == "" || userID != strings.TrimSpace(actor.User.ID) {
+		return pebblestore.UserRecord{}, ErrUserRenameUnauthorized
+	}
+	current, ok, err := s.store.GetUser(userID)
+	if err != nil {
+		return pebblestore.UserRecord{}, err
+	}
+	if !ok || current.ID != userID || current.AccountScopeID != strings.TrimSpace(actor.AccountScopeID) {
+		return pebblestore.UserRecord{}, ErrUserRenameUnauthorized
+	}
+	current.Username = username
+	current.DisplayName = username
+	updated, err := s.store.PutUser(current)
+	if err != nil {
+		if errors.Is(err, pebblestore.ErrIdentityRecordExists) {
+			return pebblestore.UserRecord{}, fmt.Errorf("%q: %w", username, ErrUsernameAlreadyExists)
+		}
+		return pebblestore.UserRecord{}, err
+	}
+	return updated, nil
 }
 
 func (s *Service) UpgradeAccountToTeam(actor ActorContext, teamDisplayName string) (TeamOptInResult, error) {

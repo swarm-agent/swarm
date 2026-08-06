@@ -1,4 +1,5 @@
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
+import type { DesktopV3MediaReference } from '../state/desktop-v3-cache-types'
 import type { ModelProfileChoice } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
@@ -377,6 +378,56 @@ export async function startDesktopV3CreateOnlySession(input: {
   }
 }
 
+export async function appendFirstDesktopV3Message(input: {
+  operation: DesktopV3NewSessionOperation
+  media?: DesktopV3AppendMessageRequest['media']
+  onSessionStarted?: (sessionId: string) => void
+}): Promise<SessionMessageMutationResponse> {
+  const operation = input.operation
+  const firstMessageRequest = input.media?.length
+    ? { ...operation.firstMessageRequest, media: input.media }
+    : operation.firstMessageRequest
+  flowDeps.dispatch({
+    type: 'pendingUser.upsert',
+    input: {
+      clientRequestId: firstMessageRequest.client_request_id,
+      messageId: firstMessageRequest.message_id,
+      sessionId: operation.sessionId,
+      content: firstMessageRequest.content,
+      metadata: firstMessageRequest.metadata,
+      runId: firstMessageRequest.run_id,
+      createdAt: operation.createdAt,
+    },
+  })
+
+  let rawMessage: SessionMessageMutationResponse | MessageMutationConflictResponse
+  try {
+    rawMessage = await flowDeps.postAppendMessage(operation.sessionId, firstMessageRequest)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    flowDeps.dispatch(messageMutationResponseToAction(
+      { ok: false, error: message },
+      firstMessageRequest.client_request_id,
+      firstMessageRequest.message_id,
+    ))
+    throw error
+  }
+  flowDeps.dispatch(messageMutationResponseToAction(
+    rawMessage,
+    firstMessageRequest.client_request_id,
+    firstMessageRequest.message_id,
+  ))
+  if (rawMessage.ok === false) {
+    throw new Error(rawMessage.error || rawMessage.error_code || 'Desktop V3 first message failed')
+  }
+  const firstRunStatus = acceptedRunPhase(rawMessage)
+  if (firstRunStatus !== 'accepted' && firstRunStatus !== 'pending_executor') {
+    throw new Error(`Desktop V3 first run was not accepted: ${firstRunStatus || 'missing phase'}`)
+  }
+  input.onSessionStarted?.(operation.sessionId)
+  return rawMessage
+}
+
 export async function startNewDesktopV3Session(input: {
   operation: DesktopV3NewSessionOperation
   shouldSelectSession?: () => boolean
@@ -388,48 +439,10 @@ export async function startNewDesktopV3Session(input: {
     shouldSelectSession: input.shouldSelectSession,
   })
 
-  flowDeps.dispatch({
-    type: 'pendingUser.upsert',
-    input: {
-      clientRequestId: operation.firstMessageRequest.client_request_id,
-      messageId: operation.firstMessageRequest.message_id,
-      sessionId: operation.sessionId,
-      content: operation.firstMessageRequest.content,
-      metadata: operation.firstMessageRequest.metadata,
-      runId: operation.firstMessageRequest.run_id,
-      createdAt: operation.createdAt,
-    },
+  const rawMessage = await appendFirstDesktopV3Message({
+    operation,
+    onSessionStarted: input.onSessionStarted,
   })
-
-  let rawMessage: SessionMessageMutationResponse | MessageMutationConflictResponse
-  try {
-    rawMessage = await flowDeps.postAppendMessage(operation.sessionId, operation.firstMessageRequest)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    flowDeps.dispatch(messageMutationResponseToAction(
-      { ok: false, error: message },
-      operation.firstMessageRequest.client_request_id,
-      operation.firstMessageRequest.message_id,
-    ))
-    throw error
-  }
-
-  flowDeps.dispatch(messageMutationResponseToAction(
-    rawMessage,
-    operation.firstMessageRequest.client_request_id,
-    operation.firstMessageRequest.message_id,
-  ))
-
-  if (rawMessage.ok === false) {
-    throw new Error(rawMessage.error || rawMessage.error_code || 'Desktop V3 first message failed')
-  }
-  const firstRunStatus = acceptedRunPhase(rawMessage)
-  if (firstRunStatus !== 'accepted' && firstRunStatus !== 'pending_executor') {
-    throw new Error(`Desktop V3 first run was not accepted: ${firstRunStatus || 'missing phase'}`)
-  }
-
-  // Only now may the new-session pane unmount and become Path B.
-  input.onSessionStarted?.(operation.sessionId)
 
   return {
     sessionId: operation.sessionId,
@@ -441,5 +454,582 @@ export async function startNewDesktopV3Session(input: {
 function acceptedRunPhase(raw: SessionMessageMutationResponse | MessageMutationConflictResponse): string {
   if (raw.ok === false) return ''
   return raw.run_intent?.status.trim().toLowerCase() ?? ''
-  return ''
+}
+
+/**
+ * Local-only state for the canonical routed Desktop start. None of the draft,
+ * primed, routing, or failed variants is a durable session and callers must not
+ * publish one into the V3 cache, sidebar, realtime controller, or URL.
+ */
+export interface DesktopV3RoutedMediaInput {
+  staging_id: string
+  modality?: string
+  file_type?: string
+}
+
+/**
+ * Serializable composer state captured before the local composer is cleared.
+ * Action and skill records intentionally remain opaque here: the controller
+ * owns exact rollback, not interpretation of either workspace-owned record.
+ */
+export interface DesktopV3RoutedComposerSnapshot {
+  prompt: string
+  attachments: DesktopV3RoutedMediaInput[]
+  selectedAction: unknown | null
+  selectedSkill: unknown | null
+  worktreePrimed: boolean
+  planModeRequested: boolean
+}
+
+export interface DesktopV3RoutedDraftState {
+  phase: 'draft'
+  prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
+}
+
+export interface DesktopV3RoutedWorktreePrimedState {
+  phase: 'worktree-primed'
+  prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
+}
+
+export interface DesktopV3RoutedWorkspaceAuthority {
+  workspace_path: string
+  host_workspace_path: string
+  runtime_workspace_path: string
+  workspace_binding_id: string
+  swarm_id: string
+  target_kind: 'host' | 'self'
+  target_relationship: 'self'
+}
+
+export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAuthority {
+  input: string
+  client_request_id: string
+  idempotency_key: string
+  agent_name?: string
+  metadata?: Record<string, unknown>
+  managed_worktree_requested: boolean
+  plan_mode_requested: boolean
+  media?: DesktopV3RoutedMediaInput[]
+}
+
+export interface DesktopV3RoutedStartOperation {
+  version: 2
+  operationId: string
+  createdAt: number
+  snapshot: DesktopV3RoutedComposerSnapshot
+  request: DesktopV3RoutedStartRequest
+}
+
+export interface DesktopV3RoutedStartResult {
+  ok: true
+  session_id: string
+  title: string
+  starting_mode: string
+  replayed: boolean
+  session: { id?: string; session_id?: string }
+  session_view: unknown
+  first_message: { id?: string; session_id?: string; media?: DesktopV3MediaReference[] }
+  projection: { session_id?: string }
+  mutation: { session_id?: string }
+}
+
+export interface DesktopV3RoutedRoutingState {
+  phase: 'routing'
+  prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
+  operation: DesktopV3RoutedStartOperation
+}
+
+export interface DesktopV3RoutedResolvedState {
+  phase: 'resolved'
+  prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
+  operation: DesktopV3RoutedStartOperation
+  result: DesktopV3RoutedStartResult
+}
+
+export interface DesktopV3RoutedFailedState {
+  phase: 'failed'
+  prompt: string
+  snapshot: DesktopV3RoutedComposerSnapshot
+  operation: DesktopV3RoutedStartOperation
+  error: string
+}
+
+export type DesktopV3RoutedNewSessionState =
+  | DesktopV3RoutedDraftState
+  | DesktopV3RoutedWorktreePrimedState
+  | DesktopV3RoutedRoutingState
+  | DesktopV3RoutedResolvedState
+  | DesktopV3RoutedFailedState
+
+export interface DesktopV3RoutedOperationIdentity {
+  operationId: string
+  clientRequestId: string
+}
+
+export function desktopV3RoutedWorkspaceAuthority(
+  workspacePath: string,
+  route: DesktopChatRoute,
+): DesktopV3RoutedWorkspaceAuthority {
+  const target = getDesktopSessionCreateTarget(route)
+  if (target.endpoint !== '/v3/sessions') {
+    throw new Error(target.unsupportedReason || 'Routed Desktop start requires the primary V3 route')
+  }
+  return normalizeDesktopV3RoutedWorkspaceAuthority({
+    workspace_path: workspacePath,
+    host_workspace_path: route.hostWorkspacePath,
+    runtime_workspace_path: route.runtimeWorkspacePath,
+    workspace_binding_id: target.workspaceBindingId,
+    swarm_id: target.swarmId,
+    target_kind: route.targetKind.trim().toLowerCase() as 'host' | 'self',
+    target_relationship: route.targetRelationship.trim().toLowerCase() as 'self',
+  })
+}
+
+export interface CreateDesktopV3RoutedStartOperationInput {
+  workspace: DesktopV3RoutedWorkspaceAuthority
+  prompt?: string
+  snapshot?: DesktopV3RoutedComposerSnapshot
+  agentName?: string
+  metadata?: Record<string, unknown>
+  media?: DesktopV3RoutedMediaInput[]
+  selectedAction?: unknown | null
+  selectedSkill?: unknown | null
+  worktreePrimed?: boolean
+  planModeRequested?: boolean
+  /** Reserved before media staging so uploads and the routed start share one identity. */
+  identity?: DesktopV3RoutedOperationIdentity
+}
+
+export type PostDesktopV3RoutedStart = (
+  request: DesktopV3RoutedStartRequest,
+) => Promise<DesktopV3RoutedStartResult>
+
+const ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v2'
+const LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v1'
+
+function normalizedRoutedMedia(media: DesktopV3RoutedMediaInput[] | undefined): DesktopV3RoutedMediaInput[] | undefined {
+  if (!media?.length) return undefined
+  return media.map((item) => {
+    const stagingID = item.staging_id.trim()
+    if (!stagingID) throw new Error('Routed Desktop media requires staging_id')
+    return {
+      staging_id: stagingID,
+      modality: item.modality?.trim() || undefined,
+      file_type: item.file_type?.trim() || undefined,
+    }
+  })
+}
+
+export function createDesktopV3RoutedComposerSnapshot(
+  input: Partial<DesktopV3RoutedComposerSnapshot> & Pick<DesktopV3RoutedComposerSnapshot, 'prompt'>,
+): DesktopV3RoutedComposerSnapshot {
+  return {
+    prompt: input.prompt,
+    attachments: input.attachments?.map((attachment) => ({ ...attachment })) ?? [],
+    selectedAction: input.selectedAction === undefined || input.selectedAction === null
+      ? null
+      : cloneRoutedComposerSelection(input.selectedAction),
+    selectedSkill: input.selectedSkill === undefined || input.selectedSkill === null
+      ? null
+      : cloneRoutedComposerSelection(input.selectedSkill),
+    worktreePrimed: input.worktreePrimed === true,
+    planModeRequested: input.planModeRequested === true,
+  }
+}
+
+function cloneRoutedComposerSelection(selection: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(selection)) as unknown
+  } catch {
+    throw new Error('Routed Desktop composer selection must be serializable')
+  }
+}
+
+export function createDesktopV3RoutedDraftState(
+  prompt = '',
+  snapshot = createDesktopV3RoutedComposerSnapshot({ prompt }),
+): DesktopV3RoutedDraftState {
+  if (prompt !== snapshot.prompt) throw new Error('Routed Desktop draft prompt must match its composer snapshot')
+  return { phase: 'draft', prompt: snapshot.prompt, snapshot }
+}
+
+export function createDesktopV3RoutedWorktreePrimedState(
+  prompt = '',
+  snapshot = createDesktopV3RoutedComposerSnapshot({ prompt, worktreePrimed: true }),
+): DesktopV3RoutedWorktreePrimedState {
+  if (prompt !== snapshot.prompt) throw new Error('Routed Desktop worktree prompt must match its composer snapshot')
+  if (!snapshot.worktreePrimed) throw new Error('Routed Desktop worktree state requires a primed composer snapshot')
+  return { phase: 'worktree-primed', prompt: snapshot.prompt, snapshot }
+}
+
+export function createDesktopV3RoutedOperationIdentity(): DesktopV3RoutedOperationIdentity {
+  const operationId = crypto.randomUUID()
+  return { operationId, clientRequestId: `desktop-v3-routed:${operationId}` }
+}
+
+export function desktopV3RoutedRequestInput(snapshot: DesktopV3RoutedComposerSnapshot): string {
+  const prompt = snapshot.prompt.trim()
+  if (!prompt) throw new Error('Routed Desktop start requires a prompt')
+  return prompt
+}
+
+export function createDesktopV3RoutedStartOperation(
+  input: CreateDesktopV3RoutedStartOperationInput,
+): DesktopV3RoutedStartOperation {
+  if (input.snapshot && input.media !== undefined) {
+    throw new Error('Routed Desktop start accepts snapshot attachments or media, not both')
+  }
+  if (input.snapshot && input.prompt !== undefined && input.prompt !== input.snapshot.prompt) {
+    throw new Error('Routed Desktop start prompt must match the captured composer snapshot')
+  }
+  const snapshot = createDesktopV3RoutedComposerSnapshot(input.snapshot ?? {
+    prompt: input.prompt ?? '',
+    attachments: input.media,
+    selectedAction: input.selectedAction,
+    selectedSkill: input.selectedSkill,
+    worktreePrimed: input.worktreePrimed,
+    planModeRequested: input.planModeRequested,
+  })
+  const requestInput = desktopV3RoutedRequestInput(snapshot)
+  const identity = input.identity ?? createDesktopV3RoutedOperationIdentity()
+  const operationId = identity.operationId.trim()
+  const clientRequestID = identity.clientRequestId.trim()
+  if (!operationId || clientRequestID !== `desktop-v3-routed:${operationId}`) {
+    throw new Error('Routed Desktop operation identity is invalid')
+  }
+  const authority = normalizeDesktopV3RoutedWorkspaceAuthority(input.workspace)
+  return {
+    version: 2,
+    operationId,
+    createdAt: Date.now(),
+    snapshot,
+    request: {
+      ...authority,
+      input: requestInput,
+      client_request_id: clientRequestID,
+      idempotency_key: clientRequestID,
+      ...(input.agentName?.trim() ? { agent_name: input.agentName.trim() } : {}),
+      metadata: input.metadata ? { ...input.metadata } : undefined,
+      managed_worktree_requested: snapshot.worktreePrimed,
+      plan_mode_requested: snapshot.planModeRequested,
+      media: normalizedRoutedMedia(snapshot.attachments),
+    },
+  }
+}
+
+function normalizeDesktopV3RoutedWorkspaceAuthority(value: DesktopV3RoutedWorkspaceAuthority): DesktopV3RoutedWorkspaceAuthority {
+  const workspacePath = value.workspace_path?.trim()
+  const hostWorkspacePath = value.host_workspace_path?.trim()
+  const runtimeWorkspacePath = value.runtime_workspace_path?.trim()
+  const workspaceBindingID = value.workspace_binding_id?.trim()
+  const swarmID = value.swarm_id?.trim()
+  const targetKind = value.target_kind?.trim().toLowerCase()
+  const targetRelationship = value.target_relationship?.trim().toLowerCase()
+  if (!workspacePath || !hostWorkspacePath || !runtimeWorkspacePath || !workspaceBindingID || !swarmID) {
+    throw new Error('Routed Desktop start requires complete captured workspace authority')
+  }
+  if (workspacePath !== hostWorkspacePath) throw new Error('Routed Desktop source and host workspace paths must match')
+  if (targetKind !== 'host' && targetKind !== 'self') throw new Error('Routed Desktop start requires a self host target')
+  if (targetRelationship !== 'self') throw new Error('Routed Desktop start requires a self target relationship')
+  return {
+    workspace_path: workspacePath,
+    host_workspace_path: hostWorkspacePath,
+    runtime_workspace_path: runtimeWorkspacePath,
+    workspace_binding_id: workspaceBindingID,
+    swarm_id: swarmID,
+    target_kind: targetKind,
+    target_relationship: 'self',
+  }
+}
+
+function isStoredDesktopV3RoutedStartOperation(value: unknown): value is DesktopV3RoutedStartOperation {
+  if (!value || typeof value !== 'object') return false
+  const operation = value as Partial<DesktopV3RoutedStartOperation>
+  if (operation.version !== 2 || !operation.operationId?.trim() || typeof operation.createdAt !== 'number' || !Number.isFinite(operation.createdAt)) return false
+  const snapshot = operation.snapshot
+  if (!isStoredDesktopV3RoutedComposerSnapshot(snapshot)) return false
+  const request = operation.request
+  if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
+  try {
+    normalizeDesktopV3RoutedWorkspaceAuthority(request)
+  } catch {
+    return false
+  }
+  if (request.idempotency_key !== request.client_request_id) return false
+  if (typeof request.managed_worktree_requested !== 'boolean' || request.managed_worktree_requested !== snapshot.worktreePrimed) return false
+  if (typeof request.plan_mode_requested !== 'boolean' || request.plan_mode_requested !== snapshot.planModeRequested) return false
+  if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
+  if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
+  if (request.input !== desktopV3RoutedRequestInput(snapshot)) return false
+  if (JSON.stringify(request.media ?? []) !== JSON.stringify(normalizedRoutedMedia(snapshot.attachments) ?? [])) return false
+  return true
+}
+
+function isStoredDesktopV3RoutedComposerSnapshot(value: unknown): value is DesktopV3RoutedComposerSnapshot {
+  if (!value || typeof value !== 'object') return false
+  const snapshot = value as Partial<DesktopV3RoutedComposerSnapshot>
+  if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean' || typeof snapshot.planModeRequested !== 'boolean') return false
+  if (!Array.isArray(snapshot.attachments) || snapshot.attachments.some((item) => !item?.staging_id?.trim())) return false
+  if (snapshot.selectedAction === undefined || snapshot.selectedSkill === undefined) return false
+  return true
+}
+
+export function persistDesktopV3RoutedStartOperation(operation: DesktopV3RoutedStartOperation): void {
+  if (typeof window === 'undefined') return
+  window.sessionStorage.setItem(ROUTED_NEW_SESSION_OPERATION_KEY, JSON.stringify(operation))
+}
+
+export function loadDesktopV3RoutedStartOperation(): DesktopV3RoutedStartOperation | null {
+  if (typeof window === 'undefined') return null
+  try {
+    window.sessionStorage.removeItem(LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY)
+    const raw = window.sessionStorage.getItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+    if (!raw) return null
+    const operation: unknown = JSON.parse(raw)
+    if (isStoredDesktopV3RoutedStartOperation(operation)) return operation
+    window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+    return null
+  } catch {
+    window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+    return null
+  }
+}
+
+export function clearDesktopV3RoutedStartOperation(operationId?: string): void {
+  if (typeof window === 'undefined') return
+  if (operationId) {
+    const current = loadDesktopV3RoutedStartOperation()
+    if (current && current.operationId !== operationId) return
+  }
+  window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
+  window.sessionStorage.removeItem(LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY)
+}
+
+export function restoreDesktopV3RoutedNewSessionState(): DesktopV3RoutedNewSessionState {
+  const operation = loadDesktopV3RoutedStartOperation()
+  if (!operation) return createDesktopV3RoutedDraftState()
+  return {
+    phase: 'failed',
+    prompt: operation.snapshot.prompt,
+    snapshot: operation.snapshot,
+    operation,
+    error: 'Routing was interrupted. Retry to resume the same routed start.',
+  }
+}
+
+function routedResultRecordSessionID(record: { id?: unknown; session_id?: unknown }): string {
+  const value = record.session_id ?? record.id
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function validateDesktopV3RoutedStartResult(result: DesktopV3RoutedStartResult): DesktopV3RoutedStartResult {
+  if (!result || result.ok !== true) throw new Error('Routed Desktop start returned an unsuccessful response')
+  const sessionID = result.session_id?.trim()
+  if (!sessionID) throw new Error('Routed Desktop start returned no canonical session_id')
+  if (!result.title?.trim() || !result.starting_mode?.trim()) {
+    throw new Error('Routed Desktop start returned incomplete routed authority')
+  }
+  if (routedResultRecordSessionID(result.session) !== sessionID) {
+    throw new Error('Routed Desktop start returned a mismatched session')
+  }
+  for (const [label, record] of [
+    ['first message', result.first_message],
+    ['projection', result.projection],
+    ['mutation', result.mutation],
+  ] as const) {
+    if (!record || routedResultRecordSessionID(record) !== sessionID) {
+      throw new Error(`Routed Desktop start returned a mismatched ${label}`)
+    }
+  }
+  return result
+}
+
+/**
+ * Small framework-neutral controller consumed by the new-chat UI. The injected
+ * transport is the only side effect besides retaining retry identity in
+ * sessionStorage. Canonical V3 activation is deliberately left to the owner of
+ * the resolved state.
+ */
+export class DesktopV3RoutedNewSessionController {
+  private state: DesktopV3RoutedNewSessionState
+  private generation = 0
+  private activeRun: Promise<DesktopV3RoutedNewSessionState> | null = null
+  private reservedIdentity: DesktopV3RoutedOperationIdentity | null = null
+  private readonly listeners = new Set<(state: DesktopV3RoutedNewSessionState) => void>()
+
+  constructor(
+    private readonly postRoutedStart: PostDesktopV3RoutedStart,
+    initialState: DesktopV3RoutedNewSessionState = restoreDesktopV3RoutedNewSessionState(),
+  ) {
+    this.state = initialState
+  }
+
+  getState(): DesktopV3RoutedNewSessionState {
+    return this.state
+  }
+
+  subscribe(listener: (state: DesktopV3RoutedNewSessionState) => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  prepareOperationIdentity(): DesktopV3RoutedOperationIdentity {
+    if (this.state.phase === 'failed' || this.state.phase === 'routing' || this.state.phase === 'resolved') {
+      return {
+        operationId: this.state.operation.operationId,
+        clientRequestId: this.state.operation.request.client_request_id,
+      }
+    }
+    if (!this.reservedIdentity) this.reservedIdentity = createDesktopV3RoutedOperationIdentity()
+    return { ...this.reservedIdentity }
+  }
+
+  startDraft(
+    prompt = '',
+    snapshot = createDesktopV3RoutedComposerSnapshot({ prompt }),
+  ): DesktopV3RoutedDraftState {
+    this.invalidateCurrentOperation()
+    const state = createDesktopV3RoutedDraftState(prompt, snapshot)
+    this.publish(state)
+    return state
+  }
+
+  primeWorktree(
+    prompt = '',
+    snapshot = createDesktopV3RoutedComposerSnapshot({ prompt, worktreePrimed: true }),
+  ): DesktopV3RoutedWorktreePrimedState {
+    this.invalidateCurrentOperation()
+    const state = createDesktopV3RoutedWorktreePrimedState(prompt, snapshot)
+    this.publish(state)
+    return state
+  }
+
+  submit(input?: CreateDesktopV3RoutedStartOperationInput): Promise<DesktopV3RoutedNewSessionState> {
+    if (this.state.phase === 'routing' && this.activeRun) return this.activeRun
+
+    let operation: DesktopV3RoutedStartOperation
+    if (this.state.phase === 'failed') {
+      operation = this.state.operation
+    } else if (this.state.phase === 'draft' || this.state.phase === 'worktree-primed') {
+      if (!input) {
+        return Promise.reject(new Error('Routed Desktop start requires captured workspace authority'))
+      }
+      const operationInput: CreateDesktopV3RoutedStartOperationInput = input
+      operation = createDesktopV3RoutedStartOperation({
+        ...operationInput,
+        identity: operationInput.identity ?? this.prepareOperationIdentity(),
+      })
+      this.reservedIdentity = null
+    } else {
+      return Promise.reject(new Error('Resolved routed Desktop start cannot be submitted again'))
+    }
+
+    persistDesktopV3RoutedStartOperation(operation)
+    const runGeneration = ++this.generation
+    this.publish({ phase: 'routing', prompt: operation.snapshot.prompt, snapshot: operation.snapshot, operation })
+    const run = this.run(operation, runGeneration)
+    this.activeRun = run
+    void run.finally(() => {
+      if (this.activeRun === run) this.activeRun = null
+    }).catch(() => undefined)
+    return run
+  }
+
+  retry(): Promise<DesktopV3RoutedNewSessionState> {
+    if (this.state.phase !== 'failed') {
+      return Promise.reject(new Error('Only a failed routed Desktop start can be retried'))
+    }
+    return this.submit()
+  }
+
+  /**
+   * Completes the local handoff only after the app-level owner has published the
+   * durable routed result, connected realtime, and navigated successfully.
+   */
+  acknowledgeResolved(operationId: string): void {
+    const normalizedOperationId = operationId.trim()
+    if (!normalizedOperationId) throw new Error('Resolved routed Desktop start requires operation identity')
+    if (this.state.phase !== 'resolved' || this.state.operation.operationId !== normalizedOperationId) {
+      throw new Error('Only the current resolved routed Desktop start can be acknowledged')
+    }
+    clearDesktopV3RoutedStartOperation(normalizedOperationId)
+    this.reservedIdentity = null
+    this.generation += 1
+  }
+
+  /** Restores the exact routed operation when canonical activation fails. */
+  rejectResolved(operationId: string, error: unknown): DesktopV3RoutedFailedState {
+    if (this.state.phase !== 'resolved' || this.state.operation.operationId !== operationId) {
+      throw new Error('Only the current resolved routed Desktop start can be rejected')
+    }
+    const operation = this.state.operation
+    persistDesktopV3RoutedStartOperation(operation)
+    const failed: DesktopV3RoutedFailedState = {
+      phase: 'failed',
+      prompt: operation.snapshot.prompt,
+      snapshot: operation.snapshot,
+      operation,
+      error: error instanceof Error ? error.message : String(error),
+    }
+    this.generation += 1
+    this.publish(failed)
+    return failed
+  }
+
+  private async run(
+    operation: DesktopV3RoutedStartOperation,
+    runGeneration: number,
+  ): Promise<DesktopV3RoutedNewSessionState> {
+    try {
+      const result = validateDesktopV3RoutedStartResult(await this.postRoutedStart(operation.request))
+      if (!this.isCurrent(operation, runGeneration)) return this.state
+      const resolved: DesktopV3RoutedResolvedState = {
+        phase: 'resolved',
+        prompt: operation.snapshot.prompt,
+        snapshot: operation.snapshot,
+        operation,
+        result,
+      }
+      this.publish(resolved)
+      return resolved
+    } catch (error) {
+      if (!this.isCurrent(operation, runGeneration)) return this.state
+      const failed: DesktopV3RoutedFailedState = {
+        phase: 'failed',
+        prompt: operation.snapshot.prompt,
+        snapshot: operation.snapshot,
+        operation,
+        error: error instanceof Error ? error.message : String(error),
+      }
+      this.publish(failed)
+      return failed
+    }
+  }
+
+  private isCurrent(operation: DesktopV3RoutedStartOperation, generation: number): boolean {
+    return generation === this.generation
+      && (this.state.phase === 'routing')
+      && this.state.operation.operationId === operation.operationId
+  }
+
+  private invalidateCurrentOperation(): void {
+    const operation = this.state.phase === 'routing'
+      || this.state.phase === 'failed'
+      || this.state.phase === 'resolved'
+      ? this.state.operation
+      : null
+    this.generation += 1
+    this.activeRun = null
+    this.reservedIdentity = null
+    if (operation) clearDesktopV3RoutedStartOperation(operation.operationId)
+  }
+
+  private publish(state: DesktopV3RoutedNewSessionState): void {
+    this.state = state
+    for (const listener of this.listeners) listener(state)
+  }
 }

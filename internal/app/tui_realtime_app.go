@@ -623,12 +623,12 @@ func chatSessionPlanFromClient(plan client.SessionPlan) ui.ChatSessionPlan {
 
 func chatMessagesFromClient(messages []client.SessionMessage, events []client.SessionV3Event) []ui.ChatMessageRecord {
 	out := make([]ui.ChatMessageRecord, 0, len(messages)+len(events))
-	eventToolInstances := make(map[string]struct{})
+	eventToolIdentities := make(map[string]struct{})
 	projectedEventMessages := make([]ui.ChatMessageRecord, 0, len(events))
 	for _, event := range events {
-		if message, instanceID, ok := chatToolMessageFromV3Event(event); ok {
-			if instanceID != "" {
-				eventToolInstances[instanceID] = struct{}{}
+		if message, identity, ok := chatToolMessageFromV3Event(event); ok {
+			if identity != "" {
+				eventToolIdentities[identity] = struct{}{}
 			}
 			projectedEventMessages = append(projectedEventMessages, message)
 			continue
@@ -638,8 +638,8 @@ func chatMessagesFromClient(messages []client.SessionMessage, events []client.Se
 		}
 	}
 	for _, message := range messages {
-		if instanceID := clientToolMessageInstanceID(message); instanceID != "" {
-			if _, projected := eventToolInstances[instanceID]; projected {
+		if identity := clientToolMessageIdentity(message); identity != "" {
+			if _, projected := eventToolIdentities[identity]; projected {
 				continue
 			}
 		}
@@ -712,7 +712,8 @@ func anyString(value any) string {
 func chatToolMessageFromV3Event(event client.SessionV3Event) (ui.ChatMessageRecord, string, bool) {
 	eventType := strings.ToLower(strings.TrimSpace(event.EventType))
 	switch eventType {
-	case "session.tool.started", "session.tool.delta", "session.tool.completed", "session.tool.failed", "session.tool.cancelled", "session.tool.canceled":
+	case "session.tool.started", "session.tool.delta", "session.tool.completed", "session.tool.failed", "session.tool.cancelled", "session.tool.canceled",
+		"session.provider_tool_call.started", "session.provider_tool_call.arguments.delta", "session.provider_tool_call.arguments.snapshot", "session.provider_tool_call.completed":
 	default:
 		return ui.ChatMessageRecord{}, "", false
 	}
@@ -738,6 +739,11 @@ func chatToolMessageFromV3Event(event client.SessionV3Event) (ui.ChatMessageReco
 		}
 	}
 	instanceID, _ := payload["tool_instance_id"].(string)
+	callID, _ := payload["call_id"].(string)
+	identity := strings.TrimSpace(instanceID)
+	if identity == "" {
+		identity = strings.TrimSpace(callID)
+	}
 	return ui.ChatMessageRecord{
 		ID:        "v3-tool-event:" + strings.TrimSpace(event.ID),
 		SessionID: strings.TrimSpace(event.SessionID),
@@ -746,10 +752,10 @@ func chatToolMessageFromV3Event(event client.SessionV3Event) (ui.ChatMessageReco
 		Content:   string(content),
 		Metadata:  map[string]any{"v3_tool_event": true},
 		CreatedAt: createdAt,
-	}, strings.TrimSpace(instanceID), true
+	}, identity, true
 }
 
-func clientToolMessageInstanceID(message client.SessionMessage) string {
+func clientToolMessageIdentity(message client.SessionMessage) string {
 	if !strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
 		return ""
 	}
@@ -761,7 +767,11 @@ func clientToolMessageInstanceID(message client.SessionMessage) string {
 		return ""
 	}
 	instanceID, _ := payload["tool_instance_id"].(string)
-	return strings.TrimSpace(instanceID)
+	if strings.TrimSpace(instanceID) != "" {
+		return strings.TrimSpace(instanceID)
+	}
+	callID, _ := payload["call_id"].(string)
+	return strings.TrimSpace(callID)
 }
 
 func chatLifecycleFromClient(lifecycle *client.SessionLifecycleSnapshot) ui.ChatSessionLifecycle {

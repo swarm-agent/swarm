@@ -20,7 +20,9 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 
+	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -28,6 +30,7 @@ import (
 	integrationruntime "swarm/packages/swarmd/internal/integration"
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
+	"swarm/packages/swarmd/internal/mediastaging"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
@@ -53,20 +56,24 @@ import (
 )
 
 type codexOAuthSession struct {
-	CodeVerifier   string
-	State          string
-	UserID         string
-	AccountScopeID string
-	Provider       string
-	Label          string
-	Active         bool
-	Method         string
-	AuthURL        string
-	Status         string
-	Error          string
-	Credential     *auth.CredentialStatus
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	CodeVerifier        string
+	State               string
+	UserID              string
+	AccountScopeID      string
+	Provider            string
+	Label               string
+	Active              bool
+	Method              string
+	AuthURL             string
+	VerificationURL     string
+	UserCode            string
+	ExpiresAt           time.Time
+	DeviceAuthorization *codex.DeviceAuthorization
+	Status              string
+	Error               string
+	Credential          *auth.CredentialStatus
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 const (
@@ -81,7 +88,8 @@ type Server struct {
 	agents                      *agentruntime.Service
 	model                       *model.Service
 	modelProfiles               *modelprofile.Service
-	swarmProfiles               *modelprofile.SwarmService
+	agentModelSettings          *agentmodelsettings.Service
+	agentModelSettingsStore     *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
 	runner                      runService
 	runStreams                  *runControlAllocator
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
@@ -106,6 +114,8 @@ type Server struct {
 	voice                       *voice.Service
 	uiSettings                  *uisettings.Service
 	todos                       *todo.Service
+	actions                     *actionruntime.Service
+	actionRuns                  *actionruntime.Runner
 	aiTasks                     aiTaskEnqueuer
 	swarm                       swarmService
 	update                      *update.Service
@@ -120,6 +130,7 @@ type Server struct {
 	startedAt                   time.Time
 	bypassPermissions           bool
 	longSessionDiagnostics      *longsessiondiag.Recorder
+	mediaStaging                *mediastaging.Service
 
 	longSessionDesktopSampleLogOnce sync.Once
 
@@ -227,6 +238,7 @@ type worktreeService interface {
 	AllocateDetachedWorkspaceForPrincipal(principal identity.Principal, workspacePath, nameSeed string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
+	RollbackAllocation(allocation worktreeruntime.Allocation) error
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
 	ListManaged(workspacePath string) ([]worktreeruntime.ManagedWorktree, error)
 	ListManagedForPrincipal(principal identity.Principal, workspacePath string) ([]worktreeruntime.ManagedWorktree, error)
@@ -283,6 +295,9 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
 	}
+	if authSvc != nil {
+		authSvc.SetCredentialChangePublisher(server.publishAuthCredentialV3Realtime)
+	}
 	if sessionSvc != nil {
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		server.planLifecycle = sessionruntime.NewPlanLifecycleService(sessionSvc)
@@ -295,6 +310,14 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 func (s *Server) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
 	if s != nil {
 		s.longSessionDiagnostics = recorder
+	}
+}
+
+// SetMediaStagingService configures bounded, account-scoped pre-session media
+// staging. The service deliberately has no session or model authority.
+func (s *Server) SetMediaStagingService(service *mediastaging.Service) {
+	if s != nil {
+		s.mediaStaging = service
 	}
 }
 
@@ -328,11 +351,16 @@ func (s *Server) SetModelProfileService(service *modelprofile.Service) {
 	s.modelProfiles = service
 }
 
-func (s *Server) SetSwarmProfileService(service *modelprofile.SwarmService) {
+// SetAgentModelSettingsService injects the canonical authenticated service.
+// Startup also supplies its store for the one complete-record onboarding write.
+func (s *Server) SetAgentModelSettingsService(service *agentmodelsettings.Service, stores ...*pebblestore.AgentModelSettingsStore) {
 	if s == nil {
 		return
 	}
-	s.swarmProfiles = service
+	s.agentModelSettings = service
+	if len(stores) != 0 {
+		s.agentModelSettingsStore = stores[0]
+	}
 }
 
 func (s *Server) SetWebPushService(service *webpush.Service) {
@@ -443,6 +471,14 @@ func (s *Server) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
 	}
 }
 
+func (s *Server) SetActionService(actionSvc *actionruntime.Service) {
+	if s == nil {
+		return
+	}
+	s.actions = actionSvc
+	s.actionRuns = actionruntime.NewRunner(s.runCtx, actionSvc)
+}
+
 func (s *Server) SetTodoService(todoSvc *todo.Service) {
 	if s == nil {
 		return
@@ -519,6 +555,9 @@ func (s *Server) BeginShutdown() {
 	s.activeRunMu.Lock()
 	s.shuttingDown.Store(true)
 	s.activeRunMu.Unlock()
+	if s.actionRuns != nil {
+		s.actionRuns.CancelAll()
+	}
 }
 
 func (s *Server) CancelInFlightRuns() {
@@ -528,6 +567,9 @@ func (s *Server) CancelInFlightRuns() {
 	s.shuttingDown.Store(true)
 	if s.runCancel != nil {
 		s.runCancel()
+	}
+	if s.actionRuns != nil {
+		s.actionRuns.CancelAll()
 	}
 	if s.gitRealtime != nil {
 		s.gitRealtime.stopAll()
@@ -543,8 +585,12 @@ func (s *Server) WaitForInFlightRuns(timeout time.Duration) bool {
 	s.activeRunMu.Unlock()
 	if timeout <= 0 {
 		s.runWG.Wait()
+		if s.actionRuns != nil {
+			s.actionRuns.Wait(0)
+		}
 		return true
 	}
+	deadline := time.Now().Add(timeout)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -552,8 +598,15 @@ func (s *Server) WaitForInFlightRuns(timeout time.Duration) bool {
 	}()
 	select {
 	case <-done:
-		return true
-	case <-time.After(timeout):
+		if s.actionRuns == nil {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		return s.actionRuns.Wait(remaining)
+	case <-time.After(time.Until(deadline)):
 		return false
 	}
 }
@@ -1729,7 +1782,8 @@ func (s *Server) handleWorkspaceBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
-	browser, err := s.workspace.BrowseForPrincipal(principal, path)
+	includeFiles := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_files")), "true")
+	browser, err := s.workspace.BrowseEntriesForPrincipal(principal, path, includeFiles)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -1985,6 +2039,35 @@ func (s *Server) handleWorkspaceTheme(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resolution, err := s.workspace.SetThemeIDForPrincipal(principal, req.Path, req.ThemeID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"workspace": resolution,
+	})
+}
+
+func (s *Server) handleWorkspaceIcon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	var req struct {
+		Path           string `json:"path"`
+		IconPNGDataURL string `json:"icon_png_data_url"`
+	}
+	if err := decodeJSONLimited(w, r, &req, 1_500_000); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resolution, err := s.workspace.SetIconPNGDataURLForPrincipal(principal, req.Path, req.IconPNGDataURL)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -3262,7 +3345,6 @@ type uiSettingsPatchPresence struct {
 	Swarming  *uiSwarmingSettingsPatchPresence `json:"swarming"`
 	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
 	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
-	Agents    *uiAgentSettingsPatchPresence    `json:"agents"`
 	UpdatedAt *int64                           `json:"updated_at"`
 }
 
@@ -3286,6 +3368,7 @@ type uiChatToolStreamSettingsPatchPresence struct {
 
 type uiChatSettingsPatchPresence struct {
 	ShowHeader                      *bool                                  `json:"show_header"`
+	ShowTips                        *bool                                  `json:"show_tips"`
 	ThinkingTags                    *bool                                  `json:"thinking_tags"`
 	ShowCompactButton               *bool                                  `json:"show_compact_button"`
 	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
@@ -3314,20 +3397,6 @@ type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
 }
 
-type uiCompactAgentSettingsPatchPresence struct {
-	Provider    *string `json:"provider"`
-	Model       *string `json:"model"`
-	Thinking    *string `json:"thinking"`
-	ServiceTier *string `json:"service_tier"`
-}
-
-type uiAgentSettingsPatchPresence struct {
-	Compact  *uiCompactAgentSettingsPatchPresence `json:"compact"`
-	Finder   *uiCompactAgentSettingsPatchPresence `json:"finder"`
-	Coder    *uiCompactAgentSettingsPatchPresence `json:"coder"`
-	Designer *uiCompactAgentSettingsPatchPresence `json:"designer"`
-}
-
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
 	settings := current
 	if raw.Theme != nil {
@@ -3349,6 +3418,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 	if raw.Chat != nil {
 		if raw.Chat.ShowHeader != nil {
 			settings.Chat.ShowHeader = patch.Chat.ShowHeader
+		}
+		if raw.Chat.ShowTips != nil {
+			settings.Chat.ShowTips = patch.Chat.ShowTips
 		}
 		if raw.Chat.ThinkingTags != nil {
 			settings.Chat.ThinkingTags = patch.Chat.ThinkingTags
@@ -3410,62 +3482,6 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
 		}
 	}
-	if raw.Agents != nil && raw.Agents.Compact != nil {
-		if raw.Agents.Compact.Provider != nil {
-			settings.Agents.Compact.Provider = patch.Agents.Compact.Provider
-		}
-		if raw.Agents.Compact.Model != nil {
-			settings.Agents.Compact.Model = patch.Agents.Compact.Model
-		}
-		if raw.Agents.Compact.Thinking != nil {
-			settings.Agents.Compact.Thinking = patch.Agents.Compact.Thinking
-		}
-		if raw.Agents.Compact.ServiceTier != nil {
-			settings.Agents.Compact.ServiceTier = patch.Agents.Compact.ServiceTier
-		}
-	}
-	if raw.Agents != nil && raw.Agents.Finder != nil {
-		if raw.Agents.Finder.Provider != nil {
-			settings.Agents.Finder.Provider = patch.Agents.Finder.Provider
-		}
-		if raw.Agents.Finder.Model != nil {
-			settings.Agents.Finder.Model = patch.Agents.Finder.Model
-		}
-		if raw.Agents.Finder.Thinking != nil {
-			settings.Agents.Finder.Thinking = patch.Agents.Finder.Thinking
-		}
-		if raw.Agents.Finder.ServiceTier != nil {
-			settings.Agents.Finder.ServiceTier = patch.Agents.Finder.ServiceTier
-		}
-	}
-	if raw.Agents != nil && raw.Agents.Coder != nil {
-		if raw.Agents.Coder.Provider != nil {
-			settings.Agents.Coder.Provider = patch.Agents.Coder.Provider
-		}
-		if raw.Agents.Coder.Model != nil {
-			settings.Agents.Coder.Model = patch.Agents.Coder.Model
-		}
-		if raw.Agents.Coder.Thinking != nil {
-			settings.Agents.Coder.Thinking = patch.Agents.Coder.Thinking
-		}
-		if raw.Agents.Coder.ServiceTier != nil {
-			settings.Agents.Coder.ServiceTier = patch.Agents.Coder.ServiceTier
-		}
-	}
-	if raw.Agents != nil && raw.Agents.Designer != nil {
-		if raw.Agents.Designer.Provider != nil {
-			settings.Agents.Designer.Provider = patch.Agents.Designer.Provider
-		}
-		if raw.Agents.Designer.Model != nil {
-			settings.Agents.Designer.Model = patch.Agents.Designer.Model
-		}
-		if raw.Agents.Designer.Thinking != nil {
-			settings.Agents.Designer.Thinking = patch.Agents.Designer.Thinking
-		}
-		if raw.Agents.Designer.ServiceTier != nil {
-			settings.Agents.Designer.ServiceTier = patch.Agents.Designer.ServiceTier
-		}
-	}
 	return settings
 }
 
@@ -3496,13 +3512,13 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = r.Body.Close()
-		var patch uisettings.UISettings
-		if err := decodeJSONBytes(body, &patch); err != nil {
+		var raw uiSettingsPatchPresence
+		if err := decodeJSONBytes(body, &raw); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		var raw uiSettingsPatchPresence
-		if err := json.Unmarshal(body, &raw); err != nil {
+		var patch uisettings.UISettings
+		if err := json.Unmarshal(body, &patch); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -3528,6 +3544,11 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
+		}
+		if raw.Chat != nil && raw.Chat.ReviewAutoArchiveMinutes != nil {
+			if reconcileErr := s.reconcileSessionsV3ReviewAutoArchiveForAccount(r.Context(), time.Now(), accountScopeID); reconcileErr != nil {
+				log.Printf("warning: v3 review auto-archive reconciliation after settings update failed account=%q: %v", accountScopeID, reconcileErr)
+			}
 		}
 		writeJSON(w, http.StatusOK, saved)
 	default:
@@ -3870,6 +3891,10 @@ func (s *Server) isAuthExemptRequest(r *http.Request) bool {
 		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
 		return r.Method == http.MethodGet || (r.Method == http.MethodPost && s.allowsUnauthenticatedOnboardingPost(r))
+	case TailscaleOnboardingApprovalPath:
+		_, pending := pendingDesktopOrigin(r)
+		_, admitted := admittedDesktopOrigin(r)
+		return (pending || admitted) && (r.Method == http.MethodGet || (pending && r.Method == http.MethodPost))
 	default:
 		return false
 	}

@@ -1,7 +1,21 @@
 import type { WorkspaceTodoSummary } from '../../todos/types'
 import type { WorkspaceOverviewTopologyRoute } from './workspace-overview'
 
-export interface WorkspaceEntry {
+export type WorkspaceDefinitionStatus = '' | 'pending' | 'completed' | 'failed'
+
+export interface WorkspaceDefinitionFields {
+  definitionStatus: WorkspaceDefinitionStatus
+  definition: string
+  definitionError: string
+  definitionSuggestion: string
+  definitionAttempts: number
+  definitionGeneration: number
+  definitionUpdatedAt: number
+}
+
+type OptionalWorkspaceDefinitionFields = Partial<WorkspaceDefinitionFields>
+
+export interface WorkspaceEntry extends OptionalWorkspaceDefinitionFields {
   path: string
   workspaceId?: string
   workspaceGeneration?: number
@@ -9,6 +23,7 @@ export interface WorkspaceEntry {
   localWorkspaceBindingId: string
   workspaceName: string
   themeId: string
+  iconPNGDataURL?: string
   directories: string[]
   isGitRepo: boolean
   sortIndex: number
@@ -34,7 +49,7 @@ export interface WorkspaceEntry {
   topologyRoutes: WorkspaceOverviewTopologyRoute[]
 }
 
-export interface WorkspaceResolution {
+export interface WorkspaceResolution extends OptionalWorkspaceDefinitionFields {
   requestedPath: string
   resolvedPath: string
   workspaceId?: string
@@ -43,6 +58,7 @@ export interface WorkspaceResolution {
   localWorkspaceBindingId: string
   workspaceName: string
   themeId: string
+  iconPNGDataURL?: string
 }
 
 export interface WorkspaceDiscoverEntry {
@@ -87,7 +103,17 @@ export interface WorkspaceBrowseResponse {
   browser: WorkspaceBrowseResultWire
 }
 
-export interface WorkspaceEntryWire {
+export interface WorkspaceDefinitionWire {
+  definition_status?: string
+  definition?: string
+  definition_error?: string
+  definition_model_suggestion?: string
+  definition_attempt_count?: number
+  definition_generation?: number
+  definition_updated_at?: number
+}
+
+export interface WorkspaceEntryWire extends WorkspaceDefinitionWire {
   path: string
   workspace_id?: string
   workspace_generation?: number
@@ -95,6 +121,7 @@ export interface WorkspaceEntryWire {
   local_workspace_binding_id?: string
   workspace_name: string
   theme_id?: string
+  icon_png_data_url?: string
   directories: string[]
   is_git_repo: boolean
   sort_index: number
@@ -118,7 +145,7 @@ export interface WorkspaceEntryWire {
   git_committed_deletions?: number
 }
 
-export interface WorkspaceResolutionWire {
+export interface WorkspaceResolutionWire extends WorkspaceDefinitionWire {
   requested_path: string
   resolved_path: string
   workspace_id?: string
@@ -127,6 +154,7 @@ export interface WorkspaceResolutionWire {
   local_workspace_binding_id?: string
   workspace_name: string
   theme_id?: string
+  icon_png_data_url?: string
 }
 
 export interface WorkspaceDiscoverEntryWire {
@@ -156,8 +184,25 @@ export interface WorkspaceBrowseResultWire {
   entries: WorkspaceBrowseEntryWire[]
 }
 
+function mapWorkspaceDefinition(entry: WorkspaceDefinitionWire): WorkspaceDefinitionFields {
+  const rawStatus = String(entry.definition_status ?? '').trim().toLowerCase()
+  const definitionStatus: WorkspaceDefinitionStatus = rawStatus === 'pending' || rawStatus === 'completed' || rawStatus === 'failed'
+    ? rawStatus
+    : ''
+  return {
+    definitionStatus,
+    definition: String(entry.definition ?? '').trim(),
+    definitionError: String(entry.definition_error ?? '').trim(),
+    definitionSuggestion: String(entry.definition_model_suggestion ?? '').trim(),
+    definitionAttempts: typeof entry.definition_attempt_count === 'number' ? entry.definition_attempt_count : 0,
+    definitionGeneration: typeof entry.definition_generation === 'number' ? entry.definition_generation : 0,
+    definitionUpdatedAt: typeof entry.definition_updated_at === 'number' ? entry.definition_updated_at : 0,
+  }
+}
+
 export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
   return {
+    ...mapWorkspaceDefinition(entry),
     path: entry.path,
     workspaceId: String(entry.workspace_id ?? '').trim(),
     workspaceGeneration: typeof entry.workspace_generation === 'number' ? entry.workspace_generation : 0,
@@ -165,6 +210,7 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
     localWorkspaceBindingId: String(entry.local_workspace_binding_id ?? '').trim(),
     workspaceName: entry.workspace_name,
     themeId: entry.theme_id ?? '',
+    iconPNGDataURL: String(entry.icon_png_data_url ?? '').trim(),
     directories: entry.directories,
     isGitRepo: Boolean(entry.is_git_repo),
     sortIndex: entry.sort_index,
@@ -193,6 +239,7 @@ export function mapWorkspaceEntry(entry: WorkspaceEntryWire): WorkspaceEntry {
 
 export function mapWorkspaceResolution(entry: WorkspaceResolutionWire): WorkspaceResolution {
   return {
+    ...mapWorkspaceDefinition(entry),
     requestedPath: entry.requested_path,
     resolvedPath: entry.resolved_path,
     workspaceId: String(entry.workspace_id ?? '').trim(),
@@ -201,6 +248,7 @@ export function mapWorkspaceResolution(entry: WorkspaceResolutionWire): Workspac
     localWorkspaceBindingId: entry.local_workspace_binding_id ?? '',
     workspaceName: entry.workspace_name,
     themeId: entry.theme_id ?? '',
+    iconPNGDataURL: String(entry.icon_png_data_url ?? '').trim(),
   }
 }
 

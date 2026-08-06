@@ -20,9 +20,9 @@ func (a *App) cycleHomeModelProfile() {
 		a.setModelProfileStatus("no saved model profiles to cycle")
 		return
 	}
-	currentID := strings.TrimSpace(a.homeModel.DefaultModelProfileID)
+	currentID := strings.TrimSpace(a.homeModel.ActiveModelProfile.ProfileID)
 	if currentID == "" {
-		currentID = strings.TrimSpace(a.homeModel.ActiveModelProfile.ProfileID)
+		currentID = strings.TrimSpace(a.homeModel.DefaultModelProfileID)
 	}
 	next := 0
 	for i, profile := range profiles {
@@ -31,47 +31,66 @@ func (a *App) cycleHomeModelProfile() {
 			break
 		}
 	}
-	a.selectHomeModelProfile(profiles[next].ProfileID)
+	_ = a.selectHomeModelProfile(profiles[next].ProfileID)
 }
 
-func (a *App) selectHomeModelProfile(profileID string) {
-	if a == nil || a.api == nil || a.home == nil {
-		return
+func (a *App) selectHomeModelProfile(profileID string) error {
+	if a == nil {
+		return fmt.Errorf("profile switch is unavailable")
+	}
+	if a.api == nil || a.home == nil {
+		err := fmt.Errorf("profile switch is unavailable")
+		a.setModelProfileStatus("switch profile failed: " + err.Error())
+		return err
 	}
 	profileID = strings.TrimSpace(profileID)
 	if profileID == "" {
-		a.setModelProfileStatus("select profile failed: profile id is required")
-		return
+		err := fmt.Errorf("profile id is required")
+		a.setModelProfileStatus("switch profile failed: " + err.Error())
+		return err
 	}
 	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil {
 		if _, active := v3chat.SelectActiveRun(a.v3Chat.Runtime().Store().Snapshot()); active {
-			a.setModelProfileStatus("select profile failed: model profile cannot be changed during an active run")
-			return
+			err := fmt.Errorf("model profile cannot be changed during an active run")
+			a.setModelProfileStatus("switch profile failed: " + err.Error())
+			return err
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	profile, err := a.api.SetDefaultModelProfile(ctx, profileID)
-	if err != nil {
-		a.setModelProfileStatus(fmt.Sprintf("select profile failed: %v", err))
-		return
-	}
 	state, err := a.api.ListModelProfiles(ctx)
 	if err != nil {
-		a.setModelProfileStatus(fmt.Sprintf("profile selected, but refresh failed: %v", err))
-		a.queueReload(false)
-		return
+		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
+		return err
 	}
-	a.applyHomeModel(applyHomeModelProfiles(a.currentHomeModel(), state))
+	var selected *client.ModelProfile
+	for i := range state.Profiles {
+		if strings.TrimSpace(state.Profiles[i].ProfileID) == profileID {
+			selected = &state.Profiles[i]
+			break
+		}
+	}
+	if selected == nil {
+		err := fmt.Errorf("selected profile is no longer available")
+		a.setModelProfileStatus("switch profile failed: " + err.Error())
+		return err
+	}
 	if err := a.applySelectedProfileToV3Chat(ctx, profileID); err != nil {
-		a.setModelProfileStatus(fmt.Sprintf("profile selected for new sessions, but chat update failed: %v", err))
-		return
+		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
+		return err
 	}
-	label := strings.TrimSpace(profile.Name)
+	next := refreshHomeModelProfiles(a.currentHomeModel(), state)
+	next = applyHomeModelProfile(next, *selected)
+	a.applyHomeModel(next)
+	if a.v3ChatDraftActive() {
+		a.syncPrimedV3ChatFromHomeDraft()
+	}
+	label := strings.TrimSpace(selected.Name)
 	if label == "" {
-		label = profile.ProfileID
+		label = selected.ProfileID
 	}
-	a.setModelProfileStatus("profile selected: " + label)
+	a.setModelProfileStatus("profile switched: " + label)
+	return nil
 }
 
 func (a *App) setModelProfileStatus(status string) {
@@ -87,15 +106,18 @@ func (a *App) setModelProfileStatus(status string) {
 }
 
 func (a *App) applySelectedProfileToV3Chat(ctx context.Context, profileID string) error {
+	return a.applyModelProfileChoiceToV3Chat(ctx, client.SessionV3ModelProfileChoice{SavedProfileID: strings.TrimSpace(profileID)})
+}
+
+func (a *App) applyModelProfileChoiceToV3Chat(ctx context.Context, choice client.SessionV3ModelProfileChoice) error {
 	if a.v3ChatDraftActive() {
-		a.syncPrimedV3ChatFromHomeDraft()
 		return nil
 	}
 	if a == nil || a.route != "v3chat" || a.v3Chat == nil || a.v3Chat.Runtime() == nil || a.v3Chat.Runtime().Store() == nil {
 		return nil
 	}
 	sessionID := strings.TrimSpace(a.v3Chat.Runtime().Store().Snapshot().Session.ID)
-	policy, err := a.api.SetSessionV3ModelProfile(ctx, sessionID, profileID)
+	policy, err := a.api.SetSessionV3ModelProfileChoice(ctx, sessionID, choice)
 	if err != nil {
 		return err
 	}

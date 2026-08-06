@@ -25,6 +25,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/discovery"
@@ -155,6 +156,7 @@ type Runtime struct {
 	agents               manageAgentService
 	orchestration        manageOrchestrationPolicyService
 	todos                manageTodoService
+	actions              manageActionService
 	uiSettings           manageThemeUISettingsService
 	themeWorkspace       manageThemeWorkspaceService
 	searchCoordinator    *SearchCoordinator
@@ -241,6 +243,15 @@ type manageAgentService interface {
 	SetActiveSubagentForAccount(accountScopeID, purpose, name string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagent(purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
 	DeleteActiveSubagentForAccount(accountScopeID, purpose string) (map[string]string, int64, *pebblestore.EventEnvelope, error)
+}
+
+type manageActionService interface {
+	List(actionruntime.Scope) ([]pebblestore.WorkspaceAction, error)
+	Get(actionruntime.Scope, string) (pebblestore.WorkspaceAction, bool, error)
+	Create(actionruntime.CreateInput) (pebblestore.WorkspaceAction, error)
+	Update(actionruntime.UpdateInput) (pebblestore.WorkspaceAction, error)
+	Delete(actionruntime.Scope, string) (bool, error)
+	Reorder(actionruntime.Scope, []string) ([]pebblestore.WorkspaceAction, error)
 }
 
 type manageTodoService interface {
@@ -456,6 +467,12 @@ func (r *Runtime) SetManageAgentService(agents manageAgentService) {
 func (r *Runtime) SetManageOrchestrationPolicyService(service manageOrchestrationPolicyService) {
 	if r != nil {
 		r.orchestration = service
+	}
+}
+
+func (r *Runtime) SetManageActionService(actions manageActionService) {
+	if r != nil {
+		r.actions = actions
 	}
 }
 
@@ -841,7 +858,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "ask-user",
-			Description: "Request a user decision/input through the permission interaction flow",
+			Description: "Request user input through the permission interaction flow. Supply at least two concrete choices per question. The backend always appends a protected option labeled exactly \"Custom response\" so the user can freely type a different answer. Never add a custom/other/input-box option; returned answers may not match any supplied choice.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -849,28 +866,29 @@ func (r *Runtime) Definitions() []Definition {
 					"context":  map[string]any{"type": "string", "description": "Optional context shown above questions"},
 					"question": map[string]any{"type": "string", "description": "Single-question prompt shown to the user"},
 					"options": map[string]any{
-						"type": "array",
+						"type":        "array",
+						"minItems":    2,
+						"description": "At least two concrete suggested answers for the single-question path. Do not add a custom/other/input-box option; the backend appends \"Custom response\" automatically.",
 						"items": map[string]any{
 							"oneOf": []any{
 								map[string]any{"type": "string"},
 								map[string]any{
 									"type": "object",
 									"properties": map[string]any{
-										"label":        map[string]any{"type": "string"},
-										"value":        map[string]any{"type": "string"},
-										"description":  map[string]any{"type": "string"},
-										"allow_custom": map[string]any{"type": "boolean"},
-										"allowCustom":  map[string]any{"type": "boolean"},
+										"label":       map[string]any{"type": "string"},
+										"value":       map[string]any{"type": "string"},
+										"description": map[string]any{"type": "string"},
 									},
 									"required":             []string{},
 									"additionalProperties": false,
 								},
 							},
 						},
-						"description": "Optional choices for the single-question path",
 					},
 					"questions": map[string]any{
-						"type": "array",
+						"type":        "array",
+						"minItems":    1,
+						"description": "Structured questions. Every question needs at least two concrete choices; the backend separately appends a protected \"Custom response\" option.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -879,18 +897,18 @@ func (r *Runtime) Definitions() []Definition {
 								"question": map[string]any{"type": "string"},
 								"required": map[string]any{"type": "boolean"},
 								"options": map[string]any{
-									"type": "array",
+									"type":        "array",
+									"minItems":    2,
+									"description": "At least two concrete suggested answers. Do not add a custom/other/input-box option; the backend appends \"Custom response\" automatically.",
 									"items": map[string]any{
 										"oneOf": []any{
 											map[string]any{"type": "string"},
 											map[string]any{
 												"type": "object",
 												"properties": map[string]any{
-													"label":        map[string]any{"type": "string"},
-													"value":        map[string]any{"type": "string"},
-													"description":  map[string]any{"type": "string"},
-													"allow_custom": map[string]any{"type": "boolean"},
-													"allowCustom":  map[string]any{"type": "boolean"},
+													"label":       map[string]any{"type": "string"},
+													"value":       map[string]any{"type": "string"},
+													"description": map[string]any{"type": "string"},
 												},
 												"required":             []string{},
 												"additionalProperties": false,
@@ -899,11 +917,14 @@ func (r *Runtime) Definitions() []Definition {
 									},
 								},
 							},
-							"required":             []string{"question"},
+							"required":             []string{"question", "options"},
 							"additionalProperties": false,
 						},
-						"description": "Optional multi-question payload for structured user input",
 					},
+				},
+				"anyOf": []any{
+					map[string]any{"required": []string{"question", "options"}},
+					map[string]any{"required": []string{"questions"}},
 				},
 				"required":             []string{},
 				"additionalProperties": false,
@@ -991,17 +1012,35 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-theme",
-			Description: "Inspect and manage builtin/custom themes. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the active workspace when available.",
+			Description: "Inspect and manage builtin/custom themes. create_batch previews or creates up to 8 themes in one confirmation-safe call for comparison, with optional apply_theme_id selection. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the active workspace when available.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|get|create|update|delete|set"},
+					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|get|create|create_batch|update|delete|set"},
 					"theme_id":       map[string]any{"type": "string", "description": "Theme id for get/update/delete/set/create; create also accepts content.id"},
 					"name":           map[string]any{"type": "string", "description": "Theme display name for create/update; create also accepts content.name"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path for workspace-scoped operations; defaults to current/active workspace scope when applying to workspace"},
 					"apply_to":       map[string]any{"type": "string", "description": "Optional apply target for create/update/set: workspace|account|global|none. Create defaults to workspace when an active workspace exists; set defaults to active workspace when available; account/global changes account settings."},
 					"base_theme_id":  map[string]any{"type": "string", "description": "Optional builtin/custom base theme id for create/update; allows inherited palette when content.palette is omitted"},
-					"confirm":        map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change; with create+apply this applies both save and scope assignment in one confirmed call"},
+					"apply_theme_id": map[string]any{"type": "string", "description": "For create_batch only, optional id from themes to apply after all themes are created; requires apply_to=workspace|account|global"},
+					"themes": map[string]any{
+						"type":        "array",
+						"description": "For create_batch, 1 to 8 theme payloads. Each item requires id or theme_id, name, and palette (or base_theme_id).",
+						"minItems":    1,
+						"maxItems":    8,
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"id":            map[string]any{"type": "string"},
+								"theme_id":      map[string]any{"type": "string"},
+								"name":          map[string]any{"type": "string"},
+								"base_theme_id": map[string]any{"type": "string"},
+								"palette":       manageThemePaletteSchema(),
+							},
+							"additionalProperties": false,
+						},
+					},
+					"confirm": map[string]any{"type": "boolean", "description": "Set true after approval to apply the proposed change; create_batch applies all selected preview items atomically to saved settings"},
 					"content": map[string]any{
 						"type":        "object",
 						"description": "Theme payload for create/update. For create provide id or top-level theme_id, name or top-level name, and palette object unless base_theme_id supplies an inherited palette.",
@@ -1010,37 +1049,7 @@ func (r *Runtime) Definitions() []Definition {
 							"theme_id":      map[string]any{"type": "string"},
 							"name":          map[string]any{"type": "string"},
 							"base_theme_id": map[string]any{"type": "string"},
-							"palette": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"background":       map[string]any{"type": "string"},
-									"panel":            map[string]any{"type": "string"},
-									"element":          map[string]any{"type": "string"},
-									"border":           map[string]any{"type": "string"},
-									"border_active":    map[string]any{"type": "string"},
-									"text":             map[string]any{"type": "string"},
-									"text_muted":       map[string]any{"type": "string"},
-									"primary":          map[string]any{"type": "string"},
-									"secondary":        map[string]any{"type": "string"},
-									"accent":           map[string]any{"type": "string"},
-									"success":          map[string]any{"type": "string"},
-									"warning":          map[string]any{"type": "string"},
-									"error":            map[string]any{"type": "string"},
-									"prompt":           map[string]any{"type": "string"},
-									"prompt_cursor_bg": map[string]any{"type": "string"},
-									"prompt_cursor_fg": map[string]any{"type": "string"},
-									"code_background":  map[string]any{"type": "string"},
-									"code_text":        map[string]any{"type": "string"},
-									"code_keyword":     map[string]any{"type": "string"},
-									"code_type":        map[string]any{"type": "string"},
-									"code_string":      map[string]any{"type": "string"},
-									"code_number":      map[string]any{"type": "string"},
-									"code_comment":     map[string]any{"type": "string"},
-									"code_function":    map[string]any{"type": "string"},
-									"code_operator":    map[string]any{"type": "string"},
-								},
-								"additionalProperties": false,
-							},
+							"palette":       manageThemePaletteSchema(),
 						},
 						"additionalProperties": false,
 					},
@@ -1068,6 +1077,7 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+		manageActionsDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage_todos",
@@ -1138,11 +1148,11 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "plan_manage",
-			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes (list/get/get-active/save/patch/update_section/update_info/checkpoint execution operations/start_session_checkpoint/request_followup_checkpoint/amend_plan/request_new_plan/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. In auto mode with no active plan, use start_session_checkpoint for a clear bounded task: it atomically creates an approved one-checkpoint active plan and starts that checkpoint in the current run. Never call request_followup_checkpoint when no active plan exists, and never call start_checkpoint after start_session_checkpoint. For broad/uncertain/multi-phase auto-mode work with no active plan, use request_new_plan with a structured document as the single approval-request path; approval applies an approved runnable plan and returns the fresh-context start path. Do not create a draft/pending shell with new/save first. save is a legacy full-document replacement; active approved/running plan changes should use amend_plan with base_revision and explicit future-checkpoint scope, request_followup_checkpoint for one ordered checkpoint, or request_new_plan with the current plan_id for whole-plan replacement. patch/update_section/document_patch perform targeted partial edits for draft/legacy cases. amend_plan creates a meaningful whole-plan definition revision, rejects stale base_revision unless override_stale=true, and protects completed/current runtime state while replacing pending future checkpoints. request_followup_checkpoint appends exactly one ordered session checkpoint from the exact change_request text (legacy action name; it does not imply related follow-up semantics); on a blocked plan call it directly, because the same action atomically marks the blocked checkpoint completed/review-approved as superseded, inserts the new checkpoint after it, and continues according to policy—do not call resolve_blocked_checkpoint first; failed checkpoints remain stopped; when creating one, copy the full original user request into change_request and include a self-contained handoff via title, tasks, acceptance_criteria, and notes so the fresh checkpoint run does not lose material context; request_new_plan creates or replaces an approval-gated plan. Every approval-bearing action requires an explicit complete document with at least one runnable checkpoint; markdown-only, empty, and partially specified plans are rejected, and the backend remains authoritative. Do not use manage_todos for agent self-tracking; plan_manage is the canonical agent checklist/progress surface. Classify feedback by impact on the current deliverable contract and choose the least disruptive valid route: inquiry or guidance only means no plan mutation; a localized additive refinement that preserves the checkpoint objective and acceptance criteria means add_subtask and continue the same checkpoint/attempt; a redefinition that invalidates the objective or acceptance criteria means restart_checkpoint; independently shippable work or a separate review/failure boundary means request_followup_checkpoint. Imperative wording alone does not make feedback a redefinition. Never use add_subtask to clear blocked or failed state. For checkpointed execution, put final report/changed_files/validation/result on the terminal checkpoint action; use update_checkpoint only for meaningful intermediate state, not routine task completion notes. In multi-task checkpoints, keep durable task state current while work continues: complete one subtask immediately at a genuine boundary, or batch all subtasks completed since the last update with subtask_ids. If the checkpoint is now fully done, complete_subtask may also set complete_checkpoint=true and include the terminal report/evidence so no extra terminal call is needed. approve_and_start applies user-owned execution choices and returns the fresh-context run request; restart_checkpoint retries the same deliverable and is the feedback route only when the change invalidates its objective or acceptance criteria; a requirement-changing restart must include change_request plus complete replacement title/tasks/acceptance_criteria/notes so reset and definition replacement happen atomically; localized additive refinements use add_subtask instead, while independent deliverables use request_followup_checkpoint; rewind_to_checkpoint resets execution state; resolve_blocked_checkpoint clears the blocker and resumes the same checkpoint in fresh context without completing it or selecting a later checkpoint; start_checkpoint/continue_checkpoint mark the next checkpoint in_progress; complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed update deterministic execution state. update_info merges only provided modular info sections and update_checkpoint merges only provided checkpoint fields. upsert_checkpoint intentionally replaces the target checkpoint object. new is only for an empty draft shell and never replaces an active plan; use request_new_plan with the current plan_id for approved replacement.",
+			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes (list/get/get-active/save/patch/update_section/update_info/checkpoint execution operations/start_session_checkpoint/request_followup_checkpoint/amend_plan/request_new_plan/set-active/new/history). document is the authoritative SessionPlanDocument; markdown plan text is display/export only. In auto mode with no active plan, use start_session_checkpoint for a clear bounded task: it atomically creates an approved one-checkpoint active plan and starts that checkpoint in the current run. Never call request_followup_checkpoint when no active plan exists, and never call start_checkpoint after start_session_checkpoint. For broad/uncertain/multi-phase auto-mode work with no active plan, use request_new_plan with a structured document as the single approval-request path; approval applies an approved runnable plan and returns the fresh-context start path. Do not create a draft/pending shell with new/save first. save is a legacy full-document replacement; active approved/running plan changes should use amend_plan with base_revision and explicit future-checkpoint scope, request_followup_checkpoint for one ordered checkpoint, or request_new_plan with the current plan_id for whole-plan replacement. patch/update_section/document_patch perform targeted partial edits for draft/legacy cases. amend_plan creates a meaningful whole-plan definition revision, rejects stale base_revision unless override_stale=true, and protects completed/current runtime state while replacing pending future checkpoints. request_followup_checkpoint appends exactly one ordered session checkpoint from the exact change_request text (legacy action name; it does not imply related follow-up semantics); on a blocked plan call it directly, because the same action atomically marks the blocked checkpoint completed/review-approved as superseded, inserts the new checkpoint after it, and continues according to policy—do not call resolve_blocked_checkpoint first; failed checkpoints remain stopped; when creating one, copy the full original user request into change_request and include a self-contained handoff via title, tasks, acceptance_criteria, and notes so the fresh checkpoint run does not lose material context; request_new_plan creates or replaces an approval-gated plan. Every approval-bearing action requires an explicit complete document with at least one runnable checkpoint; markdown-only, empty, and partially specified plans are rejected, and the backend remains authoritative. Do not use manage_todos for agent self-tracking; plan_manage is the canonical agent checklist/progress surface. Classify feedback by impact on the current deliverable contract and choose the least disruptive valid route: inquiry or guidance only means no plan mutation; a localized additive refinement whose existing checklist remains valid means add_subtask and continue the same checkpoint/attempt. For add_subtask, call plan_manage once with the complete shape {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}}; subtask must be a JSON object with a non-empty title, not a top-level title or bare text, and you must not make a partial first call to discover the format. Same-contract feedback that supersedes the checklist means replace_subtasks with the complete authoritative list; a redefinition that invalidates the objective or acceptance criteria means restart_checkpoint; independently shippable work or a separate review/failure boundary means request_followup_checkpoint. Imperative wording alone does not make feedback a redefinition. Never use add_subtask to clear blocked or failed state. For checkpointed execution, put final report/changed_files/validation/result on the terminal checkpoint action; use update_checkpoint only for meaningful intermediate state, not routine task completion notes. In multi-task checkpoints, keep durable task state current while work continues: complete one subtask immediately at a genuine boundary, or batch all subtasks completed since the last update with subtask_ids. If the checkpoint is now fully done, complete_subtask may also set complete_checkpoint=true and include the terminal report/evidence so no extra terminal call is needed. approve_and_start applies user-owned execution choices and returns the fresh-context run request; restart_checkpoint retries the same deliverable and is the feedback route only when the change invalidates its objective or acceptance criteria; a requirement-changing restart must include change_request plus complete replacement title/tasks/acceptance_criteria/notes so reset and definition replacement happen atomically; localized additive refinements use add_subtask, checklist-superseding same-contract feedback uses replace_subtasks, while independent deliverables use request_followup_checkpoint; rewind_to_checkpoint resets execution state; resolve_blocked_checkpoint clears the blocker and resumes the same checkpoint in fresh context without completing it or selecting a later checkpoint; start_checkpoint/continue_checkpoint mark the next checkpoint in_progress; complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed update deterministic execution state. update_info merges only provided modular info sections and update_checkpoint merges only provided checkpoint fields. upsert_checkpoint intentionally replaces the target checkpoint object. new is only for an empty draft shell and never replaces an active plan; use request_new_plan with the current plan_id for approved replacement.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                     map[string]any{"type": "string", "description": "Action: list|get|get-active|save|patch/update_section/update_info/upsert_checkpoint/update_checkpoint/approve_and_start/restart_checkpoint/rewind_to_checkpoint/resolve_blocked_checkpoint/start_session_checkpoint/request_followup_checkpoint/amend_plan/request_new_plan/start_checkpoint/continue_checkpoint/complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed/remove_checkpoint/reorder_checkpoints/set_active_checkpoint/add_subtask/update_subtask/remove_subtask/reorder_subtasks/focus_subtask/complete_subtask/set-active/new/history. Use start_session_checkpoint only in auto mode with no active plan for a straightforward bounded task; it is the single atomic create-and-start action for one durable session checkpoint. Never call request_followup_checkpoint when no active plan exists, and never call start_checkpoint after start_session_checkpoint. For broad auto-mode work with no active plan, use request_new_plan (or alias propose_plan/create_plan) with a structured document as the approval-gated plan proposal path; do not create a draft first with new/save. Use amend_plan for intentional active-plan future-checkpoint replacement or append with base_revision and replace_from_checkpoint_id/amend_future_checkpoints; use request_new_plan with the current plan_id for whole-plan replacement. Before mutating a plan for user feedback, classify the contract impact: inquiry/guidance only requires no mutation; localized additive feedback that preserves the checkpoint objective and acceptance criteria uses add_subtask and continues the same checkpoint/attempt; use restart_checkpoint only when the feedback invalidates the current objective or acceptance criteria, with change_request plus complete replacement requirements; use request_followup_checkpoint when the feedback redirects to independently shippable work or a separate review/failure boundary that should become the next ordered session checkpoint on an active approved/running/blocked/review plan; request_changes is only an alias for request_followup_checkpoint. On a blocked plan, call request_followup_checkpoint directly: it atomically supersedes and resolves the blocked checkpoint before inserting and continuing the new checkpoint, while failed checkpoints remain stopped; do not call resolve_blocked_checkpoint first. The new checkpoint must be a self-contained handoff: put the verbatim original user request in change_request, set a concrete checkpoint_title, and provide tasks, acceptance_criteria, and notes/context when available. Prefer terminal checkpoint actions for checkpoint outcomes. In multi-task checkpoints, keep progress durable: at a genuine boundary use complete_subtask for one task or pass subtask_ids to batch every task completed since the last update; skip it for discovery-only work and single-step checkpoints. When all checkpoint work and acceptance criteria are done, set complete_checkpoint=true on that same call with terminal report/evidence instead of making a second call. complete_checkpoint remains available as the direct terminal action. Use update_checkpoint only for meaningful intermediate state, not routine agent progress/checklist transitions. save is a legacy full structured-document replacement; patch/update_section/document_patch are targeted partial edits for draft/legacy cases. Aliases such as active/current/use/create/update/edit/write_active are also accepted; update/edit without plan/document perform patch."},
+					"action":                     map[string]any{"type": "string", "description": "Action: list|get|get-active|save|patch/update_section/update_info/upsert_checkpoint/update_checkpoint/approve_and_start/restart_checkpoint/rewind_to_checkpoint/resolve_blocked_checkpoint/start_session_checkpoint/request_followup_checkpoint/amend_plan/request_new_plan/start_checkpoint/continue_checkpoint/complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed/remove_checkpoint/reorder_checkpoints/set_active_checkpoint/add_subtask/replace_subtasks/update_subtask/remove_subtask/reorder_subtasks/focus_subtask/complete_subtask/set-active/new/history. Use start_session_checkpoint only in auto mode with no active plan for a straightforward bounded task; it is the single atomic create-and-start action for one durable session checkpoint. Never call request_followup_checkpoint when no active plan exists, and never call start_checkpoint after start_session_checkpoint. For broad auto-mode work with no active plan, use request_new_plan (or alias propose_plan/create_plan) with a structured document as the approval-gated plan proposal path; do not create a draft first with new/save. Use amend_plan for intentional active-plan future-checkpoint replacement or append with base_revision and replace_from_checkpoint_id/amend_future_checkpoints; use request_new_plan with the current plan_id for whole-plan replacement. Before mutating a plan for user feedback, classify the contract impact: inquiry/guidance only requires no mutation; localized additive feedback whose existing checklist remains valid uses add_subtask and continues the same checkpoint/attempt, using one complete call shaped as {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}} rather than a partial format-probing call; checklist-superseding feedback that preserves the checkpoint contract uses replace_subtasks with the complete authoritative list; use restart_checkpoint only when the feedback invalidates the current objective or acceptance criteria, with change_request plus complete replacement requirements; use request_followup_checkpoint when the feedback redirects to independently shippable work or a separate review/failure boundary that should become the next ordered session checkpoint on an active approved/running/blocked/review plan; request_changes is only an alias for request_followup_checkpoint. On a blocked plan, call request_followup_checkpoint directly: it atomically supersedes and resolves the blocked checkpoint before inserting and continuing the new checkpoint, while failed checkpoints remain stopped; do not call resolve_blocked_checkpoint first. The new checkpoint must be a self-contained handoff: put the verbatim original user request in change_request, set a concrete checkpoint_title, and provide tasks, acceptance_criteria, and notes/context when available. Prefer terminal checkpoint actions for checkpoint outcomes. In multi-task checkpoints, keep progress durable: at a genuine boundary use complete_subtask for one task or pass subtask_ids to batch every task completed since the last update; skip it for discovery-only work and single-step checkpoints. When all checkpoint work and acceptance criteria are done, set complete_checkpoint=true on that same call with terminal report/evidence instead of making a second call. complete_checkpoint remains available as the direct terminal action. Use update_checkpoint only for meaningful intermediate state, not routine agent progress/checklist transitions. save is a legacy full structured-document replacement; patch/update_section/document_patch are targeted partial edits for draft/legacy cases. Aliases such as active/current/use/create/update/edit/write_active are also accepted; update/edit without plan/document perform patch."},
 					"continuation_policy":        map[string]any{"type": "string", "description": "For approve_and_start: review_each_checkpoint/pause or automatic/continue_automatically."},
 					"continue_automatically":     map[string]any{"type": "boolean", "description": "For approve_and_start checkpointed execution: true auto-continues completed checkpoints; false pauses for review."},
 					"plan_id":                    map[string]any{"type": "string", "description": "Plan id for get/set-active/save/patch or typed lifecycle actions. Omit on lifecycle actions to use the active plan."},
@@ -1174,12 +1184,13 @@ func (r *Runtime) Definitions() []Definition {
 					"document_operation":         map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, start_checkpoint, continue_checkpoint, complete_checkpoint, checkpoint_outcome, accept_checkpoint_review, restart_checkpoint, rewind_to_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
 					"operations":                 map[string]any{"anyOf": []any{map[string]any{"type": "array", "items": map[string]any{"type": "object"}}, map[string]any{"type": "string"}}, "description": "Batch of structured document patch operations applied atomically. A JSON-encoded array string is also accepted for compatibility."},
 					"info":                       map[string]any{"anyOf": []any{sessionPlanInfoToolSchema(), map[string]any{"type": "string"}}, "description": "Structured plan info for update_info document patches. goal, scope, context, and validation_strategy/validation are strings; decisions, relevant_files/files, constraints, assumptions, open_questions, and success_criteria are arrays of strings. update_info merges only provided fields; use replace_info/set_info only for intentional full info replacement. A JSON-encoded object string is also accepted."},
-					"change_request":             map[string]any{"type": "string", "description": "Required for start_session_checkpoint and request_followup_checkpoint, and for restart_checkpoint when feedback invalidates the current checkpoint objective or acceptance criteria: verbatim full original user request text. A requirement-changing restart atomically replaces the checkpoint definition before fresh-context execution; localized additive refinements use add_subtask instead, and an unchanged stale definition must not be restarted."},
+					"change_request":             map[string]any{"type": "string", "description": "Required for start_session_checkpoint and request_followup_checkpoint, and for restart_checkpoint when feedback invalidates the current checkpoint objective or acceptance criteria: verbatim full original user request text. A requirement-changing restart atomically replaces the checkpoint definition before fresh-context execution; localized additive refinements whose existing checklist remains valid use add_subtask, checklist-superseding same-contract feedback uses replace_subtasks, and an unchanged stale definition must not be restarted."},
 					"checkpoint_title":           map[string]any{"type": "string", "description": "Proposed title for start_session_checkpoint or request_followup_checkpoint. Required for a requirement-changing restart_checkpoint so the replacement definition is complete."},
 					"source_message_id":          map[string]any{"type": "string", "description": "Optional source message id for start_session_checkpoint, request_followup_checkpoint, or requirement-changing restart_checkpoint."},
 					"checkpoint_id":              map[string]any{"type": "string", "description": "Target checkpoint id for checkpoint document operations; omitted start/continue/outcome actions use the active or next checkpoint when possible. For start_session_checkpoint, optional id for the created checkpoint; defaults to cp-1."},
 					"checkpoint_order":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Full checkpoint id order for reorder_checkpoints."},
-					"subtask":                    map[string]any{"type": []string{"object", "string"}, "description": "Typed subtask object for add/update operations; JSON strings are accepted. add_subtask is the canonical route for a bounded same-deliverable refinement that preserves the objective and acceptance criteria; it keeps the checkpoint boundary and attempt history, and must not clear blocked or failed state."},
+					"subtask":                    map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string", "minLength": 1}, "status": map[string]any{"type": "string"}, "notes": map[string]any{"type": "string"}, "result": map[string]any{"type": "string"}, "order": map[string]any{"type": "integer"}}, "additionalProperties": false, "description": "For add_subtask, pass a JSON object with a non-empty title in the same call, for example: {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}}. Do not put title at the top level, pass subtask as bare text, or issue an incomplete format-probing call. add_subtask is only for a bounded refinement when the existing checklist remains valid; it keeps the checkpoint boundary and attempt history, and must not clear blocked or failed state."},
+					"subtasks":                   map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Complete authoritative subtask list for replace_subtasks. Omitted stale subtasks are removed atomically, one actionable subtask is focused, and the checkpoint contract and attempt history are preserved."},
 					"subtask_id":                 map[string]any{"type": "string", "description": "Stable subtask id for update/remove/focus/complete operations. For complete_subtask, omit when using subtask_ids."},
 					"subtask_ids":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "For complete_subtask, stable ids of multiple genuinely completed subtasks to transition atomically in one call."},
 					"subtask_order":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Full subtask id order for reorder_subtasks."},
@@ -1198,10 +1209,10 @@ func (r *Runtime) Definitions() []Definition {
 					"changed_files":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Files changed while completing/updating a checkpoint."},
 					"validation":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Validation evidence for checkpoint updates."},
 					"recommendation":             map[string]any{"type": "object", "description": "Single final-review recommendation for terminal checkpoint outcomes: decision ship/change/revert/defer, action, short reason, and action_state taken/ready/needs_approval."},
-					"handoff_title":              map[string]any{"type": "string", "description": "Optional concise title for a terminal final-handoff card (maximum 120 characters)."},
-					"handoff_overview":           map[string]any{"type": "string", "description": "Required concise final-handoff overview for final checkpoint completion and whenever any handoff field is supplied (maximum 600 characters). This structured handoff is the single user-visible completion; do not emit a separate assistant report."},
-					"impact_bullets":             map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "string"}, "description": "Up to three concise behavioral-impact bullets for the final handoff."},
-					"suggested_prompts":          map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}}, "required": []string{"label", "prompt"}, "additionalProperties": false}, "description": "Up to three inert label/prompt objects that clients may send only as ordinary V3 user chat messages."},
+					"handoff_title":              map[string]any{"type": "string", "description": "Optional concise title for a terminal final or blocked handoff card (maximum 120 characters). For mark_blocked, name the blocker or blocked outcome plainly."},
+					"handoff_overview":           map[string]any{"type": "string", "description": "Required concise overview for final checkpoint completion, mark_blocked compact handoffs, and whenever any handoff field is supplied (maximum 600 characters). For mark_blocked, identify the external blocker and why it prevents progress; keep full evidence in report/result/validation."},
+					"impact_bullets":             map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "string"}, "description": "Up to three concise impact bullets for a final or blocked handoff. For mark_blocked, lead with the exact resolution required and optionally note unchanged/safe state."},
+					"suggested_prompts":          map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}}, "required": []string{"label", "prompt"}, "additionalProperties": false}, "description": "Up to three inert next-step label/prompt objects that clients may send only as ordinary V3 user chat messages. Useful for final and blocked handoffs, including a resume prompt after the blocker is resolved."},
 					"activate":                   map[string]any{"type": "boolean", "description": "Whether the saved/new plan becomes the active plan (default true)."},
 					"override":                   map[string]any{"type": "boolean", "description": "Legacy action=new field. Replacement is rejected; use request_new_plan with the current plan_id and a complete structured document."},
 				},
@@ -1534,6 +1545,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageSessions(ctx, scope, args)
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
+	case "manage-actions", "manage_actions":
+		return r.executeManageActions(scope, args)
 	case "manage-todos", "manage_todos":
 		return r.executeManageTodos(scope, args)
 	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":
@@ -5872,6 +5885,8 @@ func (r *Runtime) executeManageTheme(scope WorkspaceScope, args map[string]any) 
 		return r.manageThemeGet(scope, args)
 	case "create":
 		return r.manageThemeUpsert(scope, args, false, confirm)
+	case "create_batch", "create-batch":
+		return r.manageThemeCreateBatch(scope, args, confirm)
 	case "update":
 		return r.manageThemeUpsert(scope, args, true, confirm)
 	case "delete", "remove":
@@ -8345,6 +8360,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-actions", "manage_actions":
+		return "manage_actions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
@@ -8924,6 +8941,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_agent"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-actions", "manage_actions":
+		return "manage_actions"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	case "skill-use", "skill_use":
@@ -9365,6 +9384,8 @@ func toolPathID(name string) string {
 		return "tool.manage-agent.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
+	case "manage-actions", "manage_actions":
+		return "tool.manage-actions.v1"
 	case "manage-todos", "manage_todos":
 		return "tool.manage-todos.v1"
 	case "skill-use", "skill_use":

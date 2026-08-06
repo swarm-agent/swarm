@@ -269,6 +269,32 @@ func (p *HomePage) StartAuthModalCodexBrowserPending(status, authURL string) {
 	p.authModal.ConfirmDelete = false
 }
 
+func (p *HomePage) StartAuthModalCodexDevicePending(status, verificationURL, userCode string) {
+	if p.authModal.Login == nil {
+		p.authModal.Login = &authModalLoginState{
+			Provider:    "codex",
+			Active:      true,
+			Method:      "device",
+			OpenBrowser: false,
+		}
+	}
+	p.authModal.Login.AuthURL = strings.TrimSpace(verificationURL)
+	p.authModal.Editor = &authModalEditor{
+		Mode: "codex_device_pending",
+		Fields: []authModalEditorField{
+			{Key: "verification_url", Label: "Open", Value: strings.TrimSpace(verificationURL)},
+			{Key: "user_code", Label: "Device code", Value: strings.TrimSpace(userCode)},
+		},
+		Selected: 0,
+	}
+	if strings.TrimSpace(status) == "" {
+		status = "Open the verification URL on any device, enter the code, and approve Codex. This modal will close automatically after confirmation."
+	}
+	p.authModal.Status = strings.TrimSpace(status)
+	p.authModal.Error = ""
+	p.authModal.ConfirmDelete = false
+}
+
 func (p *HomePage) AuthModalVisible() bool {
 	return p.authModal.Visible
 }
@@ -385,11 +411,11 @@ func (p *HomePage) handleAuthModalKey(ev *tcell.EventKey) {
 		p.advanceAuthModalFocus(-1)
 		return
 	case p.keybinds.Match(ev, KeybindModalFocusLeft):
-		p.authModal.Focus = authModalFocusProviders
+		p.moveAuthModalSelection(-1)
 		p.authModal.ConfirmDelete = false
 		return
 	case p.keybinds.Match(ev, KeybindModalFocusRight):
-		p.authModal.Focus = authModalFocusCredentials
+		p.moveAuthModalSelection(1)
 		p.authModal.ConfirmDelete = false
 		return
 	case p.keybinds.Match(ev, KeybindModalMoveUp), p.keybinds.Match(ev, KeybindModalMoveUpAlt):
@@ -636,7 +662,7 @@ func (p *HomePage) triggerProviderLogin(providerID string) {
 		return
 	}
 	p.openAuthModalEditor("codex_login")
-	p.authModal.Status = "Codex auth: OAuth only. Press Enter for browser sign-in, ←/→ to choose browser or remote OAuth, or ↑ to add an optional label first. Use OpenAI for API-key auth."
+	p.authModal.Status = "Codex auth: choose Local, Device code (recommended for remote), or Remote URL fallback with ←/→. Press Enter to start the selected method."
 	p.authModal.Error = ""
 }
 
@@ -664,7 +690,7 @@ func (p *HomePage) openAuthModalEditor(mode string) {
 			Mode: "codex_login",
 			Fields: []authModalEditorField{
 				{Key: "label", Label: "Optional Label", Value: "", Placeholder: "press ↑ and type to name this credential"},
-				{Key: "method", Label: "Auth method", Value: "browser", Placeholder: "browser"},
+				{Key: "method", Label: "Auth method", Value: "local", Placeholder: "local"},
 			},
 			Selected: 1,
 		}
@@ -771,7 +797,7 @@ func (p *HomePage) appendAuthModalEditorPaste(batch string) int {
 	}
 	field := &editor.Fields[editor.Selected]
 	switch editor.Mode {
-	case "codex_browser_pending":
+	case "codex_browser_pending", "codex_device_pending":
 		return 0
 	case "codex_callback":
 		if field.Key != "callback_input" {
@@ -852,7 +878,7 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 		if editor.Mode == "codex_callback" && field.Key != "callback_input" {
 			return
 		}
-		if editor.Mode == "codex_browser_pending" {
+		if editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending" {
 			return
 		}
 		if editor.Mode == "codex_login" && field.Key != "label" {
@@ -877,7 +903,7 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 			}
 			return
 		}
-		if editor.Mode == "codex_browser_pending" {
+		if editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending" {
 			return
 		}
 		if editor.Mode == "codex_login" {
@@ -885,7 +911,7 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 			case "label":
 				field.Value = ""
 			case "method":
-				field.Value = "browser"
+				field.Value = "local"
 			}
 			return
 		}
@@ -903,6 +929,20 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 		editor.Fields[editor.Selected].Value = ""
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		if editor.Mode == "codex_device_pending" {
+			field := editor.Fields[editor.Selected]
+			copyText := strings.TrimSpace(field.Value)
+			if copyText == "" {
+				p.authModal.Error = "device login value is unavailable; choose Remote URL fallback"
+				return
+			}
+			p.enqueueAuthModalAction(AuthModalAction{
+				Kind:       AuthModalActionCopy,
+				CopyText:   copyText,
+				StatusHint: "Copying " + strings.ToLower(field.Label) + "...",
+			})
+			return
+		}
 		selectedField := editor.Fields[editor.Selected]
 		if selectedField.Key == "api_key" || selectedField.Key == "callback_input" || selectedField.Key == "copy_url" || selectedField.Key == "token" {
 			p.submitAuthModalEditor()
@@ -932,7 +972,7 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 				return
 			}
 		}
-		if editor.Mode == "codex_browser_pending" {
+		if editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending" {
 			if field.Key == "copy_url" && unicode.IsPrint(r) && (r == ' ' || r == 'c' || r == 'C') {
 				p.submitAuthModalEditor()
 			}
@@ -943,9 +983,11 @@ func (p *HomePage) handleAuthModalEditorKey(ev *tcell.EventKey) {
 				switch {
 				case r == ' ' || r == 'h' || r == 'l':
 					field.Value = cycleCodexLoginMethodValue(field.Value, 1)
-				case r == '1' || r == 'b' || r == 'B':
-					field.Value = "browser"
-				case r == '2' || r == 'r' || r == 'R':
+				case r == '1' || r == 'l' || r == 'L':
+					field.Value = "local"
+				case r == '2' || r == 'd' || r == 'D':
+					field.Value = "device"
+				case r == '3' || r == 'r' || r == 'R':
 					field.Value = "remote"
 				}
 			}
@@ -1007,12 +1049,16 @@ func (p *HomePage) submitAuthModalEditor() {
 			OpenBrowser: openBrowser,
 			AuthURL:     authURL,
 		}
-		statusHint := "Starting Codex OAuth login..."
-		if method == "code" {
+		statusHint := "Starting local Codex OAuth login..."
+		switch method {
+		case "code":
 			p.authModal.Editor = nil
-			statusHint = "Preparing remote Codex OAuth login..."
-		} else {
-			p.StartAuthModalCodexBrowserPending("Starting Codex OAuth browser login...", authURL)
+			statusHint = "Preparing Codex remote URL login..."
+		case "device":
+			p.authModal.Editor = nil
+			statusHint = "Requesting Codex device code..."
+		default:
+			p.StartAuthModalCodexBrowserPending("Starting local Codex OAuth browser login...", authURL)
 		}
 		p.enqueueAuthModalAction(AuthModalAction{
 			Kind: AuthModalActionLogin,
@@ -1028,7 +1074,7 @@ func (p *HomePage) submitAuthModalEditor() {
 		return
 	}
 
-	if editor.Mode == "codex_browser_pending" {
+	if editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending" {
 		copyText := ""
 		if p.authModal.Login != nil {
 			copyText = strings.TrimSpace(p.authModal.Login.AuthURL)
@@ -1767,7 +1813,7 @@ func (p *HomePage) drawAuthProviderPane(s tcell.Screen, rect Rect) {
 			methodSummary = "default API-key route"
 		}
 		if strings.EqualFold(strings.TrimSpace(provider.ID), "codex") {
-			methodSummary = "OAuth only"
+			methodSummary = "OAuth: local · device code · remote URL"
 		}
 		DrawText(s, card.X+1, card.Y+1, card.W-2, textStyle, clampEllipsis(provider.ID+" · "+status, card.W-2))
 		if card.H > 3 {
@@ -1912,7 +1958,7 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 		return
 	}
 	width := parent.W - 12
-	if editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending" {
+	if editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending" {
 		width = parent.W - 4
 	} else if width > 96 {
 		width = 96
@@ -1924,7 +1970,7 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 	editorStatusLines := []string(nil)
 	editorStatusStyle := p.theme.TextMuted
 	editorCommandLines := []string(nil)
-	if editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending" {
+	if editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending" {
 		callbackStatus := strings.TrimSpace(p.authModal.Status)
 		if errText := strings.TrimSpace(p.authModal.Error); errText != "" {
 			callbackStatus = errText
@@ -1936,13 +1982,18 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 		if callbackStatus == "" && editor.Mode == "codex_browser_pending" {
 			callbackStatus = "Finish sign-in in your browser. This modal will close automatically after confirmation."
 		}
+		if callbackStatus == "" && editor.Mode == "codex_device_pending" {
+			callbackStatus = "Open the verification URL on any device, enter the code, and approve Codex."
+		}
 		editorStatusLines = Wrap(callbackStatus, maxInt(1, width-4))
 		if len(editorStatusLines) == 0 {
 			editorStatusLines = []string{""}
 		}
-		commandText := "Need terminal flow? Run: swarm auth codex remote"
+		commandText := "Remote URL remains available as a fallback if this flow is unavailable."
 		if editor.Mode == "codex_browser_pending" {
 			commandText = "If the browser did not open, press Enter to copy the auth URL."
+		} else if editor.Mode == "codex_device_pending" {
+			commandText = "Swarm is waiting for approval. Device code is recommended for remote TUI sessions."
 		}
 		editorCommandLines = Wrap(commandText, maxInt(1, width-4))
 		if len(editorCommandLines) == 0 {
@@ -1970,7 +2021,9 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 	if editor.Mode == "codex_login" {
 		title = "Codex OAuth Login Setup"
 	} else if editor.Mode == "codex_browser_pending" {
-		title = "Codex Browser Sign-In"
+		title = "Codex Local Sign-In"
+	} else if editor.Mode == "codex_device_pending" {
+		title = "Codex Device Code Sign-In"
 	} else if editor.Mode == "codex_callback" {
 		title = "Codex OAuth Callback"
 	} else if strings.TrimSpace(editor.CredentialID) != "" {
@@ -1979,7 +2032,7 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, title)
 
 	rowY := rect.Y + 1
-	if editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending" {
+	if editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending" {
 		for _, line := range editorStatusLines {
 			if rowY >= rect.Y+rect.H-2 {
 				break
@@ -2028,7 +2081,7 @@ func (p *HomePage) drawAuthModalEditor(s tcell.Screen, parent Rect) {
 			rowY++
 		}
 	}
-	if (editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending") && rowY < rect.Y+rect.H-2 {
+	if (editor.Mode == "codex_callback" || editor.Mode == "codex_browser_pending" || editor.Mode == "codex_device_pending") && rowY < rect.Y+rect.H-2 {
 		for _, part := range editorCommandLines {
 			if rowY >= rect.Y+rect.H-2 {
 				break
@@ -2058,16 +2111,18 @@ func parseYN(value string) bool {
 }
 
 func cycleCodexLoginMethodValue(value string, delta int) string {
-	options := []string{"browser", "remote"}
+	options := []string{"local", "device", "remote"}
 	if len(options) == 0 {
-		return "browser"
+		return "local"
 	}
 
 	value = strings.ToLower(strings.TrimSpace(value))
 	index := 0
 	switch value {
-	case "remote", "code", "manual":
+	case "device", "device-code", "device_code":
 		index = 1
+	case "remote", "code", "manual":
+		index = 2
 	default:
 		index = 0
 	}
@@ -2136,8 +2191,10 @@ func authEditorHelpText(mode string) string {
 		return "Tab/↑/↓ move • Enter copies URL or submits callback • Esc cancel"
 	case "codex_browser_pending":
 		return "Enter copies URL • Esc close"
+	case "codex_device_pending":
+		return "↑/↓ choose URL or device code • Enter copies selected value • Esc close"
 	case "codex_login":
-		return "Enter starts selected method • ↑ label first • ←/→ or 1/2 choose browser/remote OAuth • Esc cancel"
+		return "←/→ choose Local / Device code / Remote URL • Enter starts selected method • ↑ optional label • Esc cancel"
 	case "copilot_login":
 		return "Tab/↑/↓ move • ←/→ toggle Method/active • type in Name or Token • Enter next/submit"
 	default:
@@ -2148,6 +2205,8 @@ func authEditorHelpText(mode string) string {
 func normalizeCodexLoginMethod(value string) (method string, openBrowser bool) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
+	case "device", "device-code", "device_code":
+		return "device", false
 	case "remote", "code", "manual":
 		return "code", false
 	default:

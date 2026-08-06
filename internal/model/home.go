@@ -177,6 +177,7 @@ type HomeModel struct {
 	SelectedChatRouteID         string
 	Workspaces                  []Workspace
 	Directories                 []DirectoryItem
+	WorkspaceSetupPath          string
 	PromptHint                  string
 	QuickActions                []string
 	HintLine                    string

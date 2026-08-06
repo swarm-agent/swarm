@@ -45,23 +45,6 @@ type UpsertInput struct {
 	ProviderSet         bool                           `json:"-"`
 	ModelSet            bool                           `json:"-"`
 	ThinkingSet         bool                           `json:"-"`
-	PlanProviderSet     bool                           `json:"-"`
-	PlanModelSet        bool                           `json:"-"`
-	PlanThinkingSet     bool                           `json:"-"`
-	PlanServiceTierSet  bool                           `json:"-"`
-	AutoProviderSet     bool                           `json:"-"`
-	AutoModelSet        bool                           `json:"-"`
-	AutoThinkingSet     bool                           `json:"-"`
-	AutoServiceTierSet  bool                           `json:"-"`
-	ModelMode           string                         `json:"model_mode"`
-	PlanProvider        string                         `json:"plan_provider"`
-	PlanModel           string                         `json:"plan_model"`
-	PlanThinking        string                         `json:"plan_thinking"`
-	PlanServiceTier     string                         `json:"plan_service_tier"`
-	AutoProvider        string                         `json:"auto_provider"`
-	AutoModel           string                         `json:"auto_model"`
-	AutoThinking        string                         `json:"auto_thinking"`
-	AutoServiceTier     string                         `json:"auto_service_tier"`
 	Prompt              string                         `json:"prompt"`
 	RuntimeMode         string                         `json:"runtime_mode"`
 	DefaultSessionMode  string                         `json:"default_session_mode"`
@@ -72,27 +55,13 @@ type UpsertInput struct {
 	Enabled             *bool                          `json:"enabled"`
 }
 
-type DefaultModelHydrationInput struct {
-	Provider          string
-	PrimaryModel      string
-	PrimaryThinking   string
-	PlanModel         string
-	PlanThinking      string
-	AutoModel         string
-	AutoThinking      string
-	UtilityModel      string
-	UtilityThinking   string
-	UtilityAgentNames []string
-}
-
 type DefaultModelHydrationResult struct {
 	Agents    []string
 	Subagents []string
 }
 
 type DeleteResult struct {
-	Deleted       string `json:"deleted"`
-	ActivePrimary string `json:"active_primary"`
+	Deleted string `json:"deleted"`
 }
 
 type PreviewUpsertResult struct {
@@ -162,31 +131,11 @@ func (s *Service) EnsureDefaultsForAccount(accountScopeID string) error {
 	return s.ensureDefaultsForAccount(accountScopeID)
 }
 
-func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input DefaultModelHydrationInput) (DefaultModelHydrationResult, error) {
+func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string) (DefaultModelHydrationResult, error) {
 	accountScopeID, err := s.requireAccountScopeID(accountScopeID)
 	if err != nil {
 		return DefaultModelHydrationResult{}, err
 	}
-	input.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
-	input.PrimaryModel = strings.TrimSpace(input.PrimaryModel)
-	input.PrimaryThinking = strings.TrimSpace(input.PrimaryThinking)
-	input.PlanModel = strings.TrimSpace(input.PlanModel)
-	input.PlanThinking = strings.TrimSpace(input.PlanThinking)
-	input.AutoModel = strings.TrimSpace(input.AutoModel)
-	input.AutoThinking = strings.TrimSpace(input.AutoThinking)
-	input.UtilityModel = strings.TrimSpace(input.UtilityModel)
-	input.UtilityThinking = strings.TrimSpace(input.UtilityThinking)
-	if strings.EqualFold(input.UtilityThinking, "off") {
-		input.UtilityThinking = ""
-	}
-	if input.Provider == "" || input.PrimaryModel == "" || input.PlanModel == "" || input.AutoModel == "" || input.UtilityModel == "" {
-		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require provider and main, plan, auto, utility models")
-	}
-	// Compact and Finder are compiled system agents whose snapshot-selected
-	// utility model is persisted through UI settings by the onboarding caller.
-	// Hydration therefore remains valid when there are no mutable utility rows.
-	utilityNames := normalizeDefaultUtilityAgentNames(input.UtilityAgentNames)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -198,64 +147,20 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 	if err != nil {
 		return DefaultModelHydrationResult{}, err
 	}
-	if hasVersion || len(profiles) != 0 {
+	if len(profiles) > 1 || (len(profiles) == 1 && normalizeName(profiles[0].Name) != SwarmAgentID) {
 		return DefaultModelHydrationResult{}, errors.New("hydrated default agents require an empty agent account")
 	}
 
-	now := time.Now().UnixMilli()
-	seen := make(map[string]struct{}, len(utilityNames)+1)
-	result := DefaultModelHydrationResult{}
-	for _, profile := range defaultProfiles(now) {
-		name := normalizeName(profile.Name)
-		switch name {
-		case "swarm":
-			profile.ModelMode = "split"
-			profile.PlanProvider = input.Provider
-			profile.PlanModel = input.PlanModel
-			profile.PlanThinking = input.PlanThinking
-			profile.AutoProvider = input.Provider
-			profile.AutoModel = input.AutoModel
-			profile.AutoThinking = input.AutoThinking
-			result.Agents = append(result.Agents, name)
-		default:
-			if _, ok := utilityNames[name]; !ok {
-				continue
-			}
-			profile.Provider = input.Provider
-			profile.Model = input.UtilityModel
-			profile.Thinking = input.UtilityThinking
-			result.Agents = append(result.Agents, name)
-			if strings.EqualFold(strings.TrimSpace(profile.Mode), ModeSubagent) {
-				result.Subagents = append(result.Subagents, name)
-			}
-		}
-		profile = pebblestore.NormalizeAgentProfile(profile)
-		if err := s.putProfileForAccountLocked(accountScopeID, profile); err != nil {
+	result := DefaultModelHydrationResult{Agents: []string{SwarmAgentID}}
+	// Swarm is a compiled identity. Remove the legacy context-only row when
+	// upgrading an account, then initialize direct model settings separately.
+	if len(profiles) == 1 {
+		if err := s.deleteProfileForAccountLocked(accountScopeID, SwarmAgentID); err != nil {
 			return DefaultModelHydrationResult{}, err
-		}
-		seen[name] = struct{}{}
-	}
-	if err := s.cleanupCompiledSwarmContextForAccountLocked(accountScopeID); err != nil {
-		return DefaultModelHydrationResult{}, err
-	}
-	if _, ok := seen["swarm"]; !ok {
-		return DefaultModelHydrationResult{}, errors.New("hydrated default agents missing swarm profile")
-	}
-	for name := range utilityNames {
-		if _, ok := seen[name]; !ok {
-			return DefaultModelHydrationResult{}, fmt.Errorf("hydrated default agents missing utility profile %q", name)
 		}
 	}
 	if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
 		return DefaultModelHydrationResult{}, err
-	}
-	for purpose, profileName := range defaultSubagentAssignments() {
-		if _, ok := utilityNames[normalizeName(profileName)]; !ok {
-			continue
-		}
-		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
-			return DefaultModelHydrationResult{}, err
-		}
 	}
 	if hasVersion {
 		version++
@@ -273,7 +178,6 @@ func (s *Service) EnsureHydratedDefaultsForAccount(accountScopeID string, input 
 		"account_scope_id": strings.TrimSpace(accountScopeID),
 		"state":            state,
 		"version":          version,
-		"provider":         input.Provider,
 	})
 	if err != nil {
 		return DefaultModelHydrationResult{}, err
@@ -355,37 +259,7 @@ func (s *Service) ensureDefaultsForAccount(accountScopeID string) error {
 		}
 	}
 
-	activePrimary, ok, err := s.getActivePrimaryForAccountLocked(accountScopeID)
-	if err != nil {
-		return err
-	}
-	if !ok || strings.TrimSpace(activePrimary) == "" {
-		fallback, err := s.nextPrimaryForAccountLocked(accountScopeID, "")
-		if err != nil {
-			return err
-		}
-		if fallback != "" {
-			if err := s.setActivePrimaryForAccountLocked(accountScopeID, fallback); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	valid, err := s.activePrimaryValidForAccountLocked(accountScopeID, activePrimary)
-	if err != nil {
-		return err
-	}
-	if valid {
-		return nil
-	}
-	fallback, err := s.nextPrimaryForAccountLocked(accountScopeID, activePrimary)
-	if err != nil {
-		return err
-	}
-	if fallback == "" {
-		return nil
-	}
-	return s.setActivePrimaryForAccountLocked(accountScopeID, fallback)
+	return s.setActivePrimaryForAccountLocked(accountScopeID, SwarmAgentID)
 }
 
 func isRetiredCloneAgentName(name string) bool {
@@ -592,17 +466,9 @@ func (s *Service) cleanupBuiltInCoderForAccountLocked(accountScopeID string) err
 }
 
 func (s *Service) cleanupCompiledSwarmContextForAccountLocked(accountScopeID string) error {
-	stored, ok, err := s.getProfileForAccountLocked(accountScopeID, SwarmAgentID)
-	if err != nil || !ok {
-		return err
-	}
-	context := pebblestore.AgentProfile{
-		Name: SwarmAgentID, Mode: ModePrimary, Provider: stored.Provider, Model: stored.Model, Thinking: stored.Thinking,
-		ModelMode: stored.ModelMode, PlanProvider: stored.PlanProvider, PlanModel: stored.PlanModel, PlanThinking: stored.PlanThinking, PlanServiceTier: stored.PlanServiceTier,
-		AutoProvider: stored.AutoProvider, AutoModel: stored.AutoModel, AutoThinking: stored.AutoThinking, AutoServiceTier: stored.AutoServiceTier,
-		DefaultSessionMode: stored.DefaultSessionMode, UpdatedAt: stored.UpdatedAt,
-	}
-	return s.putProfileForAccountLocked(accountScopeID, context)
+	// Swarm's runtime/default-session contract is compiled. Persisting an agent
+	// row makes that identity look user-configurable and is no longer necessary.
+	return s.deleteProfileForAccountLocked(accountScopeID, SwarmAgentID)
 }
 
 func defaultFinderPrompt() string {
@@ -645,9 +511,6 @@ func shouldRemoveBuiltInParallel(profile pebblestore.AgentProfile) bool {
 		return false
 	}
 	if strings.TrimSpace(profile.Provider) != "" || strings.TrimSpace(profile.Model) != "" || strings.TrimSpace(profile.Thinking) != "" {
-		return false
-	}
-	if strings.TrimSpace(profile.ModelMode) != "" || strings.TrimSpace(profile.PlanProvider) != "" || strings.TrimSpace(profile.PlanModel) != "" || strings.TrimSpace(profile.AutoProvider) != "" || strings.TrimSpace(profile.AutoModel) != "" {
 		return false
 	}
 	if pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite {
@@ -773,6 +636,9 @@ func (s *Service) replaceManagedStateForAccount(accountScopeID string, state Sta
 			if IsReservedSystemAgentName(name) {
 				return State{}, 0, nil, fmt.Errorf("agent %q is reserved and cannot be persisted", name)
 			}
+			if profile.Mode == ModePrimary {
+				return State{}, 0, nil, errors.New("Swarm is the only primary agent")
+			}
 			profile.UpdatedAt = time.Now().UnixMilli()
 			if _, ok := desiredProfiles[name]; ok {
 				continue
@@ -831,11 +697,11 @@ func (s *Service) replaceManagedStateForAccount(accountScopeID string, state Sta
 				return State{}, 0, nil, err
 			}
 		}
-		activePrimary := normalizeName(state.ActivePrimary)
-		if activePrimary != "" {
-			if err := s.setActivePrimaryForManagedAccountLocked(accountScopeID, activePrimary); err != nil {
-				return State{}, 0, nil, err
-			}
+		if activePrimary := normalizeName(state.ActivePrimary); activePrimary != "" && activePrimary != SwarmAgentID {
+			return State{}, 0, nil, errors.New("Swarm is the only primary agent")
+		}
+		if err := s.setActivePrimaryForManagedAccountLocked(accountScopeID, SwarmAgentID); err != nil {
+			return State{}, 0, nil, err
 		}
 	}
 	version, err := s.bumpVersionForManagedAccountLocked(accountScopeID)
@@ -1349,7 +1215,10 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for compiled system agents", profile.Name)
 	}
 	if profile.Name == SwarmAgentID {
-		return s.upsertSwarmConfigurationForAccountLocked(accountScopeID, input)
+		return pebblestore.AgentProfile{}, 0, nil, fmt.Errorf("agent %q is reserved for compiled system agents", profile.Name)
+	}
+	if profile.Mode == ModePrimary {
+		return pebblestore.AgentProfile{}, 0, nil, errors.New("Swarm is the only primary agent")
 	}
 	existing, ok, err := s.getProfileForAccountLocked(accountScopeID, profile.Name)
 	if err != nil {
@@ -1371,33 +1240,6 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if !stringFieldProvided(input.ThinkingSet, input.Thinking) {
 			profile.Thinking = existing.Thinking
 		}
-		if strings.TrimSpace(input.ModelMode) == "" {
-			profile.ModelMode = existing.ModelMode
-		}
-		if !stringFieldProvided(input.PlanProviderSet, input.PlanProvider) {
-			profile.PlanProvider = existing.PlanProvider
-		}
-		if !stringFieldProvided(input.PlanModelSet, input.PlanModel) {
-			profile.PlanModel = existing.PlanModel
-		}
-		if !stringFieldProvided(input.PlanThinkingSet, input.PlanThinking) {
-			profile.PlanThinking = existing.PlanThinking
-		}
-		if !stringFieldProvided(input.PlanServiceTierSet, input.PlanServiceTier) {
-			profile.PlanServiceTier = existing.PlanServiceTier
-		}
-		if !stringFieldProvided(input.AutoProviderSet, input.AutoProvider) {
-			profile.AutoProvider = existing.AutoProvider
-		}
-		if !stringFieldProvided(input.AutoModelSet, input.AutoModel) {
-			profile.AutoModel = existing.AutoModel
-		}
-		if !stringFieldProvided(input.AutoThinkingSet, input.AutoThinking) {
-			profile.AutoThinking = existing.AutoThinking
-		}
-		if !stringFieldProvided(input.AutoServiceTierSet, input.AutoServiceTier) {
-			profile.AutoServiceTier = existing.AutoServiceTier
-		}
 		if strings.TrimSpace(profile.Prompt) == "" {
 			profile.Prompt = existing.Prompt
 		}
@@ -1418,20 +1260,6 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		}
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(existing.ToolContract)
-		}
-	}
-	if profile.Name == "swarm" {
-		profile.Mode = ModePrimary
-		profile.Enabled = true
-		if pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeRead && pebblestore.NormalizeAgentRuntimeMode(input.RuntimeMode) != pebblestore.AgentRuntimeModeReadWrite {
-			profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
-		}
-	}
-	if profile.Mode == ModePrimary {
-		if profile.Name == "swarm" && pebblestore.AgentModelMode(profile) == "split" {
-			profile.Provider = ""
-			profile.Model = ""
-			profile.Thinking = ""
 		}
 	}
 	profile, err = finalizeRuntimeProfile(profile, input, ok)
@@ -1472,92 +1300,10 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 	return profile, version, &env, nil
 }
 
-func (s *Service) upsertSwarmConfigurationForAccountLocked(accountScopeID string, input UpsertInput) (pebblestore.AgentProfile, int64, *pebblestore.EventEnvelope, error) {
-	stored, exists, err := s.getProfileForAccountLocked(accountScopeID, SwarmAgentID)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	context := stored
-	context.Name, context.Mode = SwarmAgentID, ModePrimary
-	if stringFieldProvided(input.ProviderSet, input.Provider) {
-		context.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
-	}
-	if stringFieldProvided(input.ModelSet, input.Model) {
-		context.Model = strings.TrimSpace(input.Model)
-	}
-	if stringFieldProvided(input.ThinkingSet, input.Thinking) {
-		context.Thinking = strings.ToLower(strings.TrimSpace(input.Thinking))
-	}
-	if strings.TrimSpace(input.ModelMode) != "" {
-		context.ModelMode = pebblestore.NormalizeAgentModelMode(input.ModelMode)
-	}
-	if stringFieldProvided(input.PlanProviderSet, input.PlanProvider) {
-		context.PlanProvider = strings.ToLower(strings.TrimSpace(input.PlanProvider))
-	}
-	if stringFieldProvided(input.PlanModelSet, input.PlanModel) {
-		context.PlanModel = strings.TrimSpace(input.PlanModel)
-	}
-	if stringFieldProvided(input.PlanThinkingSet, input.PlanThinking) {
-		context.PlanThinking = strings.ToLower(strings.TrimSpace(input.PlanThinking))
-	}
-	if stringFieldProvided(input.PlanServiceTierSet, input.PlanServiceTier) {
-		context.PlanServiceTier = pebblestore.NormalizeModelServiceTier(input.PlanServiceTier)
-	}
-	if stringFieldProvided(input.AutoProviderSet, input.AutoProvider) {
-		context.AutoProvider = strings.ToLower(strings.TrimSpace(input.AutoProvider))
-	}
-	if stringFieldProvided(input.AutoModelSet, input.AutoModel) {
-		context.AutoModel = strings.TrimSpace(input.AutoModel)
-	}
-	if stringFieldProvided(input.AutoThinkingSet, input.AutoThinking) {
-		context.AutoThinking = strings.ToLower(strings.TrimSpace(input.AutoThinking))
-	}
-	if stringFieldProvided(input.AutoServiceTierSet, input.AutoServiceTier) {
-		context.AutoServiceTier = pebblestore.NormalizeModelServiceTier(input.AutoServiceTier)
-	}
-	if strings.TrimSpace(input.DefaultSessionMode) != "" {
-		context.DefaultSessionMode = pebblestore.NormalizeAgentDefaultSessionMode(input.DefaultSessionMode)
-	}
-	if pebblestore.AgentModelMode(context) == "split" {
-		context.Provider, context.Model, context.Thinking = "", "", ""
-	} else {
-		context.PlanProvider, context.PlanModel, context.PlanThinking, context.PlanServiceTier = "", "", "", ""
-		context.AutoProvider, context.AutoModel, context.AutoThinking = "", "", ""
-	}
-	context.UpdatedAt = time.Now().UnixMilli()
-	if err := s.putProfileForAccountLocked(accountScopeID, context); err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	version, err := s.bumpVersionForAccountLocked(accountScopeID)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	profile, err := s.ResolveSystemAgent(SwarmAgentID, context)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	eventType := "agent.profile.updated"
-	if !exists {
-		eventType = "agent.profile.created"
-	}
-	env, err := s.appendEventLocked(eventType, SwarmAgentID, map[string]any{
-		"account_scope_id": strings.TrimSpace(accountScopeID),
-		"profile":          profile,
-		"state":            state,
-		"version":          version,
-	})
-	if err != nil {
-		return pebblestore.AgentProfile{}, 0, nil, err
-	}
-	return profile, version, &env, nil
-}
-
+// ActivatePrimary preserves the internal service boundary while enforcing the
+// compiled Swarm identity. There is no mutable primary selection.
 func (s *Service) ActivatePrimary(name string) (string, int64, *pebblestore.EventEnvelope, error) {
-	return s.activatePrimaryForAccount("", name)
+	return s.activateCompiledPrimary("", name)
 }
 
 func (s *Service) ActivatePrimaryForAccount(accountScopeID, name string) (string, int64, *pebblestore.EventEnvelope, error) {
@@ -1565,67 +1311,18 @@ func (s *Service) ActivatePrimaryForAccount(accountScopeID, name string) (string
 	if err != nil {
 		return "", 0, nil, err
 	}
-	return s.activatePrimaryForAccount(accountScopeID, name)
+	return s.activateCompiledPrimary(accountScopeID, name)
 }
 
-func (s *Service) activatePrimaryForAccount(accountScopeID, name string) (string, int64, *pebblestore.EventEnvelope, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	name = normalizeName(name)
-	if name == "" {
-		return "", 0, nil, errors.New("agent name is required")
-	}
-	if IsReservedSystemAgentName(name) && name != SwarmAgentID {
-		return "", 0, nil, fmt.Errorf("agent %q is reserved and cannot be activated", name)
-	}
-	profile, ok, err := s.getProfileForAccount(accountScopeID, name)
-	if err != nil {
-		return "", 0, nil, err
-	}
-	if !ok {
-		return "", 0, nil, fmt.Errorf("agent %q not found", name)
-	}
-	if !profile.Enabled {
-		return "", 0, nil, fmt.Errorf("agent %q is disabled", name)
-	}
-	if profile.Mode != ModePrimary {
-		return "", 0, nil, fmt.Errorf("agent %q is not a primary agent", name)
-	}
-
-	current, ok, err := s.getActivePrimaryForAccountLocked(accountScopeID)
-	if err != nil {
-		return "", 0, nil, err
+func (s *Service) activateCompiledPrimary(accountScopeID, name string) (string, int64, *pebblestore.EventEnvelope, error) {
+	if normalizeName(name) != SwarmAgentID {
+		return "", 0, nil, errors.New("Swarm is the only primary agent")
 	}
 	version, _, err := s.getVersionForAccountLocked(accountScopeID)
 	if err != nil {
 		return "", 0, nil, err
 	}
-	if ok && strings.TrimSpace(current) == name {
-		return name, version, nil, nil
-	}
-
-	if err := s.setActivePrimaryForAccountLocked(accountScopeID, name); err != nil {
-		return "", 0, nil, err
-	}
-	version, err = s.bumpVersionForAccountLocked(accountScopeID)
-	if err != nil {
-		return "", 0, nil, err
-	}
-	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
-	if err != nil {
-		return "", 0, nil, err
-	}
-	env, err := s.appendEventLocked("agent.active.updated", name, map[string]any{
-		"account_scope_id": strings.TrimSpace(accountScopeID),
-		"active_primary":   name,
-		"state":            state,
-		"version":          version,
-	})
-	if err != nil {
-		return "", 0, nil, err
-	}
-	return name, version, &env, nil
+	return SwarmAgentID, version, nil, nil
 }
 
 func (s *Service) Delete(name string) (DeleteResult, int64, *pebblestore.EventEnvelope, error) {
@@ -1659,26 +1356,7 @@ func (s *Service) deleteForAccount(accountScopeID, name string) (DeleteResult, i
 		return DeleteResult{}, 0, nil, fmt.Errorf("agent %q not found", name)
 	}
 	if target.Mode == ModePrimary {
-		fallback, err := s.nextPrimaryForAccountLocked(accountScopeID, name)
-		if err != nil {
-			return DeleteResult{}, 0, nil, err
-		}
-		if fallback == "" {
-			return DeleteResult{}, 0, nil, fmt.Errorf("agent %q is the last primary and cannot be deleted", name)
-		}
-		activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
-		if err != nil {
-			return DeleteResult{}, 0, nil, err
-		}
-		validActivePrimary, err := s.activePrimaryValidForAccountLocked(accountScopeID, activePrimary)
-		if err != nil {
-			return DeleteResult{}, 0, nil, err
-		}
-		if strings.EqualFold(strings.TrimSpace(activePrimary), name) || !validActivePrimary {
-			if err := s.setActivePrimaryForAccountLocked(accountScopeID, fallback); err != nil {
-				return DeleteResult{}, 0, nil, err
-			}
-		}
+		return DeleteResult{}, 0, nil, errors.New("Swarm is the only primary agent")
 	}
 	if target.Mode == ModeSubagent {
 		activeSubagents, err := s.getActiveSubagentsForAccountLocked(accountScopeID, 200)
@@ -1699,14 +1377,7 @@ func (s *Service) deleteForAccount(accountScopeID, name string) (DeleteResult, i
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
 	}
-	activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
-	if err != nil {
-		return DeleteResult{}, 0, nil, err
-	}
-	result := DeleteResult{
-		Deleted:       name,
-		ActivePrimary: activePrimary,
-	}
+	result := DeleteResult{Deleted: name}
 	state, err := s.currentStateForAccountLocked(accountScopeID, 2000)
 	if err != nil {
 		return DeleteResult{}, 0, nil, err
@@ -1714,7 +1385,6 @@ func (s *Service) deleteForAccount(accountScopeID, name string) (DeleteResult, i
 	env, err := s.appendEventLocked("agent.profile.deleted", name, map[string]any{
 		"account_scope_id": strings.TrimSpace(accountScopeID),
 		"deleted":          result.Deleted,
-		"active_primary":   result.ActivePrimary,
 		"state":            state,
 		"version":          version,
 	})
@@ -1750,18 +1420,8 @@ func (s *Service) restoreDefaultsForAccount(accountScopeID string) (State, int64
 		restored = append(restored, profile.Name)
 	}
 
-	activePrimary, _, err := s.getActivePrimaryForAccountLocked(accountScopeID)
-	if err != nil {
+	if err := s.setActivePrimaryForAccountLocked(accountScopeID, SwarmAgentID); err != nil {
 		return State{}, 0, nil, err
-	}
-	validActivePrimary, err := s.activePrimaryValidForAccountLocked(accountScopeID, activePrimary)
-	if err != nil {
-		return State{}, 0, nil, err
-	}
-	if !validActivePrimary {
-		if err := s.setActivePrimaryForAccountLocked(accountScopeID, "swarm"); err != nil {
-			return State{}, 0, nil, err
-		}
 	}
 	for purpose, profileName := range defaultSubagentAssignments() {
 		if err := s.setActiveSubagentForAccountLocked(accountScopeID, purpose, profileName); err != nil {
@@ -1956,6 +1616,9 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 	}
 	if IsReservedSystemAgentName(name) {
 		return PreviewUpsertResult{}, fmt.Errorf("agent %q is reserved for compiled system agents", name)
+	}
+	if profile.Mode == ModePrimary {
+		return PreviewUpsertResult{}, errors.New("Swarm is the only primary agent")
 	}
 	before, ok, err := s.getProfileForAccountLocked(accountScopeID, name)
 	if err != nil {
@@ -2219,16 +1882,7 @@ func (s *Service) resolveProfile(name string) (pebblestore.AgentProfile, error) 
 func (s *Service) resolveProfileForAccount(accountScopeID, name string) (pebblestore.AgentProfile, error) {
 	name = normalizeName(name)
 	if name == "" {
-		active, ok, err := s.getActivePrimaryForAccountLocked(accountScopeID)
-		if err != nil {
-			return pebblestore.AgentProfile{}, err
-		}
-		if ok {
-			name = normalizeName(active)
-		}
-	}
-	if name == "" {
-		name = "swarm"
+		name = SwarmAgentID
 	}
 	if IsReservedSystemAgentName(name) && name != SwarmAgentID {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
@@ -2451,15 +2105,6 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		Provider:            strings.ToLower(strings.TrimSpace(input.Provider)),
 		Model:               strings.TrimSpace(input.Model),
 		Thinking:            strings.ToLower(strings.TrimSpace(input.Thinking)),
-		ModelMode:           pebblestore.NormalizeAgentModelMode(input.ModelMode),
-		PlanProvider:        strings.ToLower(strings.TrimSpace(input.PlanProvider)),
-		PlanModel:           strings.TrimSpace(input.PlanModel),
-		PlanThinking:        strings.ToLower(strings.TrimSpace(input.PlanThinking)),
-		PlanServiceTier:     pebblestore.NormalizeModelServiceTier(input.PlanServiceTier),
-		AutoProvider:        strings.ToLower(strings.TrimSpace(input.AutoProvider)),
-		AutoModel:           strings.TrimSpace(input.AutoModel),
-		AutoThinking:        strings.ToLower(strings.TrimSpace(input.AutoThinking)),
-		AutoServiceTier:     pebblestore.NormalizeModelServiceTier(input.AutoServiceTier),
 		Prompt:              strings.TrimSpace(input.Prompt),
 		RuntimeMode:         runtimeMode,
 		DefaultSessionMode:  defaultSessionMode,
@@ -2627,56 +2272,6 @@ func (s *Service) currentStateForAccountLocked(accountScopeID string, limit int)
 		ActiveSubagent: activeSubagent,
 		Version:        version,
 	}, nil
-}
-
-func (s *Service) activePrimaryValidLocked(name string) (bool, error) {
-	return s.activePrimaryValidForAccountLocked("", name)
-}
-
-func (s *Service) activePrimaryValidForAccountLocked(accountScopeID, name string) (bool, error) {
-	name = normalizeName(name)
-	if name == "" {
-		return false, nil
-	}
-	profile, ok, err := s.getProfileForAccount(accountScopeID, name)
-	if err != nil {
-		return false, err
-	}
-	if !ok {
-		return false, nil
-	}
-	if !profile.Enabled {
-		return false, nil
-	}
-	return profile.Mode == ModePrimary, nil
-}
-
-func (s *Service) nextPrimaryLocked(exclude string) (string, error) {
-	return s.nextPrimaryForAccountLocked("", exclude)
-}
-
-func (s *Service) nextPrimaryForAccountLocked(accountScopeID, exclude string) (string, error) {
-	exclude = normalizeName(exclude)
-	profiles, err := s.listProfilesForAccountLocked(accountScopeID, 2000)
-	if err != nil {
-		return "", err
-	}
-	for _, profile := range profiles {
-		if normalizeName(profile.Name) == exclude {
-			continue
-		}
-		if !profile.Enabled {
-			continue
-		}
-		if profile.Mode != ModePrimary {
-			continue
-		}
-		return strings.TrimSpace(profile.Name), nil
-	}
-	if exclude != SwarmAgentID {
-		return SwarmAgentID, nil
-	}
-	return "", nil
 }
 
 func (s *Service) appendEventLocked(eventType, entityID string, payload any) (pebblestore.EventEnvelope, error) {

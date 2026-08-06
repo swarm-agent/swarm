@@ -61,8 +61,8 @@ func usage() {
 	fmt.Println("Usage:")
 	fmt.Println("  swarmctl health [--addr URL]")
 	fmt.Println("  swarmctl auth codex status [--addr URL]")
-	fmt.Println("  swarmctl auth codex login [--method auto|code] [--label NAME] [--addr URL]")
-	fmt.Println("  swarmctl auth codex remote [--label NAME] [--addr URL]")
+	fmt.Println("  swarmctl auth codex login [--method device|browser|manual] [--label NAME] [--addr URL]")
+	fmt.Println("  swarmctl auth codex remote [--method device|browser|manual] [--label NAME] [--addr URL]")
 	fmt.Println("  swarmctl auth codex set --api-key KEY [--label NAME] [--addr URL]")
 	fmt.Println("  swarmctl auth attach rotate [--addr URL]  # requires SWARMD_TOKEN")
 	fmt.Println("  swarmctl model get [--addr URL]")
@@ -111,14 +111,15 @@ func cmdAuth(args []string) error {
 			fs := flag.NewFlagSet("auth codex remote", flag.ContinueOnError)
 			addr := fs.String("addr", defaultDaemonURL, "daemon base URL")
 			label := fs.String("label", "", "optional credential label")
+			method := fs.String("method", "device", "login method: device, browser, or manual")
 			if err := fs.Parse(args[2:]); err != nil {
 				return err
 			}
-			return cmdAuthCodexLogin(*addr, "code", false, *label)
+			return cmdAuthCodexLogin(*addr, *method, false, *label)
 		case "login":
 			fs := flag.NewFlagSet("auth codex login", flag.ContinueOnError)
 			addr := fs.String("addr", defaultDaemonURL, "daemon base URL")
-			method := fs.String("method", "auto", "login method: auto or code")
+			method := fs.String("method", "device", "login method: device, browser, or manual")
 			label := fs.String("label", "", "optional credential label")
 			noOpen := fs.Bool("no-open", false, "do not attempt to open browser automatically")
 			if err := fs.Parse(args[2:]); err != nil {
@@ -377,20 +378,41 @@ func cmdSession(args []string) error {
 func cmdAuthCodexLogin(addr, method string, openBrowser bool, label string) error {
 	method = strings.ToLower(strings.TrimSpace(method))
 	if method == "" {
-		method = "auto"
+		method = "device"
 	}
-	if method != "auto" && method != "code" {
-		return fmt.Errorf("unsupported login method %q (expected auto or code)", method)
+	// Preserve the original CLI spellings as explicit browser/manual aliases.
+	if method == "auto" {
+		method = "browser"
+	} else if method == "code" {
+		method = "manual"
+	}
+	if method != "device" && method != "browser" && method != "manual" {
+		return fmt.Errorf("unsupported login method %q (expected device, browser, or manual)", method)
 	}
 
+	apiMethod := method
+	if method == "browser" {
+		// The CLI owns the localhost callback so the daemon may be remote.
+		apiMethod = "manual"
+	}
 	var session codexOAuthSessionStatus
 	if err := postJSON(addr+"/v1/auth/codex/oauth/start", map[string]any{
 		"provider": "codex",
 		"label":    strings.TrimSpace(label),
 		"active":   true,
-		"method":   "manual",
+		"method":   apiMethod,
 	}, &session); err != nil {
 		return wrapAttachTokenHint(err)
+	}
+
+	if method == "device" {
+		verificationURL := strings.TrimSpace(session.VerificationURL)
+		userCode := strings.TrimSpace(session.UserCode)
+		if verificationURL == "" || userCode == "" {
+			return errors.New("codex device authorization returned no verification URL or user code")
+		}
+		fmt.Printf("Follow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   %s\n\n2. Enter this one-time code (expires in 15 minutes)\n   %s\n\nContinue only if you started this login in Swarm. If a website or another person gave you this code, cancel.\n", verificationURL, userCode)
+		return waitForCodexOAuthSession(addr, session)
 	}
 
 	authURL := strings.TrimSpace(session.AuthURL)
@@ -406,7 +428,7 @@ func cmdAuthCodexLogin(addr, method string, openBrowser bool, label string) erro
 	}
 
 	switch method {
-	case "auto":
+	case "browser":
 		fmt.Println("Waiting for OAuth callback on localhost:1455 (timeout 6m)...")
 		callbackInput, err := waitForLocalCodexOAuthCallback(context.Background(), oauthStateFromAuthURL(authURL))
 		if err != nil {
@@ -418,7 +440,7 @@ func cmdAuthCodexLogin(addr, method string, openBrowser bool, label string) erro
 		}, &session); err != nil {
 			return wrapAttachTokenHint(err)
 		}
-	case "code":
+	case "manual":
 		fmt.Println("After login, paste the full callback URL or just the authorization code, then press Enter:")
 		reader := bufio.NewReader(os.Stdin)
 		line, readErr := reader.ReadString('\n')
@@ -435,6 +457,8 @@ func cmdAuthCodexLogin(addr, method string, openBrowser bool, label string) erro
 
 	switch strings.ToLower(strings.TrimSpace(session.Status)) {
 	case "success":
+	case "waiting", "authorizing":
+		return waitForCodexOAuthSession(addr, session)
 	case "error":
 		errText := strings.TrimSpace(session.Error)
 		if errText == "" {
@@ -457,18 +481,64 @@ func cmdAuthCodexLogin(addr, method string, openBrowser bool, label string) erro
 	return nil
 }
 
+func waitForCodexOAuthSession(addr string, session codexOAuthSessionStatus) error {
+	sessionID := strings.TrimSpace(session.SessionID)
+	if sessionID == "" {
+		return errors.New("codex oauth start returned empty session_id")
+	}
+	deadline := time.Now().Add(16 * time.Minute)
+	if session.ExpiresAt > 0 {
+		expiresAt := time.UnixMilli(session.ExpiresAt)
+		if expiresAt.Before(deadline) {
+			deadline = expiresAt.Add(30 * time.Second)
+		}
+	}
+	for {
+		status := strings.ToLower(strings.TrimSpace(session.Status))
+		switch status {
+		case "success":
+			if savedLabel := strings.TrimSpace(session.Label); savedLabel != "" {
+				fmt.Printf("Codex OAuth login saved as %q.\n", savedLabel)
+			} else if session.Credential != nil && strings.TrimSpace(session.Credential.Label) != "" {
+				fmt.Printf("Codex OAuth login saved as %q.\n", strings.TrimSpace(session.Credential.Label))
+			} else {
+				fmt.Println("Codex OAuth login saved.")
+			}
+			return nil
+		case "error":
+			message := strings.TrimSpace(session.Error)
+			if message == "" {
+				message = "codex device authorization failed"
+			}
+			return errors.New(message)
+		}
+		if time.Now().After(deadline) {
+			return errors.New("codex device authorization expired after 15 minutes")
+		}
+		time.Sleep(2 * time.Second)
+		query := url.Values{}
+		query.Set("session_id", sessionID)
+		if err := getJSON(addr+"/v1/auth/codex/oauth/status?"+query.Encode(), &session); err != nil {
+			return wrapAttachTokenHint(err)
+		}
+	}
+}
+
 type authCredentialStatus struct {
 	Label  string `json:"label"`
 	Active bool   `json:"active"`
 }
 
 type codexOAuthSessionStatus struct {
-	SessionID  string                `json:"session_id"`
-	Label      string                `json:"label"`
-	AuthURL    string                `json:"auth_url"`
-	Status     string                `json:"status"`
-	Error      string                `json:"error"`
-	Credential *authCredentialStatus `json:"credential"`
+	SessionID       string                `json:"session_id"`
+	Label           string                `json:"label"`
+	AuthURL         string                `json:"auth_url"`
+	VerificationURL string                `json:"verification_url"`
+	UserCode        string                `json:"user_code"`
+	ExpiresAt       int64                 `json:"expires_at"`
+	Status          string                `json:"status"`
+	Error           string                `json:"error"`
+	Credential      *authCredentialStatus `json:"credential"`
 }
 
 func waitForLocalCodexOAuthCallback(ctx context.Context, expectedState string) (string, error) {

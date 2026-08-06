@@ -374,7 +374,7 @@ func homePresetChip(action string, compact bool) string {
 
 	switch key {
 	case "agent", "model", "thinking", "profile":
-		return "[profile:" + clampEllipsis(emptyValue(value, "setup"), 28) + "]"
+		return "[agent/model:" + clampEllipsis(emptyValue(value, "setup"), 24) + "]"
 	default:
 		return "[" + action + "]"
 	}
@@ -391,10 +391,8 @@ func homePresetChipAction(action string) string {
 	}
 	key := strings.ToLower(strings.TrimSpace(action[:sep]))
 	switch key {
-	case "agent", "model", "thinking":
+	case "agent", "model", "thinking", "profile":
 		return "open-agents-modal"
-	case "profile":
-		return "open-profiles-modal"
 	default:
 		return ""
 	}
@@ -422,6 +420,24 @@ func (p *HomePage) drawTipsRow(s tcell.Screen, rect Rect, centered bool) {
 	}
 	sessionsHint := fmt.Sprintf("%s sessions", sessionsKeyLabel)
 	line := fmt.Sprintf("%s • %s • / for commands", modeHint, sessionsHint)
+	if warning := p.workspaceSetupWarning(); warning != "" && rect.H >= 2 {
+		warningWidth := rect.W
+		if warningWidth > 118 {
+			warningWidth = 118
+		}
+		warningX := rect.X
+		if centered {
+			warningX += (rect.W - warningWidth) / 2
+		}
+		warningLines := wrapVoiceModalText(warning, warningWidth)
+		for i := 0; i < len(warningLines) && i+1 < rect.H; i++ {
+			if centered {
+				DrawCenteredText(s, warningX, rect.Y+1+i, warningWidth, p.theme.Warning.Bold(true), warningLines[i])
+			} else {
+				DrawText(s, warningX, rect.Y+1+i, warningWidth, p.theme.Warning.Bold(true), warningLines[i])
+			}
+		}
+	}
 	if centered {
 		DrawCenteredText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return
@@ -440,12 +456,11 @@ func (p *HomePage) homeFooterState() FooterState {
 		NotificationCount: p.swarmNotificationCount,
 		DisplayedMode:     currentDisplayedHomeSessionMode(p),
 		Agent:             emptyValue(strings.TrimSpace(p.model.ActiveAgent), "swarm"),
-		ProfileLabel:      p.ProfileLabel(),
 		ModelLabel:        model.DisplayModelName(provider, modelName),
 		Thinking:          strings.TrimSpace(thinking),
 		ServiceTier:       strings.TrimSpace(serviceTier),
-		UnifiedProfile:    true,
 		PlanToggle:        true,
+		WorktreeRequested: p.WorktreeRequested(),
 		RightFacts:        p.homeFooterRightFacts(),
 		StatusLine:        strings.TrimSpace(p.statusLine),
 		StatusStyle:       p.homeStatusStyle(p.statusLine),

@@ -4,13 +4,14 @@ import "testing"
 
 func TestParseResponsePreservesCodexUsageMetadata(t *testing.T) {
 	response := parseResponse(map[string]any{
-		"id":    "resp_usage_metadata",
-		"model": "gpt-5.5",
+		"id":           "resp_usage_metadata",
+		"model":        "gpt-5.5",
+		"service_tier": "priority",
 		"usage": map[string]any{
 			"input_tokens":       float64(100),
 			"output_tokens":      float64(7),
 			"total_tokens":       float64(107),
-			"service_tier":       "priority",
+			"service_tier":       "standard",
 			"estimated_cost_usd": float64(0.0123),
 		},
 	})

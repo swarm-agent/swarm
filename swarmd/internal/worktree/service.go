@@ -18,6 +18,7 @@ import (
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/lock"
+	"swarm/packages/swarmd/internal/sessionreview"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
@@ -71,6 +72,36 @@ type Allocation struct {
 	WorkspaceID   string `json:"workspace_id,omitempty"`
 }
 
+// RequestedWorktreeNameConflictError marks an exact requested branch/worktree
+// name that cannot be allocated because it is already in use.
+type RequestedWorktreeNameConflictError struct {
+	WorktreeName string
+	Cause        error
+}
+
+func (e *RequestedWorktreeNameConflictError) Error() string {
+	if e == nil {
+		return "requested worktree name is already taken"
+	}
+	name := strings.TrimSpace(e.WorktreeName)
+	if e.Cause == nil {
+		return fmt.Sprintf("worktree name %q is already taken", name)
+	}
+	return fmt.Sprintf("worktree name %q is already taken: %v", name, e.Cause)
+}
+
+func (e *RequestedWorktreeNameConflictError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func IsRequestedWorktreeNameConflict(err error) bool {
+	var conflict *RequestedWorktreeNameConflictError
+	return errors.As(err, &conflict)
+}
+
 type TaskWorkspaceState struct {
 	WorkspacePath string `json:"workspace_path"`
 	BranchName    string `json:"branch_name"`
@@ -87,18 +118,20 @@ type TaskIntegrationChild struct {
 }
 
 type TaskIntegrationEntry struct {
-	SessionID  string   `json:"session_id"`
-	BaseCommit string   `json:"base_commit"`
-	HeadCommit string   `json:"head_commit"`
-	Commits    []string `json:"commits"`
-	Files      []string `json:"files"`
+	SessionID                string   `json:"session_id"`
+	BaseCommit               string   `json:"base_commit"`
+	HeadCommit               string   `json:"head_commit"`
+	Commits                  []string `json:"commits"`
+	AlreadyIntegratedCommits []string `json:"already_integrated_commits,omitempty"`
+	Files                    []string `json:"files"`
 }
 
 type TaskIntegrationPlan struct {
-	ParentHead string                 `json:"parent_head"`
-	Entries    []TaskIntegrationEntry `json:"entries"`
-	Commits    []string               `json:"commits"`
-	Overlaps   []string               `json:"overlaps,omitempty"`
+	ParentHead               string                 `json:"parent_head"`
+	Entries                  []TaskIntegrationEntry `json:"entries"`
+	Commits                  []string               `json:"commits"`
+	AlreadyIntegratedCommits []string               `json:"already_integrated_commits,omitempty"`
+	Overlaps                 []string               `json:"overlaps,omitempty"`
 }
 
 type TaskIntegrationResult struct {
@@ -313,16 +346,38 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 		return Allocation{}, err
 	}
 	if _, statErr := os.Stat(worktreePath); statErr == nil {
-		return Allocation{}, fmt.Errorf("target worktree path %q already exists", worktreePath)
+		cause := fmt.Errorf("target worktree path %q already exists", worktreePath)
+		if exactBranchName {
+			return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: cause}
+		}
+		return Allocation{}, cause
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return Allocation{}, fmt.Errorf("check target worktree path: %w", statErr)
 	}
+	branchExisted, branchErr := localBranchExists(repoRoot, branchName)
+	if branchErr != nil {
+		return Allocation{}, fmt.Errorf("check worktree branch: %w", branchErr)
+	}
+	if exactBranchName && branchExisted {
+		return Allocation{}, &RequestedWorktreeNameConflictError{
+			WorktreeName: branchName,
+			Cause:        fmt.Errorf("branch %q already exists", branchName),
+		}
+	}
 	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch); err != nil {
-		_ = os.RemoveAll(worktreePath)
-		return Allocation{}, fmt.Errorf("create session worktree: %w", err)
+		cleanupErr := cleanupFailedWorktreeAllocation(repoRoot, worktreePath)
+		if !branchExisted {
+			cleanupErr = errors.Join(cleanupErr, cleanupPartialBranch(repoRoot, branchName, effectiveBranch))
+		}
+		cause := allocationFailureWithCleanup(err, cleanupErr)
+		if exactBranchName && isExactRequestedWorktreeConflict(err, branchName, worktreePath) {
+			return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: cause}
+		}
+		return Allocation{}, fmt.Errorf("create session worktree: %w", cause)
 	}
 	if err := os.Chmod(worktreePath, appstorage.PrivateDirPerm); err != nil {
-		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", err)
+		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
+		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", allocationFailureWithCleanup(err, cleanupErr))
 	}
 	return Allocation{
 		WorkspacePath: worktreePath,
@@ -424,9 +479,23 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 		if err != nil {
 			return TaskIntegrationPlan{}, fmt.Errorf("list child %q commits: %w", child.SessionID, err)
 		}
-		commits := strings.Fields(commitText)
-		if len(commits) == 0 {
+		childCommits := strings.Fields(commitText)
+		if len(childCommits) == 0 {
 			return TaskIntegrationPlan{}, fmt.Errorf("child %q has no commits", child.SessionID)
+		}
+		commits := make([]string, 0, len(childCommits))
+		alreadyIntegrated := make([]string, 0, len(childCommits))
+		for _, commit := range childCommits {
+			integrated, classifyErr := taskCommitAlreadyIntegrated(parentPath, plan.ParentHead, commit)
+			if classifyErr != nil {
+				return TaskIntegrationPlan{}, fmt.Errorf("classify child %q commit %s: %w", child.SessionID, commit, classifyErr)
+			}
+			if integrated {
+				alreadyIntegrated = append(alreadyIntegrated, commit)
+				plan.AlreadyIntegratedCommits = append(plan.AlreadyIntegratedCommits, commit)
+				continue
+			}
+			commits = append(commits, commit)
 		}
 		fileText, err := runGit(parentPath, "diff", "--name-only", child.BaseCommit+".."+child.HeadCommit)
 		if err != nil {
@@ -440,7 +509,14 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 				owners[file] = child.SessionID
 			}
 		}
-		plan.Entries = append(plan.Entries, TaskIntegrationEntry{SessionID: child.SessionID, BaseCommit: child.BaseCommit, HeadCommit: child.HeadCommit, Commits: commits, Files: files})
+		plan.Entries = append(plan.Entries, TaskIntegrationEntry{
+			SessionID:                child.SessionID,
+			BaseCommit:               child.BaseCommit,
+			HeadCommit:               child.HeadCommit,
+			Commits:                  commits,
+			AlreadyIntegratedCommits: alreadyIntegrated,
+			Files:                    files,
+		})
 		plan.Commits = append(plan.Commits, commits...)
 	}
 	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Commits); err != nil {
@@ -465,6 +541,9 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	}
 	if strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
 		return TaskIntegrationResult{}, errors.New("integration manifest became stale")
+	}
+	if len(current.Commits) == 0 {
+		return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: current.ParentHead}, nil
 	}
 	cherryPickArgs := append([]string{"cherry-pick"}, current.Commits...)
 	if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), cherryPickArgs...); err != nil {
@@ -523,6 +602,40 @@ func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChil
 		out = append(out, TaskIntegrationChild{SessionID: entry.SessionID, BaseCommit: entry.BaseCommit, HeadCommit: entry.HeadCommit})
 	}
 	return out
+}
+
+func taskCommitAlreadyIntegrated(parentPath, parentHead, commit string) (bool, error) {
+	reachable, err := (&Service{}).TaskCommitDescendsFrom(parentPath, commit, parentHead)
+	if err != nil {
+		return false, err
+	}
+	if reachable {
+		return true, nil
+	}
+	cherry, err := runGit(parentPath, "cherry", parentHead, commit, commit+"^")
+	if err != nil {
+		return false, fmt.Errorf("compare commit with parent HEAD: %w", err)
+	}
+	fields := strings.Fields(cherry)
+	if len(fields) == 0 {
+		return true, nil
+	}
+	if len(fields) != 2 || fields[1] != commit {
+		return false, fmt.Errorf("unexpected git cherry result %q", cherry)
+	}
+	if fields[0] == "-" {
+		return true, nil
+	}
+	if fields[0] != "+" {
+		return false, fmt.Errorf("unexpected git cherry classification %q", fields[0])
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+	integrated, err := sessionreview.CommitMatchesResolvedIntegration(ctx, sessionreview.ExecGitRunner{}, parentPath, parentHead, commit)
+	if err != nil {
+		return false, err
+	}
+	return integrated, nil
 }
 
 func preflightCherryPick(parentPath, parentHead string, commits []string) error {
@@ -1203,6 +1316,149 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	return output, nil
 }
 
+func localBranchExists(repoRoot, branchName string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git show-ref --verify: %w", err)
+	}
+	return true, nil
+}
+
+func isExactRequestedWorktreeConflict(err error, branchName, worktreePath string) bool {
+	var addErr *gitWorktreeAddError
+	if !errors.As(err, &addErr) {
+		return false
+	}
+	text := strings.ToLower(addErr.Output)
+	branchName = strings.ToLower(strings.TrimSpace(branchName))
+	worktreePath = strings.ToLower(filepath.Clean(strings.TrimSpace(worktreePath)))
+	branchCollision := branchName != "" && strings.Contains(text, branchName) &&
+		(strings.Contains(text, "already exists") || strings.Contains(text, "already checked out"))
+	pathCollision := worktreePath != "" && strings.Contains(text, worktreePath) &&
+		(strings.Contains(text, "already exists") || strings.Contains(text, "already checked out"))
+	return branchCollision || pathCollision
+}
+
+func cleanupFailedWorktreeAllocation(repoRoot, worktreePath string) error {
+	var cleanupErrs []error
+	registered, err := worktreePathRegistered(repoRoot, worktreePath)
+	if err != nil {
+		cleanupErrs = append(cleanupErrs, err)
+	} else if registered {
+		if _, err := runGit(repoRoot, "worktree", "remove", "--force", worktreePath); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree metadata: %w", err))
+		} else if err := os.RemoveAll(worktreePath); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
+		}
+	} else if owned, ownershipErr := partialWorktreePathOwnedByRepository(repoRoot, worktreePath); ownershipErr != nil {
+		cleanupErrs = append(cleanupErrs, ownershipErr)
+	} else if owned {
+		if err := os.RemoveAll(worktreePath); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
+		}
+	}
+	if _, err := runGit(repoRoot, "worktree", "prune"); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("prune partial worktree metadata: %w", err))
+	}
+	return errors.Join(cleanupErrs...)
+}
+
+func worktreePathRegistered(repoRoot, worktreePath string) (bool, error) {
+	output, err := runGit(repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, fmt.Errorf("inspect partial worktree metadata: %w", err)
+	}
+	for _, entry := range parseWorktreeList(output) {
+		if sameCleanPath(entry.Path, worktreePath) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func partialWorktreePathOwnedByRepository(repoRoot, worktreePath string) (bool, error) {
+	gitMarker, err := os.ReadFile(filepath.Join(worktreePath, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect partial worktree ownership: %w", err)
+	}
+	markerText := strings.TrimSpace(string(gitMarker))
+	if !strings.HasPrefix(markerText, "gitdir:") {
+		return false, nil
+	}
+	marker := strings.TrimSpace(strings.TrimPrefix(markerText, "gitdir:"))
+	if marker == "" {
+		return false, nil
+	}
+	marker, err = resolveGitPath(worktreePath, marker)
+	if err != nil {
+		return false, fmt.Errorf("resolve partial worktree ownership: %w", err)
+	}
+	commonDir, err := runGit(repoRoot, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return false, fmt.Errorf("resolve repository metadata for cleanup: %w", err)
+	}
+	commonDir, err = resolveGitPath(repoRoot, commonDir)
+	if err != nil {
+		return false, fmt.Errorf("resolve repository metadata path for cleanup: %w", err)
+	}
+	return pathWithinRoot(filepath.Join(commonDir, "worktrees"), marker), nil
+}
+
+func cleanupAllocatedWorktree(repoRoot, worktreePath, branchName string) error {
+	cleanupErr := cleanupFailedWorktreeAllocation(repoRoot, worktreePath)
+	if exists, err := localBranchExists(repoRoot, branchName); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("inspect partial worktree branch: %w", err))
+	} else if exists {
+		if _, err := runGit(repoRoot, "branch", "-D", branchName); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove partial worktree branch: %w", err))
+		}
+	}
+	return cleanupErr
+}
+
+func cleanupPartialBranch(repoRoot, branchName, effectiveBranch string) error {
+	branchHead, err := runGit(repoRoot, "rev-parse", "--verify", "refs/heads/"+branchName+"^{commit}")
+	if err != nil {
+		return nil
+	}
+	baseHead, err := runGit(repoRoot, "rev-parse", "--verify", effectiveBranch+"^{commit}")
+	if err != nil || branchHead != baseHead {
+		return nil
+	}
+	if _, err := runGit(repoRoot, "branch", "-D", branchName); err != nil {
+		return fmt.Errorf("remove partial worktree branch: %w", err)
+	}
+	return nil
+}
+
+func allocationFailureWithCleanup(cause, cleanupErr error) error {
+	if cleanupErr == nil {
+		return cause
+	}
+	return fmt.Errorf("%w; cleanup failed: %v", cause, cleanupErr)
+}
+
+type gitWorktreeAddError struct {
+	Args   []string
+	Output string
+	Cause  error
+}
+
+func (e *gitWorktreeAddError) Error() string {
+	return fmt.Sprintf("git %s: %s", strings.Join(e.Args, " "), e.Output)
+}
+
+func (e *gitWorktreeAddError) Unwrap() error { return e.Cause }
+
 func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch string) (string, error) {
 	args := []string{"worktree", "add", "-b", branchName, worktreePath, effectiveBranch}
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
@@ -1220,7 +1476,7 @@ func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch strin
 		if combinedOutput == "" {
 			combinedOutput = strings.TrimSpace(err.Error())
 		}
-		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), combinedOutput)
+		return "", &gitWorktreeAddError{Args: append([]string(nil), args...), Output: combinedOutput, Cause: err}
 	}
 	return combinedOutput, nil
 }

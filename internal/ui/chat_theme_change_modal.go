@@ -187,20 +187,34 @@ func (p *ChatPage) themeChangeModalLines(record ChatPermissionRecord, width int)
 	change := jsonObject(manifest, "change")
 	action := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "action"), jsonString(change, "operation")))
 	summary := strings.TrimSpace(jsonString(manifest, "summary"))
-	themeID := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "theme_id"), jsonString(manifest, "theme"), jsonString(change, "theme_id"), jsonString(change, "theme")))
+	themeID := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "theme_id"), jsonString(manifest, "theme"), jsonString(manifest, "apply_theme_id"), jsonString(change, "theme_id"), jsonString(change, "theme")))
+	generatedNames := jsonStringSlice(manifest, "generated_names")
+	if len(generatedNames) == 0 {
+		generatedNames = themeNamesFromPermissionArguments(manifest["themes"])
+	}
 	workspacePath := strings.TrimSpace(firstNonEmptyToolValue(jsonString(manifest, "workspace_path"), jsonString(change, "workspace_path")))
 	overview := []chatRenderLine{p.taskLaunchTextLine("This request will change persisted theme configuration using the existing UI settings or workspace theme path.", p.theme.Text)}
 	if summary != "" {
 		overview = append(overview, p.taskLaunchTextLine(summary, p.theme.TextMuted))
 	}
-	overview = append(overview,
-		p.taskLaunchKeyValueLine("action", emptyValue(action, "change"), p.theme.Text),
-		p.taskLaunchKeyValueLine("theme", emptyValue(themeID, "theme"), p.theme.Text),
-	)
+	overview = append(overview, p.taskLaunchKeyValueLine("action", emptyValue(action, "change"), p.theme.Text))
+	if len(generatedNames) > 0 {
+		overview = append(overview,
+			p.taskLaunchKeyValueLine("themes", fmt.Sprintf("%d generated", len(generatedNames)), p.theme.Text),
+			p.taskLaunchKeyValueLine("names", strings.Join(generatedNames, ", "), p.theme.TextMuted),
+		)
+	} else {
+		overview = append(overview, p.taskLaunchKeyValueLine("theme", emptyValue(themeID, "theme"), p.theme.Text))
+	}
 	if workspacePath != "" {
 		overview = append(overview, p.taskLaunchKeyValueLine("workspace", workspacePath, p.theme.TextMuted))
 	} else {
 		overview = append(overview, p.taskLaunchKeyValueLine("scope", "global", p.theme.TextMuted))
+	}
+	beforeValue := change["before"]
+	afterValue := change["after"]
+	if nestedChanges, ok := change["changes"].([]any); ok && len(nestedChanges) > 0 {
+		afterValue = nestedChanges
 	}
 	controls := []chatRenderLine{
 		p.taskLaunchTextLine("Enter applies the theme mutation.", p.theme.Success),
@@ -209,8 +223,8 @@ func (p *ChatPage) themeChangeModalLines(record ChatPermissionRecord, width int)
 	}
 	sections := []themeChangePreviewSection{
 		{Title: "Overview", BorderStyle: p.theme.BorderActive, TitleStyle: p.theme.Secondary.Bold(true), Lines: overview},
-		{Title: "Before", BorderStyle: p.theme.Border, TitleStyle: p.theme.Warning.Bold(true), Lines: p.themeChangeContentLines(change["before"], "No prior value.")},
-		{Title: "After", BorderStyle: p.theme.Border, TitleStyle: p.theme.Success.Bold(true), Lines: p.themeChangeContentLines(change["after"], "Value will be cleared.")},
+		{Title: "Before", BorderStyle: p.theme.Border, TitleStyle: p.theme.Warning.Bold(true), Lines: p.themeChangeContentLines(beforeValue, "No prior value.")},
+		{Title: "After", BorderStyle: p.theme.Border, TitleStyle: p.theme.Success.Bold(true), Lines: p.themeChangeContentLines(afterValue, "Value will be cleared.")},
 		{Title: "Controls", BorderStyle: p.theme.Border, TitleStyle: p.theme.Accent.Bold(true), Lines: controls},
 	}
 	lines := make([]chatRenderLine, 0, len(sections)*8)
@@ -233,6 +247,25 @@ func (p *ChatPage) themeChangeContentLines(value any, empty string) []chatRender
 		return []chatRenderLine{{Text: empty, Style: p.theme.TextMuted}}
 	}
 	return rows
+}
+
+func themeNamesFromPermissionArguments(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(jsonString(record, "name"))
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func (p *ChatPage) themeChangeValueText(value any) string {
@@ -308,6 +341,12 @@ func (p *ChatPage) themeChangeApprovalReason(record ChatPermissionRecord) string
 	} else {
 		if themeID := strings.TrimSpace(firstNonEmptyToolValue(jsonString(payload, "theme_id"), jsonString(payload, "theme"))); themeID != "" {
 			request["theme_id"] = themeID
+		}
+		if applyThemeID := strings.TrimSpace(jsonString(payload, "apply_theme_id")); applyThemeID != "" {
+			request["apply_theme_id"] = applyThemeID
+		}
+		if themes, ok := payload["themes"]; ok {
+			request["themes"] = themes
 		}
 		if workspacePath := strings.TrimSpace(jsonString(payload, "workspace_path")); workspacePath != "" {
 			request["workspace_path"] = workspacePath

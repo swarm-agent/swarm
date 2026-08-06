@@ -30,6 +30,7 @@ const (
 	V3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
 	V3RealtimeKindNotificationResource     = "notification.resource.updated"
 	V3RealtimeKindAITaskResource           = "task.lifecycle.updated"
+	V3RealtimeKindAuthResource             = "auth.credentials.updated"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
 	V3RealtimeKindLivePatch                = "live.patch"
@@ -91,6 +92,7 @@ type V3RealtimeMessage struct {
 	Notification               *pebblestore.NotificationRecord        `json:"notification,omitempty"`
 	NotificationSummary        *pebblestore.NotificationSummary       `json:"notification_summary,omitempty"`
 	AITask                     *sessionsV3AITaskLifecyclePayload      `json:"task,omitempty"`
+	Auth                       *sessionsV3AuthResourcePayload         `json:"auth,omitempty"`
 	ErrorCode                  string                                 `json:"error_code,omitempty"`
 	Error                      string                                 `json:"error,omitempty"`
 	Reason                     string                                 `json:"reason,omitempty"`
@@ -178,6 +180,11 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 	case V3RealtimeKindAITaskResource:
 		if strings.TrimSpace(message.EndpointCursor) == "" || message.AITask == nil {
 			return errors.New("v3 realtime task.lifecycle.updated requires endpoint_cursor and task")
+		}
+		return nil
+	case V3RealtimeKindAuthResource:
+		if strings.TrimSpace(message.EndpointCursor) == "" || message.Auth == nil {
+			return errors.New("v3 realtime auth.credentials.updated requires endpoint_cursor and auth")
 		}
 		return nil
 	case V3RealtimeKindReplayStart:
@@ -310,6 +317,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 		V3RealtimeKindWorksetSessionRemoved,
 		V3RealtimeKindNotificationResource,
 		V3RealtimeKindAITaskResource,
+		V3RealtimeKindAuthResource,
 		V3RealtimeKindAuthDenied,
 		V3RealtimeKindSlowConsumer:
 		return nil
@@ -320,7 +328,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindAuthResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false

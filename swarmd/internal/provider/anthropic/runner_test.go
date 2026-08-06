@@ -1,13 +1,18 @@
 package anthropic
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -174,7 +179,7 @@ func TestAnthropicThinkingConfigFallsBackToLegacyBudgetWithoutCatalog(t *testing
 func TestAnthropicRequestOptionsApplyProviderFastModeSeparatelyFromPriority(t *testing.T) {
 	catalog := pebblestore.ModelCatalogRecord{ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{
 		{Tier: "priority", SwarmSetting: "fast", ProviderParameter: "service_tier", ProviderValue: "auto"},
-		{Tier: "fast", ProviderParameter: "speed", ProviderValue: "fast", BetaHeader: "fast-mode-2026-02-01"},
+		{Tier: "fast", ProviderParameter: "speed", ProviderValue: "fast", BetaHeader: string(anthropicapi.AnthropicBetaFastMode2026_02_01)},
 	}}
 	if opts := anthropicRequestOptions(catalog, "priority"); len(opts) != 0 {
 		t.Fatalf("priority tier must not enable provider Fast Mode options: %d", len(opts))
@@ -188,14 +193,67 @@ func TestAnthropicRequestOptionsApplyProviderFastModeSeparatelyFromPriority(t *t
 	}
 }
 
+func TestAnthropicFastModeOptionsReachSDKOutboundRequest(t *testing.T) {
+	var capturedBody []byte
+	var capturedBeta []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var err error
+		capturedBody, err = io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		capturedBeta = req.Header.Values("anthropic-beta")
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	catalog := pebblestore.ModelCatalogRecord{ServiceTierMappings: []pebblestore.ModelCatalogServiceTierMapping{{
+		Tier:              "fast",
+		ProviderParameter: "speed",
+		ProviderValue:     "fast",
+		BetaHeader:        string(anthropicapi.AnthropicBetaFastMode2026_02_01),
+	}}}
+	clientOptions := append(anthropicClientOptions("paper-test-key"), option.WithBaseURL(server.URL))
+	client := anthropicapi.NewClient(clientOptions...)
+	params := anthropicapi.MessageNewParams{
+		Model:     anthropicapi.Model("claude-opus-5"),
+		MaxTokens: 1,
+		Messages:  []anthropicapi.MessageParam{anthropicapi.NewUserMessage(anthropicapi.NewTextBlock("paper test"))},
+	}
+	if _, err := client.Messages.New(context.Background(), params, anthropicRequestOptions(catalog, "fast")...); err != nil {
+		t.Fatalf("send paper request through Anthropic SDK: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("decode captured request body %q: %v", capturedBody, err)
+	}
+	if got := body["speed"]; got != "fast" {
+		t.Fatalf("captured speed = %#v, want fast; body=%s", got, capturedBody)
+	}
+	if _, ok := body["service_tier"]; ok {
+		t.Fatalf("fast mode must not serialize legacy service_tier: body=%s", capturedBody)
+	}
+	betas := strings.Join(capturedBeta, ",")
+	if !strings.Contains(betas, string(anthropicapi.AnthropicBetaFastMode2026_02_01)) {
+		t.Fatalf("captured anthropic-beta = %q, want %q", betas, anthropicapi.AnthropicBetaFastMode2026_02_01)
+	}
+}
+
 func TestAnthropicUsageMapsCacheTokenTypesForFrontend(t *testing.T) {
-	usage := anthropicUsageToTokenUsage(anthropicapi.Usage{
-		InputTokens:              100,
-		OutputTokens:             20,
-		CacheReadInputTokens:     30,
-		CacheCreationInputTokens: 40,
-		ServiceTier:              anthropicapi.UsageServiceTierPriority,
-	})
+	var providerUsage anthropicapi.Usage
+	if err := json.Unmarshal([]byte(`{
+		"input_tokens":100,
+		"output_tokens":20,
+		"cache_read_input_tokens":30,
+		"cache_creation_input_tokens":40,
+		"service_tier":"priority",
+		"speed":"fast"
+	}`), &providerUsage); err != nil {
+		t.Fatalf("decode provider usage: %v", err)
+	}
+	usage := anthropicUsageToTokenUsage(providerUsage)
 	if usage.Source != usageSource || usage.APIUsageRawPath != "usage" {
 		t.Fatalf("usage identity = %+v", usage)
 	}
@@ -207,6 +265,9 @@ func TestAnthropicUsageMapsCacheTokenTypesForFrontend(t *testing.T) {
 	}
 	if usage.APIUsageRaw["cache_read_input_tokens"] != int64(30) || usage.APIUsageRaw["cache_creation_input_tokens"] != int64(40) {
 		t.Fatalf("raw cache token fields = %#v", usage.APIUsageRaw)
+	}
+	if usage.APIUsageRaw["speed"] != "fast" {
+		t.Fatalf("raw provider speed = %#v, want fast", usage.APIUsageRaw["speed"])
 	}
 }
 
@@ -366,6 +427,7 @@ func TestAnthropicMediaDeclarationIsImageInputOnly(t *testing.T) {
 
 func TestBuildAnthropicMessagesMaterializesNativeImageInOriginalOrder(t *testing.T) {
 	payload := anthropicTestImagePayload("image/png", []byte("image-bytes"))
+	payload.FileType = "png"
 	messages, err := buildAnthropicMessages([]map[string]any{{
 		"role": "user",
 		"content": []map[string]any{

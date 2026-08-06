@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -21,6 +22,13 @@ type sessionsV3DurableProgressRecordingWriter struct {
 	assistant []sessionV3AssistantProgress
 	phases    []string
 	reasoning []string
+	provider  []sessionsV3DurableProgressProviderRecord
+}
+
+type sessionsV3DurableProgressProviderRecord struct {
+	eventType  string
+	eventIndex int
+	event      provideriface.StreamEvent
 }
 
 func newSessionsV3DurableProgressRecordingWriter(block bool) *sessionsV3DurableProgressRecordingWriter {
@@ -63,6 +71,14 @@ func (w *sessionsV3DurableProgressRecordingWriter) RecordReasoningEvent(job sess
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.reasoning = append(w.reasoning, eventType+":"+delta+":"+deltaMode+":"+summary)
+	return sessionruntime.SessionMutationResult{}, nil
+}
+
+func (w *sessionsV3DurableProgressRecordingWriter) RecordProviderToolConstructionEvent(job sessionV3ExecutorJob, eventType string, step int, eventIndex int, event provideriface.StreamEvent) (sessionruntime.SessionMutationResult, error) {
+	w.maybeBlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.provider = append(w.provider, sessionsV3DurableProgressProviderRecord{eventType: eventType, eventIndex: eventIndex, event: event})
 	return sessionruntime.SessionMutationResult{}, nil
 }
 
@@ -209,6 +225,54 @@ func TestV3DurableProgressBacklogFailsRunWithoutBlocking(t *testing.T) {
 	case <-cancelled:
 	case <-time.After(time.Second):
 		t.Fatalf("provider context was not cancelled")
+	}
+}
+
+func TestV3DurableProgressCoalescesProviderToolArgumentFragments(t *testing.T) {
+	writer := newSessionsV3DurableProgressRecordingWriter(true)
+	sink := newSessionV3DurableProgressSinkWithWriter(&sessionV3Executor{deltaFlushMaxBytes: 1 << 20, deltaFlushMaxDelay: time.Hour}, sessionV3ExecutorJob{}, func() {}, writer)
+	base := provideriface.StreamEvent{ToolCallID: "call-plan", ToolName: "plan_manage"}
+	started := base
+	started.Type = provideriface.StreamEventToolCallStarted
+	if err := sink.TryRecordProviderToolConstruction(1, 1, started); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatalf("writer did not block on provider tool start")
+	}
+	const fragmentCount = 10000
+	for i := 0; i < fragmentCount; i++ {
+		delta := base
+		delta.Type = provideriface.StreamEventToolCallArgumentsDelta
+		delta.ArgumentsDelta = "x"
+		if err := sink.TryRecordProviderToolConstruction(1, i+2, delta); err != nil {
+			t.Fatalf("provider argument fragment %d: %v", i, err)
+		}
+	}
+	completed := base
+	completed.Type = provideriface.StreamEventToolCallCompleted
+	completed.Arguments = strings.Repeat("x", fragmentCount)
+	if err := sink.TryRecordProviderToolConstruction(1, fragmentCount+2, completed); err != nil {
+		t.Fatal(err)
+	}
+	close(writer.release)
+	if err := sink.CloseAndFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if len(writer.provider) != 3 {
+		t.Fatalf("provider records = %d, want start, coalesced arguments, completed", len(writer.provider))
+	}
+	got := writer.provider[1]
+	if got.eventType != "session.provider_tool_call.arguments.delta" || got.eventIndex != fragmentCount+1 {
+		t.Fatalf("coalesced provider record = %+v", got)
+	}
+	if got.event.ArgumentsDelta != strings.Repeat("x", fragmentCount) {
+		t.Fatalf("coalesced provider arguments length = %d, want %d", len(got.event.ArgumentsDelta), fragmentCount)
 	}
 }
 

@@ -1,9 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { JSX, ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, JSX, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, Keyboard, ListChecks, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, Pencil, Pin, Plus, RefreshCcw, Search, Settings, X, XCircle } from 'lucide-react'
-import { requestJson } from '../../../app/api'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -11,7 +11,7 @@ import { cn } from '../../../lib/cn'
 import { useWorkspaceLauncher } from '../../workspaces/launcher/state/use-workspace-launcher'
 import { applyDesktopRouteTheme } from './desktop-theme-controller'
 import { loadStoredValue, saveStoredValue } from '../../workspaces/launcher/services/workspace-storage'
-import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
+import { agentStateQueryOptions, draftModelQueryOptions, modelProfilesQueryOptions, uiSettingsQueryKey, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import type { DesktopNotificationCenterRecord, DesktopSessionRecord } from '../types/realtime'
 import type { DesktopSessionPlanRecord } from '../chat/types/chat'
 import type { SettingsTabID } from '../settings/types/settings-tabs'
@@ -22,7 +22,6 @@ import { WorkspaceTodoModal } from '../../workspaces/todos/components/workspace-
 import type { WorkspaceTodoItem, WorkspaceTodoOwnerKind, WorkspaceTodoSummary } from '../../workspaces/todos/types'
 import {
   createEmptyWorkspaceTodoSummary,
-  createWorkspaceAITask,
   createWorkspaceTodo,
   deleteAllWorkspaceTodos,
   deleteDoneWorkspaceTodos,
@@ -35,21 +34,26 @@ import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-re
 import { getSwarmSettings } from '../settings/swarm/queries/get-swarm-settings'
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveSwarmSettings } from '../settings/swarm/mutations/save-swarm-settings'
-import { normalizeDefaultNewSessionMode, normalizeSidebarHideInactiveHours, type DesktopSessionMode, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { normalizeShowTipsEnabled, normalizeSidebarHideInactiveHours, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
+import { saveShowTipsSetting } from '../settings/swarm/mutations/save-show-tips-setting'
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
-import { createDesktopV3CreateOnlySessionOperation, createDesktopV3NewSessionOperation, startDesktopV3CreateOnlySession, startNewDesktopV3Session } from '../session-v3/new-session-flow'
+import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
-import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, resolveDesktopChatRouteFromSession, type DesktopChatRoute } from '../chat/services/chat-routing'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
-import { resolveDesktopWorktreeSessionDefaults } from '../chat/services/desktop-worktree-session-defaults'
-import { parseDesktopTaskCommand, type DesktopSlashCommand } from '../chat/services/slash-commands'
-import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime } from '../git/api'
+import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
+import { executeDesktopTipsCommand } from '../chat/services/home-tips'
+import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
+import { AICommitButton } from '../git/ai-commit-control'
+import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
+import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../workspaces/actions/types'
+import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import {
   sessionBackgroundInfo,
@@ -57,16 +61,19 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { commitDesktopV3CacheSnapshot, dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import { selectSession } from '../state/desktop-v3-cache-wire'
+import { messageMutationResponseToAction, selectSession, sessionCreateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
 import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import { sessionWorkspaceBindingId } from '../services/session-workspace'
-import type { V3SessionRunIntent } from '../state/desktop-v3-cache-types'
+import type { DesktopV3SessionView, SessionCreateMutationResponse, SessionMessageMutationResponse, V3SessionRunIntent, V3SessionRunState } from '../state/desktop-v3-cache-types'
+import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
+import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
+import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart, type DesktopV3RoutedSessionStartResponse } from '../session-v3/write-api'
 import { isDesktopV3NavigationHiddenRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
@@ -76,7 +83,8 @@ import type { DesktopSessionSearchItem } from '../session-search/session-search-
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
-import { buildReviewWorktreeFixPrompt, resolveReviewWorktreeRepairAgent, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
+import { buildReviewWorktreeFixPrompt, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
+import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import {
   loadDesktopMainSidebarMode,
   saveDesktopMainSidebarMode,
@@ -97,7 +105,13 @@ const SIDEBAR_ACTION_ROW_CLASS = `grid min-w-0 grid-cols-[minmax(0,1fr)_52px] it
 const SIDEBAR_ACTION_RAIL_CLASS = `grid ${SIDEBAR_ACTION_RAIL_WIDTH_CLASS} shrink-0 grid-cols-[24px_24px] justify-end gap-1`
 const SIDEBAR_ACTION_BOX_CLASS = 'grid h-6 min-h-6 w-6 min-w-6 shrink-0 place-items-center border-0 bg-transparent p-0 font-inherit'
 const SIDEBAR_ACTION_BUTTON_CLASS = `${SIDEBAR_ACTION_BOX_CLASS} text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]`
+const SIDEBAR_SESSION_ICON_CLASS = {
+  worktree: 'text-[var(--app-primary)]',
+  task: 'text-[var(--app-warning)]',
+  plan: 'text-[var(--app-info)]',
+} as const
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
+const DESKTOP_REPAIR_AGENT_NAME = 'swarm'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
   'Check prerequisites',
@@ -181,8 +195,6 @@ interface DesktopV3CompactingSessionState {
   startedAt: number
 }
 
-type DesktopSessionModeCommand = 'toggle-plan-auto'
-
 interface PlanModalState {
   sessionId: string
 }
@@ -191,6 +203,34 @@ interface GitCommitModalState {
   workspacePath: string
   sessionId: string
   files: GitFileStatus[]
+  worktree?: boolean
+  targetWorkspacePath?: string
+  targetBranch?: string
+  canIntegrate?: boolean
+}
+
+interface GitIntegrateModalState {
+  sessionId: string
+  workspacePath: string
+  worktreeBranch: string
+  targetBranch: string
+  integrationComplete?: boolean
+  presentation?: 'sidebar-popout'
+}
+
+export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalState, integrationError: string): string {
+  return [
+    'Help me understand and recover from this worktree integration error.',
+    'Inspect the existing session and worktree context, explain the failure, and recommend the safe next action. Do not integrate or archive anything unless I explicitly ask in a later message.',
+    '',
+    `Session ID: ${input.sessionId}`,
+    `Source branch: ${input.worktreeBranch || 'unknown'}`,
+    `Target branch: ${input.targetBranch || 'unknown'}`,
+    `Target workspace: ${input.workspacePath || 'unknown'}`,
+    '',
+    'Integration error:',
+    integrationError,
+  ].join('\n')
 }
 
 interface GitPanelState {
@@ -198,21 +238,204 @@ interface GitPanelState {
   workspaceName: string
 }
 
-interface ManagedWorktreeOption {
-  path: string
-  branch: string
-  workspaceID: string
+interface DesktopRepairSessionLaunchInput {
+  owningWorkspacePath: string
+  sourceSessionId: string
+  prompt: string
+  title: string
+  source: string
+  sessionMetadata?: Record<string, unknown>
+  messageMetadata?: Record<string, unknown>
 }
 
-interface WorktreeSessionModalState {
-  presentation: 'dialog' | 'page'
-  workspacePath: string
-  workspaceName: string
+interface DesktopRepairSessionAuthority {
+  workspace: WorkspaceEntry
+  route: DesktopChatRoute
   workspaceSlug: string
-  routeOptions: DesktopChatRoute[]
-  branchPrefix: string
-  managedWorktrees: ManagedWorktreeOption[]
-  settingsLoading: boolean
+}
+
+interface DesktopV3RoutedActivationDeps {
+  getSnapshot: typeof getDesktopV3CacheSnapshot
+  commitSnapshot: typeof commitDesktopV3CacheSnapshot
+  requireRealtimeController: typeof requireDesktopV3RealtimeControllerReady
+  currentURL: () => string
+  replaceURL: (url: string) => void
+}
+
+function currentDesktopURL(): string {
+  if (typeof window === 'undefined') return ''
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`
+}
+
+const desktopV3RoutedActivationDeps: DesktopV3RoutedActivationDeps = {
+  getSnapshot: getDesktopV3CacheSnapshot,
+  commitSnapshot: commitDesktopV3CacheSnapshot,
+  requireRealtimeController: requireDesktopV3RealtimeControllerReady,
+  currentURL: currentDesktopURL,
+  replaceURL: (url) => {
+    if (typeof window === 'undefined' || !url) return
+    window.history.replaceState(window.history.state, '', url)
+    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+  },
+}
+
+function desktopV3RoutedResultResponse(result: DesktopV3RoutedStartResult): DesktopV3RoutedSessionStartResponse {
+  return normalizeDesktopV3RoutedSessionStartResponse(result)
+}
+
+function desktopV3RoutedSessionView(response: DesktopV3RoutedSessionStartResponse): DesktopV3SessionView {
+  return response.session_view as unknown as DesktopV3SessionView
+}
+
+function desktopV3RoutedRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function desktopV3RoutedRequiredString(value: unknown, field: string): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized) throw new Error(`Routed Desktop activation requires canonical ${field}`)
+  return normalized
+}
+
+function validateDesktopV3RoutedActivationResponse(response: DesktopV3RoutedSessionStartResponse): void {
+  const identity = response.session_view.identity
+  const settings = desktopV3RoutedRecord(response.session_view.agentic_settings)
+  const mediaCapability = desktopV3RoutedRecord(response.session_view.media_capability)
+  const sessionId = response.session_id.trim()
+  const title = response.title.trim()
+  desktopV3RoutedRequiredString(identity.source_workspace_name, 'source workspace name')
+  desktopV3RoutedRequiredString(identity.source_workspace_path, 'source workspace')
+  const runtimeWorkspacePath = desktopV3RoutedRequiredString(identity.runtime_workspace_path, 'runtime workspace')
+  if (desktopV3RoutedRequiredString(identity.session_id, 'session identity') !== sessionId
+    || desktopV3RoutedRequiredString(identity.title, 'session title') !== title) {
+    throw new Error('Routed Desktop activation received inconsistent canonical identity')
+  }
+  desktopV3RoutedRequiredString(response.first_message.content, 'first message')
+  if (desktopV3RoutedRequiredString(response.session.workspace_path, 'runtime workspace') !== runtimeWorkspacePath
+    || desktopV3RoutedRequiredString(response.session.title, 'session title') !== title) {
+    throw new Error('Routed Desktop activation received inconsistent canonical session authority')
+  }
+  if (!settings || response.session.mode !== response.starting_mode || settings.mode !== response.starting_mode) {
+    throw new Error('Routed Desktop activation received inconsistent canonical mode authority')
+  }
+  desktopV3RoutedRequiredString(settings.agent_name, 'agent')
+  desktopV3RoutedRequiredString(settings.resolved_agent_name, 'resolved agent')
+  const effectivePreference = desktopV3RoutedRecord(settings.effective_preference)
+  desktopV3RoutedRequiredString(effectivePreference?.provider, 'model provider')
+  desktopV3RoutedRequiredString(effectivePreference?.model, 'model')
+  if (!mediaCapability || !Array.isArray(mediaCapability.capabilities)) {
+    throw new Error('Routed Desktop activation requires canonical media capability')
+  }
+  if (typeof identity.worktree_enabled !== 'boolean') {
+    throw new Error('Routed Desktop activation requires canonical worktree intent')
+  }
+  if (identity.requested_worktree_name !== undefined && typeof identity.requested_worktree_name !== 'string') {
+    throw new Error('Routed Desktop activation received invalid requested worktree authority')
+  }
+  if (identity.worktree_enabled) {
+    const worktreeRootPath = desktopV3RoutedRequiredString(identity.worktree_root_path, 'worktree root')
+    const worktreeBranch = desktopV3RoutedRequiredString(identity.worktree_branch, 'worktree branch')
+    if (response.session.worktree_enabled !== true
+      || response.session.worktree_root_path?.trim() !== worktreeRootPath
+      || response.session.worktree_branch?.trim() !== worktreeBranch) {
+      throw new Error('Routed Desktop activation received inconsistent canonical worktree authority')
+    }
+  } else if (response.session.worktree_enabled === true) {
+    throw new Error('Routed Desktop activation received inconsistent disabled worktree authority')
+  }
+}
+
+/**
+ * Publishes one already-durable routed result only after validation and realtime
+ * connection succeed. Any later publish/navigation failure restores the exact
+ * prior cache selection/sidebar snapshot and URL while the activation still owns
+ * the state it published.
+ */
+export async function activateDesktopV3RoutedSession(
+  result: DesktopV3RoutedStartResult,
+  deps: DesktopV3RoutedActivationDeps,
+  shouldActivate: () => boolean,
+  onActivated?: (response: DesktopV3RoutedSessionStartResponse) => Promise<void> | void,
+): Promise<DesktopV3RoutedSessionStartResponse> {
+  const response = desktopV3RoutedResultResponse(result)
+  validateDesktopV3RoutedActivationResponse(response)
+  const sessionId = response.session_id
+  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
+
+  const previousState = deps.getSnapshot()
+  const previousURL = deps.currentURL()
+  const previousSelectedSessionId = previousState.selectedSessionId
+  const previousSidebarOrderByScope = structuredClone(previousState.sessionOrderByScope)
+  const sidebarScopeId = previousState.desktopSidebarBootstrap.scopeId?.trim()
+  if (!sidebarScopeId) throw new Error('Routed Desktop activation requires the canonical sidebar scope')
+
+  const createResponse: SessionCreateMutationResponse = {
+    ok: true,
+    session_id: sessionId,
+    session: response.session,
+    projection: response.projection,
+    mutation: response.mutation,
+    realtime_outbox: response.mutation.realtime_outbox ?? null,
+  }
+  const mutationResources = response.mutation as typeof response.mutation & {
+    run_intent?: V3SessionRunIntent | null
+    usage_summary?: unknown
+  }
+  const messageResponse: SessionMessageMutationResponse = {
+    ok: true,
+    session_id: sessionId,
+    session: response.session,
+    projection: response.projection,
+    message: response.first_message,
+    run_intent: mutationResources.run_intent ?? null,
+    current_run_state: response.session_view.current_run_state as V3SessionRunState | undefined,
+    usage_summary: mutationResources.usage_summary ?? response.session_view.usage_summary,
+    mutation: response.mutation,
+    realtime_outbox: response.mutation.realtime_outbox ?? null,
+  }
+  const actions = [
+    sessionCreateResponseToAction(createResponse, sidebarScopeId),
+    messageMutationResponseToAction(messageResponse, `desktop-v3-routed:activation:${sessionId}`, response.first_message.id),
+    selectSession(sessionId),
+  ] as const
+
+  const controller = await deps.requireRealtimeController()
+  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
+  await controller.ensureSessionConnected(sessionId)
+  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
+
+  let nextState = structuredClone(previousState)
+  for (const action of actions) nextState = desktopV3CacheReducer(nextState, action)
+  const routedView = desktopV3RoutedSessionView(response)
+  nextState.sessionViewsById[sessionId] = routedView
+  const routedSettings = routedView.agentic_settings
+  if (!routedSettings) throw new Error('Routed Desktop activation requires canonical agentic settings')
+  nextState.preferencesBySession[sessionId] = routedSettings.effective_preference
+    ?? routedSettings.stored_preference
+  nextState.agentModelPolicyBySession[sessionId] = routedSettings.agent_model_policy
+  if (routedView.has_active_plan !== undefined) nextState.hasActivePlanBySession[sessionId] = routedView.has_active_plan
+  if (routedView.active_plan !== undefined) nextState.plansBySession[sessionId] = routedView.active_plan
+
+  let published = false
+  try {
+    if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
+    published = true
+    deps.commitSnapshot(previousState, nextState, [...actions])
+    await onActivated?.(response)
+    return response
+  } catch (error) {
+    const ownsPublishedState = published && deps.getSnapshot() === nextState
+      && previousState.selectedSessionId === previousSelectedSessionId
+      && JSON.stringify(previousState.sessionOrderByScope) === JSON.stringify(previousSidebarOrderByScope)
+    const currentURL = deps.currentURL()
+    const routedSessionSuffix = `/${encodeURIComponent(sessionId)}`
+    const ownsRoute = shouldActivate() || (ownsPublishedState && currentURL.split(/[?#]/, 1)[0]?.endsWith(routedSessionSuffix) === true)
+    if (ownsPublishedState) deps.commitSnapshot(nextState, previousState, [])
+    if (ownsRoute && currentURL !== previousURL) deps.replaceURL(previousURL)
+    throw error
+  }
 }
 
 function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
@@ -632,84 +855,6 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
   }
 }
 
-interface WorktreeSettingsWire {
-  workspace_path?: string
-  enabled?: boolean
-  use_current_branch?: boolean
-  base_branch?: string
-  branch_name?: string
-  updated_at?: number
-}
-
-interface ManagedWorktreeWire {
-  path?: string
-  workspace_id?: string
-  branch?: string
-  detached?: boolean
-  exists?: boolean
-  managed?: boolean
-}
-
-interface WorktreeSettingsResponseWire {
-  ok?: boolean
-  worktrees?: WorktreeSettingsWire
-  managed?: ManagedWorktreeWire[]
-}
-
-function normalizeWorktreeBranchPrefix(value: string | undefined): string {
-  const trimmed = (value ?? '').trim().replace(/^\/+|\/+$/g, '')
-  if (!trimmed) return ''
-  if (trimmed.toLowerCase().endsWith('/<id>')) {
-    return trimmed.slice(0, -'/<id>'.length).replace(/^\/+|\/+$/g, '')
-  }
-  return trimmed
-}
-
-function normalizeManagedWorktreeBranch(value: string | undefined): string {
-  return (value ?? '').trim().replace(/^refs\/heads\//, '')
-}
-
-async function fetchWorktreeSessionSettings(workspacePath: string): Promise<{ branchPrefix: string; managedWorktrees: ManagedWorktreeOption[] }> {
-  const params = new URLSearchParams()
-  const normalizedWorkspacePath = workspacePath.trim()
-  if (normalizedWorkspacePath) params.set('workspace_path', normalizedWorkspacePath)
-  const response = await requestJson<WorktreeSettingsResponseWire>(`/v1/worktrees?${params.toString()}`)
-  const branchPrefix = normalizeWorktreeBranchPrefix(response.worktrees?.branch_name)
-  if (!branchPrefix) {
-    throw new Error('Worktree settings did not return a branch prefix')
-  }
-  const managedWorktrees = (response.managed ?? [])
-    .map((item) => ({
-      path: item.path?.trim() ?? '',
-      branch: normalizeManagedWorktreeBranch(item.branch),
-      workspaceID: item.workspace_id?.trim() ?? '',
-      exists: item.exists === true,
-      managed: item.managed === true,
-      detached: item.detached === true,
-    }))
-    .filter((item) => item.path && item.branch && item.exists && item.managed && !item.detached)
-    .sort((left, right) => left.branch.localeCompare(right.branch))
-    .map(({ path, branch, workspaceID }) => ({ path, branch, workspaceID }))
-  return { branchPrefix, managedWorktrees }
-}
-
-export function titleToWorktreeBranchSlug(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-}
-
-function normalizeWorktreeBranchSuffix(value: string): string {
-  return value.trim().replace(/^\/+|\/+$/g, '')
-}
-
-function composeWorktreeBranchName(prefix: string, suffix: string): string {
-  const normalizedPrefix = normalizeWorktreeBranchPrefix(prefix)
-  const normalizedSuffix = normalizeWorktreeBranchSuffix(suffix)
-  return normalizedSuffix ? `${normalizedPrefix}/${normalizedSuffix}` : normalizedPrefix
-}
-
 type SpeechRecognitionResultEventLike = Event & {
   results: ArrayLike<{ 0?: { transcript?: string }; isFinal?: boolean }>
 }
@@ -954,120 +1099,7 @@ function BackgroundTaskForm({ presentation, workspaceName, request, busy, error,
   )
 }
 
-function WorktreeSessionForm({ presentation, state, title, branch, selectedExistingPath, busy, authorityPending, error, onTitleChange, onBranchChange, onSelectedExistingPathChange, onSubmit, onClose }: {
-  presentation: 'dialog' | 'page'
-  state: WorktreeSessionModalState | null
-  title: string
-  branch: string
-  selectedExistingPath: string
-  busy: boolean
-  authorityPending: boolean
-  error: string | null
-  onTitleChange: (value: string) => void
-  onBranchChange: (value: string) => void
-  onSelectedExistingPathChange: (value: string) => void
-  onSubmit: () => void
-  onClose: () => void
-}) {
-  const reusingExistingWorktree = Boolean(selectedExistingPath.trim())
-  if (!state) {
-    return presentation === 'page' ? (
-      <section data-testid="mobile-worktree-page" className="flex h-full items-center justify-center bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono text-sm text-[var(--app-text-muted)]">
-        Loading worktree settings…
-      </section>
-    ) : null
-  }
-  const content = (
-    <>
-        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-3 sm:px-5 sm:py-4">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-[var(--app-text)]">Worktree Session</div>
-            <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{state.workspaceName || state.workspacePath}</div>
-          </div>
-          <button type="button" className="grid size-11 shrink-0 touch-manipulation place-items-center rounded-xl text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]" onClick={onClose} disabled={busy} title="Close" aria-label={presentation === 'page' ? 'Back to workspace' : 'Close worktree session dialog'}>
-            <X size={18} />
-          </button>
-        </div>
-        <form
-          className="flex min-h-0 flex-1 flex-col"
-          onSubmit={(event) => {
-            event.preventDefault()
-            onSubmit()
-          }}
-        >
-          <div data-creation-form-scroll className="grid min-h-0 flex-1 gap-4 overflow-y-auto px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-5">
-          <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
-            <span>Title:</span>
-            <input
-              name="title"
-              className="min-h-11 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[16px] text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
-              value={title}
-              onChange={(event) => onTitleChange(event.target.value)}
-              disabled={busy}
-              autoFocus={presentation === 'dialog'}
-            />
-          </label>
-          <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
-            <span>Reuse existing worktree:</span>
-            <select
-              className="min-h-11 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[16px] text-[var(--app-text)] outline-none focus:border-[var(--app-border-strong)]"
-              value={selectedExistingPath}
-              onChange={(event) => onSelectedExistingPathChange(event.target.value)}
-              disabled={busy || state.settingsLoading || state.managedWorktrees.length === 0}
-            >
-              <option value="">Create a new worktree branch…</option>
-              {state.managedWorktrees.map((item) => (
-                <option key={item.path} value={item.path}>{item.branch}</option>
-              ))}
-            </select>
-            <span className="text-[11px] text-[var(--app-text-subtle)]">Select a previous managed worktree to start a new conversation in it without creating or overwriting a branch.</span>
-          </label>
-          {!reusingExistingWorktree ? (
-            <label className="grid gap-1.5 text-xs text-[var(--app-text-muted)]">
-              <span>Branch suffix:</span>
-              <div className="flex min-h-11 min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-sm focus-within:border-[var(--app-border-strong)]">
-                <span className="flex max-w-[45%] shrink-0 items-center truncate border-r border-[var(--app-border)] bg-[var(--app-bg)] px-3 font-mono text-[var(--app-text-muted)]">
-                  {state.settingsLoading ? 'Loading…' : `${state.branchPrefix}/`}
-                </span>
-                <input
-                  name="branch"
-                  className="min-w-0 flex-1 bg-transparent px-3 text-[16px] text-[var(--app-text)] outline-none"
-                  value={branch}
-                  onChange={(event) => onBranchChange(event.target.value)}
-                  disabled={busy || state.settingsLoading || !state.branchPrefix.trim()}
-                  autoComplete="off"
-                />
-              </div>
-              <span className="text-[11px] text-[var(--app-text-subtle)]">Prefix comes from Worktree settings. Change it in Settings → Worktrees.</span>
-            </label>
-          ) : null}
-            {error ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs text-[var(--app-warning)]" role="alert">{error}</div> : null}
-          </div>
-          <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 max-sm:pb-[calc(0.75rem+var(--app-safe-area-bottom))] sm:flex sm:justify-end sm:px-5">
-            <Button className="min-h-11" type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button className="min-h-11" type="submit" disabled={busy || authorityPending || state.settingsLoading || !state.branchPrefix.trim() || !title.trim() || (!reusingExistingWorktree && !normalizeWorktreeBranchSuffix(branch))}>
-              {busy ? 'Creating…' : authorityPending ? 'Loading settings…' : 'Create session'}
-            </Button>
-          </div>
-        </form>
-    </>
-  )
-  if (presentation === 'page') {
-    return (
-      <section data-testid="mobile-worktree-page" className="flex h-full min-h-0 flex-col bg-[var(--app-surface)] pt-[var(--app-safe-area-top)] font-mono">
-        {content}
-      </section>
-    )
-  }
-  return (
-    <Dialog>
-      <DialogBackdrop onClick={busy ? undefined : onClose} />
-      <DialogPanel className="w-[min(520px,100%)] gap-0 overflow-hidden p-0 font-mono">{content}</DialogPanel>
-    </Dialog>
-  )
-}
-
-function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onCommit, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onCommit: (files: GitFileStatus[]) => void; onClose: () => void }) {
+function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onCommit, aiCommitControl, onClose }: { state: GitPanelState | null; snapshot: GitSnapshot | null; loading: boolean; error: string | null; onRefresh: () => void; onCommit: (files: GitFileStatus[]) => void; aiCommitControl?: ReactNode; onClose: () => void }) {
   if (!state) return null
   const files = snapshot?.files ?? []
   return (
@@ -1108,7 +1140,7 @@ function GitDetailsOverlay({ state, snapshot, loading, error, onRefresh, onCommi
                 ))}
               </div>
             </div>
-            {files.length > 0 ? <div className="flex justify-end"><Button type="button" onClick={() => onCommit(files)}>Commit changes…</Button></div> : null}
+            {files.length > 0 ? <div className="flex flex-wrap justify-end gap-2"><Button type="button" onClick={() => onCommit(files)}>Commit changes…</Button>{aiCommitControl}</div> : null}
           </>
         ) : <div className="border border-[var(--app-border)] px-3 py-4 text-xs text-[var(--app-text-subtle)]">No git repository detected for this workspace.</div>}
       </DialogPanel>
@@ -1396,15 +1428,6 @@ function formatRelativeTime(timestamp: number | null, now: number): string {
   return `${days} day${days === 1 ? '' : 's'}`
 }
 
-function sessionOriginLabel(session: DesktopSessionRecord, routeOptions: DesktopChatRoute[], fallbackSwarmName: string): string {
-  const route = resolveDesktopChatRouteFromSession(session, routeOptions, null)
-  if (route?.label.trim()) {
-    return route.label.trim()
-  }
-  const normalizedFallback = fallbackSwarmName.trim()
-  return normalizedFallback || 'host'
-}
-
 function sessionCommitSummary(session: DesktopSessionRecord): string {
   const count = Number(session.gitCommitCount ?? 0)
   if (!session.gitCommitDetected || count <= 0) {
@@ -1592,23 +1615,15 @@ function sessionPlanCheckpointCounts(session: DesktopSessionRecord): { activeInd
 }
 
 function sessionWorkspaceLabel(session: DesktopSessionRecord): string {
-  return session.workspaceName?.trim() || fallbackWorkspaceNameFromPath(session.workspacePath || '') || 'Workspace'
+  const workspaceName = session.workspaceName?.trim()
+  if (workspaceName) return workspaceName
+  const workspacePath = session.workspacePath?.trim().replace(/[\\/]+$/, '') ?? ''
+  const pathParts = workspacePath.split(/[\\/]/).filter(Boolean)
+  return pathParts[pathParts.length - 1] || workspacePath || 'Workspace'
 }
 
 function sessionBranchLabel(session: DesktopSessionRecord): string {
   return metadataText(session, 'swarm_v3_branch_label') || session.worktreeBranch?.trim() || session.gitBranch?.trim() || ''
-}
-
-function sessionRowMetadataLabel(session: DesktopSessionRecord): string {
-  const seen = new Set<string>()
-  return [sessionWorkspaceLabel(session), sessionBranchLabel(session)]
-    .filter((value) => {
-      const normalized = value.trim().toLowerCase()
-      if (!normalized || seen.has(normalized)) return false
-      seen.add(normalized)
-      return true
-    })
-    .join(' · ')
 }
 
 function sessionIsActive(session: DesktopSessionRecord): boolean {
@@ -1946,8 +1961,6 @@ interface SessionRowProps {
   active: boolean
   now: number
   session: DesktopSessionRecord
-  fallbackSwarmName: string
-  routeOptions: DesktopChatRoute[]
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   depth?: number
   childLabel?: string | null
@@ -1970,12 +1983,11 @@ interface SessionRowProps {
   onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, fallbackSwarmName, routeOptions, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
-  const originLabel = sessionOriginLabel(session, routeOptions, fallbackSwarmName)
-  const backgroundInfo = sessionBackgroundInfo(session, originLabel)
+  const backgroundInfo = sessionBackgroundInfo(session)
   const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
   const rowType = sessionSidebarRowType(session)
   const isPlanRow = rowType === 'plan_session'
@@ -1987,7 +1999,12 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
   const hasAgentChildren = agentSummary.total > 0
-  const metadataLabel = sessionRowMetadataLabel(session)
+  const workspaceLabel = sessionWorkspaceLabel(session)
+  const branchLabel = sessionBranchLabel(session)
+  const showWorktreeChip = Boolean(session.worktreeEnabled)
+  const showBranchLabel = !session.worktreeEnabled && Boolean(branchLabel)
+  const showTaskChip = Boolean(backgroundInfo)
+  const showActivePlan = session.mode === 'plan' && sessionHasCanonicalActiveRun(session)
   const relativeActivityLabel = sessionStatusDetail(session, now)
   const hasPendingPermission = sessionHasPendingPermission(session)
   const pendingPermissionAlertActive = hasPendingPermission && !active
@@ -2042,8 +2059,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     document.addEventListener('pointerdown', handlePointerDownOutside, true)
     return () => document.removeEventListener('pointerdown', handlePointerDownOutside, true)
   }, [actionsOpen, closeActionMenu])
-  const hasDetailsRowContent = Boolean(backgroundInfo)
-  const showDetailsRow = !isPlanRow && hasDetailsRowContent
   const pinned = sessionAllowsManualSidebarPin(session) && sessionManuallyPinnedInSidebar(session)
   const pinDisabled = pendingAction !== null || !sessionAllowsManualSidebarPin(session)
   const archiveDisabled = pendingAction !== null
@@ -2151,7 +2166,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const actionMenu = (
     <span
       ref={actionMenuRef}
-      className={cn('relative z-20 inline-flex shrink-0 items-center', actionsOpen ? 'z-40' : null)}
+      className={cn('relative z-20 inline-flex h-4 w-4 shrink-0 items-center', actionsOpen ? 'z-40' : null)}
       onPointerDownCapture={(event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -2242,7 +2257,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
         actionsOpen ? 'z-30' : null,
       )}
-      title={tooltip || metadataLabel}
+      title={tooltip || [workspaceLabel, showBranchLabel ? branchLabel : ''].filter(Boolean).join(' · ')}
     >
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -2281,7 +2296,8 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                     onChange={(event) => setRenameDraft(event.target.value)}
                     onClick={(event) => event.stopPropagation()}
                     onKeyDown={(event) => {
-                      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setRenameError(null); setRenaming(false) }
+                      event.stopPropagation()
+                      if (event.key === 'Escape') { event.preventDefault(); setRenameError(null); setRenaming(false) }
                     }}
                     className="h-6 w-full rounded border border-[var(--app-border-accent)] bg-[var(--app-bg-inset)] px-1.5 text-[12px] text-[var(--app-text)] outline-none"
                   />
@@ -2299,10 +2315,35 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
           {compactingActive ? <LoaderCircle size={10} className="animate-spin text-[var(--app-primary)]" aria-hidden="true" /> : null}
           {rightSideLabel ? <span className="max-w-[5.5rem] truncate text-right">{rightSideLabel}</span> : null}
-          <span className="inline-flex shrink-0 items-center gap-1">
-            {pinActionControl}
-            {archiveActionControl}
-            {actionMenu}
+          <span className="relative inline-flex h-4 w-14 shrink-0 items-center justify-end" data-sidebar-session-corner-controls>
+            <span
+              className={cn(
+                'absolute right-0 inline-flex items-center justify-end gap-1 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0',
+                actionsOpen ? 'opacity-0' : 'opacity-100',
+              )}
+              data-sidebar-session-metadata-icons
+            >
+              {showWorktreeChip ? (
+                <span className="inline-flex h-4 w-4 items-center justify-center" title="Worktree session">
+                  <GitBranch size={12} className={cn(SIDEBAR_SESSION_ICON_CLASS.worktree, 'opacity-80')} aria-label="Worktree session" />
+                </span>
+              ) : null}
+              {showTaskChip ? (
+                <span className="inline-flex h-4 w-4 items-center justify-center" title="Task session">
+                  <ListTodo size={12} className={cn(SIDEBAR_SESSION_ICON_CLASS.task, 'opacity-80')} aria-label="Task session" />
+                </span>
+              ) : null}
+              {showActivePlan ? (
+                <span className="inline-flex h-4 w-4 items-center justify-center" title="Active plan">
+                  <NotepadText size={12} className={cn(SIDEBAR_SESSION_ICON_CLASS.plan, 'opacity-80')} aria-label="Active plan" />
+                </span>
+              ) : null}
+            </span>
+            <span className="absolute right-0 inline-flex items-center justify-end gap-1" data-sidebar-session-action-icons>
+              {pinActionControl}
+              {archiveActionControl}
+              {actionMenu}
+            </span>
           </span>
           {showStatusCircle ? (
             <span
@@ -2321,7 +2362,15 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         </span>
       </div>
       <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-        <span className="min-w-0 truncate">{metadataLabel}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 truncate">{workspaceLabel}</span>
+          {showBranchLabel ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="min-w-0 truncate">{branchLabel}</span>
+            </>
+          ) : null}
+        </span>
         <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
           {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
         </span>
@@ -2346,18 +2395,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         </div>
       ) : null}
 
-      {showDetailsRow ? (
-        <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
-            {backgroundInfo ? (
-              <span className="inline-flex h-4 shrink-0 items-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 font-medium leading-none text-[var(--app-text-muted)]">
-                {backgroundInfo.badge}
-              </span>
-            ) : null}
-            {backgroundInfo?.targetLabel ? <span className="truncate">{backgroundInfo.targetLabel}</span> : null}
-          </div>
-        </div>
-      ) : null}
     </Link>
   )
 })
@@ -2367,8 +2404,6 @@ interface RenderSidebarSessionGroupsInput {
   presentation?: 'desktop' | 'mobile'
   routeSessionId: string
   now: number
-  fallbackSwarmName: string
-  routeOptions: DesktopChatRoute[]
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
   agentSummaries: Map<string, SessionAgentSummary>
@@ -2493,11 +2528,11 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                   data-sidebar-dirty-git-entry
                   className={`flex h-5 items-center gap-1 rounded px-1 text-[9px] font-medium hover:bg-[var(--app-surface-hover)] ${input.gitDirtyCount > 0 ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-muted)]'}`}
                   onClick={input.onOpenGit}
-                  aria-label={`Open Git details: ${input.gitAheadCount} ahead, ${input.gitBehindCount} behind, ${input.gitDirtyCount} dirty files`}
+                  aria-label={`Open Git details: ${input.gitAheadCount} ahead, ${input.gitBehindCount} behind, ${input.gitDirtyCount} uncommitted changes`}
                   title="Open Git details"
                 >
                   <span aria-hidden="true">↑{input.gitAheadCount} ↓{input.gitBehindCount}</span>
-                  <span>· {input.gitDirtyCount > 0 ? `${input.gitDirtyCount} dirty` : 'clean'}</span>
+                  <span>· {input.gitDirtyCount > 0 ? `${input.gitDirtyCount} uncommitted` : 'clean'}</span>
                 </button>
               ) : null}
               {groupControls}
@@ -2519,8 +2554,6 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             active={input.routeSessionId === node.session.id}
             now={input.now}
             session={node.session}
-            fallbackSwarmName={input.fallbackSwarmName}
-            routeOptions={input.routeOptions}
             workspaceSlug={input.workspaceSlug}
             depth={node.depth}
             childLabel={node.label}
@@ -2552,8 +2585,10 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
 export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown }
+  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newWorktree?: unknown; newPlan?: unknown }
   const requestedAgentSetup = search.agentSetup === '1'
+  const requestedNewWorktree = search.newWorktree === '1'
+  const requestedNewPlan = search.newPlan === '1'
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
@@ -2573,7 +2608,7 @@ export function DesktopAppPage() {
   const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
   const routeSessionId = mobileCreationPage ? '' : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
-  const { workspaces, currentWorkspacePath, loading: launcherWorkspacesLoading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
+  const { workspaces, loading: launcherWorkspacesLoading, setWorkspaceIcon } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
   const focusMode = sidebarDisplayMode === 'focus'
   const setSidebarDisplayMode = useCallback((mode: DesktopMainSidebarMode) => {
@@ -2584,7 +2619,6 @@ export function DesktopAppPage() {
   const [mobilePreviousSessionsOpen, setMobilePreviousSessionsOpen] = useState(false)
   const [backgroundTaskOpen, setBackgroundTaskOpen] = useState(false)
   const [backgroundTaskRequest, setBackgroundTaskRequest] = useState('')
-  const [backgroundTaskBusy, setBackgroundTaskBusy] = useState(false)
   const [backgroundTaskError, setBackgroundTaskError] = useState<string | null>(null)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
@@ -2595,14 +2629,31 @@ export function DesktopAppPage() {
   const [gitPanel, setGitPanel] = useState<GitPanelState | null>(null)
   const [gitCommitModal, setGitCommitModal] = useState<GitCommitModalState | null>(null)
   const [gitCommitMessage, setGitCommitMessage] = useState('')
+  const gitCommitMessageInputRef = useRef<HTMLInputElement | null>(null)
   const [gitCommitBusy, setGitCommitBusy] = useState(false)
+  const [gitAICommitPhase, setGitAICommitPhase] = useState<'generating' | 'committing' | null>(null)
+  const gitAICommitRunningRef = useRef(false)
   const [gitCommitError, setGitCommitError] = useState<string | null>(null)
+  const [workspaceActionPresentation, setWorkspaceActionPresentation] = useState<{ action: WorkspaceAction; mode: 'standalone' | 'post-commit'; workspacePath: string; sessionId: string; initialRun?: WorkspaceActionRun } | null>(null)
+  const [gitCommitIntegrate, setGitCommitIntegrate] = useState(false)
+  const [gitCommitArchive, setGitCommitArchive] = useState(false)
+  const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
+  const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
+  const [gitIntegrateHelpBusy, setGitIntegrateHelpBusy] = useState(false)
+  const [gitIntegrateArchive, setGitIntegrateArchive] = useState(false)
+  const [gitIntegrateError, setGitIntegrateError] = useState<string | null>(null)
+  const gitIntegrateAnchorRef = useRef<HTMLDivElement | null>(null)
+  const gitIntegratePopoutRef = useRef<HTMLDivElement | null>(null)
+  const [gitIntegratePopoutStyle, setGitIntegratePopoutStyle] = useState<CSSProperties>({ visibility: 'hidden' })
   const [planModal, setPlanModal] = useState<PlanModalState | null>(null)
   const [planModalError, setPlanModalError] = useState<string | null>(null)
   const [quickSettingsTab, setQuickSettingsTab] = useState<QuickSettingsTabID | null>(null)
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
-  const [sessionModeCommand, setSessionModeCommand] = useState<DesktopSessionModeCommand | null>(null)
+  const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+  const [newSessionEpoch, setNewSessionEpoch] = useState(0)
+  const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
   const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
@@ -2614,19 +2665,9 @@ export function DesktopAppPage() {
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [updateProgress, setUpdateProgress] = useState<DesktopUpdateProgressState>({ open: false, job: null, startedAt: null })
   const [desktopToast, setDesktopToast] = useState<DesktopToastState | null>(() => loadPendingDesktopToast())
-  const [worktreeSessionModal, setWorktreeSessionModal] = useState<WorktreeSessionModalState | null>(null)
-  const [worktreeSessionTitle, setWorktreeSessionTitle] = useState('')
-  const [worktreeSessionBranch, setWorktreeSessionBranch] = useState('')
-  const [worktreeSessionBranchOverridden, setWorktreeSessionBranchOverridden] = useState(false)
-  const [worktreeSessionExistingPath, setWorktreeSessionExistingPath] = useState('')
-  const [worktreeSessionCreating, setWorktreeSessionCreating] = useState(false)
-  const [worktreeSessionError, setWorktreeSessionError] = useState<string | null>(null)
-  const [newSessionModeByWorkspace, setNewSessionModeByWorkspace] = useState<Record<string, DesktopSessionMode>>({})
   const [uiSettings, setUISettings] = useState<UISettingsWire | null>(null)
   const [todoSavingWorkspacePath, setTodoSavingWorkspacePath] = useState<string | null>(null)
   const [workspaceLayout, setWorkspaceLayout] = useState<Record<string, SidebarWorkspaceLayout>>(() => loadSidebarWorkspaceLayout())
-  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
-  const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
   const [compactingSession, setCompactingSession] = useState<DesktopV3CompactingSessionState | null>(null)
   const [sidebarSessionActions, setSidebarSessionActions] = useState<Record<string, 'pin' | 'archive' | 'rename' | undefined>>({})
   const [sidebarSelectionMode, setSidebarSelectionMode] = useState(false)
@@ -2642,29 +2683,11 @@ export function DesktopAppPage() {
   const aiTaskLifecycleByID = useDesktopV3CacheSelector((state) => state.aiTasksById)
   const aiTaskObservedStateRef = useRef(new Map<string, WorkspaceTodoItem['aiState']>())
   const aiTaskTerminalToastRef = useRef(new Set<string>())
+  const routedActivationGenerationRef = useRef(0)
+  const routedActivationWorkspaceRef = useRef('')
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
+  const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
-  useEffect(() => {
-    if (!workspaceDropdownOpen) return
-
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null
-      if (target && !workspaceDropdownRef.current?.contains(target)) {
-        setWorkspaceDropdownOpen(false)
-      }
-    }
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setWorkspaceDropdownOpen(false)
-    }
-
-    document.addEventListener('pointerdown', handlePointerDown)
-    document.addEventListener('keydown', handleEscape)
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown)
-      document.removeEventListener('keydown', handleEscape)
-    }
-  }, [workspaceDropdownOpen])
-
   const workspaceByPath = useMemo<Map<string, WorkspaceEntry>>(
     () => new Map(workspaces.map((workspace) => [workspace.path, workspace] as const)),
     [workspaces],
@@ -2683,6 +2706,23 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
+  routedActivationWorkspaceRef.current = routeSessionId ? '' : routeWorkspace?.path.trim() ?? ''
+  useEffect(() => {
+    if (!workspaceDropdownOpen) return
+    const dismiss = (event: MouseEvent) => {
+      if (!workspaceDropdownRef.current?.contains(event.target as Node)) setWorkspaceDropdownOpen(false)
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setWorkspaceDropdownOpen(false)
+    }
+    document.addEventListener('mousedown', dismiss)
+    window.addEventListener('keydown', dismissOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', dismiss)
+      window.removeEventListener('keydown', dismissOnEscape)
+    }
+  }, [workspaceDropdownOpen])
+
   useEffect(() => {
     if (!desktopToast) {
       return
@@ -2737,7 +2777,6 @@ export function DesktopAppPage() {
     staleTime: 30_000,
   })
   const agentStateQuery = useQuery(agentStateQueryOptions())
-  const modelOptionsQuery = useQuery(modelOptionsQueryOptions())
   const modelProfilesQuery = useQuery(modelProfilesQueryOptions())
   const draftPreferenceQuery = useQuery(draftModelQueryOptions())
   useEffect(() => {
@@ -3066,21 +3105,13 @@ export function DesktopAppPage() {
     () => flattenVisibleSidebarSessionNodes(filteredSidebarTrees.nodes, expandedAgentSessions, routeSessionId),
     [expandedAgentSessions, filteredSidebarTrees.nodes, routeSessionId],
   )
-  const mobileWorkspaceSessionNodes = useMemo(
-    () => globalFlattenedSessionNodes.filter((node) => (
-      routeWorkspace?.path
-        ? desktopRouteWorkspacePathForSession(node.session, workspacePathByBindingId, knownWorkspacePaths) === routeWorkspace.path
-        : false
-    )),
-    [globalFlattenedSessionNodes, knownWorkspacePaths, routeWorkspace?.path, workspacePathByBindingId],
-  )
   const mobileActiveSessionNodes = useMemo(
-    () => mobileWorkspaceSessionNodes.filter((node) => sessionIsMobileActive(node.session)),
-    [mobileWorkspaceSessionNodes],
+    () => globalFlattenedSessionNodes.filter((node) => sessionIsMobileActive(node.session)),
+    [globalFlattenedSessionNodes],
   )
   const mobilePreviousSessionNodes = useMemo(
-    () => mobileWorkspaceSessionNodes.filter((node) => !sessionIsMobileActive(node.session)),
-    [mobileWorkspaceSessionNodes],
+    () => globalFlattenedSessionNodes.filter((node) => !sessionIsMobileActive(node.session)),
+    [globalFlattenedSessionNodes],
   )
   const visibleSidebarRootIDs = useMemo(
     () => sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, null),
@@ -3110,6 +3141,21 @@ export function DesktopAppPage() {
     refetchOnWindowFocus: true,
   })
   const gitSnapshot = gitStatusQuery.data?.status ?? null
+  const activeSessionWorktree = Boolean(activeGitSession?.worktreeEnabled && selectedGitWorkspacePath)
+  const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
+  const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
+  const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId) : ''
+  const gitReviewQuery = useQuery({
+    queryKey: ['session-worktree-review', selectedGitSessionId, activeSessionTargetWorkspacePath, gitSnapshot?.head_oid ?? '', gitSnapshot?.clean ?? false],
+    queryFn: () => reviewDesktopV3Worktrees({ workspacePath: activeSessionTargetWorkspacePath, graceHours: 1 }),
+    enabled: activeSessionWorktree && activeSessionTargetWorkspacePath !== '',
+    staleTime: 2_000,
+    refetchOnWindowFocus: true,
+  })
+  const activeSessionReviewCandidate = activeSessionWorktree
+    ? [...(gitReviewQuery.data?.retained ?? []), ...(gitReviewQuery.data?.done ?? [])].find((item) => item.session_id === selectedGitSessionId) ?? null
+    : null
+  const activeSessionIntegrateEligible = Boolean(activeSessionReviewCandidate?.integrate_eligible)
 
   useEffect(() => {
     if (!selectedGitWorkspacePath || document.visibilityState === 'hidden') return
@@ -3166,7 +3212,6 @@ export function DesktopAppPage() {
   const topWorkspaceSlug = topWorkspacePath
     ? workspaceSlugByPath.get(topWorkspacePath) ?? workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel })
     : routeWorkspaceSlug
-  const topWorkspaceOptions = useMemo(() => mergedSidebarWorkspaceEntries, [mergedSidebarWorkspaceEntries])
   const topWorkspaceGitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(topWorkspacePath),
     queryFn: () => fetchGitStatus(topWorkspacePath),
@@ -3183,16 +3228,20 @@ export function DesktopAppPage() {
     ? gitSnapshot?.branch
     : gitSnapshot?.branch || selectedWorkspace?.gitBranch || routeWorkspace?.gitBranch || topWorkspace?.gitBranch
   const sidebarWorkspaceContext = sidebarWorkspaceContextLabel(masterWorkspaceName || topWorkspaceLabel, sidebarWorkspaceBranch)
-  const defaultNewChatWorkspace = useMemo(() => {
-    const defaultPath = currentWorkspacePath?.trim() || ''
-    if (defaultPath) {
-      return mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === defaultPath)
-        ?? buildTemporaryWorkspaceEntry(defaultPath, fallbackWorkspaceNameFromPath(defaultPath))
-    }
-    return topWorkspace
-  }, [currentWorkspacePath, mergedSidebarWorkspaceEntries, topWorkspace])
-  const defaultNewChatWorkspacePath = defaultNewChatWorkspace?.path || ''
-  const defaultNewChatWorkspaceLabel = defaultNewChatWorkspace?.workspaceName?.trim() || 'Default Workspace'
+  const defaultNewChatWorkspacePath = topWorkspacePath
+  const defaultNewChatWorkspaceLabel = topWorkspaceLabel
+  const activeWorkspaceAuthority = useMemo<DesktopV3RoutedWorkspaceAuthority | null>(() => {
+    if (!topWorkspace) return null
+    const route = buildDesktopChatRouteOptions({
+      hostSwarmName: swarmName,
+      workspacePath: topWorkspace.path,
+      workspaceName: topWorkspace.workspaceName,
+      topologyRoutes: topWorkspace.topologyRoutes,
+      localWorkspaceBindingId: topWorkspace.localWorkspaceBindingId,
+      hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
+    }).find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions')
+    return route ? desktopV3RoutedWorkspaceAuthority(topWorkspace.path, route) : null
+  }, [currentSwarmTarget?.swarm_id, swarmName, topWorkspace])
   const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
     const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
       || selectedWorkspacePath
@@ -3202,26 +3251,52 @@ export function DesktopAppPage() {
     return workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName || fallbackWorkspaceNameFromPath(workspacePath) })
   }, [knownWorkspacePaths, routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
-  const globalSessionRouteOptions = useMemo(() => buildDesktopChatRouteOptions({
-    hostSwarmName: swarmName,
-    workspacePath: topWorkspacePath,
-    workspaceName: topWorkspaceLabel,
-    topologyRoutes: topWorkspace?.topologyRoutes ?? [],
-    localWorkspaceBindingId: topWorkspace?.localWorkspaceBindingId ?? '',
-    hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-  }), [currentSwarmTarget?.swarm_id, swarmName, topWorkspace?.localWorkspaceBindingId, topWorkspace?.topologyRoutes, topWorkspaceLabel, topWorkspacePath])
-  const reviewFixAgent = resolveReviewWorktreeRepairAgent(agentStateQuery.data)
-  const reviewFixAvailable = Boolean(reviewFixAgent && topWorkspacePath)
-  const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
-    if (!reviewFixAgent || !topWorkspacePath) return
-    const route = globalSessionRouteOptions.find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
+  const resolveDesktopRepairSessionAuthority = useCallback((owningWorkspacePath: string, sourceSessionId: string): DesktopRepairSessionAuthority | null => {
+    const normalizedOwningPath = owningWorkspacePath.trim()
+    const sourceSession = sessionById.get(sourceSessionId.trim()) ?? null
+    const sourceBindingId = sessionWorkspaceBindingId(sourceSession?.metadata)
+    const sourceWorkspacePath = sourceSession
+      ? desktopSidebarWorkspacePathForSession(sourceSession, workspacePathByBindingId)
+      : ''
+    const workspace = workspaceByPath.get(normalizedOwningPath)
+      ?? (sourceBindingId ? workspaceByPath.get(workspacePathByBindingId.get(sourceBindingId) ?? '') : null)
+      ?? workspaceByPath.get(sourceWorkspacePath)
+      ?? mergedSidebarWorkspaceEntries.find((candidate) => candidate.path === normalizedOwningPath || candidate.path === sourceWorkspacePath)
+      ?? null
+    if (!workspace) return null
+
+    const bindingId = workspace.localWorkspaceBindingId.trim() || sourceBindingId
+    const swarmId = currentSwarmTarget?.swarm_id?.trim()
+      || metadataStringValue(sourceSession?.metadata, 'swarm_v3_runtime_swarm_id')
+    const route = buildDesktopChatRouteOptions({
+      hostSwarmName: swarmName,
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      topologyRoutes: workspace.topologyRoutes,
+      localWorkspaceBindingId: bindingId,
+      hostSwarmId: swarmId || null,
+    }).find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions') ?? null
+    if (!route) return null
+
+    return {
+      workspace,
+      route,
+      workspaceSlug: workspaceSlugByPath.get(workspace.path)
+        ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName }),
+    }
+  }, [currentSwarmTarget?.swarm_id, mergedSidebarWorkspaceEntries, sessionById, swarmName, workspaceByPath, workspacePathByBindingId, workspaceSlugByPath])
+
+  const launchDesktopRepairSession = useCallback(async (input: DesktopRepairSessionLaunchInput): Promise<void> => {
+    const authority = resolveDesktopRepairSessionAuthority(input.owningWorkspacePath, input.sourceSessionId)
+    if (!authority) throw new Error('The owning workspace binding or primary runtime is unavailable')
+
     const draftPreference = draftPreferenceQuery.data?.preference
     const modelProfileState = modelProfilesQuery.data
     const defaultModelProfile = modelProfileState?.profiles.find((candidate) => candidate.profileId === modelProfileState.defaultProfileId) ?? null
     const defaultModelProfilePreference = defaultModelProfile
       ? preferenceFromModelProfile(defaultModelProfile, 'auto', defaultModelProfile.updatedAt)
       : null
-    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], reviewFixAgent, 'auto')
+    const agentModel = resolveDesktopV3AgentModelLock(agentStateQuery.data?.profiles ?? [], DESKTOP_REPAIR_AGENT_NAME)
     const preference = defaultModelProfilePreference ?? (agentModel.locked
       ? {
           provider: agentModel.provider,
@@ -3231,47 +3306,72 @@ export function DesktopAppPage() {
           contextMode: draftPreference?.contextMode || '',
         }
       : draftPreference)
-    const modelProfileChoice = defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined
-    if (!route || !preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
-      setNeedsReviewCleanupOpen(false)
-      setDesktopToast({ message: 'Swarm could not start a repair session because its Desktop V3 route or model preference is unavailable.', tone: 'error' })
-      return
+    if (!preference?.provider?.trim() || !preference.model?.trim() || !preference.thinking?.trim()) {
+      throw new Error('The Desktop V3 model preference is unavailable')
     }
+
+    const operation = createDesktopV3NewSessionOperation({
+      workspacePath: authority.workspace.path,
+      workspaceName: authority.workspace.workspaceName,
+      route: authority.route,
+      prompt: input.prompt,
+      title: input.title,
+      mode: 'auto',
+      agentName: DESKTOP_REPAIR_AGENT_NAME,
+      modelProfileChoice: defaultModelProfilePreference ? { kind: 'account-default' as const } : undefined,
+      worktree: { mode: 'off' },
+      preference: {
+        provider: preference.provider,
+        model: preference.model,
+        thinking: preference.thinking,
+        serviceTier: preference.serviceTier,
+        contextMode: preference.contextMode,
+      },
+      sessionMetadata: {
+        ...input.sessionMetadata,
+        source: input.source,
+        source_session_id: input.sourceSessionId,
+        workspace_path: authority.workspace.path,
+      },
+      messageMetadata: {
+        ...input.messageMetadata,
+        source: input.source,
+        source_session_id: input.sourceSessionId,
+      },
+    })
+    await startNewDesktopV3Session({
+      operation,
+      onSessionStarted: (sessionId) => {
+        void navigate({
+          to: '/$workspaceSlug/$sessionId',
+          params: { workspaceSlug: authority.workspaceSlug, sessionId },
+        })
+      },
+    })
+  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, modelProfilesQuery.data, navigate, resolveDesktopRepairSessionAuthority])
+
+  const reviewFixAvailable = Boolean(topWorkspacePath)
+  const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
     setNeedsReviewCleanupOpen(false)
     try {
-      const operation = createDesktopV3NewSessionOperation({
-        workspacePath: topWorkspacePath,
-        workspaceName: topWorkspaceLabel,
-        route,
+      await launchDesktopRepairSession({
+        owningWorkspacePath: topWorkspacePath,
+        sourceSessionId: failure.candidate.session_id,
         prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
         title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
-        mode: 'auto',
-        agentName: reviewFixAgent,
-        modelProfileChoice,
-        worktree: { mode: 'off' },
-        preference: {
-          provider: preference.provider,
-          model: preference.model,
-          thinking: preference.thinking,
-          serviceTier: preference.serviceTier,
-          contextMode: preference.contextMode,
-        },
-        sessionMetadata: { source: 'desktop-v3-review-worktrees-recovery', workspace_path: topWorkspacePath },
-        messageMetadata: { source: 'desktop-v3-review-worktrees-recovery', failed_session_id: failure.candidate.session_id },
-      })
-      await startNewDesktopV3Session({
-        operation,
-        onSessionStarted: (sessionId) => {
-          void navigate({
-            to: '/$workspaceSlug/$sessionId',
-            params: { workspaceSlug: topWorkspaceSlug, sessionId },
-          })
+        source: 'desktop-v3-review-worktrees-recovery',
+        messageMetadata: {
+          failed_session_id: failure.candidate.session_id,
+          worktree_branch: failure.candidate.worktree_branch,
+          target_branch: failure.candidate.target_branch,
+          target_workspace_path: topWorkspacePath,
+          integration_error: failure.error,
         },
       })
     } catch (cause) {
       setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
     }
-  }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, globalSessionRouteOptions, modelProfilesQuery.data, navigate, reviewFixAgent, topWorkspaceLabel, topWorkspacePath, topWorkspaceSlug])
+  }, [launchDesktopRepairSession, topWorkspacePath])
 
   useEffect(() => {
     if (!routeSessionId) return
@@ -3414,10 +3514,89 @@ export function DesktopAppPage() {
     })
   }, [navigate, workspaceSlugByPath])
 
-  const handleStartNewSessionInWorkspace = useCallback((wsPath: string, wsName: string) => {
+  const handleStartNewSessionInWorkspace = useCallback((
+    wsPath: string,
+    wsName: string,
+    options: { prompt?: string; worktreeRequested?: boolean; planModeRequested?: boolean } = {},
+  ) => {
+    const nextIntent = {
+      workspacePath: wsPath,
+      prompt: options.prompt?.trim() ?? '',
+      worktreeRequested: options.worktreeRequested === true,
+      planModeRequested: options.planModeRequested === true,
+    }
+    // An explicit New Session gesture is an abandonment boundary, not an
+    // interrupted-start retry. Drop persisted retry identity and force a fresh
+    // pane even when navigation targets the workspace URL already on screen.
+    clearDesktopV3RoutedStartOperation()
+    routedActivationGenerationRef.current += 1
+    setNewSessionEpoch((current) => current + 1)
+    setNewSessionIntent(nextIntent)
     dispatchDesktopV3Cache(selectSession(undefined))
-    handleOpenWorkspace(wsPath, wsName)
-  }, [handleOpenWorkspace])
+    setMobileSidebarOpen(false)
+    const workspaceSlug = workspaceSlugByPath.get(wsPath)
+      ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
+    const search = {
+      ...(nextIntent.worktreeRequested ? { newWorktree: '1' } : {}),
+      ...(nextIntent.planModeRequested ? { newPlan: '1' } : {}),
+    }
+    void navigate({ to: '/$workspaceSlug', params: { workspaceSlug }, search })
+    setComposerFocusSignal((current) => current + 1)
+  }, [navigate, workspaceSlugByPath])
+
+  const handleRoutedSessionResolved = useCallback(async (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority): Promise<void> => {
+    const expectedWorkspacePath = authority.workspace_path.trim()
+    if (!expectedWorkspacePath || routedActivationWorkspaceRef.current !== expectedWorkspacePath) {
+      throw new Error('Routed Desktop activation is stale')
+    }
+    const activationGeneration = ++routedActivationGenerationRef.current
+    let canonicalWorkspace: WorkspaceEntry
+    try {
+      const returnedAuthority = desktopV3RoutedResultResponse(result).session_view.identity
+      const sourceWorkspacePath = returnedAuthority.source_workspace_path.trim()
+      const runtimeWorkspacePath = returnedAuthority.runtime_workspace_path.trim()
+      const expectedRuntimeWorkspacePath = authority.runtime_workspace_path.trim()
+      const runtimeAuthorityMatches = returnedAuthority.worktree_enabled
+        ? runtimeWorkspacePath === returnedAuthority.worktree_root_path?.trim()
+        : runtimeWorkspacePath === expectedRuntimeWorkspacePath
+      if (sourceWorkspacePath !== expectedWorkspacePath
+        || returnedAuthority.workspace_binding_id?.trim() !== authority.workspace_binding_id
+        || returnedAuthority.runtime_swarm_id?.trim() !== authority.swarm_id
+        || !runtimeAuthorityMatches) {
+        throw new Error('Routed Desktop start returned authority for a different workspace')
+      }
+      canonicalWorkspace = workspaceByPath.get(sourceWorkspacePath)
+        ?? workspaces.find((workspace) => workspace.workspaceId && workspace.workspaceId === returnedAuthority.source_workspace_id)
+        ?? (() => { throw new Error('Routed Desktop start returned an unknown source workspace') })()
+    } catch (error) {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Routed session authority is invalid.', tone: 'error' })
+      throw error
+    }
+    const activationStillCurrent = () => activationGeneration === routedActivationGenerationRef.current
+      && routedActivationWorkspaceRef.current === expectedWorkspacePath
+    await activateDesktopV3RoutedSession(
+      result,
+      desktopV3RoutedActivationDeps,
+      activationStillCurrent,
+      async (response) => {
+        if (!activationStillCurrent()) throw new Error('Routed Desktop activation is stale')
+        const identity = response.session_view.identity
+        const workspaceSlug = workspaceSlugByPath.get(canonicalWorkspace.path)
+          ?? workspaceRouteSlugBase({ path: canonicalWorkspace.path, workspaceName: identity.source_workspace_name })
+        await navigate({
+          to: '/$workspaceSlug/$sessionId',
+          params: { workspaceSlug, sessionId: response.session_id },
+          replace: true,
+        })
+        setMobileSidebarOpen(false)
+      },
+    ).catch((error) => {
+      if (activationStillCurrent()) {
+        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to activate routed session.', tone: 'error' })
+      }
+      throw error
+    })
+  }, [navigate, workspaceByPath, workspaces, workspaceSlugByPath])
 
   const handleArchivePlanSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -3584,170 +3763,6 @@ export function DesktopAppPage() {
       }
     : null
 
-  const openWorktreeSessionModal = useCallback((input: {
-    workspace: WorkspaceEntry
-    workspaceSlug: string
-    routeOptions: DesktopChatRoute[]
-    presentation?: 'dialog' | 'page'
-  }) => {
-    const workspacePath = input.workspace.path
-    setWorktreeSessionModal({
-      presentation: input.presentation ?? 'dialog',
-      workspacePath,
-      workspaceName: input.workspace.workspaceName,
-      workspaceSlug: input.workspaceSlug,
-      routeOptions: input.routeOptions,
-      branchPrefix: '',
-      managedWorktrees: [],
-      settingsLoading: true,
-    })
-    setWorktreeSessionTitle('')
-    setWorktreeSessionBranch('')
-    setWorktreeSessionBranchOverridden(false)
-    setWorktreeSessionExistingPath('')
-    setWorktreeSessionError(null)
-    void fetchWorktreeSessionSettings(workspacePath)
-      .then(({ branchPrefix, managedWorktrees }) => {
-        setWorktreeSessionModal((current) => current?.workspacePath === workspacePath
-          ? { ...current, branchPrefix, managedWorktrees, settingsLoading: false }
-          : current)
-      })
-      .catch((error) => {
-        setWorktreeSessionModal((current) => current?.workspacePath === workspacePath
-          ? { ...current, settingsLoading: false }
-          : current)
-        setWorktreeSessionError(error instanceof Error ? error.message : 'Failed to load worktree settings')
-      })
-  }, [])
-
-  const closeWorktreeSessionModal = useCallback(() => {
-    if (worktreeSessionCreating) return
-    setWorktreeSessionModal(null)
-    setWorktreeSessionError(null)
-    if (mobileCreationPage === 'worktree' && routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
-    }
-  }, [mobileCreationPage, navigate, routeWorkspaceSlug, worktreeSessionCreating])
-
-  const handleCreateWorktreeSession = useCallback(async () => {
-    if (!worktreeSessionModal || worktreeSessionCreating) return
-    const title = worktreeSessionTitle.trim()
-    const existingPath = worktreeSessionExistingPath.trim()
-    const existingWorktree = existingPath ? worktreeSessionModal.managedWorktrees.find((item) => item.path === existingPath) ?? null : null
-    const branchSuffix = normalizeWorktreeBranchSuffix(worktreeSessionBranch)
-    const branchPrefix = normalizeWorktreeBranchPrefix(worktreeSessionModal.branchPrefix)
-    const branch = existingWorktree?.branch ?? composeWorktreeBranchName(branchPrefix, branchSuffix)
-    if (worktreeSessionModal.settingsLoading) {
-      setWorktreeSessionError('Worktree settings are still loading.')
-      return
-    }
-    if (!branchPrefix) {
-      setWorktreeSessionError('Worktree settings did not return a branch prefix.')
-      return
-    }
-    if (!title) {
-      setWorktreeSessionError('Title is required.')
-      return
-    }
-    if (existingPath && !existingWorktree) {
-      setWorktreeSessionError('Selected worktree is no longer available.')
-      return
-    }
-    if (!existingWorktree && !branchSuffix) {
-      setWorktreeSessionError('Branch suffix is required.')
-      return
-    }
-    const selectedRoute = worktreeSessionModal.routeOptions.find((route) => getDesktopSessionCreateTarget(route).endpoint === '/v3/sessions') ?? null
-    if (!selectedRoute) {
-      setWorktreeSessionError('No writable self/host Desktop V3 route is available for this workspace.')
-      return
-    }
-    if (agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending) {
-      setWorktreeSessionError('Desktop agent and model-profile settings are still loading.')
-      return
-    }
-    if (agentStateQuery.error || modelOptionsQuery.error || modelProfilesQuery.error || draftPreferenceQuery.error) {
-      setWorktreeSessionError('Desktop agent and model-profile settings could not be loaded.')
-      return
-    }
-    if (!agentStateQuery.data || !modelOptionsQuery.data || !modelProfilesQuery.data) {
-      setWorktreeSessionError('Desktop agent and model-profile settings are unavailable.')
-      return
-    }
-    let defaults: ReturnType<typeof resolveDesktopWorktreeSessionDefaults>
-    try {
-      defaults = resolveDesktopWorktreeSessionDefaults({
-        agentState: agentStateQuery.data,
-        modelProfiles: modelProfilesQuery.data,
-        modelOptions: modelOptionsQuery.data,
-        draftPreference: draftPreferenceQuery.data,
-        explicitMode: newSessionModeByWorkspace[worktreeSessionModal.workspacePath],
-        globalDefaultMode: normalizeDefaultNewSessionMode((uiSettingsQuery.data ?? uiSettings)?.chat?.default_new_session_mode),
-      })
-    } catch (error) {
-      setWorktreeSessionError(error instanceof Error ? error.message : 'Desktop worktree session settings are unresolved.')
-      return
-    }
-    setWorktreeSessionCreating(true)
-    setWorktreeSessionError(null)
-    try {
-      const operation = createDesktopV3CreateOnlySessionOperation({
-        workspacePath: worktreeSessionModal.workspacePath,
-        workspaceName: worktreeSessionModal.workspaceName,
-        route: selectedRoute,
-        title,
-        mode: defaults.mode,
-        agentName: defaults.agentName,
-        preference: {
-          provider: defaults.preference.provider,
-          model: defaults.preference.model,
-          thinking: defaults.preference.thinking,
-          serviceTier: defaults.preference.serviceTier,
-          contextMode: defaults.preference.contextMode,
-        },
-        modelProfileChoice: defaults.modelProfileChoice,
-        sessionMetadata: {
-          source: 'desktop-v3',
-          workspace_path: worktreeSessionModal.workspacePath,
-        },
-        worktree: { mode: 'on', branchName: branch, existingPath: existingWorktree?.path },
-      })
-      await startDesktopV3CreateOnlySession({
-        operation,
-        onSessionStarted: (sessionId) => {
-          void navigate({
-            to: '/$workspaceSlug/$sessionId',
-            params: { workspaceSlug: worktreeSessionModal.workspaceSlug, sessionId },
-          })
-        },
-      })
-      setWorktreeSessionModal(null)
-      setMobileSidebarOpen(false)
-      setDesktopToast({ message: `Created worktree session on ${branch}`, tone: 'success' })
-    } catch (error) {
-      setWorktreeSessionError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setWorktreeSessionCreating(false)
-    }
-  }, [agentStateQuery.data, agentStateQuery.error, agentStateQuery.isPending, draftPreferenceQuery.data, draftPreferenceQuery.error, draftPreferenceQuery.isPending, modelOptionsQuery.data, modelOptionsQuery.error, modelOptionsQuery.isPending, modelProfilesQuery.data, modelProfilesQuery.error, modelProfilesQuery.isPending, navigate, newSessionModeByWorkspace, uiSettings, uiSettingsQuery.data, worktreeSessionBranch, worktreeSessionCreating, worktreeSessionExistingPath, worktreeSessionModal, worktreeSessionTitle])
-
-  useEffect(() => {
-    if (mobileCreationPage !== 'worktree' || !routeWorkspace?.path || worktreeSessionModal?.presentation === 'page') return
-    openWorktreeSessionModal({
-      workspace: routeWorkspace,
-      workspaceSlug: routeWorkspaceSlug || workspaceRouteSlugBase({ path: routeWorkspace.path, workspaceName: routeWorkspace.workspaceName }),
-      presentation: 'page',
-      routeOptions: buildDesktopChatRouteOptions({
-        hostSwarmName: swarmName,
-        workspacePath: routeWorkspace.path,
-        workspaceName: routeWorkspace.workspaceName,
-        topologyRoutes: routeWorkspace.topologyRoutes,
-        localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
-        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-      }),
-    })
-  }, [currentSwarmTarget?.swarm_id, mobileCreationPage, openWorktreeSessionModal, routeWorkspace, routeWorkspaceSlug, swarmName, worktreeSessionModal])
-
   const openPlanModalForSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) return
@@ -3825,55 +3840,82 @@ export function DesktopAppPage() {
         setDesktopToast({ message: 'Desktop shortcuts differ from TUI keybindings. Open Settings → Shortcuts for the Desktop list.', tone: 'info' })
         return
       case 'new-session': {
-        const session = routeSessionId ? sessionById.get(routeSessionId) : null
+        const parsed = parseDesktopNewSessionCommand(draft) ?? {
+          prompt: '',
+          worktreeRequested: action.worktreeRequested,
+          planModeRequested: action.planModeRequested,
+        }
+        if (!routeSessionId) {
+          setDesktopToast({ message: 'You’re already starting a new session—just type your request in the chat.', tone: 'info' })
+          return
+        }
+        const session = sessionById.get(routeSessionId)
         const workspacePath = session?.workspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = session?.workspaceName || selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
-        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName)
+        if (workspacePath) handleStartNewSessionInWorkspace(workspacePath, workspaceName, parsed)
         return
       }
-      case 'queue-ai-task': {
+      case 'start-background-router-session': {
         const { request, mode } = parseDesktopTaskCommand(draft)
         if (!request) {
           const error = new Error('Enter a task request after /task.')
           setDesktopToast({ message: error.message, tone: 'error' })
           throw error
         }
-        const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || topWorkspacePath
-        if (!workspacePath) {
-          const error = new Error('Select a workspace before queuing a task.')
-          setDesktopToast({ message: error.message, tone: 'error' })
-          throw error
-        }
-        const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+        let launch: ReturnType<typeof postDesktopV3BackgroundRouterSessionStart>
         try {
-          const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, mode, routeSessionId ?? undefined)
-          dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
-          setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
-          setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
-          if (result.item.managedSessionId || result.item.aiState === 'in_progress') {
-            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} started.`, tone: 'info' })
-          } else if (result.item.aiState === 'completed') {
-            aiTaskTerminalToastRef.current.add(result.item.id)
-            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} completed.`, tone: 'success' })
-          } else if (result.item.aiState === 'failed') {
-            aiTaskTerminalToastRef.current.add(result.item.id)
-            setDesktopToast({ message: result.item.aiError || 'Swarm could not start the task.', tone: 'error' })
-          } else if (result.item.aiState === 'cancelled') {
-            aiTaskTerminalToastRef.current.add(result.item.id)
-            setDesktopToast({ message: `${result.item.aiDisplayTitle || result.item.text || 'Task'} was cancelled.`, tone: 'info' })
-          } else {
-            setDesktopToast({ message: result.item.aiState === 'preparing' ? 'Swarm is preparing the queued task.' : 'Task queued for Swarm.', tone: 'info' })
-          }
+          if (!activeWorkspaceAuthority) throw new Error('Background Router session requires the active workspace authority')
+          launch = postDesktopV3BackgroundRouterSessionStart({
+            ...activeWorkspaceAuthority,
+            input: request,
+            client_request_id: clientRequestId,
+            agent_name: 'swarm',
+            metadata: { source: 'desktop-v3-task-command' },
+            plan_mode_requested: mode === 'plan',
+          })
         } catch (error) {
-          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to queue task', tone: 'error' })
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
           throw error
         }
+        setDesktopToast({ message: 'Background Router task sent.', tone: 'success' })
+        void launch.catch((error) => {
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
+        })
         return
       }
       case 'show-help':
         setDesktopToast({ message: 'Slash commands: use ↑/↓ to choose, Enter to run, Tab to insert.', tone: 'info' })
         return
+      case 'toggle-tips': {
+        try {
+          const result = await executeDesktopTipsCommand(
+            draft,
+            normalizeShowTipsEnabled(uiSettingsQuery.data ?? uiSettings),
+            saveShowTipsSetting,
+          )
+          if (!result) {
+            setDesktopToast({ message: 'Use /tips, /tips on, /tips off, /tips toggle, or /tips status.', tone: 'error' })
+            return
+          }
+          if (result.saved) {
+            setUISettings(result.saved)
+            queryClient.setQueryData(uiSettingsQueryKey(), result.saved)
+          }
+          setDesktopToast({
+            message: result.mode === 'status'
+              ? `Home tips are ${result.enabled ? 'on' : 'off'}.`
+              : `Home tips turned ${result.enabled ? 'on' : 'off'}.`,
+            tone: result.mode === 'status' ? 'info' : 'success',
+          })
+        } catch (error) {
+          setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to update home tips.', tone: 'error' })
+        }
+        return
+      }
+      case 'open-action-chooser':
       case 'open-model-picker':
+      case 'toggle-thinking':
       case 'compact-session':
         return
       default: {
@@ -3881,7 +3923,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath])
+  }, [activeWorkspaceAuthority, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath, uiSettings, uiSettingsQuery.data])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -3974,11 +4016,6 @@ export function DesktopAppPage() {
         handleOpenLatestNeedsApproval()
         return
       }
-      if (desktopShortcutMatches(event, 'm') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
-        event.preventDefault()
-        setSessionModeCommand('toggle-plan-auto')
-        return
-      }
       if (desktopShortcutMatches(event, 'p') && (!targetBlocksDesktopShortcuts || insideChatComposer)) {
         event.preventDefault()
         handleOpenPreviousChat()
@@ -4020,7 +4057,7 @@ export function DesktopAppPage() {
       description: 'Open the numbered workspace picker and press 1–9 or 0 to switch.',
       keys: ['Alt', 'W'],
       availability: 'Available anywhere in Desktop unless another modal owns the shortcut.',
-      enabled: topWorkspaceOptions.length > 0,
+      enabled: mergedSidebarWorkspaceEntries.length > 0,
       disabledReason: 'No workspaces are available.',
       icon: Folder,
       onRun: () => {
@@ -4090,23 +4127,7 @@ export function DesktopAppPage() {
         handleOpenPreviousChat()
       },
     },
-    {
-      id: 'toggle-plan-auto',
-      label: 'Toggle plan/auto mode',
-      description: 'Switch the active chat composer between plan and auto mode.',
-      keys: ['⌘/Ctrl', 'Alt', 'M'],
-      availability: 'Requires an active Desktop chat route.',
-      enabled: Boolean(routeSessionId || (routeWorkspaceSlug && routeWorkspace?.path)),
-      disabledReason: 'Open a Desktop chat composer to toggle plan/auto mode.',
-      icon: CheckCircle2,
-      onRun: () => {
-        if (routeSessionId || (routeWorkspaceSlug && routeWorkspace?.path)) {
-          setSessionModeCommand('toggle-plan-auto')
-          setQuickActionsOpen(false)
-        }
-      },
-    },
-  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, topWorkspaceLabel, topWorkspaceOptions.length, topWorkspacePath])
+  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, mergedSidebarWorkspaceEntries.length, topWorkspaceLabel, topWorkspacePath])
 
 
   const runDesktopUpdate = useCallback(async () => {
@@ -4279,78 +4300,56 @@ export function DesktopAppPage() {
   }, [navigate, routeWorkspaceSlug])
 
   const closeBackgroundTaskModal = useCallback(() => {
-    if (backgroundTaskBusy) return
     setBackgroundTaskOpen(false)
     setBackgroundTaskError(null)
     if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
       void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
     }
-  }, [backgroundTaskBusy, mobileCreationPage, navigate, routeWorkspaceSlug])
+  }, [mobileCreationPage, navigate, routeWorkspaceSlug])
 
-  const handleQueueBackgroundTask = useCallback(async (submittedRequest = backgroundTaskRequest) => {
+  const handleStartBackgroundRouterSession = useCallback((submittedRequest = backgroundTaskRequest) => {
     const request = submittedRequest.trim()
-    const workspacePath = routeWorkspace?.path.trim() ?? ''
-    if (!request || !workspacePath || backgroundTaskBusy) return
-    setBackgroundTaskBusy(true)
+    if (!request) return
     setBackgroundTaskError(null)
-    const idempotencyKey = globalThis.crypto?.randomUUID?.() ?? `task-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
+    let launch: ReturnType<typeof postDesktopV3BackgroundRouterSessionStart>
     try {
-      const result = await createWorkspaceAITask(workspacePath, request, idempotencyKey, 'auto')
-      dispatchDesktopV3Cache({ type: 'aiTasks.mergeItems', items: [result.item] })
-      setTodoItems((current) => ({ ...current, [workspacePath]: upsertWorkspaceTodoItem(current[workspacePath] ?? [], result.item) }))
-      setTodoSummaries((current) => ({ ...current, [workspacePath]: normalizeWorkspaceTodoSummary(result.summary) }))
-      if (result.item.aiState === 'failed') {
-        setBackgroundTaskError(result.item.aiError || 'Swarm could not start the task.')
-        return
-      }
-      if (result.item.aiState === 'completed' || result.item.aiState === 'cancelled') {
-        aiTaskTerminalToastRef.current.add(result.item.id)
-      }
-      setBackgroundTaskOpen(false)
-      setBackgroundTaskRequest('')
-      const taskTitle = result.item.aiDisplayTitle || result.item.text || 'Task'
-      setDesktopToast(result.item.aiState === 'completed'
-        ? { message: `${taskTitle} completed.`, tone: 'success' }
-        : result.item.aiState === 'cancelled'
-          ? { message: `${taskTitle} was cancelled.`, tone: 'info' }
-          : { message: result.item.aiState === 'in_progress' ? `${taskTitle} started.` : 'Task queued for Swarm.', tone: 'info' })
-      if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
-        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
-      }
+      if (!activeWorkspaceAuthority) throw new Error('Background Router session requires the active workspace authority')
+      launch = postDesktopV3BackgroundRouterSessionStart({
+        ...activeWorkspaceAuthority,
+        input: request,
+        client_request_id: clientRequestId,
+        agent_name: 'swarm',
+        metadata: { source: 'desktop-v3-background-task-form' },
+        plan_mode_requested: false,
+      })
     } catch (error) {
-      setBackgroundTaskError(error instanceof Error ? error.message : 'Failed to start task')
-    } finally {
-      setBackgroundTaskBusy(false)
-    }
-  }, [backgroundTaskBusy, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspace?.path, routeWorkspaceSlug])
-
-  const openRouteWorkspaceWorktree = useCallback(() => {
-    if (!routeWorkspace?.path) return
-    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 639px)').matches && routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/worktree', params: { workspaceSlug: routeWorkspaceSlug } })
+      const message = error instanceof Error ? error.message : 'Failed to start background Router session'
+      setBackgroundTaskError(message)
+      setDesktopToast({ message, tone: 'error' })
       return
     }
-    openWorktreeSessionModal({
-      workspace: routeWorkspace,
-      workspaceSlug: routeWorkspaceSlug || workspaceRouteSlugBase({ path: routeWorkspace.path, workspaceName: routeWorkspace.workspaceName }),
-      routeOptions: buildDesktopChatRouteOptions({
-        hostSwarmName: swarmName,
-        workspacePath: routeWorkspace.path,
-        workspaceName: routeWorkspace.workspaceName,
-        topologyRoutes: routeWorkspace.topologyRoutes,
-        localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
-        hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-      }),
+    setBackgroundTaskOpen(false)
+    setBackgroundTaskRequest('')
+    setDesktopToast({ message: 'Background Router task sent.', tone: 'success' })
+    if (mobileCreationPage === 'task' && routeWorkspaceSlug) {
+      void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
+    }
+    void launch.catch((error) => {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to start background Router session', tone: 'error' })
     })
-  }, [currentSwarmTarget?.swarm_id, navigate, openWorktreeSessionModal, routeWorkspace, routeWorkspaceSlug, swarmName])
+  }, [activeWorkspaceAuthority, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspaceSlug])
+
+  const openRouteWorkspaceWorktree = useCallback((workspace: WorkspaceEntry | null = routeWorkspace) => {
+    if (!workspace?.path) return
+    handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName, { worktreeRequested: true })
+  }, [handleStartNewSessionInWorkspace, routeWorkspace])
 
   const renderMobileSessions = (nodes: SidebarSessionNode[]) => renderSidebarSessionGroups({
     nodes,
     presentation: 'mobile',
     routeSessionId,
     now: sidebarNow,
-    fallbackSwarmName: swarmName,
-    routeOptions: globalSessionRouteOptions,
     workspaceSlug: globalSessionWorkspaceSlug,
     expandedAgentSessions,
     agentSummaries: sidebarAgentSummaries,
@@ -4383,27 +4382,45 @@ export function DesktopAppPage() {
   })
 
   const mobileSessionQuickMenu = routeWorkspace?.path ? (
-    <div className="flex min-h-0 w-full flex-1 flex-col gap-4 pb-2" data-testid="mobile-workspace-home">
-      <section className="shrink-0" aria-label="Workspace actions">
-        <div className="grid grid-cols-2 gap-3">
-          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)]" onClick={openBackgroundTaskModal}>
-            <ListChecks size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
-            <span className="text-sm font-semibold text-[var(--app-text)]">Task</span>
-          </button>
-          <button type="button" className="flex min-h-20 touch-manipulation flex-col items-start justify-between rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left shadow-sm transition active:bg-[var(--app-surface-hover)] disabled:opacity-50" onClick={openRouteWorkspaceWorktree} disabled={!routeWorkspace}>
-            <GitBranch size={21} className="text-[var(--app-primary)]" aria-hidden="true" />
-            <span className="text-sm font-semibold text-[var(--app-text)]">Worktree</span>
-          </button>
+    <div className="flex min-h-0 w-full flex-1 flex-col bg-[var(--app-bg)]" data-testid="mobile-workspace-home">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Workspace</p>
+          <div className="relative mt-0.5 max-w-full">
+            <select
+              aria-label="Change workspace"
+              className="min-h-8 w-full appearance-none truncate rounded-lg border border-transparent bg-transparent py-1 pl-0 pr-7 text-base font-semibold text-[var(--app-text)] outline-none transition focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+              value={routeWorkspace.path}
+              onChange={(event) => {
+                const workspace = mergedSidebarWorkspaceEntries.find((candidate) => candidate.path === event.target.value)
+                if (workspace) handleOpenWorkspace(workspace.path, workspace.workspaceName)
+              }}
+            >
+              {mergedSidebarWorkspaceEntries.map((workspace) => (
+                <option key={workspace.path} value={workspace.path}>{workspace.workspaceName}</option>
+              ))}
+            </select>
+            <ChevronDown size={16} className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-[var(--app-text-subtle)]" aria-hidden="true" />
+          </div>
         </div>
-      </section>
+        <button
+          type="button"
+          className="inline-flex min-h-11 shrink-0 touch-manipulation items-center gap-2 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface)] px-4 text-sm font-semibold text-[var(--app-primary)] shadow-sm transition active:bg-[var(--app-surface-hover)]"
+          onClick={openBackgroundTaskModal}
+        >
+          <ListChecks size={17} aria-hidden="true" />
+          <span>Task</span>
+        </button>
+      </div>
 
-      <Card className="flex min-h-0 w-full flex-1 flex-col border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-sm">
-        <div data-mobile-active-sessions-header className="mb-2 flex min-h-11 shrink-0 items-center px-1">
-          <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Active sessions</h2>
+      <section className="flex min-h-0 flex-1 flex-col" aria-labelledby="mobile-workspace-sessions-heading">
+        <div data-mobile-active-sessions-header className="flex min-h-11 shrink-0 items-center justify-between px-4 pt-1">
+          <h2 id="mobile-workspace-sessions-heading" className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Sessions</h2>
+          {mobileActiveSessionNodes.length > 0 ? <span className="text-xs text-[var(--app-text-subtle)]">{mobileActiveSessionNodes.length} active</span> : null}
         </div>
-        <div className="grid min-h-0 content-start gap-2 overflow-y-auto pr-1 [-webkit-overflow-scrolling:touch]">
+        <div className="grid min-h-0 content-start gap-2 overflow-y-auto px-3 pb-3 [-webkit-overflow-scrolling:touch]" data-testid="mobile-workspace-session-scroll">
           {renderMobileSessions(mobileActiveSessionNodes) ?? (
-            <div className="rounded-xl border border-dashed border-[var(--app-border)] px-3 py-4 text-center text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
+            <div className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-6 text-center text-sm text-[var(--app-text-subtle)]">No active sessions yet.</div>
           )}
           {mobilePreviousSessionNodes.length > 0 ? (
             <div className="mt-1 border-t border-[var(--app-border)] pt-2">
@@ -4415,13 +4432,17 @@ export function DesktopAppPage() {
             </div>
           ) : null}
         </div>
-      </Card>
+      </section>
     </div>
   ) : null
 
   useEffect(() => {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
+
+  useEffect(() => {
+    routedActivationGenerationRef.current += 1
+  }, [routeSessionId, routeWorkspace?.path])
 
   const handleCompactingSessionChange = useCallback((sessionId: string, startedAt: number | null) => {
     const normalizedSessionId = sessionId.trim()
@@ -4434,47 +4455,342 @@ export function DesktopAppPage() {
     })
   }, [])
 
-  const handleGitCommit = async () => {
-    const message = gitCommitMessage.trim()
-    if (!gitCommitModal || gitCommitBusy || !message) return
+  const integrateSessionWorktree = async (input: GitIntegrateModalState) => {
+    await reviewDesktopV3Worktrees({
+      workspacePath: input.workspacePath,
+      integrateSessionIds: [input.sessionId],
+      graceHours: 1,
+    })
+  }
 
-    setGitCommitBusy(true)
-    setGitCommitError(null)
+  const archiveIntegratedSession = async (input: GitIntegrateModalState) => {
+    await reviewDesktopV3Worktrees({
+      workspacePath: input.workspacePath,
+      archiveSessionIds: [input.sessionId],
+      graceHours: 1,
+    })
+    handleArchivePlanSession(input.sessionId)
+  }
+
+  const openWorkspaceAction = (action: WorkspaceAction) => {
+    setWorkspaceActionPresentation({ action, mode: 'standalone', workspacePath: action.workspacePath, sessionId: '' })
+  }
+
+  const runAICommitWorkspaceAction = async (action: WorkspaceAction, workspacePath: string, sessionId: string) => {
+    if (gitCommitBusy || gitAICommitRunningRef.current) return
+
+    gitAICommitRunningRef.current = true
+    setGitAICommitPhase('generating')
+    setWorkspaceActionPresentation(null)
+    setDesktopToast({ message: `AI Commit is preparing changes before “${action.name}”.`, tone: 'info' })
     try {
-      await commitWorkspaceChanges({
-        workspacePath: gitCommitModal.workspacePath,
-        sessionId: gitCommitModal.sessionId,
-        message,
-        all: true,
-      })
-      setGitCommitModal(null)
-      setGitCommitMessage('')
-      setDesktopToast({ message: 'Changes committed successfully.', tone: 'success' })
-      await queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] })
+      const suggestion = await suggestWorkspaceCommitMessage({ workspacePath, sessionId })
+      setGitAICommitPhase('committing')
+      await commitWorkspaceChanges({ workspacePath, sessionId, message: suggestion.message, all: true })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+      const inputs = Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue]))
+      const run = await startWorkspaceAction(workspacePath, action.id, inputs)
+      setWorkspaceActionPresentation({ action, mode: 'post-commit', workspacePath, sessionId, initialRun: run })
+      setDesktopToast({ message: `Committed “${suggestion.message}”; ${action.name} is running.`, tone: 'success' })
     } catch (error) {
-      setGitCommitError(error instanceof Error ? error.message : String(error))
+      setDesktopToast({ message: `AI Commit + Action failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
-      setGitCommitBusy(false)
+      gitAICommitRunningRef.current = false
+      setGitAICommitPhase(null)
     }
   }
 
+  const handleAICommit = async (
+    input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>,
+  ) => {
+    if (gitCommitBusy || gitAICommitRunningRef.current) return
+
+    gitAICommitRunningRef.current = true
+    setGitAICommitPhase('generating')
+    setDesktopToast({ message: 'AI Commit is generating a commit message. Please wait…', tone: 'info' })
+    try {
+      const suggestion = await suggestWorkspaceCommitMessage({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
+      })
+      setGitAICommitPhase('committing')
+      setDesktopToast({ message: `AI Commit is committing “${suggestion.message}”. Please wait…`, tone: 'info' })
+      await commitWorkspaceChanges({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
+        message: suggestion.message,
+        all: true,
+      })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+
+      setDesktopToast({ message: `Changes committed with “${suggestion.message}”.`, tone: 'success' })
+    } catch (error) {
+      setDesktopToast({ message: `AI Commit failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    } finally {
+      gitAICommitRunningRef.current = false
+      setGitAICommitPhase(null)
+    }
+  }
+
+  const openGitCommitReview = (modal: GitCommitModalState) => {
+    if (gitAICommitRunningRef.current) return
+    setGitCommitMessage('')
+    setGitCommitError(null)
+    setGitCommitIntegrate(false)
+    setGitCommitArchive(false)
+    setGitCommitModal(modal)
+  }
+
+  const handleGitCommit = async () => {
+    const modal = gitCommitModal
+    const message = gitCommitMessage.trim()
+    if (!modal || gitCommitBusy || !message) return
+
+    setGitCommitBusy(true)
+    setGitCommitError(null)
+    let commitSucceeded = false
+    const archiveAfterCommit = !modal.worktree && Boolean(modal.sessionId) && gitCommitArchive
+    const integration = modal.worktree && gitCommitIntegrate && modal.canIntegrate && modal.targetWorkspacePath
+      ? {
+          sessionId: modal.sessionId,
+          workspacePath: modal.targetWorkspacePath,
+          worktreeBranch: activeGitSession?.worktreeBranch?.trim() || gitSnapshot?.branch || 'worktree',
+          targetBranch: modal.targetBranch || activeSessionTargetBranch,
+        }
+      : null
+    try {
+      await commitWorkspaceChanges({
+        workspacePath: modal.workspacePath,
+        sessionId: modal.sessionId,
+        message,
+        all: true,
+      })
+      commitSucceeded = true
+      setGitCommitModal(null)
+      setGitCommitMessage('')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+
+      let completionMessage = 'Changes committed successfully.'
+
+      if (integration) {
+        setGitIntegrateModal(integration)
+        setGitIntegrateArchive(gitCommitArchive)
+        setGitIntegrateError(null)
+        setGitIntegrateBusy(true)
+        await integrateSessionWorktree(integration)
+        const integrated = { ...integration, integrationComplete: true }
+        setGitIntegrateModal(integrated)
+        if (gitCommitArchive) await archiveIntegratedSession(integrated)
+        setGitIntegrateModal(null)
+        completionMessage = gitCommitArchive ? 'Changes committed, integrated, and session archived.' : 'Changes committed and integrated successfully.'
+      } else if (archiveAfterCommit) {
+        await archiveDesktopV3Sessions([modal.sessionId])
+        handleArchivePlanSession(modal.sessionId)
+        completionMessage = 'Changes committed and session archived.'
+      }
+
+      if (integration || archiveAfterCommit) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        ])
+      }
+
+      setDesktopToast({ message: completionMessage, tone: 'success' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (commitSucceeded && integration) {
+        setGitIntegrateError(message)
+      } else if (commitSucceeded && archiveAfterCommit) {
+        setDesktopToast({ message: `Changes committed, but the session could not be archived: ${message}`, tone: 'error' })
+      } else {
+        setGitCommitError(message)
+      }
+    } finally {
+      setGitCommitBusy(false)
+      setGitIntegrateBusy(false)
+    }
+  }
+
+  const handleGitIntegrate = async (archiveAfterIntegration = gitIntegrateArchive) => {
+    const modal = gitIntegrateModal
+    if (!modal || gitIntegrateBusy) return
+    setGitIntegrateArchive(archiveAfterIntegration)
+    setGitIntegrateBusy(true)
+    setGitIntegrateError(null)
+    try {
+      const integrated = modal.integrationComplete ? modal : { ...modal, integrationComplete: true }
+      if (!modal.integrationComplete) {
+        await integrateSessionWorktree(modal)
+        setGitIntegrateModal(integrated)
+      }
+      if (archiveAfterIntegration) await archiveIntegratedSession(integrated)
+      setGitIntegrateModal(null)
+      setDesktopToast({ message: archiveAfterIntegration ? 'Worktree integrated and session archived.' : 'Worktree integrated successfully.', tone: 'success' })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+    } catch (error) {
+      setGitIntegrateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setGitIntegrateBusy(false)
+    }
+  }
+
+  const handleAskSwarmForGitIntegrationHelp = async () => {
+    const modal = gitIntegrateModal
+    const integrationError = gitIntegrateError
+    if (!modal || modal.presentation !== 'sidebar-popout' || modal.integrationComplete || !integrationError || gitIntegrateBusy || gitIntegrateHelpBusy) return
+    setGitIntegrateHelpBusy(true)
+    try {
+      await launchDesktopRepairSession({
+        owningWorkspacePath: modal.workspacePath,
+        sourceSessionId: modal.sessionId,
+        prompt: buildGitSidebarIntegrationHelpPrompt(modal, integrationError),
+        title: `Review integration failure: ${modal.worktreeBranch || modal.sessionId}`,
+        source: 'desktop-v3-git-sidebar-integration-help',
+        messageMetadata: {
+          worktree_branch: modal.worktreeBranch,
+          target_branch: modal.targetBranch,
+          target_workspace_path: modal.workspacePath,
+          integration_error: integrationError,
+        },
+      })
+      setGitIntegrateModal(null)
+      setGitIntegrateArchive(false)
+      setDesktopToast({ message: 'Started a new Swarm session for this integration error.', tone: 'success' })
+    } catch (error) {
+      setDesktopToast({ message: `Could not ask Swarm for integration help: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    } finally {
+      setGitIntegrateHelpBusy(false)
+    }
+  }
+
+  const closeGitSidebarIntegratePopout = useCallback(() => {
+    if (gitIntegrateBusy || gitIntegrateHelpBusy) return
+    setGitIntegrateModal((current) => current?.presentation === 'sidebar-popout' ? null : current)
+    setGitIntegrateArchive(false)
+    setGitIntegrateError(null)
+  }, [gitIntegrateBusy, gitIntegrateHelpBusy])
+
+  const positionGitSidebarIntegratePopout = useCallback(() => {
+    const anchor = gitIntegrateAnchorRef.current
+    const popout = gitIntegratePopoutRef.current
+    if (!anchor || !popout) return
+    const viewportPadding = 8
+    const gap = 4
+    const anchorRect = anchor.getBoundingClientRect()
+    const width = Math.min(416, Math.max(anchorRect.width, 280), window.innerWidth - viewportPadding * 2)
+    const availableAbove = Math.max(0, anchorRect.top - viewportPadding - gap)
+    const availableBelow = Math.max(0, window.innerHeight - anchorRect.bottom - viewportPadding - gap)
+    const popoutHeight = popout.scrollHeight
+    const placeAbove = popoutHeight <= availableAbove || availableAbove >= availableBelow
+    const maxHeight = placeAbove ? availableAbove : availableBelow
+    const visibleHeight = Math.min(popoutHeight, maxHeight)
+    const left = Math.min(Math.max(viewportPadding, anchorRect.left), window.innerWidth - width - viewportPadding)
+    const top = placeAbove
+      ? Math.max(viewportPadding, anchorRect.top - gap - visibleHeight)
+      : anchorRect.bottom + gap
+    setGitIntegratePopoutStyle({ left, top, width, maxHeight, visibility: 'visible' })
+  }, [])
+
+  useLayoutEffect(() => {
+    if (gitIntegrateModal?.presentation !== 'sidebar-popout') return
+    positionGitSidebarIntegratePopout()
+    const frame = window.requestAnimationFrame(positionGitSidebarIntegratePopout)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(positionGitSidebarIntegratePopout)
+    if (gitIntegratePopoutRef.current) observer?.observe(gitIntegratePopoutRef.current)
+    window.addEventListener('resize', positionGitSidebarIntegratePopout)
+    window.addEventListener('scroll', positionGitSidebarIntegratePopout, true)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      observer?.disconnect()
+      window.removeEventListener('resize', positionGitSidebarIntegratePopout)
+      window.removeEventListener('scroll', positionGitSidebarIntegratePopout, true)
+    }
+  }, [gitIntegrateError, gitIntegrateModal, positionGitSidebarIntegratePopout])
+
+  useEffect(() => {
+    if (gitIntegrateModal?.presentation !== 'sidebar-popout') return
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (target && (gitIntegrateAnchorRef.current?.contains(target) || gitIntegratePopoutRef.current?.contains(target))) return
+      closeGitSidebarIntegratePopout()
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeGitSidebarIntegratePopout()
+    }
+    document.addEventListener('pointerdown', dismissOnOutsidePointer)
+    document.addEventListener('keydown', dismissOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOnOutsidePointer)
+      document.removeEventListener('keydown', dismissOnEscape)
+    }
+  }, [closeGitSidebarIntegratePopout, gitIntegrateModal?.presentation])
+
   const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
-    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-[160px] min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="protected">
-      <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">
-        <GitBranch size={13} />
+    <>
+    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="inset-card" data-plan-section-treatment="inset-card">
+      <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]" data-plan-git-header>
+        <GitBranch size={13} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
-        {gitSnapshot?.has_git ? <span>{gitSnapshot.dirty_count}</span> : null}
-        <button type="button" className={SIDEBAR_ACTION_BUTTON_CLASS} onClick={() => { void gitStatusQuery.refetch() }} aria-label="Refresh Git status" title="Refresh Git status"><RefreshCcw size={12} className={cn(gitStatusQuery.isFetching && 'animate-spin')} /></button>
+        {gitSnapshot?.has_git ? <span className="shrink-0">{gitSnapshot.dirty_count}</span> : null}
       </div>
-      <div className="min-h-0 shrink overflow-hidden">
+      {gitSnapshot?.has_git ? (
+        <div className="mt-2 flex min-w-0 shrink-0 items-center justify-end gap-1 normal-case tracking-normal" data-plan-git-action-row data-plan-git-commit>
+          {gitSnapshot.files.length > 0 ? <>
+            <button type="button" className="grid min-h-9 w-9 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
+            <AICommitButton compact phase={gitAICommitPhase} disabled={gitCommitBusy} onGenerate={() => { void handleAICommit({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId }) }} />
+          </> : null}
+        </div>
+      ) : null}
+      {activeSessionWorktree ? (
+        <div className="mt-2 shrink-0" data-plan-git-session-commits>
+          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]"><GitCommitHorizontal size={11} />Session commits <span className="ml-auto">{activeSessionCommits.length}</span></div>
+          {activeSessionCommits.length > 0 ? <div className="mt-1 max-h-28 overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]">{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="mt-1 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
+        </div>
+      ) : null}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region>
         {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
           : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
           : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
-          : <div className="mt-2 h-[calc(100%-0.5rem)] overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-file-list>{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
+          : <div className="mt-2 min-h-0 flex-1 overflow-y-auto rounded-xl bg-[var(--app-bg-alt)] p-1 [scrollbar-gutter:stable]" data-plan-git-file-list data-plan-git-scroll="at-sidebar-edge">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
       </div>
-      {gitSnapshot?.has_git && gitSnapshot.files.length > 0 ? <button type="button" className="mt-3 w-full shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" data-plan-git-commit onClick={() => { setGitCommitMessage(''); setGitCommitError(null); setGitCommitModal({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files }) }}>Commit all changes…</button> : null}
+      {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <div ref={gitIntegrateAnchorRef} className="relative mt-2 shrink-0" data-plan-git-integrate-anchor>
+        {gitIntegrateModal?.presentation === 'sidebar-popout' && typeof document !== 'undefined' ? createPortal(
+          <div ref={gitIntegratePopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-xs shadow-xl" style={gitIntegratePopoutStyle} role="menu" aria-label="Git sidebar integration options" data-plan-git-integrate-popout>
+            <div className="flex min-h-8 items-center justify-end px-1"><button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" aria-label="Close Git integration options" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={closeGitSidebarIntegratePopout}><X size={15} /></button></div>
+            {gitIntegrateError ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-[var(--app-danger)]" role="alert"><p className="break-words">{gitIntegrateError}</p>{gitIntegrateModal.integrationComplete ? <p className="mt-1 text-[var(--app-text-subtle)]">The worktree is integrated. Retry only the remaining archive step.</p> : null}</div> : null}
+            {gitIntegrateError && !gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleAskSwarmForGitIntegrationHelp()}>{gitIntegrateHelpBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button> : null}
+            {!gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleGitIntegrate(true)}><Archive size={13} />Confirm and Archive</button> : null}
+          </div>,
+          document.body,
+        ) : null}
+        <button type="button" className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" data-plan-git-integrate aria-expanded={gitIntegrateModal?.presentation === 'sidebar-popout'} aria-haspopup="menu" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => {
+          if (gitIntegrateModal?.presentation === 'sidebar-popout') {
+            void handleGitIntegrate(gitIntegrateModal.integrationComplete || gitIntegrateArchive)
+            return
+          }
+          setGitIntegrateArchive(false)
+          setGitIntegrateError(null)
+          setGitIntegratePopoutStyle({ visibility: 'hidden' })
+          setGitIntegrateModal({ sessionId: selectedGitSessionId, workspacePath: activeSessionTargetWorkspacePath, worktreeBranch: activeSessionReviewCandidate.worktree_branch || gitSnapshot?.branch || 'worktree', targetBranch: activeSessionReviewCandidate.target_branch || activeSessionTargetBranch, presentation: 'sidebar-popout' })
+        }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Try archive again' : gitIntegrateError ? 'Try integration again' : 'Confirm integration?' : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
+      </div> : null}
     </section>
+    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
+    </>
   ) : null
 
   const focusedSidebarContent = (
@@ -4709,37 +5025,36 @@ export function DesktopAppPage() {
                     <div ref={workspaceDropdownRef} className="relative min-w-0">
                       <button
                         type="button"
-                        className="flex h-7 w-full min-w-0 items-center justify-between gap-2 rounded border border-transparent bg-transparent px-1 text-left text-[11px] font-semibold text-[var(--app-text)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:opacity-70"
-                        onClick={() => setWorkspaceDropdownOpen((open) => !open)}
-                        disabled={topWorkspaceOptions.length === 0}
-                        aria-label="Workspace"
+                        className="flex h-7 w-full min-w-0 items-center gap-1 rounded px-1 text-left text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                        aria-label={`Current workspace: ${topWorkspaceLabel}`}
                         aria-haspopup="menu"
                         aria-expanded={workspaceDropdownOpen}
                         title={topWorkspacePath || 'Default Workspace'}
+                        onClick={() => setWorkspaceDropdownOpen((open) => !open)}
                       >
-                        <span className="min-w-0 truncate">{topWorkspaceLabel}</span>
-                        <ChevronDown size={12} strokeWidth={1.8} className={cn('shrink-0 text-[var(--app-text-subtle)] transition-transform', workspaceDropdownOpen && 'rotate-180')} />
+                        <span className="min-w-0 flex-1 truncate">{topWorkspaceLabel}</span>
+                        <ChevronDown size={12} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
                       </button>
                       {workspaceDropdownOpen ? (
                         <div
                           role="menu"
-                          aria-label="Workspaces"
-                          className="absolute left-0 top-[calc(100%+6px)] z-50 min-w-full w-max max-w-[280px] overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-[var(--app-text)] shadow-xl shadow-black/30"
+                          aria-label="Select workspace"
+                          className="absolute left-0 top-8 z-30 max-h-64 min-w-full overflow-y-auto rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 shadow-xl"
                         >
-                          {topWorkspaceOptions.map((workspace) => (
+                          {mergedSidebarWorkspaceEntries.map((workspace) => (
                             <button
                               key={workspace.path}
                               type="button"
-                              role="menuitem"
-                              className="flex min-w-[190px] w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[11px] font-medium text-[var(--app-text-muted)] outline-none hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                              role="menuitemradio"
+                              aria-checked={workspace.path === topWorkspacePath}
+                              className="flex min-h-8 w-full min-w-[220px] items-center gap-2 rounded px-2 text-left text-[11px] hover:bg-[var(--app-surface-hover)]"
                               onClick={() => {
                                 setWorkspaceDropdownOpen(false)
-                                handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName)
+                                handleOpenWorkspace(workspace.path, workspace.workspaceName)
                               }}
-                              aria-label={`New chat in ${workspace.workspaceName}`}
-                              title={`New chat in ${workspace.workspaceName}`}
                             >
                               <span className="min-w-0 flex-1 truncate">{workspace.workspaceName}</span>
+                              {workspace.path === topWorkspacePath ? <Check size={12} aria-hidden="true" /> : null}
                             </button>
                           ))}
                         </div>
@@ -4762,18 +5077,7 @@ export function DesktopAppPage() {
                       className={SIDEBAR_ACTION_BUTTON_CLASS}
                       onClick={() => {
                         if (topWorkspace && topWorkspacePath) {
-                          openWorktreeSessionModal({
-                            workspace: topWorkspace,
-                            workspaceSlug: topWorkspaceSlug || workspaceRouteSlugBase({ path: topWorkspacePath, workspaceName: topWorkspaceLabel }),
-                            routeOptions: buildDesktopChatRouteOptions({
-                              hostSwarmName: swarmName,
-                              workspacePath: topWorkspace.path,
-                              workspaceName: topWorkspace.workspaceName,
-                              topologyRoutes: topWorkspace.topologyRoutes,
-                              localWorkspaceBindingId: topWorkspace.localWorkspaceBindingId,
-                              hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-                            }),
-                          })
+                          openRouteWorkspaceWorktree(topWorkspace)
                         }
                       }}
                       disabled={!topWorkspace}
@@ -4787,8 +5091,6 @@ export function DesktopAppPage() {
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
                     now: sidebarNow,
-                    fallbackSwarmName: swarmName,
-                    routeOptions: globalSessionRouteOptions,
                     workspaceSlug: globalSessionWorkspaceSlug,
                     expandedAgentSessions,
                     agentSummaries: sidebarAgentSummaries,
@@ -4888,34 +5190,20 @@ export function DesktopAppPage() {
             presentation="page"
             workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
             request={backgroundTaskRequest}
-            busy={backgroundTaskBusy}
+            busy={false}
             error={backgroundTaskError}
             onRequestChange={setBackgroundTaskRequest}
-            onSubmit={(request) => { void handleQueueBackgroundTask(request) }}
+            onSubmit={(request) => { void handleStartBackgroundRouterSession(request) }}
             onClose={closeBackgroundTaskModal}
           />
         ) : mobileCreationPage === 'worktree' && routeWorkspace ? (
-          <WorktreeSessionForm
-            presentation="page"
-            state={worktreeSessionModal?.presentation === 'page' ? worktreeSessionModal : null}
-            title={worktreeSessionTitle}
-            branch={worktreeSessionBranch}
-            selectedExistingPath={worktreeSessionExistingPath}
-            busy={worktreeSessionCreating}
-            authorityPending={agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending}
-            error={worktreeSessionError}
-            onTitleChange={(value) => {
-              setWorktreeSessionTitle(value)
-              if (!worktreeSessionBranchOverridden) setWorktreeSessionBranch(titleToWorktreeBranchSlug(value))
-            }}
-            onBranchChange={(value) => {
-              setWorktreeSessionBranch(value)
-              setWorktreeSessionBranchOverridden(true)
-            }}
-            onSelectedExistingPathChange={setWorktreeSessionExistingPath}
-            onSubmit={() => { void handleCreateWorktreeSession() }}
-            onClose={closeWorktreeSessionModal}
-          />
+          <div className="flex h-full flex-1 items-center justify-center px-6">
+            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
+              <div className="text-lg font-semibold">Managed worktree</div>
+              <p className="mt-2 text-sm text-[var(--app-text-muted)]">Worktree intent is chosen before routing; Swarm chooses the branch only after you send the new chat.</p>
+              <Button className="mt-4" onClick={() => openRouteWorkspaceWorktree()}>Use a managed worktree</Button>
+            </Card>
+          </div>
         ) : routeSessionUnavailable ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
@@ -4929,19 +5217,11 @@ export function DesktopAppPage() {
           <DesktopV3ExistingConversationPane
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
+            composerFocusSignal={composerFocusSignal}
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}
             loadedMessageCount={selectedDesktopV3LoadedMessageCount}
-            modeCommand={sessionModeCommand}
-            onModeCommandHandled={() => setSessionModeCommand(null)}
-            onModeChange={(mode) => {
-              const routeSession = sessionById.get(routeSessionId)
-              const workspacePath = routeSession
-                ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
-                : ''
-              if (workspacePath) setNewSessionModeByWorkspace((current) => ({ ...current, [workspacePath]: mode }))
-            }}
             session={sessionById.get(routeSessionId) ?? null}
             routeOptions={sessionById.get(routeSessionId) ? (() => {
               const sessionWorkspacePath = desktopRouteWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId, knownWorkspacePaths)
@@ -4991,28 +5271,24 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : routeWorkspace?.path ? (
+        ) : topWorkspace?.path && activeWorkspaceAuthority ? (
           <DesktopV3NewSessionPane
-            key={`new:${routeWorkspace.path}`}
-            modeCommand={sessionModeCommand}
-            onModeCommandHandled={() => setSessionModeCommand(null)}
-            workspace={routeWorkspace}
-            workspaceSlug={routeWorkspaceSlug}
-            routeOptions={buildDesktopChatRouteOptions({
-              hostSwarmName: swarmName,
-              workspacePath: routeWorkspace.path,
-              workspaceName: routeWorkspace.workspaceName,
-              topologyRoutes: routeWorkspace.topologyRoutes,
-              localWorkspaceBindingId: routeWorkspace.localWorkspaceBindingId,
-              hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
-            })}
-            initialMode={newSessionModeByWorkspace[routeWorkspace.path]}
-            onModeChange={(mode) => setNewSessionModeByWorkspace((current) => ({ ...current, [routeWorkspace.path]: mode }))}
-            onOpenChats={() => setMobileSidebarOpen(true)}
-            mobileSessionQuickMenu={mobileSessionQuickMenu}
-            onSlashCommand={handleSlashCommand}
+            key={`new:${topWorkspace.path}:${newSessionEpoch}`}
+            workspace={topWorkspace}
+            workspaceAuthority={activeWorkspaceAuthority}
+            onRoutedSessionResolved={handleRoutedSessionResolved}
+            composerFocusSignal={composerFocusSignal}
+            initialPrompt={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.prompt : undefined}
+            initialWorktreeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.worktreeRequested : requestedNewWorktree}
+            initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={requestedAgentName}
+            mobileSessionQuickMenu={mobileSessionQuickMenu}
+            onSlashCommand={handleSlashCommand}
+            workspaces={mergedSidebarWorkspaceEntries}
+            onOpenWorkspacePicker={mergedSidebarWorkspaceEntries.length > 1 ? () => setWorkspacePickerOpen(true) : undefined}
+            onSetWorkspaceIcon={setWorkspaceIcon}
+            onOpenActionSettings={() => handleOpenSettingsTab('actions')}
           />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
@@ -5043,7 +5319,7 @@ export function DesktopAppPage() {
 
       <DesktopWorkspacePicker
         open={workspacePickerOpen}
-        workspaces={topWorkspaceOptions}
+        workspaces={mergedSidebarWorkspaceEntries}
         currentWorkspacePath={topWorkspacePath}
         onClose={() => setWorkspacePickerOpen(false)}
         onSelect={handleSelectWorkspaceFromPicker}
@@ -5197,6 +5473,23 @@ export function DesktopAppPage() {
         />
       ) : null}
 
+      {workspaceActionPresentation ? (
+        <div className="absolute bottom-[calc(var(--app-safe-area-bottom)+1rem)] left-4 right-4 z-[65] max-h-[min(70vh,36rem)] overflow-y-auto sm:left-auto sm:right-6 sm:w-[28rem]" data-testid="workspace-action-run">
+          <DesktopWorkspaceActionPanel
+            workspacePath={workspaceActionPresentation.workspacePath}
+            action={workspaceActionPresentation.action}
+            autoCloseOnSuccess={false}
+            initialRun={workspaceActionPresentation.initialRun}
+            contextNotice={workspaceActionPresentation.mode === 'post-commit' ? 'The AI commit succeeded. This Action is now running.' : ''}
+            onRunChange={(run) => {
+              if (run.status === 'succeeded') setDesktopToast({ message: `${run.actionName} completed successfully.`, tone: 'success' })
+              else if (run.status !== 'running') setDesktopToast({ message: `${run.actionName} failed: ${run.error || run.status.replace('_', ' ')}`, tone: 'error' })
+            }}
+            onClose={() => setWorkspaceActionPresentation(null)}
+          />
+        </div>
+      ) : null}
+
       {desktopToast ? (
         <div className="pointer-events-none absolute left-4 right-4 top-[calc(var(--app-safe-area-top)+1rem)] z-[70] sm:left-auto sm:right-6 sm:top-6 sm:max-w-md" role="status" aria-live="polite">
           <Card className={cn(
@@ -5271,43 +5564,35 @@ export function DesktopAppPage() {
           presentation="dialog"
           workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
           request={backgroundTaskRequest}
-          busy={backgroundTaskBusy}
+          busy={false}
           error={backgroundTaskError}
           onRequestChange={setBackgroundTaskRequest}
-          onSubmit={() => { void handleQueueBackgroundTask() }}
+          onSubmit={() => { void handleStartBackgroundRouterSession() }}
           onClose={closeBackgroundTaskModal}
         />
       ) : null}
-      {mobileCreationPage !== 'worktree' ? <WorktreeSessionForm
-        presentation="dialog"
-        state={worktreeSessionModal?.presentation === 'dialog' ? worktreeSessionModal : null}
-        title={worktreeSessionTitle}
-        branch={worktreeSessionBranch}
-        selectedExistingPath={worktreeSessionExistingPath}
-        busy={worktreeSessionCreating}
-        authorityPending={agentStateQuery.isPending || modelOptionsQuery.isPending || modelProfilesQuery.isPending || draftPreferenceQuery.isPending}
-        error={worktreeSessionError}
-        onTitleChange={(value) => {
-          setWorktreeSessionTitle(value)
-          if (!worktreeSessionBranchOverridden) setWorktreeSessionBranch(titleToWorktreeBranchSlug(value))
-        }}
-        onBranchChange={(value) => {
-          setWorktreeSessionBranch(value)
-          setWorktreeSessionBranchOverridden(true)
-        }}
-        onSelectedExistingPathChange={setWorktreeSessionExistingPath}
-        onSubmit={() => { void handleCreateWorktreeSession() }}
-        onClose={closeWorktreeSessionModal}
-      /> : null}
       {gitCommitModal ? <Dialog>
         <DialogBackdrop onClick={() => { if (!gitCommitBusy) setGitCommitModal(null) }} />
         <DialogPanel className="w-[min(560px,100%)] gap-4">
           <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void handleGitCommit() }}>
             <div><div className="text-sm font-semibold text-[var(--app-text)]">Commit all changes</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">This explicitly stages and commits all {gitCommitModal.files.length} shown files, including untracked files.</div></div>
             <div className="max-h-48 overflow-y-auto border border-[var(--app-border)] font-mono text-xs">{gitCommitModal.files.map((file) => <div key={`${file.kind}:${file.path}`} className="flex gap-2 border-b border-[var(--app-border)] px-2 py-1 last:border-0"><span className="text-[var(--app-text-subtle)]">{gitFileStatusLabel(file)}</span><span className="truncate">{file.path}</span></div>)}</div>
-            <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input autoFocus value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none" /></label>
-            {gitCommitError ? <div className="text-xs text-[var(--app-warning)]">{gitCommitError}</div> : null}
-            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim()}>{gitCommitBusy ? 'Committing…' : 'Commit all changes'}</Button></div>
+            <label className="grid gap-1 text-xs text-[var(--app-text-muted)]"><span>Commit message</span><input ref={gitCommitMessageInputRef} autoFocus value={gitCommitMessage} disabled={gitCommitBusy} onChange={(event) => setGitCommitMessage(event.target.value)} className="h-10 border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 text-[var(--app-text)] outline-none disabled:opacity-60" /></label>
+            {gitCommitModal.worktree && gitCommitModal.canIntegrate ? <div className="grid gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs"><label className="flex items-start gap-2 text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitCommitIntegrate} disabled={gitCommitBusy} onChange={(event) => { const checked = event.target.checked; setGitCommitIntegrate(checked); if (!checked) setGitCommitArchive(false) }} /><span><strong>Integrate into {gitCommitModal.targetBranch || 'target branch'}</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">After the commit succeeds, safely apply this worktree’s missing commit stack to the target checkout.</span></span></label><label className={cn('flex items-start gap-2', gitCommitIntegrate ? 'text-[var(--app-text)]' : 'text-[var(--app-text-subtle)]')}><input type="checkbox" className="mt-0.5" checked={gitCommitArchive} disabled={gitCommitBusy || !gitCommitIntegrate} onChange={(event) => setGitCommitArchive(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after the backend verifies integration succeeded.</span></span></label></div> : null}
+            {!gitCommitModal.worktree && gitCommitModal.sessionId ? <label className="flex items-start gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitCommitArchive} disabled={gitCommitBusy} onChange={(event) => setGitCommitArchive(event.target.checked)} /><span><strong>Archive session after commit</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Archives this chat only after the commit succeeds.</span></span></label> : null}
+            {gitCommitError ? <div className="text-xs text-[var(--app-warning)]" role="alert">{gitCommitError}</div> : null}
+            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitCommitBusy} onClick={() => setGitCommitModal(null)}>Cancel</Button><Button type="submit" disabled={gitCommitBusy || !gitCommitMessage.trim()}>{gitCommitBusy ? gitCommitIntegrate ? 'Committing and integrating…' : 'Committing…' : gitCommitIntegrate ? 'Commit and integrate' : 'Commit all changes'}</Button></div>
+          </form>
+        </DialogPanel>
+      </Dialog> : null}
+      {gitIntegrateModal && gitIntegrateModal.presentation !== 'sidebar-popout' ? <Dialog>
+        <DialogBackdrop onClick={() => { if (!gitIntegrateBusy) setGitIntegrateModal(null) }} />
+        <DialogPanel className="w-[min(520px,100%)] gap-4">
+          <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void handleGitIntegrate() }}>
+            <div><div className="text-sm font-semibold text-[var(--app-text)]">{gitIntegrateModal.integrationComplete ? `Integration into ${gitIntegrateModal.targetBranch} complete` : `Integrate ${gitIntegrateModal.worktreeBranch} into ${gitIntegrateModal.targetBranch}`}</div><div className="mt-1 text-xs text-[var(--app-text-subtle)]">{gitIntegrateModal.integrationComplete ? 'The commit stack is integrated. Retry only the remaining archive step.' : 'Swarm preflights the complete missing commit stack and leaves the target unchanged if integration conflicts.'}</div></div>
+            <label className="flex items-start gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-text)]"><input type="checkbox" className="mt-0.5" checked={gitIntegrateArchive} disabled={gitIntegrateBusy} onChange={(event) => setGitIntegrateArchive(event.target.checked)} /><span><strong>Archive session after integration</strong><span className="mt-0.5 block text-[var(--app-text-subtle)]">Only archives after the backend verifies the worktree is integrated.</span></span></label>
+            {gitIntegrateError ? <div className="rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-3 text-xs text-[var(--app-danger)]">{gitIntegrateError}</div> : null}
+            <div className="flex justify-end gap-2"><Button variant="ghost" disabled={gitIntegrateBusy} onClick={() => setGitIntegrateModal(null)}>Cancel</Button><Button type="submit" disabled={gitIntegrateBusy}>{gitIntegrateBusy ? gitIntegrateModal.integrationComplete ? 'Archiving…' : 'Integrating…' : gitIntegrateModal.integrationComplete ? 'Archive session' : gitIntegrateError ? 'Try integration again' : 'Integrate commits'}</Button></div>
           </form>
         </DialogPanel>
       </Dialog> : null}
@@ -5319,11 +5604,10 @@ export function DesktopAppPage() {
         onRefresh={() => { if (gitPanel) void queryClient.invalidateQueries({ queryKey: gitStatusQueryKey(gitPanel.workspacePath) }) }}
         onCommit={(files) => {
           if (!gitPanel || files.length === 0) return
-          setGitCommitMessage('')
-          setGitCommitError(null)
-          setGitCommitModal({ workspacePath: gitPanel.workspacePath, sessionId: '', files })
+          openGitCommitReview({ workspacePath: gitPanel.workspacePath, sessionId: '', files })
           setGitPanel(null)
         }}
+        aiCommitControl={gitPanel && topWorkspaceGitSnapshot?.files.length ? <AICommitButton phase={gitAICommitPhase} disabled={gitCommitBusy} onGenerate={() => { void handleAICommit({ workspacePath: gitPanel.workspacePath, sessionId: '' }); setGitPanel(null) }} /> : null}
         onClose={closeGitPanel}
       />
       {pwaDebugEnabled ? <PwaLayoutDebugOverlay /> : null}

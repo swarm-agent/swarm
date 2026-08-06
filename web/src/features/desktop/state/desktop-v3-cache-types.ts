@@ -42,6 +42,7 @@ export interface SyncResources {
   notifications?: boolean
   notification_summary?: boolean
   tasks?: boolean
+  auth?: boolean
 }
 
 export interface KnownSessionState {
@@ -413,6 +414,7 @@ export interface SyncStreamEvent {
   event: V3SessionEvent
   projection: V3SessionProjection
   task?: DesktopAITaskLifecycleWire
+  auth?: RealtimeMessage['auth']
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
 }
@@ -519,6 +521,7 @@ export type RealtimeKind =
   | 'live.patch'
   | 'notification.resource.updated'
   | 'task.lifecycle.updated'
+  | 'auth.credentials.updated'
 
 export interface RealtimeMessage {
   protocol?: 'v3.realtime' | string
@@ -544,6 +547,13 @@ export interface RealtimeMessage {
   notification?: DesktopNotificationWire
   notification_summary?: DesktopNotificationSummaryWire
   task?: DesktopAITaskLifecycleWire
+  auth?: {
+    account_scope_id: string
+    event_type: string
+    provider?: string
+    recorded_at: number
+    event_sequence: number
+  }
   workset_subscription_id?: string
   auto_subscribed?: boolean
   projection?: V3SessionProjection
@@ -711,7 +721,7 @@ export type SessionCacheRecord =
       discoveredAt?: number
     }
 
-export type MessageListCacheSource = 'network'
+export type MessageListCacheSource = 'network' | 'mutation'
 
 export interface MessageListCache {
   items: MessageSnapshot[]
@@ -746,6 +756,45 @@ export interface PendingUserMessage {
   timelineSeq?: number
   status: 'pending' | 'failed'
   error?: string
+}
+
+export type DesktopToolActivityPhase = 'constructing' | 'ready' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type DesktopToolActivitySemanticKind = 'edit' | 'plan' | 'task' | 'investigation' | 'generic'
+
+export interface DesktopToolActivityProvenance {
+  providerConstruction: boolean
+  runtimeExecution: boolean
+  provider?: string
+  model?: string
+  providerStartedAt?: number
+  executionStartedAt?: number
+}
+
+export interface DesktopToolActivity {
+  activityId: string
+  callId: string
+  step?: number
+  stepId?: string
+  outputIndex?: number
+  toolInstanceId?: string
+  toolName?: string
+  toolIdentity?: string
+  toolRunCount?: number
+  toolDisplay?: string
+  argumentsText?: string
+  outputText?: string
+  taskStream?: LiveTaskToolStreamState
+  errorText?: string
+  durationMs?: number
+  phase: DesktopToolActivityPhase
+  semanticKind: DesktopToolActivitySemanticKind
+  label: string
+  status?: string
+  createdAt?: number
+  updatedAt: number
+  timelineSeq?: number
+  providerEventIndex?: number
+  provenance: DesktopToolActivityProvenance
 }
 
 export interface LiveTaskToolStreamState {
@@ -802,6 +851,9 @@ export interface LiveRunOverlay {
     durableOffsetEnd?: number
     livePaused?: boolean
   }>
+  /** Provider-neutral construction/execution reconciliation keyed by stable activity identity. */
+  toolActivitiesById?: Record<string, DesktopToolActivity>
+  /** Compatibility projection for existing tool-card consumers, keyed by call id. */
   toolCallsByCallId: Record<
     string,
     {

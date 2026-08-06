@@ -10,12 +10,11 @@ import (
 func TestPlanSidechatMaterializationDoesNotOwnParentModelSelection(t *testing.T) {
 	parent := pebblestore.AgentProfile{
 		Provider: "provider-a", Model: "model-a", Thinking: "high",
-		PlanProvider: "provider-plan", PlanModel: "model-plan", PlanThinking: "xhigh",
 		Prompt: "private parent prompt", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite,
 		ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}}},
 	}
 	profile := PlanSidechatAgentProfileForParent(parent)
-	if profile.Provider != "" || profile.Model != "" || profile.Thinking != "" || profile.PlanServiceTier != "" {
+	if profile.Provider != "" || profile.Model != "" || profile.Thinking != "" || profile.AutoServiceTier != "" {
 		t.Fatalf("Plan system profile inferred model settings instead of waiting for the parent session setup: %+v", profile)
 	}
 	if profile.Prompt == parent.Prompt || strings.Contains(profile.Prompt, "private parent prompt") {
@@ -42,10 +41,8 @@ func TestPlanSidechatPromptAttachesAuthoritativePlanContext(t *testing.T) {
 			t.Fatalf("prompt missing %q: %s", expected, prompt)
 		}
 	}
-	for _, expected := range []string{"only to Finder", "read-only contract", "cannot delegate further", "budgets", "depth checks"} {
-		if !strings.Contains(prompt, expected) {
-			t.Fatalf("prompt missing Finder delegation boundary %q: %s", expected, prompt)
-		}
+	if strings.Contains(prompt, "delegate") || strings.Contains(prompt, "task only to Finder") {
+		t.Fatalf("Plan sidechat prompt must not advertise subagent delegation: %s", prompt)
 	}
 	if strings.Contains(prompt, `"expected_revision":"4"`) || strings.Contains(prompt, `"document":"{`) {
 		t.Fatalf("prompt example stringifies structured arguments: %s", prompt)
@@ -60,13 +57,13 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	if profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled {
 		t.Fatal("Plan sidechat must not exit plan mode")
 	}
-	for _, name := range []string{"write", "edit", "bash", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
+	for _, name := range []string{"write", "edit", "bash", "task", "plan_manage", "ask_user", "exit_plan_mode", "manage_agent"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || *config.Enabled {
 			t.Fatalf("tool %q must be explicitly disabled", name)
 		}
 	}
-	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "edit_pending_plan", "task"} {
+	for _, name := range []string{"read", "search", "list", "websearch", "webfetch", "edit_pending_plan"} {
 		config, ok := profile.ToolContract.Tools[name]
 		if !ok || config.Enabled == nil || !*config.Enabled {
 			t.Fatalf("tool %q must be enabled", name)
@@ -88,18 +85,29 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	}
 }
 
-func TestFinderContractExplicitlyDisablesRecursiveTask(t *testing.T) {
-	profile := FinderAgentProfileForParent(pebblestore.AgentProfile{})
-	config, ok := profile.ToolContract.Tools["task"]
-	if !ok || config.Enabled == nil || *config.Enabled {
-		t.Fatal("Finder task capability must be explicitly disabled")
+func TestSystemSubagentsDoNotEnableRecursiveTask(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range registry.IDs() {
+		profile, err := registry.Materialize(id, SwarmAgentProfileForContext(pebblestore.AgentProfile{}))
+		if err != nil {
+			t.Fatalf("materialize %q: %v", id, err)
+		}
+		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
+			t.Fatalf("system subagent %q enables recursive task delegation", id)
+		}
+	}
+	if !agentToolEnabled(SwarmAgentToolContract(), "task") {
+		t.Fatal("primary Swarm task delegation must remain enabled")
 	}
 }
 
-func TestReservedAISidechatUsesAutoModelAndDisablesPlanTransitions(t *testing.T) {
-	parent := pebblestore.AgentProfile{Provider: "single-provider", Model: "single-model", AutoProvider: "auto-provider", AutoModel: "auto-model", AutoThinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}, "plan_manage": {Enabled: pebblestore.BoolPtr(true)}}}}
+func TestReservedAISidechatUsesCanonicalModelAndDisablesPlanTransitions(t *testing.T) {
+	parent := pebblestore.AgentProfile{Provider: "single-provider", Model: "single-model", Thinking: "high", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"write": {Enabled: pebblestore.BoolPtr(true)}, "plan_manage": {Enabled: pebblestore.BoolPtr(true)}}}}
 	profile := AISidechatAgentProfileForParent(parent)
-	if profile.Name != AISidechatAgentID || profile.Provider != "auto-provider" || profile.Model != "auto-model" || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
+	if profile.Name != AISidechatAgentID || profile.Provider != "single-provider" || profile.Model != "single-model" || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite {
 		t.Fatalf("unexpected AI sidechat: %+v", profile)
 	}
 	for _, name := range []string{"plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {

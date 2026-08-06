@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -58,6 +59,25 @@ type GitCommit struct {
 	Subject   string `json:"subject"`
 }
 
+type GitCommitResponse struct {
+	OK            bool     `json:"ok"`
+	WorkspacePath string   `json:"workspace_path,omitempty"`
+	CWD           string   `json:"cwd,omitempty"`
+	Argv          []string `json:"argv,omitempty"`
+	ExitCode      int      `json:"exit_code"`
+	TimedOut      bool     `json:"timed_out,omitempty"`
+	Output        string   `json:"output,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	Error         string   `json:"error,omitempty"`
+}
+
+type GitCommitSuggestionResponse struct {
+	OK            bool   `json:"ok"`
+	WorkspacePath string `json:"workspace_path,omitempty"`
+	CWD           string `json:"cwd,omitempty"`
+	Message       string `json:"message"`
+}
+
 func (c *API) GetGitStatus(ctx context.Context, workspacePath string, recentLimit int) (GitSnapshot, error) {
 	query := url.Values{}
 	if strings.TrimSpace(workspacePath) != "" {
@@ -78,4 +98,53 @@ func (c *API) GetGitStatus(ctx context.Context, workspacePath string, recentLimi
 		return GitSnapshot{}, err
 	}
 	return resp.Status, nil
+}
+
+func (c *API) CommitWorkspaceChanges(ctx context.Context, workspacePath, message, sessionID string) (GitCommitResponse, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	message = strings.TrimSpace(message)
+	if workspacePath == "" {
+		return GitCommitResponse{}, fmt.Errorf("workspace path is required")
+	}
+	if message == "" {
+		return GitCommitResponse{}, fmt.Errorf("commit message is required")
+	}
+	path := gitCommitPath("/v1/workspace/git/commit", sessionID)
+	var resp GitCommitResponse
+	if err := c.postJSON(ctx, path, map[string]any{
+		"workspace_path": workspacePath,
+		"cwd":            workspacePath,
+		"message":        message,
+		"all":            true,
+	}, &resp, true); err != nil {
+		return GitCommitResponse{}, err
+	}
+	return resp, nil
+}
+
+func (c *API) SuggestWorkspaceCommitMessage(ctx context.Context, workspacePath, sessionID string) (GitCommitSuggestionResponse, error) {
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return GitCommitSuggestionResponse{}, fmt.Errorf("workspace path is required")
+	}
+	path := gitCommitPath("/v1/workspace/git/commit/suggestion", sessionID)
+	var resp GitCommitSuggestionResponse
+	if err := c.postJSON(ctx, path, map[string]any{
+		"workspace_path": workspacePath,
+		"cwd":            workspacePath,
+	}, &resp, true); err != nil {
+		return GitCommitSuggestionResponse{}, err
+	}
+	return resp, nil
+}
+
+func gitCommitPath(base, sessionID string) string {
+	query := url.Values{}
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		query.Set("session_id", sessionID)
+	}
+	if encoded := query.Encode(); encoded != "" {
+		return base + "?" + encoded
+	}
+	return base
 }

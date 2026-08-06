@@ -40,6 +40,8 @@ const TOOL_THEME_MAP: Record<string, ToolThemeEntry> = {
   task: { icon: GitBranch, label: 'task', color: 'var(--app-primary)' },
   'manage-todos': { icon: ListChecks, label: 'todo', color: 'var(--app-primary)' },
   manage_todos: { icon: ListChecks, label: 'todo', color: 'var(--app-primary)' },
+  'manage-theme': { icon: Sparkles, label: 'theme', color: 'var(--app-accent)' },
+  manage_theme: { icon: Sparkles, label: 'theme', color: 'var(--app-accent)' },
   'plan-manage': { icon: ClipboardList, label: 'plan', color: 'var(--app-primary)' },
   plan_manage: { icon: ClipboardList, label: 'plan', color: 'var(--app-primary)' },
   'ask-user': { icon: MessageSquare, label: 'ask-user', color: 'var(--app-primary)' },

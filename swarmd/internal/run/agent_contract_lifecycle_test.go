@@ -2,6 +2,7 @@ package run
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,6 +25,20 @@ func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
 		}
 		if strings.TrimSpace(resolved.RawPreset) == "" && len(profile.ToolContract.Tools) == 0 {
 			t.Fatalf("%s resolved without persisted preset or explicit tools: %+v", name, resolved)
+		}
+		if name == agentruntime.SwarmAgentID {
+			if _, configured := profile.ToolContract.Tools["manage_todos"]; configured {
+				t.Fatalf("Swarm tool contract still configures manage_todos: %+v", profile.ToolContract)
+			}
+			if todo := resolved.Tools["manage_todos"]; todo.Enabled || slices.Contains(resolved.AvailableTools, "manage_todos") {
+				t.Fatalf("Swarm resolved toolkit advertises manage_todos: %+v", resolved)
+			}
+			if plan := resolved.Tools["plan_manage"]; !plan.Enabled || !slices.Contains(resolved.AvailableTools, "plan_manage") {
+				t.Fatalf("Swarm resolved toolkit omits plan_manage: %+v", resolved)
+			}
+			if !slices.ContainsFunc(svc.ListAgentToolDefinitions(), func(definition tool.Definition) bool { return definition.Name == "manage_todos" }) {
+				t.Fatal("shared tool inventory no longer implements manage_todos")
+			}
 		}
 	}
 }
@@ -57,6 +72,42 @@ func TestResolveAgentToolContractInheritsOnlyAccountPolicy(t *testing.T) {
 	explain := permission.ExplainPolicy("auto", "write", `{}`, *compiled)
 	if explain.Decision != permission.PolicyDecisionDeny {
 		t.Fatalf("account-a inherited decision = %q, want deny", explain.Decision)
+	}
+}
+
+func TestResolveAgentToolContractForcesTaskOffForEverySubagent(t *testing.T) {
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	for _, preset := range []string{"custom", "read_only", "read_write"} {
+		profile := pebblestore.AgentProfile{
+			Name: "subagent-" + preset,
+			Mode: agentruntime.ModeSubagent,
+			ToolContract: &pebblestore.AgentToolContract{
+				Preset: preset,
+				Tools:  map[string]pebblestore.AgentToolConfig{"task": {Enabled: pebblestore.BoolPtr(true)}},
+			},
+		}
+		resolved, compiled, disabled, err := svc.ResolveAgentToolContract(profile)
+		if err != nil {
+			t.Fatalf("ResolveAgentToolContract(%s): %v", preset, err)
+		}
+		if task := resolved.Tools["task"]; task.Enabled || task.Source != "runtime.subagent_boundary" {
+			t.Fatalf("subagent preset %q resolved task = %+v", preset, task)
+		}
+		if !disabled["task"] || slices.Contains(resolved.AvailableTools, "task") {
+			t.Fatalf("subagent preset %q advertises task: resolved=%+v disabled=%+v", preset, resolved, disabled)
+		}
+		if explain := permission.ExplainPolicy("auto", "task", `{}`, *compiled); explain.Decision != permission.PolicyDecisionDeny {
+			t.Fatalf("subagent preset %q task policy = %q, want deny", preset, explain.Decision)
+		}
+	}
+
+	primary := pebblestore.AgentProfile{Name: "primary", Mode: agentruntime.ModePrimary, ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"task": {Enabled: pebblestore.BoolPtr(true)}}}}
+	resolved, _, disabled, err := svc.ResolveAgentToolContract(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Tools["task"].Enabled || disabled["task"] {
+		t.Fatalf("primary task delegation was removed: resolved=%+v disabled=%+v", resolved.Tools["task"], disabled)
 	}
 }
 

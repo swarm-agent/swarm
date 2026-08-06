@@ -81,6 +81,39 @@ func TestAuthorizeToolCallResolvesFollowupPolicyBeforeCreatePending(t *testing.T
 	}
 }
 
+func TestAuthorizeToolCallNoActivePlanUsesAtomicSessionCheckpointPath(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "permission-no-active-plan.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: "session-no-active-plan", Mode: sessionruntime.ModeAuto, UserID: "user-lifecycle", AccountScopeID: "account-lifecycle", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Preference: &pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(pebblestore.NewPermissionStore(store), events, nil)
+	svc.SetSessionResolver(sessions)
+	svc.SetFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) {
+		return sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, nil
+	})
+
+	auth, err := svc.AuthorizeToolCall(AuthorizationInput{
+		SessionID: session.ID, AccountScopeID: "account-lifecycle", RunID: "run-no-plan", CallID: "call-no-plan",
+		ToolName: "plan_manage", ToolArguments: `{"action":"request_followup_checkpoint","change_request":"wait ten seconds"}`, Mode: sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("authorize no-plan checkpoint request: %v", err)
+	}
+	if auth.Decision != AuthorizationApprove || auth.Record != nil {
+		t.Fatalf("no-plan checkpoint authorization = %+v, want direct approval", auth)
+	}
+}
+
 func TestAuthorizeToolCallResolvesFollowupPolicyEveryTime(t *testing.T) {
 	svc, sessionID, planID, cleanup := newPermissionLifecycleTestService(t, "")
 	defer cleanup()

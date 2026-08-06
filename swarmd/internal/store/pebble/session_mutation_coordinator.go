@@ -51,6 +51,10 @@ type sessionMutationCoordinator struct {
 	// rebuild and its durable migration cursor are committed atomically.
 	beforeSearchMigrationCommit func(sessionID string) error
 
+	// beforeMediaStagingBindCommit injects a failure after staging and session
+	// authority have passed preflight but before their one atomic batch commits.
+	beforeMediaStagingBindCommit func(sessionID string) error
+
 	// beforeDurableCommit is a test seam at the store commit boundary. Tests set
 	// it before starting workers and never mutate it concurrently.
 	beforeDurableCommit func(sessionID string)

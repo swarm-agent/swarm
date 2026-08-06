@@ -6,7 +6,7 @@ minimumReleaseAgeExclude:
   - '@esbuild/*'
 blockExoticSubdeps: true
 overrides:
-  postcss: 8.5.18
+  postcss: 8.5.23
 allowBuilds:
   esbuild: true
   fsevents: true

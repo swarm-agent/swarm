@@ -362,14 +362,62 @@ func (p *HomePage) workspaceButtonStyle(base tcell.Style, state workspaceButtonS
 	}
 }
 
-func (p *HomePage) workspaceItems() []topItem {
-	if len(p.model.Workspaces) == 0 {
-		return []topItem{{Label: "[Alt+W: workspace]", Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
+const maxHeaderWorkspaces = 5
+
+func headerWorkspaceIndexes(workspaces []model.Workspace, limit int) ([]int, bool) {
+	if limit <= 0 || len(workspaces) <= limit {
+		indexes := make([]int, len(workspaces))
+		for i := range workspaces {
+			indexes[i] = i
+		}
+		return indexes, false
 	}
 
-	items := make([]topItem, 0, len(p.model.Workspaces)+1)
-	items = append(items, topItem{Label: "[Alt+W: switch]", Style: p.theme.Secondary, Action: "workspace-selector", Index: -1})
-	for i, workspace := range p.model.Workspaces {
+	active := -1
+	for i := range workspaces {
+		if workspaces[i].Active {
+			active = i
+			break
+		}
+	}
+	indexes := make([]int, 0, limit)
+	for i := 0; i < limit; i++ {
+		indexes = append(indexes, i)
+	}
+	if active >= limit {
+		indexes[limit-1] = active
+	}
+	return indexes, true
+}
+
+func (p *HomePage) workspaceSetupWarning() string {
+	setupPath := strings.TrimSpace(p.model.WorkspaceSetupPath)
+	if setupPath == "" {
+		return ""
+	}
+	return fmt.Sprintf("Detected launch path: %s is not a workspace. Type /workspace save to save this directory and switch.", setupPath)
+}
+
+func (p *HomePage) workspaceItems() []topItem {
+	workspaceShortcut := "Alt+W"
+	if p.keybinds != nil {
+		if label := strings.TrimSpace(p.keybinds.Label(KeybindGlobalWorkspaceSelect)); label != "" {
+			workspaceShortcut = label
+		}
+	}
+	if len(p.model.Workspaces) == 0 {
+		return []topItem{{Label: fmt.Sprintf("[%s: workspace]", workspaceShortcut), Style: p.theme.TextMuted, Action: "workspace-selector", Index: -1}}
+	}
+
+	indexes, overflow := headerWorkspaceIndexes(p.model.Workspaces, maxHeaderWorkspaces)
+	items := make([]topItem, 0, len(indexes)+2)
+	items = append(items, topItem{Label: fmt.Sprintf("[%s: switch]", workspaceShortcut), Style: p.theme.Secondary, Action: "workspace-selector", Index: -1})
+	activeOutsidePrefix := overflow && len(indexes) > 0 && indexes[len(indexes)-1] >= maxHeaderWorkspaces
+	for position, i := range indexes {
+		if activeOutsidePrefix && position == len(indexes)-1 {
+			items = append(items, topItem{Label: "...", Style: p.theme.TextMuted})
+		}
+		workspace := p.model.Workspaces[i]
 		icon := strings.TrimSpace(workspace.Icon)
 		name := strings.TrimSpace(workspace.Name)
 		if name == "" {
@@ -381,6 +429,9 @@ func (p *HomePage) workspaceItems() []topItem {
 			style = p.theme.Primary.Bold(true)
 		}
 		items = append(items, topItem{Label: label, Style: style, Action: "workspace-select", Index: i})
+	}
+	if overflow && !activeOutsidePrefix {
+		items = append(items, topItem{Label: "...", Style: p.theme.TextMuted})
 	}
 	return items
 }

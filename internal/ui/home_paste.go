@@ -37,7 +37,7 @@ func (p *HomePage) flushPasteBuffer() {
 	}
 	batch := string(p.pasteBuffer)
 	p.pasteBuffer = p.pasteBuffer[:0]
-	if p.authModal.Visible {
+	if p.authModal.Visible || (p.OnboardingProviderActive() && p.authModal.Editor != nil) {
 		if inserted := p.appendAuthModalEditorPaste(batch); inserted > 0 {
 			p.lastPasteBatchSize = inserted
 		} else {
@@ -59,7 +59,7 @@ func (p *HomePage) handlePromptPasteKey(ev *tcell.EventKey) bool {
 	if ev == nil {
 		return false
 	}
-	if p.onboarding.Visible && !p.authModal.Visible {
+	if p.onboarding.Visible {
 		p.handleOnboardingKey(ev)
 		return true
 	}

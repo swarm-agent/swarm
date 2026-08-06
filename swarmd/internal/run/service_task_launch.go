@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -132,34 +133,35 @@ type taskLaunchParentInfo struct {
 }
 
 type taskLaunchManifestRow struct {
-	Description           string                         `json:"description"`
-	RequestedSubagentType string                         `json:"requested_subagent_type"`
-	ResolvedAgentName     string                         `json:"resolved_agent_name"`
-	ResolvedAgentError    string                         `json:"resolved_agent_error,omitempty"`
-	Action                string                         `json:"action"`
-	MetaPrompt            string                         `json:"meta_prompt,omitempty"`
-	AssignmentLabel       string                         `json:"assignment_label,omitempty"`
-	Deliverable           string                         `json:"deliverable,omitempty"`
-	ConcurrencyReason     string                         `json:"concurrency_reason,omitempty"`
-	OwnedScope            []string                       `json:"owned_scope,omitempty"`
-	DependencyEvidence    string                         `json:"dependency_evidence,omitempty"`
-	SubagentProvider      string                         `json:"subagent_provider,omitempty"`
-	SubagentModel         string                         `json:"subagent_model,omitempty"`
-	SubagentThinking      string                         `json:"subagent_thinking,omitempty"`
-	SubagentServiceTier   string                         `json:"subagent_service_tier,omitempty"`
-	ChildTitlePreview     string                         `json:"child_title_preview,omitempty"`
-	ChildMode             string                         `json:"effective_child_mode"`
-	DisabledTools         []string                       `json:"disabled_tools,omitempty"`
-	ResolvedTools         *taskLaunchResolvedToolSummary `json:"resolved_tools,omitempty"`
-	Capabilities          map[string]any                 `json:"capabilities,omitempty"`
-	TargetWorkspacePath   string                         `json:"target_workspace_path,omitempty"`
-	TargetWorkspaceName   string                         `json:"target_workspace_name,omitempty"`
-	SourceArguments       map[string]any                 `json:"source_arguments,omitempty"`
-	ParentCopy            bool                           `json:"parent_copy,omitempty"`
-	SourceAgentName       string                         `json:"source_agent_name,omitempty"`
-	SourceProfileMode     string                         `json:"source_profile_mode,omitempty"`
-	InheritedRuntimeMode  string                         `json:"inherited_runtime_mode,omitempty"`
-	ProfileSnapshot       *pebblestore.AgentProfile      `json:"profile_snapshot,omitempty"`
+	Description           string                                   `json:"description"`
+	RequestedSubagentType string                                   `json:"requested_subagent_type"`
+	ResolvedAgentName     string                                   `json:"resolved_agent_name"`
+	ResolvedAgentError    string                                   `json:"resolved_agent_error,omitempty"`
+	Action                string                                   `json:"action"`
+	MetaPrompt            string                                   `json:"meta_prompt,omitempty"`
+	AssignmentLabel       string                                   `json:"assignment_label,omitempty"`
+	Deliverable           string                                   `json:"deliverable,omitempty"`
+	ConcurrencyReason     string                                   `json:"concurrency_reason,omitempty"`
+	OwnedScope            []string                                 `json:"owned_scope,omitempty"`
+	DependencyEvidence    string                                   `json:"dependency_evidence,omitempty"`
+	SubagentProvider      string                                   `json:"subagent_provider,omitempty"`
+	SubagentModel         string                                   `json:"subagent_model,omitempty"`
+	SubagentThinking      string                                   `json:"subagent_thinking,omitempty"`
+	SubagentServiceTier   string                                   `json:"subagent_service_tier,omitempty"`
+	ChildTitlePreview     string                                   `json:"child_title_preview,omitempty"`
+	ChildMode             string                                   `json:"effective_child_mode"`
+	DisabledTools         []string                                 `json:"disabled_tools,omitempty"`
+	ResolvedTools         *taskLaunchResolvedToolSummary           `json:"resolved_tools,omitempty"`
+	Capabilities          map[string]any                           `json:"capabilities,omitempty"`
+	TargetWorkspacePath   string                                   `json:"target_workspace_path,omitempty"`
+	TargetWorkspaceName   string                                   `json:"target_workspace_name,omitempty"`
+	SourceArguments       map[string]any                           `json:"source_arguments,omitempty"`
+	ParentCopy            bool                                     `json:"parent_copy,omitempty"`
+	SourceAgentName       string                                   `json:"source_agent_name,omitempty"`
+	SourceProfileMode     string                                   `json:"source_profile_mode,omitempty"`
+	InheritedRuntimeMode  string                                   `json:"inherited_runtime_mode,omitempty"`
+	ProfileSnapshot       *pebblestore.AgentProfile                `json:"profile_snapshot,omitempty"`
+	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot `json:"model_profile_snapshot"`
 }
 
 type taskLaunchResolvedToolSummary struct {
@@ -404,6 +406,9 @@ func rejectMalformedToolCallArguments(call tool.Call) error {
 	canonical := canonicalToolName(call.Name)
 	if canonical == "bash" {
 		return tool.ValidateBashCallArguments(call.Arguments)
+	}
+	if canonical == "ask_user" {
+		return validateAskUserCallArguments(call.Arguments)
 	}
 	if canonical != "task" {
 		return nil
@@ -693,6 +698,8 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		return string(raw), nil
 	}
 	switch canonicalToolName(call.Name) {
+	case "ask_user":
+		return normalizeAskUserPermissionArguments(arguments)
 	case "task":
 		payload, err := s.buildTaskLaunchPermissionPayload(sessionID, sessionMode, call)
 		if err != nil {
@@ -1602,51 +1609,56 @@ func validatePlanSidechatTaskTargets(parentSession pebblestore.SessionSnapshot, 
 }
 
 func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnapshot, requested string) (pebblestore.AgentProfile, bool, string, error) {
+	return s.resolveTaskLaunchProfileForMode(parentSession, requested, parentSession.Mode)
+}
+
+func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.SessionSnapshot, requested, childMode string) (pebblestore.AgentProfile, bool, string, error) {
+	if strings.EqualFold(strings.TrimSpace(requested), agentruntime.SwarmAgentID) {
+		if parentSession.ModelProfile == nil {
+			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("Swarm child launch requires the parent immutable model profile")
+		}
+		state, err := s.agents.ListStateForAccount(parentSession.AccountScopeID, 2000)
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		profiles := make(map[string]pebblestore.AgentProfile, len(state.Profiles))
+		for _, profile := range state.Profiles {
+			profiles[strings.ToLower(strings.TrimSpace(profile.Name))] = profile
+		}
+		resolution, found, err := s.resolveManageSessionsDeployAgent(profiles, agentruntime.SwarmAgentID)
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		if !found {
+			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("Swarm agent is not configured")
+		}
+		modelProfile, err := inheritedSessionModelProfile(parentSession.ModelProfile, childMode)
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		preference, err := manageSessionsDeployModelProfilePreference(modelProfile, childMode)
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", err
+		}
+		profile := resolution.ExecutionProfile
+		profile.Provider, profile.Model, profile.Thinking = preference.Provider, preference.Model, preference.Thinking
+		profile.AutoServiceTier, profile.ContextMode = preference.ServiceTier, preference.ContextMode
+		return profile, false, "", nil
+	}
 	if !agentruntime.IsCoderAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
 		return profile, false, "", err
 	}
-	parentProfile, err := sessionV3AgentProfileFromMetadataMap(parentSession.Metadata)
-	if err != nil {
-		sourceName := strings.TrimSpace(mapString(parentSession.Metadata, "agent_name"))
-		if sourceName == "" {
-			return pebblestore.AgentProfile{}, true, "", fmt.Errorf("Coder requires trusted parent agent profile snapshot: %w", err)
-		}
-		parentProfile, err = s.resolveAgentProfileForAccount(parentSession.AccountScopeID, sourceName, RunTargetKindAgent)
-		if err != nil {
-			return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("Coder cannot resolve trusted parent agent %q: %w", sourceName, err)
-		}
+	sourceName := strings.TrimSpace(mapString(parentSession.Metadata, "agent_name"))
+	if parentProfile, err := sessionV3AgentProfileFromMetadataMap(parentSession.Metadata); err == nil && sourceName == "" {
+		sourceName = strings.TrimSpace(parentProfile.Name)
 	}
-	sourceName := strings.TrimSpace(parentProfile.Name)
-	provider := firstNonEmptyString(parentProfile.AutoProvider, parentSession.Preference.Provider, parentProfile.Provider)
-	modelName := firstNonEmptyString(parentProfile.AutoModel, parentSession.Preference.Model, parentProfile.Model)
-	thinking := firstNonEmptyString(parentProfile.AutoThinking, parentSession.Preference.Thinking, parentProfile.Thinking)
-	serviceTier := firstNonEmptyString(parentProfile.AutoServiceTier, parentSession.Preference.ServiceTier)
-	if s.uiSettings != nil {
-		if settings, settingsErr := s.uiSettings.GetForAccount(strings.TrimSpace(parentSession.AccountScopeID)); settingsErr == nil {
-			override := settings.Agents.Coder
-			if strings.TrimSpace(override.Provider) != "" {
-				provider = strings.TrimSpace(override.Provider)
-			}
-			if strings.TrimSpace(override.Model) != "" {
-				modelName = strings.TrimSpace(override.Model)
-			}
-			if strings.TrimSpace(override.Thinking) != "" {
-				thinking = strings.TrimSpace(override.Thinking)
-			}
-			if strings.TrimSpace(override.ServiceTier) != "" {
-				serviceTier = strings.TrimSpace(override.ServiceTier)
-			}
-		}
+	if s.model == nil {
+		return pebblestore.AgentProfile{}, true, sourceName, errors.New("system-agent model service is not configured")
 	}
-	profile, err := s.agents.ResolveSystemAgent(agentruntime.CoderAgentID, pebblestore.AgentProfile{
-		Provider:        provider,
-		Model:           modelName,
-		Thinking:        thinking,
-		AutoServiceTier: serviceTier,
-	})
+	_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, parentSession.AccountScopeID, agentruntime.CoderAgentID, "")
 	if err != nil {
-		return pebblestore.AgentProfile{}, true, sourceName, fmt.Errorf("resolve compiled Coder: %w", err)
+		return pebblestore.AgentProfile{}, true, sourceName, err
 	}
 	return profile, true, sourceName, nil
 }
@@ -1671,6 +1683,33 @@ func taskLaunchManifestDigest(manifest taskLaunchManifest) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSpec) (taskLaunchManifest, error) {
+	var envelope struct {
+		ManifestHash string             `json:"manifest_hash"`
+		Manifest     taskLaunchManifest `json:"manifest"`
+	}
+	if err := json.Unmarshal([]byte(approved), &envelope); err != nil {
+		return taskLaunchManifest{}, fmt.Errorf("approved task manifest invalid: %w", err)
+	}
+	digest, err := taskLaunchManifestDigest(envelope.Manifest)
+	if err != nil || digest != strings.TrimSpace(envelope.ManifestHash) || digest != strings.TrimSpace(envelope.Manifest.ManifestHash) {
+		return taskLaunchManifest{}, errors.New("approved task manifest snapshot hash mismatch")
+	}
+	if len(envelope.Manifest.Launches) != len(launchSpecs) {
+		return taskLaunchManifest{}, errors.New("approved task manifest launch count mismatch")
+	}
+	for i := range launchSpecs {
+		row := envelope.Manifest.Launches[i]
+		if !strings.EqualFold(strings.TrimSpace(row.RequestedSubagentType), strings.TrimSpace(launchSpecs[i].RequestedSubagentType)) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d target mismatch", i)
+		}
+		if row.ProfileSnapshot == nil {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
+		}
+	}
+	return envelope.Manifest, nil
 }
 
 func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string, call tool.Call) (taskLaunchManifest, error) {
@@ -1708,7 +1747,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if s == nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: run service is not configured", i, requested)
 		}
-		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfile(parentSession, requested)
+		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfileForMode(parentSession, requested, childMode)
 		if err != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: %w", i, requested, err)
 		}
@@ -2003,6 +2042,22 @@ func (s *Service) buildManageThemePermissionPayload(sessionID string, call tool.
 	}
 	if workspacePath := strings.TrimSpace(mapString(args, "workspace_path")); workspacePath != "" {
 		payload["workspace_path"] = workspacePath
+	}
+	if action == "create_batch" || action == "create-batch" {
+		if themes, ok := args["themes"].([]any); ok {
+			payload["generated_count"] = len(themes)
+			names := make([]string, 0, len(themes))
+			for _, item := range themes {
+				theme, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if name := strings.TrimSpace(mapString(theme, "name")); name != "" {
+					names = append(names, name)
+				}
+			}
+			payload["generated_names"] = names
+		}
 	}
 	if confirm {
 		payload["approved_arguments"] = cloneGenericMap(args)

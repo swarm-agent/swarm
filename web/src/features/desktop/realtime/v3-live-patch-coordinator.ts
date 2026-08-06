@@ -108,6 +108,7 @@ export class DesktopV3LivePatchCoordinator {
     if (generation !== this.generation) return
 
     const key = livePatchKey(patch)
+    if (patch.stream_kind !== 'assistant_text') return
     if (this.committedStreamTombstones.has(key) || this.pausedStreams.has(key)) return
 
     const existingPending = this.pending.get(key)

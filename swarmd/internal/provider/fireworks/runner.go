@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -140,7 +141,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		"tool_count":       len(payload.Tools),
 	})
 	reasoningByKey := make(map[string]string, 4)
-	toolConstruction := newFireworksToolCallConstructionState()
+	toolConstruction := newFireworksToolCallConstructionState(payload.Model)
 	decoded, err := r.client.CreateChatCompletionStream(ctx, record.APIKey, payload, func(chunk chatCompletionChunk) error {
 		if fireworksDebugChunkInteresting(chunk) {
 			fireworksDebugEvent("stream_chunk", fireworksDebugChunkMetadata(req.SessionID, modelID, chunk))
@@ -415,21 +416,110 @@ func sanitizeFireworksSchemaMap(input map[string]any, keepRequired bool) map[str
 		return nil
 	}
 	out := make(map[string]any, len(input))
+	if properties, ok := input["properties"].(map[string]any); ok {
+		out["properties"] = sanitizeFireworksSchemaMap(properties, true)
+	}
+	properties, _ := out["properties"].(map[string]any)
+	inheritedRequired := sanitizeFireworksRequired(input["required"])
 	for key, value := range input {
 		if value == nil {
 			continue
 		}
-		if key == "required" {
+		switch key {
+		case "properties":
+			continue
+		case "required":
 			if !keepRequired {
 				if required := sanitizeFireworksRequired(value); len(required) > 0 {
 					out[key] = required
 				}
 			}
-			continue
+		case "allOf", "anyOf", "oneOf":
+			out[key] = sanitizeFireworksSchemaAlternatives(value, properties, inheritedRequired)
+		default:
+			out[key] = sanitizeFireworksSchemaValue(value, false)
 		}
-		out[key] = sanitizeFireworksSchemaValue(value, key == "properties")
 	}
 	return out
+}
+
+func appendUniqueFireworksRequired(required []string, names ...string) []string {
+	out := make([]string, 0, len(required)+len(names))
+	seen := make(map[string]struct{}, len(required)+len(names))
+	for _, name := range append(append([]string(nil), required...), names...) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func sanitizeFireworksSchemaAlternatives(value any, inheritedProperties map[string]any, inheritedRequired []string) any {
+	sanitizeAlternative := func(schema map[string]any) map[string]any {
+		out := sanitizeFireworksSchemaMap(schema, false)
+		branchRequired := sanitizeFireworksRequired(out["required"])
+		properties, _ := out["properties"].(map[string]any)
+		required := appendUniqueFireworksRequired(inheritedRequired, branchRequired...)
+		if properties == nil {
+			properties = make(map[string]any, len(required))
+		}
+		for _, name := range required {
+			if _, ok := properties[name]; ok {
+				continue
+			}
+			if inherited, ok := inheritedProperties[name]; ok {
+				properties[name] = sanitizeFireworksSchemaValue(inherited, false)
+			}
+		}
+		if len(properties) > 0 {
+			out["type"] = "object"
+			out["properties"] = properties
+		}
+		if len(required) == 0 {
+			return out
+		}
+		validRequired := make([]string, 0, len(required))
+		for _, name := range required {
+			if _, ok := properties[name]; ok {
+				validRequired = append(validRequired, name)
+			}
+		}
+		if len(validRequired) == 0 {
+			delete(out, "required")
+			return out
+		}
+		out["type"] = "object"
+		out["properties"] = properties
+		out["required"] = validRequired
+		return out
+	}
+
+	switch typed := value.(type) {
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			if schema, ok := item.(map[string]any); ok {
+				out = append(out, sanitizeAlternative(schema))
+				continue
+			}
+			out = append(out, sanitizeFireworksSchemaValue(item, false))
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, schema := range typed {
+			out = append(out, sanitizeAlternative(schema))
+		}
+		return out
+	default:
+		return sanitizeFireworksSchemaValue(value, false)
+	}
 }
 
 func sanitizeFireworksSchemaValue(value any, keepRequired bool) any {
@@ -499,21 +589,45 @@ func mapToolChoice(choice string) any {
 	}
 }
 
-type fireworksToolCallConstructionState struct {
-	seenStarted   map[int]bool
-	seenCompleted map[int]bool
-	arguments     map[int]string
-	ids           map[int]string
-	names         map[int]string
+type fireworksToolCallKey struct {
+	choiceIndex int
+	toolIndex   int
 }
 
-func newFireworksToolCallConstructionState() *fireworksToolCallConstructionState {
+type fireworksToolCallConstruction struct {
+	key              fireworksToolCallKey
+	outputIndex      int
+	id               string
+	name             string
+	typeName         string
+	arguments        string
+	pendingArguments []string
+	started          bool
+	completed        bool
+	startedAtUnixMs  int64
+	recordedAtUnixMs int64
+}
+
+type fireworksToolCallConstructionState struct {
+	providerID    string
+	model         string
+	responseID    string
+	providerModel string
+	calls         map[fireworksToolCallKey]*fireworksToolCallConstruction
+	callsByChoice map[int][]fireworksToolCallKey
+	nextOutput    int
+}
+
+func newFireworksToolCallConstructionState(models ...string) *fireworksToolCallConstructionState {
+	model := ""
+	if len(models) > 0 {
+		model = strings.TrimSpace(models[0])
+	}
 	return &fireworksToolCallConstructionState{
-		seenStarted:   make(map[int]bool),
-		seenCompleted: make(map[int]bool),
-		arguments:     make(map[int]string),
-		ids:           make(map[int]string),
-		names:         make(map[int]string),
+		providerID:    "fireworks",
+		model:         model,
+		calls:         make(map[fireworksToolCallKey]*fireworksToolCallConstruction),
+		callsByChoice: make(map[int][]fireworksToolCallKey),
 	}
 }
 
@@ -521,64 +635,146 @@ func emitFireworksToolCallConstructionEvents(state *fireworksToolCallConstructio
 	if state == nil || onEvent == nil || len(chunk.Choices) == 0 {
 		return
 	}
+	if responseID := strings.TrimSpace(chunk.ID); responseID != "" {
+		state.responseID = responseID
+	}
+	if providerModel := strings.TrimSpace(chunk.Model); providerModel != "" {
+		state.providerModel = providerModel
+	}
 	for _, choice := range chunk.Choices {
 		if choice.Delta != nil {
 			for _, delta := range choice.Delta.ToolCalls {
-				index := delta.Index
+				call := state.call(choice.Index, delta.Index)
 				if id := strings.TrimSpace(delta.ID); id != "" {
-					state.ids[index] = id
+					call.id = id
 				}
-				if name := strings.TrimSpace(fireworksToolCallDeltaName(delta)); name != "" {
-					state.names[index] = name
+				if name := fireworksToolCallDeltaName(delta); name != "" {
+					call.name = name
 				}
-				if !state.seenStarted[index] {
-					state.seenStarted[index] = true
-					onEvent(provideriface.StreamEvent{
-						Type:          provideriface.StreamEventToolCallStarted,
-						ToolCallID:    state.ids[index],
-						ToolCallIndex: intPointer(index),
-						ToolName:      state.names[index],
-						Metadata:      fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
-					})
+				if typeName := strings.TrimSpace(delta.Type); typeName != "" {
+					call.typeName = typeName
 				}
 				if delta.Function != nil && delta.Function.Arguments != "" {
-					state.arguments[index] += delta.Function.Arguments
-					onEvent(provideriface.StreamEvent{
-						Type:           provideriface.StreamEventToolCallArgumentsDelta,
-						Delta:          delta.Function.Arguments,
-						ToolCallID:     state.ids[index],
-						ToolCallIndex:  intPointer(index),
-						ToolName:       state.names[index],
-						ArgumentsDelta: delta.Function.Arguments,
-						Metadata:       fireworksToolCallDeltaMetadata(choice.Index, delta, "fireworks.chat.completions.chunk.delta"),
-					})
+					call.arguments += delta.Function.Arguments
+					call.pendingArguments = append(call.pendingArguments, delta.Function.Arguments)
+				}
+				if !call.started && (call.id != "" || call.name != "") {
+					state.startAndFlush(call, "fireworks.chat.completions.chunk.delta", onEvent)
+				} else if call.started {
+					state.flushArguments(call, "fireworks.chat.completions.chunk.delta", onEvent)
 				}
 			}
 		}
 		if strings.EqualFold(strings.TrimSpace(choice.FinishReason), "tool_calls") {
-			emitCompletedFireworksToolCallConstructionEvents(state, choice.Index, onEvent)
+			emitCompletedFireworksToolCallConstructionEvents(state, choice.Index, choice.FinishReason, onEvent)
 		}
 	}
 }
 
-func emitCompletedFireworksToolCallConstructionEvents(state *fireworksToolCallConstructionState, choiceIndex int, onEvent func(provideriface.StreamEvent)) {
-	for index := range state.seenStarted {
-		if state.seenCompleted[index] {
+func (state *fireworksToolCallConstructionState) call(choiceIndex, toolIndex int) *fireworksToolCallConstruction {
+	key := fireworksToolCallKey{choiceIndex: choiceIndex, toolIndex: toolIndex}
+	if call := state.calls[key]; call != nil && !call.completed {
+		return call
+	}
+	call := &fireworksToolCallConstruction{key: key, outputIndex: state.nextOutput}
+	state.nextOutput++
+	state.calls[key] = call
+	state.callsByChoice[choiceIndex] = append(state.callsByChoice[choiceIndex], key)
+	return call
+}
+
+func (state *fireworksToolCallConstructionState) startAndFlush(call *fireworksToolCallConstruction, source string, onEvent func(provideriface.StreamEvent)) {
+	if call == nil || call.started || onEvent == nil {
+		return
+	}
+	call.started = true
+	onEvent(state.event(call, provideriface.StreamEventToolCallStarted, source, ""))
+	state.flushArguments(call, source, onEvent)
+}
+
+func (state *fireworksToolCallConstructionState) flushArguments(call *fireworksToolCallConstruction, source string, onEvent func(provideriface.StreamEvent)) {
+	if call == nil || !call.started || onEvent == nil {
+		return
+	}
+	for _, arguments := range call.pendingArguments {
+		event := state.event(call, provideriface.StreamEventToolCallArgumentsDelta, source, "")
+		event.Delta = arguments
+		event.ArgumentsDelta = arguments
+		onEvent(event)
+	}
+	call.pendingArguments = call.pendingArguments[:0]
+}
+
+func (state *fireworksToolCallConstructionState) event(call *fireworksToolCallConstruction, eventType provideriface.StreamEventType, source, finishReason string) provideriface.StreamEvent {
+	now := time.Now().UnixMilli()
+	if now <= call.recordedAtUnixMs {
+		now = call.recordedAtUnixMs + 1
+	}
+	call.recordedAtUnixMs = now
+	if call.startedAtUnixMs == 0 {
+		call.startedAtUnixMs = now
+	}
+	status := "building"
+	if eventType == provideriface.StreamEventToolCallStarted {
+		status = "started"
+	} else if eventType == provideriface.StreamEventToolCallCompleted {
+		status = "completed"
+	}
+	metadata := map[string]any{
+		"provider":               state.providerID,
+		"source":                 source,
+		"choice_index":           call.key.choiceIndex,
+		"native_tool_call_index": call.key.toolIndex,
+	}
+	if state.responseID != "" {
+		metadata["response_id"] = state.responseID
+	}
+	if state.providerModel != "" {
+		metadata["provider_model"] = state.providerModel
+	}
+	if call.typeName != "" {
+		metadata["tool_call_type"] = call.typeName
+	}
+	if finishReason = strings.TrimSpace(finishReason); finishReason != "" {
+		metadata["finish_reason"] = finishReason
+	}
+	return provideriface.StreamEvent{
+		Type:             eventType,
+		ToolCallID:       call.id,
+		ToolCallIndex:    intPointer(call.outputIndex),
+		ToolName:         call.name,
+		ProviderID:       state.providerID,
+		Model:            state.model,
+		RecordedAtUnixMs: now,
+		StartedAtUnixMs:  call.startedAtUnixMs,
+		Status:           status,
+		Metadata:         metadata,
+	}
+}
+
+func emitCompletedFireworksToolCallConstructionEvents(state *fireworksToolCallConstructionState, choiceIndex int, finishReason string, onEvent func(provideriface.StreamEvent)) {
+	keys := append([]fireworksToolCallKey(nil), state.callsByChoice[choiceIndex]...)
+	state.callsByChoice[choiceIndex] = nil
+	sort.SliceStable(keys, func(i, j int) bool {
+		if keys[i].toolIndex != keys[j].toolIndex {
+			return keys[i].toolIndex < keys[j].toolIndex
+		}
+		return state.calls[keys[i]].outputIndex < state.calls[keys[j]].outputIndex
+	})
+	for _, key := range keys {
+		call := state.calls[key]
+		if call == nil || call.completed {
 			continue
 		}
-		state.seenCompleted[index] = true
-		onEvent(provideriface.StreamEvent{
-			Type:          provideriface.StreamEventToolCallCompleted,
-			ToolCallID:    state.ids[index],
-			ToolCallIndex: intPointer(index),
-			ToolName:      state.names[index],
-			Arguments:     strings.TrimSpace(state.arguments[index]),
-			Metadata: map[string]any{
-				"provider":     "fireworks",
-				"source":       "fireworks.chat.completions.chunk.finish",
-				"choice_index": choiceIndex,
-			},
-		})
+		if !call.started {
+			state.startAndFlush(call, "fireworks.chat.completions.chunk.finish", onEvent)
+		} else {
+			state.flushArguments(call, "fireworks.chat.completions.chunk.delta", onEvent)
+		}
+		call.completed = true
+		event := state.event(call, provideriface.StreamEventToolCallCompleted, "fireworks.chat.completions.chunk.finish", finishReason)
+		event.Arguments = call.arguments
+		onEvent(event)
 	}
 }
 
@@ -587,18 +783,6 @@ func fireworksToolCallDeltaName(delta chatCompletionToolCallDelta) string {
 		return ""
 	}
 	return strings.TrimSpace(delta.Function.Name)
-}
-
-func fireworksToolCallDeltaMetadata(choiceIndex int, delta chatCompletionToolCallDelta, source string) map[string]any {
-	metadata := map[string]any{
-		"provider":     "fireworks",
-		"source":       source,
-		"choice_index": choiceIndex,
-	}
-	if typeName := strings.TrimSpace(delta.Type); typeName != "" {
-		metadata["tool_call_type"] = typeName
-	}
-	return metadata
 }
 
 func intPointer(value int) *int {
@@ -713,10 +897,9 @@ func annotateUsage(usage *provideriface.TokenUsage, serving requestServingResolu
 	if usage.APIUsageRaw == nil {
 		usage.APIUsageRaw = map[string]any{}
 	}
-	if strings.TrimSpace(serving.EffectiveTier) != "" {
-		usage.ServiceTier = strings.TrimSpace(serving.EffectiveTier)
-		usage.APIUsageRaw["service_tier"] = usage.ServiceTier
-	}
+	// Fireworks does not return an authoritative served-tier field on its
+	// Chat Completions response. Keep request resolution separate from provider
+	// usage so durable logs do not mislabel a requested tier as provider-confirmed.
 	if strings.TrimSpace(serving.ModelID) != "" {
 		usage.APIUsageRaw["provider_model"] = strings.TrimSpace(serving.ModelID)
 	}

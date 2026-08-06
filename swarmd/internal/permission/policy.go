@@ -387,6 +387,20 @@ func previewPolicyRule(rule PolicyRule) string {
 	}
 }
 
+func shouldApproveManageActionsMutation(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return true
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "list", "get":
+		return false
+	default:
+		return true
+	}
+}
+
 func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	toolName = normalizePolicyToolName(toolName)
 	toolArguments = strings.TrimSpace(toolArguments)
@@ -397,6 +411,9 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 		toolName = "plan_acceptance"
 	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
 		toolName = "plan_acceptance"
+	}
+	if toolName == "manage_actions" && shouldApproveManageActionsMutation(toolArguments) {
+		toolName = "action_change"
 	}
 	if toolName == "manage_skill" && ShouldApproveManageSkillMutation(toolArguments) {
 		toolName = "skill_change"
@@ -1170,8 +1187,13 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// complete batch and applies it atomically, so this canonical operation is
 		// safe to flow without a separate permission round trip.
 		return PolicyDecisionAllow
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_todos", "manage_theme":
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow
+	case "action_change":
+		if bypass {
+			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
 	case "manage_sessions":
 		return PolicyDecisionAllow
 	case "session_deploy", "session_commit", "session_archive", "session_unarchive":

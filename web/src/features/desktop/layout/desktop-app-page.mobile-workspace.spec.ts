@@ -8,38 +8,48 @@ const newSessionPane = new URL('../chat/components/desktop-v3-new-session-pane.t
 const chatHeader = new URL('../chat/components/desktop-v3-chat-header.tsx', import.meta.url)
 const reviewWorktreesModal = new URL('./review-worktrees-modal.tsx', import.meta.url)
 
-test('mobile workspace presents only Task and Worktree actions while desktop keeps New session', async () => {
+test('mobile workspace uses an outlined Task action and workspace picker while desktop keeps New session', async () => {
   const source = await readFile(appPage, 'utf8')
   const start = source.indexOf('data-testid="mobile-workspace-home"')
-  const end = source.indexOf('const handleWorkspaceSelect', start)
+  const end = source.indexOf('  useEffect(() => {', start)
   const mobile = source.slice(start, end)
   const desktop = `${source.slice(0, start)}${source.slice(end)}`
 
   assert.ok(start >= 0 && end > start)
-  const task = mobile.indexOf('>Task</span>')
-  const worktree = mobile.indexOf('>Worktree</span>')
-  assert.ok(task >= 0 && worktree > task)
+  assert.match(mobile, />Workspace<\/p>/)
+  assert.match(mobile, /<select[\s\S]*?aria-label="Change workspace"/)
+  assert.match(mobile, /value=\{routeWorkspace\.path\}/)
+  assert.match(mobile, /mergedSidebarWorkspaceEntries\.map\(\(workspace\) =>/)
+  assert.match(mobile, /handleOpenWorkspace\(workspace\.path, workspace\.workspaceName\)/)
+  assert.match(mobile, />Task<\/span>/)
+  assert.match(mobile, /border border-\[var\(--app-primary\)\][^\"]*bg-\[var\(--app-surface\)\][^\"]*text-\[var\(--app-primary\)\]/)
+  assert.doesNotMatch(mobile, /bg-\[var\(--app-primary\)\][^\"]*text-\[var\(--app-primary-text\)\]/)
+  assert.doesNotMatch(mobile, />Worktree<\/span>|<GitBranch/)
   assert.doesNotMatch(mobile, /New session/i)
   assert.match(desktop, /label: 'New session'/)
   assert.match(desktop, /handleStartNewSessionInWorkspace\(topWorkspacePath, topWorkspaceLabel\)/)
   assert.match(mobile, /<ListChecks[^>]+aria-hidden="true"/)
-  assert.match(mobile, /<GitBranch[^>]+aria-hidden="true"/)
-  assert.match(mobile, /min-h-20 touch-manipulation/)
+  assert.match(mobile, /min-h-11 shrink-0 touch-manipulation/)
 })
 
-test('mobile workspace exposes active sessions and keeps prior sessions collapsed', async () => {
+test('mobile workspace exposes the global flat session list and keeps prior sessions collapsed', async () => {
   const source = await readFile(appPage, 'utf8')
+  const globalListStart = source.indexOf('const globalFlattenedSessionNodes = useMemo(')
+  const mobileListEnd = source.indexOf('  const visibleSidebarRootIDs', globalListStart)
+  const mobileListSource = source.slice(globalListStart, mobileListEnd)
 
-  assert.match(source, /desktopRouteWorkspacePathForSession\(node\.session, workspacePathByBindingId, knownWorkspacePaths\) === routeWorkspace\.path/)
-  assert.match(source, /mobileWorkspaceSessionNodes\.filter\(\(node\) => sessionIsMobileActive\(node\.session\)\)/)
-  assert.match(source, /mobileWorkspaceSessionNodes\.filter\(\(node\) => !sessionIsMobileActive\(node\.session\)\)/)
+  assert.ok(globalListStart >= 0 && mobileListEnd > globalListStart)
+  assert.match(mobileListSource, /globalFlattenedSessionNodes\.filter\(\(node\) => sessionIsMobileActive\(node\.session\)\)/)
+  assert.match(mobileListSource, /globalFlattenedSessionNodes\.filter\(\(node\) => !sessionIsMobileActive\(node\.session\)\)/)
+  assert.doesNotMatch(mobileListSource, /routeWorkspace|desktopRouteWorkspacePathForSession|mobileWorkspaceSessionNodes/)
   assert.match(source, /group === 'needs_review' \|\| group === 'in_progress'/)
-  assert.match(source, />Active sessions<\/h2>/)
+  assert.match(source, /id="mobile-workspace-sessions-heading"[^>]*>Sessions<\/h2>/)
+  assert.match(source, /mobileActiveSessionNodes\.length[^\n]*>\{mobileActiveSessionNodes\.length\} active/)
   assert.match(source, /aria-expanded=\{mobilePreviousSessionsOpen\}/)
   assert.match(source, /mobilePreviousSessionsOpen \? <div className="mt-2 grid gap-2">/)
 })
 
-test('mobile Active sessions keeps a title-only header and opens Review worktrees from the lower Manage control', async () => {
+test('mobile Sessions header and rows preserve the lower Manage worktree control', async () => {
   const source = await readFile(appPage, 'utf8')
   const rendererStart = source.indexOf('function renderSidebarSessionGroups')
   const rendererEnd = source.indexOf('export function DesktopAppPage', rendererStart)
@@ -56,8 +66,9 @@ test('mobile Active sessions keeps a title-only header and opens Review worktree
   assert.ok(rendererStart >= 0 && rendererEnd > rendererStart)
   assert.ok(mobileRendererStart >= 0 && mobileRendererEnd > mobileRendererStart)
   assert.ok(headerStart >= 0 && headerEnd > headerStart)
-  assert.match(header, />Active sessions<\/h2>/)
-  assert.doesNotMatch(header, /mobileActiveSessionNodes\.length|Review worktrees|Manage/)
+  assert.match(header, />Sessions<\/h2>/)
+  assert.match(header, /mobileActiveSessionNodes\.length/)
+  assert.doesNotMatch(header, /Review worktrees|Manage/)
   assert.equal((source.match(/<span>Manage<\/span>/g) ?? []).length, 1)
   assert.match(mobileRenderer, /presentation: 'mobile'/)
   assert.match(renderer, /input\.presentation === 'mobile'[\s\S]*?min-h-11 touch-manipulation[\s\S]*?<span>Manage<\/span>/)
@@ -81,7 +92,7 @@ test('review worktrees is a full-height, safe-area-aware mobile view with touch 
   assert.match(source, /\[-webkit-overflow-scrolling:touch\]/)
 })
 
-test('mobile Task and Worktree buttons navigate to dedicated routes', async () => {
+test('mobile Task action and direct Worktree routes navigate to dedicated pages', async () => {
   const source = await readFile(appPage, 'utf8')
   const routerSource = await readFile(router, 'utf8')
 
@@ -126,16 +137,18 @@ test('mobile Task page uses the natural composer with background guidance and su
   assert.match(page, /showModePicker=\{false\}/)
   assert.match(page, /executionLabel="background"/)
   assert.doesNotMatch(page, /<textarea|<form/)
-  assert.match(source, /const handleQueueBackgroundTask = useCallback\(async \(submittedRequest = backgroundTaskRequest\)/)
-  assert.match(source, /createWorkspaceAITask\(workspacePath, request, idempotencyKey\)/)
-  assert.match(source, /setDesktopToast\(\{ message: 'Task started in the background\. Follow it from Active sessions\.', tone: 'success' \}\)/)
+  assert.match(source, /const handleStartBackgroundRouterSession = useCallback\(\(submittedRequest = backgroundTaskRequest\)/)
+  assert.match(source, /postDesktopV3BackgroundRouterSessionStart\(\{[\s\S]*?\.\.\.activeWorkspaceAuthority[\s\S]*?input: request[\s\S]*?plan_mode_requested: false/)
+  assert.match(source, /Background Router task sent\.', tone: 'success'/)
+  assert.match(source, /void launch\.catch\([\s\S]*?tone: 'error'/)
+  assert.doesNotMatch(source, /backgroundTaskBusy|setBackgroundTaskBusy|await postDesktopV3BackgroundRouterSessionStart/)
 })
 
 test('mobile pages preserve submission, selected workspace, worktree fields, and cancel navigation', async () => {
   const source = await readFile(appPage, 'utf8')
 
-  assert.match(source, /const workspacePath = routeWorkspace\?\.path\.trim\(\) \?\? ''/)
-  assert.match(source, /createWorkspaceAITask\(workspacePath, request, idempotencyKey\)/)
+  assert.match(source, /const clientRequestId = `desktop-v3-background-router:/)
+  assert.match(source, /postDesktopV3BackgroundRouterSessionStart/)
   assert.match(source, /presentation: 'page'/)
   assert.match(source, /name="title"[\s\S]*?text-\[16px\]/)
   assert.match(source, /<select[\s\S]*?selectedExistingPath[\s\S]*?text-\[16px\]/)
@@ -144,17 +157,32 @@ test('mobile pages preserve submission, selected workspace, worktree fields, and
   assert.match(source, /mobileCreationPage === 'task'[\s\S]*?navigate\(\{ to: '\/\$workspaceSlug'/)
   assert.match(source, /mobileCreationPage === 'worktree'[\s\S]*?navigate\(\{ to: '\/\$workspaceSlug'/)
   assert.match(source, /onSubmit=\{onSubmit\}/)
-  assert.match(source, /onSubmit=\{\(request\) => \{ void handleQueueBackgroundTask\(request\) \}\}/)
+  assert.match(source, /onSubmit=\{\(request\) => \{ void handleStartBackgroundRouterSession\(request\) \}\}/)
   assert.match(source, /event\.preventDefault\(\)\s*onSubmit\(request\)/)
   assert.doesNotMatch(source, /submitTaskOnMobileEnter|restoreMobileDialogInitialView|submitMobileDialog/)
   assert.doesNotMatch(source, /window\.scrollTo|requestAnimationFrame\(resetScroll\)|setTimeout\(resetScroll/)
 })
 
-test('desktop toast clears the mobile notch while preserving desktop placement', async () => {
+test('mobile homepage is safe-area-aware while preserving desktop toast placement', async () => {
   const source = await readFile(appPage, 'utf8')
+  const pane = await readFile(newSessionPane, 'utf8')
 
+  assert.match(pane, /data-testid="mobile-workspace-session-list"/)
+  assert.match(pane, /pt-\[var\(--app-safe-area-top\)\][^\"]*sm:hidden/)
   assert.match(source, /left-4 right-4 top-\[calc\(var\(--app-safe-area-top\)\+1rem\)\]/)
   assert.match(source, /sm:left-auto sm:right-6 sm:top-6 sm:max-w-md/)
+})
+
+test('mobile session list is mounted above the composer without replacing the desktop pending shell', async () => {
+  const pane = await readFile(newSessionPane, 'utf8')
+  const sessionList = pane.indexOf('data-testid="mobile-workspace-session-list"')
+  const pendingShell = pane.indexOf('<DesktopV3RoutedPendingShell', sessionList)
+  const composer = pane.indexOf('<DesktopV3AgenticComposer', pendingShell)
+
+  assert.ok(sessionList >= 0 && pendingShell > sessionList && composer > pendingShell)
+  assert.match(pane.slice(sessionList, pendingShell), /\{mobileSessionQuickMenu\}/)
+  assert.match(pane.slice(pendingShell, composer), /className=\{mobileSessionQuickMenu \? 'hidden sm:flex' : undefined\}/)
+  assert.match(pane.slice(composer), /routedNewSession/)
 })
 
 test('mobile task dictation remains capability-gated', async () => {

@@ -88,9 +88,19 @@ type workspaceModalEditor struct {
 	WorkspacePath       string
 	Fields              []workspaceModalEditorField
 	Selected            int
-	SuggestionIndex     int
+	DirectoryPicker     *workspaceModalDirectoryPicker
 	ThemePickerVisible  bool
 	ThemePickerSelected int
+}
+
+type workspaceModalDirectoryPicker struct {
+	FieldKey    string
+	CurrentPath string
+	Filter      string
+	Entries     []string
+	Selected    int
+	VisibleRows int
+	Error       string
 }
 
 type workspaceModalEditorField struct {
@@ -195,6 +205,13 @@ func (p *HomePage) OpenWorkspaceModalSaveEditor(path string, allowPathEdit bool)
 	p.openWorkspaceModalSaveEditorForPath(path, allowPathEdit, "")
 }
 
+func (p *HomePage) OpenWorkspaceModalSaveAndSwitchEditor(path string, allowPathEdit bool) {
+	p.openWorkspaceModalSaveEditorForPath(path, allowPathEdit, "")
+	if p.workspaceModal.Editor != nil {
+		p.workspaceModal.Editor.Selected = len(p.workspaceModal.Editor.Fields) - 1
+	}
+}
+
 func (p *HomePage) PopWorkspaceModalAction() (WorkspaceModalAction, bool) {
 	if p.pendingWorkspaceAction == nil {
 		return WorkspaceModalAction{}, false
@@ -207,6 +224,10 @@ func (p *HomePage) PopWorkspaceModalAction() (WorkspaceModalAction, bool) {
 func (p *HomePage) handleWorkspaceModalKey(ev *tcell.EventKey) {
 	if p.workspaceModal.Editor != nil {
 		p.handleWorkspaceModalEditorKey(ev)
+		return
+	}
+	if p.WorkspaceModalIntent() == "select" && ev.Key() == tcell.KeyRune && ev.Modifiers() == tcell.ModNone && ev.Rune() >= '1' && ev.Rune() <= '9' {
+		p.workspaceModalActivateSlot(int(ev.Rune() - '0'))
 		return
 	}
 
@@ -314,11 +335,19 @@ func (p *HomePage) handleWorkspaceModalKey(ev *tcell.EventKey) {
 
 func (p *HomePage) handleWorkspaceModalRune(ev *tcell.EventKey) {
 	r := ev.Rune()
+	if p.WorkspaceModalIntent() == "select" {
+		if p.keybinds.Match(ev, KeybindWorkspaceRefresh) {
+			p.workspaceModalRefresh()
+		}
+		return
+	}
 
 	switch {
 	case p.keybinds.Match(ev, KeybindWorkspaceFocusList):
 		p.workspaceModal.Focus = workspaceModalFocusList
 		p.workspaceModal.ActionMenuVisible = false
+	case p.keybinds.Match(ev, KeybindWorkspaceActions):
+		p.workspaceModalOpenActions()
 	case p.keybinds.Match(ev, KeybindWorkspaceRefresh):
 		p.workspaceModalRefresh()
 	case p.keybinds.Match(ev, KeybindWorkspaceSaveCurrent):
@@ -358,6 +387,10 @@ func (p *HomePage) handleWorkspaceModalEnter() {
 		p.executeWorkspaceModalSelectedAction()
 		return
 	}
+	if p.workspaceModalNewCardSelected() {
+		p.workspaceModalNew()
+		return
+	}
 	if _, ok := p.selectedWorkspaceModal(); !ok {
 		p.workspaceModal.Status = "Select a workspace first"
 		return
@@ -367,6 +400,22 @@ func (p *HomePage) handleWorkspaceModalEnter() {
 		return
 	}
 	p.workspaceModalEditSelected()
+}
+
+func (p *HomePage) workspaceModalOpenActions() {
+	if p.workspaceModalNewCardSelected() {
+		p.workspaceModal.Status = "Select a workspace to view its actions"
+		return
+	}
+	if _, ok := p.selectedWorkspaceModal(); !ok {
+		p.workspaceModal.Status = "Select a workspace to view its actions"
+		return
+	}
+	p.workspaceModal.ActionMenuVisible = true
+	p.workspaceModal.Focus = workspaceModalFocusDetails
+	p.workspaceModal.ConfirmDelete = false
+	p.reconcileWorkspaceModalActionSelection(true)
+	p.workspaceModal.Status = "Workspace Actions opened. Use Up/Down and Enter; Esc returns to workspace cards."
 }
 
 func (p *HomePage) workspaceModalRefresh() {
@@ -389,10 +438,25 @@ func (p *HomePage) workspaceModalSaveCurrent() {
 func (p *HomePage) workspaceModalNew() {
 	p.workspaceModal.ActionMenuVisible = false
 	if p.WorkspaceModalIntent() == "add_dir" {
-		p.openWorkspaceModalSaveEditorForPath("", true, p.currentWorkspaceModalAddDirectoryPath())
+		p.openWorkspaceModalSaveEditorForPath("~/", true, p.currentWorkspaceModalAddDirectoryPath())
 		return
 	}
-	p.openWorkspaceModalSaveEditorForPath("", true, "")
+	p.openWorkspaceModalSaveEditorForPath("~/", true, "")
+}
+
+func (p *HomePage) workspaceModalActivateSlot(slot int) {
+	for _, workspace := range p.workspaceModal.Workspaces {
+		if workspace.SortIndex+1 != slot {
+			continue
+		}
+		p.enqueueWorkspaceModalAction(WorkspaceModalAction{
+			Kind:       WorkspaceModalActionSelect,
+			Path:       workspace.Path,
+			StatusHint: fmt.Sprintf("Activating workspace %s ...", workspace.Name),
+		})
+		return
+	}
+	p.workspaceModal.Status = fmt.Sprintf("Workspace slot %d is empty", slot)
 }
 
 func (p *HomePage) workspaceModalActivateSelected() {
@@ -495,9 +559,7 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 	existing, hasExisting := p.workspaceByPath(path)
 	name := workspaceModalDefaultName(path)
 	themeID := ""
-	makeCurrent := true
 	submitLabel := p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")
-	tabLabel := p.workspaceModalEditorKeyLabel(KeybindEditorFocusNext, "Tab")
 	title := "Create Workspace"
 	status := fmt.Sprintf("Choose workspace settings, then press %s to save", submitLabel)
 	if hasExisting {
@@ -507,7 +569,6 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 		if trimmed := strings.TrimSpace(existing.ThemeID); trimmed != "" {
 			themeID = trimmed
 		}
-		makeCurrent = existing.Active
 		title = "Edit Workspace"
 		status = fmt.Sprintf("Editing %s. Press %s on the last field to save changes.", existing.Path, submitLabel)
 	}
@@ -516,7 +577,7 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 			Key:         "path",
 			Label:       "Path",
 			Value:       path,
-			Placeholder: "/abs/path",
+			Placeholder: "~/",
 			Editable:    allowPathEdit,
 			Help:        "Primary workspace directory",
 		},
@@ -535,23 +596,10 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 			Editable: false,
 			Help:     "Workspace-specific theme override. Global theme remains the fallback.",
 		},
-		{
-			Key:      "active",
-			Label:    "Set Active",
-			Value:    workspaceModalBoolValue(makeCurrent),
-			Options:  []string{"yes", "no"},
-			Editable: false,
-		},
 	}
+	fields = append(fields, workspaceModalLinkDirectoryField(linkedDirectory, submitLabel))
+	fields = appendWorkspaceModalSaveActions(fields)
 	if linkedDirectory != "" {
-		fields = append(fields, workspaceModalEditorField{
-			Key:         "linked_directory",
-			Label:       "Directory to Link",
-			Value:       linkedDirectory,
-			Placeholder: "~/",
-			Editable:    true,
-			Help:        fmt.Sprintf("Optional linked directory. %s fills a suggestion; %s on this field saves the workspace and links it.", tabLabel, submitLabel),
-		})
 		if hasExisting {
 			title = "Edit Workspace + Link Directory"
 			status = fmt.Sprintf("Editing %s. Press %s on the last field to save changes and link the directory.", existing.Path, submitLabel)
@@ -570,26 +618,71 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 	p.workspaceModal.ConfirmDelete = false
 }
 
+func workspaceModalLinkDirectoryField(value, submitLabel string) workspaceModalEditorField {
+	return workspaceModalEditorField{
+		Key:         "linked_directory",
+		Label:       "Link Directory",
+		Value:       strings.TrimSpace(value),
+		Placeholder: "~/",
+		Editable:    false,
+		Help:        fmt.Sprintf("Optional. Press %s to browse from ~/; Right opens the highlighted folder and %s selects it.", submitLabel, submitLabel),
+	}
+}
+
+func workspaceModalSaveActionFields() []workspaceModalEditorField {
+	return []workspaceModalEditorField{
+		{Key: "save", Label: "Save", Help: "Save this workspace without switching to it."},
+		{Key: "save_and_switch", Label: "Save and Switch", Help: "Save this workspace and switch to it."},
+	}
+}
+
+func appendWorkspaceModalSaveActions(fields []workspaceModalEditorField) []workspaceModalEditorField {
+	return append(fields, workspaceModalSaveActionFields()...)
+}
+
 func (p *HomePage) openWorkspaceModalEditEditor(workspace WorkspaceModalWorkspace) {
 	p.openWorkspaceModalSaveEditorForPath(workspace.Path, false, "")
 	editor := p.workspaceModal.Editor
 	if editor == nil {
 		return
 	}
-	choices := removableWorkspaceModalDirectories(workspace)
-	if len(choices) == 0 {
-		return
-	}
 	editor.WorkspacePath = workspace.Path
+	for len(editor.Fields) > 0 {
+		key := editor.Fields[len(editor.Fields)-1].Key
+		if key != "linked_directory" && key != "save" && key != "save_and_switch" {
+			break
+		}
+		editor.Fields = editor.Fields[:len(editor.Fields)-1]
+	}
+	choices := removableWorkspaceModalDirectories(workspace)
+	linkedSummary := "None"
+	if len(choices) > 0 {
+		display := make([]string, 0, len(choices))
+		for _, directory := range choices {
+			display = append(display, workspaceModalDisplayPath(directory))
+		}
+		linkedSummary = strings.Join(display, ", ")
+	}
 	editor.Fields = append(editor.Fields, workspaceModalEditorField{
-		Key:      "remove_directory",
-		Label:    "Unlink Folder",
-		Value:    choices[0],
-		Options:  choices,
+		Key:      "linked_directories",
+		Label:    "Linked Directories",
+		Value:    linkedSummary,
 		Editable: false,
-		Help:     "Choose a linked folder here, then press u to unlink it.",
+		Help:     "Additional roots currently linked to this workspace.",
 	})
-	p.workspaceModal.Status = fmt.Sprintf("Editing %s. Move to Unlink Folder and press Enter to delink, or save changes normally.", workspace.Path)
+	if len(choices) > 0 {
+		editor.Fields = append(editor.Fields, workspaceModalEditorField{
+			Key:      "remove_directory",
+			Label:    "Unlink Directory",
+			Value:    choices[0],
+			Options:  choices,
+			Editable: false,
+			Help:     "Choose a linked directory with Left/Right, then press u to unlink it.",
+		})
+	}
+	editor.Fields = append(editor.Fields, workspaceModalLinkDirectoryField("", p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")))
+	editor.Fields = appendWorkspaceModalSaveActions(editor.Fields)
+	p.workspaceModal.Status = fmt.Sprintf("Editing %s. Existing linked directories are shown below; use Add Linked Directory to attach another root.", workspace.Path)
 }
 
 func (p *HomePage) openWorkspaceModalAddDirectoryEditorForWorkspace(workspace WorkspaceModalWorkspace, directoryPath string) {
@@ -598,7 +691,6 @@ func (p *HomePage) openWorkspaceModalAddDirectoryEditorForWorkspace(workspace Wo
 		directoryPath = "~/"
 	}
 	submitLabel := p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")
-	tabLabel := p.workspaceModalEditorKeyLabel(KeybindEditorFocusNext, "Tab")
 	closeLabel := p.workspaceModalEditorKeyLabel(KeybindEditorClose, "Esc")
 	fields := []workspaceModalEditorField{
 		{
@@ -606,7 +698,7 @@ func (p *HomePage) openWorkspaceModalAddDirectoryEditorForWorkspace(workspace Wo
 			Label:    "Directory Path",
 			Value:    directoryPath,
 			Editable: true,
-			Help:     fmt.Sprintf("Type under ~/ or paste an absolute directory path. %s fills a suggestion; %s links it.", tabLabel, submitLabel),
+			Help:     fmt.Sprintf("Browse from ~/. Type to filter, Right opens the highlighted folder, Left goes to the parent, and %s selects the highlighted folder and links it.", submitLabel),
 		},
 	}
 	p.workspaceModal.Editor = &workspaceModalEditor{
@@ -668,29 +760,30 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 		p.handleWorkspaceModalThemePickerKey(ev)
 		return
 	}
-	suggestions := p.workspaceModalEditorSuggestions(editor)
+	if editor.DirectoryPicker != nil {
+		p.handleWorkspaceModalDirectoryPickerKey(ev)
+		return
+	}
+	if p.workspaceModalEditorPathFieldSelected(editor) && !p.workspaceModalEditorLinkDirectoryFieldSelected(editor) {
+		p.openWorkspaceModalDirectoryPicker(editor)
+		p.handleWorkspaceModalDirectoryPickerKey(ev)
+		return
+	}
 
 	switch {
 	case p.keybinds.Match(ev, KeybindEditorClose):
 		p.workspaceModal.Editor = nil
 		p.workspaceModal.Status = "Workspace editor closed"
 		return
-	case p.keybinds.MatchAny(ev, KeybindEditorMoveDown) && p.workspaceModalEditorPathFieldSelected(editor) && len(suggestions) > 0:
-		editor.SuggestionIndex = (editor.SuggestionIndex + 1) % len(suggestions)
-		return
-	case p.keybinds.MatchAny(ev, KeybindEditorMoveUp) && p.workspaceModalEditorPathFieldSelected(editor) && len(suggestions) > 0:
-		editor.SuggestionIndex = (editor.SuggestionIndex - 1 + len(suggestions)) % len(suggestions)
-		return
 	case p.keybinds.MatchAny(ev, KeybindEditorFocusNext, KeybindEditorMoveDown):
-		if p.workspaceModalEditorPathFieldSelected(editor) && p.applyWorkspaceModalSuggestion(editor, suggestions) {
-			return
+		if editor.Selected < len(editor.Fields)-1 {
+			editor.Selected++
 		}
-		editor.Selected = (editor.Selected + 1) % len(editor.Fields)
-		editor.SuggestionIndex = 0
 		return
 	case p.keybinds.MatchAny(ev, KeybindEditorFocusPrev, KeybindEditorMoveUp):
-		editor.Selected = (editor.Selected - 1 + len(editor.Fields)) % len(editor.Fields)
-		editor.SuggestionIndex = 0
+		if editor.Selected > 0 {
+			editor.Selected--
+		}
 		return
 	case p.keybinds.Match(ev, KeybindEditorMoveLeft):
 		if p.workspaceModalEditorThemeFieldSelected(editor) {
@@ -717,7 +810,6 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 				field.Value = field.Value[:len(field.Value)-sz]
 			}
 		}
-		editor.SuggestionIndex = 0
 		return
 	case p.keybinds.Match(ev, KeybindEditorClear):
 		field := &editor.Fields[editor.Selected]
@@ -725,16 +817,22 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 			return
 		}
 		field.Value = ""
-		editor.SuggestionIndex = 0
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		if p.workspaceModalEditorSaveActionSelected(editor) {
+			p.submitWorkspaceModalEditor()
+			return
+		}
 		if p.workspaceModalEditorThemeFieldSelected(editor) {
 			p.openWorkspaceModalThemePicker(editor)
 			return
 		}
+		if p.workspaceModalEditorLinkDirectoryFieldSelected(editor) {
+			p.openWorkspaceModalDirectoryPicker(editor)
+			return
+		}
 		if editor.Selected < len(editor.Fields)-1 {
 			editor.Selected++
-			editor.SuggestionIndex = 0
 			return
 		}
 		p.submitWorkspaceModalEditor()
@@ -755,7 +853,6 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 	}
 	if field.Editable {
 		field.Value += string(r)
-		editor.SuggestionIndex = 0
 		return
 	}
 	p.setWorkspaceModalEditorOptionByPrefix(string(r))
@@ -828,9 +925,9 @@ func (p *HomePage) submitWorkspaceModalEditor() {
 		name = workspaceModalDefaultName(path)
 	}
 	themeID := workspaceModalNormalizeThemeID(get("theme_id"))
-	makeCurrent := parseWorkspaceModalBool(get("active"))
 	linkedDirectory := strings.TrimSpace(get("linked_directory"))
 
+	makeCurrent := editor.Selected >= 0 && editor.Selected < len(editor.Fields) && editor.Fields[editor.Selected].Key == "save_and_switch"
 	p.workspaceModal.Editor = nil
 	p.enqueueWorkspaceModalAction(WorkspaceModalAction{
 		Kind:            WorkspaceModalActionSave,
@@ -1085,9 +1182,6 @@ func (s *workspaceModalState) reconcileSelections() {
 	if indexInList(matches, s.SelectedWorkspace) < 0 {
 		s.SelectedWorkspace = matches[0]
 	}
-	if s.SelectedWorkspace < 0 || s.SelectedWorkspace >= len(s.Workspaces) {
-		s.SelectedWorkspace = matches[0]
-	}
 }
 
 func (p *HomePage) selectedWorkspaceModal() (WorkspaceModalWorkspace, bool) {
@@ -1096,6 +1190,10 @@ func (p *HomePage) selectedWorkspaceModal() (WorkspaceModalWorkspace, bool) {
 		return WorkspaceModalWorkspace{}, false
 	}
 	return p.workspaceModal.Workspaces[idx], true
+}
+
+func (p *HomePage) workspaceModalNewCardSelected() bool {
+	return p.WorkspaceModalIntent() != "select" && p.workspaceModal.SelectedWorkspace == len(p.workspaceModal.Workspaces)
 }
 
 func (p *HomePage) selectedWorkspaceModalPath() string {
@@ -1145,7 +1243,7 @@ func workspaceModalDirectories(workspace WorkspaceModalWorkspace) []string {
 
 func (s *workspaceModalState) filteredIndexes() []int {
 	query := strings.ToLower(strings.TrimSpace(s.Search))
-	out := make([]int, 0, len(s.Workspaces))
+	out := make([]int, 0, len(s.Workspaces)+1)
 	for i, workspace := range s.Workspaces {
 		if query != "" {
 			haystack := strings.ToLower(strings.Join([]string{workspace.Name, workspace.Path, strings.Join(workspace.Directories, " ")}, " "))
@@ -1161,6 +1259,19 @@ func (s *workspaceModalState) filteredIndexes() []int {
 			}
 		}
 		out = append(out, i)
+	}
+	if strings.TrimSpace(s.Intent) != "select" {
+		newWorkspaceText := "new workspace create add path home"
+		matched := true
+		for _, term := range strings.Fields(query) {
+			if !strings.Contains(newWorkspaceText, term) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			out = append(out, len(s.Workspaces))
+		}
 	}
 	return out
 }
@@ -1230,15 +1341,33 @@ func (p *HomePage) workspaceModalEditorPathFieldSelected(editor *workspaceModalE
 		return false
 	}
 	field := editor.Fields[editor.Selected]
+	if field.Key == "linked_directory" {
+		return true
+	}
 	if !field.Editable {
 		return false
 	}
 	switch field.Key {
-	case "path", "linked_directory", "directory_path":
+	case "path", "directory_path":
 		return true
 	default:
 		return false
 	}
+}
+
+func (p *HomePage) workspaceModalEditorLinkDirectoryFieldSelected(editor *workspaceModalEditor) bool {
+	if editor == nil || editor.Selected < 0 || editor.Selected >= len(editor.Fields) {
+		return false
+	}
+	return editor.Fields[editor.Selected].Key == "linked_directory"
+}
+
+func (p *HomePage) workspaceModalEditorSaveActionSelected(editor *workspaceModalEditor) bool {
+	if editor == nil || editor.Selected < 0 || editor.Selected >= len(editor.Fields) {
+		return false
+	}
+	key := editor.Fields[editor.Selected].Key
+	return key == "save" || key == "save_and_switch"
 }
 
 func (p *HomePage) workspaceModalEditorThemeFieldSelected(editor *workspaceModalEditor) bool {
@@ -1363,33 +1492,176 @@ func (p *HomePage) handleWorkspaceModalThemePickerKey(ev *tcell.EventKey) {
 	p.setWorkspaceModalThemePickerSelectionByPrefix(string(r))
 }
 
-func (p *HomePage) workspaceModalEditorSuggestions(editor *workspaceModalEditor) []string {
-	if !p.workspaceModalEditorPathFieldSelected(editor) {
+func (p *HomePage) openWorkspaceModalDirectoryPicker(editor *workspaceModalEditor) *workspaceModalDirectoryPicker {
+	if editor == nil || !p.workspaceModalEditorPathFieldSelected(editor) {
 		return nil
 	}
-	field := editor.Fields[editor.Selected]
-	return workspaceModalDirectorySuggestions(field.Value, 6)
+	field := &editor.Fields[editor.Selected]
+	start := workspaceModalHomePath()
+	if start == "" {
+		start = workspaceModalNormalizeDirectoryPath(field.Value)
+	}
+	editor.DirectoryPicker = &workspaceModalDirectoryPicker{
+		FieldKey:    field.Key,
+		CurrentPath: start,
+		VisibleRows: 8,
+	}
+	p.refreshWorkspaceModalDirectoryPicker(editor)
+	return editor.DirectoryPicker
 }
 
-func (p *HomePage) applyWorkspaceModalSuggestion(editor *workspaceModalEditor, suggestions []string) bool {
-	if editor == nil || !p.workspaceModalEditorPathFieldSelected(editor) || len(suggestions) == 0 {
-		return false
+func (p *HomePage) workspaceModalDirectoryPicker(editor *workspaceModalEditor) *workspaceModalDirectoryPicker {
+	if editor == nil || !p.workspaceModalEditorPathFieldSelected(editor) || editor.DirectoryPicker == nil {
+		return nil
 	}
-	index := editor.SuggestionIndex
-	if index < 0 || index >= len(suggestions) {
-		index = 0
+	if editor.DirectoryPicker.FieldKey != editor.Fields[editor.Selected].Key {
+		editor.DirectoryPicker = nil
+		return nil
 	}
-	field := &editor.Fields[editor.Selected]
-	suggestion := strings.TrimSpace(suggestions[index])
-	if suggestion == "" {
-		return false
+	return editor.DirectoryPicker
+}
+
+func (p *HomePage) refreshWorkspaceModalDirectoryPicker(editor *workspaceModalEditor) {
+	picker := editor.DirectoryPicker
+	if picker == nil {
+		return
 	}
-	current := strings.TrimSpace(field.Value)
-	if workspaceModalPathsEqual(current, suggestion) {
-		return false
+	entries, err := workspaceModalBrowseDirectories(picker.CurrentPath, picker.Filter)
+	picker.Entries = entries
+	picker.Error = ""
+	if err != nil {
+		picker.Error = err.Error()
 	}
-	field.Value = suggestion
-	return true
+	if len(entries) == 0 {
+		picker.Selected = -1
+		return
+	}
+	if picker.Selected < 0 {
+		picker.Selected = 0
+	}
+	if picker.Selected >= len(entries) {
+		picker.Selected = len(entries) - 1
+	}
+}
+
+func (p *HomePage) handleWorkspaceModalDirectoryPickerKey(ev *tcell.EventKey) {
+	editor := p.workspaceModal.Editor
+	picker := p.workspaceModalDirectoryPicker(editor)
+	if editor == nil || picker == nil {
+		return
+	}
+	pageSize := maxInt(1, picker.VisibleRows)
+
+	switch {
+	case p.keybinds.Match(ev, KeybindEditorClose):
+		p.workspaceModal.Editor = nil
+		p.workspaceModal.Status = "Workspace editor closed"
+	case p.keybinds.MatchAny(ev, KeybindEditorMoveUp):
+		p.moveWorkspaceModalDirectoryPickerSelection(-1)
+	case p.keybinds.MatchAny(ev, KeybindEditorMoveDown):
+		p.moveWorkspaceModalDirectoryPickerSelection(1)
+	case p.keybinds.Match(ev, KeybindModalPageUp):
+		p.moveWorkspaceModalDirectoryPickerSelection(-pageSize)
+	case p.keybinds.Match(ev, KeybindModalPageDown):
+		p.moveWorkspaceModalDirectoryPickerSelection(pageSize)
+	case p.keybinds.Match(ev, KeybindModalJumpHome):
+		if len(picker.Entries) > 0 {
+			picker.Selected = 0
+		}
+	case p.keybinds.Match(ev, KeybindModalJumpEnd):
+		if len(picker.Entries) > 0 {
+			picker.Selected = len(picker.Entries) - 1
+		}
+	case p.keybinds.Match(ev, KeybindEditorMoveLeft):
+		p.workspaceModalDirectoryPickerParent(editor)
+	case p.keybinds.Match(ev, KeybindEditorMoveRight):
+		p.workspaceModalDirectoryPickerEnter(editor)
+	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		p.selectWorkspaceModalDirectoryPickerHighlighted(editor)
+	case p.keybinds.Match(ev, KeybindEditorFocusNext):
+		if editor.Fields[editor.Selected].Key == "linked_directory" {
+			editor.Fields[editor.Selected].Value = ""
+			editor.DirectoryPicker = nil
+			if editor.Selected < len(editor.Fields)-1 {
+				editor.Selected++
+			}
+		}
+	case p.keybinds.Match(ev, KeybindEditorFocusPrev):
+		if editor.Selected > 0 {
+			editor.Selected--
+		}
+		editor.DirectoryPicker = nil
+	case p.keybinds.Match(ev, KeybindEditorBackspace):
+		if picker.Filter != "" {
+			runes := []rune(picker.Filter)
+			picker.Filter = string(runes[:len(runes)-1])
+			picker.Selected = 0
+			p.refreshWorkspaceModalDirectoryPicker(editor)
+		}
+	case p.keybinds.Match(ev, KeybindEditorClear):
+		picker.Filter = ""
+		picker.Selected = 0
+		p.refreshWorkspaceModalDirectoryPicker(editor)
+	case ev.Key() == tcell.KeyRune && unicode.IsPrint(ev.Rune()):
+		picker.Filter += string(ev.Rune())
+		picker.Selected = 0
+		p.refreshWorkspaceModalDirectoryPicker(editor)
+	}
+}
+
+func (p *HomePage) moveWorkspaceModalDirectoryPickerSelection(delta int) {
+	editor := p.workspaceModal.Editor
+	picker := p.workspaceModalDirectoryPicker(editor)
+	if picker == nil || len(picker.Entries) == 0 || delta == 0 {
+		return
+	}
+	picker.Selected += delta
+	if picker.Selected < 0 {
+		picker.Selected = 0
+	}
+	if picker.Selected >= len(picker.Entries) {
+		picker.Selected = len(picker.Entries) - 1
+	}
+}
+
+func (p *HomePage) workspaceModalDirectoryPickerEnter(editor *workspaceModalEditor) {
+	picker := p.workspaceModalDirectoryPicker(editor)
+	if picker == nil || picker.Selected < 0 || picker.Selected >= len(picker.Entries) {
+		return
+	}
+	picker.CurrentPath = picker.Entries[picker.Selected]
+	picker.Filter = ""
+	picker.Selected = 0
+	p.refreshWorkspaceModalDirectoryPicker(editor)
+}
+
+func (p *HomePage) selectWorkspaceModalDirectoryPickerHighlighted(editor *workspaceModalEditor) {
+	picker := p.workspaceModalDirectoryPicker(editor)
+	if picker == nil || picker.Selected < 0 || picker.Selected >= len(picker.Entries) || editor.Selected < 0 || editor.Selected >= len(editor.Fields) {
+		return
+	}
+	editor.Fields[editor.Selected].Value = workspaceModalDisplayPath(picker.Entries[picker.Selected])
+	editor.DirectoryPicker = nil
+	if editor.Selected < len(editor.Fields)-1 {
+		editor.Selected++
+		return
+	}
+	p.submitWorkspaceModalEditor()
+}
+
+func (p *HomePage) workspaceModalDirectoryPickerParent(editor *workspaceModalEditor) {
+	picker := p.workspaceModalDirectoryPicker(editor)
+	if picker == nil {
+		return
+	}
+	parent := filepath.Dir(picker.CurrentPath)
+	if parent == picker.CurrentPath {
+		return
+	}
+	picker.CurrentPath = parent
+	picker.Filter = ""
+	picker.Selected = 0
+	p.refreshWorkspaceModalDirectoryPicker(editor)
 }
 
 func (p *HomePage) workspaceModalAddDirectoryNote(selected WorkspaceModalWorkspace, ok bool, currentDir string) string {
@@ -1488,7 +1760,7 @@ func (p *HomePage) workspaceModalDetailActions() []workspaceModalDetailAction {
 		workspaceModalDetailAction{
 			ID:       workspaceModalDetailActionNew,
 			Label:    newLabel,
-			Hint:     "Open workspace setup for any path, starting from ~/ suggestions.",
+			Hint:     "Open workspace setup with the directory browser rooted at ~/.",
 			Shortcut: p.workspaceModalKeyLabel(KeybindWorkspaceNew),
 			Enabled:  true,
 		},
@@ -1528,12 +1800,11 @@ func (p *HomePage) workspaceModalEditorKeyLabel(id KeybindID, fallback string) s
 	return fallback
 }
 
-func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor, suggestionCount int) []string {
+func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor) []string {
 	if editor == nil {
 		return nil
 	}
 	submitLabel := p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")
-	tabLabel := p.workspaceModalEditorKeyLabel(KeybindEditorFocusNext, "Tab")
 	upLabel := p.workspaceModalEditorKeyLabel(KeybindEditorMoveUp, "↑")
 	downLabel := p.workspaceModalEditorKeyLabel(KeybindEditorMoveDown, "↓")
 	closeLabel := p.workspaceModalEditorKeyLabel(KeybindEditorClose, "Esc")
@@ -1545,32 +1816,23 @@ func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor,
 		}
 	}
 
-	if p.workspaceModalEditorPathFieldSelected(editor) {
-		action := "save this workspace"
-		switch {
-		case editor.Mode == "add directory":
-			action = "link this directory"
-		case editor.Mode == "remove directory":
-			action = "remove this directory"
-		case editor.Selected < len(editor.Fields)-1:
-			action = "keep this path and go to the next field"
-		case strings.Contains(editor.Mode, "link directory") || strings.Contains(editor.Mode, "add directory"):
-			action = "save the workspace and link this directory"
-		case strings.HasPrefix(editor.Mode, "edit"):
-			action = "save workspace changes"
-		}
-		lines := []string{fmt.Sprintf("%s %s", submitLabel, action)}
-		if suggestionCount > 0 {
-			lines = append(lines,
-				fmt.Sprintf("%s fills the highlighted suggestion", tabLabel),
-				fmt.Sprintf("%s/%s choose a suggestion • %s cancel", upLabel, downLabel, closeLabel),
-			)
-			return lines
-		}
-		lines = append(lines,
-			fmt.Sprintf("%s fills a suggestion when one is shown", tabLabel),
+	if p.workspaceModalEditorLinkDirectoryFieldSelected(editor) && editor.DirectoryPicker == nil {
+		return []string{
+			fmt.Sprintf("%s open directory picker • %s/%s move to save actions", submitLabel, upLabel, downLabel),
 			fmt.Sprintf("%s cancel", closeLabel),
-		)
+		}
+	}
+
+	if p.workspaceModalEditorPathFieldSelected(editor) {
+		lines := []string{
+			fmt.Sprintf("Type to filter • %s/%s move • PgUp/PgDn scroll", upLabel, downLabel),
+			fmt.Sprintf("Right open highlighted • Left parent • %s choose highlighted", submitLabel),
+		}
+		if editor.Fields[editor.Selected].Key == "linked_directory" {
+			lines = append(lines, fmt.Sprintf("%s skip linking and save • %s cancel", p.workspaceModalEditorKeyLabel(KeybindEditorFocusNext, "Tab"), closeLabel))
+		} else {
+			lines = append(lines, fmt.Sprintf("%s cancel", closeLabel))
+		}
 		return lines
 	}
 
@@ -1653,67 +1915,62 @@ func workspaceModalPathsEqual(left, right string) bool {
 	return left != "" && left == right
 }
 
-func workspaceModalDirectorySuggestions(raw string, limit int) []string {
-	if limit <= 0 {
-		limit = 6
+func workspaceModalDirectoryPickerWindowStart(total, selected, visible int) int {
+	if total <= 0 || visible <= 0 {
+		return 0
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return nil
+	if selected < 0 {
+		selected = 0
 	}
-	home = filepath.Clean(home)
-
-	query := strings.TrimSpace(raw)
-	if query == "" {
-		query = "~" + string(filepath.Separator)
+	if selected >= total {
+		selected = total - 1
 	}
-	expanded := workspaceModalExpandSuggestionInput(query, home)
-	baseDir, prefix := workspaceModalSplitSuggestionInput(query, expanded, home)
-	if strings.TrimSpace(baseDir) == "" {
-		return nil
+	start := selected - visible + 1
+	if start < 0 {
+		start = 0
 	}
-	entries, err := os.ReadDir(baseDir)
-	if err != nil {
-		return nil
+	maxStart := total - visible
+	if maxStart < 0 {
+		maxStart = 0
 	}
-	matches := make([]string, 0, limit)
-	prefixLower := strings.ToLower(strings.TrimSpace(prefix))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := strings.TrimSpace(entry.Name())
-		if name == "" {
-			continue
-		}
-		lower := strings.ToLower(name)
-		if prefixLower != "" && !strings.HasPrefix(lower, prefixLower) && !strings.Contains(lower, prefixLower) {
-			continue
-		}
-		matches = append(matches, workspaceModalDisplayPath(filepath.Join(baseDir, name)))
+	if start > maxStart {
+		start = maxStart
 	}
-	sort.Strings(matches)
-	if len(matches) > limit {
-		matches = matches[:limit]
-	}
-	return matches
+	return start
 }
 
-func workspaceModalSplitSuggestionInput(query, expanded, home string) (string, string) {
-	query = strings.TrimSpace(query)
-	expanded = strings.TrimSpace(expanded)
-	if query == "" {
-		return home, ""
+func workspaceModalBrowseDirectories(currentPath, filter string) ([]string, error) {
+	currentPath = workspaceModalNormalizeDirectoryPath(currentPath)
+	if currentPath == "" {
+		currentPath = workspaceModalHomePath()
 	}
-	if strings.HasSuffix(query, string(filepath.Separator)) || query == "~" || query == "~"+string(filepath.Separator) {
-		return expanded, ""
+	entries, err := os.ReadDir(currentPath)
+	if err != nil {
+		return nil, err
 	}
-	if info, err := os.Stat(expanded); err == nil && info.IsDir() {
-		return expanded, ""
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	matches := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name())
+		if name == "" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		path := filepath.Join(currentPath, name)
+		isDir := entry.IsDir()
+		if !isDir && entry.Type()&os.ModeSymlink != 0 {
+			if info, statErr := os.Stat(path); statErr == nil {
+				isDir = info.IsDir()
+			}
+		}
+		if !isDir || (filter != "" && !strings.Contains(strings.ToLower(name), filter)) {
+			continue
+		}
+		matches = append(matches, path)
 	}
-	baseDir := filepath.Dir(expanded)
-	prefix := filepath.Base(expanded)
-	return baseDir, prefix
+	sort.Slice(matches, func(i, j int) bool {
+		return strings.ToLower(filepath.Base(matches[i])) < strings.ToLower(filepath.Base(matches[j]))
+	})
+	return matches, nil
 }
 
 func workspaceModalExpandSuggestionInput(query, home string) string {
@@ -1793,9 +2050,10 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 	DrawBox(s, rect, p.theme.BorderActive)
 
 	editorSubmitLabel := p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")
-	editorTabLabel := p.workspaceModalEditorKeyLabel(KeybindEditorFocusNext, "Tab")
 	title := "Workspace Manager"
-	if p.WorkspaceModalIntent() == "add_dir" {
+	if p.WorkspaceModalIntent() == "select" {
+		title = "Quick Switch Workspace"
+	} else if p.WorkspaceModalIntent() == "add_dir" {
 		title = "Workspace Manager · Link Directory"
 	}
 	if p.workspaceModal.Loading {
@@ -1813,11 +2071,11 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 		if p.workspaceModal.ActionMenuVisible {
 			status = "Choose an action for the selected workspace. Enter runs it, Esc goes back to cards."
 		} else if p.WorkspaceModalIntent() == "select" {
-			status = "Type to filter saved workspaces. Use arrows or Page Up/Down to navigate, Enter to activate, Esc to cancel."
+			status = "Press 1-9 to switch immediately. Type to filter, or use arrows and Enter. Esc cancels."
 		} else if p.WorkspaceModalIntent() == "add_dir" {
 			status = "Type to filter. Use arrows to move across cards, Enter to edit, or l to link a directory."
 		} else {
-			status = "Type to filter. Use arrows to move across cards, Enter to edit, or press action keys directly."
+			status = "Use arrows to select a workspace or the New Workspace card. Enter edits or creates; e edits; l links a directory."
 		}
 	}
 	statusLines := workspaceModalWrap(status, rect.W-4)
@@ -1830,12 +2088,16 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 		DrawText(s, rect.X+2, y, rect.W-4, statusStyle, line)
 	}
 
-	help := "Type to filter • arrows move • Enter/e edit • edit screen can unlink linked folders • Esc close"
+	actionsLabel := p.workspaceModalKeyLabel(KeybindWorkspaceActions)
+	if actionsLabel == "" {
+		actionsLabel = "m"
+	}
+	help := fmt.Sprintf("arrows move • Enter edit/create • %s Workspace Actions • l link dir • n new • Esc close", actionsLabel)
 	if p.workspaceModal.ActionMenuVisible {
 		help = "↑/↓ choose workspace action • Enter run action • Esc back to cards"
 	}
 	if p.WorkspaceModalIntent() == "select" && !p.workspaceModal.ActionMenuVisible {
-		help = "Type to filter • arrows/Page Up/Page Down navigate • Enter activates • Tab toggles search/list • Esc cancels"
+		help = "1-9 switch immediately • type to filter • arrows/Enter also select • Esc cancels"
 	} else if p.WorkspaceModalIntent() == "add_dir" && !p.workspaceModal.ActionMenuVisible {
 		help = "Type to filter • arrows move • Enter edits • l link dir • s save current • n new • Esc close"
 	}
@@ -1843,7 +2105,7 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 	footerText := "Workspace switcher keys are configured in /keybinds."
 	footerStyle := p.theme.TextMuted
 	if p.WorkspaceModalIntent() == "add_dir" {
-		footerText = fmt.Sprintf("Link-directory editor accepts ~/ or absolute paths. In the editor, %s links the typed path and %s fills suggestions.", editorSubmitLabel, editorTabLabel)
+		footerText = fmt.Sprintf("The directory browser starts at ~/: type to filter, Right opens the highlighted folder, Left returns to its parent, and %s selects it.", editorSubmitLabel)
 	}
 	if p.workspaceModal.ConfirmDelete {
 		footerText = "Delete is armed: press the delete keybind again to confirm"
@@ -1969,7 +2231,6 @@ func (p *HomePage) drawWorkspaceModalCards(s tcell.Screen, rect Rect) {
 				continue
 			}
 			idx := matches[idxPos]
-			workspace := p.workspaceModal.Workspaces[idx]
 			cardX := innerX + col*(cardW+gap)
 			cardY := innerY + visibleRow*(cardH+gap)
 			cardRect := Rect{X: cardX, Y: cardY, W: cardW, H: cardH}
@@ -1982,6 +2243,21 @@ func (p *HomePage) drawWorkspaceModalCards(s tcell.Screen, rect Rect) {
 			}
 			FillRect(s, cardRect, fill)
 			DrawBox(s, cardRect, style)
+			if idx == len(p.workspaceModal.Workspaces) {
+				textStyle := p.theme.Text
+				mutedStyle := p.theme.TextMuted
+				if selected {
+					textStyle = p.theme.Text.Bold(true)
+				}
+				DrawText(s, cardRect.X+2, cardRect.Y+1, cardRect.W-4, textStyle, "New Workspace")
+				DrawText(s, cardRect.X+2, cardRect.Y+2, cardRect.W-4, mutedStyle, "Browse folders from ~/")
+				if !compact {
+					DrawText(s, cardRect.X+2, cardRect.Y+3, cardRect.W-4, mutedStyle, "Enter to create")
+					DrawText(s, cardRect.X+2, cardRect.Y+4, cardRect.W-4, mutedStyle, "+ add workspace")
+				}
+				continue
+			}
+			workspace := p.workspaceModal.Workspaces[idx]
 			name := strings.TrimSpace(workspace.Name)
 			if name == "" {
 				name = workspaceModalDefaultName(workspace.Path)
@@ -2011,14 +2287,15 @@ func (p *HomePage) drawWorkspaceModalCards(s tcell.Screen, rect Rect) {
 				continue
 			}
 			meta := fmt.Sprintf("theme %s · dirs %d", workspaceModalDisplayThemeLabel(workspace.ThemeID), dirs)
-			slotLabel := fmt.Sprintf("slot %02d", workspace.SortIndex+1)
-			if id, ok := WorkspaceSlotKeybindID(workspace.SortIndex + 1); ok {
+			DrawText(s, cardRect.X+2, cardRect.Y+3, cardRect.W-4, mutedStyle, clampEllipsis(meta, cardRect.W-4))
+			orderLine := fmt.Sprintf("slot %02d", workspace.SortIndex+1)
+			if p.WorkspaceModalIntent() == "select" && workspace.SortIndex >= 0 && workspace.SortIndex < 9 {
+				orderLine = fmt.Sprintf("press %d to switch", workspace.SortIndex+1)
+			} else if id, ok := WorkspaceSlotKeybindID(workspace.SortIndex + 1); ok {
 				if keyLabel := p.workspaceModalKeyLabel(id); keyLabel != "" {
-					slotLabel = fmt.Sprintf("%s · %s", slotLabel, keyLabel)
+					orderLine = fmt.Sprintf("%s · %s", orderLine, keyLabel)
 				}
 			}
-			DrawText(s, cardRect.X+2, cardRect.Y+3, cardRect.W-4, mutedStyle, clampEllipsis(meta, cardRect.W-4))
-			orderLine := slotLabel
 			if selected {
 				orderLine += " · Enter to edit"
 			}
@@ -2099,9 +2376,11 @@ func (p *HomePage) drawWorkspaceModalEditor(s tcell.Screen, parent Rect) {
 	}
 	contentWidth := maxInt(1, width-4)
 	helpWidth := maxInt(1, width-6)
-	suggestions := p.workspaceModalEditorSuggestions(editor)
-	footerLines := p.workspaceModalEditorFooterLines(editor, len(suggestions))
-	tabLabel := p.workspaceModalEditorKeyLabel(KeybindEditorFocusNext, "Tab")
+	picker := p.workspaceModalDirectoryPicker(editor)
+	if picker == nil && p.workspaceModalEditorPathFieldSelected(editor) && !p.workspaceModalEditorLinkDirectoryFieldSelected(editor) {
+		picker = p.openWorkspaceModalDirectoryPicker(editor)
+	}
+	footerLines := p.workspaceModalEditorFooterLines(editor)
 	height := 4 + len(footerLines)
 	for i, field := range editor.Fields {
 		line := workspaceModalEditorFieldLine(field, i == editor.Selected)
@@ -2109,8 +2388,8 @@ func (p *HomePage) drawWorkspaceModalEditor(s tcell.Screen, parent Rect) {
 		if help := strings.TrimSpace(field.Help); help != "" {
 			height += len(workspaceModalWrap(help, helpWidth))
 		}
-		if i == editor.Selected && p.workspaceModalEditorPathFieldSelected(editor) && len(suggestions) > 0 {
-			height += len(suggestions) + 1
+		if i == editor.Selected && picker != nil {
+			height += minInt(maxInt(1, picker.VisibleRows), maxInt(1, len(picker.Entries))) + 2
 		}
 		if i == editor.Selected && p.workspaceModalEditorThemeFieldSelected(editor) && editor.ThemePickerVisible {
 			height += minInt(len(field.Options), 8) + 1
@@ -2162,9 +2441,10 @@ func (p *HomePage) drawWorkspaceModalEditor(s tcell.Screen, parent Rect) {
 		if rowY >= footerY {
 			break
 		}
+		selected := i == editor.Selected
 		style := p.theme.Text
-		line := workspaceModalEditorFieldLine(field, i == editor.Selected)
-		if field.Key == "theme_id" && i == editor.Selected {
+		line := workspaceModalEditorFieldLine(field, selected)
+		if selected && (field.Key == "theme_id" || workspaceModalEditorSaveActionField(field)) {
 			style = p.theme.Primary.Bold(true)
 		}
 		for _, wrapped := range workspaceModalWrap(line, rect.W-4) {
@@ -2183,22 +2463,34 @@ func (p *HomePage) drawWorkspaceModalEditor(s tcell.Screen, parent Rect) {
 				rowY++
 			}
 		}
-		if i == editor.Selected && p.workspaceModalEditorPathFieldSelected(editor) && len(suggestions) > 0 {
+		if i == editor.Selected && picker != nil {
 			if rowY < footerY {
-				DrawText(s, rect.X+4, rowY, rect.W-6, p.theme.TextMuted, fmt.Sprintf("Suggestions (%s fills highlighted item):", tabLabel))
+				filter := picker.Filter
+				if filter == "" {
+					filter = "type to filter"
+				}
+				DrawText(s, rect.X+4, rowY, rect.W-6, p.theme.TextMuted, clampEllipsis(fmt.Sprintf("Folder: %s · Search: %s▌", workspaceModalDisplayPath(picker.CurrentPath), filter), rect.W-6))
 				rowY++
 			}
-			for idx, suggestion := range suggestions {
-				if rowY >= footerY {
-					break
-				}
+			if picker.Error != "" && rowY < footerY {
+				DrawText(s, rect.X+4, rowY, rect.W-6, p.theme.Error, clampEllipsis(picker.Error, rect.W-6))
+				rowY++
+			}
+			visible := minInt(maxInt(1, picker.VisibleRows), maxInt(0, footerY-rowY))
+			picker.VisibleRows = maxInt(1, visible)
+			start := workspaceModalDirectoryPickerWindowStart(len(picker.Entries), picker.Selected, visible)
+			if len(picker.Entries) == 0 && rowY < footerY {
+				DrawText(s, rect.X+4, rowY, rect.W-6, p.theme.TextMuted, "No visible folders match")
+				rowY++
+			}
+			for idx := start; idx < len(picker.Entries) && idx < start+visible && rowY < footerY; idx++ {
 				prefix := "  "
 				style := p.theme.TextMuted
-				if idx == editor.SuggestionIndex {
+				if idx == picker.Selected {
 					prefix = "> "
 					style = p.theme.Primary.Bold(true)
 				}
-				DrawText(s, rect.X+4, rowY, rect.W-6, style, clampEllipsis(prefix+workspaceModalDisplayPath(suggestion), rect.W-6))
+				DrawText(s, rect.X+4, rowY, rect.W-6, style, clampEllipsis(prefix+filepath.Base(picker.Entries[idx])+string(filepath.Separator), rect.W-6))
 				rowY++
 			}
 		}
@@ -2286,7 +2578,7 @@ func workspaceModalInitialEditorIndex(fields []workspaceModalEditorField) int {
 
 func workspaceModalDefaultName(path string) string {
 	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
+	if trimmed == "" || trimmed == "~" || trimmed == "~"+string(filepath.Separator) {
 		return "workspace"
 	}
 	name := filepath.Base(trimmed)
@@ -2294,22 +2586,6 @@ func workspaceModalDefaultName(path string) string {
 		return "workspace"
 	}
 	return name
-}
-
-func workspaceModalBoolValue(value bool) string {
-	if value {
-		return "yes"
-	}
-	return "no"
-}
-
-func parseWorkspaceModalBool(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "n", "no", "false", "0", "off":
-		return false
-	default:
-		return true
-	}
 }
 
 func boolLabel(value bool) string {
@@ -2347,9 +2623,21 @@ func workspaceModalWrap(text string, width int) []string {
 	return lines
 }
 
+func workspaceModalEditorSaveActionField(field workspaceModalEditorField) bool {
+	return field.Key == "save" || field.Key == "save_and_switch"
+}
+
 func workspaceModalEditorFieldLine(field workspaceModalEditorField, selected bool) string {
+	if workspaceModalEditorSaveActionField(field) {
+		if selected {
+			return "> " + field.Label
+		}
+		return "  " + field.Label
+	}
 	value := strings.TrimSpace(field.Value)
-	if value == "" {
+	if selected && field.Key == "linked_directory" && value == "" {
+		value = "Link?  [Enter opens directory picker]"
+	} else if value == "" {
 		value = field.Placeholder
 		if value == "" {
 			value = "-"
@@ -2374,7 +2662,7 @@ func workspaceModalEditorFieldLine(field workspaceModalEditorField, selected boo
 		default:
 			line += "  [" + strings.Join(field.Options, "/") + "]"
 		}
-	} else if !field.Editable {
+	} else if !field.Editable && field.Key != "linked_directory" {
 		line += "  [locked]"
 	}
 	return line

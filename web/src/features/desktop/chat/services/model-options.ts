@@ -48,6 +48,40 @@ export function modelOptionKey(provider: string, model: string, contextMode = ''
   return `${normalizeProviderID(provider)}:${model.trim()}:${contextMode.trim().toLowerCase()}`
 }
 
+export function modelProviderLabel(provider: string): string {
+  const normalized = normalizeProviderID(provider)
+  if (normalized === 'openrouter') return 'OpenRouter (routed)'
+  return normalized
+}
+
+export function modelUpstreamFamily(provider: string, model: string): string {
+  if (normalizeProviderID(provider) !== 'openrouter') return ''
+  const family = model.trim().split('/', 1)[0]?.trim().toLowerCase() ?? ''
+  return family || 'other'
+}
+
+export function modelUpstreamFamilyLabel(family: string): string {
+  const normalized = family.trim().toLowerCase()
+  if (!normalized || normalized === 'other') return 'Other'
+  return normalized.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`)
+}
+
+export function modelOptionUpstreamFamily(option: Pick<ModelOptionRecord, 'provider' | 'model' | 'upstreamFamily'>): string {
+  return option.upstreamFamily?.trim().toLowerCase() || modelUpstreamFamily(option.provider, option.model)
+}
+
+export function modelOptionGroupKey(option: Pick<ModelOptionRecord, 'provider' | 'model' | 'upstreamFamily'>): string {
+  const provider = normalizeProviderID(option.provider)
+  const family = modelOptionUpstreamFamily(option)
+  return family ? `${provider}::upstream::${family}` : `${provider}::direct`
+}
+
+export function modelOptionRouteLabel(option: Pick<ModelOptionRecord, 'provider' | 'model' | 'upstreamFamily'>): string {
+  const provider = normalizeProviderID(option.provider)
+  if (provider !== 'openrouter') return modelProviderLabel(provider)
+  return `OpenRouter → ${modelUpstreamFamilyLabel(modelOptionUpstreamFamily(option))}`
+}
+
 export function normalizeModelID(provider: string, model: string): string {
   const trimmedModel = model.trim()
   if (trimmedModel === '') return ''
@@ -99,6 +133,7 @@ function normalizedServiceTiers(provider: string, serviceTiers: string[] = []): 
     const normalized = tier.trim().toLowerCase()
     if (!normalized || normalized === 'standard' || normalized === 'off' || seen.has(normalized)) continue
     if ((normalizedProvider === 'anthropic' || normalizedProvider === 'openai') && normalized === 'batch') continue
+    if (normalizedProvider === 'google' && normalized !== 'fast' && normalized !== 'priority') continue
     seen.add(normalized)
     out.push(normalized)
   }
@@ -109,7 +144,6 @@ function serviceTierCandidates(option: Pick<ModelOptionRecord, 'serviceTiers' | 
   const values = [...(option?.serviceTiers ?? [])]
   for (const mapping of option?.serviceTierMappings ?? []) {
     if (mapping.tier) values.push(mapping.tier)
-    if (mapping.swarm_setting) values.push(mapping.swarm_setting)
   }
   return values
 }
@@ -122,6 +156,7 @@ export function normalizeModelServiceTier(provider: string, serviceTier: string)
   const normalizedProvider = normalizeProviderID(provider)
   const normalizedTier = serviceTier.trim().toLowerCase()
   if (normalizedTier === '' || normalizedTier === 'standard' || normalizedTier === 'off') return ''
+  if (normalizedProvider === 'google') return normalizedTier === 'fast' || normalizedTier === 'priority' ? normalizedTier : ''
   if (normalizedProvider === 'codex' || normalizedProvider === 'fireworks' || normalizedProvider === 'openai') return normalizedTier === 'batch' ? '' : normalizedTier
   if (normalizedProvider === 'anthropic') return normalizedTier === 'batch' ? '' : normalizedTier
   return ''
@@ -133,7 +168,7 @@ export function supportsModelServiceTier(provider: string, _model: string, servi
   const normalizedRequested = normalizeModelServiceTier(provider, requestedTier)
   if (normalizedRequested) return tiers.includes(normalizedRequested)
   if (requestedRaw && requestedRaw !== 'standard' && requestedRaw !== 'off') return false
-  return ['codex', 'fireworks', 'anthropic', 'openai'].includes(normalizeProviderID(provider)) ? tiers.length > 0 : false
+  return ['codex', 'fireworks', 'google', 'anthropic', 'openai'].includes(normalizeProviderID(provider)) ? tiers.length > 0 : false
 }
 
 export function modelServiceTierOptions(provider: string, _model: string, serviceTiers: string[] | Pick<ModelOptionRecord, 'serviceTiers' | 'serviceTierMappings'> = []): ModelServiceTierOption[] {

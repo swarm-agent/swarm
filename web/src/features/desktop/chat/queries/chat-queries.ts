@@ -42,6 +42,7 @@ import {
 import {
   modelAllowedByProviderPreset,
   modelOptionKey,
+  modelUpstreamFamily,
   sortModelOptions,
 } from "../services/model-options";
 import { parseStructuredToolMessage } from "../services/tool-message";
@@ -550,15 +551,6 @@ type AgentStateWire = {
       provider?: string;
       model?: string;
       thinking?: string;
-      model_mode?: string;
-      plan_provider?: string;
-      plan_model?: string;
-      plan_thinking?: string;
-      plan_service_tier?: string;
-      auto_provider?: string;
-      auto_model?: string;
-      auto_thinking?: string;
-      auto_service_tier?: string;
       prompt?: string;
       runtime_mode?: string;
       default_session_mode?: string;
@@ -594,15 +586,6 @@ type RestoreAgentDefaultsWire = {
     provider?: string;
     model?: string;
     thinking?: string;
-    model_mode?: string;
-    plan_provider?: string;
-    plan_model?: string;
-    plan_thinking?: string;
-    plan_service_tier?: string;
-    auto_provider?: string;
-    auto_model?: string;
-    auto_thinking?: string;
-    auto_service_tier?: string;
     prompt?: string;
     runtime_mode?: string;
     default_session_mode?: string;
@@ -662,6 +645,21 @@ interface ModelContextModeWire {
   default?: boolean;
 }
 
+interface ModelMediaDirectionWire {
+  modality?: string;
+  state?: string;
+  semantics?: string;
+  mime_types?: string[] | null;
+  file_types?: string[] | null;
+}
+
+interface ModelMediaCapabilitiesWire {
+  state?: string;
+  provider_surface?: string;
+  credential_surface?: string;
+  inputs?: ModelMediaDirectionWire[] | null;
+}
+
 interface ModelCatalogRecordWire {
   provider?: string;
   model?: string;
@@ -675,6 +673,7 @@ interface ModelCatalogRecordWire {
   default_service_tier?: string | null;
   service_tier_mappings?: ModelServiceTierMappingWire[] | null;
   context_modes?: ModelContextModeWire[] | null;
+  media?: ModelMediaCapabilitiesWire | null;
 }
 
 interface CatalogResponseWire {
@@ -1515,15 +1514,6 @@ function mapAgentStateResponse(response: AgentStateWire): AgentStateRecord {
           provider: String(profile.provider ?? "").trim(),
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
-          modelMode: String(profile.model_mode ?? "").trim() === "split" ? "split" : "single",
-          planProvider: String(profile.plan_provider ?? "").trim(),
-          planModel: String(profile.plan_model ?? "").trim(),
-          planThinking: String(profile.plan_thinking ?? "").trim(),
-          planServiceTier: String(profile.plan_service_tier ?? "").trim(),
-          autoProvider: String(profile.auto_provider ?? "").trim(),
-          autoModel: String(profile.auto_model ?? "").trim(),
-          autoThinking: String(profile.auto_thinking ?? "").trim(),
-          autoServiceTier: String(profile.auto_service_tier ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
           runtimeMode: (() => {
             const raw = String(profile.runtime_mode ?? "")
@@ -1675,15 +1665,6 @@ function mapAgentDefaultsState(
           provider: String(profile.provider ?? "").trim(),
           model: String(profile.model ?? "").trim(),
           thinking: String(profile.thinking ?? "").trim(),
-          modelMode: String(profile.model_mode ?? "").trim() === "split" ? "split" : "single",
-          planProvider: String(profile.plan_provider ?? "").trim(),
-          planModel: String(profile.plan_model ?? "").trim(),
-          planThinking: String(profile.plan_thinking ?? "").trim(),
-          planServiceTier: String(profile.plan_service_tier ?? "").trim(),
-          autoProvider: String(profile.auto_provider ?? "").trim(),
-          autoModel: String(profile.auto_model ?? "").trim(),
-          autoThinking: String(profile.auto_thinking ?? "").trim(),
-          autoServiceTier: String(profile.auto_service_tier ?? "").trim(),
           prompt: String(profile.prompt ?? ""),
           runtimeMode: (() => {
             const raw = String(profile.runtime_mode ?? "")
@@ -2203,6 +2184,26 @@ function normalizeServiceTierMappings(value: unknown): ModelServiceTierMappingRe
     .filter((item): item is ModelServiceTierMappingRecord => Boolean(item));
 }
 
+function normalizeModelMedia(value: unknown): ModelOptionRecord['media'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as ModelMediaCapabilitiesWire;
+  const inputs = Array.isArray(raw.inputs)
+    ? raw.inputs.map((item) => ({
+        modality: String(item?.modality ?? '').trim().toLowerCase(),
+        state: String(item?.state ?? 'unknown').trim().toLowerCase(),
+        semantics: String(item?.semantics ?? '').trim().toLowerCase(),
+        mimeTypes: normalizeServiceTiers(item?.mime_types),
+        fileTypes: normalizeServiceTiers(item?.file_types).map((fileType) => fileType.replace(/^\./, '')),
+      })).filter((item) => item.modality)
+    : [];
+  return {
+    state: String(raw.state ?? 'unknown').trim().toLowerCase(),
+    providerSurface: String(raw.provider_surface ?? '').trim(),
+    credentialSurface: String(raw.credential_surface ?? '').trim(),
+    inputs,
+  };
+}
+
 function normalizeContextModes(value: unknown): ModelContextModeRecord[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -2219,6 +2220,24 @@ function normalizeContextModes(value: unknown): ModelContextModeRecord[] {
       return out;
     })
     .filter((item): item is ModelContextModeRecord => Boolean(item));
+}
+
+const MODEL_CATALOG_DEFAULT_LIMIT = 500;
+const OPENROUTER_MODEL_CATALOG_LIMIT = 500;
+
+async function fetchBoundedModelCatalog(
+  provider: string,
+  signal?: AbortSignal,
+): Promise<CatalogResponseWire> {
+  const limit = provider.trim().toLowerCase() === 'openrouter'
+    ? OPENROUTER_MODEL_CATALOG_LIMIT
+    : MODEL_CATALOG_DEFAULT_LIMIT;
+  const response = await requestJson<CatalogResponseWire>(
+    `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=${limit}`,
+    { signal },
+  );
+  const records = Array.isArray(response.records) ? response.records.slice(0, limit) : [];
+  return { ...response, records };
 }
 
 export async function fetchModelOptions(
@@ -2255,10 +2274,7 @@ export async function fetchModelOptions(
         async (provider) =>
           [
             provider,
-            await requestJson<CatalogResponseWire>(
-              `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=200`,
-              { signal },
-            ),
+            await fetchBoundedModelCatalog(provider, signal),
           ] as const,
       ),
     ),
@@ -2277,6 +2293,7 @@ export async function fetchModelOptions(
         key,
         provider,
         model,
+        upstreamFamily: modelUpstreamFamily(provider, model),
         contextMode: "",
         label: String(record.label ?? `${provider}/${model}`).trim(),
         thinking: String(record.thinking ?? "").trim(),
@@ -2287,6 +2304,7 @@ export async function fetchModelOptions(
         defaultServiceTier: "",
         serviceTierMappings: [],
         contextModes: [],
+        media: null,
         thinkingOptions: [],
         defaultThinking: "",
         thinkingProviderParameter: "",
@@ -2308,6 +2326,7 @@ export async function fetchModelOptions(
           key,
           provider,
           model,
+          upstreamFamily: modelUpstreamFamily(provider, model),
           contextMode: "",
           label: `${provider}/${model}`,
           thinking: "",
@@ -2321,6 +2340,7 @@ export async function fetchModelOptions(
           defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
           serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
           contextModes: normalizeContextModes(record.context_modes),
+          media: normalizeModelMedia(record.media),
           thinkingOptions: normalizeServiceTiers(record.thinking_options),
           defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
           thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),
@@ -2339,6 +2359,7 @@ export async function fetchModelOptions(
         defaultServiceTier: String(record.default_service_tier ?? "").trim().toLowerCase(),
         serviceTierMappings: normalizeServiceTierMappings(record.service_tier_mappings),
         contextModes: normalizeContextModes(record.context_modes),
+        media: normalizeModelMedia(record.media) ?? current.media,
         thinkingOptions: normalizeServiceTiers(record.thinking_options),
         defaultThinking: String(record.default_thinking ?? "").trim().toLowerCase(),
         thinkingProviderParameter: String(record.thinking_provider_parameter ?? "").trim(),

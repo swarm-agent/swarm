@@ -21,12 +21,12 @@ type State struct {
 	NotificationCount int
 	DisplayedMode     string
 	Agent             string
-	ProfileLabel      string
 	ModelLabel        string
 	Thinking          string
 	ServiceTier       string
-	UnifiedProfile    bool
 	PlanToggle        bool
+	WorktreeRequested bool
+	HideAgentModel    bool
 	RightFacts        []string
 	StatusLine        string
 	StatusStyle       tcell.Style
@@ -82,21 +82,18 @@ func Tokens(styles Styles, state State) []Token {
 	} else {
 		tokens = append(tokens, Token{Text: modeText, Style: modeStyle})
 	}
-	if state.UnifiedProfile {
-		return append(tokens, Token{Text: ProfileUnit(state), Style: metaStyle, Action: "open-profiles-modal", Shrink: true})
+	if state.WorktreeRequested {
+		tokens = append(tokens, Token{Text: "Worktree", Style: modeStyle})
 	}
-	return append(tokens,
-		Token{Text: "[a:" + clamp(fallback(strings.TrimSpace(state.Agent), "swarm"), 12) + "]", Style: metaStyle, Action: "open-agents-modal"},
-		Token{Text: "[m:" + clamp(fallback(strings.TrimSpace(state.ModelLabel), "-"), 24) + "]", Style: metaStyle, Action: "open-models-modal"},
-		Token{Text: "[t:" + clamp(fallback(strings.TrimSpace(state.Thinking), "-"), 10) + "]", Style: metaStyle, Action: "cycle-thinking"},
-	)
+	if !state.HideAgentModel {
+		tokens = append(tokens, Token{Text: AgentModelUnit(state), Style: metaStyle, Action: "open-agents-modal", Shrink: true})
+	}
+	return tokens
 }
 
-func ProfileUnit(state State) string {
+func AgentModelUnit(state State) string {
 	parts := make([]string, 0, 4)
-	if profile := strings.TrimSpace(state.ProfileLabel); profile != "" && !strings.EqualFold(profile, "Agent model default") {
-		parts = append(parts, profile)
-	}
+	parts = append(parts, fallback(strings.TrimSpace(state.Agent), "swarm"))
 	parts = append(parts, fallback(strings.TrimSpace(state.ModelLabel), "Model"))
 	if thinking := strings.TrimSpace(state.Thinking); thinking != "" {
 		parts = append(parts, thinking)

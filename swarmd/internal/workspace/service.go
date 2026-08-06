@@ -1,9 +1,12 @@
 package workspace
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,33 +25,55 @@ type Service struct {
 }
 
 type Resolution struct {
-	RequestedPath           string `json:"requested_path"`
-	ResolvedPath            string `json:"resolved_path"`
-	WorkspaceID             string `json:"workspace_id,omitempty"`
-	LocalWorkspaceBindingID string `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceGeneration     int64  `json:"workspace_generation,omitempty"`
-	WorkspaceState          string `json:"workspace_state,omitempty"`
-	WorkspacePath           string `json:"workspace_path"`
-	WorkspaceName           string `json:"workspace_name"`
-	ThemeID                 string `json:"theme_id,omitempty"`
+	RequestedPath             string `json:"requested_path"`
+	ResolvedPath              string `json:"resolved_path"`
+	WorkspaceID               string `json:"workspace_id,omitempty"`
+	LocalWorkspaceBindingID   string `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceGeneration       int64  `json:"workspace_generation,omitempty"`
+	WorkspaceState            string `json:"workspace_state,omitempty"`
+	WorkspacePath             string `json:"workspace_path"`
+	WorkspaceName             string `json:"workspace_name"`
+	ThemeID                   string `json:"theme_id,omitempty"`
+	IconPNGDataURL            string `json:"icon_png_data_url,omitempty"`
+	Definition                string `json:"definition,omitempty"`
+	DefinitionStatus          string `json:"definition_status,omitempty"`
+	DefinitionAttemptCount    int    `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration      int64  `json:"definition_generation,omitempty"`
+	DefinitionError           string `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion string `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt       int64  `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt     int64  `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt        int64  `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt       int64  `json:"definition_updated_at,omitempty"`
 }
 
 type Entry struct {
-	Path                    string   `json:"path"`
-	WorkspaceID             string   `json:"workspace_id,omitempty"`
-	WorkspaceGeneration     int64    `json:"workspace_generation,omitempty"`
-	State                   string   `json:"state,omitempty"`
-	LocalWorkspaceBindingID string   `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName           string   `json:"workspace_name"`
-	ThemeID                 string   `json:"theme_id,omitempty"`
-	Directories             []string `json:"directories"`
-	IsGitRepo               bool     `json:"is_git_repo"`
-	SortIndex               int      `json:"sort_index"`
-	AddedAt                 int64    `json:"added_at"`
-	UpdatedAt               int64    `json:"updated_at"`
-	LastSelectedAt          int64    `json:"last_selected_at"`
-	Active                  bool     `json:"active"`
-	WorktreeEnabled         bool     `json:"worktree_enabled"`
+	Path                      string   `json:"path"`
+	WorkspaceID               string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration       int64    `json:"workspace_generation,omitempty"`
+	State                     string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID   string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName             string   `json:"workspace_name"`
+	ThemeID                   string   `json:"theme_id,omitempty"`
+	IconPNGDataURL            string   `json:"icon_png_data_url,omitempty"`
+	Directories               []string `json:"directories"`
+	IsGitRepo                 bool     `json:"is_git_repo"`
+	SortIndex                 int      `json:"sort_index"`
+	AddedAt                   int64    `json:"added_at"`
+	UpdatedAt                 int64    `json:"updated_at"`
+	LastSelectedAt            int64    `json:"last_selected_at"`
+	Active                    bool     `json:"active"`
+	WorktreeEnabled           bool     `json:"worktree_enabled"`
+	Definition                string   `json:"definition,omitempty"`
+	DefinitionStatus          string   `json:"definition_status,omitempty"`
+	DefinitionAttemptCount    int      `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration      int64    `json:"definition_generation,omitempty"`
+	DefinitionError           string   `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion string   `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt       int64    `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt     int64    `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt        int64    `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt       int64    `json:"definition_updated_at,omitempty"`
 }
 
 type Scope struct {
@@ -101,6 +126,34 @@ func (s *Service) GetByWorkspaceIDForPrincipal(principal identity.Principal, wor
 		return pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
 	}
 	return s.store.GetByWorkspaceIDForAccount(principal.AccountScopeID, workspaceID)
+}
+
+func (s *Service) MarkDefinitionPendingForPrincipal(principal identity.Principal, path string) (pebblestore.WorkspaceEntry, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, err
+	}
+	return s.store.MarkDefinitionPendingForAccount(principal.AccountScopeID, path)
+}
+
+func (s *Service) RecordDefinitionAttemptForPrincipal(principal identity.Principal, path string, generation int64, attempt int) (pebblestore.WorkspaceEntry, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, false, err
+	}
+	return s.store.RecordDefinitionAttemptForAccount(principal.AccountScopeID, path, generation, attempt)
+}
+
+func (s *Service) CompleteDefinitionForPrincipal(principal identity.Principal, path string, generation int64, definition string, attempts int) (pebblestore.WorkspaceEntry, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, false, err
+	}
+	return s.store.CompleteDefinitionForAccount(principal.AccountScopeID, path, generation, definition, attempts)
+}
+
+func (s *Service) FailDefinitionForPrincipal(principal identity.Principal, path string, generation int64, failure, suggestion string, attempts int) (pebblestore.WorkspaceEntry, bool, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return pebblestore.WorkspaceEntry{}, false, err
+	}
+	return s.store.FailDefinitionForAccount(principal.AccountScopeID, path, generation, failure, suggestion, attempts)
 }
 
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {
@@ -388,6 +441,49 @@ func (s *Service) SetThemeIDForPrincipal(principal identity.Principal, path, the
 	return resolution, nil
 }
 
+func (s *Service) SetIconPNGDataURLForPrincipal(principal identity.Principal, path, iconPNGDataURL string) (Resolution, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	iconPNGDataURL = strings.TrimSpace(iconPNGDataURL)
+	if iconPNGDataURL != "" {
+		const prefix = "data:image/png;base64,"
+		if !strings.HasPrefix(iconPNGDataURL, prefix) {
+			return Resolution{}, fmt.Errorf("workspace icon must be a PNG data URL")
+		}
+		if len(iconPNGDataURL) > 1_400_000 {
+			return Resolution{}, fmt.Errorf("workspace icon PNG is too large")
+		}
+		payload, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(iconPNGDataURL, prefix))
+		if err != nil {
+			return Resolution{}, fmt.Errorf("workspace icon PNG encoding is invalid")
+		}
+		if len(payload) == 0 || len(payload) > 1_048_576 {
+			return Resolution{}, fmt.Errorf("workspace icon PNG must be smaller than 1 MB")
+		}
+		config, err := png.DecodeConfig(bytes.NewReader(payload))
+		if err != nil {
+			return Resolution{}, fmt.Errorf("workspace icon content is not a valid PNG")
+		}
+		if config.Width < 1 || config.Height < 1 || config.Width > 2048 || config.Height > 2048 {
+			return Resolution{}, fmt.Errorf("workspace icon PNG dimensions must be between 1 and 2048 pixels")
+		}
+	}
+	entry, err := s.store.SetIconPNGDataURLForAccount(principal.AccountScopeID, resolved, iconPNGDataURL)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("set workspace icon: %w", err)
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(entry.Path)
+	}
+	return resolutionForEntry(path, entry.Path, entry, name), nil
+}
+
 func (s *Service) publishThemeUpdated(resolution Resolution) error {
 	if s == nil || s.events == nil || s.publish == nil {
 		return nil
@@ -475,20 +571,31 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 	for _, entry := range entries {
 		isGitRepo, _ := detectWorkspaceSignals(entry.Path)
 		out = append(out, Entry{
-			Path:                entry.Path,
-			WorkspaceID:         entry.WorkspaceID,
-			WorkspaceGeneration: entry.WorkspaceGeneration,
-			State:               entry.State,
-			WorkspaceName:       entry.Name,
-			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
-			Directories:         append([]string(nil), entry.Directories...),
-			IsGitRepo:           isGitRepo,
-			SortIndex:           entry.SortIndex,
-			AddedAt:             entry.AddedAt,
-			UpdatedAt:           entry.UpdatedAt,
-			LastSelectedAt:      entry.LastSelectedAt,
-			Active:              false,
-			WorktreeEnabled:     false,
+			Path:                      entry.Path,
+			WorkspaceID:               entry.WorkspaceID,
+			WorkspaceGeneration:       entry.WorkspaceGeneration,
+			State:                     entry.State,
+			WorkspaceName:             entry.Name,
+			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
+			IconPNGDataURL:            entry.IconPNGDataURL,
+			Directories:               append([]string(nil), entry.Directories...),
+			IsGitRepo:                 isGitRepo,
+			SortIndex:                 entry.SortIndex,
+			AddedAt:                   entry.AddedAt,
+			UpdatedAt:                 entry.UpdatedAt,
+			LastSelectedAt:            entry.LastSelectedAt,
+			Active:                    false,
+			WorktreeEnabled:           false,
+			Definition:                entry.Definition,
+			DefinitionStatus:          entry.DefinitionStatus,
+			DefinitionAttemptCount:    entry.DefinitionAttemptCount,
+			DefinitionGeneration:      entry.DefinitionGeneration,
+			DefinitionError:           entry.DefinitionError,
+			DefinitionModelSuggestion: entry.DefinitionModelSuggestion,
+			DefinitionPendingAt:       entry.DefinitionPendingAt,
+			DefinitionCompletedAt:     entry.DefinitionCompletedAt,
+			DefinitionFailedAt:        entry.DefinitionFailedAt,
+			DefinitionUpdatedAt:       entry.DefinitionUpdatedAt,
 		})
 	}
 	return out, nil
@@ -514,20 +621,31 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			active = true
 		}
 		out = append(out, Entry{
-			Path:                entry.Path,
-			WorkspaceID:         entry.WorkspaceID,
-			WorkspaceGeneration: entry.WorkspaceGeneration,
-			State:               entry.State,
-			WorkspaceName:       entry.Name,
-			ThemeID:             normalizeWorkspaceThemeID(entry.ThemeID),
-			Directories:         append([]string(nil), entry.Directories...),
-			IsGitRepo:           isGitRepo,
-			SortIndex:           entry.SortIndex,
-			AddedAt:             entry.AddedAt,
-			UpdatedAt:           entry.UpdatedAt,
-			LastSelectedAt:      entry.LastSelectedAt,
-			Active:              active,
-			WorktreeEnabled:     false,
+			Path:                      entry.Path,
+			WorkspaceID:               entry.WorkspaceID,
+			WorkspaceGeneration:       entry.WorkspaceGeneration,
+			State:                     entry.State,
+			WorkspaceName:             entry.Name,
+			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
+			IconPNGDataURL:            entry.IconPNGDataURL,
+			Directories:               append([]string(nil), entry.Directories...),
+			IsGitRepo:                 isGitRepo,
+			SortIndex:                 entry.SortIndex,
+			AddedAt:                   entry.AddedAt,
+			UpdatedAt:                 entry.UpdatedAt,
+			LastSelectedAt:            entry.LastSelectedAt,
+			Active:                    active,
+			WorktreeEnabled:           false,
+			Definition:                entry.Definition,
+			DefinitionStatus:          entry.DefinitionStatus,
+			DefinitionAttemptCount:    entry.DefinitionAttemptCount,
+			DefinitionGeneration:      entry.DefinitionGeneration,
+			DefinitionError:           entry.DefinitionError,
+			DefinitionModelSuggestion: entry.DefinitionModelSuggestion,
+			DefinitionPendingAt:       entry.DefinitionPendingAt,
+			DefinitionCompletedAt:     entry.DefinitionCompletedAt,
+			DefinitionFailedAt:        entry.DefinitionFailedAt,
+			DefinitionUpdatedAt:       entry.DefinitionUpdatedAt,
 		})
 	}
 	return out, nil
@@ -690,6 +808,10 @@ func (s *Service) Browse(path string) (BrowseResult, error) {
 }
 
 func (s *Service) BrowseForPrincipal(principal identity.Principal, path string) (BrowseResult, error) {
+	return s.BrowseEntriesForPrincipal(principal, path, false)
+}
+
+func (s *Service) BrowseEntriesForPrincipal(principal identity.Principal, path string, includeFiles bool) (BrowseResult, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return BrowseResult{}, err
 	}
@@ -710,15 +832,18 @@ func (s *Service) BrowseForPrincipal(principal identity.Principal, path string) 
 		if name == "" || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if !entry.IsDir() {
+		if !entry.IsDir() && !includeFiles {
 			continue
 		}
 		fullPath := filepath.Join(resolved, name)
-		isGitRepo, hasSwarm := detectWorkspaceSignals(fullPath)
+		isGitRepo, hasSwarm := false, false
+		if entry.IsDir() {
+			isGitRepo, hasSwarm = detectWorkspaceSignals(fullPath)
+		}
 		items = append(items, BrowseEntry{
 			Path:        fullPath,
 			Name:        name,
-			IsDirectory: true,
+			IsDirectory: entry.IsDir(),
 			IsGitRepo:   isGitRepo,
 			HasSwarm:    hasSwarm,
 		})
@@ -1103,7 +1228,19 @@ func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 }
 
 func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.WorkspaceEntry, workspaceName string) Resolution {
-	return resolutionForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID))
+	resolution := resolutionForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID))
+	resolution.IconPNGDataURL = entry.IconPNGDataURL
+	resolution.Definition = entry.Definition
+	resolution.DefinitionStatus = entry.DefinitionStatus
+	resolution.DefinitionAttemptCount = entry.DefinitionAttemptCount
+	resolution.DefinitionGeneration = entry.DefinitionGeneration
+	resolution.DefinitionError = entry.DefinitionError
+	resolution.DefinitionModelSuggestion = entry.DefinitionModelSuggestion
+	resolution.DefinitionPendingAt = entry.DefinitionPendingAt
+	resolution.DefinitionCompletedAt = entry.DefinitionCompletedAt
+	resolution.DefinitionFailedAt = entry.DefinitionFailedAt
+	resolution.DefinitionUpdatedAt = entry.DefinitionUpdatedAt
+	return resolution
 }
 
 func resolutionForWorkspace(requestedPath, resolvedPath, workspacePath, workspaceID string, workspaceGeneration int64, workspaceState, workspaceName, themeID string) Resolution {
