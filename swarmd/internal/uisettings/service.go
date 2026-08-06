@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	sharedtheme "swarm-refactor/swarmtui/theme"
+
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -42,9 +44,17 @@ type ThemeCustomTheme struct {
 	Palette ThemePalette `json:"palette,omitempty"`
 }
 
+type ThemeBuiltinTheme struct {
+	ID      string       `json:"id"`
+	Name    string       `json:"name"`
+	Palette ThemePalette `json:"palette"`
+}
+
 type ThemeSettings struct {
-	ActiveID     string             `json:"active_id"`
-	CustomThemes []ThemeCustomTheme `json:"custom_themes,omitempty"`
+	ActiveID       string              `json:"active_id"`
+	DefaultThemeID string              `json:"default_theme_id,omitempty"`
+	BuiltinThemes  []ThemeBuiltinTheme `json:"builtin_themes,omitempty"`
+	CustomThemes   []ThemeCustomTheme  `json:"custom_themes,omitempty"`
 }
 
 type InputSettings struct {
@@ -192,8 +202,10 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 	record = pebblestore.NormalizeUISettingsRecordForExternal(record)
 	out := UISettings{
 		Theme: ThemeSettings{
-			ActiveID:     strings.TrimSpace(record.Theme.ActiveID),
-			CustomThemes: make([]ThemeCustomTheme, 0, len(record.Theme.CustomThemes)),
+			ActiveID:       strings.TrimSpace(record.Theme.ActiveID),
+			DefaultThemeID: sharedtheme.DefaultThemeID(),
+			BuiltinThemes:  builtinThemeSettings(),
+			CustomThemes:   make([]ThemeCustomTheme, 0, len(record.Theme.CustomThemes)),
 		},
 		Input: InputSettings{
 			MouseEnabled: record.Input.MouseEnabled,
@@ -233,14 +245,31 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 		UpdatedAt: record.UpdatedAt,
 	}
 	for _, item := range record.Theme.CustomThemes {
-		id := strings.TrimSpace(item.ID)
-		if id == "" {
+		option, err := sharedtheme.NewCustomThemeOption(
+			strings.TrimSpace(item.ID),
+			strings.TrimSpace(item.Name),
+			sharedtheme.ThemePalette(paletteFromRecord(item.Palette)),
+		)
+		if err != nil {
 			continue
 		}
 		out.Theme.CustomThemes = append(out.Theme.CustomThemes, ThemeCustomTheme{
-			ID:      id,
-			Name:    strings.TrimSpace(item.Name),
-			Palette: paletteFromRecord(item.Palette),
+			ID:      option.ID,
+			Name:    option.Name,
+			Palette: ThemePalette(option.Palette),
+		})
+	}
+	return out
+}
+
+func builtinThemeSettings() []ThemeBuiltinTheme {
+	catalog := sharedtheme.BuiltinThemeCatalog()
+	out := make([]ThemeBuiltinTheme, 0, len(catalog))
+	for _, item := range catalog {
+		out = append(out, ThemeBuiltinTheme{
+			ID:      item.ID,
+			Name:    item.Name,
+			Palette: ThemePalette(item.Palette),
 		})
 	}
 	return out

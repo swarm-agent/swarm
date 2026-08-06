@@ -6,7 +6,6 @@
 // should send only the setting section they intend to change.
 
 export const DEFAULT_SWARM_NAME = 'Local'
-export const DEFAULT_GLOBAL_THEME_ID = 'tide'
 export const DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS = 12
 export const REVIEW_AUTO_ARCHIVE_MINUTES = Array.from({ length: 12 }, (_, index) => (index + 1) * 5)
 
@@ -46,6 +45,8 @@ export interface UIChatSettingsWire {
 
 export interface UIThemeSettingsWire {
   active_id?: string
+  default_theme_id?: string
+  builtin_themes?: Array<Record<string, unknown>>
   custom_themes?: Array<Record<string, unknown>>
 }
 
@@ -104,9 +105,9 @@ export function normalizeFollowupCheckpointPolicyDefault(value: unknown): Follow
 }
 
 export function normalizeGlobalThemeSettings(payload?: UISettingsWire | null): GlobalThemeSettings {
-  const activeId = typeof payload?.theme?.active_id === 'string' && payload.theme.active_id.trim()
-    ? payload.theme.active_id.trim().toLowerCase()
-    : DEFAULT_GLOBAL_THEME_ID
+  const configuredId = typeof payload?.theme?.active_id === 'string' ? payload.theme.active_id.trim().toLowerCase() : ''
+  const defaultId = typeof payload?.theme?.default_theme_id === 'string' ? payload.theme.default_theme_id.trim().toLowerCase() : ''
+  const activeId = configuredId || defaultId
 
   return {
     activeId,

@@ -292,8 +292,8 @@ func TestExecuteCommand_ThemesSetPersistsWorkspaceTheme(t *testing.T) {
 	if got := a.homeModel.Workspaces[0].ThemeID; got != "crimson" {
 		t.Fatalf("workspace theme = %q, want crimson", got)
 	}
-	if got := a.config.UI.Theme; got != defaultThemeID {
-		t.Fatalf("config.UI.Theme = %q, want %q", got, defaultThemeID)
+	if got := a.config.UI.Theme; got != ui.DefaultThemeID() {
+		t.Fatalf("config.UI.Theme = %q, want %q", got, ui.DefaultThemeID())
 	}
 	if got := a.home.Status(); got != "workspace theme set: crimson" {
 		t.Fatalf("status = %q, want %q", got, "workspace theme set: crimson")

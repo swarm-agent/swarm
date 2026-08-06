@@ -10,6 +10,7 @@ interface WorkspaceThemeBasePalette {
   text: string
   textMuted: string
   primary: string
+  success: string
   warning: string
   error: string
   codeBackground?: string
@@ -78,362 +79,145 @@ interface WorkspaceThemePalette {
 
 export type { WorkspaceThemeOption }
 
-const BUILTIN_WORKSPACE_THEME_OPTIONS: WorkspaceThemeOption[] = [
-  { id: 'black', label: 'Black' },
-  { id: 'tide', label: 'Tide' },
-  { id: 'crimson', label: 'Crimson' },
-  { id: 'nord', label: 'Nord' },
-  { id: 'solarized-dark', label: 'Solarized Dark' },
-  { id: 'dracula', label: 'Dracula' },
-  { id: 'gruvbox-dark', label: 'Gruvbox Dark' },
-  { id: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
-  { id: 'tokyo-night', label: 'Tokyo Night' },
-  { id: 'everforest-dark', label: 'Everforest Dark' },
-  { id: 'ayu-mirage', label: 'Ayu Mirage' },
-  { id: 'one-dark', label: 'One Dark' },
-  { id: 'kanagawa-wave', label: 'Kanagawa Wave' },
-  { id: 'rose-pine', label: 'Rose Pine' },
-  { id: 'monokai', label: 'Monokai' },
-  { id: 'oceanic-next', label: 'Oceanic Next' },
-  { id: 'graphite', label: 'Graphite' },
-  { id: 'cyberpunk', label: 'Cyberpunk' },
-  { id: 'emerald-forest', label: 'Emerald Forest' },
-  { id: 'softwhite', label: 'Softwhite' },
-  { id: 'paper-ink', label: 'Paper Ink' },
-  { id: 'peach-club-soda', label: 'Peach Club Soda' },
-  { id: 'sunset-amber', label: 'Sunset Amber' },
-  { id: 'neon-night', label: 'Neon Night' },
-]
-
-export const WORKSPACE_THEME_OPTIONS: WorkspaceThemeOption[] = [...BUILTIN_WORKSPACE_THEME_OPTIONS]
-
-const THEME_LABELS = new Map(BUILTIN_WORKSPACE_THEME_OPTIONS.map((item) => [item.id, item.label]))
-
-const THEME_PALETTES: Record<string, WorkspaceThemeBasePalette> = {
-  black: {
-    background: '#000000',
-    panel: '#111111',
-    border: '#27272A',
-    text: '#F5F5F0',
-    textMuted: '#A8A29A',
-    primary: '#D6D0C4',
-    warning: '#C9A66B',
-    error: '#C46C6C',
-  },
-  softwhite: {
-    background: '#F7F4EC',
-    panel: '#FFFDF8',
-    border: '#D6CFC1',
-    text: '#23201B',
-    textMuted: '#6F675B',
-    primary: '#5F5A52',
-    warning: '#9B7A44',
-    error: '#A05C5C',
-  },
-  nord: {
-    background: '#2E3440',
-    panel: '#3B4252',
-    border: '#434C5E',
-    text: '#ECEFF4',
-    textMuted: '#8B95A7',
-    primary: '#88C0D0',
-    warning: '#D08770',
-    error: '#BF616A',
-  },
-  tide: {
-    background: '#29323A',
-    panel: '#333E47',
-    border: '#586774',
-    text: '#F1F6F7',
-    textMuted: '#AFBBC1',
-    primary: '#64BDD0',
-    warning: '#EBC268',
-    error: '#F2737C',
-    codeBackground: '#242C33',
-    codeText: '#E9F0F2',
-    codeKeyword: '#72C8D7',
-    codeString: '#83D1A4',
-    codeNumber: '#EBCB7B',
-    codeComment: '#8D9BA3',
-    codeFunction: '#B5A0E0',
-    codeType: '#F4A080',
-    codeOperator: '#C3CED3',
-  },
-  crimson: {
-    background: '#1E1418',
-    panel: '#26191E',
-    border: '#5E3841',
-    text: '#BBB2B6',
-    textMuted: '#B9A8AD',
-    primary: '#E36A7A',
-    warning: '#E4B15A',
-    error: '#FF6B6B',
-  },
-  'solarized-dark': {
-    background: '#002B36',
-    panel: '#073642',
-    border: '#586E75',
-    text: '#EEE8D5',
-    textMuted: '#93A1A1',
-    primary: '#268BD2',
-    warning: '#B58900',
-    error: '#DC322F',
-  },
-  dracula: {
-    background: '#282A36',
-    panel: '#303341',
-    border: '#44475A',
-    text: '#F8F8F2',
-    textMuted: '#B0B6D0',
-    primary: '#BD93F9',
-    warning: '#F1FA8C',
-    error: '#FF5555',
-  },
-  'gruvbox-dark': {
-    background: '#282828',
-    panel: '#32302F',
-    border: '#504945',
-    text: '#EBDBB2',
-    textMuted: '#A89984',
-    primary: '#83A598',
-    warning: '#FABD2F',
-    error: '#FB4934',
-  },
-  'catppuccin-mocha': {
-    background: '#1E1E2E',
-    panel: '#313244',
-    border: '#45475A',
-    text: '#CDD6F4',
-    textMuted: '#A6ADC8',
-    primary: '#89B4FA',
-    warning: '#F9E2AF',
-    error: '#F38BA8',
-  },
-  'tokyo-night': {
-    background: '#1A1B26',
-    panel: '#1F2335',
-    border: '#3B4261',
-    text: '#C0CAF5',
-    textMuted: '#9AA5CE',
-    primary: '#7AA2F7',
-    warning: '#E0AF68',
-    error: '#F7768E',
-  },
-  'everforest-dark': {
-    background: '#2D353B',
-    panel: '#343F44',
-    border: '#475258',
-    text: '#D3C6AA',
-    textMuted: '#9DA9A0',
-    primary: '#7FBBB3',
-    warning: '#E69875',
-    error: '#E67E80',
-  },
-  'ayu-mirage': {
-    background: '#1F2430',
-    panel: '#242936',
-    border: '#3A4256',
-    text: '#CCCAC2',
-    textMuted: '#97A0B3',
-    primary: '#73D0FF',
-    warning: '#FFAD66',
-    error: '#F28779',
-  },
-  'one-dark': {
-    background: '#282C34',
-    panel: '#2C313A',
-    border: '#3E4451',
-    text: '#ABB2BF',
-    textMuted: '#8F96A3',
-    primary: '#61AFEF',
-    warning: '#E5C07B',
-    error: '#E06C75',
-  },
-  'kanagawa-wave': {
-    background: '#1F1F28',
-    panel: '#2A2A37',
-    border: '#3D3D51',
-    text: '#DCD7BA',
-    textMuted: '#A6A69C',
-    primary: '#7E9CD8',
-    warning: '#DCA561',
-    error: '#E46876',
-  },
-  'rose-pine': {
-    background: '#191724',
-    panel: '#1F1D2E',
-    border: '#403D52',
-    text: '#E0DEF4',
-    textMuted: '#908CAA',
-    primary: '#C4A7E7',
-    warning: '#F6C177',
-    error: '#EB6F92',
-  },
-  monokai: {
-    background: '#272822',
-    panel: '#2F3129',
-    border: '#49483E',
-    text: '#F8F8F2',
-    textMuted: '#AEAEA8',
-    primary: '#66D9EF',
-    warning: '#E6DB74',
-    error: '#F92672',
-  },
-  'oceanic-next': {
-    background: '#1B2B34',
-    panel: '#22313A',
-    border: '#405860',
-    text: '#D8DEE9',
-    textMuted: '#A7ADBA',
-    primary: '#6699CC',
-    warning: '#FAC863',
-    error: '#EC5F67',
-  },
-  graphite: {
-    background: '#202428',
-    panel: '#272C31',
-    border: '#3A4148',
-    text: '#E4E7EB',
-    textMuted: '#A7B0B8',
-    primary: '#7CB7FF',
-    warning: '#E6C178',
-    error: '#E68A8A',
-  },
-  cyberpunk: {
-    background: '#0B0F1A',
-    panel: '#101729',
-    border: '#22405E',
-    text: '#C8D6FF',
-    textMuted: '#7F96C9',
-    primary: '#00E5FF',
-    warning: '#FFD54F',
-    error: '#FF5252',
-  },
-  'emerald-forest': {
-    background: '#10231C',
-    panel: '#173229',
-    border: '#2D4A40',
-    text: '#D6F5E5',
-    textMuted: '#9ABAA9',
-    primary: '#5BD6A1',
-    warning: '#F5C16C',
-    error: '#FF7B7B',
-  },
-  'paper-ink': {
-    background: '#FAF7F1',
-    panel: '#F0E9DD',
-    border: '#B8AD9E',
-    text: '#2A2A2A',
-    textMuted: '#6D665F',
-    primary: '#1F5E8C',
-    warning: '#A06B22',
-    error: '#A13333',
-  },
-  'peach-club-soda': {
-    background: '#FFF3EA',
-    panel: '#FFE8D6',
-    border: '#F2B79E',
-    text: '#3A241C',
-    textMuted: '#8A6455',
-    primary: '#FF8F70',
-    warning: '#F6B85A',
-    error: '#E86F6A',
-    codeBackground: '#FFE1CC',
-    codeText: '#3A241C',
-    codeKeyword: '#E8785B',
-    codeString: '#4FAE8A',
-    codeNumber: '#EFA64E',
-    codeComment: '#9A7465',
-    codeFunction: '#35AFC0',
-    codeType: '#D89043',
-    codeOperator: '#8A6455',
-  },
-  'sunset-amber': {
-    background: '#2B1E1A',
-    panel: '#352522',
-    border: '#5A4037',
-    text: '#F8E7DA',
-    textMuted: '#C5A892',
-    primary: '#FF9E64',
-    warning: '#FFD166',
-    error: '#FF6B6B',
-  },
-  'neon-night': {
-    background: '#14111F',
-    panel: '#1B172A',
-    border: '#3A3159',
-    text: '#E8E6FF',
-    textMuted: '#A9A5D7',
-    primary: '#7AF5FF',
-    warning: '#FFE082',
-    error: '#FF6E8A',
-  },
+interface WorkspaceThemePaletteWire {
+  background?: string
+  panel?: string
+  element?: string
+  border?: string
+  text?: string
+  text_muted?: string
+  primary?: string
+  accent?: string
+  success?: string
+  warning?: string
+  error?: string
+  code_background?: string
+  code_text?: string
+  code_keyword?: string
+  code_string?: string
+  code_number?: string
+  code_comment?: string
+  code_function?: string
+  code_type?: string
+  code_operator?: string
+  code_path?: string
 }
 
-type WorkspaceCustomThemeWire = {
+interface WorkspaceThemeWire {
   id?: string
   name?: string
-  palette?: Record<string, unknown>
+  palette?: WorkspaceThemePaletteWire
 }
 
-function updateWorkspaceThemeOptions(customOptions: WorkspaceThemeOption[]) {
-  WORKSPACE_THEME_OPTIONS.splice(0, WORKSPACE_THEME_OPTIONS.length, ...BUILTIN_WORKSPACE_THEME_OPTIONS, ...customOptions)
+export interface WorkspaceThemeCatalogWire {
+  default_theme_id?: string
+  builtin_themes?: Array<Record<string, unknown>>
+  custom_themes?: Array<Record<string, unknown>>
+}
+
+export const WORKSPACE_THEME_OPTIONS: WorkspaceThemeOption[] = []
+
+const BUILTIN_WORKSPACE_THEME_IDS = new Set<string>()
+const THEME_LABELS = new Map<string, string>()
+const THEME_PALETTES: Record<string, WorkspaceThemeBasePalette> = {}
+let defaultWorkspaceThemeId = ''
+
+function themeBasePalette(raw: WorkspaceThemePaletteWire | null | undefined, allowDefaults: boolean): WorkspaceThemeBasePalette | null {
+  const background = typeof raw?.background === 'string' ? raw.background : allowDefaults ? '#2E3440' : ''
+  const panel = typeof raw?.panel === 'string'
+    ? raw.panel
+    : allowDefaults && typeof raw?.element === 'string'
+      ? raw.element
+      : allowDefaults
+        ? background
+        : ''
+  const text = typeof raw?.text === 'string' ? raw.text : allowDefaults ? '#E5E9F0' : ''
+  const textMuted = typeof raw?.text_muted === 'string' ? raw.text_muted : allowDefaults ? '#9AA3B2' : ''
+  const primary = typeof raw?.primary === 'string'
+    ? raw.primary
+    : allowDefaults && typeof raw?.accent === 'string'
+      ? raw.accent
+      : allowDefaults
+        ? '#88C0D0'
+        : ''
+  const border = typeof raw?.border === 'string' ? raw.border : allowDefaults ? textMuted : ''
+  const success = typeof raw?.success === 'string' ? raw.success : allowDefaults ? '#A3BE8C' : ''
+  const warning = typeof raw?.warning === 'string' ? raw.warning : allowDefaults ? '#EBCB8B' : ''
+  const error = typeof raw?.error === 'string' ? raw.error : allowDefaults ? '#BF616A' : ''
+  if (![background, panel, border, text, textMuted, primary, success, warning, error].every(Boolean)) {
+    return null
+  }
+  return {
+    background,
+    panel,
+    border,
+    text,
+    textMuted,
+    primary,
+    success,
+    warning,
+    error,
+    codeBackground: typeof raw?.code_background === 'string' ? raw.code_background : undefined,
+    codeText: typeof raw?.code_text === 'string' ? raw.code_text : undefined,
+    codeKeyword: typeof raw?.code_keyword === 'string' ? raw.code_keyword : undefined,
+    codeString: typeof raw?.code_string === 'string' ? raw.code_string : undefined,
+    codeNumber: typeof raw?.code_number === 'string' ? raw.code_number : undefined,
+    codeComment: typeof raw?.code_comment === 'string' ? raw.code_comment : undefined,
+    codeFunction: typeof raw?.code_function === 'string' ? raw.code_function : undefined,
+    codeType: typeof raw?.code_type === 'string' ? raw.code_type : undefined,
+    codeOperator: typeof raw?.code_operator === 'string' ? raw.code_operator : undefined,
+    codePath: typeof raw?.code_path === 'string' ? raw.code_path : undefined,
+  }
+}
+
+function clearWorkspaceThemeCatalog() {
+  WORKSPACE_THEME_OPTIONS.splice(0, WORKSPACE_THEME_OPTIONS.length)
+  BUILTIN_WORKSPACE_THEME_IDS.clear()
   THEME_LABELS.clear()
-  for (const item of WORKSPACE_THEME_OPTIONS) {
-    THEME_LABELS.set(item.id, item.label)
+  for (const key of Object.keys(THEME_PALETTES)) {
+    delete THEME_PALETTES[key]
   }
 }
 
-export function setWorkspaceThemeCustomOptions(customThemes: Array<Record<string, unknown>> | null | undefined) {
-  for (const key of Object.keys(THEME_PALETTES)) {
-    if (!BUILTIN_WORKSPACE_THEME_OPTIONS.some((item) => item.id === key)) {
-      delete THEME_PALETTES[key]
-    }
+function registerWorkspaceTheme(raw: WorkspaceThemeWire, builtin: boolean, seen: Set<string>) {
+  const id = normalizeThemeId(typeof raw.id === 'string' ? raw.id : '')
+  const palette = themeBasePalette(raw.palette, !builtin)
+  if (!id || !palette || seen.has(id) || (!builtin && BUILTIN_WORKSPACE_THEME_IDS.has(id))) {
+    return
   }
+  const label = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : formatThemeId(id)
+  seen.add(id)
+  if (builtin) {
+    BUILTIN_WORKSPACE_THEME_IDS.add(id)
+  }
+  WORKSPACE_THEME_OPTIONS.push({ id, label })
+  THEME_LABELS.set(id, label)
+  THEME_PALETTES[id] = palette
+}
 
-  const customOptions: WorkspaceThemeOption[] = []
+export function setWorkspaceThemeCatalog(theme: WorkspaceThemeCatalogWire | null | undefined) {
+  clearWorkspaceThemeCatalog()
+  defaultWorkspaceThemeId = normalizeThemeId(theme?.default_theme_id)
+
   const seen = new Set<string>()
-  for (const raw of customThemes ?? []) {
-    const item = raw as WorkspaceCustomThemeWire
-    const id = normalizeThemeId(typeof item.id === 'string' ? item.id : '')
-    if (!id || seen.has(id) || BUILTIN_WORKSPACE_THEME_OPTIONS.some((entry) => entry.id === id)) {
-      continue
-    }
-    seen.add(id)
-    const palette = item.palette && typeof item.palette === 'object' ? item.palette : {}
-    const text = typeof palette.text === 'string' ? palette.text : '#ECEFF4'
-    const textMuted = typeof palette.text_muted === 'string' ? palette.text_muted : '#8B95A7'
-    const primary = typeof palette.primary === 'string'
-      ? palette.primary
-      : typeof palette.accent === 'string'
-        ? palette.accent
-        : '#88C0D0'
-    THEME_PALETTES[id] = {
-      background: typeof palette.background === 'string' ? palette.background : '#2E3440',
-      panel: typeof palette.panel === 'string' ? palette.panel : typeof palette.element === 'string' ? palette.element : '#3B4252',
-      border: typeof palette.border === 'string' ? palette.border : typeof palette.border_active === 'string' ? palette.border_active : textMuted,
-      text,
-      textMuted,
-      primary,
-      warning: typeof palette.warning === 'string' ? palette.warning : '#D08770',
-      error: typeof palette.error === 'string' ? palette.error : '#BF616A',
-      codeBackground: typeof palette.code_background === 'string' ? palette.code_background : undefined,
-      codeText: typeof palette.code_text === 'string' ? palette.code_text : undefined,
-      codeKeyword: typeof palette.code_keyword === 'string' ? palette.code_keyword : undefined,
-      codeString: typeof palette.code_string === 'string' ? palette.code_string : undefined,
-      codeNumber: typeof palette.code_number === 'string' ? palette.code_number : undefined,
-      codeComment: typeof palette.code_comment === 'string' ? palette.code_comment : undefined,
-      codeFunction: typeof palette.code_function === 'string' ? palette.code_function : undefined,
-      codeType: typeof palette.code_type === 'string' ? palette.code_type : undefined,
-      codeOperator: typeof palette.code_operator === 'string' ? palette.code_operator : undefined,
-      codePath: typeof palette.code_path === 'string' ? palette.code_path : undefined,
-    }
-    customOptions.push({
-      id,
-      label: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : formatWorkspaceThemeLabel(id),
-    })
+  for (const raw of theme?.builtin_themes ?? []) {
+    registerWorkspaceTheme(raw as WorkspaceThemeWire, true, seen)
   }
-  updateWorkspaceThemeOptions(customOptions)
+  for (const raw of theme?.custom_themes ?? []) {
+    registerWorkspaceTheme(raw as WorkspaceThemeWire, false, seen)
+  }
+}
+
+export function workspaceThemeDefaultId(): string {
+  return defaultWorkspaceThemeId
+}
+
+function formatThemeId(themeId: string): string {
+  return themeId
+    .split('-')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 function normalizeThemeId(themeId: string | null | undefined): string {
@@ -533,7 +317,7 @@ function completePalette(base: WorkspaceThemeBasePalette): WorkspaceThemePalette
   const lightBackground = isLightHex(base.background)
   const accentAnchor = lightBackground ? '#000000' : '#ffffff'
   const textInverse = lightBackground ? '#0F172A' : '#F8FAFC'
-  const success = lightBackground ? '#1F7A4D' : '#4ADE80'
+  const success = base.success
   const info = mixHex(base.primary, textInverse, lightBackground ? 0.08 : 0.12)
   const accentHover = mixHex(base.primary, accentAnchor, lightBackground ? 0.16 : 0.2)
   const accentActive = mixHex(base.primary, accentAnchor, lightBackground ? 0.28 : 0.32)

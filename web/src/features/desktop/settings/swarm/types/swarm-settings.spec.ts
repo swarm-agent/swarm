@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  DEFAULT_GLOBAL_THEME_ID,
   DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS,
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
@@ -22,10 +21,10 @@ test('normalizeSessionMode only accepts Desktop session modes', () => {
   assert.equal(normalizeSessionMode(undefined), 'auto')
 })
 
-test('global theme settings default to Tide when unset', () => {
-  assert.equal(normalizeGlobalThemeSettings({}).activeId, DEFAULT_GLOBAL_THEME_ID)
-  assert.equal(normalizeGlobalThemeSettings(null).activeId, DEFAULT_GLOBAL_THEME_ID)
-  assert.equal(normalizeGlobalThemeSettings({ theme: { active_id: '  ' } }).activeId, DEFAULT_GLOBAL_THEME_ID)
+test('global theme settings use the canonical daemon default when active theme is unset', () => {
+  assert.equal(normalizeGlobalThemeSettings({ theme: { default_theme_id: 'tide' } }).activeId, 'tide')
+  assert.equal(normalizeGlobalThemeSettings({ theme: { active_id: '  ', default_theme_id: 'castor' } }).activeId, 'castor')
+  assert.equal(normalizeGlobalThemeSettings(null).activeId, '')
 })
 
 test('home tips default on and preserve an explicit disabled setting', () => {

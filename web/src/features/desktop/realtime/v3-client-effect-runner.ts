@@ -6,7 +6,7 @@ import { applyDesktopRouteTheme } from '../layout/desktop-theme-controller'
 import type { RealtimeMessage } from '../state/desktop-v3-cache-types'
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, uiSettingsQueryOptions, workspaceOverviewQueryOptions } from '../../queries/query-options'
 import { resolveWorkspaceBySlug } from '../../workspaces/launcher/services/workspace-route'
-import { setWorkspaceThemeCustomOptions } from '../../workspaces/launcher/services/workspace-theme'
+import { setWorkspaceThemeCatalog } from '../../workspaces/launcher/services/workspace-theme'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 
@@ -169,7 +169,7 @@ export function applyCanonicalDesktopTheme(
   overview: WorkspaceOverviewResponse,
   pathname = typeof window === 'undefined' ? '/' : window.location.pathname,
 ): void {
-  setWorkspaceThemeCustomOptions(settings.theme?.custom_themes ?? [])
+  setWorkspaceThemeCatalog(settings.theme)
   const selectedWorkspacePath = desktopRouteWorkspacePath(pathname, overview)
   applyDesktopRouteTheme(selectedWorkspacePath, overview.workspaces, settings, false)
 }

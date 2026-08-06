@@ -11,6 +11,7 @@ import {
 } from './v3-client-effect-runner'
 import type { RealtimeMessage } from '../state/desktop-v3-cache-types'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
+import { WORKSPACE_THEME_OPTIONS } from '../../workspaces/launcher/services/workspace-theme'
 
 function toolCompletedFrame(input: {
   id?: string
@@ -201,7 +202,7 @@ test('desktopRouteWorkspacePath preserves workspace-over-global route precedence
   assert.equal(desktopRouteWorkspacePath('/', overview), null)
 })
 
-test('applyCanonicalDesktopTheme installs custom palettes before applying the route-effective theme', () => {
+test('applyCanonicalDesktopTheme installs canonical builtins and custom palettes before applying the route-effective theme', () => {
   const previousDocument = globalThis.document
   const properties = new Map<string, string>()
   const root = {
@@ -228,6 +229,15 @@ test('applyCanonicalDesktopTheme installs custom palettes before applying the ro
     applyCanonicalDesktopTheme({
       theme: {
         active_id: 'global-theme',
+        default_theme_id: 'tide',
+        builtin_themes: [{
+          id: 'castor',
+          name: 'Castor',
+          palette: {
+            background: '#36272B', panel: '#402E33', border: '#6B4D55', text: '#F7ECEF',
+            text_muted: '#CBB1B8', primary: '#FF6B81', success: '#8CE6A4', warning: '#FFD275', error: '#FF5E6C',
+          },
+        }],
         custom_themes: [
           { id: 'global-theme', palette: { background: '#111111' } },
           { id: 'workspace-theme', palette: { background: '#222222' } },
@@ -235,10 +245,13 @@ test('applyCanonicalDesktopTheme installs custom palettes before applying the ro
       },
     }, overview, '/alpha/session-1')
     assert.equal(properties.get('--app-bg'), '#222222')
+    assert.ok(WORKSPACE_THEME_OPTIONS.some((item) => item.id === 'castor' && item.label === 'Castor'))
 
     applyCanonicalDesktopTheme({
       theme: {
         active_id: 'global-theme',
+        default_theme_id: 'tide',
+        builtin_themes: [],
         custom_themes: [{ id: 'global-theme', palette: { background: '#333333' } }],
       },
     }, { ...overview, workspaces: [{ ...overview.workspaces[0], themeId: '' }] }, '/')

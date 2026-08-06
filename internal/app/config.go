@@ -12,7 +12,6 @@ import (
 )
 
 const (
-	defaultThemeID         = "castor"
 	defaultSwarmingTitle   = "Swarming"
 	defaultSwarmingStatus  = "swarming"
 	defaultSwarmName       = "Local"
@@ -109,7 +108,7 @@ func defaultAppConfig() AppConfig {
 			Keybinds:     nil,
 		},
 		UI: UIConfig{
-			Theme:        defaultThemeID,
+			Theme:        ui.DefaultThemeID(),
 			CustomThemes: nil,
 		},
 		Swarming: SwarmingConfig{
@@ -206,7 +205,7 @@ func saveThemeSettings(api *client.API, uiCfg UIConfig) error {
 	return updateUISettings(api, func(settings *client.UISettings) {
 		theme := strings.TrimSpace(uiCfg.Theme)
 		if theme == "" {
-			theme = defaultThemeID
+			theme = ui.DefaultThemeID()
 		}
 		settings.Theme.ActiveID = theme
 		settings.Theme.CustomThemes = make([]client.UIThemeCustomTheme, 0, len(uiCfg.CustomThemes))
@@ -336,7 +335,7 @@ func appConfigFromUISettings(settings client.UISettings) AppConfig {
 func uiSettingsFromAppConfig(cfg AppConfig) client.UISettings {
 	theme := strings.TrimSpace(cfg.UI.Theme)
 	if theme == "" {
-		theme = defaultThemeID
+		theme = ui.DefaultThemeID()
 	}
 	out := client.UISettings{
 		Theme: client.UIThemeSettings{
