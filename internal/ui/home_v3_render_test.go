@@ -76,6 +76,48 @@ func TestHomepageOutsideWorkspaceWarningRendersBelowTipsAndKeepsWorkspaceRow(t *
 	}
 }
 
+func TestHomepageWarnsForRealInstallerHomeWorkspaceWithoutGit(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(120, 32)
+
+	page := NewHomePage(model.HomeModel{
+		CWD: "/home/installer",
+		Workspaces: []model.Workspace{{
+			Name:        "installer",
+			Path:        "/home/installer",
+			Directories: []string{"/home/installer"},
+			Active:      true,
+		}},
+		Directories: []model.DirectoryItem{{
+			Name:         "installer",
+			Path:         "~",
+			ResolvedPath: "/home/installer",
+			Branch:       "-",
+			HasGit:       false,
+			IsWorkspace:  true,
+		}},
+	})
+	page.Draw(screen)
+
+	text := dumpHomeTestScreen(screen, 120, 32)
+	for _, want := range []string{
+		"Saved workspace installer points to ~, which has no Git repository.",
+		"Press Alt+W to switch",
+		"run /workspace manage to fix its root.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("installer home workspace guidance missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "/workspace save") {
+		t.Fatalf("saved installer workspace was incorrectly described as unsaved:\n%s", text)
+	}
+}
+
 func TestHomepageWorktreePrimerKeepsWorkspaceRowAndShowsFlag(t *testing.T) {
 	screen := tcell.NewSimulationScreen("")
 	if err := screen.Init(); err != nil {

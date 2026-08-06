@@ -3917,6 +3917,7 @@ export function DesktopAppPage() {
       case 'open-model-picker':
       case 'toggle-thinking':
       case 'compact-session':
+      case 'enable-new-session-worktree':
         return
       default: {
         const _exhaustive: never = action

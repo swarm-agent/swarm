@@ -1,4 +1,4 @@
-import { getDesktopSlashCommands, buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
+import { getDesktopSlashCommands, buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
 import type { DesktopSlashCommandAction } from './slash-commands'
 
 function assert(condition: boolean, message: string): void {
@@ -45,6 +45,20 @@ function testMCPCommandIsDeferredAndExaRequiresAPIKey(): void {
   assert(mcp?.hint.includes('Swarm Sync'), 'expected /mcp hint to mention Swarm Sync')
   assert(mcp?.tips.some((tip) => tip.includes('active Exa API key')), 'expected /mcp tips to require an active Exa API key')
   assert(mcp?.tips.every((tip) => !tip.includes('Free Exa MCP search')), 'expected /mcp tips not to advertise free Exa MCP search')
+}
+
+function testWorktreeOnCommandIsReady(): void {
+  const command = getDesktopSlashCommands().find((candidate) => candidate.command === '/wt on')
+  assert(Boolean(command), 'expected /wt on command to exist')
+  assert(command?.state === 'ready', 'expected /wt on command to be ready')
+  assert(command?.action.kind === 'enable-new-session-worktree', 'expected /wt on to enable new-session worktree intent')
+
+  const palette = buildDesktopSlashPaletteState('/wt on')
+  assert(palette.exactMatch?.id === 'worktree-on', 'expected /wt on to resolve exactly')
+  assert(palette.matches[0]?.id === 'worktree-on', 'expected /wt on to lead palette matches')
+  assert(isDesktopWorktreeOnCommand(' /WT   on '), 'expected /wt on parser to ignore case and repeated whitespace')
+  assert(!isDesktopWorktreeOnCommand('/wt on extra'), 'expected /wt on parser to reject extra arguments')
+  assert(!isDesktopWorktreeOnCommand('/wt'), 'expected bare /wt to keep its worktree settings behavior')
 }
 
 function testWorktreeCommandIsRetiredAndWorktreesRemains(): void {
@@ -189,6 +203,7 @@ function main(): void {
   testCodexOpensUsageWithoutChangingModels()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
+  testWorktreeOnCommandIsReady()
   testWorktreeCommandIsRetiredAndWorktreesRemains()
   testNewSessionCommandVariantsPrimeRouterChips()
   testNewWpForwardsOnlyItsPromptToRouter()

@@ -392,10 +392,26 @@ func headerWorkspaceIndexes(workspaces []model.Workspace, limit int) ([]int, boo
 
 func (p *HomePage) workspaceSetupWarning() string {
 	setupPath := strings.TrimSpace(p.model.WorkspaceSetupPath)
-	if setupPath == "" {
-		return ""
+	if setupPath != "" {
+		return fmt.Sprintf("Detected launch path: %s is not a workspace. Type /workspace save to save this directory and switch.", setupPath)
 	}
-	return fmt.Sprintf("Detected launch path: %s is not a workspace. Type /workspace save to save this directory and switch.", setupPath)
+
+	directory := p.primaryDirectory()
+	if directory.IsWorkspace && !directory.HasGit {
+		name := strings.TrimSpace(p.activeWorkspaceName())
+		if name == "" {
+			name = "selected"
+		}
+		path := strings.TrimSpace(directory.Path)
+		if path == "" {
+			path = strings.TrimSpace(directory.ResolvedPath)
+		}
+		if path == "" {
+			path = "."
+		}
+		return fmt.Sprintf("Saved workspace %s points to %s, which has no Git repository. Press Alt+W to switch, or run /workspace manage to fix its root.", name, path)
+	}
+	return ""
 }
 
 func (p *HomePage) workspaceItems() []topItem {
