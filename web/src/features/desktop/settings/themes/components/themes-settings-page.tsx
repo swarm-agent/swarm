@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown } from 'lucide-react'
-import { applyWorkspaceTheme, setWorkspaceThemeCustomOptions } from '../../../../workspaces/launcher/services/workspace-theme'
+import { applyWorkspaceTheme, setWorkspaceThemeCatalog, workspaceThemeDefaultId } from '../../../../workspaces/launcher/services/workspace-theme'
 import { saveGlobalThemeSettings } from '../../swarm/mutations/save-global-theme-settings'
-import { DEFAULT_GLOBAL_THEME_ID, normalizeGlobalThemeSettings } from '../../swarm/types/swarm-settings'
+import { normalizeGlobalThemeSettings } from '../../swarm/types/swarm-settings'
 import { useWorkspaceLauncher } from '../../../../workspaces/launcher/state/use-workspace-launcher'
 import { WORKSPACE_THEME_OPTIONS, formatWorkspaceThemeLabel } from '../../../../workspaces/launcher/services/workspace-theme'
 import { uiSettingsQueryOptions } from '../../../../queries/query-options'
@@ -22,8 +22,8 @@ export function ThemesSettingsPage() {
   const [savingPath, setSavingPath] = useState<string | null>(null)
   const [savingGlobalTheme, setSavingGlobalTheme] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [globalThemeId, setGlobalThemeId] = useState(DEFAULT_GLOBAL_THEME_ID)
-  const [globalThemeLabel, setGlobalThemeLabel] = useState('Tide')
+  const [globalThemeId, setGlobalThemeId] = useState(workspaceThemeDefaultId())
+  const [globalThemeLabel, setGlobalThemeLabel] = useState('')
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
 
   useEffect(() => {
@@ -31,7 +31,7 @@ export function ThemesSettingsPage() {
     if (!settings) {
       return
     }
-    setWorkspaceThemeCustomOptions(settings.theme?.custom_themes ?? [])
+    setWorkspaceThemeCatalog(settings.theme)
     const globalTheme = normalizeGlobalThemeSettings(settings)
     setGlobalThemeId(globalTheme.activeId)
     setGlobalThemeLabel(globalTheme.activeLabel)

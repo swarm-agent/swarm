@@ -13,12 +13,12 @@ import (
 func (a *App) bootstrapTheme(raw string) {
 	target := strings.TrimSpace(raw)
 	if target == "" {
-		target = defaultThemeID
+		target = ui.DefaultThemeID()
 	}
 	if _, ok, _ := a.applyThemeByTarget(target, false, false); ok {
 		return
 	}
-	_, _, _ = a.applyThemeByTarget(defaultThemeID, false, false)
+	_, _, _ = a.applyThemeByTarget(ui.DefaultThemeID(), false, false)
 }
 
 func (a *App) syncConfiguredCustomThemes() {
@@ -323,7 +323,7 @@ func (a *App) activeThemeOption() ui.ThemeOption {
 	if option, ok := ui.ResolveTheme(a.config.UI.Theme); ok {
 		return option
 	}
-	option, _ := ui.ResolveTheme(defaultThemeID)
+	option, _ := ui.ResolveTheme(ui.DefaultThemeID())
 	return option
 }
 
@@ -524,12 +524,12 @@ func (a *App) deleteCustomTheme(customID string) {
 	a.syncConfiguredCustomThemes()
 
 	if wasActive {
-		if _, ok, err := a.applyThemeByTarget(defaultThemeID, true, false); !ok {
+		if _, ok, err := a.applyThemeByTarget(ui.DefaultThemeID(), true, false); !ok {
 			a.home.SetStatus("deleted theme but failed to switch to default")
 		} else if err != nil {
 			a.home.SetStatus(fmt.Sprintf("theme deleted, fallback save failed: %v", err))
 		} else {
-			a.home.SetStatus(fmt.Sprintf("custom theme deleted: %s (switched to %s)", targetID, defaultThemeID))
+			a.home.SetStatus(fmt.Sprintf("custom theme deleted: %s (switched to %s)", targetID, ui.DefaultThemeID()))
 		}
 		a.home.SetCommandOverlay(a.themeStatusLines())
 		return

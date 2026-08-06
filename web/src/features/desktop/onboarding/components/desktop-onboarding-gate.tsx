@@ -16,10 +16,9 @@ import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { CodexDeviceCode } from '../../settings/auth/components/codex-device-code'
 import { codexSetupRecommendation } from '../../settings/auth/codex-setup-recommendation'
-import { DEFAULT_GLOBAL_THEME_ID } from '../../settings/swarm/types/swarm-settings'
 import { WorkspaceFolderTree } from '../../../workspaces/launcher/components/workspace-folder-tree'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
-import { applyWorkspaceTheme } from '../../../workspaces/launcher/services/workspace-theme'
+import { applyWorkspaceTheme, workspaceThemeDefaultId } from '../../../workspaces/launcher/services/workspace-theme'
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
@@ -310,7 +309,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         : 'Skip for now'
 
   useEffect(() => {
-    applyWorkspaceTheme(DEFAULT_GLOBAL_THEME_ID)
+    applyWorkspaceTheme(workspaceThemeDefaultId())
   }, [])
 
   useEffect(() => {

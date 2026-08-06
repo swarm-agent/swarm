@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { applyWorkspaceTheme, setWorkspaceThemeCustomOptions } from '../services/workspace-theme'
-import { DEFAULT_GLOBAL_THEME_ID, normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
+import { applyWorkspaceTheme, setWorkspaceThemeCatalog, workspaceThemeDefaultId } from '../services/workspace-theme'
+import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
 import { linkWorkspaceDirectory } from '../mutations/link-workspace-directory'
 import { unlinkWorkspaceDirectory } from '../mutations/unlink-workspace-directory'
 import { moveWorkspace } from '../mutations/move-workspace'
@@ -250,7 +250,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   const [browserError, setBrowserError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [globalThemeId, setGlobalThemeId] = useState(DEFAULT_GLOBAL_THEME_ID)
+  const [globalThemeId, setGlobalThemeId] = useState(workspaceThemeDefaultId())
 
   const applyCurrentResolution = useCallback((resolution: WorkspaceResolution | null) => {
     const nextPath = resolution?.resolvedPath?.trim() || null
@@ -282,12 +282,12 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         if (cancelled) {
           return
         }
-        setWorkspaceThemeCustomOptions(settings.theme?.custom_themes ?? [])
+        setWorkspaceThemeCatalog(settings.theme)
         setGlobalThemeId(normalizeGlobalThemeSettings(settings).activeId)
       })
       .catch(() => {
         if (!cancelled) {
-          setGlobalThemeId(DEFAULT_GLOBAL_THEME_ID)
+          setGlobalThemeId(workspaceThemeDefaultId())
         }
       })
 
@@ -396,7 +396,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       if (!settings) {
         return
       }
-      setWorkspaceThemeCustomOptions(settings.theme?.custom_themes ?? [])
+      setWorkspaceThemeCatalog(settings.theme)
       setGlobalThemeId(normalizeGlobalThemeSettings(settings).activeId)
     }
 

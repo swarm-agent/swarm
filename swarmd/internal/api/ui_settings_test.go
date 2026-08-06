@@ -8,12 +8,64 @@ import (
 	"path/filepath"
 	"testing"
 
+	sharedtheme "swarm-refactor/swarmtui/theme"
+
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
 	"swarm/packages/swarmd/internal/uisettings"
 )
+
+func TestUISettingsGetIncludesCanonicalThemeCatalog(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-theme-catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server.SetUISettingsService(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/ui/settings", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Theme.DefaultThemeID != sharedtheme.DefaultThemeID() {
+		t.Fatalf("default theme id = %q, want %q", response.Theme.DefaultThemeID, sharedtheme.DefaultThemeID())
+	}
+	catalog := sharedtheme.BuiltinThemeCatalog()
+	if len(response.Theme.BuiltinThemes) != len(catalog) {
+		t.Fatalf("builtin themes = %d, want %d", len(response.Theme.BuiltinThemes), len(catalog))
+	}
+	for index, item := range catalog {
+		got := response.Theme.BuiltinThemes[index]
+		if got.ID != item.ID || got.Name != item.Name || got.Palette != uisettings.ThemePalette(item.Palette) {
+			t.Fatalf("builtin theme[%d] = %+v, want %+v", index, got, item)
+		}
+	}
+	if _, ok := sharedtheme.ResolveBuiltinTheme("castor"); !ok {
+		t.Fatal("canonical compatibility theme castor is unavailable")
+	}
+	foundCastor := false
+	for _, item := range response.Theme.BuiltinThemes {
+		if item.ID == "castor" {
+			foundCastor = true
+			break
+		}
+	}
+	if !foundCastor {
+		t.Fatal("ui settings response omitted canonical compatibility theme castor")
+	}
+}
 
 func TestUISettingsPostRejectsAgentModelSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-designer-api.pebble"))

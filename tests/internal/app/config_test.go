@@ -128,8 +128,8 @@ func TestSaveAppConfig_ToDaemon(t *testing.T) {
 
 func TestAppConfigFromUISettings_Defaults(t *testing.T) {
 	cfg := appConfigFromUISettings(client.UISettings{})
-	if cfg.UI.Theme != defaultThemeID {
-		t.Fatalf("cfg.UI.Theme = %q, want %q", cfg.UI.Theme, defaultThemeID)
+	if cfg.UI.Theme != ui.DefaultThemeID() {
+		t.Fatalf("cfg.UI.Theme = %q, want %q", cfg.UI.Theme, ui.DefaultThemeID())
 	}
 	if cfg.Swarming.Title != defaultSwarmingTitle || cfg.Swarming.Status != defaultSwarmingStatus {
 		t.Fatalf("cfg.Swarming = %+v", cfg.Swarming)
