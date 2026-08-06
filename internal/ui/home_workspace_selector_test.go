@@ -87,14 +87,14 @@ func TestWorkspaceSelectorFiltersAndActivates(t *testing.T) {
 	}
 }
 
-func TestFirstRegisteredWorkspaceIsInitialSelection(t *testing.T) {
+func TestWorkspaceSelectionRequiresExplicitActiveWorkspace(t *testing.T) {
 	page := NewHomePage(model.HomeModel{Workspaces: []model.Workspace{{Name: "first", Path: "/work/first"}, {Name: "second", Path: "/work/second"}}})
-	if got := page.activeWorkspaceIndex(); got != 0 {
-		t.Fatalf("initial workspace index = %d, want 0", got)
+	if got := page.activeWorkspaceIndex(); got != -1 {
+		t.Fatalf("initial workspace index = %d, want no active workspace", got)
 	}
 	state := page.HomepageState()
-	if state.SelectedWorkspace.Name != "first" || state.SelectedWorkspace.Path != "/work/first" {
-		t.Fatalf("initial workspace = %#v", state.SelectedWorkspace)
+	if state.SelectedWorkspace.Path != "" {
+		t.Fatalf("inactive workspace was selected: %#v", state.SelectedWorkspace)
 	}
 
 	items := page.workspaceItems()
@@ -103,6 +103,17 @@ func TestFirstRegisteredWorkspaceIsInitialSelection(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(items[0].Label), "alt+w") {
 		t.Fatalf("workspace selector indicator does not advertise Alt+W: %q", items[0].Label)
+	}
+}
+
+func TestExplicitActiveWorkspaceIsSelected(t *testing.T) {
+	page := NewHomePage(model.HomeModel{Workspaces: []model.Workspace{{Name: "first", Path: "/work/first"}, {Name: "second", Path: "/work/second", Active: true}}})
+	if got := page.activeWorkspaceIndex(); got != 1 {
+		t.Fatalf("active workspace index = %d, want 1", got)
+	}
+	state := page.HomepageState()
+	if state.SelectedWorkspace.Name != "second" || state.SelectedWorkspace.Path != "/work/second" {
+		t.Fatalf("active workspace = %#v", state.SelectedWorkspace)
 	}
 }
 
