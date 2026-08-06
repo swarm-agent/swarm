@@ -372,6 +372,7 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
         impact_bullets: ['Full evidence is opt-in', 'Suggestions remain ordinary messages'],
         recommendation: { decision: 'ship', action: 'review', reason: 'Acceptance criteria are met', action_state: 'ready' },
         suggested_prompts: [{ label: 'Review changes', prompt }],
+        pull_request_url: 'https://github.com/swarm/repository/pull/42',
         details: {
           report: '## Full report\nSensitive-to-space **Markdown** evidence.',
           result: 'done',
@@ -401,6 +402,10 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
   assert.match(markup, /The Desktop now shows one compact final focus card/)
   assert.match(markup, /Recommendation/)
   assert.match(markup, /Next steps/)
+  assert.match(markup, /Open PR in new Tab/)
+  assert.match(markup, /href="https:\/\/github\.com\/swarm\/repository\/pull\/42"/)
+  assert.match(markup, /target="_blank"/)
+  assert.match(markup, /rel="noopener noreferrer"/)
   assert.equal((markup.match(/<details>/g) ?? []).length, 3)
   assert.match(markup, /<summary[^>]*>Details<\/summary>/)
   assert.match(markup, /<summary[^>]*>Files \(1\)<\/summary>/)

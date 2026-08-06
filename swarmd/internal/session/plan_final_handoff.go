@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -28,6 +29,7 @@ const (
 func NormalizePlanCheckpointHandoff(value pebblestore.SessionPlanCheckpointHandoff) (pebblestore.SessionPlanCheckpointHandoff, error) {
 	value.Title = strings.TrimSpace(value.Title)
 	value.Overview = strings.TrimSpace(value.Overview)
+	value.PullRequestURL = strings.TrimSpace(value.PullRequestURL)
 	if value.Overview == "" {
 		return pebblestore.SessionPlanCheckpointHandoff{}, errors.New("final handoff overview is required")
 	}
@@ -62,6 +64,13 @@ func NormalizePlanCheckpointHandoff(value pebblestore.SessionPlanCheckpointHando
 			return pebblestore.SessionPlanCheckpointHandoff{}, err
 		}
 	}
+	if value.PullRequestURL != "" {
+		normalized, err := normalizeGitHubPullRequestURL(value.PullRequestURL)
+		if err != nil {
+			return pebblestore.SessionPlanCheckpointHandoff{}, err
+		}
+		value.PullRequestURL = normalized
+	}
 	return value, nil
 }
 
@@ -82,6 +91,25 @@ func validateFinalHandoffText(field, value string, maxRunes int, required bool) 
 		return fmt.Errorf("final handoff %s must be display text or an ordinary chat prompt, not an executable directive", field)
 	}
 	return nil
+}
+
+func normalizeGitHubPullRequestURL(value string) (string, error) {
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "github.com") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("final handoff pull_request_url must be an https://github.com/<owner>/<repository>/pull/<number> URL")
+	}
+	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	if len(segments) != 4 || segments[0] == "" || segments[1] == "" || segments[2] != "pull" || segments[3] == "" {
+		return "", errors.New("final handoff pull_request_url must be an https://github.com/<owner>/<repository>/pull/<number> URL")
+	}
+	for _, r := range segments[3] {
+		if r < '0' || r > '9' {
+			return "", errors.New("final handoff pull_request_url must be an https://github.com/<owner>/<repository>/pull/<number> URL")
+		}
+	}
+	parsed.Host = "github.com"
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+	return parsed.String(), nil
 }
 
 func looksLikeExecutableFinalHandoffDirective(value string) bool {
@@ -128,6 +156,7 @@ func BuildPlanFinalHandoff(checkpoint pebblestore.SessionPlanCheckpoint) (*pebbl
 		Overview:         source.Overview,
 		ImpactBullets:    append([]string(nil), source.ImpactBullets...),
 		SuggestedPrompts: append([]pebblestore.PlanFinalHandoffSuggestedPrompt(nil), source.SuggestedPrompts...),
+		PullRequestURL:   source.PullRequestURL,
 		Details: pebblestore.PlanFinalHandoffDetails{
 			Report:       checkpoint.Report,
 			Result:       checkpoint.Result,

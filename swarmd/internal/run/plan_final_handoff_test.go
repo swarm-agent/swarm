@@ -21,6 +21,7 @@ func TestBuildFinalPlanExecutionHandoffProjectsStructuredMetadataAndConciseConte
 			Handoff: &pebblestore.SessionPlanCheckpointHandoff{
 				Title: "Ready to review", Overview: "The shared contract is ready.", ImpactBullets: []string{"Clients receive the same projection."},
 				SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: "Review", Prompt: "Review the final handoff."}},
+				PullRequestURL:   "https://github.com/swarm/repository/pull/42",
 			},
 		}},
 		ActiveCheckpointID: "cp-1",
@@ -45,7 +46,7 @@ func TestBuildFinalPlanExecutionHandoffProjectsStructuredMetadataAndConciseConte
 	if !ok || projection == nil {
 		t.Fatalf("final_handoff metadata = %#v", message.Metadata["final_handoff"])
 	}
-	if projection.SchemaVersion != 1 || projection.Recommendation == nil || projection.Recommendation.Action != "review" || projection.Details.Report != "full report sentinel" || projection.Details.Result != "result sentinel" {
+	if projection.SchemaVersion != 1 || projection.Recommendation == nil || projection.Recommendation.Action != "review" || projection.Details.Report != "full report sentinel" || projection.Details.Result != "result sentinel" || projection.PullRequestURL != "https://github.com/swarm/repository/pull/42" {
 		t.Fatalf("projection = %#v", projection)
 	}
 	artifacts, ok := message.Metadata["artifacts"].([]pebblestore.SessionPlanArtifactReference)
@@ -94,11 +95,12 @@ func TestPlanDocumentArgsParseAndValidateFinalHandoff(t *testing.T) {
 		"suggested_prompts": []any{map[string]any{
 			"label": "Review", "prompt": "Review the contract for gaps.",
 		}},
+		"pull_request_url": "https://github.com/swarm/repository/pull/42",
 	})
 	if err != nil {
 		t.Fatalf("parse handoff args: %v", err)
 	}
-	if patch == nil || patch.Handoff == nil || patch.Handoff.Title != "Ready" || len(patch.Handoff.SuggestedPrompts) != 1 {
+	if patch == nil || patch.Handoff == nil || patch.Handoff.Title != "Ready" || len(patch.Handoff.SuggestedPrompts) != 1 || patch.Handoff.PullRequestURL != "https://github.com/swarm/repository/pull/42" {
 		t.Fatalf("patch = %#v", patch)
 	}
 	_, err = planDocumentPatchFromArgs(map[string]any{"action": "complete_checkpoint", "handoff_title": "missing overview"})

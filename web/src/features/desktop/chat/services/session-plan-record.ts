@@ -243,6 +243,20 @@ function normalizeDesktopSessionPlanCheckpointReview(value: unknown): DesktopSes
   return review.status || review.reviewerId || review.result || review.notes || review.reviewedAt > 0 ? review : null
 }
 
+function normalizeGitHubPullRequestUrl(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  try {
+    const url = new URL(value.trim())
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.username || url.password || url.search || url.hash) return ''
+    const segments = url.pathname.split('/').filter(Boolean)
+    if (segments.length !== 4 || !segments[0] || !segments[1] || segments[2] !== 'pull' || !/^\d+$/.test(segments[3] ?? '')) return ''
+    url.pathname = url.pathname.replace(/\/$/, '')
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
 function normalizeDesktopSessionPlanCheckpointRecommendation(value: unknown): DesktopSessionPlanCheckpoint['recommendation'] {
   const record = objectValue(value)
   if (!record) return null
@@ -281,6 +295,7 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
     impactBullets: stringArrayValue(record, 'impactBullets', 'impact_bullets').slice(0, 3),
     recommendation,
     suggestedPrompts,
+    pullRequestUrl: normalizeGitHubPullRequestUrl(record.pullRequestUrl ?? record.pull_request_url),
     details: {
       report: rawStringValue(detailsRecord, 'report'),
       result: rawStringValue(detailsRecord, 'result'),
