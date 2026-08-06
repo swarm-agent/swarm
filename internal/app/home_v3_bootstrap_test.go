@@ -140,6 +140,19 @@ func TestClaimInitialHomeWorkspaceBootstrapIsOneShot(t *testing.T) {
 	}
 }
 
+func TestShouldResolveLaunchWorkspaceKeepsUnregisteredLaunchCWD(t *testing.T) {
+	app := &App{startupCWD: "/launch", activePath: "/launch"}
+	app.homeWorkspaceBootstrapped.Store(true)
+	if !app.shouldResolveLaunchWorkspace() {
+		t.Fatal("unregistered launch CWD was not preserved on refresh")
+	}
+	app.workspacePath = "/selected"
+	app.activePath = "/selected"
+	if app.shouldResolveLaunchWorkspace() {
+		t.Fatal("explicit workspace selection was overridden by launch CWD")
+	}
+}
+
 func TestApplyHomeWorkspaceBootstrapKeepsCurrentWorkspaceAfterLaunchBootstrap(t *testing.T) {
 	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
 		current:    client.WorkspaceResolution{WorkspacePath: "/manual", ResolvedPath: "/manual", WorkspaceName: "Manual"},
@@ -183,18 +196,41 @@ func TestApplyHomeWorkspaceBootstrapRejectsResolverPseudoWorkspace(t *testing.T)
 	}
 }
 
-func TestApplyHomeWorkspaceBootstrapGuidesUnregisteredLaunchCWD(t *testing.T) {
+func TestApplyHomeWorkspaceBootstrapUsesUnregisteredLaunchCWDWithoutDefaultWorkspace(t *testing.T) {
+	launchResolve := client.WorkspaceCWDResolveResponse{
+		ResolvedPath:   "/other",
+		ResolutionKind: "non_workspace",
+		Routes: []client.WorkspaceTopologyRoute{{
+			RouteID:              "host",
+			RuntimeSwarmID:       "host-swarm",
+			RuntimeSwarmName:     "Primary",
+			RuntimeKind:          "host",
+			RuntimeRelationship:  "self",
+			HostWorkspacePath:    "/other",
+			RuntimeWorkspacePath: "/other",
+			TUIPrimaryCWD:        true,
+		}},
+	}
 	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
 		current:         client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
 		hasCurrent:      true,
 		workspaces:      []client.WorkspaceEntry{{Path: "/default", WorkspaceName: "Default"}},
 		selectedResolve: client.WorkspaceCWDResolveResponse{ResolvedPath: "/default", Workspace: &client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default"}},
 		launchChecked:   true,
-		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: "/other"},
+		launchResolve:   launchResolve,
 	}, "/other")
 
-	if selected != "/default" {
-		t.Fatalf("selected path = %q, want /default", selected)
+	if selected != "" {
+		t.Fatalf("selected path = %q, want no saved workspace", selected)
+	}
+	if len(next.Workspaces) != 1 || next.Workspaces[0].Active {
+		t.Fatalf("default workspace remained active: %#v", next.Workspaces)
+	}
+	if len(next.Directories) < 1 || next.Directories[0].ResolvedPath != "/other" || next.Directories[0].IsWorkspace {
+		t.Fatalf("launch directory = %#v", next.Directories)
+	}
+	if len(next.ChatRoutes) != 1 || !next.ChatRoutes[0].TUIPrimaryCWD || next.ChatRoutes[0].HostWorkspacePath != "/other" {
+		t.Fatalf("launch CWD route = %#v", next.ChatRoutes)
 	}
 	if len(warnings) != 0 || next.WorkspaceSetupPath != "/other" {
 		t.Fatalf("warnings = %#v, setup path = %q", warnings, next.WorkspaceSetupPath)

@@ -14,10 +14,21 @@ import (
 
 const homeBootstrapWorkspaceLimit = 200
 
-// claimInitialHomeWorkspaceBootstrap keeps launch-CWD precedence limited to the
-// first successful home bootstrap; later refreshes follow explicit selection.
+// claimInitialHomeWorkspaceBootstrap gives launch-CWD precedence on the first
+// successful home bootstrap. An unmatched launch CWD remains authoritative on
+// later refreshes until the user explicitly selects a saved workspace.
 func (a *App) claimInitialHomeWorkspaceBootstrap() bool {
 	return a != nil && a.homeWorkspaceBootstrapped.CompareAndSwap(false, true)
+}
+
+func (a *App) shouldResolveLaunchWorkspace() bool {
+	if a == nil {
+		return false
+	}
+	if a.claimInitialHomeWorkspaceBootstrap() {
+		return true
+	}
+	return a.activeWorkspacePath() == "" && pathsEqual(a.activeContextPath(), a.startupCWD)
 }
 
 type homeBootstrapData struct {
@@ -107,19 +118,31 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		selectedName = firstRegisteredWorkspaceName(data.workspaces, selectedPath)
 	}
 	launchWorkspacePath := ""
-	if data.launchChecked && data.launchErr == nil && data.launchResolve.Workspace != nil {
-		launchWorkspacePath = registeredWorkspacePath(data.workspaces, firstNonEmpty(
-			normalizePath(data.launchResolve.Workspace.WorkspacePath),
-			normalizePath(data.launchResolve.Workspace.ResolvedPath),
-		))
-		if launchWorkspacePath != "" {
-			selectedPath = launchWorkspacePath
-			selectedName = firstNonEmpty(
-				strings.TrimSpace(data.launchResolve.Workspace.WorkspaceName),
-				firstRegisteredWorkspaceName(data.workspaces, launchWorkspacePath),
-			)
+	launchUsesCWDRoute := false
+	if data.launchChecked && data.launchErr == nil {
+		if data.launchResolve.Workspace != nil {
+			launchWorkspacePath = registeredWorkspacePath(data.workspaces, firstNonEmpty(
+				normalizePath(data.launchResolve.Workspace.WorkspacePath),
+				normalizePath(data.launchResolve.Workspace.ResolvedPath),
+			))
+			if launchWorkspacePath != "" {
+				selectedPath = launchWorkspacePath
+				selectedName = firstNonEmpty(
+					strings.TrimSpace(data.launchResolve.Workspace.WorkspaceName),
+					firstRegisteredWorkspaceName(data.workspaces, launchWorkspacePath),
+				)
+				selectedResolve = data.launchResolve
+				selectedErr = nil
+			}
+		} else {
+			// A launch directory outside every saved workspace is an explicit
+			// TUI CWD scope. Do not silently leave the account's default saved
+			// workspace selected while sessions route from another directory.
+			selectedPath = ""
+			selectedName = ""
 			selectedResolve = data.launchResolve
 			selectedErr = nil
+			launchUsesCWDRoute = true
 		}
 	}
 	selectedResolveWorkspacePath := ""
@@ -166,6 +189,20 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		})
 	}
 
+	if launchUsesCWDRoute {
+		launchPath := firstNonEmpty(normalizePath(data.launchResolve.ResolvedPath), normalizePath(startupCWD))
+		if launchPath != "" {
+			next.Directories = append([]model.DirectoryItem{{
+				Name:         emptyFallback(filepath.Base(launchPath), "directory"),
+				Path:         displayPath(launchPath),
+				ResolvedPath: launchPath,
+				Branch:       "-",
+				AgentsToken:  "none",
+				IsWorkspace:  false,
+			}}, next.Directories...)
+		}
+	}
+
 	if selectedPath != "" && activeWorkspaceIndex(next.Workspaces) < 0 {
 		next.Workspaces = append([]model.Workspace{{
 			Name:        emptyFallback(selectedName, filepath.Base(selectedPath)),
@@ -184,7 +221,7 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		}}, next.Directories...)
 	}
 
-	if selectedErr == nil && selectedPath != "" {
+	if selectedErr == nil && (selectedPath != "" || launchUsesCWDRoute) {
 		next = applyCWDResolverToHomeModel(next, selectedResolve)
 	} else if selectedErr != nil {
 		warnings = append(warnings, "workspace route unavailable")
@@ -194,7 +231,9 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 	}
 
 	startupCWD = normalizePath(startupCWD)
-	if data.launchChecked && data.launchErr == nil && launchWorkspacePath == "" && startupCWD != "" && !homePathRegistered(startupCWD, next.Workspaces) {
+	if launchUsesCWDRoute {
+		next.WorkspaceSetupPath = firstNonEmpty(normalizePath(data.launchResolve.ResolvedPath), startupCWD)
+	} else if data.launchChecked && data.launchErr == nil && launchWorkspacePath == "" && startupCWD != "" && !homePathRegistered(startupCWD, next.Workspaces) {
 		next.WorkspaceSetupPath = startupCWD
 	}
 	return next, selectedPath, warnings

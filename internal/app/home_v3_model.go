@@ -65,7 +65,7 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	wg.Add(7)
 	go func() {
 		defer wg.Done()
-		preferLaunchWorkspace := a.claimInitialHomeWorkspaceBootstrap()
+		preferLaunchWorkspace := a.shouldResolveLaunchWorkspace()
 		workspaceData = a.bootstrapHomeWorkspace(ctx, preferLaunchWorkspace)
 		if preferLaunchWorkspace && workspaceData.currentErr != nil {
 			a.homeWorkspaceBootstrapped.Store(false)
@@ -84,6 +84,10 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	next, selectedPath, warnings = applyHomeWorkspaceBootstrap(next, workspaceData, a.startupCWD)
 	if selectedPath != "" {
 		next.CWD = selectedPath
+	} else if workspaceData.launchChecked && workspaceData.launchErr == nil && workspaceData.launchResolve.Workspace == nil {
+		// Keep the actual launch directory authoritative when it is outside
+		// every saved workspace instead of displaying a default selection.
+		next.CWD = firstNonEmpty(normalizePath(workspaceData.launchResolve.ResolvedPath), normalizePath(a.startupCWD))
 	}
 	if len(next.ChatRoutes) > 0 {
 		a.selectedChatRouteID = a.resolveSelectedChatRouteIDForWorkspace(selectedPath, next.ChatRoutes)
