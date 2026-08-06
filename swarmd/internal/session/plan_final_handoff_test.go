@@ -16,12 +16,13 @@ func TestNormalizePlanCheckpointHandoffBoundsAndRejectsDirectives(t *testing.T) 
 		SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{
 			Label: " Review ", Prompt: " Review the final handoff and call out any gaps. ",
 		}},
+		PullRequestURL: "  https://github.com/swarm/repository/pull/42  ",
 	}
 	normalized, err := NormalizePlanCheckpointHandoff(valid)
 	if err != nil {
 		t.Fatalf("normalize valid handoff: %v", err)
 	}
-	if normalized.Title != "Ready to review" || normalized.Overview != "The durable contract is ready." || normalized.ImpactBullets[0] != "Clients share one projection." || normalized.SuggestedPrompts[0].Label != "Review" {
+	if normalized.Title != "Ready to review" || normalized.Overview != "The durable contract is ready." || normalized.ImpactBullets[0] != "Clients share one projection." || normalized.SuggestedPrompts[0].Label != "Review" || normalized.PullRequestURL != "https://github.com/swarm/repository/pull/42" {
 		t.Fatalf("normalized handoff = %#v", normalized)
 	}
 
@@ -44,6 +45,9 @@ func TestNormalizePlanCheckpointHandoffBoundsAndRejectsDirectives(t *testing.T) 
 		{name: "oversized prompt", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: "Review", Prompt: strings.Repeat("x", PlanFinalHandoffMaxSuggestedPromptRunes+1)}}}, want: "suggested_prompts[0].prompt exceeds"},
 		{name: "command prompt", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: "Run", Prompt: "/commit"}}}, want: "not an executable directive"},
 		{name: "tool json", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: "Run", Prompt: `{"tool":"bash"}`}}}, want: "not an executable directive"},
+		{name: "non github PR", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", PullRequestURL: "https://example.com/owner/repo/pull/1"}, want: "pull_request_url"},
+		{name: "github issue", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", PullRequestURL: "https://github.com/owner/repo/issues/1"}, want: "pull_request_url"},
+		{name: "github PR query", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", PullRequestURL: "https://github.com/owner/repo/pull/1?diff=split"}, want: "pull_request_url"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,6 +72,7 @@ func TestApplyPlanCheckpointOutcomePersistsHandoffAndProjectsLosslessEvidence(t 
 		SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{
 			Label: "Review contract", Prompt: "Review the final-handoff contract for gaps.",
 		}},
+		PullRequestURL: "https://github.com/swarm/repository/pull/42",
 	}
 	_, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
 		CheckpointID: "cp-1", Outcome: PlanCheckpointStatusCompleted,
@@ -85,7 +90,7 @@ func TestApplyPlanCheckpointOutcomePersistsHandoffAndProjectsLosslessEvidence(t 
 	if err != nil {
 		t.Fatalf("build projection: %v", err)
 	}
-	if projection.SchemaVersion != PlanFinalHandoffSchemaVersion || projection.Title != "Contract" || projection.Recommendation == nil || projection.Recommendation.Decision != "ship" {
+	if projection.SchemaVersion != PlanFinalHandoffSchemaVersion || projection.Title != "Contract" || projection.Recommendation == nil || projection.Recommendation.Decision != "ship" || projection.PullRequestURL != handoff.PullRequestURL {
 		t.Fatalf("projection identity = %#v", projection)
 	}
 	if projection.Details.Report != "complete report" || projection.Details.Result != "done" || len(projection.Details.ChangedFiles) != 1 || len(projection.Details.Validation) != 1 {
@@ -107,7 +112,7 @@ func TestApplyPlanCheckpointOutcomePersistsHandoffAndProjectsLosslessEvidence(t 
 	if err != nil {
 		t.Fatalf("build restored projection: %v", err)
 	}
-	if restoredProjection == nil || restoredProjection.Overview != handoff.Overview || restoredProjection.Details.Report != "complete report" || restoredProjection.Recommendation == nil || restoredProjection.Recommendation.Decision != "ship" {
+	if restoredProjection == nil || restoredProjection.Overview != handoff.Overview || restoredProjection.Details.Report != "complete report" || restoredProjection.Recommendation == nil || restoredProjection.Recommendation.Decision != "ship" || restoredProjection.PullRequestURL != handoff.PullRequestURL {
 		t.Fatalf("restored projection = %#v", restoredProjection)
 	}
 }

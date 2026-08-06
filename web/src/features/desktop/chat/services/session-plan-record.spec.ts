@@ -90,6 +90,7 @@ test('normalizeDesktopSessionPlan decodes the versioned final handoff projection
           impact_bullets: ['Compact by default', 'Evidence remains available'],
           recommendation: { decision: 'ship', action: 'review', reason: 'All criteria met', action_state: 'ready' },
           suggested_prompts: [{ label: 'Review changes', prompt: 'Review the completed changes.' }],
+          pull_request_url: 'https://github.com/swarm/repository/pull/42',
           details: {
             report: '## Report\nFull **Markdown** evidence.',
             result: 'done',
@@ -108,6 +109,30 @@ test('normalizeDesktopSessionPlan decodes the versioned final handoff projection
   assert.deepEqual(handoff?.impactBullets, ['Compact by default', 'Evidence remains available'])
   assert.equal(handoff?.recommendation?.actionState, 'ready')
   assert.deepEqual(handoff?.suggestedPrompts, [{ label: 'Review changes', prompt: 'Review the completed changes.' }])
+  assert.equal(handoff?.pullRequestUrl, 'https://github.com/swarm/repository/pull/42')
   assert.equal(handoff?.details.report, '## Report\nFull **Markdown** evidence.')
   assert.deepEqual(handoff?.details.changedFiles, ['web/src/final.tsx'])
+})
+
+test('normalizeDesktopSessionPlan omits unsafe final handoff pull request URLs', () => {
+  const plan = normalizeDesktopSessionPlan({
+    id: 'plan-unsafe-pr',
+    document: {
+      title: 'Unsafe PR',
+      info: { goal: 'Stay safe' },
+      checkpoints: [{
+        id: 'cp-1',
+        title: 'Finish',
+        final_handoff: {
+          schema_version: 1,
+          title: 'Done',
+          overview: 'Complete.',
+          pull_request_url: 'javascript:alert(1)',
+          details: {},
+        },
+      }],
+    },
+  })
+
+  assert.equal(plan.document?.checkpoints[0]?.finalHandoff?.pullRequestUrl, '')
 })

@@ -22,6 +22,8 @@ import {
   CircleDot,
   Loader2,
   LoaderCircle,
+  Github,
+  ExternalLink,
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
@@ -3357,6 +3359,21 @@ function DesktopV3StructuredFinalHandoff({
               {recommendation.decision.replace(/[-_]+/g, " ")} — {recommendation.action.replace(/[-_]+/g, " ")}
             </div>
             {recommendation.reason ? <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{recommendation.reason}</p> : null}
+          </div>
+        ) : null}
+
+        {handoff.pullRequestUrl ? (
+          <div className="mt-3" data-final-handoff-pull-request>
+            <a
+              href={handoff.pullRequestUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+            >
+              <Github size={14} aria-hidden="true" />
+              Open PR in new Tab
+              <ExternalLink size={12} aria-hidden="true" />
+            </a>
           </div>
         ) : null}
 

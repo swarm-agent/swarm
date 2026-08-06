@@ -1049,6 +1049,7 @@ type PlanFinalHandoff struct {
 	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
 	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
 	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
 	Details          PlanFinalHandoffDetails              `json:"details"`
 }
 

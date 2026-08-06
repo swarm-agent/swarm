@@ -530,6 +530,7 @@ export interface DesktopPlanFinalHandoff {
   impactBullets: string[];
   recommendation: DesktopSessionPlanCheckpointRecommendation | null;
   suggestedPrompts: DesktopPlanFinalHandoffSuggestedPrompt[];
+  pullRequestUrl: string;
   details: DesktopPlanFinalHandoffDetails;
 }
 
