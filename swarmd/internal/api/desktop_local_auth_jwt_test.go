@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
+	updateapi "swarm/packages/swarmd/internal/update"
 )
 
 func TestDesktopSessionBootstrapFailsBeforeIdentityAndDoesNotCreateIdentity(t *testing.T) {
@@ -86,6 +87,43 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 	restarted.DesktopHandler().ServeHTTP(vaultRec, vaultReq)
 	if vaultRec.Code != http.StatusOK {
 		t.Fatalf("protected API with persisted jwt status=%d want %d body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
+	}
+}
+
+func TestLocalTransportUpdateApplyRequiresBootstrappedProductPrincipal(t *testing.T) {
+	server, _, _, cleanup := newDesktopJWTTestServer(t, true)
+	defer cleanup()
+	server.SetUpdateService(updateapi.NewService("dev", false))
+
+	unauthorizedRec := httptest.NewRecorder()
+	unauthorizedReq := httptest.NewRequest(http.MethodPost, "http://swarm-local-transport/v1/update/apply", nil)
+	server.LocalTransportHandler().ServeHTTP(unauthorizedRec, unauthorizedReq)
+	if unauthorizedRec.Code != http.StatusUnauthorized || !strings.Contains(unauthorizedRec.Body.String(), "trusted principal is required") {
+		t.Fatalf("unauthenticated update apply status=%d body=%s, want trusted-principal 401", unauthorizedRec.Code, unauthorizedRec.Body.String())
+	}
+
+	bootstrapRec := httptest.NewRecorder()
+	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://swarm-local-transport/v1/auth/desktop/session", nil)
+	server.LocalTransportHandler().ServeHTTP(bootstrapRec, bootstrapReq)
+	if bootstrapRec.Code != http.StatusOK {
+		t.Fatalf("local session bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
+	}
+	var session struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode local session: %v", err)
+	}
+
+	authorizedRec := httptest.NewRecorder()
+	authorizedReq := httptest.NewRequest(http.MethodPost, "http://swarm-local-transport/v1/update/apply", nil)
+	authorizedReq.Header.Set("X-Swarm-Token", session.Token)
+	server.LocalTransportHandler().ServeHTTP(authorizedRec, authorizedReq)
+	if authorizedRec.Code == http.StatusUnauthorized || strings.Contains(authorizedRec.Body.String(), "trusted principal is required") {
+		t.Fatalf("authenticated update apply status=%d body=%s, principal was not preserved", authorizedRec.Code, authorizedRec.Body.String())
+	}
+	if authorizedRec.Code != http.StatusBadRequest || !strings.Contains(authorizedRec.Body.String(), "update apply is suppressed") {
+		t.Fatalf("authenticated update apply status=%d body=%s, want update-service response after auth", authorizedRec.Code, authorizedRec.Body.String())
 	}
 }
 

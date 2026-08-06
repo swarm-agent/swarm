@@ -265,9 +265,14 @@ func ApplyReleaseUpdate(ctx context.Context, profile Profile, plan client.Update
 func RequestReleaseUpdatePlan(ctx context.Context, profile Profile) (client.UpdateApplyPlan, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	token, err := requestLocalProductSessionToken(ctx, profile)
+	if err != nil {
+		return client.UpdateApplyPlan{}, fmt.Errorf("authorize update apply: %w", err)
+	}
 	body, status, err := httpRequest(ctx, profile, http.MethodPost, profile.URL+"/v1/update/apply", map[string]string{
-		"Accept":       "application/json",
-		"Content-Type": "application/json",
+		"Accept":        "application/json",
+		"Content-Type":  "application/json",
+		"X-Swarm-Token": token,
 	}, map[string]any{})
 	if err != nil {
 		return client.UpdateApplyPlan{}, err
@@ -280,6 +285,27 @@ func RequestReleaseUpdatePlan(ctx context.Context, profile Profile) (client.Upda
 		return client.UpdateApplyPlan{}, fmt.Errorf("decode update apply response: %w", err)
 	}
 	return plan, nil
+}
+
+func requestLocalProductSessionToken(ctx context.Context, profile Profile) (string, error) {
+	body, status, err := httpRequest(ctx, profile, http.MethodGet, profile.URL+"/v1/auth/desktop/session", map[string]string{
+		"Accept": "application/json",
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("local product session failed (%d): %s", status, responseErrorMessage(body))
+	}
+	var session client.LocalProductSession
+	if err := json.Unmarshal(body, &session); err != nil {
+		return "", fmt.Errorf("decode local product session response: %w", err)
+	}
+	token := strings.TrimSpace(session.Token)
+	if token == "" {
+		return "", errors.New("local product session response missing token")
+	}
+	return token, nil
 }
 
 func RunReleaseUpdate(profile Profile, relaunchArgs []string) error {
