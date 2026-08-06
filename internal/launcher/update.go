@@ -47,6 +47,9 @@ const (
 var stableUpdateVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 var (
+	replacementDaemonReadinessLimit = 30 * time.Second
+	replacementDaemonReadinessPoll  = 200 * time.Millisecond
+
 	stopBackendForUpdate                     = StopBackend
 	requestBackendShutdownForUpdate          = RequestBackendShutdownForUpdate
 	applyReleaseUpdateForUpdate              = ApplyReleaseUpdate
@@ -66,6 +69,9 @@ var (
 	ensureSystemdServiceUnitForUpdate        = EnsureSystemdServiceUnit
 	rollbackPendingUpdateAndRestartForUpdate = rollbackPendingUpdateAndRestart
 	preflightReleaseUpdateForUpdate          = PreflightReleaseUpdate
+	activeBackendPIDForUpdate                = activeBackendPID
+	waitForReplacementDaemonReadyForUpdate   = waitForReplacementDaemonReady
+	replacementDaemonReadinessProbeForUpdate = replacementDaemonReadinessProbe
 )
 
 type runtimeBootStatus struct {
@@ -347,6 +353,13 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	if err := preflightReleaseUpdateForUpdate(profile); err != nil {
 		return err
 	}
+	previousDaemonPID := ""
+	if restartPlan.managerKind == lifecycleKindSystemd && restartPlan.systemdActive {
+		previousDaemonPID, err = activeBackendPIDForUpdate(profile)
+		if err != nil {
+			return fmt.Errorf("resolve current daemon before release activation: %w", err)
+		}
+	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Verifying and activating Swarm release while the current daemon remains available.", "")
 	result, err := applyReleaseUpdateForUpdate(context.Background(), profile, plan)
 	if err != nil {
@@ -356,6 +369,10 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, releaseUpdateCompletedMessage(result.Version)+" Requesting restart through the existing systemd policy; waiting for boot confirmation.", "")
 		if err := requestBackendShutdownForUpdate(profile, releaseUpdateShutdownReason); err != nil {
 			return fmt.Errorf("request authenticated update restart: %w", err)
+		}
+		if err := waitForReplacementDaemonReadyForUpdate(profile, previousDaemonPID); err != nil {
+			readinessErr := fmt.Errorf("replacement daemon did not become authenticated and ready: %w", err)
+			return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, readinessErr)
 		}
 		return nil
 	}
@@ -372,6 +389,71 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 	return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
 		appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
 	})
+}
+
+func activeBackendPID(profile Profile) (string, error) {
+	if pid, ok, err := readLockPID(profile.LockPath); err != nil {
+		return "", err
+	} else if ok && processRunning(strconv.Itoa(pid)) {
+		return strconv.Itoa(pid), nil
+	}
+	pid := strings.TrimSpace(ReadPIDFile(profile))
+	if pid == "" || !processRunning(pid) {
+		return "", errors.New("active systemd daemon pid is unavailable")
+	}
+	return pid, nil
+}
+
+func waitForReplacementDaemonReady(profile Profile, previousPID string) error {
+	deadline := time.Now().Add(replacementDaemonReadinessLimit)
+	var lastErr error
+	for {
+		if err := replacementDaemonReadinessProbeForUpdate(profile, previousPID); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("timed out after %s: %w", replacementDaemonReadinessLimit, lastErr)
+		}
+		time.Sleep(replacementDaemonReadinessPoll)
+	}
+}
+
+func replacementDaemonReadinessProbe(profile Profile, previousPID string) error {
+	previousPID = strings.TrimSpace(previousPID)
+	if previousPID == "" {
+		return errors.New("previous daemon pid is required")
+	}
+	if processRunning(previousPID) {
+		return fmt.Errorf("previous daemon pid %s is still running", previousPID)
+	}
+	currentPID := strings.TrimSpace(ReadPIDFile(profile))
+	if currentPID == "" || currentPID == previousPID || !processRunning(currentPID) {
+		return errors.New("replacement daemon process is not running")
+	}
+	if status, err := ReadyStatus(profile); err != nil {
+		return fmt.Errorf("replacement daemon readiness request: %w", err)
+	} else if status != http.StatusOK {
+		return fmt.Errorf("replacement daemon readiness returned %d", status)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	token, err := requestLocalProductSessionToken(ctx, profile)
+	if err != nil {
+		return fmt.Errorf("authorize replacement daemon: %w", err)
+	}
+	_, status, err := httpRequest(ctx, profile, http.MethodGet, profile.URL+"/me", map[string]string{
+		"Accept":        "application/json",
+		"X-Swarm-Token": token,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("authenticate replacement daemon: %w", err)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("replacement daemon authentication returned %d", status)
+	}
+	return nil
 }
 
 func RequestBackendShutdownForUpdate(profile Profile, reason string) error {

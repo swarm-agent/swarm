@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/pkg/localupdate"
@@ -644,18 +645,21 @@ func TestRunUpdateHelperSystemdShutdownFailureDoesNotReportSuccess(t *testing.T)
 	originalServiceActive := serviceActiveForUpdate
 	originalRequestShutdown := requestBackendShutdownForUpdate
 	originalPreflight := preflightReleaseUpdateForUpdate
+	originalActiveBackendPID := activeBackendPIDForUpdate
 	defer func() {
 		applyReleaseUpdateForUpdate = originalApplyRelease
 		resolveLifecycleManagerForUpdate = originalResolveLifecycle
 		serviceActiveForUpdate = originalServiceActive
 		requestBackendShutdownForUpdate = originalRequestShutdown
 		preflightReleaseUpdateForUpdate = originalPreflight
+		activeBackendPIDForUpdate = originalActiveBackendPID
 	}()
 	preflightReleaseUpdateForUpdate = func(Profile) error { return nil }
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
 		return lifecycleManager{Kind: lifecycleKindSystemd, Scope: "system", Unit: "swarm.service"}, true, nil
 	}
 	serviceActiveForUpdate = func(systemdServiceScope, string) (bool, bool, error) { return true, true, nil }
+	activeBackendPIDForUpdate = func(Profile) (string, error) { return "111", nil }
 	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
 		return UpdateResult{Version: "v1.2.3"}, nil
 	}
@@ -757,6 +761,8 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 	originalRollbackRestart := rollbackPendingUpdateAndRestartForUpdate
 	originalRequestShutdown := requestBackendShutdownForUpdate
 	originalPreflight := preflightReleaseUpdateForUpdate
+	originalActiveBackendPID := activeBackendPIDForUpdate
+	originalWaitForReplacement := waitForReplacementDaemonReadyForUpdate
 	defer func() {
 		stopBackendForUpdate = originalStopBackend
 		stopSystemdServiceForUpdate = originalStopSystemd
@@ -769,6 +775,8 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 		rollbackPendingUpdateAndRestartForUpdate = originalRollbackRestart
 		requestBackendShutdownForUpdate = originalRequestShutdown
 		preflightReleaseUpdateForUpdate = originalPreflight
+		activeBackendPIDForUpdate = originalActiveBackendPID
+		waitForReplacementDaemonReadyForUpdate = originalWaitForReplacement
 	}()
 	preflightReleaseUpdateForUpdate = func(Profile) error { return nil }
 
@@ -803,6 +811,11 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 	serviceActiveForUpdate = func(scope systemdServiceScope, unit string) (bool, bool, error) {
 		return true, true, nil
 	}
+	activeBackendPIDForUpdate = func(Profile) (string, error) { return "111", nil }
+	waitForReplacementDaemonReadyForUpdate = func(_ Profile, previousPID string) error {
+		calls = append(calls, "ready:"+previousPID)
+		return nil
+	}
 	rollbackPendingUpdateAndRestartForUpdate = func(Profile, []string, *os.Process, error) error {
 		t.Fatalf("direct rollback should not be used for successful systemd lifecycle")
 		return nil
@@ -815,7 +828,7 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 	if err := RunUpdateHelper(profile, plan, 0, []string{"main"}); err != nil {
 		t.Fatalf("RunUpdateHelper: %v", err)
 	}
-	want := "apply,shutdown:update-release"
+	want := "apply,shutdown:update-release,ready:111"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}
@@ -825,5 +838,131 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 	}
 	if status.Status != updateJobStatusRunning || status.CompletedAtUnix != 0 || !strings.Contains(status.Message, "waiting for boot confirmation") {
 		t.Fatalf("update status = %+v, want nonterminal boot confirmation state", status)
+	}
+}
+
+func TestWaitForReplacementDaemonReadySucceedsImmediately(t *testing.T) {
+	originalProbe := replacementDaemonReadinessProbeForUpdate
+	originalLimit := replacementDaemonReadinessLimit
+	originalPoll := replacementDaemonReadinessPoll
+	defer func() {
+		replacementDaemonReadinessProbeForUpdate = originalProbe
+		replacementDaemonReadinessLimit = originalLimit
+		replacementDaemonReadinessPoll = originalPoll
+	}()
+	replacementDaemonReadinessLimit = time.Second
+	replacementDaemonReadinessPoll = time.Millisecond
+	calls := 0
+	replacementDaemonReadinessProbeForUpdate = func(Profile, string) error {
+		calls++
+		return nil
+	}
+
+	if err := waitForReplacementDaemonReady(Profile{}, "111"); err != nil {
+		t.Fatalf("waitForReplacementDaemonReady: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("probe calls = %d, want 1", calls)
+	}
+}
+
+func TestWaitForReplacementDaemonReadyAllowsDelayedReadiness(t *testing.T) {
+	originalProbe := replacementDaemonReadinessProbeForUpdate
+	originalLimit := replacementDaemonReadinessLimit
+	originalPoll := replacementDaemonReadinessPoll
+	defer func() {
+		replacementDaemonReadinessProbeForUpdate = originalProbe
+		replacementDaemonReadinessLimit = originalLimit
+		replacementDaemonReadinessPoll = originalPoll
+	}()
+	replacementDaemonReadinessLimit = time.Second
+	replacementDaemonReadinessPoll = time.Millisecond
+	calls := 0
+	replacementDaemonReadinessProbeForUpdate = func(Profile, string) error {
+		calls++
+		if calls < 3 {
+			return errors.New("not ready yet")
+		}
+		return nil
+	}
+
+	if err := waitForReplacementDaemonReady(Profile{}, "111"); err != nil {
+		t.Fatalf("waitForReplacementDaemonReady: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("probe calls = %d, want 3", calls)
+	}
+}
+
+func TestRunUpdateHelperSystemdReadinessFailureRollsBack(t *testing.T) {
+	profile := Profile{InstallRoot: t.TempDir(), DataDir: t.TempDir()}
+	plan := client.UpdateApplyPlan{TargetVersion: "v1.2.3"}
+
+	originalApplyRelease := applyReleaseUpdateForUpdate
+	originalResolveLifecycle := resolveLifecycleManagerForUpdate
+	originalServiceActive := serviceActiveForUpdate
+	originalRequestShutdown := requestBackendShutdownForUpdate
+	originalPreflight := preflightReleaseUpdateForUpdate
+	originalActiveBackendPID := activeBackendPIDForUpdate
+	originalWaitForReplacement := waitForReplacementDaemonReadyForUpdate
+	originalRollbackRestart := rollbackPendingUpdateAndRestartForUpdate
+	defer func() {
+		applyReleaseUpdateForUpdate = originalApplyRelease
+		resolveLifecycleManagerForUpdate = originalResolveLifecycle
+		serviceActiveForUpdate = originalServiceActive
+		requestBackendShutdownForUpdate = originalRequestShutdown
+		preflightReleaseUpdateForUpdate = originalPreflight
+		activeBackendPIDForUpdate = originalActiveBackendPID
+		waitForReplacementDaemonReadyForUpdate = originalWaitForReplacement
+		rollbackPendingUpdateAndRestartForUpdate = originalRollbackRestart
+	}()
+
+	preflightReleaseUpdateForUpdate = func(Profile) error { return nil }
+	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
+		return lifecycleManager{Kind: lifecycleKindSystemd, Scope: "system", Unit: "swarm.service"}, true, nil
+	}
+	serviceActiveForUpdate = func(systemdServiceScope, string) (bool, bool, error) { return true, true, nil }
+	activeBackendPIDForUpdate = func(Profile) (string, error) { return "111", nil }
+	applyReleaseUpdateForUpdate = func(context.Context, Profile, client.UpdateApplyPlan) (UpdateResult, error) {
+		return UpdateResult{Version: "v1.2.3"}, nil
+	}
+	requestBackendShutdownForUpdate = func(Profile, string) error { return nil }
+	waitForReplacementDaemonReadyForUpdate = func(Profile, string) error { return errors.New("readiness timed out") }
+	rollbackCalls := 0
+	rollbackPendingUpdateAndRestartForUpdate = func(_ Profile, _ []string, _ *os.Process, cause error) error {
+		rollbackCalls++
+		if cause == nil || !strings.Contains(cause.Error(), "authenticated and ready") {
+			t.Fatalf("rollback cause = %v", cause)
+		}
+		return errors.New("rolled back replacement")
+	}
+
+	err := RunUpdateHelper(profile, plan, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "rolled back replacement") {
+		t.Fatalf("RunUpdateHelper error = %v, want rollback failure", err)
+	}
+	if rollbackCalls != 1 {
+		t.Fatalf("rollback calls = %d, want 1", rollbackCalls)
+	}
+}
+
+func TestWaitForReplacementDaemonReadyReturnsBoundedFailure(t *testing.T) {
+	originalProbe := replacementDaemonReadinessProbeForUpdate
+	originalLimit := replacementDaemonReadinessLimit
+	originalPoll := replacementDaemonReadinessPoll
+	defer func() {
+		replacementDaemonReadinessProbeForUpdate = originalProbe
+		replacementDaemonReadinessLimit = originalLimit
+		replacementDaemonReadinessPoll = originalPoll
+	}()
+	replacementDaemonReadinessLimit = 5 * time.Millisecond
+	replacementDaemonReadinessPoll = time.Millisecond
+	replacementDaemonReadinessProbeForUpdate = func(Profile, string) error {
+		return errors.New("replacement refused authentication")
+	}
+
+	err := waitForReplacementDaemonReady(Profile{}, "111")
+	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "replacement refused authentication") {
+		t.Fatalf("waitForReplacementDaemonReady error = %v, want bounded authentication failure", err)
 	}
 }
