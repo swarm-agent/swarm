@@ -1683,7 +1683,7 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 
 	input.ApplySessionMutation = applySessionMutation
 	input.BuildLifecycleMessage = func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
-		message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_fresh_context"}})
+		message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_current_context", "context_preserved": true}})
 		if !ok {
 			return nil
 		}
@@ -2837,7 +2837,8 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			payload["context_preserved"] = true
 			payload["run_ownership"] = map[string]any{"run_id": lifecycleRun.RunID, "checkpoint_id": result.Summary.NextCheckpointID, "attempt_id": result.AttemptID}
 		} else {
-			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["next_action"] = "run_checkpoint_with_current_context"
+			payload["context_preserved"] = true
 			payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.Summary.NextCheckpointID, result.AttemptID)
 		}
 	}
@@ -2888,9 +2889,9 @@ func (s *Service) executeCheckpointBoundaryTransition(sessionID string, args map
 		"attempt_id":           result.AttemptID,
 		"next_run_id":          result.RunIntent.RunID,
 		"execution_epoch_id":   result.RunIntent.EpochID,
-		"next_action":          "run_checkpoint_with_fresh_context",
+		"next_action":          "run_checkpoint_with_current_context",
 		"parent_turn_terminal": true,
-		"fresh_checkpoint_run": true,
+		"context_preserved":    true,
 		"replayed":             result.Replayed,
 		"path_id":              "tool.plan-manage.v3",
 		"summary":              "committed checkpoint boundary and fresh run intent",
@@ -3125,7 +3126,8 @@ func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *p
 		if summary.NextCheckpointID != "" {
 			payload["checkpoint_id"] = summary.NextCheckpointID
 		}
-		payload["next_action"] = "run_checkpoint_with_fresh_context"
+		payload["next_action"] = "run_checkpoint_with_current_context"
+		payload["context_preserved"] = true
 	case "accept_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
 		payload["next_checkpoint_id"] = summary.NextCheckpointID
 		if summary.PlanComplete {
@@ -3135,7 +3137,8 @@ func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *p
 		} else if summary.Blocked || summary.Failed {
 			payload["next_action"] = "stopped"
 		} else if summary.AutoAdvanceAllowed && summary.NextCheckpointID != "" {
-			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["next_action"] = "run_checkpoint_with_current_context"
+			payload["context_preserved"] = true
 			payload["auto_advance"] = true
 			payload["run_request"] = planCheckpointRunRequestPayload(doc.ID, summary.NextCheckpointID, "")
 		} else if summary.NextCheckpointID != "" {
@@ -3166,7 +3169,8 @@ func addPlanRunRequestPayloadFields(payload map[string]any, planID string, doc *
 		return
 	}
 	payload["checkpoint_id"] = strings.TrimSpace(summary.NextCheckpointID)
-	payload["next_action"] = "run_checkpoint_with_fresh_context"
+	payload["next_action"] = "run_checkpoint_with_current_context"
+	payload["context_preserved"] = true
 	payload["run_request"] = planCheckpointRunRequestPayload(planID, summary.NextCheckpointID, "")
 }
 

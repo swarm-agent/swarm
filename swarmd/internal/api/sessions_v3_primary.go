@@ -1370,11 +1370,9 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 			markSessionsV3CheckpointResumeRouting(&message, runIntent.RunID, doc.ActiveCheckpointID, "resume_paused_user_message")
 		}
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
-		// Final handoff ends checkpoint ownership, not the provider conversation.
-		// Keep this ordinary parent turn in the active execution epoch so it can
-		// continue the completed checkpoint's provider lineage. The explicit
-		// checkpoint-boundary transition is the sole operation that seals this
-		// epoch and creates a fresh one.
+		// Final-handoff persistence already sealed the checkpoint epoch and opened
+		// its successor. This ordinary parent turn therefore stays unowned by the
+		// completed checkpoint and is appended to that active successor epoch.
 		runIntent.PlanID = ""
 		runIntent.CheckpointID = ""
 		runIntent.AttemptID = ""

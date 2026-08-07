@@ -244,10 +244,10 @@ func TestSessionsV3PlanModeDedicatedLifecycleEndpointsSuccess(t *testing.T) {
 			t.Fatalf("message count = %d, want 1: %#v", len(messages), messages)
 		}
 		message := messages[0]
-		if message.Role != "system" || message.Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" || message.Metadata["action"] != "resolve_blocked_checkpoint" || message.Metadata["next_action"] != "run_checkpoint_with_fresh_context" {
+		if message.Role != "system" || message.Metadata["source"] != runruntime.PlanExecutionLifecycleMessageSource || message.Metadata["kind"] != "plan_execution_break" || message.Metadata["action"] != "resolve_blocked_checkpoint" || message.Metadata["next_action"] != "run_checkpoint_with_current_context" {
 			t.Fatalf("message role/metadata = role %q metadata %#v", message.Role, message.Metadata)
 		}
-		if !strings.Contains(message.Content, "Blocker resolved; resuming current checkpoint — Automatic mode") || !strings.Contains(message.Content, "Checkpoint: Checkpoint 1 — Blocked") || strings.Contains(message.Content, "Checkpoint 2 — Next") || !strings.Contains(message.Content, "Context: Resuming this checkpoint with fresh context; it remains incomplete until the resumed agent records a normal outcome.") {
+		if !strings.Contains(message.Content, "Blocker resolved; resuming current checkpoint — Automatic mode") || !strings.Contains(message.Content, "Checkpoint: Checkpoint 1 — Blocked") || strings.Contains(message.Content, "Checkpoint 2 — Next") || !strings.Contains(message.Content, "Context: Resuming this checkpoint with fresh recovery context; it remains incomplete until the resumed agent records a normal outcome.") {
 			t.Fatalf("message content missing resolve/resume details: %q", message.Content)
 		}
 	})

@@ -21,7 +21,7 @@ func TestPlanManageLegacyFollowupActionsAreDisabled(t *testing.T) {
 func TestCheckpointBoundaryToolPayloadIsTerminalAndCarriesRunIdentity(t *testing.T) {
 	payload := map[string]any{
 		"action":               "transition_checkpoint_boundary",
-		"next_action":          "run_checkpoint_with_fresh_context",
+		"next_action":          "run_checkpoint_with_current_context",
 		"next_run_id":          "run-next",
 		"parent_turn_terminal": true,
 	}

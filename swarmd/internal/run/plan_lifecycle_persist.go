@@ -33,8 +33,73 @@ func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action st
 	if !ok {
 		return nil
 	}
-	if err := s.appendPlanExecutionSystemMessage(sessionID, plan, handoffMessage, logicalKey(action, plan, payload), label, applySessionMutation); err != nil {
+	if err := s.appendFinalPlanExecutionSystemMessage(sessionID, plan, handoffMessage, logicalKey(action, plan, payload), label); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s *Service) appendFinalPlanExecutionSystemMessage(sessionID string, plan pebblestore.SessionPlanSnapshot, message PlanExecutionLifecycleMessage, logicalKey, label string) error {
+	if s == nil || s.sessions == nil {
+		return fmt.Errorf("append %s system message: session service is not configured", label)
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("append %s system message: %w", label, err)
+	}
+	if !ok {
+		return fmt.Errorf("append %s system message: session %q not found", label, sessionID)
+	}
+	content := strings.TrimSpace(message.Content)
+	if content == "" {
+		return fmt.Errorf("append %s system message: message content is required", label)
+	}
+	runID := planLifecycleMessageRunID(plan)
+	logicalKey = strings.TrimSpace(logicalKey)
+	handoff := pebblestore.MessageSnapshot{
+		ID:             runMessageV3ID(sessionID, runID, logicalKey, "system"),
+		SessionID:      sessionID,
+		UserID:         strings.TrimSpace(session.UserID),
+		AccountScopeID: strings.TrimSpace(session.AccountScopeID),
+		Role:           "system",
+		Content:        content,
+		Metadata:       cloneGenericMap(message.Metadata),
+	}
+	payloadHash, err := runMessageV3PayloadHash(sessionID, runID, logicalKey, int(plan.Version), "system", content, handoff.Metadata)
+	if err != nil {
+		return fmt.Errorf("append %s system message: %w", label, err)
+	}
+	checkpointID := ""
+	attemptID := ""
+	if plan.Document != nil {
+		checkpointID = strings.TrimSpace(plan.Document.ActiveCheckpointID)
+		if plan.Document.ExecutionState != nil {
+			if checkpointID == "" {
+				checkpointID = strings.TrimSpace(plan.Document.ExecutionState.LastCheckpointID)
+			}
+			attemptID = strings.TrimSpace(plan.Document.ExecutionState.LastAttemptID)
+		}
+	}
+	clientRequestID := runMessageV3ClientRequestID(sessionID, runID, logicalKey)
+	result, err := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
+		SessionID:           sessionID,
+		UserID:              session.UserID,
+		AccountScopeID:      session.AccountScopeID,
+		ClientRequestID:     clientRequestID,
+		PayloadHash:         payloadHash,
+		Reason:              "final_plan_handoff",
+		PlanID:              strings.TrimSpace(plan.ID),
+		CheckpointID:        checkpointID,
+		AttemptID:           attemptID,
+		SourceMessageID:     handoff.ID,
+		FinalHandoffMessage: &handoff,
+		SkipRunIntent:       true,
+	})
+	if err != nil {
+		return fmt.Errorf("append %s system message: %w", label, err)
+	}
+	if result.FinalHandoffMessage == nil || result.FinalHandoffEvent == nil || result.FinalHandoffOutbox == nil || result.FinalHandoffOutbox.EndpointSeq == 0 || result.Epoch.ParentEpochID != result.Predecessor.EpochID {
+		return fmt.Errorf("%s mutation did not return committed handoff and successor epoch", label)
 	}
 	return nil
 }

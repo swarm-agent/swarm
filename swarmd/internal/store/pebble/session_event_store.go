@@ -746,43 +746,8 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
-	var boundaryEpoch *ExecutionEpoch
-	if input.CheckpointBoundary != nil {
-		if activeEpoch == nil || activeEpoch.Status != ExecutionEpochStatusActive {
-			return V3SessionMutationResult{}, errors.New("checkpoint boundary requires an active execution epoch")
-		}
-		predecessor := *activeEpoch
-		predecessor.Status = ExecutionEpochStatusSealed
-		predecessor.LastRootSeq = currentSeq
-		predecessor.SealedAt = now
-		predecessor.UpdatedAt = now
-		*activeEpoch = predecessor
-		next := ExecutionEpoch{
-			EpochID:        fmt.Sprintf("epoch-%020d", predecessor.Ordinal+1),
-			SessionID:      input.SessionID,
-			UserID:         input.UserID,
-			AccountScopeID: input.AccountScopeID,
-			ParentEpochID:  predecessor.EpochID,
-			Ordinal:        predecessor.Ordinal + 1,
-			Status:         ExecutionEpochStatusActive,
-			FirstRootSeq:   seq,
-			LastRootSeq:    seq,
-			Boundary: ExecutionEpochBoundary{
-				Reason:                 "checkpoint_boundary_transition",
-				PlanID:                 strings.TrimSpace(input.RunIntent.PlanID),
-				CheckpointID:           strings.TrimSpace(input.RunIntent.CheckpointID),
-				AttemptID:              strings.TrimSpace(input.RunIntent.AttemptID),
-				RunID:                  strings.TrimSpace(input.RunIntent.RunID),
-				RunSessionID:           strings.TrimSpace(input.RunIntent.RunSessionID),
-				ParentSessionID:        strings.TrimSpace(input.RunIntent.ParentSessionID),
-				SourceMessageID:        strings.TrimSpace(input.CheckpointBoundary.SourceMessageID),
-				PredecessorLastRootSeq: currentSeq,
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-		boundaryEpoch = &next
-		epochID = next.EpochID
+	if input.CheckpointBoundary != nil && (activeEpoch == nil || activeEpoch.Status != ExecutionEpochStatusActive) {
+		return V3SessionMutationResult{}, errors.New("checkpoint boundary requires an active execution epoch")
 	}
 
 	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
@@ -973,17 +938,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		initialEpoch.UpdatedAt = now
 		initialEpoch.LastRootSeq = seq
 		if err := setExecutionEpochInBatch(batch, *initialEpoch, true); err != nil {
-			return V3SessionMutationResult{}, err
-		}
-	} else if boundaryEpoch != nil && activeEpoch != nil {
-		if err := setExecutionEpochInBatch(batch, *activeEpoch, false); err != nil {
-			return V3SessionMutationResult{}, err
-		}
-		if err := setExecutionEpochInBatch(batch, *boundaryEpoch, true); err != nil {
-			return V3SessionMutationResult{}, err
-		}
-		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, boundaryEpoch.Boundary.PlanID, boundaryEpoch.Boundary.CheckpointID, boundaryEpoch.Boundary.AttemptID, boundaryEpoch.Boundary.Reason, boundaryEpoch.Boundary.RunID, boundaryEpoch.Boundary.SourceMessageID)
-		if err := batch.Set([]byte(boundaryKey), []byte(boundaryEpoch.EpochID), nil); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 	} else if activeEpoch != nil {

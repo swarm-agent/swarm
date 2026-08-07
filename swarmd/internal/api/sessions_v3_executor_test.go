@@ -260,14 +260,15 @@ func TestSessionV3OrdinaryAgentResolutionKeepsCurrentAccountToolContract(t *test
 	}
 }
 
-func TestSessionV3ProviderCheckpointResumeKeepsProviderContext(t *testing.T) {
-	job := sessionV3ExecutorJob{CheckpointID: "cp-1", ResumeContext: true}
-	scope := sessionV3ProviderJobCheckpointScope(job)
-	if scope.FreshContext || sessionV3ProviderCheckpointFreshContext(job, scope) {
-		t.Fatalf("resume checkpoint unexpectedly requested fresh provider context: job=%#v scope=%#v", job, scope)
+func TestSessionV3ProviderCheckpointOwnershipKeepsProviderContext(t *testing.T) {
+	for _, job := range []sessionV3ExecutorJob{{CheckpointID: "cp-1"}, {CheckpointID: "cp-1", ResumeContext: true}} {
+		scope := sessionV3ProviderJobCheckpointScope(job)
+		if scope.FreshContext || sessionV3ProviderCheckpointFreshContext(job, scope) {
+			t.Fatalf("checkpoint ownership unexpectedly requested fresh provider context: job=%#v scope=%#v", job, scope)
+		}
 	}
-	if sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) == false {
-		t.Fatal("explicit checkpoint restart must keep fresh provider context")
+	if sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) {
+		t.Fatal("checkpoint routing metadata must not override execution-epoch lineage")
 	}
 }
 
@@ -304,7 +305,7 @@ func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing
 	}
 }
 
-func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(t *testing.T) {
+func TestSessionV3ProviderCheckpointScopeFromCurrentContextPayloadOverridesStaleJobScope(t *testing.T) {
 	scope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderCheckpointScope{
 		PlanID:          "old-plan",
 		CheckpointID:    "cp-4",
@@ -312,7 +313,7 @@ func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(
 		ParentSessionID: "parent-old",
 		FreshContext:    true,
 	}, map[string]any{
-		"next_action":        "run_checkpoint_with_fresh_context",
+		"next_action":        "run_checkpoint_with_current_context",
 		"next_checkpoint_id": "cp-5",
 		"run_request": map[string]any{
 			"plan_checkpoint_context": map[string]any{
@@ -335,7 +336,7 @@ func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(
 func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJobCheckpoint(t *testing.T) {
 	runner := &sessionsV3ProviderToolsRunner{}
 	exec := &sessionV3Executor{server: &Server{runner: runner}}
-	toolOutput := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"cp-5","run_request":{"plan_checkpoint_context":{"plan_id":"replacement-plan","checkpoint_id":"cp-5","attempt_id":"cp-5:attempt-1","parent_session_id":"parent-new"}}}`
+	toolOutput := `{"next_action":"run_checkpoint_with_current_context","next_checkpoint_id":"cp-5","run_request":{"plan_checkpoint_context":{"plan_id":"replacement-plan","checkpoint_id":"cp-5","attempt_id":"cp-5:attempt-1","parent_session_id":"parent-new"}}}`
 
 	input, ok, err := exec.sessionV3ProviderCheckpointRestartInput(context.Background(), sessionV3ExecutorJob{
 		SessionID:       "session-1",
@@ -391,8 +392,8 @@ func TestSessionV3LatestPlanManageToolPayloadUsesMessageTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	stalePayload := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"followup-1","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"followup-1","attempt_id":"followup-1:attempt-1","parent_session_id":"parent-stale"}}}`
-	latestPayload := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"cp-3","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"cp-3","attempt_id":"cp-3:attempt-1","parent_session_id":"parent-current"}}}`
+	stalePayload := `{"next_action":"run_checkpoint_with_current_context","next_checkpoint_id":"followup-1","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"followup-1","attempt_id":"followup-1:attempt-1","parent_session_id":"parent-stale"}}}`
+	latestPayload := `{"next_action":"run_checkpoint_with_current_context","next_checkpoint_id":"cp-3","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"cp-3","attempt_id":"cp-3:attempt-1","parent_session_id":"parent-current"}}}`
 	mutationSeq := 0
 	appendMessage := func(role, content string) {
 		t.Helper()

@@ -82,7 +82,7 @@ func TestExecuteExitPlanModePersistsStructuredDocument(t *testing.T) {
 	if payload.PlanID != "plan-exit" || payload.Title != "Exit Structured Plan" || payload.Plan != "# Display only" {
 		t.Fatalf("exit payload identity/body = %#v", payload)
 	}
-	if payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-2" || payload.RunRequest.PlanCheckpointContext.PlanID != "plan-exit" || payload.RunRequest.PlanCheckpointContext.CheckpointID != "cp-2" || payload.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || payload.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed {
+	if payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "cp-2" || payload.RunRequest.PlanCheckpointContext.PlanID != "plan-exit" || payload.RunRequest.PlanCheckpointContext.CheckpointID != "cp-2" || payload.Document.ExecutionPolicy.Mode != sessionruntime.PlanExecutionPolicyModeAutomatic || payload.Document.ExecutionPolicy.Shape != sessionruntime.PlanExecutionShapeCheckpointed {
 		t.Fatalf("exit payload run request = next %q checkpoint %q request %#v raw=%s", payload.NextAction, payload.CheckpointID, payload.RunRequest.PlanCheckpointContext, raw)
 	}
 	if payload.Version != initial.Version+1 || payload.ParentRevision != initial.Version {

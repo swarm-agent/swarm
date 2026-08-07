@@ -9,10 +9,10 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
-func TestCheckpointBoundaryPayloadSelectsFreshCommittedRunIdentity(t *testing.T) {
+func TestCheckpointBoundaryPayloadSelectsCurrentContextCommittedRunIdentity(t *testing.T) {
 	payload := map[string]any{
 		"action":             sessionruntime.CheckpointBoundaryTransitionAction,
-		"next_action":        "run_checkpoint_with_fresh_context",
+		"next_action":        "run_checkpoint_with_current_context",
 		"checkpoint_id":      "followup-1",
 		"next_checkpoint_id": "followup-1",
 		"run_request": map[string]any{"plan_checkpoint_context": map[string]any{

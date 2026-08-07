@@ -227,16 +227,16 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	}
 }
 
-func TestRunTurnCheckpointContextSendsFreshProviderInput(t *testing.T) {
+func TestRunTurnCheckpointContextKeepsSameEpochTranscriptAndAddsCheckpointInput(t *testing.T) {
 	svc, sessionID, cleanup := newCheckpointRunPromptTestService(t)
 	defer cleanup()
 	runner := &checkpointPromptCaptureRunner{id: "test-provider"}
 	svc.providers.RegisterRunner(runner)
 	if _, _, err := svc.sessions.SavePlanWithMetadata(sessionID, "plan-cp", "Plan CP", "# ignored display", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ID:                 "plan-cp",
-		Info:               pebblestore.SessionPlanInfo{Goal: "Fresh provider input"},
+		Info:               pebblestore.SessionPlanInfo{Goal: "Checkpoint provider input"},
 		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
-		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Fresh", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Current replacement objective"}},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Current", Status: sessionruntime.PlanCheckpointStatusPending, Objective: "Current replacement objective"}},
 		ActiveCheckpointID: "cp-1",
 	}}); err != nil {
 		t.Fatalf("save plan: %v", err)
@@ -252,18 +252,19 @@ func TestRunTurnCheckpointContextSendsFreshProviderInput(t *testing.T) {
 	if len(runner.requests) != 1 {
 		t.Fatalf("provider request count = %d, want 1", len(runner.requests))
 	}
-	if len(runner.requests[0].Input) != 1 {
-		t.Fatalf("provider input = %#v", runner.requests[0].Input)
+	if len(runner.requests[0].Input) != 2 {
+		t.Fatalf("provider input = %#v, want same-epoch transcript plus checkpoint routing", runner.requests[0].Input)
 	}
-	text := inputTextFromProviderInput(t, runner.requests[0].Input[0])
-	if strings.Contains(text, "legacy context should be absent") {
-		t.Fatalf("provider input leaked prior conversation: %s", text)
+	transcript := inputTextFromProviderInput(t, runner.requests[0].Input[0])
+	checkpoint := inputTextFromProviderInput(t, runner.requests[0].Input[1])
+	if !strings.Contains(transcript, "legacy context should be absent") {
+		t.Fatalf("provider input dropped same-epoch conversation: %s", transcript)
 	}
-	if !strings.Contains(text, "Current replacement objective") || !strings.Contains(text, "cp-1") {
-		t.Fatalf("provider input missing selected checkpoint objective: %s", text)
+	if !strings.Contains(checkpoint, "Current replacement objective") || !strings.Contains(checkpoint, "cp-1") {
+		t.Fatalf("provider input missing selected checkpoint objective: %s", checkpoint)
 	}
-	if strings.Contains(text, "Fresh provider input") || strings.Contains(text, `"goal"`) {
-		t.Fatalf("provider input retained stale plan goal as a competing objective: %s", text)
+	if strings.Contains(checkpoint, "Checkpoint provider input") || strings.Contains(checkpoint, `"goal"`) {
+		t.Fatalf("provider input retained stale plan goal as a competing objective: %s", checkpoint)
 	}
 	if runner.requests[0].SessionID != sessionID {
 		t.Fatalf("durable session id = %q, want %q", runner.requests[0].SessionID, sessionID)
@@ -274,8 +275,8 @@ func TestRunTurnCheckpointContextSendsFreshProviderInput(t *testing.T) {
 	if runner.requests[0].ProviderCacheKey == sessionID || runner.requests[0].SessionAffinityKey == sessionID {
 		t.Fatalf("checkpoint request reused raw session id for provider cache/affinity: %+v", runner.requests[0])
 	}
-	if runner.requests[0].BoundaryReason != "checkpoint_fresh_context" || runner.requests[0].NativeContinuationAllowed || !runner.requests[0].ForceFreshProviderContext {
-		t.Fatalf("checkpoint request did not force fresh provider context: %+v", runner.requests[0])
+	if runner.requests[0].BoundaryReason != "session_turn" || !runner.requests[0].NativeContinuationAllowed || runner.requests[0].ForceFreshProviderContext {
+		t.Fatalf("checkpoint ownership changed provider context boundary: %+v", runner.requests[0])
 	}
 }
 

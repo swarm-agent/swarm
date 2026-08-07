@@ -145,7 +145,7 @@ func TestExecutePlanManageAmendUsesApprovedArgumentsAndReportsCurrentRevision(t 
 	}
 }
 
-func TestExecutePlanManageApprovedAmendAppendsCompletedPlanAndReturnsFreshContext(t *testing.T) {
+func TestExecutePlanManageApprovedAmendAppendsCompletedPlanAndReturnsCurrentContext(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
 
@@ -181,7 +181,7 @@ func TestExecutePlanManageApprovedAmendAppendsCompletedPlanAndReturnsFreshContex
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode append payload: %v", err)
 	}
-	if payload.Action != "amend_plan" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-2" {
+	if payload.Action != "amend_plan" || payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "cp-2" {
 		t.Fatalf("approved append did not auto-transition: %#v raw=%s", payload, raw)
 	}
 	if payload.Plan.Document == nil || len(payload.Plan.Document.Checkpoints) != 2 || payload.Plan.Document.Checkpoints[0].Report != "keep" || payload.Plan.Document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending {

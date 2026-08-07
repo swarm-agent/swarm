@@ -15,9 +15,9 @@ import (
 const CheckpointBoundaryTransitionAction = "transition_checkpoint_boundary"
 
 // CheckpointBoundaryTransitionInput is the complete durable contract for moving
-// a parent provider turn across a checkpoint boundary. SourceMessageID is the
-// idempotent user-message authority; SourceRunID relinquishes ownership and the
-// Next* fields identify the one fresh checkpoint run committed in its place.
+// checkpoint ownership inside the provider turn that requested it. SourceMessageID
+// is the idempotent user-message authority; SourceRunID relinquishes ownership and
+// the Next* fields identify the next run committed in the same execution epoch.
 type CheckpointBoundaryTransitionInput struct {
 	SessionID          string
 	PlanID             string
@@ -51,8 +51,9 @@ type CheckpointBoundaryTransitionResult struct {
 }
 
 // CheckpointBoundaryService is the sole authority for appending, selecting, and
-// assigning a fresh checkpoint run from a parent provider turn. It deliberately
-// does not call PlanLifecycleService.RequestFollowupCheckpoint.
+// assigning a checkpoint run from a parent provider turn without resetting its
+// execution epoch or provider conversation. It deliberately does not call
+// PlanLifecycleService.RequestFollowupCheckpoint.
 type CheckpointBoundaryService struct {
 	sessions             *Service
 	applySessionMutation func(SessionMutationInput) (SessionMutationResult, error)
@@ -173,7 +174,7 @@ func (s *CheckpointBoundaryService) Transition(input CheckpointBoundaryTransitio
 		return CheckpointBoundaryTransitionResult{}, err
 	}
 	prepared, err := s.sessions.PreparePlanSaveWithMetadata(state.session.ID, state.plan.ID, state.plan.Title, state.plan.Plan, state.plan.Status, state.plan.ApprovalState, true, PlanSaveMetadata{
-		UpdateSummary: "Committed checkpoint boundary and fresh execution ownership",
+		UpdateSummary: "Committed checkpoint ownership in the current execution epoch",
 		UpdateScope:   checkpointID,
 		UpdateKind:    CheckpointBoundaryTransitionAction,
 		RevisionKind:  PlanRevisionKindExecution,

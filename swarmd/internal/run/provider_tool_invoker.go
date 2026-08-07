@@ -297,8 +297,11 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if strings.EqualFold(strings.TrimSpace(call.Name), "exit_plan_mode") && mapBool(payload, "mode_changed") {
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") && strings.EqualFold(strings.TrimSpace(mapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
-		return true
+	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") {
+		switch strings.ToLower(strings.TrimSpace(mapString(payload, "next_action"))) {
+		case "run_checkpoint_with_current_context", "run_checkpoint_with_fresh_context":
+			return true
+		}
 	}
 	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") && providerManagedTerminalPlanNextAction(mapString(payload, "next_action")) {
 		return true
@@ -808,7 +811,12 @@ func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call
 }
 
 func (s *Service) appendExitPlanModeLifecycleMessage(sessionID string, payload map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
-	if !strings.EqualFold(strings.TrimSpace(mapString(payload, "status")), "approved") || !strings.EqualFold(strings.TrimSpace(mapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+	if !strings.EqualFold(strings.TrimSpace(mapString(payload, "status")), "approved") {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(mapString(payload, "next_action"))) {
+	case "run_checkpoint_with_current_context", "run_checkpoint_with_fresh_context":
+	default:
 		return nil
 	}
 	if s == nil || s.sessions == nil {

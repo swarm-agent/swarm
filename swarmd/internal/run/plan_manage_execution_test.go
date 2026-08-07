@@ -47,7 +47,7 @@ func TestExecutePlanManageStartSessionCheckpointCreatesRunRequest(t *testing.T) 
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if payload.Action != "start_session_checkpoint" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-1" {
+	if payload.Action != "start_session_checkpoint" || payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "cp-1" {
 		t.Fatalf("action/next/checkpoint = %q/%q/%q", payload.Action, payload.NextAction, payload.CheckpointID)
 	}
 	if payload.Plan.ID == "" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.Document == nil {
@@ -431,12 +431,12 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if len(messages) != 1 || messages[0].Role != "system" || messages[0].Metadata["source"] != PlanExecutionCheckpointHandoffMessageSource || messages[0].Metadata["kind"] != "plan_checkpoint_handoff" {
 		t.Fatalf("automatic completion handoff metadata/order = %#v", messages)
 	}
-	for key, want := range map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "next_checkpoint_id": "cp-2", "next_action": "run_checkpoint_with_fresh_context", "fresh_context": true, "outcome": sessionruntime.PlanCheckpointStatusCompleted, "attempt_id": "attempt-1", "run_id": "run-1", "run_session_id": "child-session", "parent_session_id": "parent-session"} {
+	for key, want := range map[string]any{"action": "complete_checkpoint", "checkpoint_id": "cp-1", "next_checkpoint_id": "cp-2", "next_action": "run_checkpoint_with_current_context", "fresh_context": false, "context_preserved": true, "outcome": sessionruntime.PlanCheckpointStatusCompleted, "attempt_id": "attempt-1", "run_id": "run-1", "run_session_id": "child-session", "parent_session_id": "parent-session"} {
 		if messages[0].Metadata[key] != want {
 			t.Fatalf("automatic completion handoff metadata[%q] = %#v, want %#v: %#v", key, messages[0].Metadata[key], want, messages[0].Metadata)
 		}
 	}
-	for _, want := range []string{"Checkpoint handoff", "Completed: Checkpoint 1 — Model", "Next: Checkpoint 2 — API", "Context: Starting the next checkpoint with fresh context.", "Report:\n## Outcome\n- backend handoff ready", "Result: checkpoint complete", "Changed files:\n- swarmd/internal/run/plan_lifecycle_message.go", "Validation:\n- focused contract review"} {
+	for _, want := range []string{"Checkpoint handoff", "Completed: Checkpoint 1 — Model", "Next: Checkpoint 2 — API", "Context: Continuing with the same execution-epoch conversation.", "Report:\n## Outcome\n- backend handoff ready", "Result: checkpoint complete", "Changed files:\n- swarmd/internal/run/plan_lifecycle_message.go", "Validation:\n- focused contract review"} {
 		if !strings.Contains(messages[0].Content, want) {
 			t.Fatalf("automatic completion handoff missing %q: %q", want, messages[0].Content)
 		}
@@ -456,6 +456,10 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	raw, err = runSvc.executePlanManageToolWithMutation(sessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-2","report":"## Summary\n- done","result":"finished","validation":["lifecycle handoff regression","second validation"]}`, "", applyMutation)
 	if err != nil {
 		t.Fatalf("complete final checkpoint: %v output=%s", err, raw)
+	}
+	predecessorEpoch, ok, err := sessionSvc.GetActiveExecutionEpoch(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get predecessor epoch before final handoff: ok=%v err=%v", ok, err)
 	}
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append final lifecycle: %v", err)
@@ -482,8 +486,13 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if strings.Contains(messages[1].Content, "Final checkpoint handoff") || strings.Contains(messages[1].Content, "Report:") || strings.Contains(messages[1].Content, "Result: finished") || strings.Contains(messages[1].Content, "Validation:") {
 		t.Fatalf("final lifecycle message leaked handoff details: %q", messages[1].Content)
 	}
-	if len(appliedMutations) <= 7 || appliedMutations[7].Kind != sessionruntime.SessionMutationAppendMessage || appliedMutations[7].Message == nil || appliedMutations[7].Message.Metadata["source"] != PlanExecutionFinalHandoffMessageSource {
-		t.Fatalf("final handoff mutation ordering = %#v", appliedMutations)
+	successorEpoch, ok, err := sessionSvc.GetActiveExecutionEpoch(sessionID)
+	if err != nil || !ok || successorEpoch.ParentEpochID != predecessorEpoch.EpochID || successorEpoch.Ordinal != predecessorEpoch.Ordinal+1 {
+		t.Fatalf("final handoff successor epoch: ok=%v err=%v predecessor=%#v successor=%#v", ok, err, predecessorEpoch, successorEpoch)
+	}
+	sealedPredecessor, ok, err := sessionSvc.GetExecutionEpoch(sessionID, predecessorEpoch.EpochID)
+	if err != nil || !ok || sealedPredecessor.Status != pebblestore.ExecutionEpochStatusSealed || sealedPredecessor.LastRootSeq != messages[2].GlobalSeq {
+		t.Fatalf("final handoff predecessor boundary: ok=%v err=%v predecessor=%#v handoff=%#v", ok, err, sealedPredecessor, messages[2])
 	}
 
 	followupInput := PlanExecutionLifecycleMessageInput{
@@ -543,7 +552,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := runSvc.appendPlanLifecycleMessageForToolResult(sessionID, tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}, applyMutation); err != nil {
 		t.Fatalf("append resolve blocked lifecycle: %v", err)
 	}
-	assertLifecycleMessage(3, "resolve_blocked_checkpoint", "run_checkpoint_with_fresh_context", 9, "Blocker resolved; resuming current checkpoint — Automatic mode", "Checkpoint: Checkpoint a — Blocked", "Context: Resuming this checkpoint with fresh context; it remains incomplete until the resumed agent records a normal outcome.")
+	assertLifecycleMessage(3, "resolve_blocked_checkpoint", "run_checkpoint_with_current_context", 9, "Blocker resolved; resuming current checkpoint — Automatic mode", "Checkpoint: Checkpoint a — Blocked", "Context: Resuming this checkpoint with fresh recovery context; it remains incomplete until the resumed agent records a normal outcome.")
 
 	_, _, err = sessionSvc.SavePlanWithMetadata(sessionID, "plan-provider-blocked-lifecycle", "Plan: Provider Blocked Lifecycle", "# Provider Blocked", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
@@ -575,7 +584,7 @@ func TestExecutePlanManageLifecycleSystemMessagesForControlAndOutcomeActions(t *
 	if err := json.Unmarshal([]byte(providerRaw), &providerPayload); err != nil {
 		t.Fatalf("decode provider resolve payload: %v", err)
 	}
-	if providerPayload.NextAction != "run_checkpoint_with_fresh_context" || providerPayload.CheckpointID != "cp-provider-a" || providerPayload.Plan.Document == nil {
+	if providerPayload.NextAction != "run_checkpoint_with_current_context" || providerPayload.CheckpointID != "cp-provider-a" || providerPayload.Plan.Document == nil {
 		t.Fatalf("provider resolve payload = %#v raw=%s", providerPayload, providerRaw)
 	}
 	if providerPayload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusInProgress || providerPayload.Plan.Document.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending || providerPayload.Plan.Document.ActiveCheckpointID != "cp-provider-a" {
@@ -735,7 +744,7 @@ func TestExecutePlanManageRequestFollowupAtomicallyUnblocksAndReturnsFreshRun(t 
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode blocked follow-up payload: %v", err)
 	}
-	if payload.Action != "request_followup_checkpoint" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "followup-1" || payload.RunRequest.Context.CheckpointID != "followup-1" || payload.RunRequest.Context.AttemptID != "followup-1:attempt-1" {
+	if payload.Action != "request_followup_checkpoint" || payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "followup-1" || payload.RunRequest.Context.CheckpointID != "followup-1" || payload.RunRequest.Context.AttemptID != "followup-1:attempt-1" {
 		t.Fatalf("follow-up next action = %#v raw=%s", payload, raw)
 	}
 	if payload.ExecutionSummary.Blocked || payload.ExecutionSummary.Failed || payload.ExecutionSummary.NextCheckpointID != "followup-1" {
@@ -798,7 +807,7 @@ func TestExecutePlanManageInlineFinalReviewFollowupDefersCheckpointStart(t *test
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode inline final-review follow-up payload: %v raw=%s", err, raw)
 	}
-	if payload.Action != "request_followup_checkpoint" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "followup-1" || payload.RunRequest.Context.CheckpointID != "followup-1" || payload.RunRequest.Context.AttemptID != "" {
+	if payload.Action != "request_followup_checkpoint" || payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "followup-1" || payload.RunRequest.Context.CheckpointID != "followup-1" || payload.RunRequest.Context.AttemptID != "" {
 		t.Fatalf("inline follow-up handoff = %#v raw=%s", payload, raw)
 	}
 	if payload.Plan.Document == nil || len(payload.Plan.Document.Checkpoints) != 2 {
@@ -932,7 +941,7 @@ func TestExecutePlanManageStartAndContinueCheckpoint(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if payload.Action != "start_checkpoint" || payload.CheckpointID != "cp-1" || payload.NextAction != "run_checkpoint_with_fresh_context" {
+	if payload.Action != "start_checkpoint" || payload.CheckpointID != "cp-1" || payload.NextAction != "run_checkpoint_with_current_context" {
 		t.Fatalf("start payload action=%q checkpoint=%q next=%q raw=%s", payload.Action, payload.CheckpointID, payload.NextAction, raw)
 	}
 	doc := payload.Plan.Document
@@ -958,7 +967,7 @@ func TestExecutePlanManageStartAndContinueCheckpoint(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &completePayload); err != nil {
 		t.Fatalf("decode complete payload: %v", err)
 	}
-	if completePayload.Action != "complete_checkpoint" || completePayload.NextCheckpointID != "cp-2" || completePayload.NextAction != "run_checkpoint_with_fresh_context" {
+	if completePayload.Action != "complete_checkpoint" || completePayload.NextCheckpointID != "cp-2" || completePayload.NextAction != "run_checkpoint_with_current_context" {
 		t.Fatalf("complete payload action=%q next=%q next_action=%q raw=%s", completePayload.Action, completePayload.NextCheckpointID, completePayload.NextAction, raw)
 	}
 	if completePayload.Plan.Document == nil || completePayload.Plan.Document.ActiveCheckpointID != "cp-2" || completePayload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusCompleted {
@@ -1011,7 +1020,7 @@ func TestExecutePlanManageProviderManagedStartDefersDurableTransition(t *testing
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode provider-managed start payload: %v", err)
 	}
-	if payload.Action != "start_checkpoint" || payload.CheckpointID != "cp-1" || payload.NextAction != "run_checkpoint_with_fresh_context" || !payload.CheckpointStartDeferred {
+	if payload.Action != "start_checkpoint" || payload.CheckpointID != "cp-1" || payload.NextAction != "run_checkpoint_with_current_context" || !payload.CheckpointStartDeferred {
 		t.Fatalf("provider-managed start payload = %+v", payload)
 	}
 
@@ -1069,7 +1078,7 @@ func TestExecutePlanManageApproveAndStartAppliesExecutionPolicy(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode approve payload: %v", err)
 	}
-	if payload.Action != "approve_and_start" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-1" {
+	if payload.Action != "approve_and_start" || payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "cp-1" {
 		t.Fatalf("approve payload action=%q checkpoint=%q next=%q raw=%s", payload.Action, payload.CheckpointID, payload.NextAction, raw)
 	}
 	if payload.RunRequest.PlanCheckpointContext.PlanID != "plan-approve" || payload.RunRequest.PlanCheckpointContext.CheckpointID != "cp-1" {
@@ -1210,7 +1219,7 @@ func TestExecutePlanManageRequestNewPlanReplacementApprovesActivePlan(t *testing
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode request_new_plan payload: %v", err)
 	}
-	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_fresh_context" {
+	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_current_context" {
 		t.Fatalf("replacement request should approve active replacement and be runnable: raw=%s", raw)
 	}
 	if payload.Plan.ID != "plan-replace" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.ApprovalState != "approved" {
@@ -1241,7 +1250,7 @@ func TestExecutePlanManageRequestNewPlanReplacementApprovesActivePlan(t *testing
 	if err := json.Unmarshal([]byte(followupRaw), &followupPayload); err != nil {
 		t.Fatalf("decode follow-up payload: %v", err)
 	}
-	if followupPayload.Action != "request_followup_checkpoint" || followupPayload.NextAction != "run_checkpoint_with_fresh_context" || followupPayload.CheckpointID == "" {
+	if followupPayload.Action != "request_followup_checkpoint" || followupPayload.NextAction != "run_checkpoint_with_current_context" || followupPayload.CheckpointID == "" {
 		t.Fatalf("approved follow-up should be inserted and runnable, raw=%s", followupRaw)
 	}
 	if followupPayload.Plan.Document == nil || len(followupPayload.Plan.Document.Checkpoints) != 2 {
@@ -1362,7 +1371,7 @@ func TestExecutePlanManageRequestNewPlanPermissionThenApprovalWithoutActivePlanR
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode approved payload: %v", err)
 	}
-	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-1" {
+	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "cp-1" {
 		t.Fatalf("approved payload action=%q next=%q checkpoint=%q raw=%s", payload.Action, payload.NextAction, payload.CheckpointID, raw)
 	}
 	if payload.Plan.ID == "" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.ApprovalState != "approved" || payload.Plan.Document == nil {
@@ -1405,7 +1414,7 @@ func TestExecutePlanManageRequestNewPlanApprovedSeparatePlanActivatesAndRuns(t *
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		t.Fatalf("decode approved separate payload: %v", err)
 	}
-	if payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-proposed" || payload.ExecutionSummary.NextCheckpointID != "cp-proposed" {
+	if payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "cp-proposed" || payload.ExecutionSummary.NextCheckpointID != "cp-proposed" {
 		t.Fatalf("approved separate proposal should be runnable: %#v raw=%s", payload, raw)
 	}
 	if payload.Plan.ID == "plan-original" || !payload.Plan.Active || payload.Plan.Status != "approved" || payload.Plan.ApprovalState != "approved" {
@@ -1548,7 +1557,7 @@ func TestExecutePlanManageAcceptRestartAndRewind(t *testing.T) {
 		t.Fatalf("decode restart payload: %v", err)
 	}
 	restarted := restartPayload.Plan.Document
-	if restartPayload.NextAction != "run_checkpoint_with_fresh_context" || restartPayload.CheckpointID != "cp-2" || restarted.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending || len(restarted.Checkpoints[1].Attempts) != 0 || restarted.Checkpoints[2].Status != sessionruntime.PlanCheckpointStatusCompleted {
+	if restartPayload.NextAction != "run_checkpoint_with_current_context" || restartPayload.CheckpointID != "cp-2" || restarted.Checkpoints[1].Status != sessionruntime.PlanCheckpointStatusPending || len(restarted.Checkpoints[1].Attempts) != 0 || restarted.Checkpoints[2].Status != sessionruntime.PlanCheckpointStatusCompleted {
 		t.Fatalf("restart payload raw=%s doc=%#v", raw, restarted)
 	}
 
@@ -1600,7 +1609,7 @@ func TestExecutePlanManageRestartCheckpointAtomicallyReplacesChangedRequirements
 		t.Fatalf("decode replacement restart payload: %v", err)
 	}
 	checkpoint := payload.Plan.Document.Checkpoints[0]
-	if payload.NextAction != "run_checkpoint_with_fresh_context" || checkpoint.Title != "New behavior" || checkpoint.Objective != "redirect the same feature to the new behavior" || strings.Join(checkpoint.Tasks, ",") != "implement redirected behavior,remove stale assumptions" || strings.Join(checkpoint.AcceptanceCriteria, ",") != "new behavior works,old requirement is not retained" || checkpoint.SourceMessageID != "redirect-message" {
+	if payload.NextAction != "run_checkpoint_with_current_context" || checkpoint.Title != "New behavior" || checkpoint.Objective != "redirect the same feature to the new behavior" || strings.Join(checkpoint.Tasks, ",") != "implement redirected behavior,remove stale assumptions" || strings.Join(checkpoint.AcceptanceCriteria, ",") != "new behavior works,old requirement is not retained" || checkpoint.SourceMessageID != "redirect-message" {
 		t.Fatalf("replacement restart did not carry new requirements: raw=%s checkpoint=%#v", raw, checkpoint)
 	}
 	if checkpoint.Status != sessionruntime.PlanCheckpointStatusPending || checkpoint.AttemptID != "" || len(checkpoint.Attempts) != 0 || !strings.Contains(checkpoint.Notes, "replacement handoff") {
@@ -1941,7 +1950,7 @@ func TestPlanManageRequestNewPlanWithActivePlanUsesCanonicalApprovalForSingleAnd
 			if err := json.Unmarshal([]byte(raw), &result); err != nil {
 				t.Fatalf("decode approved request_new_plan: %v", err)
 			}
-			if result.Action != "request_new_plan" || result.NextAction != "run_checkpoint_with_fresh_context" || result.CheckpointID != "cp-new-1" || result.RunRequest.Context == nil || result.RunRequest.Context.CheckpointID != "cp-new-1" {
+			if result.Action != "request_new_plan" || result.NextAction != "run_checkpoint_with_current_context" || result.CheckpointID != "cp-new-1" || result.RunRequest.Context == nil || result.RunRequest.Context.CheckpointID != "cp-new-1" {
 				t.Fatalf("approved request_new_plan did not return fresh-context start: %#v raw=%s", result, raw)
 			}
 			if !result.Plan.Active || result.Plan.ID == "" || result.Plan.ID == "plan-original" || result.Plan.Document == nil || len(result.Plan.Document.Checkpoints) != len(tc.checkpoints) {
@@ -2009,7 +2018,7 @@ func TestProviderManagedPlanManageAllowsRequestNewPlanButRejectsRecursiveCheckpo
 	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
 		t.Fatalf("decode request_new_plan result: %v output=%s", err, result.Output)
 	}
-	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_fresh_context" || payload.CheckpointID != "cp-new" {
+	if payload.Action != "request_new_plan" || payload.NextAction != "run_checkpoint_with_current_context" || payload.CheckpointID != "cp-new" {
 		t.Fatalf("request_new_plan result = %#v output=%s", payload, result.Output)
 	}
 }

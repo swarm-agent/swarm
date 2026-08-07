@@ -416,7 +416,7 @@ func (s *PlanLifecycleService) requestFollowupCheckpoint(input PlanLifecycleFoll
 	normalizePlanExecutionPolicy(&state.doc.ExecutionPolicy, len(state.doc.Checkpoints))
 	if policy == PlanFollowupCheckpointPolicyAutoStart {
 		if strings.TrimSpace(input.RunID) == "" {
-			return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Inserted session checkpoint and queued fresh-context checkpoint start")
+			return s.saveLifecyclePlan(state, checkpointID, "request_followup_checkpoint", "Inserted session checkpoint and queued same-epoch checkpoint start")
 		}
 		return s.applyCheckpointStartAndSave(state, PlanLifecycleExecutionInput{SessionID: input.SessionID, PlanID: state.plan.ID, CheckpointID: checkpointID, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, AttemptID: input.AttemptID, StartedAt: input.StartedAt}, checkpointID, "request_followup_checkpoint", "Inserted session checkpoint and started it with the current run", state.plan.Status, state.plan.ApprovalState)
 	}
@@ -501,7 +501,7 @@ func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSession
 		if err != nil {
 			return PlanLifecycleResult{}, err
 		}
-		return PlanLifecycleResult{Session: session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, Action: "start_session_checkpoint", Message: "Created session checkpoint and queued fresh-context checkpoint start"}, nil
+		return PlanLifecycleResult{Session: session, Plan: saved, Summary: SummarizePlanExecution(saved.Document), CheckpointID: checkpointID, Action: "start_session_checkpoint", Message: "Created session checkpoint and queued same-epoch checkpoint start"}, nil
 	}
 	startedAt := input.StartedAt
 	if startedAt <= 0 {
@@ -720,7 +720,7 @@ func (s *PlanLifecycleService) RestorePlanRevision(input PlanLifecycleRevisionRe
 	updateSummary := fmt.Sprintf("Restored plan revision v%d", revision.Version)
 	if restart {
 		updateKind = "restart_from_revision"
-		updateSummary = fmt.Sprintf("Restored plan revision v%d and prepared fresh-context checkpoint start", revision.Version)
+		updateSummary = fmt.Sprintf("Restored plan revision v%d and prepared same-epoch checkpoint start", revision.Version)
 	}
 	if input.SkipPrior {
 		updateKind = "jump_to_checkpoint"
@@ -1041,12 +1041,12 @@ func (s *PlanLifecycleService) RestartCheckpointFromZero(input PlanLifecycleExec
 	if _, err := ApplyPlanCheckpointReset(state.doc, PlanCheckpointResetOptions{CheckpointID: checkpointID}); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	message := "Restarted checkpoint from zero and prepared fresh-context checkpoint start"
+	message := "Restarted checkpoint from zero and prepared same-epoch checkpoint start"
 	if strings.TrimSpace(input.ReplacementRequest) != "" {
 		if err := replaceRestartedCheckpointRequirements(state.doc, checkpointID, input); err != nil {
 			return PlanLifecycleResult{}, err
 		}
-		message = "Replaced checkpoint requirements and prepared fresh-context checkpoint restart"
+		message = "Replaced checkpoint requirements and prepared same-epoch checkpoint restart"
 	}
 	return s.saveLifecyclePlan(state, checkpointID, "restart_checkpoint", message)
 }
@@ -1103,7 +1103,7 @@ func (s *PlanLifecycleService) RewindToCheckpoint(input PlanLifecycleExecutionIn
 	if _, err := ApplyPlanCheckpointReset(state.doc, PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: true}); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return s.saveLifecyclePlan(state, checkpointID, "rewind_to_checkpoint", "Rewound plan execution to checkpoint and prepared fresh-context checkpoint start")
+	return s.saveLifecyclePlan(state, checkpointID, "rewind_to_checkpoint", "Rewound plan execution to checkpoint and prepared same-epoch checkpoint start")
 }
 
 func (s *PlanLifecycleService) ResolveBlockedCheckpoint(input PlanLifecycleExecutionInput) (PlanLifecycleResult, error) {
@@ -1187,7 +1187,7 @@ func (s *PlanLifecycleService) approvePlanWithPolicy(input PlanLifecycleExecutio
 		return PlanLifecycleResult{}, err
 	}
 	state.doc.Status = "approved"
-	return s.saveLifecyclePlanWithStatus(state, "", action, "Approved plan and prepared fresh-context checkpoint start", "approved", "approved")
+	return s.saveLifecyclePlanWithStatus(state, "", action, "Approved plan and prepared same-epoch checkpoint start", "approved", "approved")
 }
 
 func (s *PlanLifecycleService) approveAndStartCheckpoint(input PlanLifecycleExecutionInput, action string, options PlanAcceptanceExecutionOptions) (PlanLifecycleResult, error) {
@@ -1228,7 +1228,7 @@ func (s *PlanLifecycleService) approveAndStartCheckpoint(input PlanLifecycleExec
 	if err := requireCheckpointRunnable(state.doc, checkpointID); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, "Approved plan and prepared fresh-context checkpoint start", "approved", "approved")
+	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, "Approved plan and prepared same-epoch checkpoint start", "approved", "approved")
 }
 
 func (s *PlanLifecycleService) resetAndStartCheckpoint(input PlanLifecycleExecutionInput, rewind bool, action string) (PlanLifecycleResult, error) {
@@ -1248,12 +1248,12 @@ func (s *PlanLifecycleService) resetAndStartCheckpoint(input PlanLifecycleExecut
 	if _, err := ApplyPlanCheckpointReset(state.doc, PlanCheckpointResetOptions{CheckpointID: checkpointID, Rewind: rewind}); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	summary := "Prepared fresh-context checkpoint start"
+	summary := "Prepared same-epoch checkpoint start"
 	if action == "restart_checkpoint" && strings.TrimSpace(input.ReplacementRequest) != "" {
 		if err := replaceRestartedCheckpointRequirements(state.doc, checkpointID, input); err != nil {
 			return PlanLifecycleResult{}, err
 		}
-		summary = "Replaced checkpoint requirements and prepared fresh-context checkpoint restart"
+		summary = "Replaced checkpoint requirements and prepared same-epoch checkpoint restart"
 	}
 	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, summary, state.plan.Status, state.plan.ApprovalState)
 }
@@ -1279,7 +1279,7 @@ func (s *PlanLifecycleService) startCheckpoint(input PlanLifecycleExecutionInput
 	if err := requireCheckpointRunnable(state.doc, checkpointID); err != nil {
 		return PlanLifecycleResult{}, err
 	}
-	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, "Prepared fresh-context checkpoint start", state.plan.Status, state.plan.ApprovalState)
+	return s.applyCheckpointStartAndSave(state, input, checkpointID, action, "Prepared same-epoch checkpoint start", state.plan.Status, state.plan.ApprovalState)
 }
 
 func (s *PlanLifecycleService) applyCheckpointStartAndSave(state planLifecycleState, input PlanLifecycleExecutionInput, checkpointID, action, summary, status, approvalState string) (PlanLifecycleResult, error) {

@@ -102,7 +102,7 @@ func TestDurableRunStateInstructionsRoutesPlanModeWithoutActivePlan(t *testing.T
 	}
 }
 
-func TestDurableRunStateInstructionsDistinguishesPlanAndFreshRuns(t *testing.T) {
+func TestDurableRunStateInstructionsDistinguishesPlanAndCheckpointRuns(t *testing.T) {
 	svc, sessionID, cleanup := newCheckpointRunPromptTestService(t)
 	defer cleanup()
 	planInstructions, err := svc.durableRunStateInstructions(sessionID, sessionruntime.ModePlan, "run-plan", RunOptions{})
@@ -112,24 +112,24 @@ func TestDurableRunStateInstructionsDistinguishesPlanAndFreshRuns(t *testing.T) 
 	if !strings.Contains(planInstructions, `"run_kind":"plan_parent"`) || !strings.Contains(planInstructions, `"context_policy":"session_history"`) {
 		t.Fatalf("plan run state = %s", planInstructions)
 	}
-	freshInstructions, err := svc.durableRunStateInstructions(sessionID, sessionruntime.ModeAuto, "run-fresh", RunOptions{PlanCheckpointContext: &RunPlanCheckpointContext{PlanID: "active", CheckpointID: "cp-1"}})
+	checkpointInstructions, err := svc.durableRunStateInstructions(sessionID, sessionruntime.ModeAuto, "run-checkpoint", RunOptions{PlanCheckpointContext: &RunPlanCheckpointContext{PlanID: "active", CheckpointID: "cp-1"}})
 	if err != nil {
-		t.Fatalf("fresh run state: %v", err)
+		t.Fatalf("checkpoint run state: %v", err)
 	}
-	if !strings.Contains(freshInstructions, `"run_kind":"fresh_checkpoint"`) || !strings.Contains(freshInstructions, `"context_policy":"fresh_checkpoint_context"`) {
-		t.Fatalf("fresh run state = %s", freshInstructions)
+	if !strings.Contains(checkpointInstructions, `"run_kind":"checkpoint_run"`) || !strings.Contains(checkpointInstructions, `"context_policy":"same_epoch_checkpoint_context"`) {
+		t.Fatalf("checkpoint run state = %s", checkpointInstructions)
 	}
 }
 
-func TestCheckpointPromptCarriesOriginAndFreshRunMetadata(t *testing.T) {
+func TestCheckpointPromptCarriesOriginAndSameEpochRunMetadata(t *testing.T) {
 	prompt, err := renderCheckpointRunPrompt(checkpointRunPromptPayload{
-		PlanID: "plan-1", ExecutionOrigin: sessionruntime.PlanExecutionOriginApprovedPlan, RunKind: runKindFreshCheckpoint, ContextPolicy: contextPolicyFresh,
+		PlanID: "plan-1", ExecutionOrigin: sessionruntime.PlanExecutionOriginApprovedPlan, RunKind: runKindCheckpoint, ContextPolicy: contextPolicyCheckpoint,
 		Checkpoint: pebblestore.SessionPlanCheckpoint{ID: "cp-1"},
 	})
 	if err != nil {
 		t.Fatalf("render checkpoint prompt: %v", err)
 	}
-	for _, want := range []string{`"execution_origin": "approved_plan"`, `"run_kind": "fresh_checkpoint"`, `"context_policy": "fresh_checkpoint_context"`} {
+	for _, want := range []string{`"execution_origin": "approved_plan"`, `"run_kind": "checkpoint_run"`, `"context_policy": "same_epoch_checkpoint_context"`} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("checkpoint prompt missing %q: %s", want, prompt)
 		}

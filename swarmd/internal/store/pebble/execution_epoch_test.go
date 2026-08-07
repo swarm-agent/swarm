@@ -300,6 +300,76 @@ func TestBeginExecutionEpochFaultIsAllOrNothingAndTriggerIsAtomic(t *testing.T) 
 	}
 }
 
+func TestBeginExecutionEpochAtomicallyAppendsFinalHandoffBeforeSuccessor(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "final-handoff-session")
+	predecessor, ok, err := sessions.GetActiveExecutionEpoch("final-handoff-session")
+	if err != nil || !ok {
+		t.Fatalf("get predecessor: ok=%v err=%v", ok, err)
+	}
+	input := BeginExecutionEpochInput{
+		SessionID: "final-handoff-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "final-handoff", PayloadHash: "final-handoff-hash", Reason: "final_plan_handoff",
+		PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", SourceMessageID: "handoff-1",
+		FinalHandoffMessage: &MessageSnapshot{ID: "handoff-1", Role: "system", Content: "final result"},
+		SkipRunIntent:       true, NowUnixMs: 200,
+	}
+	injected := errors.New("injected final handoff boundary failure")
+	store.sessionMutations.beforeExecutionEpochCommit = func(string) error { return injected }
+	if _, err := sessions.BeginExecutionEpoch(input); !errors.Is(err, injected) {
+		t.Fatalf("fault error = %v", err)
+	}
+	store.sessionMutations.beforeExecutionEpochCommit = nil
+	activeAfterFault, ok, err := sessions.GetActiveExecutionEpoch(input.SessionID)
+	if err != nil || !ok || activeAfterFault.EpochID != predecessor.EpochID || activeAfterFault.Status != ExecutionEpochStatusActive {
+		t.Fatalf("active epoch changed after fault: ok=%v err=%v epoch=%+v", ok, err, activeAfterFault)
+	}
+	if messages, listErr := sessions.ListV3SessionMessages(input.SessionID, 0, 10); listErr != nil || len(messages) != 0 {
+		t.Fatalf("final handoff leaked after fault: messages=%+v err=%v", messages, listErr)
+	}
+	result, err := sessions.BeginExecutionEpoch(input)
+	if err != nil {
+		t.Fatalf("commit final handoff boundary: %v", err)
+	}
+	if result.FinalHandoffMessage == nil || result.FinalHandoffEvent == nil || result.FinalHandoffOutbox == nil {
+		t.Fatalf("missing compound handoff result: %+v", result)
+	}
+	if result.FinalHandoffEvent.EpochID != predecessor.EpochID || result.Predecessor.LastRootSeq != result.FinalHandoffEvent.Seq || result.Event.Seq != result.FinalHandoffEvent.Seq+1 {
+		t.Fatalf("handoff was not last predecessor event: predecessor=%+v handoff=%+v boundary=%+v", result.Predecessor, result.FinalHandoffEvent, result.Event)
+	}
+	if result.Epoch.ParentEpochID != predecessor.EpochID || result.Epoch.FirstRootSeq != result.Event.Seq || result.Epoch.Status != ExecutionEpochStatusActive {
+		t.Fatalf("successor epoch = %+v", result.Epoch)
+	}
+	replayed, err := sessions.BeginExecutionEpoch(input)
+	if err != nil || !replayed.Replayed || replayed.Epoch.EpochID != result.Epoch.EpochID || replayed.FinalHandoffMessage == nil || replayed.FinalHandoffMessage.ID != "handoff-1" {
+		t.Fatalf("replay = %+v err=%v", replayed, err)
+	}
+	epochs := 0
+	for ordinal := uint64(1); ; ordinal++ {
+		if _, exists, readErr := store.GetBytes(KeyExecutionEpochOrdinal(input.SessionID, ordinal)); readErr != nil {
+			t.Fatalf("read epoch ordinal %d: %v", ordinal, readErr)
+		} else if !exists {
+			break
+		}
+		epochs++
+	}
+	if epochs != 2 {
+		t.Fatalf("epoch count after replay = %d, want 2", epochs)
+	}
+	message, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, IdempotencyKey: "post-handoff-user", RequestHash: "post-handoff-user", Kind: V3SessionMutationAppendMessage, Message: &MessageSnapshot{ID: "post-handoff-user", Role: "user", Content: "continue"}, NowUnixMs: 300})
+	if err != nil {
+		t.Fatalf("append post-handoff user message: %v", err)
+	}
+	if message.Event.EpochID != result.Epoch.EpochID {
+		t.Fatalf("post-handoff message epoch = %q, want %q", message.Event.EpochID, result.Epoch.EpochID)
+	}
+	messages, err := sessions.ListV3SessionMessages(input.SessionID, 0, 10)
+	if err != nil || len(messages) != 2 || messages[0].ID != "handoff-1" || messages[1].ID != "post-handoff-user" {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+}
+
 func TestBeginExecutionEpochReplayReturnsCompoundTrigger(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

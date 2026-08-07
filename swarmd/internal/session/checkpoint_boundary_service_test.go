@@ -9,7 +9,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestCheckpointBoundaryTransitionCommitsPlanRunAndEpochAtomically(t *testing.T) {
+func TestCheckpointBoundaryTransitionCommitsPlanAndRunInCurrentEpochAtomically(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
 	sessionID := createPlanTestSession(t, svc)
@@ -69,8 +69,11 @@ func TestCheckpointBoundaryTransitionCommitsPlanRunAndEpochAtomically(t *testing
 		t.Fatalf("active run = %#v ok=%t err=%v", active, ok, err)
 	}
 	epoch, ok, err := svc.GetActiveExecutionEpoch(sessionID)
-	if err != nil || !ok || epoch.EpochID != result.RunIntent.EpochID || epoch.Boundary.SourceMessageID != "message-boundary" || epoch.Boundary.CheckpointID != result.CheckpointID {
+	if err != nil || !ok || epoch.EpochID != result.RunIntent.EpochID {
 		t.Fatalf("active epoch = %#v ok=%t err=%v", epoch, ok, err)
+	}
+	if epoch.Ordinal != 2 || epoch.Boundary.Reason != "source" || epoch.Boundary.CheckpointID != "" || epoch.Boundary.SourceMessageID != "" {
+		t.Fatalf("checkpoint ownership mutated execution boundary: %#v", epoch)
 	}
 
 	replayed, err := NewCheckpointBoundaryService(svc).Transition(CheckpointBoundaryTransitionInput{
@@ -115,7 +118,7 @@ func TestCheckpointBoundaryTransitionFailureLeavesPlanRunAndEpochUnchanged(t *te
 	}
 	afterPlan, _, _ := svc.GetPlan(sessionID, plan.ID)
 	afterEpoch, _, _ := svc.GetActiveExecutionEpoch(sessionID)
-	if afterPlan.Version != beforePlan.Version || len(afterPlan.Document.Checkpoints) != len(beforePlan.Document.Checkpoints) || afterEpoch.EpochID != beforeEpoch.EpochID {
+	if afterPlan.Version != beforePlan.Version || len(afterPlan.Document.Checkpoints) != len(beforePlan.Document.Checkpoints) || afterEpoch.EpochID != beforeEpoch.EpochID || afterEpoch.Ordinal != beforeEpoch.Ordinal {
 		t.Fatalf("state changed after failure: before plan=%#v epoch=%#v after plan=%#v epoch=%#v", beforePlan, beforeEpoch, afterPlan, afterEpoch)
 	}
 	if source, _, _ := svc.GetV3SessionRunIntent(sessionID, "run-source"); source.Status != RunIntentPendingExecutor {

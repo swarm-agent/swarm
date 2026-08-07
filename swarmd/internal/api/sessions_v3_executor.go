@@ -1622,28 +1622,21 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	var messages []pebblestore.MessageSnapshot
-	var input []map[string]any
-	checkpointRestartInput := false
-	if !forceCommittedContext && !job.ResumeContext && (strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "") {
-		checkpointInput, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
+	messages, err := e.sessionV3ProviderContextMessages(job)
+	if err != nil {
+		return sessionV3AssistantResponse{}, err
+	}
+	input, err := e.sessionsV3ProviderInput(resolved, messages)
+	if err != nil {
+		return sessionV3AssistantResponse{}, err
+	}
+	if strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
+		checkpointRouting, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
 		if checkpointErr != nil {
 			return sessionV3AssistantResponse{}, checkpointErr
 		}
 		if ok {
-			input = checkpointInput
-			checkpointRestartInput = true
-		}
-	}
-	if !checkpointRestartInput {
-		var err error
-		messages, err = e.sessionV3ProviderContextMessages(job)
-		if err != nil {
-			return sessionV3AssistantResponse{}, err
-		}
-		input, err = e.sessionsV3ProviderInput(resolved, messages)
-		if err != nil {
-			return sessionV3AssistantResponse{}, err
+			input = append(input, checkpointRouting...)
 		}
 	}
 	if len(input) == 0 {
@@ -1652,7 +1645,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	requestStarted := time.Now()
 	baseReq, err := e.sessionV3ProviderBaseRequest(job, resolved, input)
 	if recorder := e.server.longSessionDiagnostics; recorder != nil {
-		recorder.ObserveOperation("v3.request_construct", job.SessionID, time.Since(requestStarted), err != nil, map[string]int64{"messages": int64(len(messages)), "input_items": int64(len(input)), "tools": int64(len(resolved.Tools))}, map[string]bool{"checkpoint_restart": checkpointRestartInput, "resume_context": job.ResumeContext})
+		recorder.ObserveOperation("v3.request_construct", job.SessionID, time.Since(requestStarted), err != nil, map[string]int64{"messages": int64(len(messages)), "input_items": int64(len(input)), "tools": int64(len(resolved.Tools))}, map[string]bool{"checkpoint_owned": strings.TrimSpace(job.CheckpointID) != "", "resume_context": job.ResumeContext})
 	}
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
@@ -1665,13 +1658,6 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		baseReq.AllowContinuation = false
 		baseReq.ReuseTransport = false
 		baseReq.ResetTransport = true
-		baseReq.NativeContinuationAllowed = false
-		baseReq.ForceFreshProviderContext = true
-	} else if checkpointRestartInput {
-		baseReq.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(baseReq.BoundaryReason, "checkpoint_fresh_context")
-		baseReq.StartNewChain = true
-		baseReq.AllowContinuation = false
-		baseReq.ReuseTransport = true
 		baseReq.NativeContinuationAllowed = false
 		baseReq.ForceFreshProviderContext = true
 	} else if sessionV3ProviderRequiresBoundedHandoff(baseReq) {
@@ -1905,9 +1891,6 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 	boundaryReason := "session_turn"
 	if !previousOK {
 		boundaryReason = "epoch_fresh_context"
-		if sessionV3ProviderCheckpointFreshContext(job, checkpointScope) {
-			boundaryReason = "checkpoint_fresh_context"
-		}
 	} else if !nativeContinuationAllowed {
 		boundaryReason = "provider_model_runtime_handoff"
 	}
@@ -2239,7 +2222,7 @@ func sessionV3ProviderJobCheckpointScope(job sessionV3ExecutorJob) sessionV3Prov
 		CheckpointID:    checkpointID,
 		AttemptID:       strings.TrimSpace(job.AttemptID),
 		ParentSessionID: strings.TrimSpace(job.ParentSessionID),
-		FreshContext:    checkpointID != "" && !job.ResumeContext,
+		FreshContext:    false,
 	}
 }
 
@@ -2247,7 +2230,7 @@ func sessionV3ProviderCheckpointScopeFromPayload(scope sessionV3ProviderCheckpoi
 	if payload == nil {
 		return scope
 	}
-	freshContext := strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context")
+	freshContext := sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action"))
 	if freshContext {
 		scope.FreshContext = true
 	}
@@ -2379,8 +2362,10 @@ func sessionV3ProviderForceFreshContext(job sessionV3ExecutorJob, previousLineag
 	return !sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
 }
 
-func sessionV3ProviderCheckpointFreshContext(job sessionV3ExecutorJob, checkpointScope sessionV3ProviderCheckpointScope) bool {
-	return !job.ResumeContext && (strings.TrimSpace(job.CheckpointID) != "" || checkpointScope.FreshContext)
+func sessionV3ProviderCheckpointFreshContext(_ sessionV3ExecutorJob, _ sessionV3ProviderCheckpointScope) bool {
+	// Checkpoint ownership is routing metadata inside an execution epoch. Only an
+	// epoch change (or an explicit provider/runtime handoff) resets lineage.
+	return false
 }
 
 func sessionV3ProviderBoundaryReasonWithOverride(current, override string) string {
@@ -2779,6 +2764,15 @@ type sessionV3ProviderTerminalPlanResult struct {
 	Summary          string
 }
 
+func sessionV3ProviderCheckpointRunNextAction(nextAction string) bool {
+	switch strings.ToLower(strings.TrimSpace(nextAction)) {
+	case "run_checkpoint_with_current_context", "run_checkpoint_with_fresh_context":
+		return true
+	default:
+		return false
+	}
+}
+
 func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecutionResult) bool {
 	for i := len(results) - 1; i >= 0; i-- {
 		result := results[i]
@@ -2787,7 +2781,7 @@ func sessionsV3ProviderCheckpointRunToolResult(results []provideriface.ToolExecu
 			continue
 		}
 		payload := sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(result.Output, result.TextForModel, result.Error)))
-		if strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+		if sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action")) {
 			return true
 		}
 	}
@@ -3126,7 +3120,7 @@ func sessionsV3DecodeToolPayload(raw string) map[string]any {
 
 func (e *sessionV3Executor) sessionV3LatestCheckpointRunToolPayload(job sessionV3ExecutorJob) map[string]any {
 	payload := e.sessionV3LatestPlanManageToolPayload(job)
-	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+	if payload == nil || !sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action")) {
 		return nil
 	}
 	return payload
@@ -3196,10 +3190,10 @@ func (e *sessionV3Executor) sessionV3ProviderRestartInput(ctx context.Context, j
 
 func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, toolOutput string) ([]map[string]any, bool, error) {
 	payload := sessionsV3DecodeToolPayload(strings.TrimSpace(toolOutput))
-	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+	if payload == nil || !sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action")) {
 		payload = e.sessionV3LatestCheckpointRunToolPayload(job)
 	}
-	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+	if payload == nil || !sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action")) {
 		if strings.TrimSpace(job.CheckpointID) == "" && strings.TrimSpace(job.PlanID) == "" {
 			return nil, false, nil
 		}

@@ -38,10 +38,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
 	nextCheckpointID := strings.TrimSpace(summary.NextCheckpointID)
 	nextCheckpointTitle := planLifecycleCheckpointTitle(doc, nextCheckpointID)
-	freshContext := nextAction == "run_checkpoint_with_fresh_context" || action == "start_checkpoint" || action == "continue_checkpoint" || action == "restart_checkpoint" || action == "rewind_to_checkpoint" || action == "approve_and_start"
-	if action == "resume_checkpoint" {
-		freshContext = false
-	}
+	freshContext := action == "resolve_blocked_checkpoint" && nextAction == "run_checkpoint_with_fresh_context"
 
 	checkpointLabel := planLifecycleCheckpointLabel(checkpointID, checkpointTitle)
 	modeLabel := planLifecycleModeLabel(doc.ExecutionPolicy)
@@ -84,10 +81,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 		lines = append(lines, bodyLines...)
 	}
 	if freshContext {
-		contextLine := "Context: Starting the next checkpoint with fresh context."
-		if action == "resolve_blocked_checkpoint" {
-			contextLine = "Context: Resuming this checkpoint with fresh context; it remains incomplete until the resumed agent records a normal outcome."
-		}
+		contextLine := "Context: Resuming this checkpoint with fresh recovery context; it remains incomplete until the resumed agent records a normal outcome."
 		lines = append(lines, "", contextLine)
 	}
 
@@ -152,7 +146,7 @@ func isPlanExecutionOutcomeMessageAction(action string) bool {
 
 func planLifecycleHeadline(action, checkpointID string, doc *pebblestore.SessionPlanDocument, summary sessionruntime.PlanExecutionSummary, nextAction, modeLabel string) string {
 	base := "Plan execution updated"
-	if action == "approve_and_start" && nextAction == "run_checkpoint_with_fresh_context" && strings.TrimSpace(summary.NextCheckpointID) != "" {
+	if action == "approve_and_start" && (nextAction == "run_checkpoint_with_current_context" || nextAction == "run_checkpoint_with_fresh_context") && strings.TrimSpace(summary.NextCheckpointID) != "" {
 		return "Plan accepted, starting " + planLifecycleCheckpointLabel(summary.NextCheckpointID, "")
 	}
 	switch action {
@@ -342,7 +336,7 @@ func inferPlanExecutionNextAction(summary sessionruntime.PlanExecutionSummary) s
 		return "stopped"
 	}
 	if summary.AutoAdvanceAllowed && summary.NextCheckpointID != "" {
-		return "run_checkpoint_with_fresh_context"
+		return "run_checkpoint_with_current_context"
 	}
 	if summary.NextCheckpointID != "" {
 		return "continue_checkpoint"
@@ -361,9 +355,9 @@ func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecyc
 	if nextAction == "" {
 		nextAction = inferPlanExecutionNextAction(summary)
 	}
-	automaticFreshContext := nextAction == "run_checkpoint_with_fresh_context" && strings.TrimSpace(doc.ExecutionPolicy.Mode) == sessionruntime.PlanExecutionPolicyModeAutomatic
+	automaticContinuation := (nextAction == "run_checkpoint_with_current_context" || nextAction == "run_checkpoint_with_fresh_context") && strings.TrimSpace(doc.ExecutionPolicy.Mode) == sessionruntime.PlanExecutionPolicyModeAutomatic
 	manualReview := planLifecycleManualReviewCheckpointHandoffRequired(action, nextAction, doc)
-	if !automaticFreshContext && !manualReview {
+	if !automaticContinuation && !manualReview {
 		return PlanExecutionLifecycleMessage{}, false
 	}
 	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
@@ -381,10 +375,10 @@ func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecyc
 		"",
 		"Completed: " + planLifecycleCheckpointLabel(checkpointID, checkpointTitle),
 	}
-	if automaticFreshContext {
+	if automaticContinuation {
 		lines = append(lines,
 			"Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle),
-			"Context: Starting the next checkpoint with fresh context.",
+			"Context: Continuing with the same execution-epoch conversation.",
 		)
 	} else {
 		lines = append(lines, "Review: Review this checkpoint before starting "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle)+".")
@@ -396,7 +390,8 @@ func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecyc
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionCheckpointHandoffMessageSource, "plan_checkpoint_handoff")
 	metadata["next_checkpoint_id"] = nextCheckpointID
 	metadata["next_checkpoint_title"] = nextCheckpointTitle
-	metadata["fresh_context"] = automaticFreshContext
+	metadata["fresh_context"] = false
+	metadata["context_preserved"] = automaticContinuation
 	if manualReview {
 		metadata["review_required"] = true
 	}
