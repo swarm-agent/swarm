@@ -32,6 +32,7 @@ function commandIcon(command: DesktopSlashCommand): LucideIcon {
     case 'thinking':
       return Lightbulb
     case 'commit':
+    case 'commit-ai':
       return GitCommitHorizontal
     case 'plan':
       return ListChecks

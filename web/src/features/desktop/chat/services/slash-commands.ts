@@ -12,6 +12,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'toggle-tips' }
   | { kind: 'open-codex-usage' }
   | { kind: 'open-commit-modal' }
+  | { kind: 'ai-commit' }
   | { kind: 'open-plan-modal' }
   | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
@@ -223,6 +224,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/models', 'Browse providers and models', 'Press Enter to open the picker'],
     state: 'ready',
     action: { kind: 'open-model-picker' },
+  },
+  {
+    id: 'commit-ai',
+    command: '/commit ai',
+    aliases: [],
+    hint: 'Generate a commit message and commit all changes',
+    actionLabel: 'Run AI Commit',
+    tips: ['/commit ai', 'Generate a message and commit all changes'],
+    state: 'ready',
+    action: { kind: 'ai-commit' },
   },
   {
     id: 'commit',

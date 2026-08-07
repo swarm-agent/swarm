@@ -3818,6 +3818,41 @@ export function DesktopAppPage() {
     void navigate({ to: '/settings', search })
   }, [navigate, routeSessionId, routeWorkspaceSlug])
 
+  const handleAICommit = useCallback(async (
+    input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>,
+  ) => {
+    if (gitCommitBusy || gitAICommitRunningRef.current) return
+
+    gitAICommitRunningRef.current = true
+    setGitAICommitPhase('generating')
+    setDesktopToast({ message: 'AI Commit is generating a commit message. Please wait…', tone: 'info' })
+    try {
+      const suggestion = await suggestWorkspaceCommitMessage({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
+      })
+      setGitAICommitPhase('committing')
+      setDesktopToast({ message: `AI Commit is committing “${suggestion.message}”. Please wait…`, tone: 'info' })
+      await commitWorkspaceChanges({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
+        message: suggestion.message,
+        all: true,
+      })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+
+      setDesktopToast({ message: `Changes committed with “${suggestion.message}”.`, tone: 'success' })
+    } catch (error) {
+      setDesktopToast({ message: `AI Commit failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    } finally {
+      gitAICommitRunningRef.current = false
+      setGitAICommitPhase(null)
+    }
+  }, [gitCommitBusy, queryClient])
+
   const handleSlashCommand = useCallback(async (command: DesktopSlashCommand, draft = '') => {
     const action = command.action
     switch (action.kind) {
@@ -3844,6 +3879,18 @@ export function DesktopAppPage() {
         const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
         if (workspacePath) openMainWorktreeGitPanel(workspacePath, workspaceName)
+        return
+      }
+      case 'ai-commit': {
+        const workspacePath = selectedGitWorkspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
+        if (!workspacePath) {
+          setDesktopToast({ message: 'Open a workspace before running AI Commit.', tone: 'error' })
+          return
+        }
+        await handleAICommit({
+          workspacePath,
+          sessionId: selectedGitWorkspacePath ? selectedGitSessionId : '',
+        })
         return
       }
       case 'open-plan-modal':
@@ -3940,7 +3987,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [activeWorkspaceAuthority, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath, uiSettings, uiSettingsQuery.data])
+  }, [activeWorkspaceAuthority, handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath, uiSettings, uiSettingsQuery.data])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -4514,41 +4561,6 @@ export function DesktopAppPage() {
       setDesktopToast({ message: `Committed “${suggestion.message}”; ${action.name} is running.`, tone: 'success' })
     } catch (error) {
       setDesktopToast({ message: `AI Commit + Action failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
-    } finally {
-      gitAICommitRunningRef.current = false
-      setGitAICommitPhase(null)
-    }
-  }
-
-  const handleAICommit = async (
-    input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>,
-  ) => {
-    if (gitCommitBusy || gitAICommitRunningRef.current) return
-
-    gitAICommitRunningRef.current = true
-    setGitAICommitPhase('generating')
-    setDesktopToast({ message: 'AI Commit is generating a commit message. Please wait…', tone: 'info' })
-    try {
-      const suggestion = await suggestWorkspaceCommitMessage({
-        workspacePath: input.workspacePath,
-        sessionId: input.sessionId,
-      })
-      setGitAICommitPhase('committing')
-      setDesktopToast({ message: `AI Commit is committing “${suggestion.message}”. Please wait…`, tone: 'info' })
-      await commitWorkspaceChanges({
-        workspacePath: input.workspacePath,
-        sessionId: input.sessionId,
-        message: suggestion.message,
-        all: true,
-      })
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
-      ])
-
-      setDesktopToast({ message: `Changes committed with “${suggestion.message}”.`, tone: 'success' })
-    } catch (error) {
-      setDesktopToast({ message: `AI Commit failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
       gitAICommitRunningRef.current = false
       setGitAICommitPhase(null)

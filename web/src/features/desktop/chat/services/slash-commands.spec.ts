@@ -29,6 +29,21 @@ function testCodexOpensUsageWithoutChangingModels(): void {
   assert((models?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-model-picker', 'expected /models to keep opening model picker')
 }
 
+function testAICommitCommandTriggersCanonicalWorkflow(): void {
+  const commands = getDesktopSlashCommands()
+  const aiCommit = commands.find((command) => command.command === '/commit ai')
+  const commit = commands.find((command) => command.command === '/commit')
+
+  assert(Boolean(aiCommit), 'expected /commit ai command to exist')
+  assert(aiCommit?.state === 'ready', 'expected /commit ai command to be ready')
+  assert(aiCommit?.action.kind === 'ai-commit', 'expected /commit ai to trigger AI Commit')
+  assert(commit?.action.kind === 'open-commit-modal', 'expected bare /commit to keep opening the commit modal')
+
+  const palette = buildDesktopSlashPaletteState('/commit ai')
+  assert(palette.exactMatch?.id === 'commit-ai', 'expected /commit ai to resolve exactly')
+  assert(palette.matches[0]?.id === 'commit-ai', 'expected /commit ai to lead palette matches')
+}
+
 function testFastCommandIsRetired(): void {
   const commands = getDesktopSlashCommands()
   assert(commands.every((command) => command.command !== '/fast'), 'expected /fast command to be absent')
@@ -201,6 +216,7 @@ function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
+  testAICommitCommandTriggersCanonicalWorkflow()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
   testWorktreeOnCommandIsReady()

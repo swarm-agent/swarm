@@ -71,6 +71,19 @@ test('Workspace Action menu offers explicit AI Commit then run orchestration', a
   assert.match(workflow, /throw error/)
 })
 
+test('Desktop /commit ai dispatches the canonical AI Commit handler', async () => {
+  const page = await readFile(pageURL, 'utf8')
+  const commandStart = page.indexOf("case 'ai-commit':")
+  const commandEnd = page.indexOf("case 'open-plan-modal':", commandStart)
+  const command = page.slice(commandStart, commandEnd)
+
+  assert.ok(commandStart >= 0, 'expected Desktop to handle the AI Commit slash action')
+  assert.match(command, /await handleAICommit\(\{/)
+  assert.match(command, /workspacePath/)
+  assert.match(command, /sessionId: selectedGitWorkspacePath \? selectedGitSessionId : ''/)
+  assert.doesNotMatch(command, /suggestWorkspaceCommitMessage|commitWorkspaceChanges/)
+})
+
 test('standalone Workspace Action execution remains in the existing execution panel', async () => {
   const page = await readFile(pageURL, 'utf8')
   assert.match(page, /<DesktopWorkspaceActionPanel[\s\S]*action=\{workspaceActionPresentation\.action\}/)
