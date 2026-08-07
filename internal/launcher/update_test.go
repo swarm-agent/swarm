@@ -801,8 +801,14 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 		t.Fatalf("systemd restart must not be used for release update")
 		return nil
 	}
-	runTUIWithExtraEnvForUpdate = func(Profile, []string, map[string]string) error {
+	runTUIWithExtraEnvForUpdate = func(_ Profile, args []string, extraEnv map[string]string) error {
 		calls = append(calls, "run-tui")
+		if len(args) != 1 || args[0] != "main" {
+			t.Fatalf("relaunch args = %v, want [main]", args)
+		}
+		if got := strings.TrimSpace(extraEnv[appliedUpdateToastEnv]); got != "Updated to v1.2.3" {
+			t.Fatalf("toast env = %q", got)
+		}
 		return nil
 	}
 	resolveLifecycleManagerForUpdate = func(Profile) (lifecycleManager, bool, error) {
@@ -828,7 +834,7 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 	if err := RunUpdateHelper(profile, plan, 0, []string{"main"}); err != nil {
 		t.Fatalf("RunUpdateHelper: %v", err)
 	}
-	want := "apply,shutdown:update-release,ready:111"
+	want := "apply,shutdown:update-release,ready:111,run-tui"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("calls = %s, want %s", got, want)
 	}
@@ -836,8 +842,8 @@ func TestRunUpdateHelperSystemdActivatesBeforeAuthenticatedRestartRequest(t *tes
 	if err != nil || !ok {
 		t.Fatalf("read update status: ok=%v err=%v", ok, err)
 	}
-	if status.Status != updateJobStatusRunning || status.CompletedAtUnix != 0 || !strings.Contains(status.Message, "waiting for boot confirmation") {
-		t.Fatalf("update status = %+v, want nonterminal boot confirmation state", status)
+	if status.Status != updateJobStatusCompleted || status.CompletedAtUnix == 0 || status.Message != "Updated to v1.2.3." {
+		t.Fatalf("update status = %+v, want completed release update", status)
 	}
 }
 
