@@ -636,7 +636,7 @@ func (e *sessionV3Executor) nextCheckpointRunAlreadyCommitted(job sessionV3Execu
 	}
 	e.finish(job)
 	if intent.Status == sessionruntime.RunIntentPendingExecutor {
-		e.EnqueueRun(sessionV3ExecutorJob{Principal: job.Principal, SessionID: job.SessionID, RunID: intent.RunID, EpochID: intent.EpochID, PlanID: intent.PlanID, CheckpointID: intent.CheckpointID, AttemptID: intent.AttemptID, RunSessionID: intent.RunSessionID, ParentSessionID: intent.ParentSessionID, ResumeContext: intent.ResumeContext})
+		e.EnqueueRun(sessionV3ExecutorJob{Principal: job.Principal, SessionID: job.SessionID, RunID: intent.RunID, SourceMessageID: intent.SourceMessageID, EpochID: intent.EpochID, PlanID: intent.PlanID, CheckpointID: intent.CheckpointID, AttemptID: intent.AttemptID, RunSessionID: intent.RunSessionID, ParentSessionID: intent.ParentSessionID, ResumeContext: intent.ResumeContext})
 	}
 	return true
 }
@@ -3227,7 +3227,7 @@ func (e *sessionV3Executor) sessionV3ProviderCheckpointRestartInput(ctx context.
 	if parentSessionID == "" {
 		parentSessionID = job.SessionID
 	}
-	checkpointInput, ok, err := builder.BuildPlanCheckpointRunInput(job.SessionID, job.RunID, runruntime.RunRequest{PlanCheckpointContext: &runruntime.RunPlanCheckpointContext{PlanID: planID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: parentSessionID}}, runruntime.RunStartMeta{RunID: job.RunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
+	checkpointInput, ok, err := builder.BuildPlanCheckpointRunInput(job.SessionID, job.RunID, runruntime.RunRequest{PlanCheckpointContext: &runruntime.RunPlanCheckpointContext{PlanID: planID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: parentSessionID, SourceMessageID: e.sessionV3SourceMessageID(job)}}, runruntime.RunStartMeta{RunID: job.RunID, Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation})
 	if err != nil {
 		return nil, true, err
 	}

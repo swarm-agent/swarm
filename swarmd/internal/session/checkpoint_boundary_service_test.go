@@ -53,7 +53,7 @@ func TestCheckpointBoundaryTransitionCommitsPlanRunAndEpochAtomically(t *testing
 	if err != nil {
 		t.Fatalf("transition checkpoint boundary: %v", err)
 	}
-	if result.CheckpointID != "followup-1" || result.AttemptID != "followup-1:attempt-1" || result.RunIntent.RunID != "run-next" || result.RunIntent.EpochID == "" {
+	if result.CheckpointID != "followup-1" || result.AttemptID != "followup-1:attempt-1" || result.RunIntent.RunID != "run-next" || result.RunIntent.SourceMessageID != "message-boundary" || result.RunIntent.EpochID == "" {
 		t.Fatalf("transition identity = %#v", result)
 	}
 	if result.Plan.Document == nil || result.Plan.Document.ActiveCheckpointID != result.CheckpointID || result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.CurrentRunID != "run-next" {

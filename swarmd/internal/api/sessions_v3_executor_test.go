@@ -344,6 +344,7 @@ func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJo
 		CheckpointID:    "cp-4",
 		AttemptID:       "cp-4:attempt-1",
 		ParentSessionID: "parent-old",
+		SourceMessageID: "message-new-direction",
 	}, sessionV3ResolvedRuntime{}, toolOutput)
 	if err != nil {
 		t.Fatalf("checkpoint restart input: %v", err)
@@ -358,8 +359,8 @@ func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJo
 	if ctx == nil {
 		t.Fatalf("PlanCheckpointContext is nil")
 	}
-	if ctx.PlanID != "replacement-plan" || ctx.CheckpointID != "cp-5" || ctx.AttemptID != "cp-5:attempt-1" || ctx.ParentSessionID != "parent-new" {
-		t.Fatalf("PlanCheckpointContext = %+v, want fresh payload context", *ctx)
+	if ctx.PlanID != "replacement-plan" || ctx.CheckpointID != "cp-5" || ctx.AttemptID != "cp-5:attempt-1" || ctx.ParentSessionID != "parent-new" || ctx.SourceMessageID != "message-new-direction" {
+		t.Fatalf("PlanCheckpointContext = %+v, want fresh payload context with source message provenance", *ctx)
 	}
 }
 

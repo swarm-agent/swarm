@@ -200,6 +200,7 @@ func (s *CheckpointBoundaryService) Transition(input CheckpointBoundaryTransitio
 		EventType:       "session.checkpoint_boundary.committed",
 		RunIntent: &pebblestore.V3SessionRunIntent{
 			RunID:           input.NextRunID,
+			SourceMessageID: input.SourceMessageID,
 			Status:          RunIntentPendingExecutor,
 			PlanID:          state.plan.ID,
 			CheckpointID:    checkpointID,

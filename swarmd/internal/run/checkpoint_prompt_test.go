@@ -49,7 +49,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		t.Fatalf("append old chat: %v", err)
 	}
 
-	input, ok, err := svc.buildPlanCheckpointRunInput(sessionID, "run-cp", RunOptions{PlanCheckpointContext: &RunPlanCheckpointContext{PlanID: "plan-cp", CheckpointID: "cp-2", ParentSessionID: "parent-session"}, ApplySessionMutation: applyMutation})
+	input, ok, err := svc.buildPlanCheckpointRunInput(sessionID, "run-cp", RunOptions{PlanCheckpointContext: &RunPlanCheckpointContext{PlanID: "plan-cp", CheckpointID: "cp-2", ParentSessionID: "parent-session", SourceMessageID: "message-current-direction"}, ApplySessionMutation: applyMutation})
 	if err != nil {
 		t.Fatalf("build checkpoint input: %v", err)
 	}
@@ -71,6 +71,9 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	}
 	if !strings.Contains(text, `"objective": "Use plan context only"`) {
 		t.Fatalf("prompt missing selected checkpoint objective: %s", text)
+	}
+	if !strings.Contains(text, `"source_message_id": "message-current-direction"`) {
+		t.Fatalf("prompt missing source message provenance: %s", text)
 	}
 	for _, want := range []string{
 		`"checkpoint_index": [`,

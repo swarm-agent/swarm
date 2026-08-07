@@ -29,6 +29,7 @@ type checkpointRunPromptPayload struct {
 	RunID            string                                     `json:"run_id,omitempty"`
 	RunSessionID     string                                     `json:"run_session_id,omitempty"`
 	ParentSessionID  string                                     `json:"parent_session_id,omitempty"`
+	SourceMessageID  string                                     `json:"source_message_id,omitempty"`
 }
 
 type checkpointRunOrientation struct {
@@ -117,6 +118,7 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		RunID:            runID,
 		RunSessionID:     sessionID,
 		ParentSessionID:  parentSessionID,
+		SourceMessageID:  strings.TrimSpace(ctx.SourceMessageID),
 	}
 	prompt, err := renderCheckpointRunPrompt(payload)
 	if err != nil {

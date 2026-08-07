@@ -6748,6 +6748,9 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsFreshCheckpointExactlyOnce(t
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
+			if !sessionsV3ProviderInputContainsContentText(req.Input, `"source_message_id": "provider-final-review-followup-message"`) {
+				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint input lost source message provenance: %+v", req.Input)
+			}
 			if runner.requests[0].ExecutionEpochID == req.ExecutionEpochID {
 				return provideriface.Response{}, fmt.Errorf("checkpoint run reused parent execution epoch %q", req.ExecutionEpochID)
 			}
@@ -6811,6 +6814,9 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsFreshCheckpointExactlyOnce(t
 	for _, intent := range intents {
 		if intent.Status != sessionruntime.RunIntentCompleted {
 			t.Fatalf("final-review follow-up run did not complete: %+v", intents)
+		}
+		if intent.CheckpointID == "followup-1" && intent.SourceMessageID != "provider-final-review-followup-message" {
+			t.Fatalf("follow-up checkpoint run lost source message identity: %+v", intent)
 		}
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
