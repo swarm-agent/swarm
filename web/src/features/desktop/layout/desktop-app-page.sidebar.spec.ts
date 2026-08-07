@@ -7,10 +7,12 @@ import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY } from '../session-v3/api'
 import {
   SIDEBAR_SESSION_GROUPS,
   buildGitSidebarIntegrationHelpPrompt,
+  buildInstallGitPrompt,
   compareSidebarSessions,
   desktopRouteWorkspacePathForSession,
   buildSidebarSessionTree,
   filterInactiveSidebarSessionTrees,
+  isMissingGitSidebarError,
   sessionActivityLabel,
   sessionStatusDetail,
   sessionStatusTone,
@@ -94,6 +96,34 @@ test('plan Git commit form submits on Enter through the shared commit handler an
   assert.match(modalSource, /Archives this chat only after the commit succeeds\./)
   assert.match(modalSource, /gitIntegrateModal[\s\S]*void handleGitIntegrate\(\)/)
   assert.equal((modalSource.match(/commitWorkspaceChanges/g) ?? []).length, 0)
+})
+
+test('Git sidebar recognizes the missing-Git rev-parse failure and builds an install request', () => {
+  const error = 'git rev-parse --show-toplevel: exit status 128'
+
+  assert.equal(isMissingGitSidebarError(error), true)
+  assert.equal(isMissingGitSidebarError(new Error(`request failed: ${error}`)), true)
+  assert.equal(isMissingGitSidebarError('git status: exit status 128'), false)
+  assert.match(buildInstallGitPrompt(error), /Please install Git on this machine/)
+  assert.match(buildInstallGitPrompt(error), /git rev-parse --show-toplevel: exit status 128/)
+})
+
+test('Git sidebar missing-Git action launches a fresh Swarm session', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const handlerStart = source.indexOf('const handleAskSwarmToInstallGit = async () =>')
+  const handlerEnd = source.indexOf('const closeGitSidebarIntegratePopout', handlerStart)
+  const handlerSource = source.slice(handlerStart, handlerEnd)
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handlerSource, /launchDesktopRepairSession\(\{[\s\S]*prompt: buildInstallGitPrompt\(gitSidebarError\)[\s\S]*title: 'Install Git on this machine'/)
+  assert.match(handlerSource, /source: 'desktop-v3-git-sidebar-install-help'/)
+  assert.match(handlerSource, /requested_action: 'install_git'/)
+  assert.match(handlerSource, /Started a new Swarm session to install Git\./)
+  assert.match(panelSource, /Git isn't installed, Ask Swarm to install Git\?/)
+  assert.match(panelSource, /onClick=\{\(\) => \{ void handleAskSwarmToInstallGit\(\) \}\}/)
 })
 
 test('Git sidebar integration help prompt carries the actual error without authorizing integration or archive', () => {

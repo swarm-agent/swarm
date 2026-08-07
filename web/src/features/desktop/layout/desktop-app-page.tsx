@@ -112,6 +112,7 @@ const SIDEBAR_SESSION_ICON_CLASS = {
 } as const
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
 const DESKTOP_REPAIR_AGENT_NAME = 'swarm'
+const MISSING_GIT_REV_PARSE_ERROR = 'git rev-parse --show-toplevel: exit status 128'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
   'Check prerequisites',
@@ -230,6 +231,20 @@ export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalSta
     '',
     'Integration error:',
     integrationError,
+  ].join('\n')
+}
+
+export function isMissingGitSidebarError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return message.includes(MISSING_GIT_REV_PARSE_ERROR)
+}
+
+export function buildInstallGitPrompt(gitError: string): string {
+  return [
+    'Please install Git on this machine so Swarm can use Git features.',
+    '',
+    'The sidebar Git check failed with:',
+    gitError,
   ].join('\n')
 }
 
@@ -2640,6 +2655,7 @@ export function DesktopAppPage() {
   const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
   const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
   const [gitIntegrateHelpBusy, setGitIntegrateHelpBusy] = useState(false)
+  const [gitInstallHelpBusy, setGitInstallHelpBusy] = useState(false)
   const [gitIntegrateArchive, setGitIntegrateArchive] = useState(false)
   const [gitIntegrateError, setGitIntegrateError] = useState<string | null>(null)
   const gitIntegrateAnchorRef = useRef<HTMLDivElement | null>(null)
@@ -4677,6 +4693,34 @@ export function DesktopAppPage() {
     }
   }
 
+  const gitSidebarError = gitRealtimeErrors[selectedGitWorkspacePath]
+    || (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '')
+  const gitSidebarMissingGit = isMissingGitSidebarError(gitSidebarError)
+
+  const handleAskSwarmToInstallGit = async () => {
+    if (!gitSidebarMissingGit || !selectedGitWorkspacePath || !selectedGitSessionId || gitInstallHelpBusy) return
+    setGitInstallHelpBusy(true)
+    try {
+      await launchDesktopRepairSession({
+        owningWorkspacePath: activeSessionTargetWorkspacePath || selectedGitWorkspacePath,
+        sourceSessionId: selectedGitSessionId,
+        prompt: buildInstallGitPrompt(gitSidebarError),
+        title: 'Install Git on this machine',
+        source: 'desktop-v3-git-sidebar-install-help',
+        messageMetadata: {
+          workspace_path: selectedGitWorkspacePath,
+          git_error: gitSidebarError,
+          requested_action: 'install_git',
+        },
+      })
+      setDesktopToast({ message: 'Started a new Swarm session to install Git.', tone: 'success' })
+    } catch (error) {
+      setDesktopToast({ message: `Could not ask Swarm to install Git: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    } finally {
+      setGitInstallHelpBusy(false)
+    }
+  }
+
   const closeGitSidebarIntegratePopout = useCallback(() => {
     if (gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateModal((current) => current?.presentation === 'sidebar-popout' ? null : current)
@@ -4762,7 +4806,8 @@ export function DesktopAppPage() {
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region>
-        {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
+        {gitSidebarMissingGit ? <button type="button" className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-warning)] px-2 py-1.5 text-xs font-semibold text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitInstallHelpBusy} onClick={() => { void handleAskSwarmToInstallGit() }}>{gitInstallHelpBusy ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Bot size={13} aria-hidden="true" />}{gitInstallHelpBusy ? 'Asking Swarm…' : "Git isn't installed, Ask Swarm to install Git?"}</button>
+          : gitSidebarError ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitSidebarError}</div>
           : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
           : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
