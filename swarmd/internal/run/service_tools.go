@@ -2068,7 +2068,7 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 	case "transition-checkpoint-boundary", "transition_checkpoint_boundary", "checkpoint-boundary-transition", "checkpoint_boundary_transition":
 		action = "transition_checkpoint_boundary"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
-		return "", errors.New("plan_manage request_followup_checkpoint is disabled; migrate to transition_checkpoint_boundary from a parent provider turn")
+		return "", errors.New("plan_manage request_followup_checkpoint is disabled; use transition_checkpoint_boundary from a parent provider turn")
 	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
 		action = "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
@@ -2780,7 +2780,7 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		}
 		result, err = lifecycle.StartSessionCheckpoint(input)
 	case "request_followup_checkpoint":
-		return "", errors.New("plan_manage request_followup_checkpoint is disabled; migrate to transition_checkpoint_boundary from a parent provider turn")
+		return "", errors.New("plan_manage request_followup_checkpoint is disabled; use transition_checkpoint_boundary from a parent provider turn")
 	case "amend_plan":
 		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":
