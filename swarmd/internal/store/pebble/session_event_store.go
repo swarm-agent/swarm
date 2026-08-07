@@ -60,21 +60,12 @@ type V3PlanSaveMutation struct {
 	ExpectedParentVersion int                  `json:"expected_parent_version,omitempty"`
 }
 
-// V3CheckpointBoundaryMutation identifies the parent provider run preparing to
-// relinquish execution ownership. The canonical mutation commits the
-// inserted-and-selected checkpoint plan revision and next pending run intent;
-// source completion is deferred until the boundary tool result is durable.
+// V3CheckpointBoundaryMutation identifies the active parent provider run that
+// keeps execution ownership while the canonical mutation commits the inserted,
+// selected, and started checkpoint plan revision onto that same run.
 type V3CheckpointBoundaryMutation struct {
 	SourceRunID     string `json:"source_run_id"`
 	SourceMessageID string `json:"source_message_id"`
-}
-
-// V3CheckpointBoundaryResultMutation atomically makes the provider-visible
-// boundary result durable and terminalizes its source run. The next run is
-// already committed but must not be enqueued before this mutation succeeds.
-type V3CheckpointBoundaryResultMutation struct {
-	SourceRunID string `json:"source_run_id"`
-	NextRunID   string `json:"next_run_id"`
 }
 
 type V3SessionMutationInput struct {
@@ -98,7 +89,6 @@ type V3SessionMutationInput struct {
 	PlanAcceptance           *V3PlanAcceptanceMutation           `json:"plan_acceptance,omitempty"`
 	PlanSave                 *V3PlanSaveMutation                 `json:"plan_save,omitempty"`
 	CheckpointBoundary       *V3CheckpointBoundaryMutation       `json:"checkpoint_boundary,omitempty"`
-	CheckpointBoundaryResult *V3CheckpointBoundaryResultMutation `json:"checkpoint_boundary_result,omitempty"`
 	MediaStagingBindings     []MediaStagingBinding               `json:"media_staging_bindings,omitempty"`
 	EpochID                  string                              `json:"epoch_id,omitempty"`
 	TurnUsage                *SessionTurnUsageSnapshot           `json:"turn_usage,omitempty"`
@@ -673,7 +663,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	var boundarySourceRunOK bool
 	if input.CheckpointBoundary != nil {
 		if input.PlanSave == nil || input.RunIntent == nil {
-			return V3SessionMutationResult{}, errors.New("checkpoint boundary mutation requires plan save and next run intent")
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary mutation requires plan save and current run intent")
 		}
 		sourceRunID := strings.TrimSpace(input.CheckpointBoundary.SourceRunID)
 		if sourceRunID == "" || strings.TrimSpace(input.CheckpointBoundary.SourceMessageID) == "" {
@@ -690,33 +680,8 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if boundarySourceRun.Status != V3RunIntentRunning && boundarySourceRun.Status != V3RunIntentPendingExecutor {
 			return V3SessionMutationResult{}, fmt.Errorf("checkpoint boundary source run %q is %s", sourceRunID, boundarySourceRun.Status)
 		}
-		if strings.TrimSpace(input.RunIntent.RunID) == sourceRunID {
-			return V3SessionMutationResult{}, errors.New("checkpoint boundary requires a distinct next run id")
-		}
-	}
-	if input.CheckpointBoundaryResult != nil {
-		if input.Message == nil {
-			return V3SessionMutationResult{}, errors.New("checkpoint boundary result mutation requires the durable tool result message")
-		}
-		sourceRunID := strings.TrimSpace(input.CheckpointBoundaryResult.SourceRunID)
-		nextRunID := strings.TrimSpace(input.CheckpointBoundaryResult.NextRunID)
-		if sourceRunID == "" || nextRunID == "" || sourceRunID == nextRunID {
-			return V3SessionMutationResult{}, errors.New("checkpoint boundary result mutation requires distinct source and next run ids")
-		}
-		var readErr error
-		boundarySourceRun, boundarySourceRunOK, readErr = s.GetV3SessionRunIntent(input.SessionID, sourceRunID)
-		if readErr != nil {
-			return V3SessionMutationResult{}, readErr
-		}
-		if !boundarySourceRunOK || (boundarySourceRun.Status != V3RunIntentRunning && boundarySourceRun.Status != V3RunIntentPendingExecutor) {
-			return V3SessionMutationResult{}, fmt.Errorf("checkpoint boundary result source run %q is not active", sourceRunID)
-		}
-		nextRun, ok, readErr := s.GetV3SessionRunIntent(input.SessionID, nextRunID)
-		if readErr != nil {
-			return V3SessionMutationResult{}, readErr
-		}
-		if !ok || (nextRun.Status != V3RunIntentPendingExecutor && nextRun.Status != V3RunIntentRunning) {
-			return V3SessionMutationResult{}, fmt.Errorf("checkpoint boundary result next run %q is not ready", nextRunID)
+		if strings.TrimSpace(input.RunIntent.RunID) != sourceRunID {
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary must preserve the active source run id")
 		}
 	}
 	currentSeq, err := s.readV3SessionSequence(input.SessionID)
@@ -1093,29 +1058,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(usageSummary.AccountScopeID, usageSummary.SessionID)), summaryPayload, nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
-		}
-	}
-	if input.CheckpointBoundaryResult != nil && boundarySourceRunOK {
-		terminalSource := boundarySourceRun
-		terminalSource.Status = V3RunIntentCompleted
-		terminalSource.BlockedReason = ""
-		terminalSource.UpdatedAt = now
-		terminalSource.CompletedAt = now
-		terminalSource.EventSeq = seq
-		sourcePayload, err := json.Marshal(terminalSource)
-		if err != nil {
-			return V3SessionMutationResult{}, fmt.Errorf("marshal checkpoint boundary source run %q: %w", terminalSource.RunID, err)
-		}
-		if err := batch.Set([]byte(KeyV3SessionRunIntent(terminalSource.SessionID, terminalSource.RunID)), sourcePayload, nil); err != nil {
-			return V3SessionMutationResult{}, err
-		}
-		previousStatusKey := KeyV3SessionRunIntentStatus(boundarySourceRun.Status, boundarySourceRun.UpdatedAt, boundarySourceRun.AccountScopeID, boundarySourceRun.SessionID, boundarySourceRun.RunID)
-		if err := batch.Delete([]byte(previousStatusKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
-			return V3SessionMutationResult{}, err
-		}
-		statusKey := KeyV3SessionRunIntentStatus(terminalSource.Status, terminalSource.UpdatedAt, terminalSource.AccountScopeID, terminalSource.SessionID, terminalSource.RunID)
-		if err := batch.Set([]byte(statusKey), sourcePayload, nil); err != nil {
-			return V3SessionMutationResult{}, err
 		}
 	}
 	if runIntentProvided {
@@ -2340,19 +2282,24 @@ func (s *SessionStore) validateV3CheckpointBoundaryRunTransition(sessionID strin
 	if source.RunID == "" || (source.Status != V3RunIntentRunning && source.Status != V3RunIntentPendingExecutor) {
 		return V3SessionRunIntent{}, errors.New("checkpoint boundary requires an active source run")
 	}
-	status := strings.TrimSpace(incoming.Status)
-	if status == "" {
-		status = V3RunIntentPendingExecutor
+	if strings.TrimSpace(incoming.RunID) != strings.TrimSpace(source.RunID) {
+		return V3SessionRunIntent{}, errors.New("checkpoint boundary must keep ownership on the active source run")
 	}
-	if status != V3RunIntentPendingExecutor {
-		return V3SessionRunIntent{}, fmt.Errorf("checkpoint boundary next run %q must be pending_executor", incoming.RunID)
-	}
-	if existing, ok, err := s.GetV3SessionRunIntent(sessionID, incoming.RunID); err != nil {
+	existing, ok, err := s.GetV3SessionRunIntent(sessionID, source.RunID)
+	if err != nil {
 		return V3SessionRunIntent{}, err
-	} else if ok {
-		return V3SessionRunIntent{}, fmt.Errorf("checkpoint boundary next run %q already exists with status %s", incoming.RunID, existing.Status)
 	}
-	incoming.Status = status
+	if !ok || existing.Status != source.Status {
+		return V3SessionRunIntent{}, fmt.Errorf("checkpoint boundary source run %q changed before ownership assignment", source.RunID)
+	}
+	incoming.Status = source.Status
+	if incoming.CreatedAt == 0 {
+		incoming.CreatedAt = source.CreatedAt
+	}
+	incoming.StartedAt = source.StartedAt
+	incoming.CompletedAt = 0
+	incoming.DurationMs = source.DurationMs
+	incoming.CumulativeDurationMs = source.CumulativeDurationMs
 	return incoming, nil
 }
 
@@ -2848,9 +2795,6 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	}
 	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
-	}
-	if input.CheckpointBoundaryResult != nil && (input.Kind != V3SessionMutationAppendMessage || input.Message == nil) {
-		return errors.New("checkpoint boundary result payload requires an append-message mutation")
 	}
 	if planSave := input.PlanSave; planSave != nil {
 		if err := validateV3MutationEmbeddedOwnership(input, "plan save", planSave.Plan.SessionID, planSave.Plan.UserID, planSave.Plan.AccountScopeID); err != nil {

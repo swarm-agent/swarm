@@ -18,21 +18,21 @@ func TestPlanManageLegacyFollowupActionsAreDisabled(t *testing.T) {
 	}
 }
 
-func TestCheckpointBoundaryToolPayloadIsTerminalAndCarriesRunIdentity(t *testing.T) {
+func TestCheckpointBoundaryToolPayloadContinuesCurrentRun(t *testing.T) {
 	payload := map[string]any{
-		"action":               "transition_checkpoint_boundary",
-		"next_action":          "run_checkpoint_with_current_context",
-		"next_run_id":          "run-next",
-		"parent_turn_terminal": true,
+		"action":            "transition_checkpoint_boundary",
+		"next_action":       "continue_current_run",
+		"run_id":            "run-current",
+		"context_preserved": true,
 	}
 	raw, err := marshalPlanManagePayload(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	if !strings.Contains(raw, `"parent_turn_terminal":true`) || !strings.Contains(raw, `"next_run_id":"run-next"`) {
-		t.Fatalf("terminal payload = %s", raw)
+	if !strings.Contains(raw, `"next_action":"continue_current_run"`) || !strings.Contains(raw, `"run_id":"run-current"`) || strings.Contains(raw, `"next_run_id"`) || strings.Contains(raw, `"parent_turn_terminal"`) {
+		t.Fatalf("current-run payload = %s", raw)
 	}
-	if !providerManagedToolRequiresTurnRestart(tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}) {
-		t.Fatal("checkpoint boundary result did not terminate the parent provider turn")
+	if providerManagedToolRequiresTurnRestart(tool.Call{Name: "plan_manage"}, tool.Result{Output: raw}) {
+		t.Fatal("checkpoint assignment restarted the current provider turn")
 	}
 }

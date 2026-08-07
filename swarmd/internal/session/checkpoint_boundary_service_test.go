@@ -9,7 +9,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestCheckpointBoundaryTransitionCommitsPlanAndRunInCurrentEpochAtomically(t *testing.T) {
+func TestCheckpointBoundaryTransitionAssignsCheckpointToCurrentRunAtomically(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
 	sessionID := createPlanTestSession(t, svc)
@@ -48,24 +48,24 @@ func TestCheckpointBoundaryTransitionCommitsPlanAndRunInCurrentEpochAtomically(t
 	result, err := NewCheckpointBoundaryService(svc).Transition(CheckpointBoundaryTransitionInput{
 		SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "audit the release", Title: "Release audit",
 		Tasks: []string{"Audit release"}, AcceptanceCriteria: []string{"Audit is complete"},
-		SourceMessageID: "message-boundary", SourceRunID: "run-source", NextRunID: "run-next", StartedAt: now + 2,
+		SourceMessageID: "message-boundary", SourceRunID: "run-source", StartedAt: now + 2,
 	})
 	if err != nil {
 		t.Fatalf("transition checkpoint boundary: %v", err)
 	}
-	if result.CheckpointID != "followup-1" || result.AttemptID != "followup-1:attempt-1" || result.RunIntent.RunID != "run-next" || result.RunIntent.SourceMessageID != "message-boundary" || result.RunIntent.EpochID == "" {
+	if result.CheckpointID != "followup-1" || result.AttemptID != "followup-1:attempt-1" || result.RunIntent.RunID != "run-source" || result.RunIntent.SourceMessageID != "message-boundary" || result.RunIntent.EpochID == "" {
 		t.Fatalf("transition identity = %#v", result)
 	}
-	if result.Plan.Document == nil || result.Plan.Document.ActiveCheckpointID != result.CheckpointID || result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.CurrentRunID != "run-next" {
+	if result.Plan.Document == nil || result.Plan.Document.ActiveCheckpointID != result.CheckpointID || result.Plan.Document.ExecutionState == nil || result.Plan.Document.ExecutionState.CurrentRunID != "run-source" {
 		t.Fatalf("committed plan = %#v", result.Plan.Document)
 	}
 	if got := result.Plan.Document.Checkpoints[0].Handoff; got == nil || got.Title != "Done handoff" || !strings.Contains(got.Overview, "remains available") {
 		t.Fatalf("completed checkpoint handoff was not preserved: %#v", got)
 	}
-	if source, ok, err := svc.GetV3SessionRunIntent(sessionID, "run-source"); err != nil || !ok || source.Status != RunIntentPendingExecutor {
-		t.Fatalf("source run completed before the boundary tool result became durable: %#v ok=%t err=%v", source, ok, err)
+	if source, ok, err := svc.GetV3SessionRunIntent(sessionID, "run-source"); err != nil || !ok || source.Status != RunIntentPendingExecutor || source.CheckpointID != "followup-1" || source.AttemptID != "followup-1:attempt-1" {
+		t.Fatalf("source run did not retain ownership of the checkpoint: %#v ok=%t err=%v", source, ok, err)
 	}
-	if active, ok, err := svc.GetSessionActiveRunIntent(sessionID); err != nil || !ok || active.RunID != "run-next" {
+	if active, ok, err := svc.GetSessionActiveRunIntent(sessionID); err != nil || !ok || active.RunID != "run-source" {
 		t.Fatalf("active run = %#v ok=%t err=%v", active, ok, err)
 	}
 	epoch, ok, err := svc.GetActiveExecutionEpoch(sessionID)
@@ -78,9 +78,9 @@ func TestCheckpointBoundaryTransitionCommitsPlanAndRunInCurrentEpochAtomically(t
 
 	replayed, err := NewCheckpointBoundaryService(svc).Transition(CheckpointBoundaryTransitionInput{
 		SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "audit the release", Title: "Release audit",
-		AcceptanceCriteria: []string{"Audit is complete"}, SourceMessageID: "message-boundary", SourceRunID: "run-source", NextRunID: "different-run",
+		AcceptanceCriteria: []string{"Audit is complete"}, SourceMessageID: "message-boundary", SourceRunID: "run-source",
 	})
-	if err != nil || !replayed.Replayed || replayed.CheckpointID != result.CheckpointID || replayed.RunIntent.RunID != "run-next" {
+	if err != nil || !replayed.Replayed || replayed.CheckpointID != result.CheckpointID || replayed.RunIntent.RunID != "run-source" {
 		t.Fatalf("replay = %#v err=%v", replayed, err)
 	}
 }
@@ -111,7 +111,7 @@ func TestCheckpointBoundaryTransitionFailureLeavesPlanRunAndEpochUnchanged(t *te
 	beforePlan, _, _ := svc.GetPlan(sessionID, plan.ID)
 	beforeEpoch, _, _ := svc.GetActiveExecutionEpoch(sessionID)
 	restore := svc.Store().SetCheckpointBoundaryCommitHookForTest(func(string) error { return errors.New("injected boundary failure") })
-	_, err = NewCheckpointBoundaryService(svc).Transition(CheckpointBoundaryTransitionInput{SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "must not commit", AcceptanceCriteria: []string{"Never committed"}, SourceMessageID: "failure-message", SourceRunID: "run-source", NextRunID: "run-next"})
+	_, err = NewCheckpointBoundaryService(svc).Transition(CheckpointBoundaryTransitionInput{SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "must not commit", AcceptanceCriteria: []string{"Never committed"}, SourceMessageID: "failure-message", SourceRunID: "run-source"})
 	restore()
 	if err == nil || !strings.Contains(err.Error(), "injected boundary failure") {
 		t.Fatalf("transition error = %v", err)
@@ -124,8 +124,8 @@ func TestCheckpointBoundaryTransitionFailureLeavesPlanRunAndEpochUnchanged(t *te
 	if source, _, _ := svc.GetV3SessionRunIntent(sessionID, "run-source"); source.Status != RunIntentPendingExecutor {
 		t.Fatalf("source run changed after failure: %#v", source)
 	}
-	if _, ok, _ := svc.GetV3SessionRunIntent(sessionID, "run-next"); ok {
-		t.Fatal("next run intent exists after failed boundary commit")
+	if source, _, _ := svc.GetV3SessionRunIntent(sessionID, "run-source"); source.CheckpointID != "" || source.AttemptID != "" {
+		t.Fatalf("source run acquired checkpoint ownership after failed boundary commit: %#v", source)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestCheckpointBoundaryTransitionRejectsFailedAndConflictingRuns(t *testing.
 	plan := saveApprovedLifecyclePlan(t, svc, sessionID, pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed}, []pebblestore.SessionPlanCheckpoint{{ID: "cp-failed", Title: "Failed", Status: PlanCheckpointStatusFailed}})
 	_, err := NewCheckpointBoundaryService(svc).Transition(CheckpointBoundaryTransitionInput{
 		SessionID: sessionID, PlanID: plan.ID, ChangeRequest: "do not recover", AcceptanceCriteria: []string{"Never runs"},
-		SourceMessageID: "message-failed", SourceRunID: "run-missing", NextRunID: "run-next",
+		SourceMessageID: "message-failed", SourceRunID: "run-missing",
 	})
 	if err == nil || !strings.Contains(err.Error(), "active source run") {
 		t.Fatalf("missing source run error = %v", err)

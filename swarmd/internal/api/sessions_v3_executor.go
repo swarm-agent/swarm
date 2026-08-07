@@ -769,6 +769,33 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 	now := time.Now().UnixMilli()
 	sanitizedReason := strings.TrimSpace(privacy.SanitizeText(reason))
 	intent := sessionV3RunIntentForJob(job, status, now)
+	// A parent turn may acquire checkpoint ownership after it has already been
+	// enqueued. Preserve that durable ownership when the same run later records
+	// phase or terminal state; the original executor job intentionally has no
+	// second-run checkpoint identity to copy.
+	if current, ok, currentErr := e.server.sessions.GetV3SessionRunIntent(job.SessionID, job.RunID); currentErr != nil {
+		return sessionruntime.SessionMutationResult{}, currentErr
+	} else if ok {
+		if intent.SourceMessageID == "" {
+			intent.SourceMessageID = current.SourceMessageID
+		}
+		if intent.PlanID == "" {
+			intent.PlanID = current.PlanID
+		}
+		if intent.CheckpointID == "" {
+			intent.CheckpointID = current.CheckpointID
+		}
+		if intent.AttemptID == "" {
+			intent.AttemptID = current.AttemptID
+		}
+		if intent.RunSessionID == "" {
+			intent.RunSessionID = current.RunSessionID
+		}
+		if intent.ParentSessionID == "" {
+			intent.ParentSessionID = current.ParentSessionID
+		}
+		intent.ResumeContext = current.ResumeContext
+	}
 	intent.BlockedReason = sanitizedReason
 	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, status, sanitizedReason, eventType, "")
 	if err != nil {

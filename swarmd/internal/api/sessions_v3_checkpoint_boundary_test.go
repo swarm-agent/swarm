@@ -9,19 +9,19 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
-func TestCheckpointBoundaryPayloadSelectsCurrentContextCommittedRunIdentity(t *testing.T) {
+func TestCheckpointBoundaryPayloadDoesNotSelectAnotherRunScope(t *testing.T) {
 	payload := map[string]any{
 		"action":             sessionruntime.CheckpointBoundaryTransitionAction,
-		"next_action":        "run_checkpoint_with_current_context",
+		"next_action":        "continue_current_run",
 		"checkpoint_id":      "followup-1",
 		"next_checkpoint_id": "followup-1",
-		"run_request": map[string]any{"plan_checkpoint_context": map[string]any{
-			"plan_id": "plan-1", "checkpoint_id": "followup-1", "attempt_id": "followup-1:attempt-1", "run_id": "run-next", "execution_epoch_id": "epoch-2", "parent_session_id": "session-1",
-		}},
+		"run_id":             "run-current",
+		"context_preserved":  true,
 	}
-	scope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderCheckpointScope{PlanID: "plan-old", CheckpointID: "cp-old"}, payload)
-	if !scope.FreshContext || scope.PlanID != "plan-1" || scope.CheckpointID != "followup-1" || scope.AttemptID != "followup-1:attempt-1" || scope.ParentSessionID != "session-1" {
-		t.Fatalf("checkpoint boundary scope = %#v", scope)
+	original := sessionV3ProviderCheckpointScope{PlanID: "plan-old", CheckpointID: "cp-old", AttemptID: "attempt-old", ParentSessionID: "session-1"}
+	scope := sessionV3ProviderCheckpointScopeFromPayload(original, payload)
+	if scope.FreshContext || scope != original {
+		t.Fatalf("checkpoint assignment changed current run scope: got %#v want %#v", scope, original)
 	}
 }
 

@@ -30,7 +30,8 @@ func TestPlanManageContractMakesCheckpointBoundariesExplicit(t *testing.T) {
 	if !containsAll(definition.Description,
 		"start_session_checkpoint atomically creates and starts one bounded checkpoint",
 		"transition_checkpoint_boundary is the only action",
-		"terminal for the parent turn",
+		"already-current run",
+		"continues that provider turn",
 		"request_followup_checkpoint action and all aliases are rejected",
 	) {
 		t.Fatalf("plan_manage description does not enforce checkpoint-boundary routing: %s", definition.Description)
@@ -110,7 +111,7 @@ func TestPlanManageDefinitionRequiresCheckpointBoundarySelection(t *testing.T) {
 		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
 	}
 	actionDescription, _ := params["action"].(map[string]any)["description"].(string)
-	if !containsAll(actionDescription, "transition_checkpoint_boundary is the sole active-plan checkpoint-boundary action", "trusted parent provider turn", "one fresh execution run", "terminates the parent turn", "request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected") {
+	if !containsAll(actionDescription, "transition_checkpoint_boundary is the sole active-plan checkpoint-boundary action", "trusted parent provider turn", "already-current run", "continues the parent turn without allocating another run", "request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected") {
 		t.Fatalf("plan_manage action description does not classify redirected work: %q", actionDescription)
 	}
 	changeRequestDescription, _ := params["change_request"].(map[string]any)["description"].(string)

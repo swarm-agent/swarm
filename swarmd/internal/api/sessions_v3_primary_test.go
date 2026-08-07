@@ -6733,45 +6733,29 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsCheckpointInSuccessorEpochEx
 		if req.ToolInvoker == nil {
 			return provideriface.Response{}, errors.New("missing provider-managed tool invoker")
 		}
-		switch runner.callCount {
-		case 1:
-			parentEpochID := req.ExecutionEpochID
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-final-review-followup", Name: "plan_manage", Arguments: `{"action":"transition_checkpoint_boundary","change_request":"investigate launch readiness","checkpoint_title":"Launch readiness","tasks":["Investigate launch readiness"],"acceptance_criteria":["A launch-readiness answer is appended"]}`})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if result.Error != "" || !result.RestartTurn {
-				return provideriface.Response{}, fmt.Errorf("final-review follow-up did not request a checkpoint run: %+v", result)
-			}
-			payload := sessionsV3DecodeToolPayload(result.Output)
-			if sessionsV3MapString(payload, "execution_epoch_id") == "" || sessionsV3MapString(payload, "execution_epoch_id") != parentEpochID || sessionsV3MapString(payload, "next_run_id") == "" {
-				return provideriface.Response{}, fmt.Errorf("checkpoint boundary did not preserve the post-handoff epoch with one distinct run: parent_epoch=%q payload=%+v", parentEpochID, payload)
-			}
-			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
-		case 2:
-			if !sessionsV3ProviderInputContainsContentText(req.Input, `"source_message_id": "v3msg_`) {
-				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint input lost source message provenance: %+v", req.Input)
-			}
-			if runner.requests[0].ExecutionEpochID != req.ExecutionEpochID {
-				return provideriface.Response{}, fmt.Errorf("checkpoint run changed the post-handoff execution epoch: parent=%q checkpoint=%q", runner.requests[0].ExecutionEpochID, req.ExecutionEpochID)
-			}
-			if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
-				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint lineage flags = boundary %q native %t fresh %t, want same-epoch continuation", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
-			}
-			if !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: followup-1.") {
-				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint input = %+v", req.Input)
-			}
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-review-followup", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"followup-1","report":"launch readiness investigated","result":"done","handoff_overview":"Launch readiness investigation is complete.","recommendation":{"decision":"ship","action":"review the completed checkpoint","reason":"The focused flow completed.","action_state":"ready"}}`})
-			if err != nil {
-				return provideriface.Response{}, err
-			}
-			if result.Error != "" || !result.RestartTurn {
-				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint completion failed: %+v", result)
-			}
-			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
-		default:
+		if runner.callCount != 1 {
 			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
 		}
+		parentEpochID := req.ExecutionEpochID
+		boundaryResult, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-final-review-followup", Name: "plan_manage", Arguments: `{"action":"transition_checkpoint_boundary","change_request":"investigate launch readiness","checkpoint_title":"Launch readiness","tasks":["Investigate launch readiness"],"acceptance_criteria":["A launch-readiness answer is appended"]}`})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if boundaryResult.Error != "" || boundaryResult.RestartTurn {
+			return provideriface.Response{}, fmt.Errorf("final-review checkpoint assignment restarted the current run: %+v", boundaryResult)
+		}
+		payload := sessionsV3DecodeToolPayload(boundaryResult.Output)
+		if sessionsV3MapString(payload, "execution_epoch_id") == "" || sessionsV3MapString(payload, "execution_epoch_id") != parentEpochID || sessionsV3MapString(payload, "run_id") == "" || sessionsV3MapString(payload, "next_run_id") != "" || sessionsV3MapString(payload, "next_action") != "continue_current_run" {
+			return provideriface.Response{}, fmt.Errorf("checkpoint assignment did not preserve the current post-handoff run: parent_epoch=%q payload=%+v", parentEpochID, payload)
+		}
+		completion, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-review-followup", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"followup-1","report":"launch readiness investigated","result":"done","handoff_overview":"Launch readiness investigation is complete.","recommendation":{"decision":"ship","action":"review the completed checkpoint","reason":"The focused flow completed.","action_state":"ready"}}`})
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		if completion.Error != "" || !completion.RestartTurn {
+			return provideriface.Response{}, fmt.Errorf("follow-up checkpoint completion failed: %+v", completion)
+		}
+		return provideriface.Response{RestartTurn: completion.RestartTurn}, nil
 	}
 	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
 	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-final-review-followup-create", "provider final-review follow-up", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
@@ -6804,8 +6788,8 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsCheckpointInSuccessorEpochEx
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if runner.callCount != 2 {
-		t.Fatalf("provider calls = %d, want parent turn plus one follow-up checkpoint run", runner.callCount)
+	if runner.callCount != 1 {
+		t.Fatalf("provider calls = %d, want one post-handoff run through checkpoint completion", runner.callCount)
 	}
 	if !server.WaitForInFlightRuns(2 * time.Second) {
 		t.Fatal("final-review follow-up runs did not drain")
@@ -6814,16 +6798,11 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsCheckpointInSuccessorEpochEx
 	if err != nil {
 		t.Fatalf("list final-review follow-up run intents: %v", err)
 	}
-	if len(intents) != 2 || intents[0].RunID == intents[1].RunID || intents[0].CheckpointID == intents[1].CheckpointID {
-		t.Fatalf("final-review follow-up run intents = %+v, want distinct parent and checkpoint runs", intents)
+	if len(intents) != 1 || intents[0].CheckpointID != "followup-1" || intents[0].AttemptID != "followup-1:attempt-1" || intents[0].Status != sessionruntime.RunIntentCompleted {
+		t.Fatalf("final-review follow-up run intents = %+v, want one completed run with checkpoint ownership", intents)
 	}
-	for _, intent := range intents {
-		if intent.Status != sessionruntime.RunIntentCompleted {
-			t.Fatalf("final-review follow-up run did not complete: %+v", intents)
-		}
-		if intent.CheckpointID == "followup-1" && (intent.SourceMessageID == "" || !strings.HasPrefix(intent.SourceMessageID, "v3msg_")) {
-			t.Fatalf("follow-up checkpoint run lost canonical source message identity: %+v", intent)
-		}
+	if intents[0].SourceMessageID == "" || !strings.HasPrefix(intents[0].SourceMessageID, "v3msg_") {
+		t.Fatalf("follow-up checkpoint run lost canonical source message identity: %+v", intents[0])
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
 	if err != nil {
@@ -7047,16 +7026,14 @@ func TestSessionsV3ExecutorFinalHandoffIsolatesSentinelAcrossCheckpointCycles(t 
 				return provideriface.Response{}, fmt.Errorf("post-handoff parent input crossed epoch boundary incorrectly: %+v", req.Input)
 			}
 			args := mustSessionsV3TestJSON(t, map[string]any{"action": "transition_checkpoint_boundary", "change_request": postHandoffRequest, "checkpoint_title": "Second cycle", "tasks": []string{"Verify epoch isolation"}, "acceptance_criteria": []string{"Pre-handoff sentinel is unavailable"}})
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-start-second-cycle", Name: "plan_manage", Arguments: args})
+			boundary, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-start-second-cycle", Name: "plan_manage", Arguments: args})
 			if err != nil {
 				return provideriface.Response{}, err
 			}
-			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
-		case 3:
-			if sessionsV3ProviderInputContainsContentText(req.Input, preHandoffSentinel) || !sessionsV3ProviderInputContainsContentText(req.Input, postHandoffRequest) || !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: followup-1.") {
-				return provideriface.Response{}, fmt.Errorf("second checkpoint did not receive only successor-epoch conversation plus routing: %+v", req.Input)
+			if boundary.RestartTurn {
+				return provideriface.Response{}, fmt.Errorf("checkpoint assignment restarted the second-cycle run: %+v", boundary)
 			}
-			args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "followup-1", "report": "epoch isolation verified", "result": "done"})
+			args = mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": "followup-1", "report": "epoch isolation verified", "result": "done"})
 			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-second-cycle", Name: "plan_manage", Arguments: args})
 			if err != nil {
 				return provideriface.Response{}, err
@@ -7088,14 +7065,14 @@ func TestSessionsV3ExecutorFinalHandoffIsolatesSentinelAcrossCheckpointCycles(t 
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if runner.callCount != 3 || len(runner.requests) != 3 {
-		t.Fatalf("provider calls = %d requests = %d, want first checkpoint, post-handoff parent, and second checkpoint", runner.callCount, len(runner.requests))
+	if runner.callCount != 2 || len(runner.requests) != 2 {
+		t.Fatalf("provider calls = %d requests = %d, want one run per final-handoff cycle", runner.callCount, len(runner.requests))
 	}
 	if runner.requests[0].ExecutionEpochID == "" || runner.requests[1].ExecutionEpochID == runner.requests[0].ExecutionEpochID || runner.requests[1].ProviderLineageID == runner.requests[0].ProviderLineageID {
 		t.Fatalf("final handoff did not open a fresh epoch/provider lineage: first=%+v post=%+v", runner.requests[0], runner.requests[1])
 	}
-	if runner.requests[2].ExecutionEpochID != runner.requests[1].ExecutionEpochID || runner.requests[2].ProviderLineageID != runner.requests[1].ProviderLineageID {
-		t.Fatalf("checkpoint creation reset successor epoch/provider lineage: parent=%+v checkpoint=%+v", runner.requests[1], runner.requests[2])
+	if runner.requests[1].ExecutionEpochID == "" || runner.requests[1].ProviderLineageID == "" {
+		t.Fatalf("post-handoff run lost successor epoch/provider lineage: %+v", runner.requests[1])
 	}
 }
 

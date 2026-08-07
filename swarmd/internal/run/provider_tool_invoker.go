@@ -794,7 +794,7 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 	if checkpointID == "" {
 		return nil
 	}
-	return fmt.Errorf("checkpoint boundary transition is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; transition_checkpoint_boundary is reserved for a trusted parent provider turn and its successful result terminates that turn while committing one fresh checkpoint run; request_followup_checkpoint and its aliases are retired; if an unrelated request reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence so the parent conversation can choose transition_checkpoint_boundary or request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
+	return fmt.Errorf("checkpoint boundary transition is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; transition_checkpoint_boundary is reserved for a trusted parent provider turn and assigns the new checkpoint to that already-current run without restarting it; request_followup_checkpoint and its aliases are retired; if an unrelated request reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence so the parent conversation can choose transition_checkpoint_boundary or request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
 }
 
 func isPlanManageSessionCheckpointCreationAction(action string) bool {
@@ -945,24 +945,19 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 	if applyMutation == nil {
 		return errors.New("v3 provider tool persistence requires applySessionV3PrimaryMutation")
 	}
-	boundaryResult, err := providerManagedCheckpointBoundaryResultMutation(config.runID, call, result)
-	if err != nil {
-		return err
-	}
 	mutation, err := applyMutation(sessionruntime.SessionMutationInput{
-		SessionID:                config.sessionID,
-		UserID:                   principal.UserID,
-		AccountScopeID:           principal.AccountScopeID,
-		ClientRequestID:          clientRequestID,
-		IdempotencyKey:           clientRequestID,
-		PayloadHash:              payloadHash,
-		RequestHash:              payloadHash,
-		Kind:                     sessionruntime.SessionMutationAppendMessage,
-		EventType:                eventType,
-		EventPayload:             eventPayload,
-		Message:                  &message,
-		CheckpointBoundaryResult: boundaryResult,
-		NowUnixMs:                now,
+		SessionID:       config.sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       eventType,
+		EventPayload:    eventPayload,
+		Message:         &message,
+		NowUnixMs:       now,
 	})
 	if err != nil {
 		return err
@@ -971,21 +966,6 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		config.emit(StreamEvent{Type: StreamEventMessageStored, Step: config.step, Message: mutation.Message})
 	}
 	return nil
-}
-
-func providerManagedCheckpointBoundaryResultMutation(sourceRunID string, call tool.Call, result tool.Result) (*pebblestore.V3CheckpointBoundaryResultMutation, error) {
-	if !providerManagedCheckpointBoundaryCall(call) || strings.TrimSpace(result.Error) != "" {
-		return nil, nil
-	}
-	payload := decodeToolPayload(strings.TrimSpace(result.Output))
-	if payload == nil || !mapBool(payload, "parent_turn_terminal") {
-		return nil, errors.New("checkpoint boundary tool result is missing terminal ownership metadata")
-	}
-	nextRunID := strings.TrimSpace(mapString(payload, "next_run_id"))
-	if nextRunID == "" {
-		return nil, errors.New("checkpoint boundary tool result is missing next_run_id")
-	}
-	return &pebblestore.V3CheckpointBoundaryResultMutation{SourceRunID: strings.TrimSpace(sourceRunID), NextRunID: nextRunID}, nil
 }
 
 const (

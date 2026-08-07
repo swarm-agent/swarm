@@ -14,10 +14,9 @@ import (
 
 const CheckpointBoundaryTransitionAction = "transition_checkpoint_boundary"
 
-// CheckpointBoundaryTransitionInput is the complete durable contract for moving
-// checkpoint ownership inside the provider turn that requested it. SourceMessageID
-// is the idempotent user-message authority; SourceRunID relinquishes ownership and
-// the Next* fields identify the next run committed in the same execution epoch.
+// CheckpointBoundaryTransitionInput is the complete durable contract for assigning
+// checkpoint ownership to the provider turn that requested it. SourceMessageID is
+// the idempotent user-message authority and SourceRunID remains the owning run.
 type CheckpointBoundaryTransitionInput struct {
 	SessionID          string
 	PlanID             string
@@ -29,10 +28,9 @@ type CheckpointBoundaryTransitionInput struct {
 	Notes              string
 	SourceMessageID    string
 	SourceRunID        string
-	NextRunID          string
-	NextRunSessionID   string
+	RunSessionID       string
 	ParentSessionID    string
-	NextAttemptID      string
+	AttemptID          string
 	StartedAt          int64
 }
 
@@ -51,9 +49,9 @@ type CheckpointBoundaryTransitionResult struct {
 }
 
 // CheckpointBoundaryService is the sole authority for appending, selecting, and
-// assigning a checkpoint run from a parent provider turn without resetting its
-// execution epoch or provider conversation. It deliberately does not call
-// PlanLifecycleService.RequestFollowupCheckpoint.
+// assigning a checkpoint to the parent provider run that is already executing.
+// It does not create another run, reset the execution epoch, or restart the
+// provider conversation.
 type CheckpointBoundaryService struct {
 	sessions             *Service
 	applySessionMutation func(SessionMutationInput) (SessionMutationResult, error)
@@ -104,6 +102,9 @@ func (s *CheckpointBoundaryService) Transition(input CheckpointBoundaryTransitio
 	}
 	if strings.TrimSpace(active.RunID) != input.SourceRunID {
 		return CheckpointBoundaryTransitionResult{}, fmt.Errorf("checkpoint boundary source run %q conflicts with active run %q", input.SourceRunID, active.RunID)
+	}
+	if active.Status != RunIntentPendingExecutor && active.Status != RunIntentRunning {
+		return CheckpointBoundaryTransitionResult{}, fmt.Errorf("checkpoint boundary source run %q is %s", input.SourceRunID, active.Status)
 	}
 
 	point := followupCheckpointInsertionPointForDocument(state.doc)
@@ -161,9 +162,9 @@ func (s *CheckpointBoundaryService) Transition(input CheckpointBoundaryTransitio
 	decision, err := ApplyPlanCheckpointStart(state.doc, PlanCheckpointStartOptions{
 		CheckpointID:    checkpointID,
 		PlanID:          state.plan.ID,
-		AttemptID:       input.NextAttemptID,
-		RunID:           input.NextRunID,
-		SessionID:       input.NextRunSessionID,
+		AttemptID:       input.AttemptID,
+		RunID:           input.SourceRunID,
+		SessionID:       input.RunSessionID,
 		ParentSessionID: input.ParentSessionID,
 		StartedAt:       now,
 	})
@@ -189,6 +190,15 @@ func (s *CheckpointBoundaryService) Transition(input CheckpointBoundaryTransitio
 		return CheckpointBoundaryTransitionResult{}, err
 	}
 	clientRequestID := "checkpoint-boundary:" + input.SourceMessageID
+	ownedRun := active
+	ownedRun.SourceMessageID = input.SourceMessageID
+	ownedRun.PlanID = state.plan.ID
+	ownedRun.CheckpointID = checkpointID
+	ownedRun.AttemptID = decision.AttemptID
+	ownedRun.RunSessionID = input.RunSessionID
+	ownedRun.ParentSessionID = input.ParentSessionID
+	ownedRun.ResumeContext = false
+	ownedRun.UpdatedAt = now
 	mutation, err := s.applySessionMutation(SessionMutationInput{
 		SessionID:       state.session.ID,
 		UserID:          state.session.UserID,
@@ -199,17 +209,7 @@ func (s *CheckpointBoundaryService) Transition(input CheckpointBoundaryTransitio
 		RequestHash:     hash,
 		Kind:            SessionMutationCommitCheckpointBoundary,
 		EventType:       "session.checkpoint_boundary.committed",
-		RunIntent: &pebblestore.V3SessionRunIntent{
-			RunID:           input.NextRunID,
-			SourceMessageID: input.SourceMessageID,
-			Status:          RunIntentPendingExecutor,
-			PlanID:          state.plan.ID,
-			CheckpointID:    checkpointID,
-			AttemptID:       decision.AttemptID,
-			RunSessionID:    input.NextRunSessionID,
-			ParentSessionID: input.ParentSessionID,
-			ResumeContext:   false,
-		},
+		RunIntent:       &ownedRun,
 		PlanSave: &pebblestore.V3PlanSaveMutation{
 			Plan:                  prepared.Plan,
 			ArchivedRevision:      prepared.ArchivedRevision,
@@ -266,20 +266,15 @@ func normalizeCheckpointBoundaryTransitionInput(input CheckpointBoundaryTransiti
 	input.Notes = strings.TrimSpace(input.Notes)
 	input.SourceMessageID = strings.TrimSpace(input.SourceMessageID)
 	input.SourceRunID = strings.TrimSpace(input.SourceRunID)
-	input.NextRunID = strings.TrimSpace(input.NextRunID)
-	if input.NextRunID == "" && input.SessionID != "" && input.SourceMessageID != "" {
-		sum := sha256.Sum256([]byte(input.SessionID + "\x00" + input.SourceMessageID + "\x00checkpoint-boundary"))
-		input.NextRunID = "desktop-v3-run:" + hex.EncodeToString(sum[:16])
-	}
-	input.NextRunSessionID = strings.TrimSpace(input.NextRunSessionID)
-	if input.NextRunSessionID == "" {
-		input.NextRunSessionID = input.SessionID
+	input.RunSessionID = strings.TrimSpace(input.RunSessionID)
+	if input.RunSessionID == "" {
+		input.RunSessionID = input.SessionID
 	}
 	input.ParentSessionID = strings.TrimSpace(input.ParentSessionID)
 	if input.ParentSessionID == "" {
 		input.ParentSessionID = input.SessionID
 	}
-	input.NextAttemptID = strings.TrimSpace(input.NextAttemptID)
+	input.AttemptID = strings.TrimSpace(input.AttemptID)
 	return input
 }
 
@@ -287,11 +282,8 @@ func validateCheckpointBoundaryTransitionInput(input CheckpointBoundaryTransitio
 	if input.SessionID == "" || input.ChangeRequest == "" || input.SourceMessageID == "" {
 		return errors.New("checkpoint boundary transition requires session_id, change_request, and source_message_id")
 	}
-	if input.SourceRunID == "" || input.NextRunID == "" || input.NextRunSessionID == "" || input.ParentSessionID == "" {
-		return errors.New("checkpoint boundary transition requires complete source and next run ownership")
-	}
-	if input.SourceRunID == input.NextRunID {
-		return errors.New("checkpoint boundary transition requires a distinct next run")
+	if input.SourceRunID == "" || input.RunSessionID == "" || input.ParentSessionID == "" {
+		return errors.New("checkpoint boundary transition requires complete current run ownership")
 	}
 	if len(trimStringSlice(input.AcceptanceCriteria)) == 0 {
 		return errors.New("checkpoint boundary transition requires acceptance_criteria")
