@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func TestExecutePlanManageNewRefusesWithoutOverrideWhenActivePlanExists(t *testing.T) {
@@ -82,7 +84,9 @@ func newPlanManageRunTestService(t *testing.T) (*Service, *sessionruntime.Servic
 		t.Fatalf("open event log: %v", err)
 	}
 	sessionSvc := sessionruntime.NewService(sessions, events)
-	return &Service{sessions: sessionSvc}, sessionSvc, func() { _ = store.Close() }
+	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
+	permissions.SetBypassPermissions(true)
+	return NewService(sessionSvc, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events), sessionSvc, func() { _ = store.Close() }
 }
 
 func createPlanManageTestSession(t *testing.T, svc *sessionruntime.Service) string {

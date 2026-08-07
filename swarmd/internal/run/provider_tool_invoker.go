@@ -794,6 +794,17 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 	if checkpointID == "" {
 		return nil
 	}
+	// A provider/tool retry of the exact parent boundary call must reach the
+	// boundary service's durable source-message replay path. It is not a request
+	// to append another checkpoint from inside the checkpoint-owned run.
+	sourceMessageID := strings.TrimSpace(config.sourceMessageID)
+	if sourceMessageID != "" {
+		for _, checkpoint := range active.Document.Checkpoints {
+			if strings.TrimSpace(checkpoint.ID) == checkpointID && strings.TrimSpace(checkpoint.SourceMessageID) == sourceMessageID {
+				return nil
+			}
+		}
+	}
 	return fmt.Errorf("checkpoint boundary transition is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; transition_checkpoint_boundary is reserved for a trusted parent provider turn and assigns the new checkpoint to that already-current run without restarting it; request_followup_checkpoint and its aliases are retired; if an unrelated request reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence so the parent conversation can choose transition_checkpoint_boundary or request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
 }
 
