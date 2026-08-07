@@ -489,34 +489,15 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartSessionCheckpoint(w http.Res
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
-	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		return
 	}
-	var req sessionsV3PlanLifecycleFollowupRequest
-	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	input, err := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, "")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	var runStart *sessionsV3PlanModeRunStart
-	if result.Summary.NextCheckpointID != "" && result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress && strings.TrimSpace(result.AttemptID) != "" {
-		var status int
-		runStart, status, err = s.startSessionsV3PlanModeRun(principal, sessionID, "request_followup_checkpoint", result, req.SuppressLifecycleMessage)
-		if err != nil {
-			writeError(w, status, err)
-			return
-		}
-	}
-	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "request_followup_checkpoint", result, runStart)
+	writeJSON(w, http.StatusGone, map[string]any{
+		"ok":         false,
+		"error_code": "legacy_followup_checkpoint_disabled",
+		"error":      "the request-followup-checkpoint lifecycle route is disabled; migrate parent AI turns to plan_manage transition_checkpoint_boundary",
+	})
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeRequestNewPlan(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {

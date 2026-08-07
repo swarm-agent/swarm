@@ -484,19 +484,7 @@ func (s *Service) authorizeDynamicToolAction(input AuthorizationInput, sessionID
 	action := normalizePlanManageAction(mapStringAny(args["action"]), mapStringAny(args["op"]), args)
 	switch action {
 	case "request_followup_checkpoint":
-		approvalRequired, policyEffective, err := s.planFollowupCheckpointApprovalRequired(sessionID, input.AccountScopeID, args)
-		if err != nil {
-			return AuthorizationResult{}, true, err
-		}
-		if !approvalRequired {
-			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "resolved session checkpoint policy allows auto-add and start", Source: "dynamic_action_policy"}, true, nil
-		}
-		reason := "resolved session checkpoint policy requires approval"
-		if policyEffective != "" {
-			reason = fmt.Sprintf("resolved session checkpoint policy %q requires approval", policyEffective)
-		}
-		result, err := s.createPendingAuthorization(input, sessionID, requirement, reason, "dynamic_action_policy", "ask plan session checkpoint request")
-		return result, true, err
+		return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: "plan_manage request_followup_checkpoint is disabled; use transition_checkpoint_boundary from a trusted parent provider turn", Source: "retired_action_lockout"}, true, nil
 	case "amend_plan", "request_new_plan":
 		result, err := s.createPendingAuthorization(input, sessionID, requirement, "typed plan lifecycle request requires approval", "dynamic_action_policy", "ask plan lifecycle request")
 		return result, true, err
@@ -1596,7 +1584,7 @@ func PlanManageLifecycleRequirement(toolArguments string) string {
 	action := normalizePlanManageAction(mapStringAny(payload["action"]), mapStringAny(payload["op"]), payload)
 	switch action {
 	case "request_followup_checkpoint":
-		return "plan_followup_request"
+		return "plan_followup_retired"
 	case "amend_plan":
 		return "plan_amendment_request"
 	case "request_new_plan":

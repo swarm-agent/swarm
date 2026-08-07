@@ -25,14 +25,15 @@ func TestEditPendingPlanDefinitionRequiresNativeStructuredDocument(t *testing.T)
 	}
 }
 
-func TestPlanManageContractMakesNoPlanCheckpointAtomic(t *testing.T) {
+func TestPlanManageContractMakesCheckpointBoundariesExplicit(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
 	if !containsAll(definition.Description,
-		"atomically creates an approved one-checkpoint active plan and starts that checkpoint in the current run",
-		"Never call request_followup_checkpoint when no active plan exists",
-		"never call start_checkpoint after start_session_checkpoint",
+		"start_session_checkpoint atomically creates and starts one bounded checkpoint",
+		"transition_checkpoint_boundary is the only action",
+		"terminal for the parent turn",
+		"request_followup_checkpoint action and all aliases are rejected",
 	) {
-		t.Fatalf("plan_manage description does not enforce atomic no-plan checkpoint routing: %s", definition.Description)
+		t.Fatalf("plan_manage description does not enforce checkpoint-boundary routing: %s", definition.Description)
 	}
 }
 
@@ -99,9 +100,9 @@ func TestPlanToolDefinitionsExposeCanonicalInfoFieldTypes(t *testing.T) {
 	}
 }
 
-func TestPlanManageDefinitionRequiresRequirementAwareRestartSelection(t *testing.T) {
+func TestPlanManageDefinitionRequiresCheckpointBoundarySelection(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
-	if !containsAll(definition.Description, "Classify feedback by impact on the current deliverable contract", "least disruptive valid route", "inquiry or guidance only means no plan mutation", "localized additive refinement", "add_subtask", "replace_subtasks", "complete authoritative list", "invalidates its objective or acceptance criteria", "complete replacement title/tasks/acceptance_criteria/notes", "independently shippable work", "request_followup_checkpoint", "Imperative wording alone does not make feedback a redefinition") {
+	if !containsAll(definition.Description, "Classify feedback by contract impact", "add_subtask", "replace_subtasks", "restart_checkpoint", "independently shippable work from a parent turn uses transition_checkpoint_boundary", "request_followup_checkpoint action and all aliases are rejected") {
 		t.Fatalf("plan_manage description does not define requirement-aware restart selection: %q", definition.Description)
 	}
 	params, ok := definition.Parameters["properties"].(map[string]any)
@@ -109,7 +110,7 @@ func TestPlanManageDefinitionRequiresRequirementAwareRestartSelection(t *testing
 		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
 	}
 	actionDescription, _ := params["action"].(map[string]any)["description"].(string)
-	if !containsAll(actionDescription, "Before mutating a plan for user feedback", "inquiry/guidance only requires no mutation", "localized additive feedback", "uses add_subtask and continues the same checkpoint/attempt", "replace_subtasks", "complete authoritative list", "invalidates the current objective or acceptance criteria", "independently shippable work or a separate review/failure boundary") {
+	if !containsAll(actionDescription, "transition_checkpoint_boundary is the sole active-plan checkpoint-boundary action", "trusted parent provider turn", "one fresh execution run", "terminates the parent turn", "request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected") {
 		t.Fatalf("plan_manage action description does not classify redirected work: %q", actionDescription)
 	}
 	changeRequestDescription, _ := params["change_request"].(map[string]any)["description"].(string)
@@ -135,18 +136,15 @@ func TestPlanManageDefinitionRequiresRequirementAwareRestartSelection(t *testing
 	}
 }
 
-func TestPlanManageDefinitionDirectsBlockedFollowupsToAtomicRecovery(t *testing.T) {
+func TestPlanManageDefinitionRejectsLegacyFollowupContract(t *testing.T) {
 	definition := mustFindDefinition(t, "plan_manage")
-	if !containsAll(definition.Description, "blocked plan", "request_followup_checkpoint", "do not call resolve_blocked_checkpoint first", "failed checkpoints remain stopped") {
-		t.Fatalf("plan_manage description does not advertise atomic blocked follow-up recovery: %q", definition.Description)
-	}
 	params, ok := definition.Parameters["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
 	}
 	actionDescription, _ := params["action"].(map[string]any)["description"].(string)
-	if !containsAll(actionDescription, "active approved/running/blocked/review plan", "atomically supersedes and resolves", "do not call resolve_blocked_checkpoint first") {
-		t.Fatalf("plan_manage action description does not direct atomic blocked recovery: %q", actionDescription)
+	if !containsAll(actionDescription, "transition_checkpoint_boundary", "sole active-plan checkpoint-boundary action", "request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected") {
+		t.Fatalf("plan_manage action description does not lock the legacy path: %q", actionDescription)
 	}
 }
 

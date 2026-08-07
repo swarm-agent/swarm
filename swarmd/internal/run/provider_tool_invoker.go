@@ -72,6 +72,7 @@ type ProviderManagedToolInvokerConfig struct {
 	SessionID            string
 	PermissionSessionID  string
 	RunID                string
+	SourceMessageID      string
 	Step                 int
 	SessionMode          string
 	WorkspacePath        string
@@ -117,6 +118,7 @@ type providerToolInvokerConfig struct {
 	sessionID            string
 	permissionSessionID  string
 	runID                string
+	sourceMessageID      string
 	step                 int
 	sessionMode          string
 	workspacePath        string
@@ -142,6 +144,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		sessionID:            strings.TrimSpace(config.SessionID),
 		permissionSessionID:  strings.TrimSpace(config.PermissionSessionID),
 		runID:                strings.TrimSpace(config.RunID),
+		sourceMessageID:      strings.TrimSpace(config.SourceMessageID),
 		step:                 config.Step,
 		sessionMode:          strings.TrimSpace(config.SessionMode),
 		workspacePath:        strings.TrimSpace(config.WorkspacePath),
@@ -413,7 +416,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 				RunID:           strings.TrimSpace(config.runID),
 				RunSessionID:    strings.TrimSpace(config.sessionID),
 				ParentSessionID: strings.TrimSpace(config.sessionID),
-				SourceMessageID: fmt.Sprintf("provider-run:%s:step:%d:call:%s", strings.TrimSpace(config.runID), config.step, strings.TrimSpace(call.CallID)),
+				SourceMessageID: strings.TrimSpace(config.sourceMessageID),
 				Inline:          config.providerManagedV3 && sessionruntime.NormalizeMode(config.sessionMode) == sessionruntime.ModeAuto,
 			}
 			controlResponse := providerManagedControlPlaneResponse(call, feedback)
@@ -756,12 +759,12 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 	if checkpointID == "" {
 		return nil
 	}
-	return fmt.Errorf("recursive session checkpoint creation is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; request_followup_checkpoint is reserved for related ordered work from the parent conversation, while an unrelated product goal must use request_new_plan with one checkpoint when bounded or multiple ordered checkpoints when intrinsically multi-stage, high-risk, fresh-context, or independently reviewable; if an unrelated request somehow reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence without asking the user to resend so the parent conversation can call request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
+	return fmt.Errorf("checkpoint boundary transition is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; transition_checkpoint_boundary is reserved for a trusted parent provider turn and its successful result terminates that turn while committing one fresh checkpoint run; request_followup_checkpoint and its aliases are retired; if an unrelated request reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence so the parent conversation can choose transition_checkpoint_boundary or request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
 }
 
 func isPlanManageSessionCheckpointCreationAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint", "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
+	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint", "transition-checkpoint-boundary", "transition_checkpoint_boundary", "checkpoint-boundary-transition", "checkpoint_boundary_transition", "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		return true
 	default:
 		return false

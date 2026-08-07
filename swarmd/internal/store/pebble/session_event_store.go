@@ -13,23 +13,24 @@ import (
 )
 
 const (
-	V3SessionMutationCreateSession      = "session.create"
-	V3SessionMutationAppendMessage      = "message.append"
-	V3SessionMutationUpsertLifecycle    = "lifecycle.upsert"
-	V3SessionMutationRecordRunIntent    = "run_intent.record"
-	V3SessionMutationRecordDiagnostic   = "diagnostic.record"
-	V3SessionMutationRecordUsage        = "usage.record"
-	V3SessionMutationUpdateMode         = "session.mode.update"
-	V3SessionMutationUpdatePreference   = "session.preference.update"
-	V3SessionMutationUpdateMetadata     = "session.metadata.update"
-	V3SessionMutationUpdateSettings     = "session.settings.update"
-	V3SessionMutationUpdateModelProfile = "session.model_profile.update"
-	V3SessionMutationUpdateTitle        = "session.title.update"
-	V3SessionMutationSavePlan           = "plan.save"
-	V3SessionMutationAcceptPlan         = "plan.accept"
-	V3SessionMutationDeleteSession      = "session.delete"
-	V3SessionMutationArchiveSession     = "session.archive"
-	V3SessionMutationReactivateSession  = "session.reactivate"
+	V3SessionMutationCreateSession            = "session.create"
+	V3SessionMutationAppendMessage            = "message.append"
+	V3SessionMutationUpsertLifecycle          = "lifecycle.upsert"
+	V3SessionMutationRecordRunIntent          = "run_intent.record"
+	V3SessionMutationRecordDiagnostic         = "diagnostic.record"
+	V3SessionMutationRecordUsage              = "usage.record"
+	V3SessionMutationUpdateMode               = "session.mode.update"
+	V3SessionMutationUpdatePreference         = "session.preference.update"
+	V3SessionMutationUpdateMetadata           = "session.metadata.update"
+	V3SessionMutationUpdateSettings           = "session.settings.update"
+	V3SessionMutationUpdateModelProfile       = "session.model_profile.update"
+	V3SessionMutationUpdateTitle              = "session.title.update"
+	V3SessionMutationSavePlan                 = "plan.save"
+	V3SessionMutationAcceptPlan               = "plan.accept"
+	V3SessionMutationCommitCheckpointBoundary = "checkpoint_boundary.commit"
+	V3SessionMutationDeleteSession            = "session.delete"
+	V3SessionMutationArchiveSession           = "session.archive"
+	V3SessionMutationReactivateSession        = "session.reactivate"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
 	V3SessionMutationStatusCompleted = "completed"
@@ -59,31 +60,41 @@ type V3PlanSaveMutation struct {
 	ExpectedParentVersion int                  `json:"expected_parent_version,omitempty"`
 }
 
+// V3CheckpointBoundaryMutation identifies the parent provider run relinquishing
+// execution ownership. The canonical mutation commits its terminal state, the
+// inserted-and-selected checkpoint plan revision, and the next pending run
+// intent in one batch.
+type V3CheckpointBoundaryMutation struct {
+	SourceRunID     string `json:"source_run_id"`
+	SourceMessageID string `json:"source_message_id"`
+}
+
 type V3SessionMutationInput struct {
-	SessionID            string                    `json:"session_id"`
-	UserID               string                    `json:"user_id,omitempty"`
-	AccountScopeID       string                    `json:"account_scope_id,omitempty"`
-	ClientRequestID      string                    `json:"client_request_id,omitempty"`
-	IdempotencyKey       string                    `json:"idempotency_key,omitempty"`
-	PayloadHash          string                    `json:"payload_hash,omitempty"`
-	RequestHash          string                    `json:"request_hash,omitempty"`
-	Kind                 string                    `json:"kind"`
-	EventID              string                    `json:"event_id,omitempty"`
-	EventType            string                    `json:"event_type,omitempty"`
-	EventPayload         json.RawMessage           `json:"event_payload,omitempty"`
-	CausationID          string                    `json:"causation_id,omitempty"`
-	CorrelationID        string                    `json:"correlation_id,omitempty"`
-	Session              *SessionSnapshot          `json:"session,omitempty"`
-	Message              *MessageSnapshot          `json:"message,omitempty"`
-	Lifecycle            *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	RunIntent            *V3SessionRunIntent       `json:"run_intent,omitempty"`
-	PlanAcceptance       *V3PlanAcceptanceMutation `json:"plan_acceptance,omitempty"`
-	PlanSave             *V3PlanSaveMutation       `json:"plan_save,omitempty"`
-	MediaStagingBindings []MediaStagingBinding     `json:"media_staging_bindings,omitempty"`
-	EpochID              string                    `json:"epoch_id,omitempty"`
-	TurnUsage            *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
-	ExpectedLastEventSeq *uint64                   `json:"expected_last_event_seq,omitempty"`
-	NowUnixMs            int64                     `json:"now_unix_ms,omitempty"`
+	SessionID            string                        `json:"session_id"`
+	UserID               string                        `json:"user_id,omitempty"`
+	AccountScopeID       string                        `json:"account_scope_id,omitempty"`
+	ClientRequestID      string                        `json:"client_request_id,omitempty"`
+	IdempotencyKey       string                        `json:"idempotency_key,omitempty"`
+	PayloadHash          string                        `json:"payload_hash,omitempty"`
+	RequestHash          string                        `json:"request_hash,omitempty"`
+	Kind                 string                        `json:"kind"`
+	EventID              string                        `json:"event_id,omitempty"`
+	EventType            string                        `json:"event_type,omitempty"`
+	EventPayload         json.RawMessage               `json:"event_payload,omitempty"`
+	CausationID          string                        `json:"causation_id,omitempty"`
+	CorrelationID        string                        `json:"correlation_id,omitempty"`
+	Session              *SessionSnapshot              `json:"session,omitempty"`
+	Message              *MessageSnapshot              `json:"message,omitempty"`
+	Lifecycle            *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
+	RunIntent            *V3SessionRunIntent           `json:"run_intent,omitempty"`
+	PlanAcceptance       *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
+	PlanSave             *V3PlanSaveMutation           `json:"plan_save,omitempty"`
+	CheckpointBoundary   *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
+	MediaStagingBindings []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
+	EpochID              string                        `json:"epoch_id,omitempty"`
+	TurnUsage            *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	ExpectedLastEventSeq *uint64                       `json:"expected_last_event_seq,omitempty"`
+	NowUnixMs            int64                         `json:"now_unix_ms,omitempty"`
 }
 
 type V3SessionMutationResult struct {
@@ -358,6 +369,7 @@ type V3SessionRunIntent struct {
 	UserID               string `json:"user_id,omitempty"`
 	AccountScopeID       string `json:"account_scope_id,omitempty"`
 	RunID                string `json:"run_id"`
+	SourceMessageID      string `json:"source_message_id,omitempty"`
 	Status               string `json:"status"`
 	BlockedReason        string `json:"blocked_reason,omitempty"`
 	CreatedAt            int64  `json:"created_at"`
@@ -381,6 +393,7 @@ type V3SessionRunState struct {
 	UserID               string `json:"user_id,omitempty"`
 	AccountScopeID       string `json:"account_scope_id,omitempty"`
 	RunID                string `json:"run_id"`
+	SourceMessageID      string `json:"source_message_id,omitempty"`
 	Active               bool   `json:"active"`
 	Status               string `json:"status"`
 	BlockedReason        string `json:"blocked_reason,omitempty"`
@@ -420,24 +433,25 @@ type V3SessionHydration struct {
 }
 
 type v3SessionEventReplayPayload struct {
-	SessionID     string                    `json:"session_id,omitempty"`
-	Seq           uint64                    `json:"seq,omitempty"`
-	Kind          string                    `json:"kind,omitempty"`
-	Session       *SessionSnapshot          `json:"session,omitempty"`
-	Message       *MessageSnapshot          `json:"message,omitempty"`
-	Lifecycle     *SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
-	RunIntent     *V3SessionRunIntent       `json:"run_intent,omitempty"`
-	TurnUsage     *SessionTurnUsageSnapshot `json:"turn_usage,omitempty"`
-	UsageSummary  *SessionUsageSummary      `json:"usage_summary,omitempty"`
-	Tombstone     *V3SessionTombstone       `json:"tombstone,omitempty"`
-	MessageID     string                    `json:"message_id,omitempty"`
-	Role          string                    `json:"role,omitempty"`
-	RunID         string                    `json:"run_id,omitempty"`
-	Status        string                    `json:"status,omitempty"`
-	BlockedReason string                    `json:"blocked_reason,omitempty"`
-	Error         string                    `json:"error,omitempty"`
-	HasActivePlan bool                      `json:"has_active_plan,omitempty"`
-	ActivePlan    *SessionPlanSnapshot      `json:"active_plan,omitempty"`
+	SessionID          string                        `json:"session_id,omitempty"`
+	Seq                uint64                        `json:"seq,omitempty"`
+	Kind               string                        `json:"kind,omitempty"`
+	Session            *SessionSnapshot              `json:"session,omitempty"`
+	Message            *MessageSnapshot              `json:"message,omitempty"`
+	Lifecycle          *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
+	RunIntent          *V3SessionRunIntent           `json:"run_intent,omitempty"`
+	TurnUsage          *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	UsageSummary       *SessionUsageSummary          `json:"usage_summary,omitempty"`
+	CheckpointBoundary *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
+	Tombstone          *V3SessionTombstone           `json:"tombstone,omitempty"`
+	MessageID          string                        `json:"message_id,omitempty"`
+	Role               string                        `json:"role,omitempty"`
+	RunID              string                        `json:"run_id,omitempty"`
+	Status             string                        `json:"status,omitempty"`
+	BlockedReason      string                        `json:"blocked_reason,omitempty"`
+	Error              string                        `json:"error,omitempty"`
+	HasActivePlan      bool                          `json:"has_active_plan,omitempty"`
+	ActivePlan         *SessionPlanSnapshot          `json:"active_plan,omitempty"`
 }
 
 func KeyV3SessionSequence(sessionID string) string {
@@ -558,6 +572,15 @@ func V3RealtimeOutboxCursor(endpointSeq uint64) string {
 
 // SetMediaStagingBindCommitHookForTest installs a failure seam immediately
 // before the atomic routed media/session authority batch commits.
+func (s *SessionStore) SetCheckpointBoundaryCommitHookForTest(hook func(sessionID string) error) func() {
+	if s == nil || s.store == nil {
+		return func() {}
+	}
+	previous := s.store.sessionMutations.beforeExecutionEpochCommit
+	s.store.sessionMutations.beforeExecutionEpochCommit = hook
+	return func() { s.store.sessionMutations.beforeExecutionEpochCommit = previous }
+}
+
 func (s *SessionStore) SetMediaStagingBindCommitHookForTest(hook func(sessionID string) error) func() {
 	if s == nil || s.store == nil {
 		return func() {}
@@ -637,6 +660,31 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, fmt.Errorf("plan %q revision conflict: expected parent %d", input.PlanSave.Plan.ID, expected)
 		}
 	}
+	var boundarySourceRun V3SessionRunIntent
+	var boundarySourceRunOK bool
+	if input.CheckpointBoundary != nil {
+		if input.PlanSave == nil || input.RunIntent == nil {
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary mutation requires plan save and next run intent")
+		}
+		sourceRunID := strings.TrimSpace(input.CheckpointBoundary.SourceRunID)
+		if sourceRunID == "" || strings.TrimSpace(input.CheckpointBoundary.SourceMessageID) == "" {
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary mutation requires source run and source message ids")
+		}
+		var readErr error
+		boundarySourceRun, boundarySourceRunOK, readErr = s.GetV3SessionRunIntent(input.SessionID, sourceRunID)
+		if readErr != nil {
+			return V3SessionMutationResult{}, readErr
+		}
+		if !boundarySourceRunOK {
+			return V3SessionMutationResult{}, fmt.Errorf("checkpoint boundary source run %q was not found", sourceRunID)
+		}
+		if boundarySourceRun.Status != V3RunIntentRunning && boundarySourceRun.Status != V3RunIntentPendingExecutor {
+			return V3SessionMutationResult{}, fmt.Errorf("checkpoint boundary source run %q is %s", sourceRunID, boundarySourceRun.Status)
+		}
+		if strings.TrimSpace(input.RunIntent.RunID) == sourceRunID {
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary requires a distinct next run id")
+		}
+	}
 	currentSeq, err := s.readV3SessionSequence(input.SessionID)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -698,6 +746,44 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
+	var boundaryEpoch *ExecutionEpoch
+	if input.CheckpointBoundary != nil {
+		if activeEpoch == nil || activeEpoch.Status != ExecutionEpochStatusActive {
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary requires an active execution epoch")
+		}
+		predecessor := *activeEpoch
+		predecessor.Status = ExecutionEpochStatusSealed
+		predecessor.LastRootSeq = currentSeq
+		predecessor.SealedAt = now
+		predecessor.UpdatedAt = now
+		*activeEpoch = predecessor
+		next := ExecutionEpoch{
+			EpochID:        fmt.Sprintf("epoch-%020d", predecessor.Ordinal+1),
+			SessionID:      input.SessionID,
+			UserID:         input.UserID,
+			AccountScopeID: input.AccountScopeID,
+			ParentEpochID:  predecessor.EpochID,
+			Ordinal:        predecessor.Ordinal + 1,
+			Status:         ExecutionEpochStatusActive,
+			FirstRootSeq:   seq,
+			LastRootSeq:    seq,
+			Boundary: ExecutionEpochBoundary{
+				Reason:                 "checkpoint_boundary_transition",
+				PlanID:                 strings.TrimSpace(input.RunIntent.PlanID),
+				CheckpointID:           strings.TrimSpace(input.RunIntent.CheckpointID),
+				AttemptID:              strings.TrimSpace(input.RunIntent.AttemptID),
+				RunID:                  strings.TrimSpace(input.RunIntent.RunID),
+				RunSessionID:           strings.TrimSpace(input.RunIntent.RunSessionID),
+				ParentSessionID:        strings.TrimSpace(input.RunIntent.ParentSessionID),
+				SourceMessageID:        strings.TrimSpace(input.CheckpointBoundary.SourceMessageID),
+				PredecessorLastRootSeq: currentSeq,
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		boundaryEpoch = &next
+		epochID = next.EpochID
+	}
 
 	lifecycle, lifecycleProvided := prepareV3LifecycleForMutation(input, seq, now)
 	runIntent, runIntentProvided := prepareV3RunIntentForMutation(input, seq, now)
@@ -709,7 +795,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if strings.TrimSpace(runIntent.EpochID) == "" {
 			runIntent.EpochID = epochID
 		}
-		prepared, err := s.validateV3RunIntentTransition(input.SessionID, runIntent)
+		var prepared V3SessionRunIntent
+		if input.CheckpointBoundary != nil {
+			prepared, err = s.validateV3CheckpointBoundaryRunTransition(input.SessionID, boundarySourceRun, runIntent)
+		} else {
+			prepared, err = s.validateV3RunIntentTransition(input.SessionID, runIntent)
+		}
 		if err != nil {
 			return V3SessionMutationResult{}, err
 		}
@@ -732,6 +823,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	message, messageProvided, err := s.prepareV3MessageForMutation(input, session, seq, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if runIntentProvided && strings.TrimSpace(runIntent.SourceMessageID) == "" && messageProvided && strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+		runIntent.SourceMessageID = strings.TrimSpace(message.ID)
 	}
 	mediaAssets, err := s.prepareV3MessageMediaAssets(input, message, messageProvided)
 	if err != nil {
@@ -881,6 +975,17 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := setExecutionEpochInBatch(batch, *initialEpoch, true); err != nil {
 			return V3SessionMutationResult{}, err
 		}
+	} else if boundaryEpoch != nil && activeEpoch != nil {
+		if err := setExecutionEpochInBatch(batch, *activeEpoch, false); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := setExecutionEpochInBatch(batch, *boundaryEpoch, true); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		boundaryKey := KeyExecutionEpochBoundary(input.SessionID, boundaryEpoch.Boundary.PlanID, boundaryEpoch.Boundary.CheckpointID, boundaryEpoch.Boundary.AttemptID, boundaryEpoch.Boundary.Reason, boundaryEpoch.Boundary.RunID, boundaryEpoch.Boundary.SourceMessageID)
+		if err := batch.Set([]byte(boundaryKey), []byte(boundaryEpoch.EpochID), nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	} else if activeEpoch != nil {
 		if activeEpoch.Status != ExecutionEpochStatusActive {
 			return V3SessionMutationResult{}, fmt.Errorf("execution epoch %q is not active", activeEpoch.EpochID)
@@ -1002,6 +1107,29 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 		}
 	}
+	if input.CheckpointBoundary != nil && boundarySourceRunOK {
+		terminalSource := boundarySourceRun
+		terminalSource.Status = V3RunIntentCompleted
+		terminalSource.BlockedReason = ""
+		terminalSource.UpdatedAt = now
+		terminalSource.CompletedAt = now
+		terminalSource.EventSeq = seq
+		sourcePayload, err := json.Marshal(terminalSource)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal checkpoint boundary source run %q: %w", terminalSource.RunID, err)
+		}
+		if err := batch.Set([]byte(KeyV3SessionRunIntent(terminalSource.SessionID, terminalSource.RunID)), sourcePayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		previousStatusKey := KeyV3SessionRunIntentStatus(boundarySourceRun.Status, boundarySourceRun.UpdatedAt, boundarySourceRun.AccountScopeID, boundarySourceRun.SessionID, boundarySourceRun.RunID)
+		if err := batch.Delete([]byte(previousStatusKey), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return V3SessionMutationResult{}, err
+		}
+		statusKey := KeyV3SessionRunIntentStatus(terminalSource.Status, terminalSource.UpdatedAt, terminalSource.AccountScopeID, terminalSource.SessionID, terminalSource.RunID)
+		if err := batch.Set([]byte(statusKey), sourcePayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if runIntentProvided {
 		runPayload, err := json.Marshal(runIntent)
 		if err != nil {
@@ -1029,6 +1157,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if len(mediaStagingRecords) > 0 {
 		if hook := s.store.sessionMutations.beforeMediaStagingBindCommit; hook != nil {
+			if err := hook(input.SessionID); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
+	if input.CheckpointBoundary != nil {
+		if hook := s.store.sessionMutations.beforeExecutionEpochCommit; hook != nil {
 			if err := hook(input.SessionID); err != nil {
 				return V3SessionMutationResult{}, err
 			}
@@ -2126,6 +2261,7 @@ func v3SessionRunStateFromIntent(intent V3SessionRunIntent) V3SessionRunState {
 		UserID:          strings.TrimSpace(intent.UserID),
 		AccountScopeID:  strings.TrimSpace(intent.AccountScopeID),
 		RunID:           strings.TrimSpace(intent.RunID),
+		SourceMessageID: strings.TrimSpace(intent.SourceMessageID),
 		Active:          isV3RunIntentActive(status),
 		Status:          status,
 		BlockedReason:   strings.TrimSpace(intent.BlockedReason),
@@ -2188,6 +2324,7 @@ func v3SessionRunIntentFromState(state V3SessionRunState) V3SessionRunIntent {
 		UserID:          strings.TrimSpace(state.UserID),
 		AccountScopeID:  strings.TrimSpace(state.AccountScopeID),
 		RunID:           strings.TrimSpace(state.RunID),
+		SourceMessageID: strings.TrimSpace(state.SourceMessageID),
 		Status:          strings.TrimSpace(state.Status),
 		BlockedReason:   strings.TrimSpace(state.BlockedReason),
 		CreatedAt:       state.CreatedAt,
@@ -2209,6 +2346,26 @@ func v3SessionRunIntentWithStateTiming(intent V3SessionRunIntent, state V3Sessio
 	intent.DurationMs = state.DurationMs
 	intent.CumulativeDurationMs = state.CumulativeDurationMs
 	return intent
+}
+
+func (s *SessionStore) validateV3CheckpointBoundaryRunTransition(sessionID string, source, incoming V3SessionRunIntent) (V3SessionRunIntent, error) {
+	if source.RunID == "" || (source.Status != V3RunIntentRunning && source.Status != V3RunIntentPendingExecutor) {
+		return V3SessionRunIntent{}, errors.New("checkpoint boundary requires an active source run")
+	}
+	status := strings.TrimSpace(incoming.Status)
+	if status == "" {
+		status = V3RunIntentPendingExecutor
+	}
+	if status != V3RunIntentPendingExecutor {
+		return V3SessionRunIntent{}, fmt.Errorf("checkpoint boundary next run %q must be pending_executor", incoming.RunID)
+	}
+	if existing, ok, err := s.GetV3SessionRunIntent(sessionID, incoming.RunID); err != nil {
+		return V3SessionRunIntent{}, err
+	} else if ok {
+		return V3SessionRunIntent{}, fmt.Errorf("checkpoint boundary next run %q already exists with status %s", incoming.RunID, existing.Status)
+	}
+	incoming.Status = status
+	return incoming, nil
 }
 
 func (s *SessionStore) validateV3RunIntentTransition(sessionID string, incoming V3SessionRunIntent) (V3SessionRunIntent, error) {
@@ -2585,6 +2742,7 @@ func prepareV3RunIntentForMutation(input V3SessionMutationInput, seq uint64, now
 		intent.AccountScopeID = input.AccountScopeID
 	}
 	intent.RunID = strings.TrimSpace(intent.RunID)
+	intent.SourceMessageID = strings.TrimSpace(intent.SourceMessageID)
 	if intent.RunID == "" {
 		intent.RunID = fmt.Sprintf("v3run_%s_%020d", input.SessionID, seq)
 	}
@@ -2699,6 +2857,9 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 		if err := validateV3MutationEmbeddedOwnership(input, "run intent", input.RunIntent.SessionID, input.RunIntent.UserID, input.RunIntent.AccountScopeID); err != nil {
 			return err
 		}
+	}
+	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
+		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
 	}
 	if planSave := input.PlanSave; planSave != nil {
 		if err := validateV3MutationEmbeddedOwnership(input, "plan save", planSave.Plan.SessionID, planSave.Plan.UserID, planSave.Plan.AccountScopeID); err != nil {
@@ -2887,6 +3048,10 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 		plan.Active = input.PlanSave.Activate
 		payload.HasActivePlan = input.PlanSave.Activate
 		payload.ActivePlan = &plan
+	}
+	if input.CheckpointBoundary != nil {
+		boundary := *input.CheckpointBoundary
+		payload.CheckpointBoundary = &boundary
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

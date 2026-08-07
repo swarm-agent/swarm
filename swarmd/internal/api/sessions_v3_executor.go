@@ -67,6 +67,7 @@ type sessionV3ExecutorJob struct {
 	Principal       identity.Principal
 	SessionID       string
 	RunID           string
+	SourceMessageID string
 	EpochID         string
 	PlanID          string
 	CheckpointID    string
@@ -91,6 +92,7 @@ func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64
 		UserID:          strings.TrimSpace(job.Principal.UserID),
 		AccountScopeID:  strings.TrimSpace(job.Principal.AccountScopeID),
 		RunID:           strings.TrimSpace(job.RunID),
+		SourceMessageID: strings.TrimSpace(job.SourceMessageID),
 		Status:          strings.TrimSpace(status),
 		EpochID:         strings.TrimSpace(job.EpochID),
 		PlanID:          strings.TrimSpace(job.PlanID),
@@ -170,6 +172,7 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	job.SessionID = strings.TrimSpace(job.SessionID)
 	job.RunID = strings.TrimSpace(job.RunID)
+	job.SourceMessageID = strings.TrimSpace(job.SourceMessageID)
 	job.EpochID = strings.TrimSpace(job.EpochID)
 	job.PlanID = strings.TrimSpace(job.PlanID)
 	job.CheckpointID = strings.TrimSpace(job.CheckpointID)
@@ -346,6 +349,12 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 }
 
 func hydrateSessionV3ExecutorJobFromIntent(job sessionV3ExecutorJob, intent pebblestore.V3SessionRunIntent) sessionV3ExecutorJob {
+	if job.SourceMessageID == "" {
+		job.SourceMessageID = strings.TrimSpace(intent.SourceMessageID)
+	}
+	if job.EpochID == "" {
+		job.EpochID = strings.TrimSpace(intent.EpochID)
+	}
 	if job.PlanID == "" {
 		job.PlanID = strings.TrimSpace(intent.PlanID)
 	}
@@ -437,6 +446,7 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 			},
 			SessionID:       intent.SessionID,
 			RunID:           intent.RunID,
+			SourceMessageID: intent.SourceMessageID,
 			EpochID:         intent.EpochID,
 			PlanID:          intent.PlanID,
 			CheckpointID:    intent.CheckpointID,
@@ -558,10 +568,17 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		return
 	}
 	if response.LifecycleOnly {
-		if _, err := e.recordRunStatus(job, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
-			return
+		committedBoundary := response.StartNextCheckpoint && e.nextCheckpointRunAlreadyCommitted(job)
+		if !committedBoundary {
+			if err := e.persistSessionV3ProviderLifecycle(job, response, sessionruntime.SessionMutationResult{}); err != nil {
+				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+				return
+			}
+			if _, err := e.recordRunStatus(job, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
+				return
+			}
 		}
-		if response.StartNextCheckpoint {
+		if response.StartNextCheckpoint && !committedBoundary {
 			if err := e.startNextCheckpointRun(job); err != nil {
 				log.Printf("warning: v3 session executor could not start next checkpoint after run %q for session %q: %v", job.RunID, job.SessionID, err)
 				_, _ = e.recordRunFailureSystemMessage(job, "automatic checkpoint advance failed: "+err.Error())
@@ -599,6 +616,29 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 		return
 	}
+}
+
+func (e *sessionV3Executor) nextCheckpointRunAlreadyCommitted(job sessionV3ExecutorJob) bool {
+	payload := e.sessionV3LatestCheckpointRunToolPayload(job)
+	if payload == nil || !strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "action")), sessionruntime.CheckpointBoundaryTransitionAction) {
+		return false
+	}
+	nextRunID := strings.TrimSpace(sessionsV3MapString(payload, "next_run_id"))
+	if nextRunID == "" || e == nil || e.server == nil || e.server.sessions == nil {
+		return false
+	}
+	intent, ok, err := e.server.sessions.GetV3SessionRunIntent(job.SessionID, nextRunID)
+	if err != nil || !ok {
+		return false
+	}
+	if intent.Status != sessionruntime.RunIntentPendingExecutor && intent.Status != sessionruntime.RunIntentRunning {
+		return false
+	}
+	e.finish(job)
+	if intent.Status == sessionruntime.RunIntentPendingExecutor {
+		e.EnqueueRun(sessionV3ExecutorJob{Principal: job.Principal, SessionID: job.SessionID, RunID: intent.RunID, EpochID: intent.EpochID, PlanID: intent.PlanID, CheckpointID: intent.CheckpointID, AttemptID: intent.AttemptID, RunSessionID: intent.RunSessionID, ParentSessionID: intent.ParentSessionID, ResumeContext: intent.ResumeContext})
+	}
+	return true
 }
 
 func (e *sessionV3Executor) startNextCheckpointRun(job sessionV3ExecutorJob) error {
@@ -1699,7 +1739,28 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"result":   sessionV3ProviderResponseDiagnostic(response, loopResult.FinalContent, loopResult.DurableFlushCount),
 	})
 	if loopResult.TerminalPlanHandled {
-		return sessionV3AssistantResponse{LifecycleOnly: true, StartNextCheckpoint: loopResult.StartNextCheckpoint}, nil
+		return sessionV3AssistantResponse{
+			LifecycleOnly:                 true,
+			StartNextCheckpoint:           loopResult.StartNextCheckpoint,
+			ProviderID:                    providerID,
+			Model:                         modelName,
+			ProviderLineageID:             loopResult.FinalRequest.ProviderLineageID,
+			ProviderConfigurationHash:     loopResult.FinalRequest.ProviderConfigurationHash,
+			ContextBranchID:               loopResult.FinalRequest.ContextBranchID,
+			ProviderCacheKey:              loopResult.FinalRequest.ProviderCacheKey,
+			SessionAffinityKey:            loopResult.FinalRequest.SessionAffinityKey,
+			TransportAffinityKey:          loopResult.FinalRequest.TransportAffinityKey,
+			EpochID:                       loopResult.FinalRequest.ExecutionEpochID,
+			BoundaryReason:                loopResult.FinalRequest.BoundaryReason,
+			PreviousProviderLineageID:     loopResult.FinalRequest.PreviousProviderLineageID,
+			PreviousProviderID:            loopResult.FinalRequest.PreviousProviderID,
+			PreviousModel:                 loopResult.FinalRequest.PreviousModel,
+			ProviderLineageStartMessageID: loopResult.FinalRequest.ProviderLineageStartMessageID,
+			ProviderLineageStartRunID:     loopResult.FinalRequest.ProviderLineageStartRunID,
+			ProviderLineageStartGlobalSeq: loopResult.FinalRequest.ProviderLineageStartGlobalSeq,
+			NativeContinuationAllowed:     loopResult.FinalRequest.NativeContinuationAllowed,
+			ForceFreshProviderContext:     loopResult.FinalRequest.ForceFreshProviderContext,
+		}, nil
 	}
 	content := loopResult.FinalContent
 	if strings.TrimSpace(content) == "" {
@@ -2837,6 +2898,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		SessionID:            job.SessionID,
 		PermissionSessionID:  job.SessionID,
 		RunID:                job.RunID,
+		SourceMessageID:      e.sessionV3SourceMessageID(job),
 		Step:                 step,
 		SessionMode:          resolved.Session.Mode,
 		WorkspacePath:        workspacePath,
@@ -2858,6 +2920,39 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		return nil, errors.New("provider-managed tool invoker is not configured")
 	}
 	return invoker, nil
+}
+
+func (e *sessionV3Executor) sessionV3SourceMessageID(job sessionV3ExecutorJob) string {
+	if sourceMessageID := strings.TrimSpace(job.SourceMessageID); sourceMessageID != "" {
+		return sourceMessageID
+	}
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return ""
+	}
+	intent, ok, err := e.server.sessions.GetV3SessionRunIntent(job.SessionID, job.RunID)
+	if err != nil || !ok {
+		return ""
+	}
+	if sourceMessageID := strings.TrimSpace(intent.SourceMessageID); sourceMessageID != "" {
+		return sourceMessageID
+	}
+	if intent.EventSeq == 0 {
+		return ""
+	}
+	epochID := strings.TrimSpace(firstNonEmptyString(job.EpochID, intent.EpochID))
+	if epochID == "" {
+		return ""
+	}
+	_, messages, err := e.server.sessions.ListExecutionEpochMessages(job.SessionID, epochID, 0)
+	if err != nil {
+		return ""
+	}
+	for _, message := range messages {
+		if message.GlobalSeq == intent.EventSeq && strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+			return strings.TrimSpace(message.ID)
+		}
+	}
+	return ""
 }
 
 func (e *sessionV3Executor) applySessionV3ProviderToolMutation(job sessionV3ExecutorJob) func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
@@ -3169,24 +3264,6 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 			return nil, err
 		}
 		messages = sessionsV3InjectCheckpointResumeRoutingMessage(messages, job.RunID)
-	}
-	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "post_checkpoint_followup") {
-		if activePlan, planOK, planErr := e.server.sessions.GetActivePlan(job.SessionID); planErr != nil {
-			return nil, planErr
-		} else if planOK {
-			summary := sessionV3PlanFreshContextBoundarySummary(activePlan, epoch.Boundary.CheckpointID, "")
-			if summary != "" {
-				content, metadata := runruntime.BuildProviderContextBoundaryMessage(summary, runruntime.ContextCompactionOriginPlanFreshContext, 1, &activePlan)
-				if metadata == nil {
-					metadata = map[string]any{}
-				}
-				metadata["source"] = "execution_epoch_boundary"
-				metadata["epoch_id"] = epoch.EpochID
-				metadata["checkpoint_id"] = epoch.Boundary.CheckpointID
-				metadata["synthetic"] = true
-				messages = append([]pebblestore.MessageSnapshot{{SessionID: job.SessionID, Role: "system", Content: content, Metadata: metadata}}, messages...)
-			}
-		}
 	}
 	return runruntime.CompactMessagesForProviderContext(messages, 500), nil
 }

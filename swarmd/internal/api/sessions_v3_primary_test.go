@@ -6199,7 +6199,7 @@ func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseFreshCodexBoundary(
 		scope sessionV3ProviderCheckpointScope
 	}{
 		{name: "start_session_checkpoint", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-start", CheckpointID: "cp-start", AttemptID: "cp-start:attempt-1", RunID: "run-start", ParentSessionID: created.ID}},
-		{name: "request_followup_checkpoint", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-followup", CheckpointID: "cp-followup", AttemptID: "cp-followup:attempt-1", RunID: "run-followup", ParentSessionID: created.ID}},
+		{name: "checkpoint_boundary_transition", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-followup", CheckpointID: "cp-followup", AttemptID: "cp-followup:attempt-1", RunID: "run-followup", ParentSessionID: created.ID}},
 		{name: "approved_plan_checkpoint_start", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-approved", CheckpointID: "cp-approved", AttemptID: "cp-approved:attempt-1", RunID: "run-approved", ParentSessionID: created.ID}},
 		{name: "automatic_continuation", job: sessionV3ExecutorJob{SessionID: created.ID, PlanID: "plan-auto", CheckpointID: "cp-auto", AttemptID: "cp-auto:attempt-1", RunID: "run-auto", ParentSessionID: created.ID}},
 		{name: "review_finalization", job: sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-review"}, scope: sessionV3ProviderCheckpointScope{PlanID: "plan-review", CheckpointID: "cp-review", AttemptID: "cp-review:attempt-1", ParentSessionID: created.ID, FreshContext: true}},
@@ -6734,15 +6734,23 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsFreshCheckpointExactlyOnce(t
 		}
 		switch runner.callCount {
 		case 1:
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-final-review-followup", Name: "plan_manage", Arguments: `{"action":"request_followup_checkpoint","change_request":"investigate launch readiness","checkpoint_title":"Launch readiness","tasks":["Investigate launch readiness"],"acceptance_criteria":["A launch-readiness answer is appended"]}`})
+			parentEpochID := req.ExecutionEpochID
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-final-review-followup", Name: "plan_manage", Arguments: `{"action":"transition_checkpoint_boundary","change_request":"investigate launch readiness","checkpoint_title":"Launch readiness","tasks":["Investigate launch readiness"],"acceptance_criteria":["A launch-readiness answer is appended"]}`})
 			if err != nil {
 				return provideriface.Response{}, err
 			}
 			if result.Error != "" || !result.RestartTurn {
 				return provideriface.Response{}, fmt.Errorf("final-review follow-up did not request a fresh checkpoint run: %+v", result)
 			}
+			payload := sessionsV3DecodeToolPayload(result.Output)
+			if sessionsV3MapString(payload, "execution_epoch_id") == "" || sessionsV3MapString(payload, "execution_epoch_id") == parentEpochID || sessionsV3MapString(payload, "next_run_id") == "" {
+				return provideriface.Response{}, fmt.Errorf("checkpoint boundary did not return one distinct epoch/run: parent_epoch=%q payload=%+v", parentEpochID, payload)
+			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
+			if runner.requests[0].ExecutionEpochID == req.ExecutionEpochID {
+				return provideriface.Response{}, fmt.Errorf("checkpoint run reused parent execution epoch %q", req.ExecutionEpochID)
+			}
 			if req.BoundaryReason != "checkpoint_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
 				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint lineage flags = boundary %q native %t fresh %t", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 			}
@@ -6849,7 +6857,7 @@ func TestSessionsV3PlanModeRunInputSkipsDurableRunIDCollision(t *testing.T) {
 	}
 }
 
-func TestSessionsV3WaitingReviewFollowupReturnsCanonicalDurableTriggerMessage(t *testing.T) {
+func TestSessionsV3WaitingReviewMessageKeepsCanonicalDurableMessageAndProviderEpoch(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "waiting-review-followup-create", "waiting review followup")
 	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-waiting-review", "Plan: waiting review", "## Plan", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
@@ -6862,6 +6870,10 @@ func TestSessionsV3WaitingReviewFollowupReturnsCanonicalDurableTriggerMessage(t 
 	}
 
 	req := sessionsV3MessageRequest{ClientRequestID: "waiting-review-followup-message", MessageID: "canonical-followup-message", RunID: "waiting-review-followup-run", Role: "user", Content: "continue after final handoff"}
+	beforeEpoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get waiting-review provider epoch: ok=%t err=%v", ok, err)
+	}
 	result, job, err := server.acceptSessionsV3Message(testPrincipal(), created.ID, req)
 	if err != nil {
 		t.Fatalf("accept waiting-review followup: %v", err)
@@ -6872,8 +6884,14 @@ func TestSessionsV3WaitingReviewFollowupReturnsCanonicalDurableTriggerMessage(t 
 	if job.PlanID != "" || job.CheckpointID != "" || job.AttemptID != "" || job.ParentSessionID != "" {
 		t.Fatalf("post-checkpoint user turn retained completed checkpoint ownership: %#v", job)
 	}
-	if result.RunIntent == nil || result.RunIntent.PlanID != "plan-waiting-review" || result.RunIntent.CheckpointID != "cp-1" || result.RunIntent.AttemptID != "cp-1:attempt-1" {
-		t.Fatalf("durable boundary intent lost completed checkpoint audit metadata: %#v", result.RunIntent)
+	if result.RunIntent == nil || result.RunIntent.PlanID != "" || result.RunIntent.CheckpointID != "" || result.RunIntent.AttemptID != "" || result.RunIntent.ParentSessionID != "" || result.RunIntent.ResumeContext {
+		t.Fatalf("post-handoff parent run acquired checkpoint ownership: %#v", result.RunIntent)
+	}
+	if result.RunIntent.EpochID != beforeEpoch.EpochID || job.EpochID != beforeEpoch.EpochID {
+		t.Fatalf("post-handoff message reset provider epoch: result=%#v job=%#v before=%#v", result.RunIntent, job, beforeEpoch)
+	}
+	if result.RunIntent.SourceMessageID != req.MessageID || job.SourceMessageID != req.MessageID {
+		t.Fatalf("post-handoff source message identity = intent %q job %q, want %q", result.RunIntent.SourceMessageID, job.SourceMessageID, req.MessageID)
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {
@@ -6985,12 +7003,13 @@ func TestSessionsV3MessagesForProviderLineageDoesNotInferBoundaryFromTranscript(
 	}
 }
 
-func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBoundary(t *testing.T) {
+func TestSessionsV3ExecutorPostHandoffTurnsPreserveProviderLineage(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
 	const oldPrompt = "old raw transcript before automatic checkpoint"
 	const checkpointReport = "automatic checkpoint report retained in boundary"
 	const followUp = "normal follow-up after automatic checkpoint"
+	const secondFollowUp = "another question before creating a checkpoint"
 	runner := &sessionsV3RecordingProviderRunner{}
 	runner.handler = func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
 		switch runner.callCount {
@@ -7008,18 +7027,28 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
-			if req.BoundaryReason != "epoch_fresh_context" || req.NativeContinuationAllowed || !req.ForceFreshProviderContext {
-				return provideriface.Response{}, fmt.Errorf("post-checkpoint follow-up lineage flags = boundary %q native %t fresh %t, want a fresh provider chain in the new post-checkpoint epoch", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("post-handoff lineage flags = boundary %q native %t fresh %t, want retained provider lineage", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 			}
-			if sessionsV3ProviderInputContainsContentText(req.Input, oldPrompt) {
-				return provideriface.Response{}, fmt.Errorf("follow-up provider input leaked old raw transcript: %+v", req.Input)
-			}
-			for _, want := range []string{"[context-compact]", "origin=plan_fresh_context", checkpointReport, followUp} {
+			for _, want := range []string{oldPrompt, checkpointReport, followUp} {
 				if !sessionsV3ProviderInputContainsContentText(req.Input, want) {
-					return provideriface.Response{}, fmt.Errorf("follow-up provider input missing %q: %+v", want, req.Input)
+					return provideriface.Response{}, fmt.Errorf("post-handoff provider input missing %q: %+v", want, req.Input)
 				}
 			}
-			return provideriface.Response{Text: "follow-up answered from fresh boundary"}, nil
+			if sessionsV3ProviderInputContainsContentText(req.Input, "origin=plan_fresh_context") {
+				return provideriface.Response{}, fmt.Errorf("post-handoff provider input synthesized an early reset boundary: %+v", req.Input)
+			}
+			return provideriface.Response{Text: "follow-up answered on retained lineage"}, nil
+		case 3:
+			if req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
+				return provideriface.Response{}, fmt.Errorf("second post-handoff lineage flags = boundary %q native %t fresh %t", req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
+			}
+			for _, want := range []string{followUp, "follow-up answered on retained lineage", secondFollowUp} {
+				if !sessionsV3ProviderInputContainsContentText(req.Input, want) {
+					return provideriface.Response{}, fmt.Errorf("second post-handoff provider input missing %q: %+v", want, req.Input)
+				}
+			}
+			return provideriface.Response{Text: "second follow-up answered on retained lineage"}, nil
 		default:
 			return provideriface.Response{}, fmt.Errorf("unexpected provider call %d", runner.callCount)
 		}
@@ -7033,11 +7062,13 @@ func TestSessionsV3ExecutorFollowUpAfterAutomaticCheckpointUsesFreshContextBound
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-normal", followUp)
 	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, stableSessionsV3PrimaryRunID(created.ID, "provider-auto-follow-up-normal"), sessionruntime.RunIntentCompleted)
-	if runner.callCount != 2 {
-		t.Fatalf("provider call count = %d, want checkpoint tool turn and follow-up", runner.callCount)
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-follow-up-second", secondFollowUp)
+	waitForSessionsV3SpecificRunIntentStatus(t, sessionSvc, created.ID, stableSessionsV3PrimaryRunID(created.ID, "provider-auto-follow-up-second"), sessionruntime.RunIntentCompleted)
+	if runner.callCount != 3 {
+		t.Fatalf("provider call count = %d, want checkpoint tool turn and two post-handoff turns", runner.callCount)
 	}
-	if sessionsV3ProviderInputContainsContentText(runner.requests[1].Input, oldPrompt) {
-		t.Fatalf("follow-up request leaked old raw transcript: %+v", runner.requests[1].Input)
+	if runner.requests[0].ExecutionEpochID == "" || runner.requests[1].ExecutionEpochID != runner.requests[0].ExecutionEpochID || runner.requests[2].ExecutionEpochID != runner.requests[0].ExecutionEpochID || runner.requests[1].ProviderLineageID != runner.requests[0].ProviderLineageID || runner.requests[2].ProviderLineageID != runner.requests[0].ProviderLineageID {
+		t.Fatalf("post-handoff turns changed epoch/lineage: first=%+v followup=%+v second=%+v", runner.requests[0], runner.requests[1], runner.requests[2])
 	}
 }
 

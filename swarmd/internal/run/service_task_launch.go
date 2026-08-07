@@ -1069,7 +1069,7 @@ func (s *Service) buildPlanManagePermissionPayload(sessionID string, call tool.C
 	case "approve-and-start", "approve_and_start", "approve-start", "approve_start", "start-plan", "start_plan":
 		action = "approve_and_start"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
-		action = "request_followup_checkpoint"
+		return planManagePermissionPayload{}, false, errors.New("plan_manage request_followup_checkpoint is disabled; migrate to transition_checkpoint_boundary from a parent provider turn")
 	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
 		action = "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
