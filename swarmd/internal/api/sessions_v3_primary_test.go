@@ -6161,6 +6161,47 @@ func assertSessionsV3NoMessageAppendedActivePlanPayload(t *testing.T, sessionSvc
 	}
 }
 
+func TestSessionsV3ProviderContextIncludesFinalHandoffFromPredecessorEpoch(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := newSessionV3Executor(server)
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-final-handoff-context-create", "provider final handoff context", t.TempDir(), pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"})
+	predecessor, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get predecessor epoch: ok=%t err=%v", ok, err)
+	}
+	handoff := pebblestore.MessageSnapshot{
+		ID: created.ID + "-final-handoff", SessionID: created.ID, Role: "system", Content: "Final handoff sentinel: all three checkpoints completed.",
+		Metadata: map[string]any{"source": runruntime.PlanExecutionFinalHandoffMessageSource, "plan_id": "plan-final", "checkpoint_id": "cp-3"},
+	}
+	result, err := sessionSvc.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
+		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+		ClientRequestID: "provider-final-handoff-context-boundary", PayloadHash: "provider-final-handoff-context-boundary-hash",
+		Reason: "final_plan_handoff", PlanID: "plan-final", CheckpointID: "cp-3", FinalHandoffMessage: &handoff, SkipRunIntent: true,
+	})
+	if err != nil {
+		t.Fatalf("begin final handoff epoch: %v", err)
+	}
+	if result.Epoch.ParentEpochID != predecessor.EpochID {
+		t.Fatalf("successor parent = %q, want %q", result.Epoch.ParentEpochID, predecessor.EpochID)
+	}
+	trigger := pebblestore.MessageSnapshot{ID: created.ID + "-question", SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID, Role: "user", Content: "what do you see in context"}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+		ClientRequestID: "provider-final-handoff-context-question", IdempotencyKey: "provider-final-handoff-context-question", PayloadHash: "provider-final-handoff-context-question-hash", RequestHash: "provider-final-handoff-context-question-hash",
+		Kind: sessionruntime.SessionMutationAppendMessage, Message: &trigger,
+	}); err != nil {
+		t.Fatalf("append post-handoff question: %v", err)
+	}
+	messages, err := exec.sessionV3ProviderContextMessages(sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-post-handoff", EpochID: result.Epoch.EpochID})
+	if err != nil {
+		t.Fatalf("provider context messages: %v", err)
+	}
+	input := sessionsV3ProviderInput(messages)
+	if !sessionsV3ProviderInputContainsContentText(input, "Final handoff sentinel") || !sessionsV3ProviderInputContainsContentText(input, "what do you see in context") {
+		t.Fatalf("post-handoff provider input = %+v, want canonical final handoff and current user message", input)
+	}
+}
+
 func TestSessionsV3ProviderBaseRequestCheckpointCategoriesUseSameEpochCodexBoundary(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	providers := registry.New()
@@ -7174,6 +7215,34 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	}
 	if sessionsV3ProviderInputHasTopLevelType(runner.requests[1].Input, "reasoning") || strings.Contains(fmt.Sprint(runner.requests[1].Input), "encrypted-reasoning") {
 		t.Fatalf("restart-after-tool fresh input replayed native encrypted reasoning: %+v", runner.requests[1].Input)
+	}
+}
+
+func TestSessionsV3RuntimeInstructionsIncludeDurableActivePlanContext(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(&sessionsV3RecordingProviderRunner{id: "test-provider"})
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "runtime-active-plan-context-create", "runtime active plan context", workspace, pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-context", "Three checkpoint plan", "# plan context", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ID: "plan-context", Title: "Three checkpoint plan",
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-3", LastAttemptID: "cp-3:attempt-1"},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-3", Title: "Confirm final boundary", Status: sessionruntime.PlanCheckpointStatusCompleted, Tasks: []string{"Verify checkpoint 2 handoff"}, Report: "All three boundaries completed."}},
+		ActiveCheckpointID: "cp-3",
+	}}); err != nil {
+		t.Fatalf("save active plan: %v", err)
+	}
+	resolved, err := exec.resolveSessionV3Runtime(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: "run-after-final-handoff"})
+	if err != nil {
+		t.Fatalf("resolve runtime: %v", err)
+	}
+	for _, want := range []string{`"active_plan_present":true`, `"plan_id":"plan-context"`, `"execution_status":"waiting_review"`, `"id":"cp-3"`, `"next_lifecycle_action":"await_review"`, "normal post-handoff conversation turn"} {
+		if !strings.Contains(resolved.Instructions, want) {
+			t.Fatalf("resolved instructions missing durable plan context %q:\n%s", want, resolved.Instructions)
+		}
 	}
 }
 

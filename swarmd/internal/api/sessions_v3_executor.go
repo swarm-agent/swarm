@@ -3302,6 +3302,10 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 	if err != nil {
 		return nil, err
 	}
+	messages, err = e.sessionV3ProviderFinalHandoffContextMessages(job.SessionID, epoch, messages)
+	if err != nil {
+		return nil, err
+	}
 	if job.ResumeContext {
 		messages, err = e.sessionV3ProviderResumeContextMessages(job.SessionID, epoch, messages)
 		if err != nil {
@@ -3310,6 +3314,35 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 		messages = sessionsV3InjectCheckpointResumeRoutingMessage(messages, job.RunID)
 	}
 	return runruntime.CompactMessagesForProviderContext(messages, 500), nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderFinalHandoffContextMessages(sessionID string, epoch pebblestore.ExecutionEpoch, messages []pebblestore.MessageSnapshot) ([]pebblestore.MessageSnapshot, error) {
+	parentEpochID := strings.TrimSpace(epoch.ParentEpochID)
+	if parentEpochID == "" {
+		return messages, nil
+	}
+	parentEpoch, ok, err := e.server.sessions.GetExecutionEpoch(sessionID, parentEpochID)
+	if err != nil {
+		return nil, fmt.Errorf("v3 final handoff parent epoch resolve failed: %w", err)
+	}
+	if !ok || parentEpoch.LastRootSeq == 0 {
+		return messages, nil
+	}
+	parentMessages, err := e.server.sessions.ListSessionMessagesBefore(sessionID, parentEpoch.LastRootSeq+1, 1)
+	if err != nil {
+		return nil, fmt.Errorf("v3 final handoff parent context resolve failed: %w", err)
+	}
+	for i := len(parentMessages) - 1; i >= 0; i-- {
+		message := parentMessages[i]
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "system") || !strings.EqualFold(strings.TrimSpace(sessionV3MetadataString(message.Metadata, "source")), runruntime.PlanExecutionFinalHandoffMessageSource) {
+			continue
+		}
+		// The handoff is the predecessor tail and is injected ahead of the
+		// successor epoch's boundary/user message. This preserves the deliberate
+		// fresh-context boundary without losing the canonical completion packet.
+		return append([]pebblestore.MessageSnapshot{message}, messages...), nil
+	}
+	return messages, nil
 }
 
 func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID string, epoch pebblestore.ExecutionEpoch, messages []pebblestore.MessageSnapshot) ([]pebblestore.MessageSnapshot, error) {
@@ -3533,6 +3566,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
+	if stateCompiler, ok := e.server.runner.(interface {
+		ComposeDurableRunStateInstructions(string, string, string, *runruntime.RunPlanCheckpointContext) (string, error)
+	}); ok && stateCompiler != nil {
+		checkpointContext := (*runruntime.RunPlanCheckpointContext)(nil)
+		if strings.TrimSpace(job.PlanID) != "" || strings.TrimSpace(job.CheckpointID) != "" {
+			checkpointContext = &runruntime.RunPlanCheckpointContext{
+				PlanID:          strings.TrimSpace(job.PlanID),
+				CheckpointID:    strings.TrimSpace(job.CheckpointID),
+				AttemptID:       strings.TrimSpace(job.AttemptID),
+				ParentSessionID: strings.TrimSpace(job.ParentSessionID),
+				SourceMessageID: strings.TrimSpace(job.SourceMessageID),
+			}
+		}
+		runState, stateErr := stateCompiler.ComposeDurableRunStateInstructions(session.ID, session.Mode, job.RunID, checkpointContext)
+		if stateErr != nil {
+			return sessionV3ResolvedRuntime{}, stateErr
+		}
+		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
+	}
 	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")

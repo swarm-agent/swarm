@@ -65,6 +65,14 @@ type compactRunOwnership struct {
 	CurrentRunID     string `json:"current_run_id,omitempty"`
 }
 
+// ComposeDurableRunStateInstructions exposes the canonical durable plan/run
+// projection to provider-managed V3 execution. V3 must not reconstruct plan
+// state from the transcript, especially after a final handoff opens a successor
+// execution epoch.
+func (s *Service) ComposeDurableRunStateInstructions(sessionID, mode, runID string, checkpointContext *RunPlanCheckpointContext) (string, error) {
+	return s.durableRunStateInstructions(sessionID, mode, runID, RunOptions{PlanCheckpointContext: checkpointContext})
+}
+
 func (s *Service) durableRunStateInstructions(sessionID, mode, runID string, options RunOptions) (string, error) {
 	state := compactRunState{
 		SessionMode:         sessionruntime.NormalizeMode(mode),
