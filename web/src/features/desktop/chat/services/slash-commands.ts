@@ -16,6 +16,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
+  | { kind: 'enable-new-session-worktree' }
   | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
   | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
@@ -82,6 +83,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/worktrees', '/wt', 'Open the current worktrees quick settings'],
     state: 'ready',
     action: { kind: 'open-quick-settings', tab: 'worktrees' },
+  },
+  {
+    id: 'worktree-on',
+    command: '/wt on',
+    aliases: [],
+    hint: 'Enable a managed worktree for this new session',
+    actionLabel: 'Enable Worktree',
+    tips: ['/wt on', 'Available only before starting a new session'],
+    state: 'ready',
+    action: { kind: 'enable-new-session-worktree' },
   },
   {
     id: 'workspace',
@@ -341,6 +352,10 @@ function sortCommands(left: DesktopSlashCommand, right: DesktopSlashCommand, que
 
 export function getDesktopSlashCommands(): DesktopSlashCommand[] {
   return DESKTOP_SLASH_COMMANDS.slice()
+}
+
+export function isDesktopWorktreeOnCommand(input: string): boolean {
+  return /^\/wt\s+on$/i.test(input.trim())
 }
 
 export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionCommandRequest | null {

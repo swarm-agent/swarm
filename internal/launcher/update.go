@@ -374,7 +374,11 @@ func RunUpdateHelper(profile Profile, plan client.UpdateApplyPlan, parentPID int
 			readinessErr := fmt.Errorf("replacement daemon did not become authenticated and ready: %w", err)
 			return rollbackPendingUpdateAndRestartForUpdate(profile, relaunchArgs, nil, readinessErr)
 		}
-		return nil
+		_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusCompleted, releaseUpdateCompletedMessage(result.Version), "")
+		jobTerminalStatusWritten = true
+		return runTUIWithExtraEnvForUpdate(profile, relaunchArgs, map[string]string{
+			appliedUpdateToastEnv: fmt.Sprintf("Updated to %s", strings.TrimSpace(result.Version)),
+		})
 	}
 
 	_ = writeLauncherUpdateJobStatus(profile, updateKindRelease, updateJobStatusRunning, "Restarting Swarm backend without a service manager.", "")

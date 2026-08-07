@@ -85,6 +85,26 @@ test('all successful direct starts retain the new-chat surface until destination
   assert.doesNotMatch(source, /showComposer/)
 })
 
+test('Shift+Tab primes Plan only in the routed new-session composer', async () => {
+  const source = await readFile(composerURL, 'utf8')
+
+  assert.match(source, /routedNewSession && event\.key === 'Tab' && event\.shiftKey/)
+  assert.match(source, /event\.preventDefault\(\)\s*onModeSelect\?\.\('plan'\)/)
+  assert.doesNotMatch(source, /event\.preventDefault\(\)\s*onRoutedWorktreeRequestedChange\?\.\(true\)\s*onModeSelect\?\.\('plan'\)/)
+  assert.match(source, /aria-keyshortcuts=\{routedNewSession \? 'Shift\+Tab' : undefined\}/)
+  assert.match(source, /Shift\+Tab enables Plan for this new session/)
+  assert.doesNotMatch(source, /window\.addEventListener\('keydown'[\s\S]*Shift\+Tab/)
+})
+
+test('/wt on enables worktree intent only for a routed new-session composer', async () => {
+  const source = await readFile(composerURL, 'utf8')
+
+  assert.match(source, /command\.action\.kind === 'enable-new-session-worktree'/)
+  assert.match(source, /if \(routedNewSession\) \{\s*onRoutedWorktreeRequestedChange\?\.\(true\)/)
+  assert.match(source, /Use \/wt on only in a new-session composer\. Worktree intent was not changed\./)
+  assert.match(source, /role="alert"[\s\S]*worktreeCommandWarning/)
+})
+
 test('routed new-chat composer exposes explicit Worktree and Plan intent with a waiting model bar', async () => {
   const source = await readFile(composerURL, 'utf8')
 
