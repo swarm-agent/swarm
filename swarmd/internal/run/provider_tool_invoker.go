@@ -286,6 +286,17 @@ func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []str
 	return originRoots
 }
 
+func providerManagedCheckpointBoundaryCall(call tool.Call) bool {
+	if canonicalToolName(call.Name) != "plan_manage" {
+		return false
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &args); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(mapString(args, "action")), sessionruntime.CheckpointBoundaryTransitionAction)
+}
+
 func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) bool {
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
 	if payload == nil {
@@ -404,6 +415,24 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			principal = config.principal
 		}
 		ctx = identity.ContextWithPrincipal(ctx, principal)
+		boundaryProgressEmitted := false
+		if providerManagedCheckpointBoundaryCall(call) {
+			progression := recordProviderToolProgression(config.toolProgression, metadata, name)
+			if config.emit != nil {
+				config.emit(StreamEvent{
+					Type:         StreamEventToolStarted,
+					Step:         config.step,
+					ToolName:     name,
+					CallID:       callID,
+					Arguments:    call.Arguments,
+					ToolIdentity: progression.Identity,
+					ToolRunCount: progression.RunCount,
+					ToolDisplay:  progression.Display,
+					Metadata:     cloneGenericMap(metadata),
+				})
+			}
+			boundaryProgressEmitted = true
+		}
 		handled := false
 		var controlResult tool.Result
 		var controlErr error
@@ -426,8 +455,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			handled, controlResult, controlErr = s.executeControlPlaneToolWithLifecycleRunContext(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, controlResponse, config.emit, config.applySessionMutation, lifecycleRun)
 		}
 		if handled {
-			progression := recordProviderToolProgression(config.toolProgression, metadata, name)
-			if config.emit != nil {
+			progression := providerToolProgressionFromMetadata(metadata, name)
+			if !boundaryProgressEmitted {
+				progression = recordProviderToolProgression(config.toolProgression, metadata, name)
+			}
+			if config.emit != nil && !boundaryProgressEmitted {
 				config.emit(StreamEvent{
 					Type:         StreamEventToolStarted,
 					Step:         config.step,
@@ -913,19 +945,24 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 	if applyMutation == nil {
 		return errors.New("v3 provider tool persistence requires applySessionV3PrimaryMutation")
 	}
+	boundaryResult, err := providerManagedCheckpointBoundaryResultMutation(config.runID, call, result)
+	if err != nil {
+		return err
+	}
 	mutation, err := applyMutation(sessionruntime.SessionMutationInput{
-		SessionID:       config.sessionID,
-		UserID:          principal.UserID,
-		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationAppendMessage,
-		EventType:       eventType,
-		EventPayload:    eventPayload,
-		Message:         &message,
-		NowUnixMs:       now,
+		SessionID:                config.sessionID,
+		UserID:                   principal.UserID,
+		AccountScopeID:           principal.AccountScopeID,
+		ClientRequestID:          clientRequestID,
+		IdempotencyKey:           clientRequestID,
+		PayloadHash:              payloadHash,
+		RequestHash:              payloadHash,
+		Kind:                     sessionruntime.SessionMutationAppendMessage,
+		EventType:                eventType,
+		EventPayload:             eventPayload,
+		Message:                  &message,
+		CheckpointBoundaryResult: boundaryResult,
+		NowUnixMs:                now,
 	})
 	if err != nil {
 		return err
@@ -934,6 +971,21 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		config.emit(StreamEvent{Type: StreamEventMessageStored, Step: config.step, Message: mutation.Message})
 	}
 	return nil
+}
+
+func providerManagedCheckpointBoundaryResultMutation(sourceRunID string, call tool.Call, result tool.Result) (*pebblestore.V3CheckpointBoundaryResultMutation, error) {
+	if !providerManagedCheckpointBoundaryCall(call) || strings.TrimSpace(result.Error) != "" {
+		return nil, nil
+	}
+	payload := decodeToolPayload(strings.TrimSpace(result.Output))
+	if payload == nil || !mapBool(payload, "parent_turn_terminal") {
+		return nil, errors.New("checkpoint boundary tool result is missing terminal ownership metadata")
+	}
+	nextRunID := strings.TrimSpace(mapString(payload, "next_run_id"))
+	if nextRunID == "" {
+		return nil, errors.New("checkpoint boundary tool result is missing next_run_id")
+	}
+	return &pebblestore.V3CheckpointBoundaryResultMutation{SourceRunID: strings.TrimSpace(sourceRunID), NextRunID: nextRunID}, nil
 }
 
 const (

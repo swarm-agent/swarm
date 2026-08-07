@@ -21,6 +21,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 
 	gorillaws "github.com/gorilla/websocket"
 
@@ -6748,7 +6749,7 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsCheckpointInSuccessorEpochEx
 			}
 			return provideriface.Response{RestartTurn: result.RestartTurn}, nil
 		case 2:
-			if !sessionsV3ProviderInputContainsContentText(req.Input, `"source_message_id": "provider-final-review-followup-message"`) {
+			if !sessionsV3ProviderInputContainsContentText(req.Input, `"source_message_id": "v3msg_`) {
 				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint input lost source message provenance: %+v", req.Input)
 			}
 			if runner.requests[0].ExecutionEpochID != req.ExecutionEpochID {
@@ -6760,7 +6761,7 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsCheckpointInSuccessorEpochEx
 			if !sessionsV3ProviderInputContainsContentText(req.Input, "Execute exactly one checkpoint: followup-1.") {
 				return provideriface.Response{}, fmt.Errorf("follow-up checkpoint input = %+v", req.Input)
 			}
-			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-review-followup", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"followup-1","report":"launch readiness investigated","result":"done"}`})
+			result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-final-review-followup", Name: "plan_manage", Arguments: `{"action":"complete_checkpoint","checkpoint_id":"followup-1","report":"launch readiness investigated","result":"done","handoff_overview":"Launch readiness investigation is complete.","recommendation":{"decision":"ship","action":"review the completed checkpoint","reason":"The focused flow completed.","action_state":"ready"}}`})
 			if err != nil {
 				return provideriface.Response{}, err
 			}
@@ -6797,12 +6798,17 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsCheckpointInSuccessorEpochEx
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("final-review follow-up did not complete: calls=%d plan=%+v", runner.callCount, active.Document)
+			intents, _ := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
+			messages, _ := sessionSvc.ListSessionMessages(created.ID, 0, 20)
+			t.Fatalf("final-review follow-up did not complete: calls=%d plan=%+v intents=%+v messages=%+v", runner.callCount, active.Document, intents, messages)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if runner.callCount != 2 {
 		t.Fatalf("provider calls = %d, want parent turn plus one follow-up checkpoint run", runner.callCount)
+	}
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatal("final-review follow-up runs did not drain")
 	}
 	intents, err := sessionSvc.ListSessionRunIntents(created.ID, 0, 10)
 	if err != nil {
@@ -6815,8 +6821,8 @@ func TestSessionsV3ExecutorFinalReviewFollowupStartsCheckpointInSuccessorEpochEx
 		if intent.Status != sessionruntime.RunIntentCompleted {
 			t.Fatalf("final-review follow-up run did not complete: %+v", intents)
 		}
-		if intent.CheckpointID == "followup-1" && intent.SourceMessageID != "provider-final-review-followup-message" {
-			t.Fatalf("follow-up checkpoint run lost source message identity: %+v", intent)
+		if intent.CheckpointID == "followup-1" && (intent.SourceMessageID == "" || !strings.HasPrefix(intent.SourceMessageID, "v3msg_")) {
+			t.Fatalf("follow-up checkpoint run lost canonical source message identity: %+v", intent)
 		}
 	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 20)
@@ -7095,15 +7101,19 @@ func TestSessionsV3ExecutorFinalHandoffIsolatesSentinelAcrossCheckpointCycles(t 
 
 func setupSessionsV3ProviderManagedPlanTest(t *testing.T, server *Server, sessionSvc *sessionruntime.Service, runner *sessionsV3RecordingProviderRunner) {
 	t.Helper()
+	principal := testPrincipal()
+	if _, err := server.agentModelSettings.ReplaceSwarm(identity.ContextWithPrincipal(context.Background(), principal), agentmodelsettings.SwarmInput{
+		Action: agentmodelsettings.Assignment{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
+		Plan:   agentmodelsettings.Assignment{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
+	}); err != nil {
+		t.Fatalf("configure plan-managed Swarm model: %v", err)
+	}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	server.providers = providers
 	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
 	server.runner = runSvc
 	server.SetBypassPermissions(true)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"plan_manage": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
-		t.Fatalf("upsert plan-managed swarm agent: %v", err)
-	}
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 0
 	server.v3SessionExecutor = exec

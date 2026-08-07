@@ -568,12 +568,12 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		return
 	}
 	if response.LifecycleOnly {
+		if err := e.persistSessionV3ProviderLifecycle(job, response, sessionruntime.SessionMutationResult{}); err != nil {
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
+			return
+		}
 		committedBoundary := response.StartNextCheckpoint && e.nextCheckpointRunAlreadyCommitted(job)
 		if !committedBoundary {
-			if err := e.persistSessionV3ProviderLifecycle(job, response, sessionruntime.SessionMutationResult{}); err != nil {
-				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
-				return
-			}
 			completionEpochID, err := e.activeSessionV3ExecutionEpochID(job.SessionID)
 			if err != nil {
 				return
@@ -1653,15 +1653,6 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	if strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
-		checkpointRouting, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
-		if checkpointErr != nil {
-			return sessionV3AssistantResponse{}, checkpointErr
-		}
-		if ok {
-			input = append(input, checkpointRouting...)
-		}
-	}
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 	}
@@ -1701,6 +1692,15 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 			return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
 		}
 		baseReq.Input = append([]map[string]any(nil), input...)
+	}
+	if strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
+		checkpointRouting, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
+		if checkpointErr != nil {
+			return sessionV3AssistantResponse{}, checkpointErr
+		}
+		if ok {
+			baseReq.Input = append(baseReq.Input, checkpointRouting...)
+		}
 	}
 	requestEventType := "session.provider.request_started"
 	if suffix := strings.TrimSpace(requestPhaseSuffix); suffix != "" {

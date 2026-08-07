@@ -62,8 +62,8 @@ func TestCheckpointBoundaryTransitionCommitsPlanAndRunInCurrentEpochAtomically(t
 	if got := result.Plan.Document.Checkpoints[0].Handoff; got == nil || got.Title != "Done handoff" || !strings.Contains(got.Overview, "remains available") {
 		t.Fatalf("completed checkpoint handoff was not preserved: %#v", got)
 	}
-	if source, ok, err := svc.GetV3SessionRunIntent(sessionID, "run-source"); err != nil || !ok || source.Status != RunIntentCompleted {
-		t.Fatalf("source run = %#v ok=%t err=%v", source, ok, err)
+	if source, ok, err := svc.GetV3SessionRunIntent(sessionID, "run-source"); err != nil || !ok || source.Status != RunIntentPendingExecutor {
+		t.Fatalf("source run completed before the boundary tool result became durable: %#v ok=%t err=%v", source, ok, err)
 	}
 	if active, ok, err := svc.GetSessionActiveRunIntent(sessionID); err != nil || !ok || active.RunID != "run-next" {
 		t.Fatalf("active run = %#v ok=%t err=%v", active, ok, err)

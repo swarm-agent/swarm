@@ -60,41 +60,50 @@ type V3PlanSaveMutation struct {
 	ExpectedParentVersion int                  `json:"expected_parent_version,omitempty"`
 }
 
-// V3CheckpointBoundaryMutation identifies the parent provider run relinquishing
-// execution ownership. The canonical mutation commits its terminal state, the
-// inserted-and-selected checkpoint plan revision, and the next pending run
-// intent in one batch.
+// V3CheckpointBoundaryMutation identifies the parent provider run preparing to
+// relinquish execution ownership. The canonical mutation commits the
+// inserted-and-selected checkpoint plan revision and next pending run intent;
+// source completion is deferred until the boundary tool result is durable.
 type V3CheckpointBoundaryMutation struct {
 	SourceRunID     string `json:"source_run_id"`
 	SourceMessageID string `json:"source_message_id"`
 }
 
+// V3CheckpointBoundaryResultMutation atomically makes the provider-visible
+// boundary result durable and terminalizes its source run. The next run is
+// already committed but must not be enqueued before this mutation succeeds.
+type V3CheckpointBoundaryResultMutation struct {
+	SourceRunID string `json:"source_run_id"`
+	NextRunID   string `json:"next_run_id"`
+}
+
 type V3SessionMutationInput struct {
-	SessionID            string                        `json:"session_id"`
-	UserID               string                        `json:"user_id,omitempty"`
-	AccountScopeID       string                        `json:"account_scope_id,omitempty"`
-	ClientRequestID      string                        `json:"client_request_id,omitempty"`
-	IdempotencyKey       string                        `json:"idempotency_key,omitempty"`
-	PayloadHash          string                        `json:"payload_hash,omitempty"`
-	RequestHash          string                        `json:"request_hash,omitempty"`
-	Kind                 string                        `json:"kind"`
-	EventID              string                        `json:"event_id,omitempty"`
-	EventType            string                        `json:"event_type,omitempty"`
-	EventPayload         json.RawMessage               `json:"event_payload,omitempty"`
-	CausationID          string                        `json:"causation_id,omitempty"`
-	CorrelationID        string                        `json:"correlation_id,omitempty"`
-	Session              *SessionSnapshot              `json:"session,omitempty"`
-	Message              *MessageSnapshot              `json:"message,omitempty"`
-	Lifecycle            *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
-	RunIntent            *V3SessionRunIntent           `json:"run_intent,omitempty"`
-	PlanAcceptance       *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
-	PlanSave             *V3PlanSaveMutation           `json:"plan_save,omitempty"`
-	CheckpointBoundary   *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
-	MediaStagingBindings []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
-	EpochID              string                        `json:"epoch_id,omitempty"`
-	TurnUsage            *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
-	ExpectedLastEventSeq *uint64                       `json:"expected_last_event_seq,omitempty"`
-	NowUnixMs            int64                         `json:"now_unix_ms,omitempty"`
+	SessionID                string                              `json:"session_id"`
+	UserID                   string                              `json:"user_id,omitempty"`
+	AccountScopeID           string                              `json:"account_scope_id,omitempty"`
+	ClientRequestID          string                              `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                              `json:"idempotency_key,omitempty"`
+	PayloadHash              string                              `json:"payload_hash,omitempty"`
+	RequestHash              string                              `json:"request_hash,omitempty"`
+	Kind                     string                              `json:"kind"`
+	EventID                  string                              `json:"event_id,omitempty"`
+	EventType                string                              `json:"event_type,omitempty"`
+	EventPayload             json.RawMessage                     `json:"event_payload,omitempty"`
+	CausationID              string                              `json:"causation_id,omitempty"`
+	CorrelationID            string                              `json:"correlation_id,omitempty"`
+	Session                  *SessionSnapshot                    `json:"session,omitempty"`
+	Message                  *MessageSnapshot                    `json:"message,omitempty"`
+	Lifecycle                *SessionLifecycleSnapshot           `json:"lifecycle,omitempty"`
+	RunIntent                *V3SessionRunIntent                 `json:"run_intent,omitempty"`
+	PlanAcceptance           *V3PlanAcceptanceMutation           `json:"plan_acceptance,omitempty"`
+	PlanSave                 *V3PlanSaveMutation                 `json:"plan_save,omitempty"`
+	CheckpointBoundary       *V3CheckpointBoundaryMutation       `json:"checkpoint_boundary,omitempty"`
+	CheckpointBoundaryResult *V3CheckpointBoundaryResultMutation `json:"checkpoint_boundary_result,omitempty"`
+	MediaStagingBindings     []MediaStagingBinding               `json:"media_staging_bindings,omitempty"`
+	EpochID                  string                              `json:"epoch_id,omitempty"`
+	TurnUsage                *SessionTurnUsageSnapshot           `json:"turn_usage,omitempty"`
+	ExpectedLastEventSeq     *uint64                             `json:"expected_last_event_seq,omitempty"`
+	NowUnixMs                int64                               `json:"now_unix_ms,omitempty"`
 }
 
 type V3SessionMutationResult struct {
@@ -685,6 +694,31 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, errors.New("checkpoint boundary requires a distinct next run id")
 		}
 	}
+	if input.CheckpointBoundaryResult != nil {
+		if input.Message == nil {
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary result mutation requires the durable tool result message")
+		}
+		sourceRunID := strings.TrimSpace(input.CheckpointBoundaryResult.SourceRunID)
+		nextRunID := strings.TrimSpace(input.CheckpointBoundaryResult.NextRunID)
+		if sourceRunID == "" || nextRunID == "" || sourceRunID == nextRunID {
+			return V3SessionMutationResult{}, errors.New("checkpoint boundary result mutation requires distinct source and next run ids")
+		}
+		var readErr error
+		boundarySourceRun, boundarySourceRunOK, readErr = s.GetV3SessionRunIntent(input.SessionID, sourceRunID)
+		if readErr != nil {
+			return V3SessionMutationResult{}, readErr
+		}
+		if !boundarySourceRunOK || (boundarySourceRun.Status != V3RunIntentRunning && boundarySourceRun.Status != V3RunIntentPendingExecutor) {
+			return V3SessionMutationResult{}, fmt.Errorf("checkpoint boundary result source run %q is not active", sourceRunID)
+		}
+		nextRun, ok, readErr := s.GetV3SessionRunIntent(input.SessionID, nextRunID)
+		if readErr != nil {
+			return V3SessionMutationResult{}, readErr
+		}
+		if !ok || (nextRun.Status != V3RunIntentPendingExecutor && nextRun.Status != V3RunIntentRunning) {
+			return V3SessionMutationResult{}, fmt.Errorf("checkpoint boundary result next run %q is not ready", nextRunID)
+		}
+	}
 	currentSeq, err := s.readV3SessionSequence(input.SessionID)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -1061,7 +1095,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 		}
 	}
-	if input.CheckpointBoundary != nil && boundarySourceRunOK {
+	if input.CheckpointBoundaryResult != nil && boundarySourceRunOK {
 		terminalSource := boundarySourceRun
 		terminalSource.Status = V3RunIntentCompleted
 		terminalSource.BlockedReason = ""
@@ -2814,6 +2848,9 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	}
 	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
+	}
+	if input.CheckpointBoundaryResult != nil && (input.Kind != V3SessionMutationAppendMessage || input.Message == nil) {
+		return errors.New("checkpoint boundary result payload requires an append-message mutation")
 	}
 	if planSave := input.PlanSave; planSave != nil {
 		if err := validateV3MutationEmbeddedOwnership(input, "plan save", planSave.Plan.SessionID, planSave.Plan.UserID, planSave.Plan.AccountScopeID); err != nil {
