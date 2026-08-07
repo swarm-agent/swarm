@@ -6951,6 +6951,15 @@ func TestSessionsV3ExecutorFinalizesAutomaticLastCheckpointCompletion(t *testing
 
 	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-auto-finalize-message", "complete final checkpoint")
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
+	completedRunID := stableSessionsV3PrimaryRunID(created.ID, "provider-auto-finalize-message")
+	completedIntent, ok, err := sessionSvc.GetV3SessionRunIntent(created.ID, completedRunID)
+	if err != nil || !ok || completedIntent.Status != sessionruntime.RunIntentCompleted {
+		t.Fatalf("final-handoff source run did not complete: ok=%t err=%v intent=%+v", ok, err, completedIntent)
+	}
+	activeEpoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok || activeEpoch.Status != pebblestore.ExecutionEpochStatusActive || activeEpoch.EpochID == completedIntent.EpochID || activeEpoch.ParentEpochID != completedIntent.EpochID {
+		t.Fatalf("final-handoff completion did not leave an active successor while preserving source run ownership: ok=%t err=%v intent=%+v active=%+v", ok, err, completedIntent, activeEpoch)
+	}
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)

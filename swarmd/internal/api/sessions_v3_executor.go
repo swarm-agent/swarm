@@ -574,7 +574,11 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, err.Error(), "session.run.failed")
 				return
 			}
-			if _, err := e.recordRunStatus(job, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
+			completionEpochID, err := e.activeSessionV3ExecutionEpochID(job.SessionID)
+			if err != nil {
+				return
+			}
+			if _, err := e.recordRunStatusInEpoch(job, completionEpochID, sessionruntime.RunIntentCompleted, "", "session.assistant.completed"); err != nil {
 				return
 			}
 		}
@@ -755,6 +759,10 @@ func sessionV3RunFailureSystemMessage(reason string) string {
 }
 
 func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, reason, eventType string) (sessionruntime.SessionMutationResult, error) {
+	return e.recordRunStatusInEpoch(job, job.EpochID, status, reason, eventType)
+}
+
+func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mutationEpochID, status, reason, eventType string) (sessionruntime.SessionMutationResult, error) {
 	if e == nil || e.server == nil {
 		return sessionruntime.SessionMutationResult{}, errors.New("v3 executor is not configured")
 	}
@@ -776,6 +784,7 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationRecordRunIntent,
 		EventType:       eventType,
+		EpochID:         strings.TrimSpace(mutationEpochID),
 		RunIntent:       &intent,
 		NowUnixMs:       now,
 	})
@@ -783,6 +792,20 @@ func (e *sessionV3Executor) recordRunStatus(job sessionV3ExecutorJob, status, re
 		err = e.server.reconcileAITaskRunLifecycle(job, status, sanitizedReason, "")
 	}
 	return result, err
+}
+
+func (e *sessionV3Executor) activeSessionV3ExecutionEpochID(sessionID string) (string, error) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return "", errors.New("v3 executor is not configured")
+	}
+	active, ok, err := e.server.sessions.GetActiveExecutionEpoch(strings.TrimSpace(sessionID))
+	if err != nil {
+		return "", err
+	}
+	if !ok || strings.TrimSpace(active.EpochID) == "" || active.Status != pebblestore.ExecutionEpochStatusActive {
+		return "", errors.New("v3 lifecycle completion has no active execution epoch")
+	}
+	return strings.TrimSpace(active.EpochID), nil
 }
 
 func (e *sessionV3Executor) recordRunPhase(job sessionV3ExecutorJob, phase RunPhase, eventType string) (sessionruntime.SessionMutationResult, error) {
