@@ -8,13 +8,14 @@ import { WorkspaceActionIcon } from './workspace-action-icons'
 
 interface WorkspaceActionsSidebarSectionProps {
   workspacePath: string
+  sessionId?: string
   workspaceName?: string
   canAICommit?: boolean
   onRun: (action: WorkspaceAction) => void
   onAICommitRun?: (action: WorkspaceAction) => void
 }
 
-export function WorkspaceActionsSidebarSection({ workspacePath, workspaceName = '', canAICommit = false, onRun, onAICommitRun }: WorkspaceActionsSidebarSectionProps) {
+export function WorkspaceActionsSidebarSection({ workspacePath, sessionId = '', workspaceName = '', canAICommit = false, onRun, onAICommitRun }: WorkspaceActionsSidebarSectionProps) {
   const [actions, setActions] = useState<WorkspaceAction[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -26,7 +27,7 @@ export function WorkspaceActionsSidebarSection({ workspacePath, workspaceName = 
     const controller = new AbortController()
     setLoading(true)
     setError('')
-    void fetchWorkspaceActions(workspacePath, controller.signal)
+    void fetchWorkspaceActions(workspacePath, controller.signal, sessionId)
       .then(setActions)
       .catch((cause) => {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Could not load Workspace Actions.')
@@ -35,7 +36,7 @@ export function WorkspaceActionsSidebarSection({ workspacePath, workspaceName = 
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [request, workspacePath])
+  }, [request, sessionId, workspacePath])
 
   const pinnedActions = useMemo(
     () => orderWorkspaceActionsForQuickAccess(actions).filter((action) => action.pinned),

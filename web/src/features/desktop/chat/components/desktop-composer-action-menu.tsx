@@ -16,6 +16,7 @@ interface DesktopComposerActionMenuProps {
   onCompact?: () => void
   compactDisabled?: boolean
   workspacePath?: string
+  sessionId?: string
   onActionSelect?: (action: WorkspaceAction, confirmedLaunch: boolean) => void
   onOpenActionSettings?: () => void
   onSkillSelect?: (skill: WorkspaceSkill) => void
@@ -40,6 +41,7 @@ export function DesktopComposerActionMenu({
   onCompact,
   compactDisabled = false,
   workspacePath = '',
+  sessionId = '',
   onActionSelect,
   onOpenActionSettings,
   onSkillSelect,
@@ -110,7 +112,7 @@ export function DesktopComposerActionMenu({
     const controller = new AbortController()
     setActionsLoading(true)
     setActionsError('')
-    void fetchWorkspaceActions(workspacePath, controller.signal)
+    void fetchWorkspaceActions(workspacePath, controller.signal, sessionId)
       .then(setActions)
       .catch((error) => {
         if (!controller.signal.aborted) setActionsError(error instanceof Error ? error.message : 'Could not load Actions.')
@@ -119,7 +121,7 @@ export function DesktopComposerActionMenu({
         if (!controller.signal.aborted) setActionsLoading(false)
       })
     return () => controller.abort()
-  }, [actionsRequest, open, view, workspacePath])
+  }, [actionsRequest, open, sessionId, view, workspacePath])
 
   useEffect(() => {
     if (!open || view !== 'skills' || !workspacePath.trim()) return

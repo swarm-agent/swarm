@@ -97,18 +97,19 @@ func TestWorkspaceActionsResolveManagedWorktreeToBoundParentWorkspace(t *testing
 	if err != nil {
 		t.Fatalf("create parent session: %v", err)
 	}
-	if _, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+	childSession, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: "Managed worktree child",
 		WorkspacePath: worktreePath, WorkspaceName: "managed-worktree", Mode: sessionruntime.ModeAuto,
 		Worktree: &sessionruntime.CreateSessionWorktree{RootPath: worktreePath, BaseBranch: "dev", BranchName: "agent/action-worktree", WorkspaceID: "action-worktree"},
 		Metadata: map[string]any{
 			"parent_session_id": parentSession.ID,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("create worktree child session: %v", err)
 	}
 
-	request := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/actions?workspace_path="+worktreePath, nil))
+	request := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/actions?workspace_path="+worktreePath+"&session_id="+childSession.ID, nil))
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -129,11 +130,36 @@ func TestWorkspaceActionsResolveManagedWorktreeToBoundParentWorkspace(t *testing
 		t.Fatalf("worktree actions=%+v want parent action %q without unrelated %q", response.Actions, parentAction.ID, unrelatedAction.ID)
 	}
 
-	scope, err := server.resolveWorkspaceActionScope(request, worktreePath)
+	scope, err := server.resolveWorkspaceActionScope(request, worktreePath, childSession.ID)
 	if err != nil {
 		t.Fatalf("resolve worktree action scope: %v", err)
 	}
 	if filepath.Clean(scope.RuntimePath) != filepath.Clean(worktreePath) || filepath.Clean(scope.WorkspacePath) != filepath.Clean(parentPath) {
 		t.Fatalf("action paths runtime=%q canonical=%q", scope.RuntimePath, scope.WorkspacePath)
+	}
+
+	mismatchedRequest := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/actions", nil))
+	if _, err := server.resolveWorkspaceActionScope(mismatchedRequest, parentPath, childSession.ID); err == nil {
+		t.Fatal("expected worktree session with mismatched runtime path to be rejected")
+	}
+}
+
+func TestWorkspaceActionsResolveDirectWorkspaceSessionWithoutBinding(t *testing.T) {
+	server, workspacePath, _ := newWorkspaceOverviewTopologyTestServer(t)
+	principal := testPrincipal()
+	directSession, _, err := server.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: "Direct workspace session",
+		WorkspacePath: workspacePath, WorkspaceName: filepath.Base(workspacePath), Mode: sessionruntime.ModeAuto,
+	})
+	if err != nil {
+		t.Fatalf("create direct session: %v", err)
+	}
+	request := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/actions", nil))
+	scope, err := server.resolveWorkspaceActionScope(request, workspacePath, directSession.ID)
+	if err != nil {
+		t.Fatalf("resolve direct session scope: %v", err)
+	}
+	if scope.RuntimePath != scope.WorkspacePath || filepath.Clean(scope.WorkspacePath) != filepath.Clean(workspacePath) {
+		t.Fatalf("direct action scope = %+v", scope)
 	}
 }

@@ -158,8 +158,9 @@ export function orderWorkspaceActionsForQuickAccess(actions: readonly WorkspaceA
     .map(({ action }) => action)
 }
 
-export async function fetchWorkspaceActions(workspacePath: string, signal?: AbortSignal): Promise<WorkspaceAction[]> {
+export async function fetchWorkspaceActions(workspacePath: string, signal?: AbortSignal, sessionId = ''): Promise<WorkspaceAction[]> {
   const search = new URLSearchParams({ workspace_path: workspacePath })
+  if (sessionId.trim()) search.set('session_id', sessionId.trim())
   const response = await requestJson<WorkspaceActionsResponseWire>(`/v1/workspace/actions?${search.toString()}`, { signal })
   return Array.isArray(response.actions) ? response.actions.map(mapWorkspaceAction) : []
 }
@@ -211,28 +212,29 @@ export async function deleteWorkspaceAction(workspacePath: string, actionId: str
   })
 }
 
-export async function startWorkspaceAction(workspacePath: string, actionId: string, inputs: Record<string, string>): Promise<WorkspaceActionRun> {
+export async function startWorkspaceAction(workspacePath: string, actionId: string, inputs: Record<string, string>, sessionId = ''): Promise<WorkspaceActionRun> {
   const response = await requestJson<WorkspaceActionRunResponseWire>('/v1/workspace/actions/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace_path: workspacePath, action_id: actionId, inputs }),
+    body: JSON.stringify({ workspace_path: workspacePath, session_id: sessionId.trim(), action_id: actionId, inputs }),
   })
   if (!response.run) throw new Error('Action launch returned no run')
   return mapWorkspaceActionRun(response.run)
 }
 
-export async function fetchWorkspaceActionRun(workspacePath: string, runId: string, signal?: AbortSignal): Promise<WorkspaceActionRun> {
+export async function fetchWorkspaceActionRun(workspacePath: string, runId: string, signal?: AbortSignal, sessionId = ''): Promise<WorkspaceActionRun> {
   const search = new URLSearchParams({ workspace_path: workspacePath, run_id: runId })
+  if (sessionId.trim()) search.set('session_id', sessionId.trim())
   const response = await requestJson<WorkspaceActionRunResponseWire>(`/v1/workspace/actions/runs?${search.toString()}`, { signal })
   if (!response.run) throw new Error('Action status returned no run')
   return mapWorkspaceActionRun(response.run)
 }
 
-export async function cancelWorkspaceActionRun(workspacePath: string, runId: string): Promise<WorkspaceActionRun> {
+export async function cancelWorkspaceActionRun(workspacePath: string, runId: string, sessionId = ''): Promise<WorkspaceActionRun> {
   const response = await requestJson<WorkspaceActionRunResponseWire>('/v1/workspace/actions/runs/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace_path: workspacePath, run_id: runId }),
+    body: JSON.stringify({ workspace_path: workspacePath, session_id: sessionId.trim(), run_id: runId }),
   })
   if (!response.run) throw new Error('Action cancellation returned no run')
   return mapWorkspaceActionRun(response.run)

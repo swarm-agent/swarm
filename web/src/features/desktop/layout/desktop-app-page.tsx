@@ -4538,7 +4538,7 @@ export function DesktopAppPage() {
   }
 
   const openWorkspaceAction = (action: WorkspaceAction) => {
-    setWorkspaceActionPresentation({ action, mode: 'standalone', workspacePath: action.workspacePath, sessionId: '' })
+    setWorkspaceActionPresentation({ action, mode: 'standalone', workspacePath: selectedGitWorkspacePath || action.workspacePath, sessionId: selectedGitSessionId })
   }
 
   const runAICommitWorkspaceAction = async (action: WorkspaceAction, workspacePath: string, sessionId: string) => {
@@ -4557,7 +4557,7 @@ export function DesktopAppPage() {
         queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
       ])
       const inputs = Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue]))
-      const run = await startWorkspaceAction(workspacePath, action.id, inputs)
+      const run = await startWorkspaceAction(workspacePath, action.id, inputs, sessionId)
       setWorkspaceActionPresentation({ action, mode: 'post-commit', workspacePath, sessionId, initialRun: run })
       setDesktopToast({ message: `Committed “${suggestion.message}”; ${action.name} is running.`, tone: 'success' })
     } catch (error) {
@@ -4858,7 +4858,7 @@ export function DesktopAppPage() {
         }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Archive session' : gitIntegrateError ? 'Review integration error' : `Confirm integration into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}` : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
       </div> : null}
     </section>
-    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
+    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} sessionId={selectedGitSessionId} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
     </>
   ) : null
 
@@ -5546,6 +5546,7 @@ export function DesktopAppPage() {
         <div className="absolute bottom-[calc(var(--app-safe-area-bottom)+1rem)] left-4 right-4 z-[65] max-h-[min(70vh,36rem)] overflow-y-auto sm:left-auto sm:right-6 sm:w-[28rem]" data-testid="workspace-action-run">
           <DesktopWorkspaceActionPanel
             workspacePath={workspaceActionPresentation.workspacePath}
+            sessionId={workspaceActionPresentation.sessionId}
             action={workspaceActionPresentation.action}
             autoCloseOnSuccess={false}
             initialRun={workspaceActionPresentation.initialRun}

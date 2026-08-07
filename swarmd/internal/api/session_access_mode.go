@@ -37,23 +37,49 @@ func (s *Server) sessionWorkspaceBindingForAccess(principal identity.Principal, 
 	if sessionID == "" {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
 	}
-	bindingID := ""
-	if s.sessions != nil {
-		if session, ok, err := s.sessions.GetSession(sessionID); err != nil {
-			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
-		} else if ok && strings.TrimSpace(session.AccountScopeID) == strings.TrimSpace(principal.AccountScopeID) {
-			bindingID = firstNonEmpty(
-				strings.TrimSpace(fmt.Sprint(session.Metadata["swarm_v3_workspace_binding_id"])),
-				strings.TrimSpace(fmt.Sprint(session.Metadata["local_workspace_binding_id"])),
-			)
-		}
-	}
-	if bindingID == "" {
+	if s.sessions == nil {
 		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
 	}
-	binding, ok, err := s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, bindingID)
-	if err != nil || !ok {
-		return pebblestore.TopologyWorkspaceBindingRecord{}, ok, err
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
 	}
-	return binding, true, nil
+	if !ok || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
+		return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+	}
+	return s.sessionWorkspaceBindingFromLineage(principal, session)
+}
+
+func (s *Server) sessionWorkspaceBindingFromLineage(principal identity.Principal, session pebblestore.SessionSnapshot) (pebblestore.TopologyWorkspaceBindingRecord, bool, error) {
+	seen := make(map[string]struct{}, 8)
+	for depth := 0; depth < 100; depth++ {
+		if strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+		}
+		sessionID := strings.TrimSpace(session.ID)
+		if sessionID == "" {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+		}
+		if _, exists := seen[sessionID]; exists {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("worktree session lineage contains a cycle")
+		}
+		seen[sessionID] = struct{}{}
+		bindingID := firstNonEmpty(
+			strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_workspace_binding_id")),
+			strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "local_workspace_binding_id")),
+		)
+		if bindingID != "" {
+			return s.topology.GetWorkspaceBindingForAccount(principal.AccountScopeID, bindingID)
+		}
+		parentSessionID := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "parent_session_id"))
+		if parentSessionID == "" {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, nil
+		}
+		parent, found, err := s.sessions.GetSession(parentSessionID)
+		if err != nil || !found {
+			return pebblestore.TopologyWorkspaceBindingRecord{}, false, err
+		}
+		session = parent
+	}
+	return pebblestore.TopologyWorkspaceBindingRecord{}, false, errors.New("worktree session lineage exceeds the supported depth")
 }

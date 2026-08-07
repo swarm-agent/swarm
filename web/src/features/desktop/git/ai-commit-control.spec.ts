@@ -84,6 +84,17 @@ test('Desktop /commit ai dispatches the canonical AI Commit handler', async () =
   assert.doesNotMatch(command, /suggestWorkspaceCommitMessage|commitWorkspaceChanges/)
 })
 
+test('worktree AI Commit preserves the durable session identity for suggestion and commit', async () => {
+  const page = await readFile(pageURL, 'utf8')
+  const handlerStart = page.indexOf('const handleAICommit = useCallback')
+  const handlerEnd = page.indexOf('const handleSlashCommand = useCallback', handlerStart)
+  const handler = page.slice(handlerStart, handlerEnd)
+
+  assert.match(handler, /suggestWorkspaceCommitMessage\(\{[\s\S]*workspacePath: input\.workspacePath,[\s\S]*sessionId: input\.sessionId/)
+  assert.match(handler, /commitWorkspaceChanges\(\{[\s\S]*workspacePath: input\.workspacePath,[\s\S]*sessionId: input\.sessionId/)
+  assert.match(page, /handleAICommit\(\{ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId \}\)/)
+})
+
 test('standalone Workspace Action execution remains in the existing execution panel', async () => {
   const page = await readFile(pageURL, 'utf8')
   assert.match(page, /<DesktopWorkspaceActionPanel[\s\S]*action=\{workspaceActionPresentation\.action\}/)

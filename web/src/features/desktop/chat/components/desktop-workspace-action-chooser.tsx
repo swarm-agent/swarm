@@ -9,6 +9,7 @@ import {
 
 interface DesktopWorkspaceActionChooserProps {
   workspacePath: string
+  sessionId?: string
   onSelect: (action: WorkspaceAction) => void
   onOpenSettings?: () => void
   onClose: () => void
@@ -16,6 +17,7 @@ interface DesktopWorkspaceActionChooserProps {
 
 export function DesktopWorkspaceActionChooser({
   workspacePath,
+  sessionId = '',
   onSelect,
   onOpenSettings,
   onClose,
@@ -29,7 +31,7 @@ export function DesktopWorkspaceActionChooser({
     const controller = new AbortController()
     setLoading(true)
     setError('')
-    void fetchWorkspaceActions(workspacePath, controller.signal)
+    void fetchWorkspaceActions(workspacePath, controller.signal, sessionId)
       .then(setActions)
       .catch((cause) => {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Could not load Actions.')
@@ -38,7 +40,7 @@ export function DesktopWorkspaceActionChooser({
         if (!controller.signal.aborted) setLoading(false)
       })
     return () => controller.abort()
-  }, [request, workspacePath])
+  }, [request, sessionId, workspacePath])
 
   const orderedActions = orderWorkspaceActionsForQuickAccess(actions)
 
