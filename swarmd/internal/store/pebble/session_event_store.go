@@ -69,31 +69,31 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	SessionID                string                              `json:"session_id"`
-	UserID                   string                              `json:"user_id,omitempty"`
-	AccountScopeID           string                              `json:"account_scope_id,omitempty"`
-	ClientRequestID          string                              `json:"client_request_id,omitempty"`
-	IdempotencyKey           string                              `json:"idempotency_key,omitempty"`
-	PayloadHash              string                              `json:"payload_hash,omitempty"`
-	RequestHash              string                              `json:"request_hash,omitempty"`
-	Kind                     string                              `json:"kind"`
-	EventID                  string                              `json:"event_id,omitempty"`
-	EventType                string                              `json:"event_type,omitempty"`
-	EventPayload             json.RawMessage                     `json:"event_payload,omitempty"`
-	CausationID              string                              `json:"causation_id,omitempty"`
-	CorrelationID            string                              `json:"correlation_id,omitempty"`
-	Session                  *SessionSnapshot                    `json:"session,omitempty"`
-	Message                  *MessageSnapshot                    `json:"message,omitempty"`
-	Lifecycle                *SessionLifecycleSnapshot           `json:"lifecycle,omitempty"`
-	RunIntent                *V3SessionRunIntent                 `json:"run_intent,omitempty"`
-	PlanAcceptance           *V3PlanAcceptanceMutation           `json:"plan_acceptance,omitempty"`
-	PlanSave                 *V3PlanSaveMutation                 `json:"plan_save,omitempty"`
-	CheckpointBoundary       *V3CheckpointBoundaryMutation       `json:"checkpoint_boundary,omitempty"`
-	MediaStagingBindings     []MediaStagingBinding               `json:"media_staging_bindings,omitempty"`
-	EpochID                  string                              `json:"epoch_id,omitempty"`
-	TurnUsage                *SessionTurnUsageSnapshot           `json:"turn_usage,omitempty"`
-	ExpectedLastEventSeq     *uint64                             `json:"expected_last_event_seq,omitempty"`
-	NowUnixMs                int64                               `json:"now_unix_ms,omitempty"`
+	SessionID            string                        `json:"session_id"`
+	UserID               string                        `json:"user_id,omitempty"`
+	AccountScopeID       string                        `json:"account_scope_id,omitempty"`
+	ClientRequestID      string                        `json:"client_request_id,omitempty"`
+	IdempotencyKey       string                        `json:"idempotency_key,omitempty"`
+	PayloadHash          string                        `json:"payload_hash,omitempty"`
+	RequestHash          string                        `json:"request_hash,omitempty"`
+	Kind                 string                        `json:"kind"`
+	EventID              string                        `json:"event_id,omitempty"`
+	EventType            string                        `json:"event_type,omitempty"`
+	EventPayload         json.RawMessage               `json:"event_payload,omitempty"`
+	CausationID          string                        `json:"causation_id,omitempty"`
+	CorrelationID        string                        `json:"correlation_id,omitempty"`
+	Session              *SessionSnapshot              `json:"session,omitempty"`
+	Message              *MessageSnapshot              `json:"message,omitempty"`
+	Lifecycle            *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
+	RunIntent            *V3SessionRunIntent           `json:"run_intent,omitempty"`
+	PlanAcceptance       *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
+	PlanSave             *V3PlanSaveMutation           `json:"plan_save,omitempty"`
+	CheckpointBoundary   *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
+	MediaStagingBindings []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
+	EpochID              string                        `json:"epoch_id,omitempty"`
+	TurnUsage            *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	ExpectedLastEventSeq *uint64                       `json:"expected_last_event_seq,omitempty"`
+	NowUnixMs            int64                         `json:"now_unix_ms,omitempty"`
 }
 
 type V3SessionMutationResult struct {
