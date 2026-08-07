@@ -149,6 +149,7 @@ type Page struct {
 	handoffDetailsModal          bool
 	handoffDetailsScroll         int
 	handoffDetailsMessageID      string
+	handoffDetailsSection        string
 	handoffDetails               *client.PlanFinalHandoff
 }
 
@@ -766,18 +767,10 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	if p.handleFinalHandoffKeyLocked(ev) {
 		return PageActionNone
 	}
-	match := func(action string) bool { return p.matchKey != nil && p.matchKey(ev, action) }
-	if len(p.input) == 0 && ev.Key() == tcell.KeyRune && ev.Rune() >= '1' && ev.Rune() <= '3' {
-		if message, ok := p.latestFinalHandoffLocked(); ok {
-			index := int(ev.Rune() - '1')
-			action := finalHandoffPromptAction(message.ID, index)
-			if message.FinalHandoff != nil && index < len(message.FinalHandoff.SuggestedPrompts) && p.handoffTargets[action].W > 0 {
-				p.handoffMessageID, p.handoffControl, p.handoffFocus = message.ID, index, true
-				p.activateFinalHandoffControlLocked(message, index)
-				return PageActionNone
-			}
-		}
+	if len(p.input) == 0 && ev.Key() == tcell.KeyTab && p.focusLatestFinalHandoffLocked() {
+		return PageActionNone
 	}
+	match := func(action string) bool { return p.matchKey != nil && p.matchKey(ev, action) }
 	if match(KeyCycleMode) {
 		p.cycleModeLocked()
 		return PageActionNone
@@ -1577,7 +1570,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelPicker, modelLoading, modelIndex := p.modelPicker, p.modelLoading, p.modelIndex
 	planModal, planModalScroll, planModalPlan := p.planModal, p.planModalScroll, p.planModalPlan
 	bashOutputModal, bashOutputModalScroll, bashOutputModalTool := p.bashOutputModal, p.bashOutputModalScroll, p.bashOutputModalTool
-	handoffDetailsModal, handoffDetailsScroll := p.handoffDetailsModal, p.handoffDetailsScroll
+	handoffDetailsModal, handoffDetailsScroll, handoffDetailsSection := p.handoffDetailsModal, p.handoffDetailsScroll, p.handoffDetailsSection
 	var handoffDetails *client.PlanFinalHandoff
 	if p.handoffDetails != nil {
 		copy := cloneFinalHandoff(p.handoffDetails)
@@ -1663,6 +1656,18 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 		transcriptHeight = 1
 	}
 	rows := p.renderRowsForHeight(state, maxInt(1, width-4), transcriptHeight, styles)
+	p.mu.Lock()
+	handoffFocused, handoffMessageID, handoffControl := p.handoffFocus, p.handoffMessageID, p.handoffControl
+	p.mu.Unlock()
+	if handoffFocused {
+		if action := finalHandoffSelectedAction(state.Messages, handoffMessageID, handoffControl); action != "" {
+			scroll = scrollToRenderAction(rows, action, transcriptHeight, scroll)
+			p.mu.Lock()
+			p.scroll = scroll
+			p.follow = scroll == 0
+			p.mu.Unlock()
+		}
+	}
 	start := len(rows) - transcriptHeight - scroll
 	if start < 0 {
 		start = 0
@@ -1740,7 +1745,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if taskLaunchModalIndex >= 0 && taskLaunchModalIndex < len(pendingPermissions) {
 		p.drawTaskLaunchPermissionModal(screen, width, height, styles, pendingPermissions[taskLaunchModalIndex], permissionContentScroll)
 	} else if handoffDetailsModal {
-		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsScroll)
+		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsSection, handoffDetailsScroll)
 	} else if planModal {
 		plan := state.Plan.ActivePlan
 		if planModalPlan != nil {

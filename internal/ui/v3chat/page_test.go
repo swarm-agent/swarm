@@ -113,7 +113,11 @@ func TestStructuredFinalHandoffRendersCompactCardAndLegacyMarkersAreSanitized(t 
 		"ship — review",
 		"NEXT STEPS",
 		"1. Review",
-		"Details  ·  report  ·  result  ·  files 2  ·  validation 1",
+		"EVIDENCE",
+		"▸ Details  ·  report  ·  result",
+		"▸ Files (2)",
+		"▸ Validation (1)",
+		"Tab focus  ·  ←/→ choose  ·  Enter execute/open",
 		"Legacy summary",
 	} {
 		if !strings.Contains(drawn, want) {
@@ -150,8 +154,8 @@ func TestFinalHandoffSectionsUseContentAwareSpacing(t *testing.T) {
 		{"FINAL HANDOFF  ·  ship", "Ready to review"},
 		{"• Compact card", "RECOMMENDATION"},
 		{"ship — review", "NEXT STEPS"},
-		{"1. Review", "Details  ·  report"},
-		{"Details  ·  report", "Tab focus  ·  1–3 choose next step"},
+		{"1. Review", "EVIDENCE"},
+		{"▸ Validation (1)", "Tab focus  ·  ←/→ choose  ·  Enter execute/open"},
 	} {
 		before, after := -1, -1
 		for index, line := range text {
@@ -265,12 +269,16 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 		t.Fatalf("Tab did not focus the first handoff control: focus=%t control=%d", page.handoffFocus, page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
-	if page.handoffControl != 1 {
-		t.Fatalf("Tab did not move handoff control: %d", page.handoffControl)
+	if page.handoffControl != 0 {
+		t.Fatalf("Tab moved the focused handoff control instead of retaining focus: %d", page.handoffControl)
 	}
-	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if page.handoffControl != 1 {
+		t.Fatalf("Right did not move to the second suggested prompt: %d", page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	if page.handoffControl != 2 {
-		t.Fatalf("arrow did not move to details control: %d", page.handoffControl)
+		t.Fatalf("Right did not move from AI suggestions to the first expandable object: %d", page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if !page.handoffDetailsModal {
@@ -284,7 +292,8 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	if page.handoffFocus {
 		t.Fatal("Esc did not return focus to the composer")
 	}
-	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, '1', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	deadline := time.Now().Add(time.Second)
 	for {
 		transport.mu.Lock()
@@ -322,7 +331,7 @@ func TestFinalHandoffMouseDetailsModalScrollsAtNarrowWidthAndReturnsToTranscript
 	var details footerbar.Rect
 	page.mu.Lock()
 	for action, target := range page.handoffTargets {
-		if strings.Contains(action, ":details:") {
+		if strings.Contains(action, ":section:details") {
 			details = target
 			break
 		}

@@ -46,24 +46,70 @@ func sanitizeLegacyHandoffMarkers(content string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-func finalHandoffHasDetails(handoff *client.PlanFinalHandoff) bool {
+func finalHandoffExpandableSections(handoff *client.PlanFinalHandoff) []string {
 	if handoff == nil {
-		return false
+		return nil
 	}
-	return strings.TrimSpace(handoff.Details.Report) != "" ||
-		strings.TrimSpace(handoff.Details.Result) != "" ||
-		len(handoff.Details.ChangedFiles) > 0 || len(handoff.Details.Validation) > 0
+	sections := make([]string, 0, 3)
+	if strings.TrimSpace(handoff.Details.Report) != "" || strings.TrimSpace(handoff.Details.Result) != "" {
+		sections = append(sections, "details")
+	}
+	if len(handoff.Details.ChangedFiles) > 0 {
+		sections = append(sections, "files")
+	}
+	if len(handoff.Details.Validation) > 0 {
+		sections = append(sections, "validation")
+	}
+	return sections
 }
 
 func finalHandoffControlCount(handoff *client.PlanFinalHandoff) int {
 	if handoff == nil {
 		return 0
 	}
-	count := len(handoff.SuggestedPrompts)
-	if finalHandoffHasDetails(handoff) {
-		count++
+	return len(handoff.SuggestedPrompts) + len(finalHandoffExpandableSections(handoff))
+}
+
+func finalHandoffSelectedAction(messages []Message, messageID string, control int) string {
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.ID != messageID || !isStructuredFinalHandoffMessage(message) || message.FinalHandoff == nil {
+			continue
+		}
+		if control >= 0 && control < len(message.FinalHandoff.SuggestedPrompts) {
+			return finalHandoffPromptAction(message.ID, control)
+		}
+		sections := finalHandoffExpandableSections(message.FinalHandoff)
+		sectionIndex := control - len(message.FinalHandoff.SuggestedPrompts)
+		if sectionIndex >= 0 && sectionIndex < len(sections) {
+			return finalHandoffSectionAction(message.ID, sections[sectionIndex])
+		}
+		return ""
 	}
-	return count
+	return ""
+}
+
+func scrollToRenderAction(rows []renderRow, action string, visibleHeight, currentScroll int) int {
+	if action == "" || visibleHeight <= 0 {
+		return currentScroll
+	}
+	for rowIndex, row := range rows {
+		for _, target := range row.actions {
+			if target.action != action {
+				continue
+			}
+			bottomStart := maxInt(0, len(rows)-visibleHeight)
+			visibleStart := bottomStart - currentScroll
+			if rowIndex < visibleStart {
+				return maxInt(0, bottomStart-rowIndex)
+			}
+			if rowIndex >= visibleStart+visibleHeight {
+				return maxInt(0, bottomStart-rowIndex+visibleHeight-1)
+			}
+			return currentScroll
+		}
+	}
+	return currentScroll
 }
 
 func (p *Page) latestFinalHandoffLocked() (Message, bool) {
@@ -116,24 +162,17 @@ func (p *Page) handleFinalHandoffKeyLocked(ev *tcell.EventKey) bool {
 	case tcell.KeyEscape:
 		p.handoffFocus = false
 		return true
-	case tcell.KeyUp, tcell.KeyLeft, tcell.KeyBacktab:
+	case tcell.KeyLeft, tcell.KeyBacktab:
 		move(-1)
 		return true
-	case tcell.KeyDown, tcell.KeyRight, tcell.KeyTab:
+	case tcell.KeyRight:
 		move(1)
+		return true
+	case tcell.KeyTab:
 		return true
 	case tcell.KeyEnter:
 		p.activateFinalHandoffControlLocked(message, p.handoffControl)
 		return true
-	case tcell.KeyRune:
-		if ev.Rune() >= '1' && ev.Rune() <= '3' {
-			index := int(ev.Rune() - '1')
-			action := finalHandoffPromptAction(message.ID, index)
-			if index < len(message.FinalHandoff.SuggestedPrompts) && p.handoffTargets[action].W > 0 {
-				p.activateFinalHandoffControlLocked(message, index)
-			}
-			return true
-		}
 	}
 	return false
 }
@@ -156,10 +195,13 @@ func (p *Page) activateFinalHandoffControlLocked(message Message, index int) {
 		go p.Send(prompt)
 		return
 	}
-	if index == len(handoff.SuggestedPrompts) && finalHandoffHasDetails(handoff) {
+	sections := finalHandoffExpandableSections(handoff)
+	sectionIndex := index - len(handoff.SuggestedPrompts)
+	if sectionIndex >= 0 && sectionIndex < len(sections) {
 		copy := cloneFinalHandoff(handoff)
 		p.handoffDetails = &copy
 		p.handoffDetailsMessageID = message.ID
+		p.handoffDetailsSection = sections[sectionIndex]
 		p.handoffDetailsModal = true
 		p.handoffDetailsScroll = 0
 	}
@@ -211,6 +253,7 @@ func (p *Page) closeFinalHandoffDetailsLocked() {
 	p.handoffDetailsScroll = 0
 	p.handoffDetails = nil
 	p.handoffDetailsMessageID = ""
+	p.handoffDetailsSection = ""
 }
 
 func (p *Page) activateFinalHandoffTargetLocked(action string) bool {
@@ -232,10 +275,16 @@ func (p *Page) activateFinalHandoffTargetLocked(action string) bool {
 			return true
 		}
 	}
-	if parts[2] == "details" {
-		p.handoffControl = len(message.FinalHandoff.SuggestedPrompts)
-		p.activateFinalHandoffControlLocked(message, p.handoffControl)
-		return true
+	if parts[2] == "section" {
+		sections := finalHandoffExpandableSections(message.FinalHandoff)
+		for sectionIndex, section := range sections {
+			if section != parts[3] {
+				continue
+			}
+			p.handoffControl = len(message.FinalHandoff.SuggestedPrompts) + sectionIndex
+			p.activateFinalHandoffControlLocked(message, p.handoffControl)
+			return true
+		}
 	}
 	return false
 }
@@ -333,36 +382,43 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 			appendBody(fmt.Sprintf("%d. %s", index+1, suggestion.Label), styles.Text, action, focused && selected == index)
 		}
 	}
-	if finalHandoffHasDetails(handoff) {
+	sections := finalHandoffExpandableSections(handoff)
+	if len(sections) > 0 {
 		appendSectionGap()
-		facts := make([]string, 0, 4)
-		if strings.TrimSpace(handoff.Details.Report) != "" {
-			facts = append(facts, "report")
+		appendBody("EVIDENCE", styles.Secondary.Bold(true), "", false)
+		for sectionIndex, section := range sections {
+			label := ""
+			switch section {
+			case "details":
+				facts := make([]string, 0, 2)
+				if strings.TrimSpace(handoff.Details.Report) != "" {
+					facts = append(facts, "report")
+				}
+				if strings.TrimSpace(handoff.Details.Result) != "" {
+					facts = append(facts, "result")
+				}
+				label = "▸ Details  ·  " + strings.Join(facts, "  ·  ")
+			case "files":
+				label = fmt.Sprintf("▸ Files (%d)", len(handoff.Details.ChangedFiles))
+			case "validation":
+				label = fmt.Sprintf("▸ Validation (%d)", len(handoff.Details.Validation))
+			}
+			controlIndex := len(handoff.SuggestedPrompts) + sectionIndex
+			appendBody(label, styles.Muted, finalHandoffSectionAction(message.ID, section), focused && selected == controlIndex)
 		}
-		if strings.TrimSpace(handoff.Details.Result) != "" {
-			facts = append(facts, "result")
-		}
-		if count := len(handoff.Details.ChangedFiles); count > 0 {
-			facts = append(facts, fmt.Sprintf("files %d", count))
-		}
-		if count := len(handoff.Details.Validation); count > 0 {
-			facts = append(facts, fmt.Sprintf("validation %d", count))
-		}
-		action := fmt.Sprintf("handoff:%s:details:0", message.ID)
-		appendBody("Details  ·  "+strings.Join(facts, "  ·  "), styles.Muted, action, focused && selected == len(handoff.SuggestedPrompts))
 	}
 	if focused {
 		appendSectionGap()
-		appendBody("↑/↓ or Tab move  ·  Enter select  ·  Esc exit", styles.Muted, "", false)
+		appendBody("←/→ choose  ·  Enter execute/open  ·  Esc exit", styles.Muted, "", false)
 	} else if finalHandoffControlCount(handoff) > 0 {
 		appendSectionGap()
-		appendBody("Tab focus  ·  1–3 choose next step", styles.Muted, "", false)
+		appendBody("Tab focus  ·  ←/→ choose  ·  Enter execute/open", styles.Muted, "", false)
 	}
 	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle})
 	return append(rows, renderRow{text: "", style: styles.Text})
 }
 
-func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, width int, styles PageStyles) []permissionCardLine {
+func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, section string, width int, styles PageStyles) []permissionCardLine {
 	if handoff == nil {
 		return nil
 	}
@@ -398,17 +454,27 @@ func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, width int, style
 			}
 		}
 	}
-	appendSection("REPORT", handoff.Details.Report)
-	appendSection("RESULT", handoff.Details.Result)
-	appendList("CHANGED FILES", handoff.Details.ChangedFiles)
-	appendList("VALIDATION", handoff.Details.Validation)
+	switch section {
+	case "details":
+		appendSection("REPORT", handoff.Details.Report)
+		appendSection("RESULT", handoff.Details.Result)
+	case "files":
+		appendList("CHANGED FILES", handoff.Details.ChangedFiles)
+	case "validation":
+		appendList("VALIDATION", handoff.Details.Validation)
+	default:
+		appendSection("REPORT", handoff.Details.Report)
+		appendSection("RESULT", handoff.Details.Result)
+		appendList("CHANGED FILES", handoff.Details.ChangedFiles)
+		appendList("VALIDATION", handoff.Details.Validation)
+	}
 	if len(lines) == 0 {
 		lines = append(lines, permissionCardLine{Text: "No durable evidence was provided.", Style: styles.Muted})
 	}
 	return lines
 }
 
-func (p *Page) drawFinalHandoffDetailsModal(screen tcell.Screen, width, height int, styles PageStyles, handoff *client.PlanFinalHandoff, scroll int) {
+func (p *Page) drawFinalHandoffDetailsModal(screen tcell.Screen, width, height int, styles PageStyles, handoff *client.PlanFinalHandoff, section string, scroll int) {
 	if handoff == nil || width < 8 || height < 6 {
 		return
 	}
@@ -418,11 +484,15 @@ func (p *Page) drawFinalHandoffDetailsModal(screen tcell.Screen, width, height i
 	fill(screen, x, y, modalWidth, modalHeight, styles.Panel)
 	drawBox(screen, x, y, modalWidth, modalHeight, styles.BorderActive)
 	contentWidth := maxInt(1, modalWidth-4)
-	drawText(screen, x+2, y+1, contentWidth, styles.Primary.Bold(true), "FINAL HANDOFF DETAILS")
+	title := map[string]string{"details": "FINAL HANDOFF DETAILS", "files": "FINAL HANDOFF FILES", "validation": "FINAL HANDOFF VALIDATION"}[section]
+	if title == "" {
+		title = "FINAL HANDOFF EVIDENCE"
+	}
+	drawText(screen, x+2, y+1, contentWidth, styles.Primary.Bold(true), title)
 	if modalHeight > 4 {
 		drawText(screen, x+2, y+2, contentWidth, styles.Muted, "↑/↓ scroll  ·  d, q, or Esc close")
 	}
-	lines := finalHandoffDetailsLines(handoff, contentWidth, styles)
+	lines := finalHandoffDetailsLines(handoff, section, contentWidth, styles)
 	visibleRows := maxInt(1, modalHeight-5)
 	maxScroll := maxInt(0, len(lines)-visibleRows)
 	scroll = minInt(maxInt(0, scroll), maxScroll)
@@ -497,6 +567,10 @@ func displayCellWidth(text string) int {
 
 func finalHandoffPromptAction(messageID string, index int) string {
 	return fmt.Sprintf("handoff:%s:prompt:%d", messageID, index)
+}
+
+func finalHandoffSectionAction(messageID, section string) string {
+	return fmt.Sprintf("handoff:%s:section:%s", messageID, section)
 }
 
 func finalHandoffTargetAt(targets map[string]footerbar.Rect, x, y int) string {
