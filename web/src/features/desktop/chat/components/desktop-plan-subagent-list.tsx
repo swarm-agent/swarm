@@ -51,7 +51,7 @@ export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlan
   if (children.length === 0) return null;
   const label = `${children.length} subagent${children.length === 1 ? "" : "s"}`;
   return (
-    <details className={cn("group min-w-0 overflow-hidden", mode !== "thin" && "my-3")} data-plan-subagent-list data-display-mode={mode} aria-label="Subagents">
+    <details className={cn("group min-w-0 overflow-hidden", mode !== "thin" && "mx-4 my-3")} data-plan-subagent-list data-display-mode={mode} aria-label="Subagents">
       <summary
         className={cn(
           "flex min-h-9 cursor-pointer list-none items-center rounded-lg border border-[var(--app-border)] text-xs font-medium text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden",
