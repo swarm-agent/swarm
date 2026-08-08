@@ -15,7 +15,7 @@ function usage() {
   console.log(`Usage: node scripts/diagnose-desktop-v3-cross-client-discovery.mjs [options]
 
 Real two-client desktop V3 discovery diagnostic. It opens two Playwright browser
-contexts against a live desktop (optionally through an SSH tunnel to testbench):
+contexts against a live desktop (optionally through a configured SSH tunnel):
 
   Client A: navigates to the selected workspace and records only the V3 runtime
             path: /v3/sessions:reconnect and /v3/realtime/stream frames.
@@ -29,7 +29,7 @@ The diagnostic answers the critical fork:
   - Did Client A render the discovered session title?
 
 Options:
-  --ssh <alias>                  Open SSH tunnel to remote desktop. Example: testbench.
+  --ssh <target>                 Open SSH tunnel to remote desktop (or set SWARM_PRIMARY_SSH).
   --url <url>                    Desktop URL. Default: SWARM_DESKTOP_URL or local/tunnel URL.
   --remote-desktop-port <port>   Remote desktop port for --ssh. Default: 5555.
   --workspace <name|path>        Workspace to use. Default: swarm-go.
@@ -44,8 +44,8 @@ Options:
   --timeout-ms <ms>              Per-phase timeout. Default: 90000.
   --help                         Show this help.
 
-Recommended testbench run:
-  node scripts/diagnose-desktop-v3-cross-client-discovery.mjs --ssh testbench --workspace swarm-go
+Example remote run:
+  node scripts/diagnose-desktop-v3-cross-client-discovery.mjs --ssh <target> --workspace swarm-go
 `)
 }
 

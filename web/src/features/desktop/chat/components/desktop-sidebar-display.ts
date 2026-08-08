@@ -18,19 +18,9 @@ export function effectiveDesktopSidebarDisplayMode(
 export function loadDesktopSidebarDisplayMode(): DesktopSidebarDisplayMode {
   if (typeof window === "undefined") return "full";
   try {
-    return normalizeDesktopSidebarDisplayMode(
-      window.localStorage.getItem(DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY),
-    );
+    window.localStorage.removeItem(DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY);
   } catch {
-    return "full";
+    // Legacy client-local layout cleanup is best effort.
   }
-}
-
-export function saveDesktopSidebarDisplayMode(mode: DesktopSidebarDisplayMode): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY, mode);
-  } catch {
-    // Client-local layout persistence is best effort.
-  }
+  return "full";
 }

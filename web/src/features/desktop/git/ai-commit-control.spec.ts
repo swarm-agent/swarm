@@ -71,6 +71,30 @@ test('Workspace Action menu offers explicit AI Commit then run orchestration', a
   assert.match(workflow, /throw error/)
 })
 
+test('Desktop /commit ai dispatches the canonical AI Commit handler', async () => {
+  const page = await readFile(pageURL, 'utf8')
+  const commandStart = page.indexOf("case 'ai-commit':")
+  const commandEnd = page.indexOf("case 'open-plan-modal':", commandStart)
+  const command = page.slice(commandStart, commandEnd)
+
+  assert.ok(commandStart >= 0, 'expected Desktop to handle the AI Commit slash action')
+  assert.match(command, /await handleAICommit\(\{/)
+  assert.match(command, /workspacePath/)
+  assert.match(command, /sessionId: selectedGitWorkspacePath \? selectedGitSessionId : ''/)
+  assert.doesNotMatch(command, /suggestWorkspaceCommitMessage|commitWorkspaceChanges/)
+})
+
+test('worktree AI Commit preserves the durable session identity for suggestion and commit', async () => {
+  const page = await readFile(pageURL, 'utf8')
+  const handlerStart = page.indexOf('const handleAICommit = useCallback')
+  const handlerEnd = page.indexOf('const handleSlashCommand = useCallback', handlerStart)
+  const handler = page.slice(handlerStart, handlerEnd)
+
+  assert.match(handler, /suggestWorkspaceCommitMessage\(\{[\s\S]*workspacePath: input\.workspacePath,[\s\S]*sessionId: input\.sessionId/)
+  assert.match(handler, /commitWorkspaceChanges\(\{[\s\S]*workspacePath: input\.workspacePath,[\s\S]*sessionId: input\.sessionId/)
+  assert.match(page, /handleAICommit\(\{ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId \}\)/)
+})
+
 test('standalone Workspace Action execution remains in the existing execution panel', async () => {
   const page = await readFile(pageURL, 'utf8')
   assert.match(page, /<DesktopWorkspaceActionPanel[\s\S]*action=\{workspaceActionPresentation\.action\}/)

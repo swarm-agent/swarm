@@ -4,6 +4,7 @@ import { cancelWorkspaceActionRun, fetchWorkspaceActionRun, startWorkspaceAction
 
 interface DesktopWorkspaceActionPanelProps {
   workspacePath: string
+  sessionId?: string
   action: WorkspaceAction
   autoLaunch?: boolean
   initialRun?: WorkspaceActionRun | null
@@ -24,7 +25,7 @@ function invocationPreview(action: WorkspaceAction): string {
   return parts.join(' ')
 }
 
-export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch = false, initialRun = null, initialValues, onRunChange, autoCloseOnSuccess = true, contextNotice = '', launchLabel = 'Run', onLaunch, onClose }: DesktopWorkspaceActionPanelProps) {
+export function DesktopWorkspaceActionPanel({ workspacePath, sessionId = '', action, autoLaunch = false, initialRun = null, initialValues, onRunChange, autoCloseOnSuccess = true, contextNotice = '', launchLabel = 'Run', onLaunch, onClose }: DesktopWorkspaceActionPanelProps) {
   const [values, setValues] = useState<Record<string, string>>(() => initialValues ?? Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue])))
   const [run, setRun] = useState<WorkspaceActionRun | null>(initialRun)
   const [error, setError] = useState('')
@@ -48,7 +49,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     if (!run || run.status !== 'running') return
     const controller = new AbortController()
     const timer = window.setInterval(() => {
-      void fetchWorkspaceActionRun(workspacePath, run.id, controller.signal)
+      void fetchWorkspaceActionRun(workspacePath, run.id, controller.signal, sessionId)
         .then((next) => {
           setRun(next)
           onRunChangeRef.current?.(next)
@@ -63,7 +64,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
       controller.abort()
       window.clearInterval(timer)
     }
-  }, [run?.id, run?.status, workspacePath])
+  }, [run?.id, run?.status, sessionId, workspacePath])
 
   useEffect(() => {
     if (!autoCloseOnSuccess || run?.status !== 'succeeded') return
@@ -79,7 +80,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     setLaunching(true)
     setError('')
     try {
-      const next = onLaunch ? await onLaunch(values) : await startWorkspaceAction(workspacePath, action.id, values)
+      const next = onLaunch ? await onLaunch(values) : await startWorkspaceAction(workspacePath, action.id, values, sessionId)
       setRun(next)
       onRunChangeRef.current?.(next)
     } catch (cause) {
@@ -87,7 +88,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     } finally {
       setLaunching(false)
     }
-  }, [action.id, onLaunch, values, workspacePath])
+  }, [action.id, onLaunch, sessionId, values, workspacePath])
 
   useEffect(() => {
     if (!autoLaunch || action.inputs.length > 0 || autoLaunchStartedRef.current) return
@@ -99,7 +100,7 @@ export function DesktopWorkspaceActionPanel({ workspacePath, action, autoLaunch 
     if (!run) return
     setError('')
     try {
-      const next = await cancelWorkspaceActionRun(workspacePath, run.id)
+      const next = await cancelWorkspaceActionRun(workspacePath, run.id, sessionId)
       setRun(next)
       onRunChangeRef.current?.(next)
     } catch (cause) {

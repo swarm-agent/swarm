@@ -4,8 +4,14 @@ import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('./agent-model-control.tsx', import.meta.url), 'utf8')
 
-test('agent setup configures agents directly without profile management', () => {
-  assert.doesNotMatch(source, /Saved profiles|Profile settings|aria-label="Saved model profiles"/)
+test('agent setup keeps direct assignments behind the favorites launcher', () => {
+  assert.match(source, /screen === 'favorites'/)
+  assert.match(source, /role=\{screen === 'favorites' \? 'menu' : 'dialog'\}/)
+  assert.match(source, /data-model-favorites-anchor/)
+  assert.match(source, /favoritesPosition\.bottom/)
+  assert.match(source, /No favorites yet/)
+  assert.match(source, /> Agent Setup/)
+  assert.match(source, /Switch the current chat and the canonical Default Model/)
   assert.match(source, /title="Default Model"/)
   assert.match(source, /title="Plan Model"/)
   assert.match(source, /Configure this system agent’s model directly/)

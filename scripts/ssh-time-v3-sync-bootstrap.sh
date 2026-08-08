@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/ssh-time-v3-sync-bootstrap.sh [ssh-alias] [options]
+Usage: scripts/ssh-time-v3-sync-bootstrap.sh [ssh-target] [options]
 
 Directly times the full /v3/sync/bootstrap API response on a remote SSH host.
 This does not use the frontend. It obtains a desktop session token from the API,
@@ -33,7 +33,7 @@ USAGE
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"; }
 
-SSH_ALIAS="${SWARM_PRIMARY_SSH:-testbench}"
+SSH_ALIAS="${SWARM_PRIMARY_SSH:-}"
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 SERVICE_UNIT="${SWARM_SERVICE_UNIT:-swarm.service}"
 INCLUDE_ACTIVE="${SWARM_BOOTSTRAP_INCLUDE_ACTIVE:-true}"
@@ -64,7 +64,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_command ssh
-[[ -n "${SSH_ALIAS}" ]] || fail "ssh alias is required"
+[[ -n "${SSH_ALIAS}" ]] || fail "pass an SSH target as the first argument or set SWARM_PRIMARY_SSH"
 [[ -n "${API_URL}" ]] || fail "api URL is required"
 [[ "${INCLUDE_ACTIVE}" == "true" || "${INCLUDE_ACTIVE}" == "false" ]] || fail "--include-active must be true or false"
 [[ "${SESSION_LIMIT}" =~ ^[0-9]+$ && "${SESSION_LIMIT}" -gt 0 ]] || fail "--session-limit must be a positive integer"

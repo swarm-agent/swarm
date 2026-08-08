@@ -6,6 +6,18 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+### Added
+
+- Added workspace Actions with structured inputs, quick-access pins, AI-assisted commit orchestration, and Desktop/TUI management surfaces.
+- Added Git-aware workspace controls, worktree integration improvements, AI commit commands, and final handoff links to public pull requests.
+- Added account-scoped model favorites and richer model controls, including complete catalog pagination, provider service-tier metadata, and current Google Gemini thinking support.
+
+### Changed
+
+- Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
+- Expanded Desktop and TUI workspace onboarding, session routing, themes, responsive navigation, git status, and launch tips while removing legacy display and workspace-definition authorities.
+- Hardened release update and systemd relaunch behavior, including non-privileged update handoff, replacement readiness, authorization, and rollback-sensitive restart paths.
+
 ### Fixed
 
 - Removed the retired hosted remote-deploy product surface while preserving Swarm targets, topology runtime placement, and workspace bindings.
@@ -21,6 +33,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Docs impact
 
+- Public docs should cover workspace Actions, AI-assisted commits, Git/worktree controls, account-scoped model favorites, and provider service-tier choices.
+- Public docs should describe the current durable V3 checkpoint/resume behavior and the updated Desktop/TUI workspace, routing, and onboarding surfaces.
+- Public update docs should reflect the hardened non-privileged update, systemd relaunch, readiness, and rollback behavior.
 - Public docs should describe the system storage contract, Linux root locations, no-silent-migration behavior, and future macOS system-root expectations.
 - Public product docs must describe dedicated local containers as retired while retaining V3 and Swarm targets as current critical contracts and future non-local runners as a separate direction.
 - Public install docs should point users to the release installer fast lane before source checkout workflows.

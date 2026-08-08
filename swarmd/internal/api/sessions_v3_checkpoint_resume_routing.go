@@ -73,7 +73,7 @@ func sessionsV3InjectCheckpointResumeRoutingMessage(messages []pebblestore.Messa
 func sessionsV3CheckpointResumeRoutingMessage(checkpointID string) string {
 	return fmt.Sprintf(`Active checkpoint resumed by this user message
 
-This message continues checkpoint %s; it is not a new-session request. Do not call start_session_checkpoint or request_followup_checkpoint.
+This message continues checkpoint %s; it is not a new-session request. Do not call start_session_checkpoint or transition_checkpoint_boundary. request_followup_checkpoint and its aliases are retired.
 
 Interpret the message against the current objective and checklist:
 - If it answers a question or selects a recommendation, continue without plan mutation.

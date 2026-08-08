@@ -1380,17 +1380,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if err != nil {
 		return RunResult{}, err
 	}
-	var input []map[string]any
+	historyLimit := sessionContextHistoryFetchLimit(sessionSnapshot, defaultHistoryLimit)
+	messages, err = s.listRunMessages(sessionID, 0, historyLimit, options.ApplySessionMutation != nil)
+	if err != nil {
+		return RunResult{}, err
+	}
+	messages = compactMessagesForProviderContext(messages, defaultHistoryLimit)
+	input := buildInput(messages)
 	if checkpointRunContext {
-		input = checkpointRunInput
-	} else {
-		historyLimit := sessionContextHistoryFetchLimit(sessionSnapshot, defaultHistoryLimit)
-		messages, err = s.listRunMessages(sessionID, 0, historyLimit, options.ApplySessionMutation != nil)
-		if err != nil {
-			return RunResult{}, err
-		}
-		messages = compactMessagesForProviderContext(messages, defaultHistoryLimit)
-		input = buildInput(messages)
+		input = append(input, checkpointRunInput...)
 	}
 	rawToolDefinitions := convertToolDefinitions(s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
@@ -1852,11 +1850,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		boundaryReason := "session_turn"
 		nativeContinuationAllowed := true
 		forceFreshProviderContext := false
-		if options.PlanCheckpointContext != nil {
-			boundaryReason = "checkpoint_fresh_context"
-			nativeContinuationAllowed = false
-			forceFreshProviderContext = true
-		}
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,

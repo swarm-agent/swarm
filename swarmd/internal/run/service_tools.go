@@ -1683,7 +1683,7 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 
 	input.ApplySessionMutation = applySessionMutation
 	input.BuildLifecycleMessage = func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
-		message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_fresh_context"}})
+		message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_current_context", "context_preserved": true}})
 		if !ok {
 			return nil
 		}
@@ -2065,8 +2065,10 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		action = "approve_and_start"
 	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint":
 		action = "start_session_checkpoint"
+	case "transition-checkpoint-boundary", "transition_checkpoint_boundary", "checkpoint-boundary-transition", "checkpoint_boundary_transition":
+		action = "transition_checkpoint_boundary"
 	case "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
-		action = "request_followup_checkpoint"
+		return "", errors.New("plan_manage request_followup_checkpoint is disabled; use transition_checkpoint_boundary from a parent provider turn")
 	case "amend-plan", "amend_plan", "plan-amendment", "plan_amendment", "amend-future-checkpoints", "amend_future_checkpoints":
 		action = "amend_plan"
 	case "request-new-plan", "request_new_plan", "new-plan-proposal", "new_plan_proposal":
@@ -2083,7 +2085,9 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 	}
 
 	switch action {
-	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "request_followup_checkpoint", "amend_plan", "request_new_plan":
+	case "transition_checkpoint_boundary":
+		return s.executeCheckpointBoundaryTransition(sessionID, args, applySessionMutation, lifecycleRun)
+	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "amend_plan", "request_new_plan":
 		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation, lifecycleRun)
 	case "list":
 		limit := mapInt(args, "limit")
@@ -2776,45 +2780,7 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		}
 		result, err = lifecycle.StartSessionCheckpoint(input)
 	case "request_followup_checkpoint":
-		followupRunID := strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunID, mapString(args, "run_id")))
-		followupRunSessionID := strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, mapString(args, "run_session_id"), mapString(args, "session_id")))
-		followupParentSessionID := strings.TrimSpace(firstNonEmptyString(lifecycleRun.ParentSessionID, mapString(args, "parent_session_id")))
-		followupStartedAt := int64(mapInt(args, "started_at"))
-		followupAttemptID := strings.TrimSpace(mapString(args, "attempt_id"))
-		if lifecycleRun.Inline {
-			// A provider-managed parent turn only owns the request that creates the
-			// follow-up. Leave the inserted checkpoint pending so the executor can
-			// assign and start its distinct fresh-context run exactly once.
-			followupRunID = ""
-			followupRunSessionID = ""
-			followupParentSessionID = ""
-			followupStartedAt = 0
-			followupAttemptID = ""
-		}
-		input := sessionruntime.PlanLifecycleFollowupCheckpointInput{
-			SessionID:          sessionID,
-			PlanID:             planID,
-			ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
-			Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
-			Tasks:              mapStringSlice(args, "tasks"),
-			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
-			Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
-			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"), lifecycleRun.SourceMessageID)),
-			ApprovalConfirmed:  mapBool(args, "approval_confirmed"),
-			RunID:              followupRunID,
-			RunSessionID:       followupRunSessionID,
-			ParentSessionID:    followupParentSessionID,
-			StartedAt:          followupStartedAt,
-			AttemptID:          followupAttemptID,
-		}
-		input.Artifacts, err = planArtifactsFromArgs(args)
-		if err != nil {
-			return "", err
-		}
-		result, err = lifecycle.RequestFollowupCheckpoint(input)
-		if err == nil && result.Action == "start_session_checkpoint" {
-			action = result.Action
-		}
+		return "", errors.New("plan_manage request_followup_checkpoint is disabled; use transition_checkpoint_boundary from a parent provider turn")
 	case "amend_plan":
 		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":
@@ -2871,9 +2837,64 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			payload["context_preserved"] = true
 			payload["run_ownership"] = map[string]any{"run_id": lifecycleRun.RunID, "checkpoint_id": result.Summary.NextCheckpointID, "attempt_id": result.AttemptID}
 		} else {
-			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["next_action"] = "run_checkpoint_with_current_context"
+			payload["context_preserved"] = true
 			payload["run_request"] = planCheckpointRunRequestPayload(result.Plan.ID, result.Summary.NextCheckpointID, result.AttemptID)
 		}
+	}
+	return marshalPlanManagePayload(payload)
+}
+
+func (s *Service) executeCheckpointBoundaryTransition(sessionID string, args map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
+	if !lifecycleRun.Inline {
+		return "", errors.New("transition_checkpoint_boundary requires a trusted parent provider turn")
+	}
+	if strings.TrimSpace(lifecycleRun.SourceMessageID) == "" || strings.TrimSpace(lifecycleRun.RunID) == "" {
+		return "", errors.New("transition_checkpoint_boundary requires trusted source message and run identity")
+	}
+	artifacts, err := planArtifactsFromArgs(args)
+	if err != nil {
+		return "", err
+	}
+	boundary := sessionruntime.NewCheckpointBoundaryService(s.sessions)
+	boundary.SetApplySessionMutation(applySessionMutation)
+	result, err := boundary.Transition(sessionruntime.CheckpointBoundaryTransitionInput{
+		SessionID:          sessionID,
+		PlanID:             strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "id"))),
+		ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
+		Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
+		Tasks:              mapStringSlice(args, "tasks"),
+		AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
+		Artifacts:          artifacts,
+		Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
+		SourceMessageID:    strings.TrimSpace(lifecycleRun.SourceMessageID),
+		SourceRunID:        strings.TrimSpace(lifecycleRun.RunID),
+		RunSessionID:       strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, sessionID)),
+		ParentSessionID:    strings.TrimSpace(firstNonEmptyString(lifecycleRun.ParentSessionID, sessionID)),
+		AttemptID:          strings.TrimSpace(mapString(args, "attempt_id")),
+		StartedAt:          int64(mapInt(args, "started_at")),
+	})
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"tool":               "plan_manage",
+		"action":             sessionruntime.CheckpointBoundaryTransitionAction,
+		"status":             "ok",
+		"plan":               result.Plan,
+		"execution_summary":  result.Summary,
+		"checkpoint_id":      result.CheckpointID,
+		"next_checkpoint_id": result.CheckpointID,
+		"attempt_id":         result.AttemptID,
+		"run_id":             result.RunIntent.RunID,
+		"execution_epoch_id": result.RunIntent.EpochID,
+		"next_action":        "continue_current_run",
+		"context_preserved":  true,
+		"run_ownership":      map[string]any{"run_id": result.RunIntent.RunID, "checkpoint_id": result.CheckpointID, "attempt_id": result.AttemptID},
+		"replayed":           result.Replayed,
+		"path_id":            "tool.plan-manage.v3",
+		"summary":            "assigned checkpoint to the current run",
+		"details_truncated":  false,
 	}
 	return marshalPlanManagePayload(payload)
 }
@@ -3069,12 +3090,23 @@ func (s *Service) prepareProviderManagedCheckpointStart(sessionID, planID string
 }
 
 func planCheckpointRunRequestPayload(planID, checkpointID, attemptID string) map[string]any {
+	return planCheckpointRunRequestPayloadWithIdentity(planID, checkpointID, attemptID, "", "", "")
+}
+
+func planCheckpointRunRequestPayloadWithIdentity(planID, checkpointID, attemptID, runID, epochID, parentSessionID string) map[string]any {
 	ctx := map[string]any{
 		"plan_id":       strings.TrimSpace(planID),
 		"checkpoint_id": strings.TrimSpace(checkpointID),
 	}
-	if trimmed := strings.TrimSpace(attemptID); trimmed != "" {
-		ctx["attempt_id"] = trimmed
+	for key, value := range map[string]string{
+		"attempt_id":         attemptID,
+		"run_id":             runID,
+		"execution_epoch_id": epochID,
+		"parent_session_id":  parentSessionID,
+	} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			ctx[key] = trimmed
+		}
 	}
 	return map[string]any{
 		"plan_checkpoint_context": ctx,
@@ -3092,7 +3124,8 @@ func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *p
 		if summary.NextCheckpointID != "" {
 			payload["checkpoint_id"] = summary.NextCheckpointID
 		}
-		payload["next_action"] = "run_checkpoint_with_fresh_context"
+		payload["next_action"] = "run_checkpoint_with_current_context"
+		payload["context_preserved"] = true
 	case "accept_checkpoint", "complete_checkpoint", "checkpoint_outcome", "mark_needs_review", "mark_blocked", "mark_failed":
 		payload["next_checkpoint_id"] = summary.NextCheckpointID
 		if summary.PlanComplete {
@@ -3102,7 +3135,8 @@ func addPlanExecutionPayloadFields(payload map[string]any, action string, doc *p
 		} else if summary.Blocked || summary.Failed {
 			payload["next_action"] = "stopped"
 		} else if summary.AutoAdvanceAllowed && summary.NextCheckpointID != "" {
-			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["next_action"] = "run_checkpoint_with_current_context"
+			payload["context_preserved"] = true
 			payload["auto_advance"] = true
 			payload["run_request"] = planCheckpointRunRequestPayload(doc.ID, summary.NextCheckpointID, "")
 		} else if summary.NextCheckpointID != "" {
@@ -3133,7 +3167,8 @@ func addPlanRunRequestPayloadFields(payload map[string]any, planID string, doc *
 		return
 	}
 	payload["checkpoint_id"] = strings.TrimSpace(summary.NextCheckpointID)
-	payload["next_action"] = "run_checkpoint_with_fresh_context"
+	payload["next_action"] = "run_checkpoint_with_current_context"
+	payload["context_preserved"] = true
 	payload["run_request"] = planCheckpointRunRequestPayload(planID, summary.NextCheckpointID, "")
 }
 

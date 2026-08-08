@@ -1306,7 +1306,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	}
 	now := time.Now().UnixMilli()
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, session, req)
-	runIntent := &pebblestore.V3SessionRunIntent{RunID: strings.TrimSpace(req.RunID), Status: runStatus, BlockedReason: blockedReason}
+	runIntent := &pebblestore.V3SessionRunIntent{RunID: strings.TrimSpace(req.RunID), SourceMessageID: strings.TrimSpace(message.ID), Status: runStatus, BlockedReason: blockedReason}
 	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey))
 	if clientRequestID == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("client_request_id is required")
@@ -1318,7 +1318,6 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
-	var followupEpoch *pebblestore.BeginExecutionEpochResult
 	var reactivatedPlanSave *sessionruntime.PreparedPlanSave
 	if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr != nil {
 		return sessionruntime.SessionMutationResult{}, nil, planErr
@@ -1371,61 +1370,45 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 			markSessionsV3CheckpointResumeRouting(&message, runIntent.RunID, doc.ActiveCheckpointID, "resume_paused_user_message")
 		}
 	} else if ok && plan.Document != nil && plan.Document.ExecutionState != nil && strings.EqualFold(strings.TrimSpace(plan.Document.ExecutionState.Status), sessionruntime.PlanExecutionStateWaitingReview) {
-		epochResult, epochErr := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
-			SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
-			ClientRequestID: "post-checkpoint-followup:" + clientRequestID, PayloadHash: payloadHash,
-			Reason: "post_checkpoint_followup", PlanID: strings.TrimSpace(plan.ID),
-			CheckpointID: strings.TrimSpace(plan.Document.ExecutionState.LastCheckpointID),
-			AttemptID:    strings.TrimSpace(plan.Document.ExecutionState.LastAttemptID),
-			RunID:        runIntent.RunID, TriggerMessage: &message,
-			RunSessionID: sessionID, ParentSessionID: sessionID, NowUnixMs: now,
-		})
-		if epochErr != nil {
-			return sessionruntime.SessionMutationResult{}, nil, epochErr
-		}
-		followupEpoch = &epochResult
-		runIntent.EpochID = epochResult.Epoch.EpochID
+		// Final-handoff persistence already sealed the checkpoint epoch and opened
+		// its successor. This ordinary parent turn therefore stays unowned by the
+		// completed checkpoint and is appended to that active successor epoch.
+		runIntent.PlanID = ""
+		runIntent.CheckpointID = ""
+		runIntent.AttemptID = ""
+		runIntent.RunSessionID = sessionID
+		runIntent.ParentSessionID = ""
+		runIntent.ResumeContext = false
 	}
 	var result sessionruntime.SessionMutationResult
-	if followupEpoch != nil {
-		epochResult := *followupEpoch
-		if epochResult.TriggerMessage == nil || epochResult.TriggerEvent == nil || epochResult.TriggerOutbox == nil {
-			return result, nil, errors.New("execution epoch replay is missing its compound trigger message")
-		}
-		intent, ok, intentErr := s.sessions.GetV3SessionRunIntent(sessionID, runIntent.RunID)
-		if intentErr != nil {
-			return result, nil, intentErr
-		}
-		if !ok {
-			return result, nil, errors.New("execution epoch did not persist its trigger run intent")
-		}
-		result = sessionruntime.SessionMutationResult{SessionID: sessionID, PrimarySeq: epochResult.TriggerEvent.Seq, FirstSeq: epochResult.TriggerEvent.Seq, LastSeq: epochResult.TriggerEvent.Seq, EventIDs: []string{epochResult.TriggerEvent.ID}, PayloadHash: payloadHash, Event: *epochResult.TriggerEvent, Message: epochResult.TriggerMessage, RunIntent: &intent, Projection: epochResult.Projection, RealtimeOutbox: epochResult.TriggerOutbox, Replayed: epochResult.Replayed}
-	} else {
-		mutation := sessionruntime.SessionMutationInput{
-			SessionID:       sessionID,
-			UserID:          principal.UserID,
-			AccountScopeID:  principal.AccountScopeID,
-			ClientRequestID: clientRequestID,
-			IdempotencyKey:  clientRequestID,
-			PayloadHash:     payloadHash,
-			RequestHash:     payloadHash,
-			Kind:            sessionruntime.SessionMutationAppendMessage,
-			Message:         &message,
-			RunIntent:       runIntent,
-			NowUnixMs:       now,
-		}
-		if reactivatedPlanSave != nil {
-			prepared := *reactivatedPlanSave
-			mutation.PlanSave = &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, ArchivedRevision: prepared.ArchivedRevision, Activate: prepared.Activate, ExpectedParentVersion: prepared.Plan.ParentRevision}
-		}
-		result, err = s.applySessionV3PrimaryMutation(mutation)
+	mutation := sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		Message:         &message,
+		RunIntent:       runIntent,
+		NowUnixMs:       now,
 	}
+	if reactivatedPlanSave != nil {
+		prepared := *reactivatedPlanSave
+		mutation.PlanSave = &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, ArchivedRevision: prepared.ArchivedRevision, Activate: prepared.Activate, ExpectedParentVersion: prepared.Plan.ParentRevision}
+	}
+	result, err = s.applySessionV3PrimaryMutation(mutation)
 	if err != nil {
 		return result, nil, err
 	}
 	var enqueueJob *sessionV3ExecutorJob
 	if !result.Replayed && result.RunIntent != nil && result.RunIntent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
-		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID, EpochID: result.RunIntent.EpochID}
+		sourceMessageID := ""
+		if result.Message != nil {
+			sourceMessageID = strings.TrimSpace(result.Message.ID)
+		}
+		enqueueJob = &sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: result.RunIntent.RunID, EpochID: result.RunIntent.EpochID, SourceMessageID: sourceMessageID}
 		if checkpointJob, ok, err := s.sessionsV3ActiveCheckpointMessageRunJob(principal, sessionID, result.RunIntent.RunID, result.RunIntent.EpochID); err != nil {
 			return result, nil, err
 		} else if ok {

@@ -8,6 +8,7 @@ export interface ComposerPlanModelControlProps {
   statusLabel?: string
   disabled?: boolean
   open?: boolean
+  popoverAnchorId?: string
   onOpen: () => void
 }
 
@@ -26,6 +27,7 @@ export function ComposerPlanModelControl({
   statusLabel = '',
   disabled = false,
   open = false,
+  popoverAnchorId,
   onOpen,
 }: ComposerPlanModelControlProps) {
   const modelLabel = statusLabel.trim() || modelShorthand(provider, model)
@@ -43,6 +45,7 @@ export function ComposerPlanModelControl({
     aria-expanded={open}
     title={selectionLabel}
     data-composer-agent-model-control
+    data-model-favorites-anchor={popoverAnchorId}
     className="group inline-flex min-h-9 min-w-0 max-w-[9.5rem] items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-left shadow-sm transition-colors hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[20rem]"
   >
     <Settings2 size={13} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />

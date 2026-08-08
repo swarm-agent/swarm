@@ -83,14 +83,14 @@ export function DesktopV3RoutedPendingShell({
             {showTips ? (
               <button
                 type="button"
-                className="mt-4 inline-flex max-w-xl items-center justify-center gap-1.5 text-sm leading-6 text-[var(--app-text-muted)] transition-colors hover:text-[var(--app-text)] disabled:cursor-default"
+                className="mt-4 inline-flex max-w-xl items-center justify-center gap-1.5 text-sm leading-6 text-[var(--app-accent)] transition-colors hover:text-[var(--app-primary-hover)] disabled:cursor-default"
                 data-testid="desktop-home-tip"
                 title="Click to disable tips"
                 aria-label="Click to disable tips"
                 disabled={!onDisableTips}
                 onClick={onDisableTips}
               >
-                <Lightbulb size={15} className="shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />
+                <Lightbulb size={15} className="shrink-0" aria-hidden="true" />
                 <span>Tip: {DESKTOP_HOME_TIPS[tipIndex]}</span>
               </button>
             ) : null}

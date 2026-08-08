@@ -339,7 +339,7 @@ func (s *Server) handleSessionV3PrimaryPlanModeSubmitPlan(w http.ResponseWriter,
 		ModePreference:   transition.Preference,
 		ModeAgentProfile: &activeProfile,
 		BuildLifecycleMessage: func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
-			message, ok := runruntime.BuildPlanExecutionLifecycleSystemMessage(runruntime.PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_fresh_context"}})
+			message, ok := runruntime.BuildPlanExecutionLifecycleSystemMessage(runruntime.PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_current_context", "context_preserved": true}})
 			if !ok {
 				return nil
 			}
@@ -489,34 +489,15 @@ func (s *Server) handleSessionV3PrimaryPlanModeStartSessionCheckpoint(w http.Res
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeRequestFollowupCheckpoint(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
-	if !s.prepareSessionsV3PlanModeLifecycle(w, r, principal, sessionID) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		return
 	}
-	var req sessionsV3PlanLifecycleFollowupRequest
-	if err := decodeSessionsV3PlanModeRequest(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	input, err := s.sessionsV3PlanModeRunInput(sessionID, req.PlanID, "")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	result, err := s.planLifecycle.RequestFollowupCheckpoint(sessionruntime.PlanLifecycleFollowupCheckpointInput{SessionID: sessionID, PlanID: req.PlanID, ChangeRequest: req.ChangeRequest, Title: firstNonEmptyString(req.CheckpointTitle, req.Title), Tasks: req.Tasks, AcceptanceCriteria: req.AcceptanceCriteria, Notes: req.Notes, SourceMessageID: req.SourceMessageID, GlobalDefaultPolicy: req.FollowupCheckpointPolicy, ApprovalConfirmed: true, RunID: input.RunID, RunSessionID: input.RunSessionID, ParentSessionID: input.ParentSessionID, StartedAt: input.StartedAt})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	var runStart *sessionsV3PlanModeRunStart
-	if result.Summary.NextCheckpointID != "" && result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress && strings.TrimSpace(result.AttemptID) != "" {
-		var status int
-		runStart, status, err = s.startSessionsV3PlanModeRun(principal, sessionID, "request_followup_checkpoint", result, req.SuppressLifecycleMessage)
-		if err != nil {
-			writeError(w, status, err)
-			return
-		}
-	}
-	s.finishSessionsV3PlanModeLifecycle(w, principal, sessionID, "request_followup_checkpoint", result, runStart)
+	writeJSON(w, http.StatusGone, map[string]any{
+		"ok":         false,
+		"error_code": "legacy_followup_checkpoint_disabled",
+		"error":      "the request-followup-checkpoint lifecycle route is disabled; migrate parent AI turns to plan_manage transition_checkpoint_boundary",
+	})
 }
 
 func (s *Server) handleSessionV3PrimaryPlanModeRequestNewPlan(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -913,27 +894,41 @@ func (s *Server) startSessionsV3PlanModeRun(principal identity.Principal, sessio
 	payloadHash := sessionsV3PlanModeRunIntentPayloadHash(sessionID, runID, checkpointID, attemptID)
 	clientRequestID := fmt.Sprintf("plan-mode-run:%s:%s", strings.TrimSpace(sessionID), strings.TrimSpace(runID))
 	resumeContext := strings.EqualFold(strings.TrimSpace(transition), "resume_checkpoint")
-	epochResult, err := s.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, PayloadHash: payloadHash, Reason: strings.TrimSpace(transition), PlanID: strings.TrimSpace(result.Plan.ID), CheckpointID: checkpointID, AttemptID: attemptID, RunID: runID, RunSessionID: sessionID, ParentSessionID: sessionID, ResumeContext: resumeContext, NowUnixMs: time.Now().UnixMilli()})
+	mutation, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.run_intent.recorded",
+		RunIntent: &pebblestore.V3SessionRunIntent{
+			RunID:           runID,
+			Status:          sessionruntime.RunIntentPendingExecutor,
+			PlanID:          strings.TrimSpace(result.Plan.ID),
+			CheckpointID:    checkpointID,
+			AttemptID:       attemptID,
+			RunSessionID:    sessionID,
+			ParentSessionID: sessionID,
+			ResumeContext:   resumeContext,
+		},
+		NowUnixMs: time.Now().UnixMilli(),
+	})
 	if err != nil {
-		// A failure after Pebble committed the epoch (for example while publishing
-		// its outbox head) still leaves an exact durable executor intent. Recover
-		// that intent rather than pausing a run which can safely execute.
-		if committed, ok, readErr := s.sessions.GetV3SessionRunIntent(sessionID, runID); readErr == nil && ok {
-			epochResult.Epoch.EpochID = committed.EpochID
-			epochResult.RunIntent = &committed
-			err = nil
-		} else {
-			return nil, http.StatusConflict, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, err)
-		}
+		return nil, http.StatusConflict, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, err)
 	}
-	if epochResult.RunIntent == nil {
-		return nil, http.StatusConflict, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, errors.New("execution epoch did not return its committed pending run intent"))
+	if mutation.RunIntent == nil {
+		return nil, http.StatusConflict, s.reconcileSessionsV3PlanModeStartFailure(result, sessionID, checkpointID, attemptID, runID, errors.New("checkpoint start did not return its committed pending run intent"))
 	}
-	intent := *epochResult.RunIntent
-	_ = s.publishCommittedV3RealtimeOutbox(epochResult.Outbox)
+	intent := *mutation.RunIntent
+	if mutation.RealtimeOutbox != nil {
+		_ = s.publishCommittedV3RealtimeOutbox(*mutation.RealtimeOutbox)
+	}
 	runStart := &sessionsV3PlanModeRunStart{RunIntent: &intent, CheckpointID: checkpointID, AttemptID: attemptID}
-	if !epochResult.Replayed && intent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
-		runStart.Queued = s.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, EpochID: epochResult.Epoch.EpochID, PlanID: result.Plan.ID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: sessionID, ResumeContext: resumeContext})
+	if !mutation.Replayed && intent.Status == sessionruntime.RunIntentPendingExecutor && s.v3SessionExecutor != nil {
+		runStart.Queued = s.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, EpochID: intent.EpochID, PlanID: result.Plan.ID, CheckpointID: checkpointID, AttemptID: attemptID, ParentSessionID: sessionID, ResumeContext: resumeContext})
 	}
 	return runStart, http.StatusAccepted, nil
 }

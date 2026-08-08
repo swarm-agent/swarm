@@ -39,7 +39,7 @@ func (s *Server) handleWorkspaceActions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	resolve := func(rawPath string) (actionruntime.Scope, error) {
-		return s.resolveWorkspaceActionScope(r, rawPath)
+		return s.resolveWorkspaceActionScope(r, rawPath, r.URL.Query().Get("session_id"))
 	}
 
 	switch r.Method {

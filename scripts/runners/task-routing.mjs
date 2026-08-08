@@ -1,0 +1,457 @@
+#!/usr/bin/env node
+import crypto from 'node:crypto'
+
+const argv = process.argv.slice(2)
+const option = (name, fallback = '') => {
+  const index = argv.indexOf(name)
+  return index >= 0 && index + 1 < argv.length ? argv[index + 1] : fallback
+}
+
+const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || '')).replace(/\/$/, '')
+const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || '')).trim().toLowerCase()
+const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '900000'))
+const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
+const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
+
+if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
+if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is required and must contain only letters, numbers, dots, underscores, or dashes')
+if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout-ms must be at least 30000')
+
+const testID = `runner-task-routing-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+const requiredGates = [
+  'provider_runnable', 'recommended_models', 'models_configured', 'initial_sessions_loaded',
+  'first_session_selected', 'new_router_page_auto', 'new_router_page_plan',
+  'existing_session_auto', 'existing_session_plan', 'four_ai_calls', 'all_acknowledged',
+  'all_worktrees', 'mode_contracts', 'plan_contracts', 'models_verified', 'no_failures',
+  'models_restored',
+]
+const result = {
+  result: 'NOT_DONE',
+  test: 'task-routing',
+  test_id: testID,
+  started_at: new Date().toISOString(),
+  api_url: apiURL,
+  provider,
+  models: {},
+  selected_first_session: {},
+  calls: [],
+  gates: {},
+  failures: [],
+}
+let token = suppliedToken
+let originalSwarmSettings = null
+let settingsChanged = false
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const fail = (message) => {
+  result.failures.push(message)
+  throw new Error(message)
+}
+const assert = (condition, message) => {
+  if (!condition) fail(message)
+}
+const log = (message) => process.stderr.write(`[task-routing] ${message}\n`)
+
+async function api(method, route, body, label = route, allowError = false) {
+  const headers = {
+    Accept: 'application/json',
+    Origin: new URL(apiURL).origin,
+    Referer: `${apiURL}/app`,
+    'Sec-Fetch-Site': 'same-origin',
+  }
+  if (token) {
+    headers['X-Swarm-Token'] = token
+    headers.Cookie = `swarm_desktop_session=${token}`
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(`${label} timed out`)), Math.min(timeoutMs, 120000))
+  try {
+    const init = { method, headers, signal: controller.signal }
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json'
+      init.body = JSON.stringify(body)
+    }
+    const response = await fetch(`${apiURL}${route}`, init)
+    const text = await response.text()
+    let decoded = null
+    try {
+      decoded = text ? JSON.parse(text) : null
+    } catch {
+      decoded = { raw: text }
+    }
+    if (!allowError && !response.ok) fail(`${label} failed with HTTP ${response.status}: ${text.slice(0, 1000)}`)
+    return { ok: response.ok, status: response.status, body: decoded, text }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function recommendationFor(record, roles) {
+  const recommendations = Array.isArray(record?.recommendations) ? record.recommendations : []
+  return recommendations.find((item) => roles.includes(String(item?.role || '').trim().toLowerCase())) || null
+}
+
+function recommendedAssignment(records, roles, label) {
+  for (const record of records) {
+    const recommendation = recommendationFor(record, roles)
+    if (!recommendation) continue
+    const model = String(record?.model || '').trim()
+    const thinking = String(recommendation?.thinking || record?.default_thinking || '').trim().toLowerCase()
+    if (!model || !thinking) continue
+    const serving = String(recommendation?.serving || '').trim().toLowerCase()
+    return {
+      provider,
+      model,
+      thinking,
+      ...(serving === 'fast' || serving === 'priority' ? { service_tier: 'priority' } : {}),
+    }
+  }
+  fail(`model catalog has no complete ${label} recommendation for provider ${provider}`)
+}
+
+function metadataString(metadata, key) {
+  const value = metadata && typeof metadata === 'object' ? metadata[key] : ''
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function bindingSourcePath(binding) {
+  return String(binding?.source_workspace_path || binding?.host_workspace_path || '').trim()
+}
+
+function bindingRuntimePath(binding) {
+  return String(binding?.destination_workspace_path || binding?.runtime_workspace_path || bindingSourcePath(binding)).trim()
+}
+
+function bindingID(binding) {
+  return String(binding?.workspace_binding_id || binding?.id || '').trim()
+}
+
+function runtimeID(topology) {
+  const runtimes = Array.isArray(topology?.runtimes) ? topology.runtimes : []
+  const runtime = runtimes.find((item) => item?.relationship === 'self') || runtimes[0]
+  return String(runtime?.swarm_id || '').trim()
+}
+
+function chooseDefaultBinding(topology) {
+  const bindings = Array.isArray(topology?.workspace_bindings) ? topology.workspace_bindings : []
+  if (workspacePathOverride) {
+    return bindings.find((item) => bindingSourcePath(item) === workspacePathOverride || bindingRuntimePath(item) === workspacePathOverride) || null
+  }
+  return bindings.find((item) => item?.state === 'bound' && bindingID(item)) || bindings.find((item) => bindingID(item)) || null
+}
+
+function chooseBindingForSession(topology, session, fallback) {
+  const bindings = Array.isArray(topology?.workspace_bindings) ? topology.workspace_bindings : []
+  const metadata = session?.metadata || {}
+  const wantedID = metadataString(metadata, 'swarm_v3_workspace_binding_id') || metadataString(metadata, 'local_workspace_binding_id')
+  if (wantedID) {
+    const matched = bindings.find((item) => bindingID(item) === wantedID)
+    if (matched) return matched
+  }
+  const wantedPath = metadataString(metadata, 'swarm_v3_source_workspace_path') || String(session?.workspace_path || '').trim()
+  if (wantedPath) {
+    const matched = bindings.find((item) => bindingSourcePath(item) === wantedPath || bindingRuntimePath(item) === wantedPath)
+    if (matched) return matched
+  }
+  return fallback
+}
+
+function authorityFor(topology, binding) {
+  const workspacePath = bindingSourcePath(binding)
+  const runtimeWorkspacePath = bindingRuntimePath(binding)
+  const workspaceBindingID = bindingID(binding)
+  const swarmID = runtimeID(topology)
+  assert(workspacePath, 'selected topology binding has no source workspace path')
+  assert(runtimeWorkspacePath, 'selected topology binding has no runtime workspace path')
+  assert(workspaceBindingID, 'selected topology binding has no workspace_binding_id')
+  assert(swarmID, 'topology has no self Swarm runtime')
+  return {
+    workspace_path: workspacePath,
+    host_workspace_path: workspacePath,
+    runtime_workspace_path: runtimeWorkspacePath,
+    workspace_binding_id: workspaceBindingID,
+    swarm_id: swarmID,
+    target_kind: 'host',
+    target_relationship: 'self',
+  }
+}
+
+async function bootstrapSessions() {
+  const response = await api('POST', '/v3/sync/bootstrap', {
+    surface: 'desktop',
+    selector: { kind: 'recent', global: true, recent: { limit: 50 } },
+    history: { mode: 'none' },
+    resources: {
+      messages: false,
+      events: false,
+      run_intents: false,
+      current_run_state: true,
+      session_view: false,
+      active_plan: true,
+      plan_revisions: false,
+      permission_summaries: true,
+      notifications: false,
+      notification_summary: false,
+      tasks: false,
+    },
+    include_active: true,
+  }, 'load initial Desktop sessions')
+  return response.body || {}
+}
+
+async function hydrateSession(sessionID) {
+  const response = await api('POST', '/v3/sync/hydrate', {
+    surface: 'desktop',
+    session_ids: [sessionID],
+    history: {
+      mode: 'tail',
+      max_messages_per_session: 200,
+      max_events_per_session: 200,
+      manifest_policy: 'manifest',
+    },
+    resources: {
+      messages: true,
+      events: true,
+      run_intents: true,
+      current_run_state: true,
+      session_view: true,
+      active_plan: true,
+      plan_revisions: false,
+      permission_summaries: false,
+    },
+    include_active: true,
+  }, `hydrate task session ${sessionID}`)
+  return response.body || {}
+}
+
+function objectPayload(value) {
+  if (value && typeof value === 'object') return value
+  try {
+    return JSON.parse(String(value || '{}'))
+  } catch {
+    return {}
+  }
+}
+
+function usageRecordsFromEvents(events) {
+  const records = []
+  for (const event of events) {
+    const payload = objectPayload(event?.payload)
+    const usage = payload?.turn_usage || payload?.TurnUsage
+    if (usage && typeof usage === 'object') records.push(usage)
+  }
+  return records
+}
+
+function isTerminalIntentStatus(status) {
+  return ['completed', 'failed', 'cancelled', 'expired', 'interrupted'].includes(String(status || '').trim().toLowerCase())
+}
+
+async function waitForAcknowledgement(sessionID) {
+  const deadline = Date.now() + timeoutMs
+  let latest = null
+  while (Date.now() < deadline) {
+    latest = await hydrateSession(sessionID)
+    const messages = latest.messages_by_session?.[sessionID] || []
+    const assistant = [...messages].reverse().find((message) => String(message?.role || '').toLowerCase() === 'assistant' && String(message?.content || '').trim())
+    const intents = latest.run_intents_by_session?.[sessionID] || []
+    const activeIntents = intents.filter((intent) => !isTerminalIntentStatus(intent?.status))
+    if (assistant && intents.length > 0 && activeIntents.length === 0) return { snapshot: latest, assistant, intents }
+    await sleep(1000)
+  }
+  const intents = latest?.run_intents_by_session?.[sessionID] || []
+  fail(`timed out waiting for ACK in ${sessionID}; intents=${intents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+}
+
+async function usageForSession(sessionID, events) {
+  const response = await api('GET', `/v1/sessions/${encodeURIComponent(sessionID)}/usage?limit=100`, undefined, `read usage for ${sessionID}`)
+  return [...usageRecordsFromEvents(events), ...(response.body?.turn_usage_records || [])]
+}
+
+async function runTaskCall({ scenario, mode, authority, selectedSessionID, expectedAssignment }) {
+  const sequence = result.calls.length + 1
+  const clientRequestID = `${testID}:${scenario}:${mode}:${sequence}`
+  const uniqueTaskLabel = `${testID.slice(-8)}-${scenario}-${mode}-${sequence}`
+  const prompt = mode === 'plan'
+    ? `Unique task label ${uniqueTaskLabel}. Reply with exactly ACK and nothing else. Stay in Plan mode. Do not create, save, submit, approve, or mutate a plan. Do not use tools or inspect files.`
+    : `Unique task label ${uniqueTaskLabel}. Reply with exactly ACK and nothing else. Do not create, save, submit, approve, or mutate a plan. Do not use tools or inspect files.`
+  log(`launching ${scenario} /task ${mode} call ${sequence}`)
+  const response = await api('POST', '/v3/sessions:background-router', {
+    ...authority,
+    input: prompt,
+    client_request_id: clientRequestID,
+    idempotency_key: clientRequestID,
+    agent_name: 'swarm',
+    metadata: {
+      source: 'desktop-v3-task-command',
+      runner_test: 'task-routing',
+      runner_test_id: testID,
+      runner_scenario: scenario,
+      runner_selected_session_id: selectedSessionID || '',
+      runner_call: sequence,
+    },
+    plan_mode_requested: mode === 'plan',
+  }, `start ${scenario} /task ${mode}`)
+  const launched = response.body || {}
+  const sessionID = String(launched.session_id || launched.session?.id || '').trim()
+  assert(sessionID, `${scenario} /task ${mode} returned no session_id`)
+  assert(String(launched.starting_mode || '') === mode, `${scenario} /task ${mode} started in ${launched.starting_mode}`)
+  const immediateSession = launched.session || {}
+  const identity = launched.session_view?.identity || {}
+  assert(immediateSession.worktree_enabled === true || identity.worktree_enabled === true, `${scenario} /task ${mode} did not enable a managed worktree`)
+  assert(String(immediateSession.worktree_root_path || identity.worktree_root_path || '').trim(), `${scenario} /task ${mode} has no worktree root`)
+  assert(String(immediateSession.worktree_branch || identity.worktree_branch || '').trim(), `${scenario} /task ${mode} has no worktree branch`)
+
+  const settled = await waitForAcknowledgement(sessionID)
+  const hydratedSession = settled.snapshot.sessions_by_id?.[sessionID] || {}
+  const session = {
+    ...immediateSession,
+    ...hydratedSession,
+    metadata: { ...(immediateSession?.metadata || {}), ...(hydratedSession?.metadata || {}) },
+    model_profile: hydratedSession?.model_profile || immediateSession?.model_profile,
+  }
+  const view = settled.snapshot.session_views_by_id?.[sessionID] || launched.session_view || {}
+  const messages = settled.snapshot.messages_by_session?.[sessionID] || []
+  const events = settled.snapshot.events_by_session?.[sessionID] || []
+  const assistantContent = String(settled.assistant?.content || '').trim()
+  assert(assistantContent.toUpperCase() === 'ACK', `${scenario} /task ${mode} assistant replied ${JSON.stringify(assistantContent)}, want ACK`)
+  assert(String(session?.mode || '') === mode, `${scenario} /task ${mode} settled in mode ${session?.mode}`)
+  assert(session?.worktree_enabled === true, `${scenario} /task ${mode} settled without worktree_enabled`)
+  assert(String(session?.worktree_root_path || '').trim(), `${scenario} /task ${mode} settled without worktree_root_path`)
+  assert(String(session?.worktree_branch || '').trim(), `${scenario} /task ${mode} settled without worktree_branch`)
+  assert(session?.metadata?.background_router_session === true, `${scenario} /task ${mode} lacks background Router metadata`)
+  assert(session?.metadata?.managed_worktree_requested === true, `${scenario} /task ${mode} lacks required worktree intent metadata`)
+  assert(session?.metadata?.plan_mode_requested === (mode === 'plan'), `${scenario} /task ${mode} stored the wrong plan intent`)
+  const hasActivePlan = view?.has_active_plan === true || Boolean(view?.active_plan)
+  assert(!hasActivePlan, `${scenario} /task ${mode} unexpectedly created an active plan`)
+  const failedIntents = settled.intents.filter((intent) => String(intent?.status || '').trim().toLowerCase() !== 'completed')
+  assert(failedIntents.length === 0, `${scenario} /task ${mode} has non-completed intents: ${failedIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+  const failedEvents = events.filter((event) => /failed|cancelled|expired|interrupted/.test(String(event?.event_type || '').toLowerCase()))
+  assert(failedEvents.length === 0, `${scenario} /task ${mode} has failure events: ${failedEvents.map((event) => event.event_type).join(', ')}`)
+
+  const modelProfile = session?.model_profile || immediateSession?.model_profile || {}
+  const roleProfile = mode === 'plan' ? modelProfile?.plan : modelProfile?.action
+  assert(String(roleProfile?.provider || '') === provider, `${scenario} /task ${mode} profile provider is ${roleProfile?.provider}, want ${provider}`)
+  assert(String(roleProfile?.model || '') === expectedAssignment.model, `${scenario} /task ${mode} profile model is ${roleProfile?.model}, want ${expectedAssignment.model}`)
+  assert(String(roleProfile?.thinking || '').toLowerCase() === expectedAssignment.thinking, `${scenario} /task ${mode} profile thinking is ${roleProfile?.thinking}, want ${expectedAssignment.thinking}`)
+  const usageRecords = await usageForSession(sessionID, events)
+  const matchingUsage = usageRecords.find((usage) => String(usage?.provider || '') === provider && String(usage?.model || '') === expectedAssignment.model)
+  assert(matchingUsage, `${scenario} /task ${mode} has no runtime usage for ${provider}/${expectedAssignment.model}`)
+
+  const userMessages = messages.filter((message) => String(message?.role || '').toLowerCase() === 'user')
+  const assistantMessages = messages.filter((message) => String(message?.role || '').toLowerCase() === 'assistant')
+  assert(userMessages.length >= 1 && assistantMessages.length >= 1, `${scenario} /task ${mode} did not preserve both sides of the ACK turn`)
+  const call = {
+    sequence,
+    scenario,
+    mode,
+    selected_session_id: selectedSessionID || null,
+    session_id: sessionID,
+    assistant: assistantContent,
+    worktree_root_path: session.worktree_root_path,
+    worktree_branch: session.worktree_branch,
+    has_active_plan: hasActivePlan,
+    model_profile: { provider: roleProfile.provider, model: roleProfile.model, thinking: roleProfile.thinking },
+    runtime_usage: { provider: matchingUsage.provider, model: matchingUsage.model, run_id: matchingUsage.run_id },
+    completed_run_ids: settled.intents.map((intent) => intent.run_id),
+  }
+  result.calls.push(call)
+  result.gates[`${scenario}_${mode}`] = true
+  log(`verified ${scenario} /task ${mode}: ${sessionID}`)
+}
+
+async function main() {
+  if (!token) {
+    const auth = await api('GET', '/v1/auth/desktop/session', undefined, 'desktop authentication')
+    token = String(auth.body?.token || '').trim()
+    assert(token, 'desktop authentication returned no token; set SWARM_RUNNER_TOKEN when the target does not permit desktop bootstrap')
+  }
+
+  const providersResponse = await api('GET', '/v1/providers', undefined, 'list providers')
+  const providerStatus = (providersResponse.body?.providers || []).find((item) => String(item?.id || '').trim().toLowerCase() === provider)
+  assert(providerStatus, `provider ${provider} is not registered`)
+  assert(providerStatus.runnable !== false, `provider ${provider} is not runnable: ${providerStatus.message || 'no status message'}`)
+  result.gates.provider_runnable = true
+
+  const catalogResponse = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model recommendations')
+  const records = catalogResponse.body?.records || []
+  const planAssignment = recommendedAssignment(records, ['plan'], 'plan')
+  const actionAssignment = recommendedAssignment(records, ['auto', 'main'], 'auto')
+  result.models = { plan: planAssignment, auto: actionAssignment }
+  result.gates.recommended_models = true
+
+  const settingsResponse = await api('GET', '/v1/agent-model-settings', undefined, 'read agent model settings')
+  originalSwarmSettings = settingsResponse.body?.agent_model_settings?.swarm || null
+  assert(originalSwarmSettings?.action?.model && originalSwarmSettings?.plan?.model, 'canonical Swarm action/plan model settings are missing')
+  await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply task runner model settings')
+  settingsChanged = true
+  result.gates.models_configured = true
+
+  const topology = (await api('GET', '/v1/swarm/topology', undefined, 'read topology')).body || {}
+  const defaultBinding = chooseDefaultBinding(topology)
+  assert(defaultBinding, workspacePathOverride ? `no topology binding found for ${workspacePathOverride}` : 'topology has no workspace binding')
+  const newRouterAuthority = authorityFor(topology, defaultBinding)
+
+  await runTaskCall({ scenario: 'new_router_page', mode: 'auto', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: actionAssignment })
+  await runTaskCall({ scenario: 'new_router_page', mode: 'plan', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: planAssignment })
+
+  // Match the Desktop interaction: after launching from the new Router page, refresh
+  // the sidebar, select its first session, and issue the same two /task forms there.
+  const bootstrap = await bootstrapSessions()
+  const sessionOrder = Array.isArray(bootstrap.session_order) ? bootstrap.session_order : []
+  assert(sessionOrder.length > 0, 'Desktop session order is empty; cannot select the first existing session')
+  result.gates.initial_sessions_loaded = true
+  const firstSessionID = String(sessionOrder[0] || '').trim()
+  const firstSession = bootstrap.sessions_by_id?.[firstSessionID]
+  assert(firstSessionID && firstSession, 'Desktop first session is missing from sessions_by_id')
+  const existingBinding = chooseBindingForSession(topology, firstSession, defaultBinding)
+  assert(existingBinding, `first existing session ${firstSessionID} has no usable workspace binding`)
+  const existingAuthority = authorityFor(topology, existingBinding)
+  result.selected_first_session = {
+    session_id: firstSessionID,
+    title: firstSession.title,
+    workspace_path: firstSession.workspace_path,
+    workspace_binding_id: existingAuthority.workspace_binding_id,
+  }
+  result.gates.first_session_selected = true
+
+  await runTaskCall({ scenario: 'existing_session', mode: 'auto', authority: existingAuthority, selectedSessionID: firstSessionID, expectedAssignment: actionAssignment })
+  await runTaskCall({ scenario: 'existing_session', mode: 'plan', authority: existingAuthority, selectedSessionID: firstSessionID, expectedAssignment: planAssignment })
+
+  assert(result.calls.length === 4, `runner completed ${result.calls.length} AI calls, want 4`)
+  assert(result.calls.every((call) => call.assistant === 'ACK'), 'not every task call returned ACK')
+  assert(result.calls.every((call) => call.worktree_root_path && call.worktree_branch), 'not every task call used a durable worktree')
+  assert(result.calls.filter((call) => call.mode === 'auto').every((call) => call.has_active_plan === false), 'an Auto task created a plan')
+  assert(result.calls.filter((call) => call.mode === 'plan').every((call) => call.has_active_plan === false), 'a Plan acknowledgement unexpectedly created a plan')
+  assert(result.calls.filter((call) => call.mode === 'auto').every((call) => call.model_profile.model === actionAssignment.model), 'an Auto task used the wrong model')
+  assert(result.calls.filter((call) => call.mode === 'plan').every((call) => call.model_profile.model === planAssignment.model), 'a Plan task used the wrong model')
+  result.gates.four_ai_calls = true
+  result.gates.all_acknowledged = true
+  result.gates.all_worktrees = true
+  result.gates.mode_contracts = true
+  result.gates.plan_contracts = true
+  result.gates.models_verified = true
+  result.gates.no_failures = true
+  result.result = 'PASS'
+}
+
+try {
+  await main()
+} catch (error) {
+  result.error = error?.stack || String(error)
+  log(result.error)
+} finally {
+  if (settingsChanged && originalSwarmSettings) {
+    try {
+      await api('PATCH', '/v1/agent-model-settings', { swarm: originalSwarmSettings }, 'restore agent model settings')
+      result.gates.models_restored = true
+    } catch (restoreError) {
+      result.failures.push(`failed to restore Swarm model settings: ${restoreError?.message || restoreError}`)
+      result.result = 'NOT_DONE'
+    }
+  }
+  result.completed_at = new Date().toISOString()
+  result.failed_gates = requiredGates.filter((name) => result.gates[name] !== true)
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  if (result.result !== 'PASS') process.exitCode = 2
+}

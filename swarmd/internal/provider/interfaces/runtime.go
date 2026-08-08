@@ -75,7 +75,8 @@ type MediaContractCapability struct {
 }
 
 // SessionMediaContract is the sole normalized result consumed by media schema,
-// prompts, execution admission, capability projection, and provider lineage.
+// prompts, execution admission, capability projection, and request validation.
+// Refreshed media metadata is request configuration, not provider-chain identity.
 type SessionMediaContract struct {
 	Version               int                       `json:"version"`
 	ProviderID            string                    `json:"provider_id"`
@@ -152,9 +153,11 @@ type Request struct {
 	// SessionID is the stable durable Swarm session identity used for
 	// diagnostics/storage. Providers must not treat it as a cache/session
 	// affinity key; use ProviderCacheKey/SessionAffinityKey instead.
-	SessionID                 string
-	ProviderLineageID         string
-	ExecutionEpochID          string
+	SessionID         string
+	ProviderLineageID string
+	ExecutionEpochID  string
+	// ProviderConfigurationHash fingerprints the resolved request configuration
+	// for validation and diagnostics; it is not provider-chain identity.
 	ProviderConfigurationHash string
 	ContextBranchID           string
 	ProviderCacheKey          string

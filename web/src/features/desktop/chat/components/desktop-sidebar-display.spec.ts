@@ -6,7 +6,6 @@ import {
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
   normalizeDesktopSidebarDisplayMode,
-  saveDesktopSidebarDisplayMode,
 } from "./desktop-sidebar-display";
 
 test("sidebar display normalization accepts full compact and thin only", () => {
@@ -26,23 +25,19 @@ test("responsive sidebar mode downgrades without changing the preference", () =>
   assert.equal(effectiveDesktopSidebarDisplayMode("thin", 1440), "thin");
 });
 
-test("sidebar display mode persists through client-local storage", () => {
+test("sidebar display mode removes a legacy client-local preference and defaults to full", () => {
   const previousWindow = globalThis.window;
-  const values = new Map<string, string>();
+  const values = new Map<string, string>([[DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY, "thin"]]);
   globalThis.window = {
     localStorage: {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => {
-        values.set(key, value);
+      removeItem: (key: string) => {
+        values.delete(key);
       },
     },
   } as unknown as Window & typeof globalThis;
   try {
-    saveDesktopSidebarDisplayMode("compact");
-    assert.equal(values.get(DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY), "compact");
-    assert.equal(loadDesktopSidebarDisplayMode(), "compact");
-    saveDesktopSidebarDisplayMode("thin");
-    assert.equal(loadDesktopSidebarDisplayMode(), "thin");
+    assert.equal(loadDesktopSidebarDisplayMode(), "full");
+    assert.equal(values.has(DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY), false);
   } finally {
     globalThis.window = previousWindow;
   }

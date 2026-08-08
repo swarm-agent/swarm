@@ -85,6 +85,7 @@ import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspac
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
+import { IntegrationConfirmation } from './integration-confirmation'
 import {
   loadDesktopMainSidebarMode,
   saveDesktopMainSidebarMode,
@@ -112,6 +113,7 @@ const SIDEBAR_SESSION_ICON_CLASS = {
 } as const
 const PWA_DEBUG_QUERY_PARAM = 'pwaDebug'
 const DESKTOP_REPAIR_AGENT_NAME = 'swarm'
+const MISSING_GIT_REV_PARSE_ERROR = 'git rev-parse --show-toplevel: exit status 128'
 const UPDATE_PROGRESS_STEP_TITLES = [
   'Start update helper',
   'Check prerequisites',
@@ -230,6 +232,20 @@ export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalSta
     '',
     'Integration error:',
     integrationError,
+  ].join('\n')
+}
+
+export function isMissingGitSidebarError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return message.includes(MISSING_GIT_REV_PARSE_ERROR)
+}
+
+export function buildInstallGitPrompt(gitError: string): string {
+  return [
+    'Please install Git on this machine so Swarm can use Git features.',
+    '',
+    'The sidebar Git check failed with:',
+    gitError,
   ].join('\n')
 }
 
@@ -2640,6 +2656,7 @@ export function DesktopAppPage() {
   const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
   const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
   const [gitIntegrateHelpBusy, setGitIntegrateHelpBusy] = useState(false)
+  const [gitInstallHelpBusy, setGitInstallHelpBusy] = useState(false)
   const [gitIntegrateArchive, setGitIntegrateArchive] = useState(false)
   const [gitIntegrateError, setGitIntegrateError] = useState<string | null>(null)
   const gitIntegrateAnchorRef = useRef<HTMLDivElement | null>(null)
@@ -3802,6 +3819,41 @@ export function DesktopAppPage() {
     void navigate({ to: '/settings', search })
   }, [navigate, routeSessionId, routeWorkspaceSlug])
 
+  const handleAICommit = useCallback(async (
+    input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>,
+  ) => {
+    if (gitCommitBusy || gitAICommitRunningRef.current) return
+
+    gitAICommitRunningRef.current = true
+    setGitAICommitPhase('generating')
+    setDesktopToast({ message: 'AI Commit is generating a commit message. Please wait…', tone: 'info' })
+    try {
+      const suggestion = await suggestWorkspaceCommitMessage({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
+      })
+      setGitAICommitPhase('committing')
+      setDesktopToast({ message: `AI Commit is committing “${suggestion.message}”. Please wait…`, tone: 'info' })
+      await commitWorkspaceChanges({
+        workspacePath: input.workspacePath,
+        sessionId: input.sessionId,
+        message: suggestion.message,
+        all: true,
+      })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      ])
+
+      setDesktopToast({ message: `Changes committed with “${suggestion.message}”.`, tone: 'success' })
+    } catch (error) {
+      setDesktopToast({ message: `AI Commit failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    } finally {
+      gitAICommitRunningRef.current = false
+      setGitAICommitPhase(null)
+    }
+  }, [gitCommitBusy, queryClient])
+
   const handleSlashCommand = useCallback(async (command: DesktopSlashCommand, draft = '') => {
     const action = command.action
     switch (action.kind) {
@@ -3828,6 +3880,18 @@ export function DesktopAppPage() {
         const workspacePath = selectedWorkspace?.path || selectedWorkspacePath || ''
         const workspaceName = selectedWorkspace?.workspaceName || fallbackWorkspaceNameFromPath(workspacePath)
         if (workspacePath) openMainWorktreeGitPanel(workspacePath, workspaceName)
+        return
+      }
+      case 'ai-commit': {
+        const workspacePath = selectedGitWorkspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
+        if (!workspacePath) {
+          setDesktopToast({ message: 'Open a workspace before running AI Commit.', tone: 'error' })
+          return
+        }
+        await handleAICommit({
+          workspacePath,
+          sessionId: selectedGitWorkspacePath ? selectedGitSessionId : '',
+        })
         return
       }
       case 'open-plan-modal':
@@ -3924,7 +3988,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [activeWorkspaceAuthority, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath, uiSettings, uiSettingsQuery.data])
+  }, [activeWorkspaceAuthority, handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath, uiSettings, uiSettingsQuery.data])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -4474,7 +4538,7 @@ export function DesktopAppPage() {
   }
 
   const openWorkspaceAction = (action: WorkspaceAction) => {
-    setWorkspaceActionPresentation({ action, mode: 'standalone', workspacePath: action.workspacePath, sessionId: '' })
+    setWorkspaceActionPresentation({ action, mode: 'standalone', workspacePath: selectedGitWorkspacePath || action.workspacePath, sessionId: selectedGitSessionId })
   }
 
   const runAICommitWorkspaceAction = async (action: WorkspaceAction, workspacePath: string, sessionId: string) => {
@@ -4493,46 +4557,11 @@ export function DesktopAppPage() {
         queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
       ])
       const inputs = Object.fromEntries(action.inputs.map((input) => [input.id, input.defaultValue]))
-      const run = await startWorkspaceAction(workspacePath, action.id, inputs)
+      const run = await startWorkspaceAction(workspacePath, action.id, inputs, sessionId)
       setWorkspaceActionPresentation({ action, mode: 'post-commit', workspacePath, sessionId, initialRun: run })
       setDesktopToast({ message: `Committed “${suggestion.message}”; ${action.name} is running.`, tone: 'success' })
     } catch (error) {
       setDesktopToast({ message: `AI Commit + Action failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
-    } finally {
-      gitAICommitRunningRef.current = false
-      setGitAICommitPhase(null)
-    }
-  }
-
-  const handleAICommit = async (
-    input: Pick<GitCommitModalState, 'workspacePath' | 'sessionId'>,
-  ) => {
-    if (gitCommitBusy || gitAICommitRunningRef.current) return
-
-    gitAICommitRunningRef.current = true
-    setGitAICommitPhase('generating')
-    setDesktopToast({ message: 'AI Commit is generating a commit message. Please wait…', tone: 'info' })
-    try {
-      const suggestion = await suggestWorkspaceCommitMessage({
-        workspacePath: input.workspacePath,
-        sessionId: input.sessionId,
-      })
-      setGitAICommitPhase('committing')
-      setDesktopToast({ message: `AI Commit is committing “${suggestion.message}”. Please wait…`, tone: 'info' })
-      await commitWorkspaceChanges({
-        workspacePath: input.workspacePath,
-        sessionId: input.sessionId,
-        message: suggestion.message,
-        all: true,
-      })
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
-      ])
-
-      setDesktopToast({ message: `Changes committed with “${suggestion.message}”.`, tone: 'success' })
-    } catch (error) {
-      setDesktopToast({ message: `AI Commit failed: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
       gitAICommitRunningRef.current = false
       setGitAICommitPhase(null)
@@ -4677,6 +4706,34 @@ export function DesktopAppPage() {
     }
   }
 
+  const gitSidebarError = gitRealtimeErrors[selectedGitWorkspacePath]
+    || (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '')
+  const gitSidebarMissingGit = isMissingGitSidebarError(gitSidebarError)
+
+  const handleAskSwarmToInstallGit = async () => {
+    if (!gitSidebarMissingGit || !selectedGitWorkspacePath || !selectedGitSessionId || gitInstallHelpBusy) return
+    setGitInstallHelpBusy(true)
+    try {
+      await launchDesktopRepairSession({
+        owningWorkspacePath: activeSessionTargetWorkspacePath || selectedGitWorkspacePath,
+        sourceSessionId: selectedGitSessionId,
+        prompt: buildInstallGitPrompt(gitSidebarError),
+        title: 'Install Git on this machine',
+        source: 'desktop-v3-git-sidebar-install-help',
+        messageMetadata: {
+          workspace_path: selectedGitWorkspacePath,
+          git_error: gitSidebarError,
+          requested_action: 'install_git',
+        },
+      })
+      setDesktopToast({ message: 'Started a new Swarm session to install Git.', tone: 'success' })
+    } catch (error) {
+      setDesktopToast({ message: `Could not ask Swarm to install Git: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
+    } finally {
+      setGitInstallHelpBusy(false)
+    }
+  }
+
   const closeGitSidebarIntegratePopout = useCallback(() => {
     if (gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateModal((current) => current?.presentation === 'sidebar-popout' ? null : current)
@@ -4762,7 +4819,8 @@ export function DesktopAppPage() {
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region>
-        {gitRealtimeErrors[selectedGitWorkspacePath] || gitStatusQuery.error instanceof Error ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitRealtimeErrors[selectedGitWorkspacePath] || (gitStatusQuery.error as Error).message}</div>
+        {gitSidebarMissingGit ? <button type="button" className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-warning)] px-2 py-1.5 text-xs font-semibold text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitInstallHelpBusy} onClick={() => { void handleAskSwarmToInstallGit() }}>{gitInstallHelpBusy ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Bot size={13} aria-hidden="true" />}{gitInstallHelpBusy ? 'Asking Swarm…' : "Git isn't installed, Ask Swarm to install Git?"}</button>
+          : gitSidebarError ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitSidebarError}</div>
           : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
           : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
@@ -4770,27 +4828,37 @@ export function DesktopAppPage() {
       </div>
       {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <div ref={gitIntegrateAnchorRef} className="relative mt-2 shrink-0" data-plan-git-integrate-anchor>
         {gitIntegrateModal?.presentation === 'sidebar-popout' && typeof document !== 'undefined' ? createPortal(
-          <div ref={gitIntegratePopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-xs shadow-xl" style={gitIntegratePopoutStyle} role="menu" aria-label="Git sidebar integration options" data-plan-git-integrate-popout>
+          <div ref={gitIntegratePopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 text-xs shadow-xl" style={gitIntegratePopoutStyle} role="dialog" aria-label="Confirm Git sidebar integration" data-plan-git-integrate-popout>
             <div className="flex min-h-8 items-center justify-end px-1"><button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" aria-label="Close Git integration options" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={closeGitSidebarIntegratePopout}><X size={15} /></button></div>
             {gitIntegrateError ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-[var(--app-danger)]" role="alert"><p className="break-words">{gitIntegrateError}</p>{gitIntegrateModal.integrationComplete ? <p className="mt-1 text-[var(--app-text-subtle)]">The worktree is integrated. Retry only the remaining archive step.</p> : null}</div> : null}
-            {gitIntegrateError && !gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleAskSwarmForGitIntegrationHelp()}>{gitIntegrateHelpBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button> : null}
-            {!gitIntegrateModal.integrationComplete ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleGitIntegrate(true)}><Archive size={13} />Confirm and Archive</button> : null}
+            {gitIntegrateError && !gitIntegrateModal.integrationComplete ? <button type="button" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => void handleAskSwarmForGitIntegrationHelp()}>{gitIntegrateHelpBusy ? <LoaderCircle size={13} className="animate-spin" /> : <Bot size={13} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button> : null}
+            <IntegrationConfirmation
+              targetBranch={gitIntegrateModal.targetBranch}
+              worktreeBranch={gitIntegrateModal.worktreeBranch}
+              archiveAfter={gitIntegrateArchive}
+              busy={gitIntegrateBusy || gitIntegrateHelpBusy}
+              integrationComplete={gitIntegrateModal.integrationComplete}
+              retrying={Boolean(gitIntegrateError)}
+              onArchiveAfterChange={setGitIntegrateArchive}
+              onConfirm={() => void handleGitIntegrate()}
+              onCancel={closeGitSidebarIntegratePopout}
+            />
           </div>,
           document.body,
         ) : null}
-        <button type="button" className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" data-plan-git-integrate aria-expanded={gitIntegrateModal?.presentation === 'sidebar-popout'} aria-haspopup="menu" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => {
+        <button type="button" className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50" data-plan-git-integrate aria-expanded={gitIntegrateModal?.presentation === 'sidebar-popout'} aria-haspopup="dialog" disabled={gitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => {
           if (gitIntegrateModal?.presentation === 'sidebar-popout') {
-            void handleGitIntegrate(gitIntegrateModal.integrationComplete || gitIntegrateArchive)
+            positionGitSidebarIntegratePopout()
             return
           }
           setGitIntegrateArchive(false)
           setGitIntegrateError(null)
           setGitIntegratePopoutStyle({ visibility: 'hidden' })
           setGitIntegrateModal({ sessionId: selectedGitSessionId, workspacePath: activeSessionTargetWorkspacePath, worktreeBranch: activeSessionReviewCandidate.worktree_branch || gitSnapshot?.branch || 'worktree', targetBranch: activeSessionReviewCandidate.target_branch || activeSessionTargetBranch, presentation: 'sidebar-popout' })
-        }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Try archive again' : gitIntegrateError ? 'Try integration again' : 'Confirm integration?' : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
+        }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Archive session' : gitIntegrateError ? 'Review integration error' : `Confirm integration into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}` : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
       </div> : null}
     </section>
-    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
+    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} sessionId={selectedGitSessionId} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
     </>
   ) : null
 
@@ -5478,6 +5546,7 @@ export function DesktopAppPage() {
         <div className="absolute bottom-[calc(var(--app-safe-area-bottom)+1rem)] left-4 right-4 z-[65] max-h-[min(70vh,36rem)] overflow-y-auto sm:left-auto sm:right-6 sm:w-[28rem]" data-testid="workspace-action-run">
           <DesktopWorkspaceActionPanel
             workspacePath={workspaceActionPresentation.workspacePath}
+            sessionId={workspaceActionPresentation.sessionId}
             action={workspaceActionPresentation.action}
             autoCloseOnSuccess={false}
             initialRun={workspaceActionPresentation.initialRun}

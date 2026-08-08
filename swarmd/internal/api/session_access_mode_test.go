@@ -50,6 +50,42 @@ func TestSessionBindingWriteAccessAllowsReadWriteBinding(t *testing.T) {
 	}
 }
 
+func TestSessionBindingAccessUsesManagedWorktreeParentLineage(t *testing.T) {
+	server, sessionSvc := newSessionAccessModeTestServer(t, pebblestore.TopologyWorkspaceBindingAccessModeReadWrite)
+	parent, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      "session-parent-binding",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/source/workspace",
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Metadata:       map[string]any{"swarm_v3_workspace_binding_id": "binding-access-mode"},
+	})
+	if err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+	if _, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      "session-worktree-child",
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		WorkspacePath:  "/runtime/worktree",
+		WorkspaceName:  "worktree",
+		Mode:           sessionruntime.ModeAuto,
+		Worktree:       &sessionruntime.CreateSessionWorktree{RootPath: "/runtime/worktree", BaseBranch: "dev", BranchName: "agent/test", WorkspaceID: "test-worktree"},
+		Metadata:       map[string]any{"parent_session_id": parent.ID},
+	}); err != nil {
+		t.Fatalf("create worktree child session: %v", err)
+	}
+
+	binding, found, err := server.sessionWorkspaceBindingForAccess(testPrincipal(), "session-worktree-child")
+	if err != nil {
+		t.Fatalf("resolve inherited binding: %v", err)
+	}
+	if !found || binding.BindingID != "binding-access-mode" {
+		t.Fatalf("inherited binding = %+v found=%t", binding, found)
+	}
+}
+
 func newSessionAccessModeTestServer(t *testing.T, accessMode string) (*Server, *sessionruntime.Service) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "session-access-mode.pebble"))

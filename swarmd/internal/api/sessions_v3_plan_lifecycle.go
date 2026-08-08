@@ -190,7 +190,8 @@ func sessionsV3PlanLifecycleMessagePayload(result sessionruntime.PlanLifecycleRe
 		case "resume_checkpoint":
 			payload["next_action"] = "resume_checkpoint_context"
 		case "start_checkpoint", "continue_checkpoint", "restart_checkpoint", "rewind_to_checkpoint":
-			payload["next_action"] = "run_checkpoint_with_fresh_context"
+			payload["next_action"] = "run_checkpoint_with_current_context"
+			payload["context_preserved"] = true
 		case "resolve_blocked_checkpoint":
 			if result.Summary.NextCheckpointStatus == sessionruntime.PlanCheckpointStatusInProgress && result.Summary.NextCheckpointID == result.CheckpointID {
 				payload["next_action"] = "run_checkpoint_with_fresh_context"
@@ -201,7 +202,8 @@ func sessionsV3PlanLifecycleMessagePayload(result sessionruntime.PlanLifecycleRe
 			payload["next_action"] = "continue_checkpoint"
 		default:
 			if result.Summary.AutoAdvanceAllowed {
-				payload["next_action"] = "run_checkpoint_with_fresh_context"
+				payload["next_action"] = "run_checkpoint_with_current_context"
+				payload["context_preserved"] = true
 			} else {
 				payload["next_action"] = "continue_checkpoint"
 			}

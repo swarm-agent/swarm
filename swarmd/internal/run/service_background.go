@@ -45,6 +45,7 @@ type RunPlanCheckpointContext struct {
 	CheckpointID    string `json:"checkpoint_id,omitempty"`
 	AttemptID       string `json:"attempt_id,omitempty"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
+	SourceMessageID string `json:"source_message_id,omitempty"`
 }
 
 type RunRequest struct {
@@ -248,6 +249,7 @@ func normalizeRunPlanCheckpointContext(ctx RunPlanCheckpointContext) RunPlanChec
 	ctx.CheckpointID = strings.TrimSpace(ctx.CheckpointID)
 	ctx.AttemptID = strings.TrimSpace(ctx.AttemptID)
 	ctx.ParentSessionID = strings.TrimSpace(ctx.ParentSessionID)
+	ctx.SourceMessageID = strings.TrimSpace(ctx.SourceMessageID)
 	return ctx
 }
 

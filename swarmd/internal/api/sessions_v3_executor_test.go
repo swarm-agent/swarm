@@ -13,6 +13,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -260,14 +261,15 @@ func TestSessionV3OrdinaryAgentResolutionKeepsCurrentAccountToolContract(t *test
 	}
 }
 
-func TestSessionV3ProviderCheckpointResumeKeepsProviderContext(t *testing.T) {
-	job := sessionV3ExecutorJob{CheckpointID: "cp-1", ResumeContext: true}
-	scope := sessionV3ProviderJobCheckpointScope(job)
-	if scope.FreshContext || sessionV3ProviderCheckpointFreshContext(job, scope) {
-		t.Fatalf("resume checkpoint unexpectedly requested fresh provider context: job=%#v scope=%#v", job, scope)
+func TestSessionV3ProviderCheckpointOwnershipKeepsProviderContext(t *testing.T) {
+	for _, job := range []sessionV3ExecutorJob{{CheckpointID: "cp-1"}, {CheckpointID: "cp-1", ResumeContext: true}} {
+		scope := sessionV3ProviderJobCheckpointScope(job)
+		if scope.FreshContext || sessionV3ProviderCheckpointFreshContext(job, scope) {
+			t.Fatalf("checkpoint ownership unexpectedly requested fresh provider context: job=%#v scope=%#v", job, scope)
+		}
 	}
-	if sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) == false {
-		t.Fatal("explicit checkpoint restart must keep fresh provider context")
+	if sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) {
+		t.Fatal("checkpoint routing metadata must not override execution-epoch lineage")
 	}
 }
 
@@ -278,11 +280,14 @@ func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing
 	if err != nil || !ok {
 		t.Fatalf("get parent epoch: ok=%t err=%v", ok, err)
 	}
+	redirect := pebblestore.MessageSnapshot{Role: "user", Content: "redirect the paused checkpoint now"}
+	markSessionsV3CheckpointResumeRouting(&redirect, "resume-run", "cp-1", "resume_paused_user_message")
 	result, err := sessionSvc.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
 		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
 		ClientRequestID: "resume-parent-context", PayloadHash: "resume-parent-context-hash",
 		Reason: "resume_checkpoint", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-2",
 		RunID: "resume-run", RunSessionID: created.ID, ParentSessionID: created.ID, ResumeContext: true,
+		TriggerMessage: &redirect,
 	})
 	if err != nil {
 		t.Fatalf("begin resume epoch: %v", err)
@@ -296,15 +301,17 @@ func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing
 	if len(input) == 0 {
 		t.Fatal("resume provider input is empty")
 	}
-	if !sessionsV3ProviderInputContainsContentText(input, "resume parent context") {
-		t.Fatalf("resume provider input = %+v, want parent session context", input)
+	for _, want := range []string{"resume parent context", "Active checkpoint resumed by this user message", "redirect the paused checkpoint now"} {
+		if !sessionsV3ProviderInputContainsContentText(input, want) {
+			t.Fatalf("resume provider input = %+v, want %q", input, want)
+		}
 	}
 	if result.Epoch.ParentEpochID != parent.EpochID {
 		t.Fatalf("resume parent epoch = %q, want %q", result.Epoch.ParentEpochID, parent.EpochID)
 	}
 }
 
-func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(t *testing.T) {
+func TestSessionV3ProviderCheckpointScopeFromCurrentContextPayloadOverridesStaleJobScope(t *testing.T) {
 	scope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderCheckpointScope{
 		PlanID:          "old-plan",
 		CheckpointID:    "cp-4",
@@ -312,7 +319,7 @@ func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(
 		ParentSessionID: "parent-old",
 		FreshContext:    true,
 	}, map[string]any{
-		"next_action":        "run_checkpoint_with_fresh_context",
+		"next_action":        "run_checkpoint_with_current_context",
 		"next_checkpoint_id": "cp-5",
 		"run_request": map[string]any{
 			"plan_checkpoint_context": map[string]any{
@@ -332,10 +339,94 @@ func TestSessionV3ProviderCheckpointScopeFromFreshPayloadOverridesStaleJobScope(
 	}
 }
 
+func TestSessionV3ProviderCheckpointStartupInputUsesCanonicalBuilder(t *testing.T) {
+	runner := &sessionsV3ProviderToolsRunner{checkpointInputReturn: []map[string]any{{"role": "user", "content": "CANONICAL_BUILDER_INPUT"}}, checkpointInputReturnOK: true, checkpointInputReturnOKSet: true}
+	exec := &sessionV3Executor{server: &Server{runner: runner}}
+	input, selection, err := exec.sessionV3ProviderCheckpointStartupInput(sessionV3ExecutorJob{SessionID: "session-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", SourceMessageID: "exit-plan-message"}, sessionV3ResolvedRuntime{})
+	if err != nil {
+		t.Fatalf("checkpoint startup input: %v", err)
+	}
+	if selection != sessionV3ProviderContextCheckpointStartup || !sessionsV3ProviderInputContainsContentText(input, "CANONICAL_BUILDER_INPUT") || len(runner.checkpointRequests) != 1 {
+		t.Fatalf("checkpoint startup selection=%q input=%+v requests=%+v", selection, input, runner.checkpointRequests)
+	}
+	ctx := runner.checkpointRequests[0].PlanCheckpointContext
+	if ctx == nil || ctx.PlanID != "plan-1" || ctx.CheckpointID != "cp-1" || ctx.AttemptID != "cp-1:attempt-1" || ctx.SourceMessageID != "exit-plan-message" {
+		t.Fatalf("canonical checkpoint context = %+v", ctx)
+	}
+}
+
+func TestSessionV3ProviderResumedCheckpointUsesReconstructedConversation(t *testing.T) {
+	runner := &sessionsV3ProviderToolsRunner{checkpointInputReturn: []map[string]any{{"role": "user", "content": "ISOLATED_CHECKPOINT_INPUT"}}, checkpointInputReturnOK: true, checkpointInputReturnOKSet: true}
+	exec := &sessionV3Executor{server: &Server{runner: runner}}
+	input, selection, err := exec.sessionV3ProviderCheckpointStartupInput(sessionV3ExecutorJob{
+		SessionID: "session-1", RunID: "run-2", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-2", ResumeContext: true,
+	}, sessionV3ResolvedRuntime{})
+	if err != nil {
+		t.Fatalf("resumed checkpoint context selection: %v", err)
+	}
+	if selection != sessionV3ProviderContextConversation || len(input) != 0 || len(runner.checkpointRequests) != 0 {
+		t.Fatalf("resumed checkpoint selection=%q input=%+v requests=%+v, want reconstructed conversation", selection, input, runner.checkpointRequests)
+	}
+}
+
+func TestSessionV3ProviderInitialContextInputCheckpointStartupNeverUsesHandoff(t *testing.T) {
+	const canonical = "CANONICAL_CHECKPOINT_INPUT"
+	const historical = "EXIT_PLAN_MODE_HISTORY"
+	exec := &sessionV3Executor{}
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "assistant", Content: historical},
+		{Role: "tool", Content: `{"tool_name":"exit_plan_mode","arguments":"HISTORICAL_PLAN_ARGUMENTS","completed_output":"HISTORICAL_PLAN_RESULT"}`},
+	}
+	resolved := sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}
+	canonicalInput := []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": canonical}}}}
+
+	for _, tc := range []struct {
+		name string
+		req  provideriface.Request
+	}{
+		{name: "same provider model", req: provideriface.Request{PreviousProviderLineageID: "same", ProviderLineageID: "same", BoundaryReason: "session_turn", NativeContinuationAllowed: true}},
+		{name: "changed provider model", req: provideriface.Request{PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff", ForceFreshProviderContext: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, err := exec.sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, resolved, messages, tc.req, canonicalInput, sessionV3ProviderContextCheckpointStartup)
+			if err != nil {
+				t.Fatalf("checkpoint context selection: %v", err)
+			}
+			if !sessionsV3ProviderInputContainsContentText(input, canonical) {
+				t.Fatalf("checkpoint input missing canonical payload: %+v", input)
+			}
+			for _, forbidden := range []string{"[provider-handoff]", historical, "exit_plan_mode", "HISTORICAL_PLAN_ARGUMENTS", "HISTORICAL_PLAN_RESULT"} {
+				if sessionsV3ProviderInputContainsContentText(input, forbidden) {
+					t.Fatalf("checkpoint input replayed %q: %+v", forbidden, input)
+				}
+			}
+			if tc.name == "changed provider model" && (!tc.req.ForceFreshProviderContext || tc.req.NativeContinuationAllowed) {
+				t.Fatal("changed-model checkpoint test did not preserve fresh-chain policy")
+			}
+		})
+	}
+}
+
+func TestSessionV3ProviderInitialContextInputOrdinarySwitchUsesHandoff(t *testing.T) {
+	exec := &sessionV3Executor{}
+	resolved := sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}
+	messages := []pebblestore.MessageSnapshot{{Role: "user", Content: "ordinary switched request"}}
+	input, err := exec.sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, resolved, messages, provideriface.Request{
+		PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff",
+		PreviousProviderID: "anthropic", PreviousModel: "claude", NewProviderID: "codex", NewModel: "gpt-5", ForceFreshProviderContext: true,
+	}, nil, sessionV3ProviderContextConversation)
+	if err != nil {
+		t.Fatalf("ordinary provider/model switch: %v", err)
+	}
+	if !sessionsV3ProviderInputContainsContentText(input, "[provider-handoff]") || !sessionsV3ProviderInputContainsContentText(input, "ordinary switched request") {
+		t.Fatalf("ordinary switch did not use compact handoff input: %+v", input)
+	}
+}
+
 func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJobCheckpoint(t *testing.T) {
 	runner := &sessionsV3ProviderToolsRunner{}
 	exec := &sessionV3Executor{server: &Server{runner: runner}}
-	toolOutput := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"cp-5","run_request":{"plan_checkpoint_context":{"plan_id":"replacement-plan","checkpoint_id":"cp-5","attempt_id":"cp-5:attempt-1","parent_session_id":"parent-new"}}}`
+	toolOutput := `{"next_action":"run_checkpoint_with_current_context","next_checkpoint_id":"cp-5","run_request":{"plan_checkpoint_context":{"plan_id":"replacement-plan","checkpoint_id":"cp-5","attempt_id":"cp-5:attempt-1","parent_session_id":"parent-new"}}}`
 
 	input, ok, err := exec.sessionV3ProviderCheckpointRestartInput(context.Background(), sessionV3ExecutorJob{
 		SessionID:       "session-1",
@@ -344,6 +435,7 @@ func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJo
 		CheckpointID:    "cp-4",
 		AttemptID:       "cp-4:attempt-1",
 		ParentSessionID: "parent-old",
+		SourceMessageID: "message-new-direction",
 	}, sessionV3ResolvedRuntime{}, toolOutput)
 	if err != nil {
 		t.Fatalf("checkpoint restart input: %v", err)
@@ -358,8 +450,8 @@ func TestSessionV3ProviderCheckpointRestartInputUsesFreshPayloadCheckpointOverJo
 	if ctx == nil {
 		t.Fatalf("PlanCheckpointContext is nil")
 	}
-	if ctx.PlanID != "replacement-plan" || ctx.CheckpointID != "cp-5" || ctx.AttemptID != "cp-5:attempt-1" || ctx.ParentSessionID != "parent-new" {
-		t.Fatalf("PlanCheckpointContext = %+v, want fresh payload context", *ctx)
+	if ctx.PlanID != "replacement-plan" || ctx.CheckpointID != "cp-5" || ctx.AttemptID != "cp-5:attempt-1" || ctx.ParentSessionID != "parent-new" || ctx.SourceMessageID != "message-new-direction" {
+		t.Fatalf("PlanCheckpointContext = %+v, want fresh payload context with source message provenance", *ctx)
 	}
 }
 
@@ -390,8 +482,8 @@ func TestSessionV3LatestPlanManageToolPayloadUsesMessageTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	stalePayload := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"followup-1","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"followup-1","attempt_id":"followup-1:attempt-1","parent_session_id":"parent-stale"}}}`
-	latestPayload := `{"next_action":"run_checkpoint_with_fresh_context","next_checkpoint_id":"cp-3","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"cp-3","attempt_id":"cp-3:attempt-1","parent_session_id":"parent-current"}}}`
+	stalePayload := `{"next_action":"run_checkpoint_with_current_context","next_checkpoint_id":"followup-1","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"followup-1","attempt_id":"followup-1:attempt-1","parent_session_id":"parent-stale"}}}`
+	latestPayload := `{"next_action":"run_checkpoint_with_current_context","next_checkpoint_id":"cp-3","run_request":{"plan_checkpoint_context":{"plan_id":"plan-1","checkpoint_id":"cp-3","attempt_id":"cp-3:attempt-1","parent_session_id":"parent-current"}}}`
 	mutationSeq := 0
 	appendMessage := func(role, content string) {
 		t.Helper()

@@ -196,6 +196,83 @@ func TestBeginExecutionEpochAllowsDistinctRunsAfterSameCheckpoint(t *testing.T) 
 	}
 }
 
+func TestBeginExecutionEpochAllowsRepeatedFinalHandoffsAfterSameCheckpoint(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "repeated-final-handoff-session")
+
+	first, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "repeated-final-handoff-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "final-handoff-1", PayloadHash: "final-handoff-hash-1",
+		Reason: "final_plan_handoff", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1",
+		SourceMessageID: "final-handoff-message-1", FinalHandoffMessage: &MessageSnapshot{ID: "final-handoff-message-1", Role: "system", Content: "first final result"},
+		SkipRunIntent: true, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatalf("begin first final handoff epoch: %v", err)
+	}
+	second, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "repeated-final-handoff-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "final-handoff-2", PayloadHash: "final-handoff-hash-2",
+		Reason: "final_plan_handoff", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1",
+		SourceMessageID: "final-handoff-message-2", FinalHandoffMessage: &MessageSnapshot{ID: "final-handoff-message-2", Role: "system", Content: "second final result"},
+		SkipRunIntent: true, NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatalf("begin second final handoff epoch: %v", err)
+	}
+	if second.Replayed || second.Epoch.EpochID == first.Epoch.EpochID || second.Epoch.ParentEpochID != first.Epoch.EpochID {
+		t.Fatalf("second final handoff did not create a distinct successor: first=%+v second=%+v", first.Epoch, second.Epoch)
+	}
+	if second.Epoch.Boundary.SourceMessageID != "final-handoff-message-2" || second.FinalHandoffMessage == nil || second.FinalHandoffMessage.ID != "final-handoff-message-2" {
+		t.Fatalf("second final handoff boundary identity = %+v result=%+v", second.Epoch.Boundary, second.FinalHandoffMessage)
+	}
+}
+
+func TestBeginExecutionEpochMigratesLegacyFinalHandoffBoundary(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "legacy-final-handoff-session")
+
+	first, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "legacy-final-handoff-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "legacy-final-handoff-1", PayloadHash: "legacy-final-handoff-hash-1",
+		Reason: "final_plan_handoff", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1",
+		SourceMessageID: "legacy-final-handoff-message-1", FinalHandoffMessage: &MessageSnapshot{ID: "legacy-final-handoff-message-1", Role: "system", Content: "first final result"},
+		SkipRunIntent: true, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatalf("begin first final handoff epoch: %v", err)
+	}
+	newKey := KeyExecutionEpochBoundary(first.Epoch.SessionID, first.Epoch.Boundary.PlanID, first.Epoch.Boundary.CheckpointID, first.Epoch.Boundary.AttemptID, first.Epoch.Boundary.Reason, first.Epoch.Boundary.RunID, first.Epoch.Boundary.SourceMessageID)
+	legacyKey := executionEpochBoundaryLegacyKey(first.Epoch.SessionID, first.Epoch.Boundary.PlanID, first.Epoch.Boundary.CheckpointID, first.Epoch.Boundary.AttemptID, first.Epoch.Boundary.Reason)
+	batch := store.db.NewBatch()
+	defer batch.Close()
+	if err := batch.Delete([]byte(newKey), nil); err != nil {
+		t.Fatalf("delete new boundary index: %v", err)
+	}
+	if err := batch.Set([]byte(legacyKey), []byte(first.Epoch.EpochID), nil); err != nil {
+		t.Fatalf("seed legacy boundary index: %v", err)
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		t.Fatalf("commit legacy boundary fixture: %v", err)
+	}
+
+	second, err := sessions.BeginExecutionEpoch(BeginExecutionEpochInput{
+		SessionID: "legacy-final-handoff-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "legacy-final-handoff-2", PayloadHash: "legacy-final-handoff-hash-2",
+		Reason: "final_plan_handoff", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1",
+		SourceMessageID: "legacy-final-handoff-message-2", FinalHandoffMessage: &MessageSnapshot{ID: "legacy-final-handoff-message-2", Role: "system", Content: "second final result"},
+		SkipRunIntent: true, NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatalf("begin successor after legacy final handoff boundary: %v", err)
+	}
+	if second.Epoch.EpochID == first.Epoch.EpochID || second.Epoch.ParentEpochID != first.Epoch.EpochID {
+		t.Fatalf("legacy final handoff successor identity: first=%+v second=%+v", first.Epoch, second.Epoch)
+	}
+}
+
 func TestBeginExecutionEpochAllowsRepeatedCompactionWithinSameRun(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
@@ -297,6 +374,76 @@ func TestBeginExecutionEpochFaultIsAllOrNothingAndTriggerIsAtomic(t *testing.T) 
 	}
 	if events, err := sessions.ListV3SessionEvents(input.SessionID, 0, 10); err != nil || len(events) != 3 || events[1].EventType != ExecutionEpochBoundaryEventType || events[2].EventType != "session.message.appended" {
 		t.Fatalf("compound events: err=%v events=%+v", err, events)
+	}
+}
+
+func TestBeginExecutionEpochAtomicallyAppendsFinalHandoffBeforeSuccessor(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "final-handoff-session")
+	predecessor, ok, err := sessions.GetActiveExecutionEpoch("final-handoff-session")
+	if err != nil || !ok {
+		t.Fatalf("get predecessor: ok=%v err=%v", ok, err)
+	}
+	input := BeginExecutionEpochInput{
+		SessionID: "final-handoff-session", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "final-handoff", PayloadHash: "final-handoff-hash", Reason: "final_plan_handoff",
+		PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", SourceMessageID: "handoff-1",
+		FinalHandoffMessage: &MessageSnapshot{ID: "handoff-1", Role: "system", Content: "final result"},
+		SkipRunIntent:       true, NowUnixMs: 200,
+	}
+	injected := errors.New("injected final handoff boundary failure")
+	store.sessionMutations.beforeExecutionEpochCommit = func(string) error { return injected }
+	if _, err := sessions.BeginExecutionEpoch(input); !errors.Is(err, injected) {
+		t.Fatalf("fault error = %v", err)
+	}
+	store.sessionMutations.beforeExecutionEpochCommit = nil
+	activeAfterFault, ok, err := sessions.GetActiveExecutionEpoch(input.SessionID)
+	if err != nil || !ok || activeAfterFault.EpochID != predecessor.EpochID || activeAfterFault.Status != ExecutionEpochStatusActive {
+		t.Fatalf("active epoch changed after fault: ok=%v err=%v epoch=%+v", ok, err, activeAfterFault)
+	}
+	if messages, listErr := sessions.ListV3SessionMessages(input.SessionID, 0, 10); listErr != nil || len(messages) != 0 {
+		t.Fatalf("final handoff leaked after fault: messages=%+v err=%v", messages, listErr)
+	}
+	result, err := sessions.BeginExecutionEpoch(input)
+	if err != nil {
+		t.Fatalf("commit final handoff boundary: %v", err)
+	}
+	if result.FinalHandoffMessage == nil || result.FinalHandoffEvent == nil || result.FinalHandoffOutbox == nil {
+		t.Fatalf("missing compound handoff result: %+v", result)
+	}
+	if result.FinalHandoffEvent.EpochID != predecessor.EpochID || result.Predecessor.LastRootSeq != result.FinalHandoffEvent.Seq || result.Event.Seq != result.FinalHandoffEvent.Seq+1 {
+		t.Fatalf("handoff was not last predecessor event: predecessor=%+v handoff=%+v boundary=%+v", result.Predecessor, result.FinalHandoffEvent, result.Event)
+	}
+	if result.Epoch.ParentEpochID != predecessor.EpochID || result.Epoch.FirstRootSeq != result.Event.Seq || result.Epoch.Status != ExecutionEpochStatusActive {
+		t.Fatalf("successor epoch = %+v", result.Epoch)
+	}
+	replayed, err := sessions.BeginExecutionEpoch(input)
+	if err != nil || !replayed.Replayed || replayed.Epoch.EpochID != result.Epoch.EpochID || replayed.FinalHandoffMessage == nil || replayed.FinalHandoffMessage.ID != "handoff-1" {
+		t.Fatalf("replay = %+v err=%v", replayed, err)
+	}
+	epochs := 0
+	for ordinal := uint64(1); ; ordinal++ {
+		if _, exists, readErr := store.GetBytes(KeyExecutionEpochOrdinal(input.SessionID, ordinal)); readErr != nil {
+			t.Fatalf("read epoch ordinal %d: %v", ordinal, readErr)
+		} else if !exists {
+			break
+		}
+		epochs++
+	}
+	if epochs != 2 {
+		t.Fatalf("epoch count after replay = %d, want 2", epochs)
+	}
+	message, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, IdempotencyKey: "post-handoff-user", RequestHash: "post-handoff-user", Kind: V3SessionMutationAppendMessage, Message: &MessageSnapshot{ID: "post-handoff-user", Role: "user", Content: "continue"}, NowUnixMs: 300})
+	if err != nil {
+		t.Fatalf("append post-handoff user message: %v", err)
+	}
+	if message.Event.EpochID != result.Epoch.EpochID {
+		t.Fatalf("post-handoff message epoch = %q, want %q", message.Event.EpochID, result.Epoch.EpochID)
+	}
+	messages, err := sessions.ListV3SessionMessages(input.SessionID, 0, 10)
+	if err != nil || len(messages) != 2 || messages[0].ID != "handoff-1" || messages[1].ID != "post-handoff-user" {
+		t.Fatalf("messages=%+v err=%v", messages, err)
 	}
 }
 

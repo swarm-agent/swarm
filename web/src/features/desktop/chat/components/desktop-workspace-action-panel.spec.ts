@@ -13,7 +13,7 @@ test('workspace Action panel can foreground an existing run without launching a 
   assert.match(source, /useState<WorkspaceActionRun \| null>\(initialRun\)/)
   assert.match(source, /if \(!initialRun\) return/)
   assert.match(source, /if \(!run \|\| run\.status !== 'running'\) return/)
-  assert.match(source, /fetchWorkspaceActionRun\(workspacePath, run\.id, controller\.signal\)/)
+  assert.match(source, /fetchWorkspaceActionRun\(workspacePath, run\.id, controller\.signal, sessionId\)/)
   assert.match(source, /onRunChangeRef\.current\?\.\(next\)/)
 })
 
@@ -24,6 +24,7 @@ test('Action definitions and execution remain separate surfaces', async () => {
     readFile(settingsURL, 'utf8'),
   ])
 
+  assert.match(page, /sessionId=\{workspaceActionPresentation\.sessionId\}/)
   assert.match(page, /action=\{workspaceActionPresentation\.action\}/)
   assert.match(settings, /Action saved\. Nothing was executed\./)
   assert.match(settings, /onClick=\{\(\) => runAction\(action\)\}/)
@@ -48,4 +49,13 @@ test('execution panel supports an explicit commit-first launch without duplicati
   assert.match(source, /onLaunch \? await onLaunch\(values\) : await startWorkspaceAction/)
   assert.match(source, /launchLabel = 'Run'/)
   assert.match(source, /\{launchLabel\}/)
+})
+
+test('worktree Action requests preserve the exact session identity', async () => {
+  const [panel, page] = await Promise.all([readFile(panelURL, 'utf8'), readFile(pageURL, 'utf8')])
+
+  assert.match(panel, /startWorkspaceAction\(workspacePath, action\.id, values, sessionId\)/)
+  assert.match(panel, /cancelWorkspaceActionRun\(workspacePath, run\.id, sessionId\)/)
+  assert.match(page, /startWorkspaceAction\(workspacePath, action\.id, inputs, sessionId\)/)
+  assert.match(page, /workspacePath: selectedGitWorkspacePath \|\| action\.workspacePath, sessionId: selectedGitSessionId/)
 })

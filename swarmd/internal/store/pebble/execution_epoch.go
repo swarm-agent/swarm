@@ -95,38 +95,42 @@ type ExecutionProviderLifecycleState struct {
 }
 
 type BeginExecutionEpochInput struct {
-	SessionID       string                  `json:"session_id"`
-	UserID          string                  `json:"user_id,omitempty"`
-	AccountScopeID  string                  `json:"account_scope_id,omitempty"`
-	ClientRequestID string                  `json:"client_request_id"`
-	PayloadHash     string                  `json:"payload_hash"`
-	EpochID         string                  `json:"epoch_id,omitempty"`
-	Reason          string                  `json:"reason,omitempty"`
-	PlanID          string                  `json:"plan_id,omitempty"`
-	CheckpointID    string                  `json:"checkpoint_id,omitempty"`
-	AttemptID       string                  `json:"attempt_id,omitempty"`
-	RunSessionID    string                  `json:"run_session_id,omitempty"`
-	ParentSessionID string                  `json:"parent_session_id,omitempty"`
-	ResumeContext   bool                    `json:"resume_context,omitempty"`
-	SourceMessageID string                  `json:"source_message_id,omitempty"`
-	TriggerMessage  *MessageSnapshot        `json:"trigger_message,omitempty"`
-	SkipRunIntent   bool                    `json:"skip_run_intent,omitempty"`
-	ProviderPolicy  ExecutionProviderPolicy `json:"provider_policy,omitempty"`
-	RunID           string                  `json:"run_id,omitempty"`
-	NowUnixMs       int64                   `json:"now_unix_ms,omitempty"`
+	SessionID           string                  `json:"session_id"`
+	UserID              string                  `json:"user_id,omitempty"`
+	AccountScopeID      string                  `json:"account_scope_id,omitempty"`
+	ClientRequestID     string                  `json:"client_request_id"`
+	PayloadHash         string                  `json:"payload_hash"`
+	EpochID             string                  `json:"epoch_id,omitempty"`
+	Reason              string                  `json:"reason,omitempty"`
+	PlanID              string                  `json:"plan_id,omitempty"`
+	CheckpointID        string                  `json:"checkpoint_id,omitempty"`
+	AttemptID           string                  `json:"attempt_id,omitempty"`
+	RunSessionID        string                  `json:"run_session_id,omitempty"`
+	ParentSessionID     string                  `json:"parent_session_id,omitempty"`
+	ResumeContext       bool                    `json:"resume_context,omitempty"`
+	SourceMessageID     string                  `json:"source_message_id,omitempty"`
+	FinalHandoffMessage *MessageSnapshot        `json:"final_handoff_message,omitempty"`
+	TriggerMessage      *MessageSnapshot        `json:"trigger_message,omitempty"`
+	SkipRunIntent       bool                    `json:"skip_run_intent,omitempty"`
+	ProviderPolicy      ExecutionProviderPolicy `json:"provider_policy,omitempty"`
+	RunID               string                  `json:"run_id,omitempty"`
+	NowUnixMs           int64                   `json:"now_unix_ms,omitempty"`
 }
 
 type BeginExecutionEpochResult struct {
-	Epoch          ExecutionEpoch          `json:"epoch"`
-	Predecessor    ExecutionEpoch          `json:"predecessor"`
-	Event          V3SessionEvent          `json:"event"`
-	Projection     V3SessionProjection     `json:"projection"`
-	Outbox         V3RealtimeOutboxRecord  `json:"realtime_outbox"`
-	TriggerMessage *MessageSnapshot        `json:"trigger_message,omitempty"`
-	TriggerEvent   *V3SessionEvent         `json:"trigger_event,omitempty"`
-	TriggerOutbox  *V3RealtimeOutboxRecord `json:"trigger_realtime_outbox,omitempty"`
-	RunIntent      *V3SessionRunIntent     `json:"run_intent,omitempty"`
-	Replayed       bool                    `json:"replayed,omitempty"`
+	Epoch               ExecutionEpoch          `json:"epoch"`
+	Predecessor         ExecutionEpoch          `json:"predecessor"`
+	Event               V3SessionEvent          `json:"event"`
+	Projection          V3SessionProjection     `json:"projection"`
+	Outbox              V3RealtimeOutboxRecord  `json:"realtime_outbox"`
+	FinalHandoffMessage *MessageSnapshot        `json:"final_handoff_message,omitempty"`
+	FinalHandoffEvent   *V3SessionEvent         `json:"final_handoff_event,omitempty"`
+	FinalHandoffOutbox  *V3RealtimeOutboxRecord `json:"final_handoff_realtime_outbox,omitempty"`
+	TriggerMessage      *MessageSnapshot        `json:"trigger_message,omitempty"`
+	TriggerEvent        *V3SessionEvent         `json:"trigger_event,omitempty"`
+	TriggerOutbox       *V3RealtimeOutboxRecord `json:"trigger_realtime_outbox,omitempty"`
+	RunIntent           *V3SessionRunIntent     `json:"run_intent,omitempty"`
+	Replayed            bool                    `json:"replayed,omitempty"`
 }
 
 // SealExecutionEpochInput names the epoch being sealed so a delayed executor
@@ -167,10 +171,30 @@ func KeyExecutionEpochBoundary(sessionID, planID, checkpointID, attemptID, reaso
 	if normalizedReason == "post_checkpoint_followup" && strings.TrimSpace(runID) != "" {
 		return key + "/" + keyPart(runID)
 	}
-	if strings.HasPrefix(normalizedReason, "context_compaction_") && strings.TrimSpace(sourceMessageID) != "" {
+	if executionEpochBoundaryUsesSourceMessageID(normalizedReason) && strings.TrimSpace(sourceMessageID) != "" {
 		return key + "/" + keyPart(sourceMessageID)
 	}
 	return key
+}
+
+func executionEpochBoundaryUsesSourceMessageID(reason string) bool {
+	normalizedReason := strings.ToLower(strings.TrimSpace(reason))
+	return normalizedReason == "final_plan_handoff" || strings.HasPrefix(normalizedReason, "context_compaction_")
+}
+
+func executionEpochBoundaryLegacyIdentityDiffers(existing, proposed ExecutionEpochBoundary) bool {
+	normalizedReason := strings.ToLower(strings.TrimSpace(proposed.Reason))
+	if normalizedReason == "post_checkpoint_followup" {
+		existingRunID := strings.TrimSpace(existing.RunID)
+		proposedRunID := strings.TrimSpace(proposed.RunID)
+		return existingRunID != "" && proposedRunID != "" && existingRunID != proposedRunID
+	}
+	if executionEpochBoundaryUsesSourceMessageID(normalizedReason) {
+		existingSourceMessageID := strings.TrimSpace(existing.SourceMessageID)
+		proposedSourceMessageID := strings.TrimSpace(proposed.SourceMessageID)
+		return existingSourceMessageID != "" && proposedSourceMessageID != "" && existingSourceMessageID != proposedSourceMessageID
+	}
+	return false
 }
 
 func executionEpochBoundaryLegacyKey(sessionID, planID, checkpointID, attemptID, reason string) string {
@@ -447,7 +471,11 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		if err != nil || !exists {
 			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch is unavailable: %w", err)
 		}
-		event, eventOK, err := s.GetV3SessionEvent(input.SessionID, record.Result.FirstSeq)
+		boundarySeq := record.Result.FirstSeq
+		if input.FinalHandoffMessage != nil {
+			boundarySeq++
+		}
+		event, eventOK, err := s.GetV3SessionEvent(input.SessionID, boundarySeq)
 		if err != nil || !eventOK || event.EpochID != epoch.EpochID || event.EventType != ExecutionEpochBoundaryEventType {
 			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch event is unavailable or inconsistent: %w", err)
 		}
@@ -458,6 +486,9 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		predecessor, predecessorOK, err := s.GetExecutionEpoch(input.SessionID, epoch.ParentEpochID)
 		if err != nil || !predecessorOK || predecessor.Status != ExecutionEpochStatusSealed || predecessor.LastRootSeq+1 != epoch.FirstRootSeq {
 			return BeginExecutionEpochResult{}, fmt.Errorf("replayed execution epoch predecessor is unavailable or inconsistent: %w", err)
+		}
+		if input.FinalHandoffMessage != nil && predecessor.LastRootSeq != record.Result.FirstSeq {
+			return BeginExecutionEpochResult{}, errors.New("replayed final handoff is not the predecessor epoch tail")
 		}
 		outboxReference, outboxOK, err := s.store.GetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, event.Seq))
 		if err != nil || !outboxOK {
@@ -472,6 +503,31 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 		}
 		committedOutbox := []uint64{outbox.EndpointSeq}
 		projection := outbox.Projection
+		var finalHandoffMessage *MessageSnapshot
+		var finalHandoffEvent *V3SessionEvent
+		var finalHandoffOutbox *V3RealtimeOutboxRecord
+		if input.FinalHandoffMessage != nil {
+			handoff, handoffOK, handoffErr := s.GetV3SessionEvent(input.SessionID, record.Result.FirstSeq)
+			if handoffErr != nil || !handoffOK || handoff.EpochID != predecessor.EpochID || handoff.EventType != "session.message.appended" {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed final handoff event is unavailable or inconsistent: %w", handoffErr)
+			}
+			handoffReference, handoffOutboxOK, handoffErr := s.store.GetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, handoff.Seq))
+			if handoffErr != nil || !handoffOutboxOK {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed final handoff outbox is unavailable: %w", handoffErr)
+			}
+			handoffRecord, handoffErr := s.resolveV3RealtimeOutboxValue(handoffReference)
+			if handoffErr != nil || handoffRecord.Event.Seq != handoff.Seq {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed final handoff outbox is inconsistent: %w", handoffErr)
+			}
+			messages, handoffErr := listV3SessionMessagesRangeFromReader(s.store.db, input.SessionID, handoff.Seq, handoff.Seq, 1)
+			if handoffErr != nil || len(messages) != 1 || messages[0].GlobalSeq != handoff.Seq {
+				return BeginExecutionEpochResult{}, fmt.Errorf("replayed final handoff message is unavailable or inconsistent: %w", handoffErr)
+			}
+			finalHandoffMessage = &messages[0]
+			finalHandoffEvent = &handoff
+			finalHandoffOutbox = &handoffRecord
+			committedOutbox = append([]uint64{handoffRecord.EndpointSeq}, committedOutbox...)
+		}
 		var triggerMessage *MessageSnapshot
 		var triggerEvent *V3SessionEvent
 		var triggerOutbox *V3RealtimeOutboxRecord
@@ -509,7 +565,7 @@ func (s *SessionStore) BeginExecutionEpoch(input BeginExecutionEpochInput) (Begi
 			}
 			runIntent = &intent
 		}
-		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: triggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, RunIntent: runIntent, Replayed: true}, nil
+		return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, FinalHandoffMessage: finalHandoffMessage, FinalHandoffEvent: finalHandoffEvent, FinalHandoffOutbox: finalHandoffOutbox, TriggerMessage: triggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, RunIntent: runIntent, Replayed: true}, nil
 	}
 	return s.beginFreshExecutionEpoch(input, idemKey)
 }
@@ -553,14 +609,23 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		predecessor.Boundary.LegacyPrefix = legacy
 		predecessor.LastRootSeq = seq
 	}
+	finalHandoffProvided := input.FinalHandoffMessage != nil
 	triggerProvided := input.TriggerMessage != nil
+	finalHandoffSeq := uint64(0)
 	boundarySeq := seq + 1
+	if finalHandoffProvided {
+		finalHandoffSeq = boundarySeq
+		boundarySeq++
+	}
 	triggerSeq := uint64(0)
 	if triggerProvided {
 		triggerSeq = boundarySeq + 1
 	}
 	predecessor.Status = ExecutionEpochStatusSealed
 	predecessor.LastRootSeq = seq
+	if finalHandoffProvided {
+		predecessor.LastRootSeq = finalHandoffSeq
+	}
 	predecessor.SealedAt = now
 	predecessor.UpdatedAt = now
 	epochID := strings.TrimSpace(input.EpochID)
@@ -571,7 +636,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if triggerProvided {
 		epochLastSeq = triggerSeq
 	}
-	epoch := ExecutionEpoch{EpochID: epochID, SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, ParentEpochID: predecessor.EpochID, Ordinal: predecessor.Ordinal + 1, Status: ExecutionEpochStatusActive, FirstRootSeq: boundarySeq, LastRootSeq: epochLastSeq, Boundary: ExecutionEpochBoundary{Reason: strings.TrimSpace(input.Reason), PlanID: strings.TrimSpace(input.PlanID), CheckpointID: strings.TrimSpace(input.CheckpointID), AttemptID: strings.TrimSpace(input.AttemptID), RunID: strings.TrimSpace(input.RunID), RunSessionID: strings.TrimSpace(input.RunSessionID), ParentSessionID: strings.TrimSpace(input.ParentSessionID), SourceMessageID: strings.TrimSpace(input.SourceMessageID), PredecessorLastRootSeq: seq}, ProviderPolicy: input.ProviderPolicy, CreatedAt: now, UpdatedAt: now}
+	epoch := ExecutionEpoch{EpochID: epochID, SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, ParentEpochID: predecessor.EpochID, Ordinal: predecessor.Ordinal + 1, Status: ExecutionEpochStatusActive, FirstRootSeq: boundarySeq, LastRootSeq: epochLastSeq, Boundary: ExecutionEpochBoundary{Reason: strings.TrimSpace(input.Reason), PlanID: strings.TrimSpace(input.PlanID), CheckpointID: strings.TrimSpace(input.CheckpointID), AttemptID: strings.TrimSpace(input.AttemptID), RunID: strings.TrimSpace(input.RunID), RunSessionID: strings.TrimSpace(input.RunSessionID), ParentSessionID: strings.TrimSpace(input.ParentSessionID), SourceMessageID: strings.TrimSpace(input.SourceMessageID), PredecessorLastRootSeq: predecessor.LastRootSeq}, ProviderPolicy: input.ProviderPolicy, CreatedAt: now, UpdatedAt: now}
 	if existing, ok, getErr := s.GetExecutionEpoch(input.SessionID, epoch.EpochID); getErr != nil {
 		return BeginExecutionEpochResult{}, getErr
 	} else if ok {
@@ -589,8 +654,8 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		} else if ok {
 			return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch boundary collision: plan %q checkpoint %q already maps to %q", epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, string(boundaryEpochID))
 		}
-		if strings.EqualFold(epoch.Boundary.Reason, "post_checkpoint_followup") && epoch.Boundary.RunID != "" {
-			legacyKey := executionEpochBoundaryLegacyKey(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason)
+		legacyKey := executionEpochBoundaryLegacyKey(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason)
+		if boundaryKey != legacyKey {
 			if legacyEpochID, ok, getErr := s.store.GetBytes(legacyKey); getErr != nil {
 				return BeginExecutionEpochResult{}, getErr
 			} else if ok {
@@ -598,7 +663,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 				if epochErr != nil {
 					return BeginExecutionEpochResult{}, epochErr
 				}
-				if !exists || strings.TrimSpace(legacyEpoch.Boundary.RunID) == "" || strings.TrimSpace(legacyEpoch.Boundary.RunID) == epoch.Boundary.RunID {
+				if !exists || !executionEpochBoundaryLegacyIdentityDiffers(legacyEpoch.Boundary, epoch.Boundary) {
 					return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch boundary collision: plan %q checkpoint %q already maps to %q", epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, string(legacyEpochID))
 				}
 			}
@@ -608,8 +673,11 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	event := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", input.SessionID, boundarySeq), SessionID: input.SessionID, Seq: boundarySeq, EventType: ExecutionEpochBoundaryEventType, Payload: payload, TsUnixMs: now, EpochID: epoch.EpochID}
 	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: epochLastSeq, ProjectionHighWatermarkSeq: epochLastSeq, UpdatedAt: now}
 	outboxCount := 1
+	if finalHandoffProvided {
+		outboxCount++
+	}
 	if triggerProvided {
-		outboxCount = 2
+		outboxCount++
 	}
 	reserved, err := s.store.sessionMutations.reserveOutbox(s.store, outboxCount)
 	if err != nil {
@@ -621,7 +689,38 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			s.store.sessionMutations.abandonOutbox(reserved)
 		}
 	}()
-	outbox := V3RealtimeOutboxRecord{EndpointSeq: reserved[0], EndpointCursor: V3RealtimeOutboxCursor(reserved[0]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: event, Projection: V3SessionProjection{SessionID: input.SessionID, LastEventSeq: boundarySeq, ProjectionHighWatermarkSeq: boundarySeq, UpdatedAt: now}, CreatedAt: now}
+	boundaryOutboxIndex := 0
+	if finalHandoffProvided {
+		boundaryOutboxIndex = 1
+	}
+	outbox := V3RealtimeOutboxRecord{EndpointSeq: reserved[boundaryOutboxIndex], EndpointCursor: V3RealtimeOutboxCursor(reserved[boundaryOutboxIndex]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: event, Projection: V3SessionProjection{SessionID: input.SessionID, LastEventSeq: boundarySeq, ProjectionHighWatermarkSeq: boundarySeq, UpdatedAt: now}, CreatedAt: now}
+	var finalHandoffMessage MessageSnapshot
+	var finalHandoffEvent *V3SessionEvent
+	var finalHandoffOutbox *V3RealtimeOutboxRecord
+	if finalHandoffProvided {
+		finalHandoffMessage = sanitizeMessageSnapshot(*input.FinalHandoffMessage)
+		finalHandoffMessage.SessionID = input.SessionID
+		finalHandoffMessage.UserID = strings.TrimSpace(firstNonEmptyString(finalHandoffMessage.UserID, input.UserID))
+		finalHandoffMessage.AccountScopeID = strings.TrimSpace(firstNonEmptyString(finalHandoffMessage.AccountScopeID, input.AccountScopeID))
+		finalHandoffMessage.GlobalSeq = finalHandoffSeq
+		if finalHandoffMessage.ID == "" {
+			finalHandoffMessage.ID = fmt.Sprintf("v3msg_%s_%020d", input.SessionID, finalHandoffSeq)
+		}
+		if finalHandoffMessage.Role == "" || finalHandoffMessage.Content == "" {
+			return BeginExecutionEpochResult{}, errors.New("final handoff message role and content are required")
+		}
+		if finalHandoffMessage.CreatedAt == 0 {
+			finalHandoffMessage.CreatedAt = now
+		}
+		handoffPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &finalHandoffMessage}).v3EventPayload(finalHandoffSeq, SessionSnapshot{}, finalHandoffMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{})
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		handoffEvent := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", input.SessionID, finalHandoffSeq), SessionID: input.SessionID, Seq: finalHandoffSeq, EventType: "session.message.appended", Payload: handoffPayload, TsUnixMs: now, EpochID: predecessor.EpochID}
+		finalHandoffEvent = &handoffEvent
+		handoffRecord := V3RealtimeOutboxRecord{EndpointSeq: reserved[0], EndpointCursor: V3RealtimeOutboxCursor(reserved[0]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: handoffEvent, Projection: V3SessionProjection{SessionID: input.SessionID, LastEventSeq: finalHandoffSeq, ProjectionHighWatermarkSeq: finalHandoffSeq, UpdatedAt: now}, CreatedAt: now}
+		finalHandoffOutbox = &handoffRecord
+	}
 	var triggerMessage MessageSnapshot
 	var triggerEvent *V3SessionEvent
 	var triggerOutbox *V3RealtimeOutboxRecord
@@ -646,7 +745,8 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		}
 		trigger := V3SessionEvent{ID: fmt.Sprintf("v3evt_%s_%020d", input.SessionID, triggerSeq), SessionID: input.SessionID, Seq: triggerSeq, EventType: "session.message.appended", Payload: triggerPayload, TsUnixMs: now, EpochID: epoch.EpochID}
 		triggerEvent = &trigger
-		triggerRecord := V3RealtimeOutboxRecord{EndpointSeq: reserved[1], EndpointCursor: V3RealtimeOutboxCursor(reserved[1]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: trigger, Projection: projection, CreatedAt: now}
+		triggerOutboxIndex := boundaryOutboxIndex + 1
+		triggerRecord := V3RealtimeOutboxRecord{EndpointSeq: reserved[triggerOutboxIndex], EndpointCursor: V3RealtimeOutboxCursor(reserved[triggerOutboxIndex]), SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Event: trigger, Projection: projection, CreatedAt: now}
 		triggerOutbox = &triggerRecord
 	}
 	if session, ok, getErr := s.GetSession(input.SessionID); getErr != nil {
@@ -654,15 +754,23 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	} else if ok {
 		membership := newV3RealtimeOutboxMembershipFromSession(session, now)
 		outbox.Membership = membership
+		if finalHandoffOutbox != nil {
+			finalHandoffOutbox.Membership = membership
+		}
 		if triggerOutbox != nil {
 			triggerOutbox.Membership = membership
 		}
 	}
 	eventIDs := []string{event.ID}
+	firstSeq := boundarySeq
+	if finalHandoffEvent != nil {
+		eventIDs = append([]string{finalHandoffEvent.ID}, eventIDs...)
+		firstSeq = finalHandoffSeq
+	}
 	if triggerEvent != nil {
 		eventIDs = append(eventIDs, triggerEvent.ID)
 	}
-	stored := V3SessionMutationStoredResult{SessionID: input.SessionID, RunID: epoch.EpochID, FirstSeq: boundarySeq, LastSeq: epochLastSeq, EventIDs: eventIDs, PayloadHash: input.PayloadHash, ResponseVersion: V3SessionMutationResponseVersion, ResponseStatus: V3SessionMutationStatusCompleted, EventType: event.EventType, LastEventSeq: epochLastSeq, ProjectionHighWatermarkSeq: epochLastSeq, AppliedAt: now}
+	stored := V3SessionMutationStoredResult{SessionID: input.SessionID, RunID: epoch.EpochID, FirstSeq: firstSeq, LastSeq: epochLastSeq, EventIDs: eventIDs, PayloadHash: input.PayloadHash, ResponseVersion: V3SessionMutationResponseVersion, ResponseStatus: V3SessionMutationStatusCompleted, EventType: event.EventType, LastEventSeq: epochLastSeq, ProjectionHighWatermarkSeq: epochLastSeq, AppliedAt: now}
 	idem := V3SessionIdempotencyRecord{SessionID: input.SessionID, UserID: strings.TrimSpace(input.UserID), AccountScopeID: input.AccountScopeID, Operation: V3SessionMutationBeginExecutionEpoch, ClientRequestID: input.ClientRequestID, Key: input.ClientRequestID, PayloadHash: input.PayloadHash, Kind: V3SessionMutationBeginExecutionEpoch, Status: V3SessionMutationStatusCompleted, Result: stored, CreatedAt: now, CompletedAt: now}
 	batch := s.store.NewBatch()
 	defer batch.Close()
@@ -678,7 +786,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 			return BeginExecutionEpochResult{}, err
 		}
 	}
-	for key, value := range map[string]any{KeyV3SessionEvent(input.SessionID, boundarySeq): event, KeyV3SessionProjection(input.SessionID): projection, KeyV3RealtimeOutbox(reserved[0]): outbox, idemKey: idem} {
+	for key, value := range map[string]any{KeyV3SessionEvent(input.SessionID, boundarySeq): event, KeyV3SessionProjection(input.SessionID): projection, KeyV3RealtimeOutbox(outbox.EndpointSeq): outbox, idemKey: idem} {
 		raw, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
 			return BeginExecutionEpochResult{}, marshalErr
@@ -691,24 +799,63 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if err != nil {
 		return BeginExecutionEpochResult{}, err
 	}
-	for _, key := range []string{KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, reserved[0]), KeyV3RealtimeOutboxBySessionSeq(input.SessionID, boundarySeq), KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, reserved[0])} {
+	for _, key := range []string{KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, outbox.EndpointSeq), KeyV3RealtimeOutboxBySessionSeq(input.SessionID, boundarySeq), KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, outbox.EndpointSeq)} {
 		if err := batch.Set([]byte(key), ref, nil); err != nil {
 			return BeginExecutionEpochResult{}, err
 		}
 	}
-	if triggerEvent != nil && triggerOutbox != nil {
+	messageCountDelta := 0
+	if finalHandoffProvided {
+		messageCountDelta++
+	}
+	if triggerProvided {
+		messageCountDelta++
+	}
+	if messageCountDelta > 0 {
 		if session, ok, getErr := s.GetSession(input.SessionID); getErr != nil {
 			return BeginExecutionEpochResult{}, getErr
 		} else if !ok {
 			return BeginExecutionEpochResult{}, fmt.Errorf("session %q not found", input.SessionID)
 		} else {
-			session.MessageCount++
+			session.MessageCount += messageCountDelta
 			session.UpdatedAt = now
 			session.LastMessageAt = now
 			if err := s.setSessionInBatch(batch, session); err != nil {
 				return BeginExecutionEpochResult{}, err
 			}
 		}
+	}
+	if finalHandoffEvent != nil && finalHandoffOutbox != nil {
+		handoffMessageRaw, marshalErr := json.Marshal(finalHandoffMessage)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		handoffEventRaw, marshalErr := json.Marshal(*finalHandoffEvent)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		handoffOutboxRaw, marshalErr := json.Marshal(*finalHandoffOutbox)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		handoffRef, marshalErr := marshalV3RealtimeOutboxReference(*finalHandoffOutbox)
+		if marshalErr != nil {
+			return BeginExecutionEpochResult{}, marshalErr
+		}
+		for key, value := range map[string][]byte{
+			KeyV3SessionMessage(input.SessionID, finalHandoffSeq):                                              handoffMessageRaw,
+			KeyV3SessionEvent(input.SessionID, finalHandoffSeq):                                                handoffEventRaw,
+			KeyV3RealtimeOutbox(finalHandoffOutbox.EndpointSeq):                                                handoffOutboxRaw,
+			KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, finalHandoffOutbox.EndpointSeq):              handoffRef,
+			KeyV3RealtimeOutboxBySessionSeq(input.SessionID, finalHandoffSeq):                                  handoffRef,
+			KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, finalHandoffOutbox.EndpointSeq): handoffRef,
+		} {
+			if err := batch.Set([]byte(key), value, nil); err != nil {
+				return BeginExecutionEpochResult{}, err
+			}
+		}
+	}
+	if triggerEvent != nil && triggerOutbox != nil {
 		triggerMessageRaw, marshalErr := json.Marshal(triggerMessage)
 		if marshalErr != nil {
 			return BeginExecutionEpochResult{}, marshalErr
@@ -803,7 +950,11 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 	if triggerProvided {
 		committedTriggerMessage = &triggerMessage
 	}
-	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, TriggerMessage: committedTriggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, RunIntent: committedRunIntent}, nil
+	var committedFinalHandoffMessage *MessageSnapshot
+	if finalHandoffProvided {
+		committedFinalHandoffMessage = &finalHandoffMessage
+	}
+	return BeginExecutionEpochResult{Epoch: epoch, Predecessor: predecessor, Event: event, Projection: projection, Outbox: outbox, FinalHandoffMessage: committedFinalHandoffMessage, FinalHandoffEvent: finalHandoffEvent, FinalHandoffOutbox: finalHandoffOutbox, TriggerMessage: committedTriggerMessage, TriggerEvent: triggerEvent, TriggerOutbox: triggerOutbox, RunIntent: committedRunIntent}, nil
 }
 
 func (s *SessionStore) readLegacyEpochPrefix(sessionID string, seq uint64) (*ExecutionEpochLegacyPrefix, error) {

@@ -6,6 +6,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 
 - `dev` is the day-to-day integration branch.
 - `main` is the protected release/build branch.
+- Pull requests to `main` must update `CHANGELOG.md`; `.github/workflows/require-changelog.yml` enforces the release-note gate.
 - Pull requests and pushes to `main` run `.github/workflows/build-main.yml`, which builds, signs, attests, and verifies a release candidate.
 - On a protected `main` push produced by the user's approved PR merge, the same workflow re-verifies that run's exact evidence set without rebuilding it, then automatically creates the stable tag and GitHub Release.
 - Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag in the promotion PR or release record instead of maintaining a stale fixed snapshot here.
@@ -53,6 +54,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - [ ] Confirm the exact promotion range with `git log --oneline main..dev`
 - [ ] Confirm whether the `main`-only commit (`Add main branch build workflow and branch flow docs`) must be preserved, merged, or recreated in the promoted history
 - [ ] Freeze the release candidate to one explicit `dev` SHA and record it in the promotion PR or release record with `git rev-parse HEAD`
+- [ ] Update the `CHANGELOG.md` Unreleased entry for the complete promotion range, including its `Docs impact` subsection
 
 ### 2. Repo safety and hygiene
 
@@ -81,6 +83,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 ### 5. Open and review the promotion PR
 
 - [ ] Open the single `dev` -> `main` promotion PR for the frozen candidate SHA
+- [ ] Confirm the required changelog workflow passes for the exact PR range
 - [ ] Confirm the PR workflow builds an installable candidate artifact without creating a tag or GitHub release
 - [ ] Complete code review and required checks before merging the approved commit set to `main`
 - [ ] Verify the non-publishing `main` push workflow succeeds for the reviewed merge commit
@@ -128,6 +131,8 @@ For the first stable release, there is no older public stable version from which
 
 - `README.md`
 - `.github/workflows/build-main.yml`
+- `.github/workflows/require-changelog.yml`
+- `scripts/check-changelog.sh`
 - `scripts/build-main-dist.sh`
 - `scripts/check-precommit.sh`
 - `scripts/check-launch-readiness.sh`

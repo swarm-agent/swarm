@@ -58,29 +58,30 @@ func (a *App) selectHomeModelProfile(profileID string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	state, err := a.api.ListModelProfiles(ctx)
+	selected, err := a.api.SetDefaultModelProfile(ctx, profileID)
 	if err != nil {
 		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
 		return err
 	}
-	var selected *client.ModelProfile
-	for i := range state.Profiles {
-		if strings.TrimSpace(state.Profiles[i].ProfileID) == profileID {
-			selected = &state.Profiles[i]
-			break
-		}
-	}
-	if selected == nil {
-		err := fmt.Errorf("selected profile is no longer available")
-		a.setModelProfileStatus("switch profile failed: " + err.Error())
+	// Project the daemon-confirmed selection before the collection refresh so
+	// the homepage footer switches immediately and is not left stale if the
+	// follow-up list request fails.
+	next := a.currentHomeModel()
+	next.DefaultModelProfileID = profileID
+	next = applyHomeModelProfile(next, selected)
+	a.applyHomeModel(next)
+
+	state, err := a.api.ListModelProfiles(ctx)
+	if err != nil {
+		a.setModelProfileStatus(fmt.Sprintf("profile default updated, but refresh failed: %v", err))
+		a.queueReload(false)
 		return err
 	}
 	if err := a.applySelectedProfileToV3Chat(ctx, profileID); err != nil {
-		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
+		a.setModelProfileStatus(fmt.Sprintf("profile default updated, but chat update failed: %v", err))
 		return err
 	}
-	next := refreshHomeModelProfiles(a.currentHomeModel(), state)
-	next = applyHomeModelProfile(next, *selected)
+	next = applyHomeModelProfiles(a.currentHomeModel(), state)
 	a.applyHomeModel(next)
 	if a.v3ChatDraftActive() {
 		a.syncPrimedV3ChatFromHomeDraft()

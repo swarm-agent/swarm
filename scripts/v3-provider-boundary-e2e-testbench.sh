@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SSH_HOST="${1:-${SWARM_PRIMARY_SSH:-testbench}}"
+SSH_HOST="${1:-${SWARM_PRIMARY_SSH:-}}"
+if [[ -z "${SSH_HOST}" ]]; then
+  echo "pass an SSH target as the first argument or set SWARM_PRIMARY_SSH" >&2
+  exit 2
+fi
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 SERVICE_UNIT="${SWARM_SERVICE_UNIT:-swarm.service}"
 EXPECTED_COMMIT="${SWARM_EXPECTED_COMMIT:-}"
@@ -47,7 +51,7 @@ const httpLog = `${artifactDir}/http.ndjson`;
 const summaryPath = `${artifactDir}/summary.json`;
 fs.writeFileSync(httpLog, '');
 const result = {result:'NOT_DONE', e2e_id:cfg.e2eID, workspace:cfg.workspaceDir, started_at:startedISO, candidate:{}, ids:{}, gates:{}, diagnostics:{}, artifacts:{http:httpLog, summary:summaryPath, artifact_dir:artifactDir}, failures:[], failed_gates:[]};
-const requiredGates=['candidate','diagnostics_enabled','workspace','codex_same_lineage','codex_model_handoff','codex_to_fireworks_handoff','codex55_to_fireworks_glm','exit_plan_mode_splice','post_checkpoint_resume','checkpoint_fresh_context','codex_usage','fireworks_usage','provider_tool_construction','logs'];
+const requiredGates=['candidate','diagnostics_enabled','workspace','codex_same_lineage','codex_model_handoff','codex_to_fireworks_handoff','codex55_to_fireworks_glm','exit_plan_mode_splice','post_checkpoint_resume','post_final_new_checkpoint','checkpoint_fresh_context','codex_usage','fireworks_usage','provider_tool_construction','logs'];
 function refreshSummary(){ result.failed_gates=requiredGates.filter(g=>result.gates[g]!==true); }
 function save(){ refreshSummary(); fs.writeFileSync(summaryPath, JSON.stringify(result,null,2)); }
 function die(msg){ result.failures.push(msg); save(); throw new Error(msg); }
@@ -140,16 +144,19 @@ async function waitForSessionMode(token, sessionID, mode, label, timeoutMs=18000
   }
   die(`timeout waiting for session mode ${mode} ${label}`);
 }
-async function waitForPlanReview(token, sessionID, label, timeoutMs=600000){
+async function waitForPlanReview(token, sessionID, label, timeoutMs=600000, minCheckpoints=1){
   const end=Date.now()+timeoutMs;
   while(Date.now()<end){
     const body=(await api('GET',`/v3/sessions/${encodeURIComponent(sessionID)}/plans/active`,token,undefined,`plan.${label}`,false,60000)).body;
     const plan=body.plan||body.active_plan||body;
     const doc=plan.document||{};
-    if(doc.execution_state?.status==='waiting_review' || doc.execution_state?.status==='final_review') return plan;
+    const checkpoints=doc.checkpoints||[];
+    const finalReview=doc.execution_state?.status==='waiting_review' || doc.execution_state?.status==='final_review';
+    const requiredComplete=checkpoints.length>=minCheckpoints && checkpoints.slice(0,minCheckpoints).every(cp=>cp.status==='completed');
+    if(finalReview && requiredComplete) return plan;
     await new Promise(r=>setTimeout(r,2000));
   }
-  die(`timeout waiting for active plan review ${label}`);
+  die(`timeout waiting for active plan review ${label} with ${minCheckpoints} completed checkpoints`);
 }
 async function runTurn(token, sessionID, label, provider, model, content){
   await api('POST',`/v3/sessions/${encodeURIComponent(sessionID)}/preference`,token,{provider,model,thinking:'low'},`preference.${label}`);
@@ -267,6 +274,33 @@ PY`]); result.candidate.diagnostics_env=env.stdout; assert(env.stdout.includes('
   let exitEvents=await fetchEvents(token,exitSessionID,'after_exit_checkpoint'); assertProviderToolConstruction('codex_exit_plan_tool_construction',exitEvents,exitRunID,'exit_plan_mode'); const cpRecords=providerRequestRecords(exitEvents,'').filter(r=>String(r.request?.boundary_reason||'').includes('checkpoint_fresh_context') && String(r.request?.model||'')===cfg.codexAutoModel); if(cpRecords.length===0){ const observed=providerRequestRecords(exitEvents,'').map(requestSummary); const staleReplay=apiRequestBodies(exitEvents,'','codex').some(body=>body.includes('z'.repeat(20000))); result.diagnostics.exit_plan_blocker={reason:'missing checkpoint_fresh_context provider request after approved exit_plan_mode', observed_provider_requests:observed, stale_sentinel_in_codex_api_requests:staleReplay, active_plan_execution_state:reviewPlan.document?.execution_state||null}; save(); die(`exit_plan_mode did not create a checkpoint_fresh_context provider request; observed=${JSON.stringify(observed)}`); } const cpRecord=cpRecords.at(-1); const exitCheckpointRunID=recordRunID(cpRecord)||exitRunID; result.ids.exit_checkpoint_run_id=exitCheckpointRunID; const dExitCp=cpRecord.request; assertBoundary('exit_plan_mode_splice',dExitCp,{metadata:{}},{boundary:'checkpoint_fresh_context',native:false,fresh:true,model:cfg.codexAutoModel,thinking:cfg.codexAutoThinking}); assert(Number(dExitCp.input_text_chars||0)<50000,`exit checkpoint input too large: ${dExitCp.input_text_chars}`); for (const body of apiRequestBodies(exitEvents,exitCheckpointRunID,'codex')) { assert(!body.includes('z'.repeat(20000)), 'exit checkpoint request replayed stale pre-splice transcript body'); } const exitAssistant=await waitForAssistant(token,exitSessionID,exitRunID,'exit_checkpoint_final',600000); result.ids.exit_checkpoint_assistant_id=exitAssistant.id||''; result.diagnostics.exit_plan_review={execution_state:reviewPlan.document?.execution_state||null}; result.gates.exit_plan_mode_splice=true;
   const postRunID=await postMessage(token,exitSessionID,'post_checkpoint_resume',`Post-checkpoint resume ${cfg.e2eID}. Reply exactly POST_CHECKPOINT_RESUME_OK and do not mention the stale sentinel.`); const postAssistant=await waitForAssistant(token,exitSessionID,postRunID,'post_checkpoint_resume',600000); exitEvents=await fetchEvents(token,exitSessionID,'after_post_checkpoint_resume'); const dPost=requestDiag(exitEvents,postRunID); assertBoundary('post_checkpoint_resume',dPost,postAssistant,{boundary:'session_turn',native:true,fresh:false,previousEqualsCurrent:true,model:cfg.codexAutoModel,thinking:cfg.codexAutoThinking}); assert(dPost.provider_lineage_id===dExitCp.provider_lineage_id,`post-checkpoint lineage ${dPost.provider_lineage_id} does not match checkpoint splice lineage ${dExitCp.provider_lineage_id}`); assert(Number(dPost.input_text_chars||0)<50000,`post-checkpoint resume input too large: ${dPost.input_text_chars}`); assert(!JSON.stringify(dPost).includes('STALE_EXIT_PLAN_SENTINEL'), 'post-checkpoint diagnostic referenced stale sentinel'); for (const body of apiRequestBodies(exitEvents,postRunID,'codex')) { assert(!body.includes('z'.repeat(20000)), 'post-checkpoint user message replayed stale pre-splice transcript body'); } result.gates.post_checkpoint_resume=true;
 
+  const boundaryRunID=await postMessage(token,exitSessionID,'post_final_new_checkpoint',`Create one new ordered checkpoint after the completed final handoff for ${cfg.e2eID}. Call plan_manage transition_checkpoint_boundary now with title Second boundary proof, task Complete the checkpoint with report SECOND_CHECKPOINT_OK, and acceptance criterion The second checkpoint reaches its final handoff. Do not answer this request as an ordinary assistant message.`);
+  const secondReviewPlan=await waitForPlanReview(token,exitSessionID,'post_final_new_checkpoint',600000,2);
+  const secondCheckpoints=secondReviewPlan.document?.checkpoints||[];
+  const secondCheckpoint=secondCheckpoints.at(-1)||{};
+  assert(secondCheckpoints.length===2,`new-checkpoint flow produced ${secondCheckpoints.length} checkpoints, want exactly 2`);
+  assert(secondCheckpoint.status==='completed',`second checkpoint did not complete: ${JSON.stringify(secondCheckpoint)}`);
+  const replay=(await api('GET',`/v3/sessions/${encodeURIComponent(exitSessionID)}/events?after_seq=0&limit=1000`,token,undefined,'replay.post_final_new_checkpoint',false,60000)).body;
+  const intents=replay.run_intents||[];
+  const parentIntent=intents.find(intent=>String(intent.run_id||'')===boundaryRunID);
+  const childIntent=intents.find(intent=>String(intent.checkpoint_id||'')===String(secondCheckpoint.id||''));
+  assert(parentIntent?.status==='completed',`new-checkpoint parent run not completed: ${JSON.stringify(parentIntent)}`);
+  assert(childIntent?.status==='completed',`new-checkpoint child run not completed: ${JSON.stringify(childIntent)}`);
+  assert(String(parentIntent.run_id||'')!==String(childIntent.run_id||''),'new-checkpoint parent and child reused one run id');
+  assert(String(parentIntent.epoch_id||'')!=='' && parentIntent.epoch_id===childIntent.epoch_id,`new-checkpoint run epoch mismatch: parent=${parentIntent.epoch_id} child=${childIntent.epoch_id}`);
+  assert(String(childIntent.source_message_id||'').startsWith('v3msg_'),`new-checkpoint child lost canonical source message: ${JSON.stringify(childIntent)}`);
+  const durableMessages=replay.messages||[];
+  const secondHandoffs=durableMessages.filter(message=>message.metadata?.source==='plan_execution_final_handoff' && String(message.content||'').includes('SECOND_CHECKPOINT_OK'));
+  assert(secondHandoffs.length===1,`second checkpoint final handoff count=${secondHandoffs.length}, want 1`);
+  const durableEvidence=JSON.stringify({events:replay.events||[],run_intents:intents,messages:durableMessages});
+  assert(!durableEvidence.includes('cannot claim or update'),'validated durable flow contains completed-parent claim/update failure');
+  assert(!durableEvidence.includes('provider returned empty assistant response'),'validated durable flow contains empty assistant response failure');
+  result.ids.post_final_boundary_run_id=boundaryRunID;
+  result.ids.post_final_checkpoint_id=secondCheckpoint.id||'';
+  result.ids.post_final_checkpoint_run_id=childIntent.run_id||'';
+  result.diagnostics.post_final_new_checkpoint={execution_state:secondReviewPlan.document?.execution_state||null,parent_run:parentIntent,child_run:childIntent,final_handoff_id:secondHandoffs[0]?.id||'',checkpoint_count:secondCheckpoints.length};
+  result.gates.post_final_new_checkpoint=true;
+
   const doc={id:`plan-${cfg.e2eID}`,title:`${cfg.e2eID} checkpoint plan`,info:{goal:'E2E checkpoint fresh context boundary'},execution_policy:{mode:'automatic',shape:'checkpointed'},active_checkpoint_id:'cp-boundary',checkpoints:[{id:'cp-boundary',title:'checkpoint provider boundary',status:'pending',tasks:['Call plan_manage complete_checkpoint for cp-boundary with report CHECKPOINT_BOUNDARY_OK, then keep any final assistant response brief.'],acceptance_criteria:['Fresh context run completes','Fireworks provider tool-call construction events are durable']} ]};
   await api('POST',`/v3/sessions/${encodeURIComponent(sessionID)}/plans`,token,{plan_id:doc.id,title:doc.title,document:doc,status:'approved',approval_state:'approved',activate:true},'plan.save');
   const start=(await api('POST',`/v3/sessions/${encodeURIComponent(sessionID)}/plan-mode/checkpoints/cp-boundary/start`,token,{plan_id:doc.id},'checkpoint.start',false,600000)).body; const checkpointRunID=start.run_start?.run_intent?.run_id||start.run_intent?.run_id||''; assert(checkpointRunID,'checkpoint start missing run_id'); result.ids.checkpoint_run_id=checkpointRunID; const cp=await waitForAssistant(token,sessionID,checkpointRunID,'checkpoint',600000);
@@ -277,7 +311,7 @@ PY`]); result.candidate.diagnostics_env=env.stdout; assert(env.stdout.includes('
   const usageBodies=apiChunks(events,result.ids.fireworks_run_id,'fireworks').concat(apiChunks(events,checkpointRunID,'fireworks'));
   result.diagnostics.fireworks_usage={usage_event_count:usageEvents.length, usage_samples:usageEvents.map(d=>diagnosticPayload(d).usage||null).filter(Boolean).slice(-3), stream_chunk_usage_seen:usageBodies.some(b=>b.includes('"usage"') && !b.includes('"usage":null')), assistant_usage:f.metadata?.usage||cp.metadata?.usage||null};
   assert(result.diagnostics.fireworks_usage.stream_chunk_usage_seen || usageEvents.length>0 || result.diagnostics.fireworks_usage.assistant_usage, 'Fireworks stream usage/token evidence missing'); result.gates.fireworks_usage=true;
-  const logs=run('bash',['-lc',`journalctl -u ${cfg.serviceUnit} --since '${startedISO}' --no-pager | grep -E 'panic|websocket error|provider boundary e2e fatal' || true`]); fs.writeFileSync(`${artifactDir}/journal-matches.log`, logs.stdout+logs.stderr); result.logs={matches_path:`${artifactDir}/journal-matches.log`, forbidden_matches:(logs.stdout||'').split('\n').filter(Boolean)}; assert(result.logs.forbidden_matches.length===0,`unexpected service log matches: ${result.logs.forbidden_matches.slice(0,10).join(' | ')}`); result.gates.logs=true;
+  const logs=run('bash',['-lc',`journalctl -u ${cfg.serviceUnit} --since '${startedISO}' --no-pager | grep -E 'panic|websocket error|provider boundary e2e fatal|cannot claim or update|provider returned empty assistant response' || true`]); fs.writeFileSync(`${artifactDir}/journal-matches.log`, logs.stdout+logs.stderr); result.logs={matches_path:`${artifactDir}/journal-matches.log`, forbidden_matches:(logs.stdout||'').split('\n').filter(Boolean)}; assert(result.logs.forbidden_matches.length===0,`unexpected service log matches: ${result.logs.forbidden_matches.slice(0,10).join(' | ')}`); result.gates.logs=true;
   refreshSummary(); result.result=result.failed_gates.length?'NOT_DONE':'PASS'; save();
 }
 main().catch(err=>{ result.result='NOT_DONE'; result.error=err?.stack||String(err); save(); console.error(result.error); process.exitCode=2; }).finally(()=>{ console.log(JSON.stringify(result,null,2)); });

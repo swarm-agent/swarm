@@ -22,7 +22,7 @@ func TestSessionsV3InjectCheckpointResumeRoutingMessageImmediatelyBeforeUserMess
 	for _, want := range []string{
 		"Active checkpoint resumed by this user message",
 		"continues checkpoint followup-5",
-		"Do not call start_session_checkpoint or request_followup_checkpoint",
+		"Do not call start_session_checkpoint or transition_checkpoint_boundary", "request_followup_checkpoint and its aliases are retired",
 		"continue without plan mutation",
 		"use add_subtask",
 		"use replace_subtasks",

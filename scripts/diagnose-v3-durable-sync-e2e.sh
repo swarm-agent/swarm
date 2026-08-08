@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/diagnose-v3-durable-sync-e2e.sh [ssh-alias] [options]
-       scripts/diagnose-v3-durable-sync-e2e.sh --primary-ssh <alias> [options]
+Usage: scripts/diagnose-v3-durable-sync-e2e.sh [ssh-target] [options]
+       scripts/diagnose-v3-durable-sync-e2e.sh --primary-ssh <target> [options]
 
-Runs a live durable V3 sync E2E against an SSH testbench. The harness uses the
+Runs a live durable V3 sync E2E against a configured SSH target. The harness uses the
 real backend, real Pebble state/outbox, real websocket transport, and a real
 Fireworks-backed V3 session turn.
 
@@ -19,7 +19,7 @@ It verifies:
   - a Fireworks-backed assistant turn converges through realtime and durable replay
 
 Options:
-  --primary-ssh <alias>      SSH alias for testbench. Default: testbench
+  --primary-ssh <target>     SSH target. Required via option, positional argument, or SWARM_PRIMARY_SSH
   --api-url <url>            API URL used on remote host. Default: http://127.0.0.1:7781
   --service <unit>           systemd service to restart for key persistence. Default: swarm.service
   --data-dir <path>          Remote swarmd data dir containing v3-sync-cursor.key. Default: /var/lib/swarmd or SWARMD_DATA_DIR
@@ -49,7 +49,7 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 require_command() { command -v "${1:-}" >/dev/null 2>&1 || fail "required command not found: ${1:-}"; }
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY_SSH="${SWARM_PRIMARY_SSH:-testbench}"
+PRIMARY_SSH="${SWARM_PRIMARY_SSH:-}"
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 SERVICE_UNIT="${SWARM_SERVICE_UNIT:-swarm.service}"
 DATA_DIR="${SWARMD_DATA_DIR:-/var/lib/swarmd}"
@@ -95,7 +95,7 @@ require_command scp
 require_command jq
 require_command python3
 
-[[ -n "${PRIMARY_SSH}" ]] || fail "--primary-ssh is required"
+[[ -n "${PRIMARY_SSH}" ]] || fail "pass an SSH target positionally, with --primary-ssh, or via SWARM_PRIMARY_SSH"
 [[ -n "${API_URL}" ]] || fail "--api-url is required"
 [[ -n "${SERVICE_UNIT}" ]] || fail "--service is required"
 [[ -n "${DATA_DIR}" ]] || fail "--data-dir is required"

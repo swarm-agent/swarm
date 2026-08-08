@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
@@ -164,6 +164,7 @@ export interface DesktopV3AgenticComposerProps {
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
   onUseAgentModelDefault?: () => void | Promise<void>
+  onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
   modelOptions?: ModelOptionRecord[]
   selectedModelKey?: string
   selectedServiceTier?: string
@@ -193,6 +194,7 @@ export interface DesktopV3AgenticComposerProps {
   onDropTodo?: (event: ReactDragEvent<HTMLTextAreaElement>) => void
   focusSignal?: number
   workspacePath?: string
+  sessionId?: string
   onOpenActionSettings?: () => void
   /** Pre-route composer state; agent/model controls remain visible before the first send. */
   routedNewSession?: boolean
@@ -261,6 +263,7 @@ export function DesktopV3AgenticComposer({
   modelProfiles = [],
   activeModelProfile,
   onUseAgentModelDefault: _onUseAgentModelDefault,
+  onApplyModelFavorite,
   modelOptions = [],
   selectedModelKey = '',
   selectedServiceTier = '',
@@ -290,6 +293,7 @@ export function DesktopV3AgenticComposer({
   onDropTodo,
   focusSignal = 0,
   workspacePath = '',
+  sessionId = '',
   onOpenActionSettings,
   routedNewSession = false,
   slashCommandContext = 'existing-session',
@@ -320,6 +324,7 @@ export function DesktopV3AgenticComposer({
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
+  const modelFavoritesAnchorId = useId()
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
   const [textAttachments, setTextAttachments] = useState<DesktopComposerTextAttachment[]>([])
@@ -1051,6 +1056,7 @@ export function DesktopV3AgenticComposer({
   ) : null
 
   const renderComposerControl = (openPicker: () => void, open: boolean) => <ComposerPlanModelControl
+    popoverAnchorId={modelFavoritesAnchorId}
     provider={selectedModel?.provider}
     model={selectedModel?.model}
     thinking={selectedThinking}
@@ -1109,6 +1115,7 @@ export function DesktopV3AgenticComposer({
         {workspaceActionChooserOpen && workspacePath.trim() ? (
           <DesktopWorkspaceActionChooser
             workspacePath={workspacePath}
+            sessionId={sessionId}
             onSelect={(action) => {
               setWorkspaceActionChooserOpen(false)
               handleWorkspaceActionSelect(action, false)
@@ -1117,7 +1124,7 @@ export function DesktopV3AgenticComposer({
             onClose={() => setWorkspaceActionChooserOpen(false)}
           />
         ) : selectedWorkspaceAction && workspacePath.trim() ? (
-          <DesktopWorkspaceActionPanel key={`${selectedWorkspaceAction.id}:${workspaceActionLaunchToken}`} workspacePath={workspacePath} action={selectedWorkspaceAction} autoLaunch={workspaceActionAutoLaunch} onClose={closeWorkspaceActionPanel} />
+          <DesktopWorkspaceActionPanel key={`${selectedWorkspaceAction.id}:${workspaceActionLaunchToken}`} workspacePath={workspacePath} sessionId={sessionId} action={selectedWorkspaceAction} autoLaunch={workspaceActionAutoLaunch} onClose={closeWorkspaceActionPanel} />
         ) : null}
         {visibleComposerError ? (
           <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-danger)]" role="alert">
@@ -1275,6 +1282,7 @@ export function DesktopV3AgenticComposer({
               onCompact={onCompact ? () => { void onCompact(draft) } : undefined}
               compactDisabled={compactDisabled || !onCompact}
               workspacePath={workspacePath}
+              sessionId={sessionId}
               onActionSelect={handleWorkspaceActionSelect}
               onOpenActionSettings={onOpenActionSettings}
               onSkillSelect={setSelectedWorkspaceSkill}
@@ -1353,6 +1361,8 @@ export function DesktopV3AgenticComposer({
         initialAgentName={agentSettingsInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
+        onApplyModelFavorite={onApplyModelFavorite}
+        popoverAnchorId={modelFavoritesAnchorId}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}
         busy={agentModelControlBusy}

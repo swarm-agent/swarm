@@ -72,6 +72,7 @@ type ProviderManagedToolInvokerConfig struct {
 	SessionID            string
 	PermissionSessionID  string
 	RunID                string
+	SourceMessageID      string
 	Step                 int
 	SessionMode          string
 	WorkspacePath        string
@@ -117,6 +118,7 @@ type providerToolInvokerConfig struct {
 	sessionID            string
 	permissionSessionID  string
 	runID                string
+	sourceMessageID      string
 	step                 int
 	sessionMode          string
 	workspacePath        string
@@ -142,6 +144,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		sessionID:            strings.TrimSpace(config.SessionID),
 		permissionSessionID:  strings.TrimSpace(config.PermissionSessionID),
 		runID:                strings.TrimSpace(config.RunID),
+		sourceMessageID:      strings.TrimSpace(config.SourceMessageID),
 		step:                 config.Step,
 		sessionMode:          strings.TrimSpace(config.SessionMode),
 		workspacePath:        strings.TrimSpace(config.WorkspacePath),
@@ -283,6 +286,17 @@ func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []str
 	return originRoots
 }
 
+func providerManagedCheckpointBoundaryCall(call tool.Call) bool {
+	if canonicalToolName(call.Name) != "plan_manage" {
+		return false
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &args); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(mapString(args, "action")), sessionruntime.CheckpointBoundaryTransitionAction)
+}
+
 func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) bool {
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
 	if payload == nil {
@@ -294,8 +308,11 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if strings.EqualFold(strings.TrimSpace(call.Name), "exit_plan_mode") && mapBool(payload, "mode_changed") {
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") && strings.EqualFold(strings.TrimSpace(mapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
-		return true
+	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") {
+		switch strings.ToLower(strings.TrimSpace(mapString(payload, "next_action"))) {
+		case "run_checkpoint_with_current_context", "run_checkpoint_with_fresh_context":
+			return true
+		}
 	}
 	if strings.EqualFold(strings.TrimSpace(call.Name), "plan_manage") && providerManagedTerminalPlanNextAction(mapString(payload, "next_action")) {
 		return true
@@ -398,6 +415,24 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			principal = config.principal
 		}
 		ctx = identity.ContextWithPrincipal(ctx, principal)
+		boundaryProgressEmitted := false
+		if providerManagedCheckpointBoundaryCall(call) {
+			progression := recordProviderToolProgression(config.toolProgression, metadata, name)
+			if config.emit != nil {
+				config.emit(StreamEvent{
+					Type:         StreamEventToolStarted,
+					Step:         config.step,
+					ToolName:     name,
+					CallID:       callID,
+					Arguments:    call.Arguments,
+					ToolIdentity: progression.Identity,
+					ToolRunCount: progression.RunCount,
+					ToolDisplay:  progression.Display,
+					Metadata:     cloneGenericMap(metadata),
+				})
+			}
+			boundaryProgressEmitted = true
+		}
 		handled := false
 		var controlResult tool.Result
 		var controlErr error
@@ -413,15 +448,18 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 				RunID:           strings.TrimSpace(config.runID),
 				RunSessionID:    strings.TrimSpace(config.sessionID),
 				ParentSessionID: strings.TrimSpace(config.sessionID),
-				SourceMessageID: fmt.Sprintf("provider-run:%s:step:%d:call:%s", strings.TrimSpace(config.runID), config.step, strings.TrimSpace(call.CallID)),
+				SourceMessageID: strings.TrimSpace(config.sourceMessageID),
 				Inline:          config.providerManagedV3 && sessionruntime.NormalizeMode(config.sessionMode) == sessionruntime.ModeAuto,
 			}
 			controlResponse := providerManagedControlPlaneResponse(call, feedback)
 			handled, controlResult, controlErr = s.executeControlPlaneToolWithLifecycleRunContext(ctx, config.sessionID, config.sessionMode, config.agentProfile, config.step, call, controlResponse, config.emit, config.applySessionMutation, lifecycleRun)
 		}
 		if handled {
-			progression := recordProviderToolProgression(config.toolProgression, metadata, name)
-			if config.emit != nil {
+			progression := providerToolProgressionFromMetadata(metadata, name)
+			if !boundaryProgressEmitted {
+				progression = recordProviderToolProgression(config.toolProgression, metadata, name)
+			}
+			if config.emit != nil && !boundaryProgressEmitted {
 				config.emit(StreamEvent{
 					Type:         StreamEventToolStarted,
 					Step:         config.step,
@@ -756,12 +794,23 @@ func (s *Service) rejectProviderManagedCheckpointRunFollowup(config providerTool
 	if checkpointID == "" {
 		return nil
 	}
-	return fmt.Errorf("recursive session checkpoint creation is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; request_followup_checkpoint is reserved for related ordered work from the parent conversation, while an unrelated product goal must use request_new_plan with one checkpoint when bounded or multiple ordered checkpoints when intrinsically multi-stage, high-risk, fresh-context, or independently reviewable; if an unrelated request somehow reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence without asking the user to resend so the parent conversation can call request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
+	// A provider/tool retry of the exact parent boundary call must reach the
+	// boundary service's durable source-message replay path. It is not a request
+	// to append another checkpoint from inside the checkpoint-owned run.
+	sourceMessageID := strings.TrimSpace(config.sourceMessageID)
+	if sourceMessageID != "" {
+		for _, checkpoint := range active.Document.Checkpoints {
+			if strings.TrimSpace(checkpoint.ID) == checkpointID && strings.TrimSpace(checkpoint.SourceMessageID) == sourceMessageID {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("checkpoint boundary transition is not allowed from checkpoint run %q for active checkpoint %q; do not retry or claim a checkpoint was added: complete all work belonging to the current objective here; transition_checkpoint_boundary is reserved for a trusted parent provider turn and assigns the new checkpoint to that already-current run without restarting it; request_followup_checkpoint and its aliases are retired; if an unrelated request reached this checkpoint-owned run, preserve it verbatim in terminal next-action evidence so the parent conversation can choose transition_checkpoint_boundary or request_new_plan; finish the current checkpoint with complete_checkpoint, mark_needs_review, mark_blocked, or mark_failed", runID, checkpointID)
 }
 
 func isPlanManageSessionCheckpointCreationAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint", "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
+	case "start-session-checkpoint", "start_session_checkpoint", "session-checkpoint", "session_checkpoint", "auto-checkpoint", "auto_checkpoint", "transition-checkpoint-boundary", "transition_checkpoint_boundary", "checkpoint-boundary-transition", "checkpoint_boundary_transition", "request-followup-checkpoint", "request_followup_checkpoint", "followup-checkpoint", "followup_checkpoint", "request-changes", "request_changes":
 		return true
 	default:
 		return false
@@ -805,7 +854,12 @@ func (s *Service) appendPlanLifecycleMessageForToolResult(sessionID string, call
 }
 
 func (s *Service) appendExitPlanModeLifecycleMessage(sessionID string, payload map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
-	if !strings.EqualFold(strings.TrimSpace(mapString(payload, "status")), "approved") || !strings.EqualFold(strings.TrimSpace(mapString(payload, "next_action")), "run_checkpoint_with_fresh_context") {
+	if !strings.EqualFold(strings.TrimSpace(mapString(payload, "status")), "approved") {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(mapString(payload, "next_action"))) {
+	case "run_checkpoint_with_current_context", "run_checkpoint_with_fresh_context":
+	default:
 		return nil
 	}
 	if s == nil || s.sessions == nil {
