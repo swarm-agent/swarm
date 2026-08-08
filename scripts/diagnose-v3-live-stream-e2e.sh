@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/diagnose-v3-live-stream-e2e.sh [ssh-alias] [options]
-       scripts/diagnose-v3-live-stream-e2e.sh --primary-ssh <alias> [options]
+Usage: scripts/diagnose-v3-live-stream-e2e.sh [ssh-target] [options]
+       scripts/diagnose-v3-live-stream-e2e.sh --primary-ssh <target> [options]
 
-Runs a real Sessions API V3 desktop stream E2E against a live SSH testbench.
+Runs a real Sessions API V3 desktop stream E2E against a configured SSH target.
 This is not a mock and not a passive socket check:
   1. SSHes to the target host.
   2. Authenticates to the live local swarmd desktop API.
@@ -19,7 +19,7 @@ This is not a mock and not a passive socket check:
   9. Writes evidence plus a function-chain document explaining every hop.
 
 Options:
-  --primary-ssh <alias>      SSH alias for testbench. Default: testbench
+  --primary-ssh <target>     SSH target. Required via option, positional argument, or SWARM_PRIMARY_SSH
   --api-url <url>            API URL used on remote host. Default: http://127.0.0.1:7781
   --agent <name>             V3 agent name. Default: swarm
   --provider <provider>      Model provider. Default: fireworks
@@ -45,7 +45,7 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 require_command() { command -v "${1:-}" >/dev/null 2>&1 || fail "required command not found: ${1:-}"; }
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY_SSH="${SWARM_PRIMARY_SSH:-testbench}"
+PRIMARY_SSH="${SWARM_PRIMARY_SSH:-}"
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 AGENT_NAME="${SWARM_LIVE_STREAM_AGENT:-swarm}"
 PROVIDER="${SWARM_LIVE_STREAM_PROVIDER:-fireworks}"
@@ -85,7 +85,7 @@ require_command scp
 require_command jq
 require_command python3
 
-[[ -n "${PRIMARY_SSH}" ]] || fail "--primary-ssh is required"
+[[ -n "${PRIMARY_SSH}" ]] || fail "pass an SSH target positionally, with --primary-ssh, or via SWARM_PRIMARY_SSH"
 [[ -n "${API_URL}" ]] || fail "--api-url is required"
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${TIMEOUT_SECONDS}" -gt 0 ]] || fail "--timeout-seconds must be a positive integer"
 API_URL="${API_URL%/}"

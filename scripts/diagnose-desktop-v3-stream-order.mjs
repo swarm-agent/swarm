@@ -24,7 +24,7 @@ function usage() {
 Runs a real Desktop V3 AI turn and captures redacted realtime arrival order plus
 sampled desktop-chat-row DOM order. Evidence defaults to tmp/desktop-v3-stream-order/.
 
-  --ssh <alias>                  SSH tunnel target (default: testbench)
+  --ssh <target>                 SSH tunnel target (or set SWARM_PRIMARY_SSH)
   --url <url>                    Direct Desktop URL instead of the tunnel URL
   --remote-desktop-port <port>   Remote Desktop port (default: 5555)
   --workspace <name|path>        Workspace selector (default: swarm-go)
@@ -40,7 +40,7 @@ sampled desktop-chat-row DOM order. Evidence defaults to tmp/desktop-v3-stream-o
 }
 function parseArgs(argv) {
   const opts = {
-    ssh: process.env.SWARM_PRIMARY_SSH || 'testbench', url: process.env.SWARM_DESKTOP_URL || '',
+    ssh: process.env.SWARM_PRIMARY_SSH || '', url: process.env.SWARM_DESKTOP_URL || '',
     remotePort: Number(process.env.SWARM_REMOTE_DESKTOP_PORT || '') || 5555,
     workspace: process.env.SWARM_STREAM_ORDER_WORKSPACE || 'swarm-go',
     provider: process.env.SWARM_PROVIDER || 'fireworks',
@@ -66,6 +66,7 @@ function parseArgs(argv) {
     else if (arg === '--timeout-ms') { opts.timeoutMs = Number(value(argv, i, arg)); i += 1 }
     else fail(`unknown argument: ${arg}`)
   }
+  if (!opts.ssh && !opts.url) fail('pass --ssh/set SWARM_PRIMARY_SSH, or pass --url/set SWARM_DESKTOP_URL')
   if (!Number.isFinite(opts.remotePort) || opts.remotePort <= 0) fail('--remote-desktop-port must be positive')
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0) fail('--timeout-ms must be positive')
   if (!opts.artifactDir) opts.artifactDir = path.join(ROOT, 'tmp', 'desktop-v3-stream-order', stamp())

@@ -3,17 +3,17 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: tests/testbench_tui_pty_e2e.sh [ssh-alias] [options]
+Usage: tests/testbench_tui_pty_e2e.sh [ssh-target] [options]
 
-Runs a real TUI PTY E2E against an already rebuilt live SSH testbench.
+Runs a real TUI PTY E2E against an already rebuilt live SSH target.
 This test does not mock the backend, TUI, realtime transport, or assistant output.
 It launches the real remote TUI in a PTY, sends hello and a follow-up, captures
 TUI transcript plus HTTP/realtime evidence, and verifies assistant output and
 run lifecycle indicators.
 
 Options:
-  --primary-ssh <alias>       SSH alias for testbench. Default: testbench
-  --api-url <url>             Remote API URL as seen from the testbench. Default: http://127.0.0.1:7781
+  --primary-ssh <target>      SSH target. Required via option, positional argument, or SWARM_PRIMARY_SSH
+  --api-url <url>             Remote API URL as seen from the target. Default: http://127.0.0.1:7781
   --remote-dir <path>         Remote swarm-go checkout. Default: auto-discover
   --session-id <id>           Existing V3 session to open in TUI. Default: create one through live API
   --prompt <text>             First prompt. Default: asks for TUI_E2E_HELLO_OK
@@ -42,7 +42,7 @@ fail() { log "FAIL: $*" >&2; log "artifact root: ${ARTIFACT_DIR:-<not-created>}"
 require_command() { command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"; }
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY_SSH="${SWARM_PRIMARY_SSH:-testbench}"
+PRIMARY_SSH="${SWARM_PRIMARY_SSH:-}"
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 REMOTE_DIR="${SWARM_TUI_E2E_REMOTE_DIR:-}"
 SESSION_ID="${SWARM_TUI_E2E_SESSION_ID:-}"
@@ -100,7 +100,7 @@ require_command jq
 require_command python3
 require_command timeout
 
-[[ -n "${PRIMARY_SSH}" ]] || fail "--primary-ssh is required"
+[[ -n "${PRIMARY_SSH}" ]] || fail "pass an SSH target positionally, with --primary-ssh, or via SWARM_PRIMARY_SSH"
 [[ -n "${API_URL}" ]] || fail "--api-url is required"
 [[ "${TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${TIMEOUT_SECONDS}" -gt 0 ]] || fail "--timeout-seconds must be a positive integer"
 if [[ -z "${OVERALL_TIMEOUT_SECONDS}" ]]; then

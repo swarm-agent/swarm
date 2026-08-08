@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SSH_HOST="${1:-${SWARM_PRIMARY_SSH:-testbench}}"
+SSH_HOST="${1:-${SWARM_PRIMARY_SSH:-}}"
+if [[ -z "${SSH_HOST}" ]]; then
+  echo "pass an SSH target as the first argument or set SWARM_PRIMARY_SSH" >&2
+  exit 2
+fi
 API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
 SERVICE_UNIT="${SWARM_SERVICE_UNIT:-swarm.service}"
 EXPECTED_COMMIT="${SWARM_EXPECTED_COMMIT:-}"
