@@ -320,6 +320,14 @@ func (a *App) refreshModelsModalData(providerHint, statusHint string) {
 	a.home.SetModelsModalStatus(fmt.Sprintf("models loaded: %d", len(entries)))
 }
 
+func (a *App) firstOnboardingProviderCredentialRequired(ctx context.Context) bool {
+	if a == nil || a.api == nil {
+		return false
+	}
+	status, err := a.api.GetOnboardingStatus(ctx)
+	return err == nil && status.Heuristics.CredentialCount == 0 && status.Heuristics.AgentCount == 0
+}
+
 func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 	if !a.home.ModelsModalVisible() {
 		return
@@ -343,13 +351,22 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		record, err := a.api.UpsertAuthCredential(ctx, client.AuthCredentialUpsertRequest{
+		upsert := client.AuthCredentialUpsertRequest{
 			Provider: providerID,
 			Type:     "api",
 			Label:    strings.TrimSpace(action.KeyLabel),
 			APIKey:   apiKey,
 			Active:   action.SetActive,
-		})
+		}
+		var (
+			record client.AuthCredential
+			err    error
+		)
+		if action.SetActive && a.firstOnboardingProviderCredentialRequired(ctx) {
+			record, err = a.api.AcceptOnboardingProviderCredential(ctx, upsert)
+		} else {
+			record, err = a.api.UpsertAuthCredential(ctx, upsert)
+		}
 		if err != nil {
 			a.home.SetModelsModalLoading(false)
 			a.home.SetModelsModalError(fmt.Sprintf("save credential failed: %v", err))

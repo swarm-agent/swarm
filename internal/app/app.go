@@ -5310,7 +5310,7 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		record, err := a.api.UpsertAuthCredential(ctx, client.AuthCredentialUpsertRequest{
+		upsert := client.AuthCredentialUpsertRequest{
 			ID:           action.Upsert.ID,
 			Provider:     action.Upsert.Provider,
 			Type:         action.Upsert.Type,
@@ -5322,7 +5322,17 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 			ExpiresAt:    action.Upsert.ExpiresAt,
 			AccountID:    action.Upsert.AccountID,
 			Active:       action.Upsert.Active,
-		})
+		}
+		var (
+			record client.AuthCredential
+			err    error
+		)
+		firstProvider := a.firstOnboardingProviderCredentialRequired(ctx)
+		if firstProvider && (a.home.OnboardingProviderActive() || upsert.Active) {
+			record, err = a.api.AcceptOnboardingProviderCredential(ctx, upsert)
+		} else {
+			record, err = a.api.UpsertAuthCredential(ctx, upsert)
+		}
 		if err == nil && a.chat != nil {
 			a.chat.AppendUserAuthCommandMessage(action.Upsert.Provider)
 		}
