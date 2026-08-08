@@ -171,10 +171,30 @@ func KeyExecutionEpochBoundary(sessionID, planID, checkpointID, attemptID, reaso
 	if normalizedReason == "post_checkpoint_followup" && strings.TrimSpace(runID) != "" {
 		return key + "/" + keyPart(runID)
 	}
-	if strings.HasPrefix(normalizedReason, "context_compaction_") && strings.TrimSpace(sourceMessageID) != "" {
+	if executionEpochBoundaryUsesSourceMessageID(normalizedReason) && strings.TrimSpace(sourceMessageID) != "" {
 		return key + "/" + keyPart(sourceMessageID)
 	}
 	return key
+}
+
+func executionEpochBoundaryUsesSourceMessageID(reason string) bool {
+	normalizedReason := strings.ToLower(strings.TrimSpace(reason))
+	return normalizedReason == "final_plan_handoff" || strings.HasPrefix(normalizedReason, "context_compaction_")
+}
+
+func executionEpochBoundaryLegacyIdentityDiffers(existing, proposed ExecutionEpochBoundary) bool {
+	normalizedReason := strings.ToLower(strings.TrimSpace(proposed.Reason))
+	if normalizedReason == "post_checkpoint_followup" {
+		existingRunID := strings.TrimSpace(existing.RunID)
+		proposedRunID := strings.TrimSpace(proposed.RunID)
+		return existingRunID != "" && proposedRunID != "" && existingRunID != proposedRunID
+	}
+	if executionEpochBoundaryUsesSourceMessageID(normalizedReason) {
+		existingSourceMessageID := strings.TrimSpace(existing.SourceMessageID)
+		proposedSourceMessageID := strings.TrimSpace(proposed.SourceMessageID)
+		return existingSourceMessageID != "" && proposedSourceMessageID != "" && existingSourceMessageID != proposedSourceMessageID
+	}
+	return false
 }
 
 func executionEpochBoundaryLegacyKey(sessionID, planID, checkpointID, attemptID, reason string) string {
@@ -634,8 +654,8 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		} else if ok {
 			return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch boundary collision: plan %q checkpoint %q already maps to %q", epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, string(boundaryEpochID))
 		}
-		if strings.EqualFold(epoch.Boundary.Reason, "post_checkpoint_followup") && epoch.Boundary.RunID != "" {
-			legacyKey := executionEpochBoundaryLegacyKey(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason)
+		legacyKey := executionEpochBoundaryLegacyKey(input.SessionID, epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, epoch.Boundary.AttemptID, epoch.Boundary.Reason)
+		if boundaryKey != legacyKey {
 			if legacyEpochID, ok, getErr := s.store.GetBytes(legacyKey); getErr != nil {
 				return BeginExecutionEpochResult{}, getErr
 			} else if ok {
@@ -643,7 +663,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 				if epochErr != nil {
 					return BeginExecutionEpochResult{}, epochErr
 				}
-				if !exists || strings.TrimSpace(legacyEpoch.Boundary.RunID) == "" || strings.TrimSpace(legacyEpoch.Boundary.RunID) == epoch.Boundary.RunID {
+				if !exists || !executionEpochBoundaryLegacyIdentityDiffers(legacyEpoch.Boundary, epoch.Boundary) {
 					return BeginExecutionEpochResult{}, fmt.Errorf("execution epoch boundary collision: plan %q checkpoint %q already maps to %q", epoch.Boundary.PlanID, epoch.Boundary.CheckpointID, string(legacyEpochID))
 				}
 			}
