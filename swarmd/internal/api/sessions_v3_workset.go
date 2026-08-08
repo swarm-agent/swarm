@@ -319,9 +319,14 @@ func appendCanonicalSessionsV3WorksetPath(paths []string, seen map[string]struct
 }
 
 func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) (map[string]any, error) {
-	sessionShells, err := sessionsV3SyncSessionShells(workset.SessionsByID)
-	if err != nil {
-		return nil, err
+	sessionShells, invalidSessionIDs := sessionsV3SyncSessionShells(workset.SessionsByID)
+	for _, sessionID := range invalidSessionIDs {
+		quarantineSessionsV3WorksetSession(&workset, sessionID)
+		workset.Omissions = append(workset.Omissions, pebblestore.V3SessionWorksetOmission{
+			SessionID: sessionID,
+			Resource:  "session",
+			Reason:    sessionsV3SyncOmissionInvalidSessionSnapshot,
+		})
 	}
 	return map[string]any{
 		"ok":                           true,
@@ -341,4 +346,22 @@ func sessionsV3WorksetResponse(workset pebblestore.V3SessionWorksetResult, snaps
 		"watermarks":                   workset.Watermarks,
 		"session_order":                workset.SessionOrder,
 	}, nil
+}
+
+func quarantineSessionsV3WorksetSession(workset *pebblestore.V3SessionWorksetResult, sessionID string) {
+	if workset == nil {
+		return
+	}
+	delete(workset.SessionsByID, sessionID)
+	delete(workset.ProjectionsBySession, sessionID)
+	delete(workset.MessagesBySession, sessionID)
+	delete(workset.EventsBySession, sessionID)
+	delete(workset.RunIntentsBySession, sessionID)
+	delete(workset.CurrentRunStateBySession, sessionID)
+	for _, descriptor := range workset.HistoryManifestsBySession[sessionID] {
+		delete(workset.HistoryChunksByID, descriptor.ChunkID)
+	}
+	delete(workset.HistoryManifestsBySession, sessionID)
+	workset.SessionOrder = removeSessionsV3SyncSessionID(workset.SessionOrder, sessionID)
+	workset.ActiveSessionIDs = removeSessionsV3SyncSessionID(workset.ActiveSessionIDs, sessionID)
 }

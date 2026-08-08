@@ -74,6 +74,84 @@ func TestSessionsV3SyncBootstrapReturnsCanonicalSnapshotScopeAndReplayInstructio
 	}
 }
 
+func TestSessionsV3SyncBootstrapQuarantinesInvalidSessionWithoutBlockingHealthySessions(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	healthy := createSessionsV3PrimaryTestSessionWithWorkspace(t, server, "sync-healthy", "Healthy", "/workspace/quarantine")
+	principal := testPrincipal()
+	invalidID := "sync-invalid-model-profile"
+	now := time.Now().UnixMilli()
+	_, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       invalidID,
+		UserID:          principal.UserID,
+		AccountScopeID:  principal.AccountScopeID,
+		ClientRequestID: "create-" + invalidID,
+		IdempotencyKey:  "create-" + invalidID,
+		PayloadHash:     "hash-create-" + invalidID,
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session: &pebblestore.SessionSnapshot{
+			ID:             invalidID,
+			UserID:         principal.UserID,
+			AccountScopeID: principal.AccountScopeID,
+			WorkspacePath:  "/workspace/quarantine",
+			WorkspaceName:  "quarantine",
+			Title:          "Invalid",
+			Mode:           sessionruntime.ModePlan,
+			ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+				Source: pebblestore.SessionModelProfileSourceSaved,
+				Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model"},
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		NowUnixMs: now,
+	})
+	if err != nil {
+		t.Fatalf("seed invalid session: %v", err)
+	}
+
+	body := `{"surface":"desktop","selector":{"kind":"workspace","workspace_path":"/workspace/quarantine","recent":{"limit":10}},"history":{"mode":"tail","max_messages_per_session":10},"resources":{"messages":true,"run_intents":true,"active_plan":true}}`
+	req := httptest.NewRequest(http.MethodPost, V3SyncBootstrapPath, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		OK                   bool                                       `json:"ok"`
+		SessionsByID         map[string]pebblestore.SessionSnapshot     `json:"sessions_by_id"`
+		ProjectionsBySession map[string]pebblestore.V3SessionProjection `json:"projections_by_session"`
+		SessionOrder         []string                                   `json:"session_order"`
+		Omissions            []pebblestore.V3SyncSnapshotOmission       `json:"omissions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if !payload.OK || payload.SessionsByID[healthy.ID].ID != healthy.ID {
+		t.Fatalf("healthy session missing after quarantine: %+v", payload.SessionsByID)
+	}
+	if _, ok := payload.SessionsByID[invalidID]; ok {
+		t.Fatalf("invalid session leaked into bootstrap: %+v", payload.SessionsByID)
+	}
+	if _, ok := payload.ProjectionsBySession[invalidID]; ok {
+		t.Fatalf("invalid session projection leaked into bootstrap: %+v", payload.ProjectionsBySession)
+	}
+	for _, sessionID := range payload.SessionOrder {
+		if sessionID == invalidID {
+			t.Fatalf("invalid session remained in session order: %+v", payload.SessionOrder)
+		}
+	}
+	foundOmission := false
+	for _, omission := range payload.Omissions {
+		if omission.SessionID == invalidID && omission.Resource == "session" && omission.Reason == sessionsV3SyncOmissionInvalidSessionSnapshot {
+			foundOmission = true
+		}
+	}
+	if !foundOmission {
+		t.Fatalf("invalid session omission missing: %+v", payload.Omissions)
+	}
+}
+
 func TestSessionsV3SelectedSessionHydrateResourcesIncludeEvents(t *testing.T) {
 	req := sessionsV3SelectedSessionHydrateRequest(" session-a ")
 	if req.SessionIDs[0] != "session-a" {
@@ -228,6 +306,77 @@ func TestSessionsV3SyncSessionShellRejectsDisabledPlan(t *testing.T) {
 	}
 	if _, err := sessionsV3SyncSessionShell(session); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {
 		t.Fatalf("disabled Plan shell error = %v", err)
+	}
+}
+
+func TestSessionsV3SyncSessionShellsQuarantineInvalidSession(t *testing.T) {
+	valid := pebblestore.SessionSnapshot{
+		ID:   "valid-session",
+		Mode: sessionruntime.ModeAuto,
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Source: pebblestore.SessionModelProfileSourceTemporary,
+			Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model"},
+		},
+	}
+	invalid := pebblestore.SessionSnapshot{
+		ID:   "invalid-session",
+		Mode: sessionruntime.ModePlan,
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Source: pebblestore.SessionModelProfileSourceTemporary,
+			Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model"},
+		},
+	}
+
+	shells, invalidSessionIDs := sessionsV3SyncSessionShells(map[string]pebblestore.SessionSnapshot{
+		valid.ID:   valid,
+		invalid.ID: invalid,
+	})
+	if _, ok := shells[valid.ID]; !ok {
+		t.Fatalf("valid session was quarantined: %+v", shells)
+	}
+	if _, ok := shells[invalid.ID]; ok {
+		t.Fatalf("invalid session leaked into bootstrap shells: %+v", shells)
+	}
+	if len(invalidSessionIDs) != 1 || invalidSessionIDs[0] != invalid.ID {
+		t.Fatalf("invalid session ids = %+v", invalidSessionIDs)
+	}
+}
+
+func TestQuarantineSessionsV3SyncSnapshotSessionRemovesRelatedResources(t *testing.T) {
+	snapshot := pebblestore.V3SyncSnapshotResult{
+		SessionsByID:             map[string]pebblestore.SessionSnapshot{"invalid-session": {ID: "invalid-session"}, "valid-session": {ID: "valid-session"}},
+		ProjectionsBySession:     map[string]pebblestore.V3SessionProjection{"invalid-session": {}, "valid-session": {}},
+		MessagesBySession:        map[string][]pebblestore.MessageSnapshot{"invalid-session": {}, "valid-session": {}},
+		EventsBySession:          map[string][]pebblestore.V3SessionEvent{"invalid-session": {}, "valid-session": {}},
+		RunIntentsBySession:      map[string][]pebblestore.V3SessionRunIntent{"invalid-session": {}, "valid-session": {}},
+		CurrentRunStateBySession: map[string]pebblestore.V3SessionRunState{"invalid-session": {}, "valid-session": {}},
+		HistoryManifestsBySession: map[string][]pebblestore.V3SessionHistoryChunkDescriptor{
+			"invalid-session": {{ChunkID: "invalid-session:messages"}},
+			"valid-session":   {{ChunkID: "valid-session:messages"}},
+		},
+		HistoryChunksByID: map[string]pebblestore.V3SessionHistoryChunk{
+			"invalid-session:messages": {ChunkID: "invalid-session:messages"},
+			"valid-session:messages":   {ChunkID: "valid-session:messages"},
+		},
+		SessionOrder:     []string{"invalid-session", "valid-session"},
+		ActiveSessionIDs: []string{"invalid-session", "valid-session"},
+	}
+
+	quarantineSessionsV3SyncSnapshotSession(&snapshot, "invalid-session")
+	if _, ok := snapshot.SessionsByID["invalid-session"]; ok {
+		t.Fatal("invalid session remained in snapshot")
+	}
+	if _, ok := snapshot.ProjectionsBySession["invalid-session"]; ok {
+		t.Fatal("invalid projection remained in snapshot")
+	}
+	if _, ok := snapshot.HistoryChunksByID["invalid-session:messages"]; ok {
+		t.Fatal("invalid history chunk remained in snapshot")
+	}
+	if len(snapshot.SessionOrder) != 1 || snapshot.SessionOrder[0] != "valid-session" {
+		t.Fatalf("session order = %+v", snapshot.SessionOrder)
+	}
+	if len(snapshot.ActiveSessionIDs) != 1 || snapshot.ActiveSessionIDs[0] != "valid-session" {
+		t.Fatalf("active sessions = %+v", snapshot.ActiveSessionIDs)
 	}
 }
 
