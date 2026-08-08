@@ -58,7 +58,7 @@ func TestAgentsModalCanonicalAgentListStartsOnSwarm(t *testing.T) {
 	if got := page.selectedAgentsModalName(); got != "swarm" {
 		t.Fatalf("selected agent = %q, want swarm", got)
 	}
-	if got, want := canonicalAgentModelNames, []string{"swarm", "compact", "finder", "coder", "designer", "router"}; len(got) != len(want) {
+	if got, want := canonicalAgentModelNames, []string{"swarm", "finder", "coder", "designer", "compact", "router"}; len(got) != len(want) {
 		t.Fatalf("agents = %#v, want %#v", got, want)
 	} else {
 		for i := range want {
@@ -88,8 +88,8 @@ func TestAgentsModalSwarmHasDefaultThenPlanAndSystemAgentHasOneAssignment(t *tes
 
 	page.agentsModal.Focus = agentsModalFocusAgents
 	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
-	if got := page.selectedAgentsModalAssignments(); len(got) != 1 || got[0].Model != "compact-model" {
-		t.Fatalf("Compact assignments = %#v", got)
+	if got := page.selectedAgentsModalAssignments(); len(got) != 1 || got[0].Model != "finder-model" {
+		t.Fatalf("Finder assignments = %#v", got)
 	}
 }
 
@@ -212,6 +212,38 @@ func TestAgentsModalAgentCardUsesOneOutlineAndPanelBackground(t *testing.T) {
 		if got != point.want {
 			t.Fatalf("card outline cell (%d,%d) = %q, want %q", point.x, point.y, got, point.want)
 		}
+	}
+}
+
+func TestAgentsModalRenderSeparatesCoreAgentsFromUtilities(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(canonicalAgentsModalTestData())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(110, 36)
+	page.drawAgentsModal(screen)
+	screen.Show()
+	cells, width, _ := screen.GetContents()
+	var rendered strings.Builder
+	for i, cell := range cells {
+		if i > 0 && i%width == 0 {
+			rendered.WriteByte('\n')
+		}
+		if len(cell.Runes) > 0 {
+			rendered.WriteRune(cell.Runes[0])
+		} else {
+			rendered.WriteByte(' ')
+		}
+	}
+	text := rendered.String()
+	core, finder, coder, designer := strings.Index(text, "Core system agents"), strings.Index(text, "Finder"), strings.Index(text, "Coder"), strings.Index(text, "Designer")
+	utilities, compact, router := strings.Index(text, "Utilities"), strings.Index(text, "Compact"), strings.Index(text, "Router")
+	if !(core >= 0 && core < finder && finder < coder && coder < designer && designer < utilities && utilities < compact && compact < router) {
+		t.Fatalf("agent groups are not rendered in canonical order:\n%s", text)
 	}
 }
 

@@ -56,6 +56,8 @@ const CODER_AGENT_NAME = 'system-coder'
 const DESIGNER_AGENT_NAME = 'system-designer'
 const ROUTER_AGENT_NAME = 'system-router'
 const SWARM_AGENT_NAME = 'swarm'
+const CORE_SYSTEM_AGENT_NAMES = [SWARM_AGENT_NAME, FINDER_AGENT_NAME, CODER_AGENT_NAME, DESIGNER_AGENT_NAME] as const
+const UTILITY_SYSTEM_AGENT_NAMES = [COMPACT_AGENT_NAME, ROUTER_AGENT_NAME] as const
 
 function isSystemUtility(name: string): boolean {
   return name === COMPACT_AGENT_NAME || name === FINDER_AGENT_NAME || name === CODER_AGENT_NAME || name === DESIGNER_AGENT_NAME || name === ROUTER_AGENT_NAME
@@ -339,11 +341,15 @@ export function AgentModelControl({
   const providers = useMemo(() => agentModelProviderChoices(modelOptions), [modelOptions])
   const agentSections = useMemo(() => {
     const item = (profile: AgentProfileRecord) => ({ name: profile.name, profile })
-    const primaryProfiles = selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name))
+    const systemItem = (name: string) => ({
+      name,
+      profile: name === SWARM_AGENT_NAME ? null : selectableAgents.find((agent) => agent.name === name) ?? null,
+    })
     const sections = [
-      { label: 'Agents', items: [{ name: SWARM_AGENT_NAME, profile: null }, ...primaryProfiles.map(item)] },
+      { label: 'Core system agents', items: CORE_SYSTEM_AGENT_NAMES.map(systemItem) },
+      { label: 'Utilities', items: UTILITY_SYSTEM_AGENT_NAMES.map(systemItem) },
+      { label: 'Agents', items: selectableAgents.filter((agent) => agentMode(agent) === 'primary' && !isCompiledSystemAgent(agent.name)).map(item) },
       { label: 'Subagents', items: selectableAgents.filter((agent) => agentMode(agent) === 'subagent' && !isCompiledSystemAgent(agent.name)).map(item) },
-      { label: 'System agents', items: selectableAgents.filter((agent) => isCompiledSystemAgent(agent.name)).map(item) },
       { label: 'Other agents', items: selectableAgents.filter((agent) => {
         const profileMode = agentMode(agent)
         return profileMode !== 'primary' && profileMode !== 'subagent' && !isCompiledSystemAgent(agent.name)
