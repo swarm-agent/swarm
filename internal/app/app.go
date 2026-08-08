@@ -74,7 +74,6 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/help", Hint: "Show command help"},
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
-		{Command: "/mode", Hint: "Toggle Plan behavior for new chats", QuickTips: []string{"/mode plan", "/mode action", "/mode status"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
 		{Command: "/new", Hint: "Open a local session draft; explicit worktree forms route", QuickTips: []string{"/new [<prompt>]", "/new worktree [<prompt>]", "/new plan [<prompt>]", "/new wp [<prompt>]"}},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
@@ -2185,8 +2184,6 @@ func (a *App) executeCommand(raw string) {
 		} else {
 			a.handleWorktreesCommand(args)
 		}
-	case "mode":
-		a.handleModeCommand(args)
 	case "profiles":
 		a.openProfilesModal()
 	case "agents", "agent":
@@ -2265,7 +2262,6 @@ func (a *App) showHelp() {
 		"/worktrees [new|open|off|status|branch <name>]",
 		"/agents   (open agent cards and model setup)",
 
-		"/mode [plan|action|status]   (Plan on/off for new chats)",
 		"/profiles   (quick-switch the saved model profile used by new sessions)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
 		fmt.Sprintf("%s   (cycle saved model profiles)", keybinds.Label(ui.KeybindGlobalCycleProfiles)),

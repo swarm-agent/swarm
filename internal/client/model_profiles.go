@@ -19,15 +19,25 @@ type ModelProfileSelection struct {
 
 // ModelProfile is an account-owned saved model profile returned by swarmd.
 type ModelProfile struct {
-	ProfileID string                 `json:"profile_id"`
-	Name      string                 `json:"name"`
-	ModelMode string                 `json:"model_mode"`
+	ProfileID   string `json:"profile_id"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	Thinking    string `json:"thinking"`
+	ServiceTier string `json:"service_tier,omitempty"`
+	ContextMode string `json:"context_mode,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+	SortOrder   int    `json:"sort_order,omitempty"`
+	IsDefault   bool   `json:"is_default"`
+
+	// The TUI still projects profiles through its single/split home model. These
+	// compatibility fields are populated from the daemon's canonical flat
+	// favorite record by normalizeModelProfile.
+	ModelMode string                 `json:"model_mode,omitempty"`
 	Single    *ModelProfileSelection `json:"single,omitempty"`
 	Plan      *ModelProfileSelection `json:"plan,omitempty"`
 	Auto      *ModelProfileSelection `json:"auto,omitempty"`
-	CreatedAt int64                  `json:"created_at"`
-	UpdatedAt int64                  `json:"updated_at"`
-	IsDefault bool                   `json:"is_default"`
 }
 
 // ModelProfileState is the daemon-owned saved profile collection and its
@@ -57,7 +67,7 @@ func (c *API) CreateModelProfile(ctx context.Context, input ModelProfileInput) (
 	if err := c.postJSON(ctx, "/v1/model-profiles", input, &response, true); err != nil {
 		return ModelProfile{}, err
 	}
-	return response.Profile, nil
+	return normalizeModelProfile(response.Profile), nil
 }
 
 // UpdateModelProfile updates an account-owned saved profile through the same
@@ -73,7 +83,7 @@ func (c *API) UpdateModelProfile(ctx context.Context, profileID string, input Mo
 	if err := c.putJSON(ctx, "/v1/model-profiles/"+url.PathEscape(profileID), input, &response, true); err != nil {
 		return ModelProfile{}, err
 	}
-	return response.Profile, nil
+	return normalizeModelProfile(response.Profile), nil
 }
 
 func (c *API) ListModelProfiles(ctx context.Context) (ModelProfileState, error) {
@@ -82,6 +92,7 @@ func (c *API) ListModelProfiles(ctx context.Context) (ModelProfileState, error) 
 		return ModelProfileState{}, err
 	}
 	for i := range state.Profiles {
+		state.Profiles[i] = normalizeModelProfile(state.Profiles[i])
 		state.Profiles[i].IsDefault = state.Profiles[i].IsDefault || state.Profiles[i].ProfileID == state.DefaultProfileID
 	}
 	return state, nil
@@ -101,5 +112,24 @@ func (c *API) SetDefaultModelProfile(ctx context.Context, profileID string) (Mod
 		return ModelProfile{}, err
 	}
 	response.Profile.IsDefault = true
-	return response.Profile, nil
+	return normalizeModelProfile(response.Profile), nil
+}
+
+func normalizeModelProfile(profile ModelProfile) ModelProfile {
+	if profile.Single != nil || profile.Plan != nil || profile.Auto != nil {
+		return profile
+	}
+	selection := ModelProfileSelection{
+		Provider:    strings.TrimSpace(profile.Provider),
+		Model:       strings.TrimSpace(profile.Model),
+		Thinking:    strings.TrimSpace(profile.Thinking),
+		ServiceTier: strings.TrimSpace(profile.ServiceTier),
+		ContextMode: strings.TrimSpace(profile.ContextMode),
+	}
+	if selection.Provider == "" && selection.Model == "" {
+		return profile
+	}
+	profile.ModelMode = "single"
+	profile.Single = &selection
+	return profile
 }

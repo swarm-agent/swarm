@@ -130,7 +130,7 @@ func (p *HomePage) drawProfilesModal(s tcell.Screen) {
 	FillRect(s, rect, p.theme.Panel)
 	DrawBox(s, rect, p.theme.BorderActive)
 	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, "Model Profiles")
-	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.TextMuted, "Switch the active profile; account default is managed in /agents")
+	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.TextMuted, "Select the default model profile used by new sessions")
 
 	rowY := rect.Y + 3
 	availableRows := rect.H - 6
