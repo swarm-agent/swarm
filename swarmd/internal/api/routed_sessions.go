@@ -672,7 +672,7 @@ func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, can
 	if !worktreeruntime.IsRequestedWorktreeNameConflict(err) {
 		return worktreeruntime.Allocation{}, "", err
 	}
-	retryBranchName, retryErr := worktreeruntime.CanonicalizeRequestedWorktreeNameRetry(routerName, config.BranchName)
+	retryBranchName, retryRequestedName, retryErr := worktreeruntime.CanonicalizeRequestedWorktreeNameRetry(routerName, config.BranchName)
 	if retryErr != nil {
 		return worktreeruntime.Allocation{}, "", retryErr
 	}
@@ -680,7 +680,7 @@ func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, can
 	if err != nil {
 		return worktreeruntime.Allocation{}, "", err
 	}
-	return allocation, strings.TrimSpace(routerName) + " (1)", nil
+	return allocation, retryRequestedName, nil
 }
 
 func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot, sourceWorkspacePath, routerName, finalRequestedName string, allocation worktreeruntime.Allocation) {
