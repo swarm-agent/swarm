@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Star, Zap, ZapOff } from 'lucide-react'
+import { ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { displayAgentName } from '../services/agent-display'
 import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../settings/swarm/queries/get-agent-model-settings'
 import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
 import type { AgentModelAssignment, AgentModelSettings, SystemAgentModelName } from '../../settings/swarm/types/agent-model-settings'
-import { createModelProfile, invalidateModelProfiles } from '../queries/model-profile-queries'
+import { createModelProfile, deleteModelProfile, invalidateModelProfiles } from '../queries/model-profile-queries'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'provider'
@@ -320,6 +320,8 @@ export function AgentModelControl({
   const [screen, setScreen] = useState<'favorites' | 'setup'>('favorites')
   const [saving, setSaving] = useState(false)
   const [switchingFavoriteId, setSwitchingFavoriteId] = useState('')
+  const [deletingFavoriteId, setDeletingFavoriteId] = useState('')
+  const [deleteCandidateId, setDeleteCandidateId] = useState('')
   const [favoriteName, setFavoriteName] = useState('')
   const [favoriteEditorOpen, setFavoriteEditorOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -449,6 +451,7 @@ export function AgentModelControl({
       setScreen('favorites')
       setFavoriteEditorOpen(false)
       setFavoriteName('')
+      setDeleteCandidateId('')
       return
     }
     if (initializedOpenRef.current) return
@@ -543,6 +546,23 @@ export function AgentModelControl({
     } finally {
       setSaving(false)
       setSwitchingFavoriteId('')
+    }
+  }
+
+  async function deleteFavorite(profile: ModelProfileRecord) {
+    if (saving || busy) return
+    setSaving(true)
+    setDeletingFavoriteId(profile.profileId)
+    setError(null)
+    try {
+      await deleteModelProfile(profile.profileId)
+      await invalidateModelProfiles(queryClient)
+      setDeleteCandidateId('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+      setDeletingFavoriteId('')
     }
   }
 
@@ -647,15 +667,28 @@ export function AgentModelControl({
                 <div className="grid gap-2" aria-label="Model favorites">
                   {modelProfiles.map((profile) => {
                     const active = favoriteMatchesCurrentChat(profile)
+                    const confirmingDelete = deleteCandidateId === profile.profileId
                     return (
-                      <button key={profile.profileId} type="button" disabled={saving || busy} onClick={() => { void applyFavorite(profile) }} className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'} disabled:cursor-default disabled:opacity-70`}>
-                        <Star size={17} fill={active ? 'currentColor' : 'none'} className={active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'} />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
-                          <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider} / {displayModelName(profile.provider, profile.model, profile.contextMode)} · {profile.thinking}</span>
-                        </span>
-                        <span className="shrink-0 text-[11px] font-semibold text-[var(--app-text-subtle)]">{switchingFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use'}</span>
-                      </button>
+                      <div key={profile.profileId} className={`flex items-center gap-1 rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                        <button type="button" disabled={saving || busy} onClick={() => { void applyFavorite(profile) }} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2 text-left disabled:cursor-default disabled:opacity-70">
+                          <Star size={17} fill={active ? 'currentColor' : 'none'} className={active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
+                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider} / {displayModelName(profile.provider, profile.model, profile.contextMode)} · {profile.thinking}</span>
+                          </span>
+                          <span className="shrink-0 text-[11px] font-semibold text-[var(--app-text-subtle)]">{switchingFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use'}</span>
+                        </button>
+                        {confirmingDelete ? (
+                          <div className="flex shrink-0 items-center gap-1" role="group" aria-label={`Confirm deletion of ${profile.name}`}>
+                            <button type="button" disabled={saving || busy} onClick={() => setDeleteCandidateId('')} className="rounded-lg px-2 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">Keep</button>
+                            <button type="button" disabled={saving || busy} onClick={() => { void deleteFavorite(profile) }} className="rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2 py-2 text-[11px] font-semibold text-[var(--app-danger)] hover:brightness-110 disabled:opacity-60">{deletingFavoriteId === profile.profileId ? 'Deleting…' : 'Delete'}</button>
+                          </div>
+                        ) : (
+                          <button type="button" disabled={saving || busy} aria-label={`Delete favorite ${profile.name}`} title={`Delete favorite ${profile.name}`} onClick={() => { setError(null); setDeleteCandidateId(profile.profileId) }} className="shrink-0 rounded-lg p-2 text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-60">
+                            <Trash2 size={15} />
+                          </button>
+                        )}
+                      </div>
                     )
                   })}
                 </div>
