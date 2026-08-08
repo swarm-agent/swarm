@@ -3252,7 +3252,11 @@ const (
 )
 
 func (e *sessionV3Executor) sessionV3ProviderCheckpointStartupInput(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime) ([]map[string]any, sessionV3ProviderContextSelection, error) {
-	if strings.TrimSpace(job.CheckpointID) == "" && strings.TrimSpace(job.PlanID) == "" {
+	if job.ResumeContext || (strings.TrimSpace(job.CheckpointID) == "" && strings.TrimSpace(job.PlanID) == "") {
+		// A user message that reactivates or rebinds a checkpoint is a natural
+		// continuation of the existing execution epoch. Reconstruct its durable
+		// conversation (including the redirecting message) instead of replacing
+		// the entire request with the checkpoint-start payload.
 		return nil, sessionV3ProviderContextConversation, nil
 	}
 	input, ok, err := e.sessionV3ProviderCheckpointRestartInput(context.Background(), job, resolved, "")
@@ -3412,9 +3416,6 @@ func (e *sessionV3Executor) sessionV3ProviderFinalHandoffContextMessages(session
 }
 
 func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID string, epoch pebblestore.ExecutionEpoch, messages []pebblestore.MessageSnapshot) ([]pebblestore.MessageSnapshot, error) {
-	if len(sessionsV3ProviderInput(messages)) != 0 {
-		return messages, nil
-	}
 	parentEpochID := strings.TrimSpace(epoch.ParentEpochID)
 	if parentEpochID == "" {
 		return messages, nil
@@ -3423,7 +3424,13 @@ func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID str
 	if err != nil {
 		return nil, fmt.Errorf("v3 resume checkpoint parent context resolve failed: %w", err)
 	}
-	return parentMessages, nil
+	// The resumed epoch may already contain the redirecting user message. That
+	// message is additive continuation input, not evidence that the predecessor
+	// conversation can be discarded.
+	combined := make([]pebblestore.MessageSnapshot, 0, len(parentMessages)+len(messages))
+	combined = append(combined, parentMessages...)
+	combined = append(combined, messages...)
+	return combined, nil
 }
 
 func (e *sessionV3Executor) sessionV3ProviderPlanFreshContextBoundary(job sessionV3ExecutorJob, messages []pebblestore.MessageSnapshot) (*pebblestore.MessageSnapshot, int, error) {

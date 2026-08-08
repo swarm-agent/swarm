@@ -280,11 +280,14 @@ func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing
 	if err != nil || !ok {
 		t.Fatalf("get parent epoch: ok=%t err=%v", ok, err)
 	}
+	redirect := pebblestore.MessageSnapshot{Role: "user", Content: "redirect the paused checkpoint now"}
+	markSessionsV3CheckpointResumeRouting(&redirect, "resume-run", "cp-1", "resume_paused_user_message")
 	result, err := sessionSvc.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
 		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
 		ClientRequestID: "resume-parent-context", PayloadHash: "resume-parent-context-hash",
 		Reason: "resume_checkpoint", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-2",
 		RunID: "resume-run", RunSessionID: created.ID, ParentSessionID: created.ID, ResumeContext: true,
+		TriggerMessage: &redirect,
 	})
 	if err != nil {
 		t.Fatalf("begin resume epoch: %v", err)
@@ -298,8 +301,10 @@ func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing
 	if len(input) == 0 {
 		t.Fatal("resume provider input is empty")
 	}
-	if !sessionsV3ProviderInputContainsContentText(input, "resume parent context") {
-		t.Fatalf("resume provider input = %+v, want parent session context", input)
+	for _, want := range []string{"resume parent context", "Active checkpoint resumed by this user message", "redirect the paused checkpoint now"} {
+		if !sessionsV3ProviderInputContainsContentText(input, want) {
+			t.Fatalf("resume provider input = %+v, want %q", input, want)
+		}
 	}
 	if result.Epoch.ParentEpochID != parent.EpochID {
 		t.Fatalf("resume parent epoch = %q, want %q", result.Epoch.ParentEpochID, parent.EpochID)
@@ -347,6 +352,20 @@ func TestSessionV3ProviderCheckpointStartupInputUsesCanonicalBuilder(t *testing.
 	ctx := runner.checkpointRequests[0].PlanCheckpointContext
 	if ctx == nil || ctx.PlanID != "plan-1" || ctx.CheckpointID != "cp-1" || ctx.AttemptID != "cp-1:attempt-1" || ctx.SourceMessageID != "exit-plan-message" {
 		t.Fatalf("canonical checkpoint context = %+v", ctx)
+	}
+}
+
+func TestSessionV3ProviderResumedCheckpointUsesReconstructedConversation(t *testing.T) {
+	runner := &sessionsV3ProviderToolsRunner{checkpointInputReturn: []map[string]any{{"role": "user", "content": "ISOLATED_CHECKPOINT_INPUT"}}, checkpointInputReturnOK: true, checkpointInputReturnOKSet: true}
+	exec := &sessionV3Executor{server: &Server{runner: runner}}
+	input, selection, err := exec.sessionV3ProviderCheckpointStartupInput(sessionV3ExecutorJob{
+		SessionID: "session-1", RunID: "run-2", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-2", ResumeContext: true,
+	}, sessionV3ResolvedRuntime{})
+	if err != nil {
+		t.Fatalf("resumed checkpoint context selection: %v", err)
+	}
+	if selection != sessionV3ProviderContextConversation || len(input) != 0 || len(runner.checkpointRequests) != 0 {
+		t.Fatalf("resumed checkpoint selection=%q input=%+v requests=%+v, want reconstructed conversation", selection, input, runner.checkpointRequests)
 	}
 }
 
