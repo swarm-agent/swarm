@@ -11,6 +11,7 @@ import { reviewDesktopV3Worktrees, unarchiveDesktopV3ReviewSessions, type Review
 import { getUISettings } from '../settings/swarm/queries/get-ui-settings'
 import { saveReviewAutoArchiveMinutes } from '../settings/swarm/mutations/save-review-auto-archive-minutes'
 import { normalizeReviewAutoArchiveMinutes, REVIEW_AUTO_ARCHIVE_MINUTES, type UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { IntegrationConfirmation } from './integration-confirmation'
 
 export function reviewWorktreeReasonLabel(item: ReviewWorktreeCandidate): string {
   switch (item.reason) {
@@ -442,22 +443,32 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   const renderIntegrationAction = (item: ReviewWorktreeCandidate): ReactNode => {
     if (!item.integrate_eligible) return null
     const expanded = integrateCandidate?.session_id === item.session_id
-    if (!expanded) return <button type="button" className="ml-2 mt-2 inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)] max-sm:ml-0 max-sm:w-full max-sm:justify-center" aria-expanded="false" aria-haspopup="menu" onClick={() => openIntegrateReview(item)}><GitMerge size={12} />Integrate into {item.target_branch || 'target'}</button>
+    if (!expanded) return <button type="button" className="ml-2 mt-2 inline-flex min-h-11 touch-manipulation items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1 text-[var(--app-text)] max-sm:ml-0 max-sm:w-full max-sm:justify-center" aria-expanded="false" aria-haspopup="dialog" onClick={() => openIntegrateReview(item)}><GitMerge size={12} />Integrate into {item.target_branch || 'target'}</button>
     const failureDisplay = integrationFailure ? reviewWorktreeIntegrationFailureDisplay(integrationFailure.error, showIntegrationError, integrationFailure.operation) : null
     const popout = (
-      <div ref={integrationPopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 shadow-xl" style={integrationPopoutStyle} role="menu" aria-label="Integration options popout" data-integration-popout>
+      <div ref={integrationPopoutRef} className="fixed z-[90] grid min-w-0 gap-1 overflow-y-auto overscroll-contain rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-1 shadow-xl" style={integrationPopoutStyle} role="dialog" aria-label="Confirm worktree integration" data-integration-popout>
         <div className="flex min-h-8 items-center justify-end px-1">
           <button type="button" className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-text-muted)] hover:bg-[var(--app-surface-subtle)]" aria-label="Close integration options" onClick={closeIntegrationReview}><X size={15} /></button>
         </div>
         {integrationArchiveError ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-[var(--app-danger)]" role="alert"><p className="break-words">{integrationArchiveError}</p><p className="mt-1 text-[var(--app-text-subtle)]">The worktree is integrated. Retry only the remaining archive step.</p></div> : null}
         {integrationFailure && failureDisplay ? <div className="m-1 min-w-0 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2" role="alert"><p className="font-medium text-[var(--app-danger)]">Integration failed</p><p className="mt-1 text-[var(--app-text-subtle)]">{failureDisplay.summary}</p>{failureDisplay.fullError ? <pre className="mt-2 max-h-52 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] p-2 text-[var(--app-text)]">{failureDisplay.fullError}</pre> : null}<div className="mt-2 flex flex-wrap gap-1"><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)] px-2 py-1.5 text-[var(--app-text)]" onClick={() => setShowIntegrationError((current) => !current)}>{showIntegrationError ? <EyeOff size={13} /> : <Eye size={13} />}{showIntegrationError ? 'Hide Error' : 'Show Error'}</button>{onAskSwarmFix ? <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-transparent px-2 py-1.5 font-semibold text-[var(--app-primary)]" title={repairFixAvailable ? undefined : 'Swarm will explain if a repair chat cannot be started.'} onClick={askSwarmToFixIntegration}><Bot size={13} />Ask Swarm for Help</button> : null}</div></div> : null}
-        {!integrationSucceeded && !integrationFailure ? <button type="button" role="menuitem" className="inline-flex min-h-11 w-full items-center justify-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] disabled:opacity-50" disabled={integrating} onClick={() => void integrateWorktree(true)}><Archive size={13} />Integrate and Archive</button> : null}
+        <IntegrationConfirmation
+          targetBranch={item.target_branch}
+          worktreeBranch={item.worktree_branch}
+          archiveAfter={integrationArchiveAfter}
+          busy={integrating}
+          integrationComplete={integrationSucceeded}
+          retrying={Boolean(integrationFailure)}
+          onArchiveAfterChange={setIntegrationArchiveAfter}
+          onConfirm={() => void integrateWorktree()}
+          onCancel={closeIntegrationReview}
+        />
       </div>
     )
     return (
       <div ref={integrationAnchorRef} className="relative ml-2 mt-2 inline-flex max-w-full max-sm:ml-0 max-sm:w-full" data-integration-popout-anchor>
         {typeof document === 'undefined' ? null : createPortal(popout, document.body)}
-        <button type="button" className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-[var(--app-surface)] px-2 py-1 font-semibold text-[var(--app-primary)] disabled:opacity-50" aria-expanded="true" aria-haspopup="menu" disabled={integrating} onClick={() => void integrateWorktree(integrationSucceeded || integrationArchiveAfter)}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : integrationSucceeded ? <Archive size={13} /> : <GitMerge size={13} />}{integrationSucceeded ? 'Try archive again' : integrationFailure ? 'Try integration again' : 'Confirm integration?'}</button>
+        <button type="button" className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-md border border-[var(--app-primary)] bg-[var(--app-surface)] px-2 py-1 font-semibold text-[var(--app-primary)] disabled:opacity-50" aria-expanded="true" aria-haspopup="dialog" disabled={integrating} onClick={positionIntegrationPopout}>{integrating ? <LoaderCircle size={13} className="animate-spin" /> : integrationSucceeded ? <Archive size={13} /> : <GitMerge size={13} />}{integrationSucceeded ? 'Archive session' : integrationFailure ? 'Review integration error' : `Confirm integration into ${item.target_branch || 'target'}`}</button>
       </div>
     )
   }
