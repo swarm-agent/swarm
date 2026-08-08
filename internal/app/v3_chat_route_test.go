@@ -356,9 +356,12 @@ func TestV3ChatHomeProfileUsesCanonicalCreateAndFooterHandoff(t *testing.T) {
 	if intent.Profile != profile {
 		t.Fatalf("home-to-chat profile handoff = %#v, want %#v", intent.Profile, profile)
 	}
-	choice := v3ChatCreateModelProfile(intent.Profile)
+	if choice := v3ChatCreateModelProfile(intent.Profile, "swarm"); choice != nil {
+		t.Fatalf("Swarm create sent favorite as session override: %#v", choice)
+	}
+	choice := v3ChatCreateModelProfile(intent.Profile, "finder")
 	if choice == nil || choice.SavedProfileID != "profile-1" {
-		t.Fatalf("create model profile choice = %#v", choice)
+		t.Fatalf("non-Swarm create model profile choice = %#v", choice)
 	}
 	if got := v3ChatHomeProfileLabel(profile); got != "Focused work" {
 		t.Fatalf("chat footer profile label = %q, want Focused work", got)
@@ -385,8 +388,8 @@ func TestV3ChatDraftSelectionsReuseHomepagePlanAutoProjection(t *testing.T) {
 	if auto.Preference.Provider != "openrouter" || auto.Preference.Model != "auto-model" || auto.Preference.Thinking != "medium" || auto.Preference.ServiceTier != "flex" || auto.Preference.ContextMode != "auto-context" || auto.ContextWindow != 180000 {
 		t.Fatalf("auto draft selection = %#v", auto)
 	}
-	if plan.AgentModelPolicy.ProfileName != "Focused work" || auto.AgentModelPolicy.ProfileName != "Focused work" || plan.ModelProfile == nil || plan.ModelProfile.SavedProfileID != "profile-1" || auto.ModelProfile == nil || auto.ModelProfile.SavedProfileID != "profile-1" {
-		t.Fatalf("draft profile choices = plan %#v auto %#v", plan, auto)
+	if plan.AgentModelPolicy.ProfileName != "Focused work" || auto.AgentModelPolicy.ProfileName != "Focused work" || plan.ModelProfile != nil || auto.ModelProfile != nil {
+		t.Fatalf("Swarm draft profile choices = plan %#v auto %#v", plan, auto)
 	}
 	if home.SessionMode() != "auto" {
 		t.Fatalf("draft selection projection mutated homepage mode to %q", home.SessionMode())
