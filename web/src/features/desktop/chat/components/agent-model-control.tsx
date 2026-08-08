@@ -462,8 +462,8 @@ export function AgentModelControl({
   }
 
   const modal = open ? createPortal(
-    <div className="fixed inset-0 z-[9999] flex items-stretch justify-center bg-black/50 sm:items-center sm:p-3" role="dialog" aria-modal="true" aria-label="Agent and model settings">
-      <div className="flex h-[100dvh] max-h-[100dvh] w-full max-w-6xl flex-col overflow-hidden bg-[var(--app-surface)] shadow-xl sm:h-auto sm:max-h-[min(94dvh,880px)] sm:rounded-xl sm:border sm:border-[var(--app-border)]">
+    <div className="fixed inset-0 z-[9999] flex items-stretch justify-center overflow-hidden bg-black/50 pt-[var(--app-safe-area-top)] pr-[var(--app-safe-area-right)] pb-[var(--app-safe-area-bottom)] pl-[var(--app-safe-area-left)] sm:items-center sm:pt-[calc(var(--app-safe-area-top)+0.75rem)] sm:pr-[calc(var(--app-safe-area-right)+0.75rem)] sm:pb-[calc(var(--app-safe-area-bottom)+0.75rem)] sm:pl-[calc(var(--app-safe-area-left)+0.75rem)]" role="dialog" aria-modal="true" aria-label="Agent and model settings">
+      <div className="flex h-full max-h-full w-full max-w-6xl flex-col overflow-hidden bg-[var(--app-surface)] shadow-xl sm:h-auto sm:max-h-[min(94dvh,880px)] sm:rounded-xl sm:border sm:border-[var(--app-border)]">
         <div className="flex flex-col gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:px-5 sm:py-4">
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Agent setup</div>
@@ -574,7 +574,7 @@ export function AgentModelControl({
           </section>
         </div>
 
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-5 sm:py-4">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 sm:px-5 sm:py-4">
           <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
           <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm() }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
             {saving || busy ? 'Saving…' : `Save ${draftAgentName === SWARM_AGENT_NAME ? 'Swarm models' : `${draftProfile ? displayAgentName(draftProfile.name) : 'agent'} model`}`}
