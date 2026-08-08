@@ -57,6 +57,7 @@ import type {
   ToolMessageState,
   AgentStateRecord,
   SessionPreferenceRecord,
+  ModelProfileRecord,
   ChatMessageRecord,
   DesktopPlanFinalHandoff,
   DesktopSessionPlanCheckpointRecommendation,
@@ -2148,6 +2149,30 @@ export function DesktopV3ExistingConversationPane({
     }
   }
 
+  async function handleApplyModelFavorite(profile: ModelProfileRecord) {
+    if (!normalizedSessionId) return;
+    const nextPreference = preferenceFromModelProfile(profile, mode, Date.now());
+    if (!nextPreference) throw new Error("Model favorite does not resolve for the current chat mode");
+    const response = await updateSessionV3ModelProfile(normalizedSessionId, {
+      kind: 'temporary',
+      profile: {
+        name: profile.name,
+        provider: profile.provider,
+        model: profile.model,
+        thinking: profile.thinking,
+        serviceTier: profile.serviceTier,
+        contextMode: profile.contextMode,
+      },
+    });
+    dispatchDesktopV3Cache({
+      type: "mutation.sessionSettingsResult",
+      raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId),
+    });
+    setPreference(nextPreference);
+    unlockedPreferenceRef.current = nextPreference;
+    localSettingsDirtyRef.current.preference = false;
+  }
+
   async function handleConfirmAgentSettings(
     input: AgentModelControlConfirmInput,
   ) {
@@ -2894,6 +2919,7 @@ export function DesktopV3ExistingConversationPane({
             needsAuth={needsAuth}
             onOpenAuthSettings={handleOpenAuthSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
+            onApplyModelFavorite={handleApplyModelFavorite}
             agentModelControlBusy={agentModelSaving}
             thinking={displayedPreference.thinking}
             thinkingTagsEnabled={thinkingTagsEnabled}

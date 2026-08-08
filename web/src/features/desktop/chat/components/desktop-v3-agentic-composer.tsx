@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
@@ -164,6 +164,7 @@ export interface DesktopV3AgenticComposerProps {
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
   onUseAgentModelDefault?: () => void | Promise<void>
+  onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
   modelOptions?: ModelOptionRecord[]
   selectedModelKey?: string
   selectedServiceTier?: string
@@ -262,6 +263,7 @@ export function DesktopV3AgenticComposer({
   modelProfiles = [],
   activeModelProfile,
   onUseAgentModelDefault: _onUseAgentModelDefault,
+  onApplyModelFavorite,
   modelOptions = [],
   selectedModelKey = '',
   selectedServiceTier = '',
@@ -322,6 +324,7 @@ export function DesktopV3AgenticComposer({
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
+  const modelFavoritesAnchorId = useId()
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
   const [textAttachments, setTextAttachments] = useState<DesktopComposerTextAttachment[]>([])
@@ -1053,6 +1056,7 @@ export function DesktopV3AgenticComposer({
   ) : null
 
   const renderComposerControl = (openPicker: () => void, open: boolean) => <ComposerPlanModelControl
+    popoverAnchorId={modelFavoritesAnchorId}
     provider={selectedModel?.provider}
     model={selectedModel?.model}
     thinking={selectedThinking}
@@ -1357,6 +1361,8 @@ export function DesktopV3AgenticComposer({
         initialAgentName={agentSettingsInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
+        onApplyModelFavorite={onApplyModelFavorite}
+        popoverAnchorId={modelFavoritesAnchorId}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}
         busy={agentModelControlBusy}
