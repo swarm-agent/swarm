@@ -1676,9 +1676,19 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	input, err := e.sessionsV3ProviderInput(resolved, messages)
+	// Canonical checkpoint startup is an authoritative context-selection
+	// boundary, not an ordinary conversational handoff. Build it before generic
+	// transcript/lineage selection so neither a same-model continuation nor a
+	// changed-model fresh chain can replay exit_plan_mode or historical tools.
+	input, contextSelection, err := e.sessionV3ProviderCheckpointStartupInput(job, resolved)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
+	}
+	if contextSelection != sessionV3ProviderContextCheckpointStartup {
+		input, err = e.sessionsV3ProviderInput(resolved, messages)
+		if err != nil {
+			return sessionV3AssistantResponse{}, err
+		}
 	}
 	if len(input) == 0 {
 		return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
@@ -1701,33 +1711,12 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		baseReq.ResetTransport = true
 		baseReq.NativeContinuationAllowed = false
 		baseReq.ForceFreshProviderContext = true
-	} else if sessionV3ProviderRequiresBoundedHandoff(baseReq) {
-		handoffInput, handoffErr := e.sessionV3ProviderHandoffInput(job, resolved, messages, baseReq)
-		if handoffErr != nil {
-			return sessionV3AssistantResponse{}, handoffErr
-		}
-		if len(handoffInput) == 0 {
-			return sessionV3AssistantResponse{}, errors.New("v3 provider handoff input is empty")
-		}
-		baseReq.Input = handoffInput
 	} else {
-		input, err = e.sessionsV3ProviderInputForLineage(resolved, messages, baseReq.ProviderLineageID, baseReq.NativeContinuationAllowed && !baseReq.ForceFreshProviderContext)
+		input, err = e.sessionV3ProviderInitialContextInput(job, resolved, messages, baseReq, input, contextSelection)
 		if err != nil {
 			return sessionV3AssistantResponse{}, err
 		}
-		if len(input) == 0 {
-			return sessionV3AssistantResponse{}, errors.New("v3 provider input is empty")
-		}
-		baseReq.Input = append([]map[string]any(nil), input...)
-	}
-	if strings.TrimSpace(job.CheckpointID) != "" || strings.TrimSpace(job.PlanID) != "" {
-		checkpointRouting, ok, checkpointErr := e.sessionV3ProviderCheckpointRestartInput(ctx, job, resolved, "")
-		if checkpointErr != nil {
-			return sessionV3AssistantResponse{}, checkpointErr
-		}
-		if ok {
-			baseReq.Input = append(baseReq.Input, checkpointRouting...)
-		}
+		baseReq.Input = input
 	}
 	requestEventType := "session.provider.request_started"
 	if suffix := strings.TrimSpace(requestPhaseSuffix); suffix != "" {
@@ -1913,6 +1902,11 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		return provideriface.Request{}, fmt.Errorf("provider %q declared an invalid execution epoch lifecycle capability", providerID)
 	}
 	contextBranchID := provideriface.ShortProviderLineageKey("epoch", strings.TrimSpace(job.SessionID), epochID)
+	// The configuration hash records the complete request configuration for
+	// diagnostics and adapter validation. It is deliberately not provider-chain
+	// identity: instructions, tools, session mode, durable run state, and request
+	// preferences can all refresh while a compatible provider/model chain stays
+	// alive.
 	configurationHash := provideriface.ShortProviderLineageKey(
 		providerID,
 		model,
@@ -1934,8 +1928,15 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		return provideriface.Request{}, err
 	}
 	previousLineageID := strings.TrimSpace(previousState.ProviderLineageID)
-	lineageID := provideriface.ShortProviderLineageKey(job.SessionID, epochID, configurationHash)
-	nativeContinuationAllowed := previousOK && previousState.ConfigurationHash == configurationHash && previousLineageID == lineageID
+	identityCompatible := previousOK && sessionV3ProviderIdentityCompatible(previousState.Provider, previousState.Model, providerID, model)
+	lineageID := sessionV3ProviderLineageID(job.SessionID, epochID, providerID, model)
+	if identityCompatible && previousLineageID != "" {
+		// Preserve the durable lineage allocated before provider/model identity was
+		// separated from the full configuration fingerprint. This also keeps
+		// in-flight same-model epochs compatible across an upgrade.
+		lineageID = previousLineageID
+	}
+	nativeContinuationAllowed := identityCompatible && previousLineageID == lineageID
 	providerCacheKey := sessionV3ProviderScopedKey("cache", epochID+"-"+lineageID)
 	sessionAffinityKey := sessionV3ProviderScopedKey("affinity", epochID+"-"+lineageID)
 	boundaryReason := "session_turn"
@@ -2387,6 +2388,22 @@ type sessionV3ProviderLineageSnapshot struct {
 	StartGlobalSeq          uint64
 	HandoffSummaryMessageID string
 	HandoffSummaryGlobalSeq uint64
+}
+
+func sessionV3ProviderLineageID(sessionID, epochID, providerID, model string) string {
+	return provideriface.ShortProviderLineageKey(
+		strings.TrimSpace(sessionID),
+		strings.TrimSpace(epochID),
+		strings.ToLower(strings.TrimSpace(providerID)),
+		strings.TrimSpace(model),
+	)
+}
+
+func sessionV3ProviderIdentityCompatible(previousProvider, previousModel, providerID, model string) bool {
+	return strings.TrimSpace(previousProvider) != "" &&
+		strings.TrimSpace(previousModel) != "" &&
+		strings.EqualFold(strings.TrimSpace(previousProvider), strings.TrimSpace(providerID)) &&
+		strings.TrimSpace(previousModel) == strings.TrimSpace(model)
 }
 
 func sessionV3ProviderBoundaryReason(job sessionV3ExecutorJob, previousLineageID, lineageID string, checkpointScope sessionV3ProviderCheckpointScope) string {
@@ -3225,6 +3242,55 @@ func sessionsV3MapString(payload map[string]any, key string) string {
 		return typed
 	}
 	return fmt.Sprint(value)
+}
+
+type sessionV3ProviderContextSelection string
+
+const (
+	sessionV3ProviderContextConversation      sessionV3ProviderContextSelection = "conversation"
+	sessionV3ProviderContextCheckpointStartup sessionV3ProviderContextSelection = "checkpoint_startup"
+)
+
+func (e *sessionV3Executor) sessionV3ProviderCheckpointStartupInput(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime) ([]map[string]any, sessionV3ProviderContextSelection, error) {
+	if strings.TrimSpace(job.CheckpointID) == "" && strings.TrimSpace(job.PlanID) == "" {
+		return nil, sessionV3ProviderContextConversation, nil
+	}
+	input, ok, err := e.sessionV3ProviderCheckpointRestartInput(context.Background(), job, resolved, "")
+	if err != nil {
+		return nil, sessionV3ProviderContextCheckpointStartup, err
+	}
+	if !ok {
+		return nil, sessionV3ProviderContextCheckpointStartup, errors.New("checkpoint startup did not resolve canonical checkpoint input")
+	}
+	return input, sessionV3ProviderContextCheckpointStartup, nil
+}
+
+func (e *sessionV3Executor) sessionV3ProviderInitialContextInput(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, messages []pebblestore.MessageSnapshot, req provideriface.Request, canonicalInput []map[string]any, selection sessionV3ProviderContextSelection) ([]map[string]any, error) {
+	if selection == sessionV3ProviderContextCheckpointStartup {
+		// BuildPlanCheckpointRunInput is the complete checkpoint-start authority.
+		// A compatible chain receives it as additive input; an incompatible
+		// provider/model starts a fresh chain with this same input. Neither case
+		// uses the compact mid-conversation handoff packet.
+		return append([]map[string]any(nil), canonicalInput...), nil
+	}
+	if sessionV3ProviderRequiresBoundedHandoff(req) {
+		handoffInput, err := e.sessionV3ProviderHandoffInput(job, resolved, messages, req)
+		if err != nil {
+			return nil, err
+		}
+		if len(handoffInput) == 0 {
+			return nil, errors.New("v3 provider handoff input is empty")
+		}
+		return handoffInput, nil
+	}
+	input, err := e.sessionsV3ProviderInputForLineage(resolved, messages, req.ProviderLineageID, req.NativeContinuationAllowed && !req.ForceFreshProviderContext)
+	if err != nil {
+		return nil, err
+	}
+	if len(input) == 0 {
+		return nil, errors.New("v3 provider input is empty")
+	}
+	return append([]map[string]any(nil), input...), nil
 }
 
 func (e *sessionV3Executor) sessionV3ProviderRestartInput(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, toolOutput string) ([]map[string]any, error) {

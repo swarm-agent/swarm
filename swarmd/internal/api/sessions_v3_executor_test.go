@@ -13,6 +13,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -330,6 +331,76 @@ func TestSessionV3ProviderCheckpointScopeFromCurrentContextPayloadOverridesStale
 	}
 	if !scope.FreshContext {
 		t.Fatalf("FreshContext = false, want true")
+	}
+}
+
+func TestSessionV3ProviderCheckpointStartupInputUsesCanonicalBuilder(t *testing.T) {
+	runner := &sessionsV3ProviderToolsRunner{checkpointInputReturn: []map[string]any{{"role": "user", "content": "CANONICAL_BUILDER_INPUT"}}, checkpointInputReturnOK: true, checkpointInputReturnOKSet: true}
+	exec := &sessionV3Executor{server: &Server{runner: runner}}
+	input, selection, err := exec.sessionV3ProviderCheckpointStartupInput(sessionV3ExecutorJob{SessionID: "session-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", SourceMessageID: "exit-plan-message"}, sessionV3ResolvedRuntime{})
+	if err != nil {
+		t.Fatalf("checkpoint startup input: %v", err)
+	}
+	if selection != sessionV3ProviderContextCheckpointStartup || !sessionsV3ProviderInputContainsContentText(input, "CANONICAL_BUILDER_INPUT") || len(runner.checkpointRequests) != 1 {
+		t.Fatalf("checkpoint startup selection=%q input=%+v requests=%+v", selection, input, runner.checkpointRequests)
+	}
+	ctx := runner.checkpointRequests[0].PlanCheckpointContext
+	if ctx == nil || ctx.PlanID != "plan-1" || ctx.CheckpointID != "cp-1" || ctx.AttemptID != "cp-1:attempt-1" || ctx.SourceMessageID != "exit-plan-message" {
+		t.Fatalf("canonical checkpoint context = %+v", ctx)
+	}
+}
+
+func TestSessionV3ProviderInitialContextInputCheckpointStartupNeverUsesHandoff(t *testing.T) {
+	const canonical = "CANONICAL_CHECKPOINT_INPUT"
+	const historical = "EXIT_PLAN_MODE_HISTORY"
+	exec := &sessionV3Executor{}
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "assistant", Content: historical},
+		{Role: "tool", Content: `{"tool_name":"exit_plan_mode","arguments":"HISTORICAL_PLAN_ARGUMENTS","completed_output":"HISTORICAL_PLAN_RESULT"}`},
+	}
+	resolved := sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}
+	canonicalInput := []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": canonical}}}}
+
+	for _, tc := range []struct {
+		name string
+		req  provideriface.Request
+	}{
+		{name: "same provider model", req: provideriface.Request{PreviousProviderLineageID: "same", ProviderLineageID: "same", BoundaryReason: "session_turn", NativeContinuationAllowed: true}},
+		{name: "changed provider model", req: provideriface.Request{PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff", ForceFreshProviderContext: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, err := exec.sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, resolved, messages, tc.req, canonicalInput, sessionV3ProviderContextCheckpointStartup)
+			if err != nil {
+				t.Fatalf("checkpoint context selection: %v", err)
+			}
+			if !sessionsV3ProviderInputContainsContentText(input, canonical) {
+				t.Fatalf("checkpoint input missing canonical payload: %+v", input)
+			}
+			for _, forbidden := range []string{"[provider-handoff]", historical, "exit_plan_mode", "HISTORICAL_PLAN_ARGUMENTS", "HISTORICAL_PLAN_RESULT"} {
+				if sessionsV3ProviderInputContainsContentText(input, forbidden) {
+					t.Fatalf("checkpoint input replayed %q: %+v", forbidden, input)
+				}
+			}
+			if tc.name == "changed provider model" && (!tc.req.ForceFreshProviderContext || tc.req.NativeContinuationAllowed) {
+				t.Fatal("changed-model checkpoint test did not preserve fresh-chain policy")
+			}
+		})
+	}
+}
+
+func TestSessionV3ProviderInitialContextInputOrdinarySwitchUsesHandoff(t *testing.T) {
+	exec := &sessionV3Executor{}
+	resolved := sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}
+	messages := []pebblestore.MessageSnapshot{{Role: "user", Content: "ordinary switched request"}}
+	input, err := exec.sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, resolved, messages, provideriface.Request{
+		PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff",
+		PreviousProviderID: "anthropic", PreviousModel: "claude", NewProviderID: "codex", NewModel: "gpt-5", ForceFreshProviderContext: true,
+	}, nil, sessionV3ProviderContextConversation)
+	if err != nil {
+		t.Fatalf("ordinary provider/model switch: %v", err)
+	}
+	if !sessionsV3ProviderInputContainsContentText(input, "[provider-handoff]") || !sessionsV3ProviderInputContainsContentText(input, "ordinary switched request") {
+		t.Fatalf("ordinary switch did not use compact handoff input: %+v", input)
 	}
 }
 

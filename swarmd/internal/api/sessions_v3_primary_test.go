@@ -6323,14 +6323,13 @@ func TestSessionsV3ProviderPostCheckpointFollowupUsesNativeContinuation(t *testi
 	if err != nil || !ok {
 		t.Fatalf("get active execution epoch: ok=%t err=%v", ok, err)
 	}
-	configurationHash := provideriface.ShortProviderLineageKey("codex", "gpt-5.3-codex", resolved.Instructions, sessionV3ProviderToolsLineageHash(resolved.Tools), strings.TrimSpace(created.Mode), strings.TrimSpace(resolved.AgentProfile.Name), strings.TrimSpace(resolved.AgentProfile.Mode), strings.TrimSpace(resolved.AgentProfile.RuntimeMode), strings.TrimSpace(resolved.AgentProfile.ExecutionSetting), strings.TrimSpace(resolved.Preference.Thinking), strings.TrimSpace(resolved.Preference.ServiceTier), strings.TrimSpace(resolved.Preference.ContextMode))
-	previousLineageID := provideriface.ShortProviderLineageKey(created.ID, epoch.EpochID, configurationHash)
+	previousLineageID := sessionV3ProviderLineageID(created.ID, epoch.EpochID, "codex", "gpt-5.3-codex")
 	if err := sessionSvc.PutExecutionProviderLifecycleState(pebblestore.ExecutionProviderLifecycleState{
 		SessionID:                     created.ID,
 		EpochID:                       epoch.EpochID,
 		Provider:                      "codex",
 		Model:                         "gpt-5.3-codex",
-		ConfigurationHash:             configurationHash,
+		ConfigurationHash:             "prior-request-configuration",
 		ProviderLineageID:             previousLineageID,
 		ContextBranchID:               provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID),
 		ProviderCacheKey:              sessionV3ProviderScopedKey("cache", epoch.EpochID+"-"+previousLineageID),
@@ -6351,6 +6350,90 @@ func TestSessionsV3ProviderPostCheckpointFollowupUsesNativeContinuation(t *testi
 	}
 	if req.ProviderLineageID != previousLineageID || req.ContextBranchID != provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID) {
 		t.Fatalf("post-checkpoint follow-up lineage = %q branch %q, want continued epoch lineage %q", req.ProviderLineageID, req.ContextBranchID, previousLineageID)
+	}
+}
+
+func TestSessionsV3ProviderSameIdentityIgnoresRefreshedRequestConfiguration(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(&sessionsV3RecordingProviderRunner{id: "codex"})
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-refresh-create", "provider refresh", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "medium"})
+	epoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get active execution epoch: ok=%t err=%v", ok, err)
+	}
+	lineageID := sessionV3ProviderLineageID(created.ID, epoch.EpochID, "codex", "gpt-5.3-codex")
+	if err := sessionSvc.PutExecutionProviderLifecycleState(pebblestore.ExecutionProviderLifecycleState{
+		SessionID: created.ID, EpochID: epoch.EpochID, Provider: "CODEX", Model: "gpt-5.3-codex",
+		ConfigurationHash: "old-dynamic-request-configuration", ProviderLineageID: lineageID,
+		ContextBranchID: provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID), BoundaryReason: "session_turn",
+	}); err != nil {
+		t.Fatalf("put provider lifecycle state: %v", err)
+	}
+	resolved := sessionV3ResolvedRuntime{
+		Session:      created,
+		AgentProfile: pebblestore.AgentProfile{Name: "swarm", Mode: string(agentruntime.ModePrimary), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExecutionSetting: "auto"},
+		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.3-codex", Thinking: "high", ServiceTier: "fast"},
+		Scope:        tool.WorkspaceScope{PrimaryPath: workspace}, Instructions: "refreshed instructions with run_id=new-run and checkpoint state", ToolChoice: "auto",
+		Tools: []provideriface.ToolDefinition{{Type: "function", Name: "refreshed_tool", Parameters: map[string]any{"type": "object"}}},
+	}
+	for _, runID := range []string{"run-refresh-1", "run-refresh-2"} {
+		resolved.Instructions += " " + runID
+		req, err := exec.sessionV3ProviderBaseRequest(sessionV3ExecutorJob{SessionID: created.ID, RunID: runID, EpochID: epoch.EpochID}, resolved, []map[string]any{{"role": "user", "content": "next"}})
+		if err != nil {
+			t.Fatalf("base request %s: %v", runID, err)
+		}
+		if req.ProviderLineageID != lineageID || req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext || sessionV3ProviderRequiresBoundedHandoff(req) {
+			t.Fatalf("refreshed request rotated compatible lineage: %+v", req)
+		}
+		if req.ProviderConfigurationHash == "old-dynamic-request-configuration" {
+			t.Fatalf("refreshed request did not retain independent configuration fingerprint: %+v", req)
+		}
+	}
+}
+
+func TestSessionsV3ProviderChangedModelCheckpointStartsFreshWithCanonicalInput(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	providers := registry.New()
+	providers.RegisterRunner(&sessionsV3RecordingProviderRunner{id: "codex"})
+	server.providers = providers
+	exec := newSessionV3Executor(server)
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-changed-checkpoint-create", "provider changed checkpoint", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "model-new", Thinking: "medium"})
+	epoch, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get active execution epoch: ok=%t err=%v", ok, err)
+	}
+	if err := sessionSvc.PutExecutionProviderLifecycleState(pebblestore.ExecutionProviderLifecycleState{
+		SessionID: created.ID, EpochID: epoch.EpochID, Provider: "codex", Model: "model-old",
+		ConfigurationHash: "old-configuration", ProviderLineageID: "old-lineage",
+		ContextBranchID: provideriface.ShortProviderLineageKey("epoch", created.ID, epoch.EpochID), BoundaryReason: "session_turn",
+	}); err != nil {
+		t.Fatalf("put provider lifecycle state: %v", err)
+	}
+	resolved := sessionV3ResolvedRuntime{
+		Session: created, AgentProfile: pebblestore.AgentProfile{Name: "swarm", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto},
+		Preference: pebblestore.ModelPreference{Provider: "codex", Model: "model-new", Thinking: "medium"}, Scope: tool.WorkspaceScope{PrimaryPath: workspace},
+		Instructions: "fresh auto instructions", ToolChoice: "none",
+	}
+	canonical := []map[string]any{{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "CANONICAL_CHANGED_MODEL_CHECKPOINT"}}}}
+	job := sessionV3ExecutorJob{SessionID: created.ID, RunID: "run-changed-checkpoint", EpochID: epoch.EpochID, PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1"}
+	req, err := exec.sessionV3ProviderBaseRequest(job, resolved, canonical)
+	if err != nil {
+		t.Fatalf("base request: %v", err)
+	}
+	if !req.StartNewChain || req.AllowContinuation || req.NativeContinuationAllowed || !req.ForceFreshProviderContext || req.BoundaryReason != "provider_model_runtime_handoff" || req.ProviderLineageID == req.PreviousProviderLineageID {
+		t.Fatalf("changed-model checkpoint did not rotate provider chain: %+v", req)
+	}
+	input, err := exec.sessionV3ProviderInitialContextInput(job, resolved, []pebblestore.MessageSnapshot{{Role: "tool", Content: "EXIT_PLAN_MODE_HISTORY"}}, req, canonical, sessionV3ProviderContextCheckpointStartup)
+	if err != nil {
+		t.Fatalf("select checkpoint input: %v", err)
+	}
+	if !sessionsV3ProviderInputContainsContentText(input, "CANONICAL_CHANGED_MODEL_CHECKPOINT") || sessionsV3ProviderInputContainsContentText(input, "[provider-handoff]") || sessionsV3ProviderInputContainsContentText(input, "EXIT_PLAN_MODE_HISTORY") {
+		t.Fatalf("changed-model checkpoint selected noncanonical input: %+v", input)
 	}
 }
 
