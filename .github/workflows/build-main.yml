@@ -36,6 +36,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Require an Unreleased changelog update
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/check-changelog.sh "${BASE_SHA}" "${HEAD_SHA}"
+
       - name: Check for committed secrets
         run: ./scripts/check-secrets.sh
 
