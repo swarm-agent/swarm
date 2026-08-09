@@ -386,11 +386,41 @@ func TestOnboardingProviderCredentialEndpointAcceptsDesktopActiveField(t *testin
 	}
 }
 
+func TestOnboardingOpenAICredentialSetupDoesNotRequireProviderProbe(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: false, connected: false, message: "provider probe must not gate onboarding"})
+
+	status, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
+		Provider: "openai",
+		Type:     "api",
+		APIKey:   "sk-test-unverified",
+	})
+	if err != nil {
+		t.Fatalf("accept OpenAI onboarding credential without provider probe: %v", err)
+	}
+	if !status.Active {
+		t.Fatalf("unverified OpenAI credential was not activated: %+v", status)
+	}
+	if status.Connection != nil {
+		t.Fatalf("OpenAI onboarding credential connection = %+v, want unverified", status.Connection)
+	}
+	if status.AutoDefaults == nil || !status.AutoDefaults.Applied {
+		t.Fatalf("unverified OpenAI credential did not hydrate defaults: %+v", status.AutoDefaults)
+	}
+
+	credentials, err := server.auth.ListCredentialsForAccount(principal.AccountScopeID, "openai", "", 200)
+	if err != nil {
+		t.Fatalf("list unverified OpenAI credential: %v", err)
+	}
+	if credentials.Total != 1 || len(credentials.Records) != 1 || !credentials.Records[0].Active || credentials.Records[0].Connection != nil {
+		t.Fatalf("OpenAI credential state = %+v, want one active unverified credential", credentials)
+	}
+}
+
 func TestOnboardingProviderCredentialRejectsFailedVerificationWithoutPersisting(t *testing.T) {
-	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: false, message: "invalid api key"})
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "anthropic", ready: true, connected: false, message: "invalid api key"})
 
 	_, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
-		Provider: "openai",
+		Provider: "anthropic",
 		Type:     "api",
 		APIKey:   "sk-test-invalid",
 	})
