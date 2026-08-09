@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -54,15 +55,23 @@ func TestDesktopBoundaryTailscaleAdmission(t *testing.T) {
 	if _, _, err := policy.Add(origin); err != nil {
 		t.Fatalf("approve origin: %v", err)
 	}
-	admission, err := server.admitDesktopRequest(request())
+	admittedRequest := request()
+	admission, err := server.admitDesktopRequest(admittedRequest)
 	if err != nil || admission.origin != origin || !admission.tailscaleServe {
 		t.Fatalf("approved admission=%+v err=%v", admission, err)
+	}
+	admittedRequest = admittedRequest.WithContext(context.WithValue(admittedRequest.Context(), desktopAdmittedOriginKey, admission))
+	if !isLocalAdministrativeRequest(admittedRequest) {
+		t.Fatal("approved Tailscale Desktop admission was not allowed to perform a host administrative action")
 	}
 
 	missingIdentity := request()
 	missingIdentity.Header.Del(tailscaleUserLoginHeader)
 	if _, err := server.admitDesktopRequest(missingIdentity); err == nil {
 		t.Fatal("request without Serve identity provenance was admitted")
+	}
+	if isLocalAdministrativeRequest(missingIdentity) {
+		t.Fatal("request without an admitted Serve identity was allowed to perform a host administrative action")
 	}
 	spoofedRemote := request()
 	spoofedRemote.RemoteAddr = "192.0.2.10:43210"
