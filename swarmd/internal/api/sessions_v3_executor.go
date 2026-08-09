@@ -870,7 +870,7 @@ func (e *sessionV3Executor) recordRunPhase(job sessionV3ExecutorJob, phase RunPh
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ExecutorClientRequestID(eventType, job.RunID)
+	clientRequestID := sessionV3ExecutorJobClientRequestID(eventType, job)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -920,7 +920,7 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, progress
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := fmt.Sprintf("%s-%04d", sessionV3ExecutorClientRequestID("session.assistant.delta", job.RunID), deltaIndex)
+	clientRequestID := fmt.Sprintf("%s-%04d", sessionV3ExecutorJobClientRequestID("session.assistant.delta", job), deltaIndex)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -1010,7 +1010,7 @@ func (e *sessionV3Executor) recordProviderToolConstructionEvent(job sessionV3Exe
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ProviderToolConstructionClientRequestID(eventType, job.RunID, step, callID, event.ToolCallIndex, eventIndex)
+	clientRequestID := sessionV3ProviderToolConstructionClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step, callID, event.ToolCallIndex, eventIndex)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -1083,7 +1083,7 @@ func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, event
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ReasoningEventClientRequestID(eventType, job.RunID, step, reasoningKey, eventIndex)
+	clientRequestID := sessionV3ReasoningEventClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step, reasoningKey, eventIndex)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -1387,7 +1387,7 @@ func (e *sessionV3Executor) recordPreToolAssistantSegment(job sessionV3ExecutorJ
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ExecutorStepClientRequestID("session.assistant.pre_tool", job.RunID, step)
+	clientRequestID := sessionV3ExecutorJobStepClientRequestID("session.assistant.pre_tool", job, step)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -3194,6 +3194,11 @@ func (e *sessionV3Executor) applySessionV3ProviderToolMutation(job sessionV3Exec
 		if sessionV3ProviderToolTerminalEvent(input.EventType) && e.isRunCanceled(job) {
 			return sessionruntime.SessionMutationResult{}, context.Canceled
 		}
+		// Provider tools restart their step-local counters after overflow or stale
+		// compaction. Scope their mutation identity to the execution epoch while
+		// preserving the canonical parent run ID carried by the run intent.
+		input.ClientRequestID = sessionV3ExecutorEpochScopedID(input.ClientRequestID, job.EpochID)
+		input.IdempotencyKey = sessionV3ExecutorEpochScopedID(input.IdempotencyKey, job.EpochID)
 		return e.server.applySessionV3PrimaryMutation(input)
 	}
 }
@@ -3319,7 +3324,7 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	if err != nil {
 		return err
 	}
-	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, job.RunID, step, callID, deltaIndex)
+	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step, callID, deltaIndex)
 	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
 	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
@@ -4932,6 +4937,28 @@ func sessionV3ExecutorRunKey(sessionID, runID string) string {
 func sessionV3ExecutorClientRequestID(eventType, runID string) string {
 	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
 	return "v3-executor-" + label + "-" + strings.TrimSpace(runID)
+}
+
+func sessionV3ExecutorEpochScopedID(id, epochID string) string {
+	id = strings.TrimSpace(id)
+	epochID = strings.TrimSpace(epochID)
+	if id == "" || epochID == "" {
+		return id
+	}
+	sum := sha256.Sum256([]byte(epochID))
+	return id + "-epoch-" + hex.EncodeToString(sum[:8])
+}
+
+func sessionV3ExecutorJobMutationRunID(job sessionV3ExecutorJob) string {
+	return sessionV3ExecutorEpochScopedID(job.RunID, job.EpochID)
+}
+
+func sessionV3ExecutorJobClientRequestID(eventType string, job sessionV3ExecutorJob) string {
+	return sessionV3ExecutorClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job))
+}
+
+func sessionV3ExecutorJobStepClientRequestID(eventType string, job sessionV3ExecutorJob, step int) string {
+	return sessionV3ExecutorStepClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step)
 }
 
 func sessionV3ProviderToolStepID(step int) string {

@@ -95,7 +95,7 @@ func (e *sessionV3Executor) recordProviderUsage(job sessionV3ExecutorJob, resolv
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, false, err
 	}
-	clientRequestID := sessionV3ExecutorStepClientRequestID("run.usage.updated", job.RunID, step)
+	clientRequestID := sessionV3ExecutorJobStepClientRequestID("run.usage.updated", job, step)
 	result, err := e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
