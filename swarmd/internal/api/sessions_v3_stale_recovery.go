@@ -131,7 +131,7 @@ func (e *sessionV3Executor) staleRecoveryEligible(job sessionV3ExecutorJob, now 
 }
 
 func (e *sessionV3Executor) recordStaleRecoveryEvent(job sessionV3ExecutorJob, state, reason string) error {
-	if e == nil || e.server == nil {
+	if e == nil || e.server == nil || e.server.sessions == nil {
 		return errors.New("v3 stale recovery event recorder is not configured")
 	}
 	state = strings.TrimSpace(state)
@@ -139,8 +139,31 @@ func (e *sessionV3Executor) recordStaleRecoveryEvent(job sessionV3ExecutorJob, s
 	if state == "" {
 		return errors.New("v3 stale recovery state is required")
 	}
+
+	// The recovery projection remains owned by the epoch where the stale attempt
+	// was detected. Compaction seals that epoch and atomically creates a successor,
+	// so subsequent recovery observability must be written in the active epoch
+	// while retaining the original recovery epoch in its payload and idempotency
+	// identity. This preserves normal epoch fencing instead of bypassing it.
+	recoveryEpochID := strings.TrimSpace(job.EpochID)
+	eventJob := job
+	if recoveryEpoch, ok, err := e.server.sessions.GetExecutionEpoch(job.SessionID, recoveryEpochID); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("stale recovery execution epoch %q not found", recoveryEpochID)
+	} else if recoveryEpoch.Status != pebblestore.ExecutionEpochStatusActive {
+		activeEpoch, active, activeErr := e.server.sessions.GetActiveExecutionEpoch(job.SessionID)
+		if activeErr != nil {
+			return activeErr
+		}
+		if !active {
+			return fmt.Errorf("stale recovery execution epoch %q is sealed without an active continuation epoch", recoveryEpochID)
+		}
+		eventJob.EpochID = activeEpoch.EpochID
+	}
+
 	now := time.Now().UnixMilli()
-	intent := sessionV3RunIntentForJob(job, pebblestore.V3RunIntentRunning, now)
+	intent := sessionV3RunIntentForJob(eventJob, pebblestore.V3RunIntentRunning, now)
 	payload := struct {
 		SessionID string                         `json:"session_id"`
 		RunID     string                         `json:"run_id"`
@@ -149,7 +172,7 @@ func (e *sessionV3Executor) recordStaleRecoveryEvent(job sessionV3ExecutorJob, s
 		Reason    string                         `json:"reason,omitempty"`
 		RunIntent pebblestore.V3SessionRunIntent `json:"run_intent"`
 		Recorded  int64                          `json:"recorded_at"`
-	}{job.SessionID, job.RunID, job.EpochID, state, reason, intent, now}
+	}{job.SessionID, job.RunID, recoveryEpochID, state, reason, intent, now}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -159,11 +182,11 @@ func (e *sessionV3Executor) recordStaleRecoveryEvent(job sessionV3ExecutorJob, s
 	if err != nil {
 		return err
 	}
-	clientRequestID := sessionV3ExecutorClientRequestID(eventType+"."+reason+"."+job.EpochID, job.RunID)
+	clientRequestID := sessionV3ExecutorClientRequestID(eventType+"."+reason+"."+recoveryEpochID, job.RunID)
 	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID: job.SessionID, UserID: job.Principal.UserID, AccountScopeID: job.Principal.AccountScopeID,
 		ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: payloadHash, RequestHash: payloadHash,
-		Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: eventType, EventPayload: raw, RunIntent: &intent, NowUnixMs: now,
+		Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: eventType, EventPayload: raw, EpochID: eventJob.EpochID, RunIntent: &intent, NowUnixMs: now,
 	})
 	return err
 }
