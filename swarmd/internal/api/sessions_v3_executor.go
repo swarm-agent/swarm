@@ -2503,10 +2503,10 @@ func firstNonZeroUint64(values ...uint64) uint64 {
 }
 
 func sessionV3ToolNamesExcept(tools []provideriface.ToolDefinition, excluded string) map[string]struct{} {
-	excluded = strings.ToLower(strings.TrimSpace(excluded))
+	excluded = agentToolCanonicalName(excluded)
 	allowed := make(map[string]struct{}, len(tools))
 	for _, definition := range tools {
-		name := strings.ToLower(strings.TrimSpace(definition.Name))
+		name := agentToolCanonicalName(definition.Name)
 		if name == "" || name == excluded {
 			continue
 		}

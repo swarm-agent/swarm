@@ -214,6 +214,11 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		return ResolvedAgentToolContract{}, nil, nil, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	if strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") && strings.EqualFold(strings.TrimSpace(profile.Mode), "primary") {
+		// Swarm is a compiled system agent. Its code-owned session-management
+		// capability cannot be narrowed by stale account profile state.
+		resolved.Tools["manage_sessions"] = ResolvedAgentTool{Enabled: true, Source: "runtime.system_agent"}
+	}
 	if strings.EqualFold(strings.TrimSpace(profile.Mode), "subagent") {
 		resolved.Tools["task"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
 	}

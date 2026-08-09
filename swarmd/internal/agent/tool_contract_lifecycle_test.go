@@ -53,14 +53,14 @@ func TestEnsureDefaultsBackfillsMissingBuiltInToolContractsOnly(t *testing.T) {
 	}
 }
 
-func TestEnsureDefaultsAddsManageSessionsToSwarmAndPreservesExplicitOptOut(t *testing.T) {
+func TestEnsureDefaultsRestoresManageSessionsToSwarm(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		enabled *bool
 		want    bool
 	}{
 		{name: "missing", want: true},
-		{name: "disabled", enabled: pebblestore.BoolPtr(false), want: false},
+		{name: "disabled", enabled: pebblestore.BoolPtr(false), want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, agents := newTestService(t)

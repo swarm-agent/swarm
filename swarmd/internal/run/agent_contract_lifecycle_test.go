@@ -33,6 +33,9 @@ func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
 			if todo := resolved.Tools["manage_todos"]; todo.Enabled || slices.Contains(resolved.AvailableTools, "manage_todos") {
 				t.Fatalf("Swarm resolved toolkit advertises manage_todos: %+v", resolved)
 			}
+			if sessions := resolved.Tools["manage_sessions"]; !sessions.Enabled || !slices.Contains(resolved.AvailableTools, "manage_sessions") {
+				t.Fatalf("Swarm resolved toolkit omits manage_sessions: %+v", resolved)
+			}
 			if plan := resolved.Tools["plan_manage"]; !plan.Enabled || !slices.Contains(resolved.AvailableTools, "plan_manage") {
 				t.Fatalf("Swarm resolved toolkit omits plan_manage: %+v", resolved)
 			}
@@ -40,6 +43,35 @@ func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
 				t.Fatal("shared tool inventory no longer implements manage_todos")
 			}
 		}
+	}
+}
+
+func TestResolveAgentToolContractRestoresManageSessionsOnlyForSwarmPrimary(t *testing.T) {
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	for _, tc := range []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: agentruntime.SwarmAgentID, mode: agentruntime.ModePrimary, want: true},
+		{name: "other-primary", mode: agentruntime.ModePrimary, want: false},
+		{name: agentruntime.SwarmAgentID, mode: agentruntime.ModeSubagent, want: false},
+	} {
+		t.Run(tc.name+"-"+tc.mode, func(t *testing.T) {
+			profile := pebblestore.AgentProfile{Name: tc.name, Mode: tc.mode, ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+				"manage_sessions": {Enabled: pebblestore.BoolPtr(false)},
+			}}}
+			resolved, _, disabled, err := svc.ResolveAgentToolContract(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resolved.Tools["manage_sessions"]; got.Enabled != tc.want {
+				t.Fatalf("manage_sessions = %+v, want enabled=%v", got, tc.want)
+			}
+			if disabled["manage_sessions"] == tc.want {
+				t.Fatalf("disabled manage_sessions = %v, want %v", disabled["manage_sessions"], !tc.want)
+			}
+		})
 	}
 }
 
