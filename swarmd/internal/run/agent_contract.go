@@ -296,11 +296,11 @@ func applyNamedAgentPreset(target map[string]ResolvedAgentTool, knownTools map[s
 	}
 	switch preset {
 	case "read_only":
-		enable("read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "compact", "exit_plan_mode")
 	case "read_write":
-		enable("read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "compact", "exit_plan_mode")
 	case "bash_git_only":
-		enable("read", "search", "list", "bash", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "bash", "skill_use", "plan_manage", "ask_user", "compact", "exit_plan_mode")
 		target["bash"] = ResolvedAgentTool{
 			Enabled:      true,
 			Source:       "preset:" + preset,

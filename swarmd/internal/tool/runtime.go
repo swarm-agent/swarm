@@ -1128,6 +1128,19 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
+			Name:        "compact",
+			Description: "Continue plan-mode research in fresh provider context after a context-pressure warning. Supply a concise handoff that preserves the active goal, decisions, evidence, relevant files, and immediate next action. This control is exposed only while the backend is awaiting the required choice between compact and exit_plan_mode.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"handoff": map[string]any{"type": "string", "minLength": 1, "description": "Concise research handoff for the fresh-context continuation"},
+				},
+				"required":             []string{"handoff"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "exit_plan_mode",
 			Description: "Submit the final structured executable plan for approval so the session can leave plan mode and continue execution. document is required and must contain at least one complete checkpoint; markdown plan text is display/export only and can never substitute for document. The backend revalidates the exact approved document before persistence, mode changes, or execution.",
 			Parameters: map[string]any{

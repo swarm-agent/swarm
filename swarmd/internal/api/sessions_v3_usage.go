@@ -115,6 +115,22 @@ func (e *sessionV3Executor) recordProviderUsage(job sessionV3ExecutorJob, resolv
 	return result, true, nil
 }
 
+func sessionV3PlanContextGuardUsageSummary(result sessionruntime.SessionMutationResult, usage pebblestore.SessionTurnUsageSnapshot) pebblestore.SessionUsageSummary {
+	if result.UsageSummary != nil {
+		return *result.UsageSummary
+	}
+	summary := pebblestore.SessionUsageSummary{
+		SessionID:      strings.TrimSpace(usage.SessionID),
+		UserID:         strings.TrimSpace(usage.UserID),
+		AccountScopeID: strings.TrimSpace(usage.AccountScopeID),
+		Provider:       strings.TrimSpace(usage.Provider),
+		Model:          strings.TrimSpace(usage.Model),
+		Source:         strings.TrimSpace(usage.Source),
+		ContextWindow:  usage.ContextWindow,
+	}
+	return pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
+}
+
 func sessionV3UsagePayloadHash(sessionID, runID string, usage pebblestore.SessionTurnUsageSnapshot) (string, error) {
 	canonical := struct {
 		Operation string                               `json:"operation"`

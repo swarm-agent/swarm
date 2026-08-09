@@ -20,12 +20,17 @@ import {
   type FlatModelOption,
 } from '../../model-favorites/components/model-favorites-settings'
 import { saveSwarmAgentModelSettings } from '../../swarm/mutations/save-agent-model-settings'
+import { savePlanContextGuardSettings } from '../../swarm/mutations/save-plan-context-guard-settings'
 import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../swarm/queries/get-agent-model-settings'
+import { getUISettings } from '../../swarm/queries/get-ui-settings'
 import type { AgentModelSettings } from '../../swarm/types/agent-model-settings'
+import { normalizePlanContextGuardSettings } from '../../swarm/types/swarm-settings'
+import type { UISettingsWire } from '../../swarm/types/swarm-settings'
 import {
   SwarmModelAssignmentSettings,
   type SwarmModelAssignmentSaveInput,
 } from './swarm-model-assignment-settings'
+import { PlanContextGuardSettingsSection } from './plan-context-guard-settings'
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim() ? error.message : fallback
@@ -86,11 +91,14 @@ export function toFlatModelOptions(options: ModelOptionRecord[]): FlatModelOptio
   return Array.from(byModel.values())
 }
 
+const uiSettingsQueryKey = ['ui-settings'] as const
+
 export function ModelsSettingsPage() {
   const queryClient = useQueryClient()
   const optionsQuery = useQuery(modelOptionsQueryOptions())
   const profilesQuery = useQuery(modelProfilesQueryOptions())
   const settingsQuery = useQuery(agentModelSettingsQueryOptions())
+  const uiSettingsQuery = useQuery({ queryKey: uiSettingsQueryKey, queryFn: getUISettings, staleTime: 30_000 })
 
   const favoritesMutation = useMutation({
     mutationFn: async (operation: () => Promise<unknown>) => {
@@ -102,6 +110,10 @@ export function ModelsSettingsPage() {
     mutationFn: saveSwarmAgentModelSettings,
     onSuccess: (settings) => queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, settings),
   })
+  const guardMutation = useMutation({
+    mutationFn: (value: Parameters<typeof savePlanContextGuardSettings>[1]) => savePlanContextGuardSettings(uiSettingsQuery.data ?? {}, value),
+    onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
+  })
 
   const profiles = profilesQuery.data?.profiles ?? []
   const favorites = profiles.map(toFlatModelFavorite)
@@ -111,6 +123,11 @@ export function ModelsSettingsPage() {
     profilesQuery.error ? `Model favorites are unavailable: ${errorMessage(profilesQuery.error, 'request failed')}` : '',
     settingsQuery.error ? `Swarm models are unavailable: ${errorMessage(settingsQuery.error, 'request failed')}` : '',
   ].filter(Boolean)
+  const guardError = guardMutation.error
+    ? errorMessage(guardMutation.error, 'The Plan context guard request failed.')
+    : uiSettingsQuery.error
+      ? errorMessage(uiSettingsQuery.error, 'Plan context guard settings are unavailable.')
+      : null
   const favoriteError = favoritesMutation.error
     ? errorMessage(favoritesMutation.error, 'The model favorite request failed.')
     : loadErrors.filter((message) => !message.startsWith('Swarm models')).join(' ')
@@ -160,7 +177,16 @@ export function ModelsSettingsPage() {
             saving={settingsMutation.isPending}
             error={assignmentError || null}
             onSave={saveAssignments}
-          />
+          >
+            {uiSettingsQuery.data ? (
+              <PlanContextGuardSettingsSection
+                value={normalizePlanContextGuardSettings(uiSettingsQuery.data)}
+                saving={guardMutation.isPending}
+                error={guardError}
+                onSave={(value) => guardMutation.mutate(value)}
+              />
+            ) : guardError ? <div role="alert" className="text-sm text-[var(--app-danger)]">{guardError}</div> : null}
+          </SwarmModelAssignmentSettings>
         ) : (
           <section aria-labelledby="swarm-model-assignments-title" className="space-y-3">
             <h2 id="swarm-model-assignments-title" className="text-lg font-semibold text-[var(--app-text)]">Swarm models</h2>

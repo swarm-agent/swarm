@@ -29,6 +29,9 @@ func TestUISettingsStoreDefaultsEnableThinkingTags(t *testing.T) {
 	if defaults.Chat.SidebarHideInactiveHours == nil || *defaults.Chat.SidebarHideInactiveHours != 12 {
 		t.Fatalf("default sidebar hide inactive hours = %v, want 12", defaults.Chat.SidebarHideInactiveHours)
 	}
+	if defaults.Chat.PlanContextGuardEnabled == nil || !*defaults.Chat.PlanContextGuardEnabled || defaults.Chat.PlanContextGuardUsedPercent != 80 || defaults.Chat.PlanContextGuardMaxCompactions == nil || *defaults.Chat.PlanContextGuardMaxCompactions != 1 {
+		t.Fatalf("unexpected plan context guard defaults: %+v", defaults.Chat)
+	}
 }
 
 func TestUISettingsStoreUpdateFromEmptyStorePreservesTrueDefaults(t *testing.T) {
@@ -68,6 +71,61 @@ func TestUISettingsStoreUpdateFromEmptyStorePreservesTrueDefaults(t *testing.T) 
 	}
 	if !stored.Chat.ThinkingTags {
 		t.Fatal("stored thinking tags = false, want true")
+	}
+}
+
+func TestUISettingsStoreNormalizesLegacyPlanContextGuardFields(t *testing.T) {
+	disabled := false
+	tooMany := 99
+	record := NormalizeUISettingsRecordForExternal(UISettingsRecord{Chat: UIChatSettingsRecord{
+		PlanContextGuardEnabled:        &disabled,
+		PlanContextGuardUsedPercent:    10,
+		PlanContextGuardMaxCompactions: &tooMany,
+		UpdatedAt:                      123,
+	}})
+	if record.Chat.PlanContextGuardEnabled == nil || *record.Chat.PlanContextGuardEnabled {
+		t.Fatalf("explicit disabled guard was not preserved: %+v", record.Chat)
+	}
+	if record.Chat.PlanContextGuardUsedPercent != 50 {
+		t.Fatalf("legacy guard threshold = %d, want clamped 50", record.Chat.PlanContextGuardUsedPercent)
+	}
+	if record.Chat.PlanContextGuardMaxCompactions == nil || *record.Chat.PlanContextGuardMaxCompactions != 3 {
+		t.Fatalf("legacy max compactions = %v, want clamped 3", record.Chat.PlanContextGuardMaxCompactions)
+	}
+
+	missing := NormalizeUISettingsRecordForExternal(UISettingsRecord{Chat: UIChatSettingsRecord{UpdatedAt: 123}})
+	if missing.Chat.PlanContextGuardEnabled == nil || !*missing.Chat.PlanContextGuardEnabled || missing.Chat.PlanContextGuardUsedPercent != 80 || missing.Chat.PlanContextGuardMaxCompactions == nil || *missing.Chat.PlanContextGuardMaxCompactions != 1 {
+		t.Fatalf("legacy missing guard fields did not receive defaults: %+v", missing.Chat)
+	}
+}
+
+func TestUISettingsStorePersistsPlanContextGuardPerAccount(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "ui-settings-plan-guard.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	settings := NewUISettingsStore(store)
+	disabled := false
+	zero := 0
+	updated, err := settings.UpdateForAccount("account-a", UISettingsPatch{Chat: &UIChatSettingsRecord{
+		PlanContextGuardEnabled: &disabled, PlanContextGuardUsedPercent: 95, PlanContextGuardMaxCompactions: &zero,
+	}})
+	if err != nil {
+		t.Fatalf("update account guard: %v", err)
+	}
+	if updated.Chat.PlanContextGuardEnabled == nil || *updated.Chat.PlanContextGuardEnabled || updated.Chat.PlanContextGuardUsedPercent != 95 || updated.Chat.PlanContextGuardMaxCompactions == nil || *updated.Chat.PlanContextGuardMaxCompactions != 0 {
+		t.Fatalf("updated guard settings = %+v", updated.Chat)
+	}
+	loaded, ok, err := settings.GetForAccount("account-a")
+	if err != nil || !ok {
+		t.Fatalf("get account guard ok=%v err=%v", ok, err)
+	}
+	if loaded.Chat.PlanContextGuardEnabled == nil || *loaded.Chat.PlanContextGuardEnabled || loaded.Chat.PlanContextGuardUsedPercent != 95 || loaded.Chat.PlanContextGuardMaxCompactions == nil || *loaded.Chat.PlanContextGuardMaxCompactions != 0 {
+		t.Fatalf("persisted guard settings = %+v", loaded.Chat)
+	}
+	if _, ok, err := settings.GetForAccount("account-b"); err != nil || ok {
+		t.Fatalf("account-b unexpectedly observed account-a settings ok=%v err=%v", ok, err)
 	}
 }
 

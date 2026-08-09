@@ -1037,6 +1037,16 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		default:
 			return false, tool.Result{}, nil
 		}
+	case "compact":
+		if sessionruntime.NormalizeMode(sessionMode) != sessionruntime.ModePlan || !pebblestore.AgentExitPlanModeEnabled(agentProfile) {
+			return true, result, errors.New("compact is restricted to an armed plan-mode context guard decision")
+		}
+		handoff, err := planContextGuardCompactHandoff(call.Arguments)
+		if err != nil {
+			return true, result, err
+		}
+		result.Output = fmt.Sprintf("Plan context compact handoff accepted (%d characters).", len([]rune(handoff)))
+		return true, result, nil
 	case "exit_plan_mode":
 		output, err := s.executeExitPlanModeTool(sessionID, sessionMode, agentProfile, call.Arguments, approvedArguments, applySessionMutation)
 		result.Output = output

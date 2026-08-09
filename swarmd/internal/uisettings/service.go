@@ -77,6 +77,9 @@ type ChatSettings struct {
 	ShowCompactButton               bool                   `json:"show_compact_button"`
 	DefaultNewSessionMode           string                 `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                 `json:"followup_checkpoint_policy_default,omitempty"`
+	PlanContextGuardEnabled         bool                   `json:"plan_context_guard_enabled"`
+	PlanContextGuardUsedPercent     int                    `json:"plan_context_guard_used_percent"`
+	PlanContextGuardMaxCompactions  int                    `json:"plan_context_guard_max_compactions"`
 	ReviewAutoArchiveMinutes        int                    `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        int                    `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string      `json:"default_workspace_routes,omitempty"`
@@ -218,6 +221,9 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			ShowCompactButton:               record.Chat.ShowCompactButton,
 			DefaultNewSessionMode:           strings.TrimSpace(record.Chat.DefaultNewSessionMode),
 			FollowupCheckpointPolicyDefault: strings.TrimSpace(record.Chat.FollowupCheckpointPolicyDefault),
+			PlanContextGuardEnabled:         *record.Chat.PlanContextGuardEnabled,
+			PlanContextGuardUsedPercent:     record.Chat.PlanContextGuardUsedPercent,
+			PlanContextGuardMaxCompactions:  *record.Chat.PlanContextGuardMaxCompactions,
 			ReviewAutoArchiveMinutes:        record.Chat.ReviewAutoArchiveMinutes,
 			SidebarHideInactiveHours:        *record.Chat.SidebarHideInactiveHours,
 			DefaultWorkspaceRoutes:          cloneMap(record.Chat.DefaultWorkspaceRoutes),
@@ -311,6 +317,9 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 		ShowCompactButton:               settings.ShowCompactButton,
 		DefaultNewSessionMode:           strings.TrimSpace(settings.DefaultNewSessionMode),
 		FollowupCheckpointPolicyDefault: strings.TrimSpace(settings.FollowupCheckpointPolicyDefault),
+		PlanContextGuardEnabled:         boolPointer(settings.PlanContextGuardEnabled),
+		PlanContextGuardUsedPercent:     settings.PlanContextGuardUsedPercent,
+		PlanContextGuardMaxCompactions:  intPointer(settings.PlanContextGuardMaxCompactions),
 		ReviewAutoArchiveMinutes:        settings.ReviewAutoArchiveMinutes,
 		SidebarHideInactiveHours:        intPointer(settings.SidebarHideInactiveHours),
 		DefaultWorkspaceRoutes:          cloneMap(settings.DefaultWorkspaceRoutes),

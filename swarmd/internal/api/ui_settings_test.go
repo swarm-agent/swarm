@@ -382,6 +382,63 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *
 	}
 }
 
+func TestUISettingsPlanContextGuardRoundTripNormalizesAndPreservesAccountScope(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-plan-guard.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "guard-user", AccountScopeID: "guard-account"}
+
+	post := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"chat":{"plan_context_guard_enabled":false,"plan_context_guard_used_percent":99,"plan_context_guard_max_compactions":9}}`)))
+	post = post.WithContext(identity.ContextWithPrincipal(post.Context(), principal))
+	post.Header.Set("Content-Type", "application/json")
+	postRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(postRec, post)
+	if postRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d body=%s", postRec.Code, postRec.Body.String())
+	}
+	var posted uisettings.UISettings
+	if err := json.Unmarshal(postRec.Body.Bytes(), &posted); err != nil {
+		t.Fatalf("decode post response: %v", err)
+	}
+	if posted.Chat.PlanContextGuardEnabled || posted.Chat.PlanContextGuardUsedPercent != 95 || posted.Chat.PlanContextGuardMaxCompactions != 3 {
+		t.Fatalf("normalized POST guard = %+v", posted.Chat)
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/ui/settings", nil)
+	get = get.WithContext(identity.ContextWithPrincipal(get.Context(), principal))
+	getRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(getRec, get)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/ui/settings status = %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	var loaded uisettings.UISettings
+	if err := json.Unmarshal(getRec.Body.Bytes(), &loaded); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if loaded.Chat.PlanContextGuardEnabled || loaded.Chat.PlanContextGuardUsedPercent != 95 || loaded.Chat.PlanContextGuardMaxCompactions != 3 {
+		t.Fatalf("round-tripped guard = %+v", loaded.Chat)
+	}
+
+	other, err := settingsSvc.GetForAccount("other-account")
+	if err != nil {
+		t.Fatalf("get other account: %v", err)
+	}
+	if !other.Chat.PlanContextGuardEnabled || other.Chat.PlanContextGuardUsedPercent != 80 || other.Chat.PlanContextGuardMaxCompactions != 1 {
+		t.Fatalf("other account inherited guard settings: %+v", other.Chat)
+	}
+}
+
 func TestUISettingsPostPersistsSidebarHideInactiveHours(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-sidebar-hours.pebble"))
 	if err != nil {

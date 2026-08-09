@@ -392,6 +392,6 @@ func (e *sessionV3Executor) staleCompactedAssistantResponse(ctx context.Context,
 	if err != nil {
 		return sessionV3AssistantResponse{}, job, err
 	}
-	response, err = e.providerAssistantResponse(ctx, job, resolved, "stale-compacted-continuation", true)
+	response, err = e.providerAssistantResponse(ctx, job, resolved, "stale-compacted-continuation", true, nil)
 	return response, job, err
 }

@@ -68,6 +68,9 @@ type UIChatSettingsRecord struct {
 	ShowCompactButton               bool                           `json:"show_compact_button"`
 	DefaultNewSessionMode           string                         `json:"default_new_session_mode,omitempty"`
 	FollowupCheckpointPolicyDefault string                         `json:"followup_checkpoint_policy_default,omitempty"`
+	PlanContextGuardEnabled         *bool                          `json:"plan_context_guard_enabled,omitempty"`
+	PlanContextGuardUsedPercent     int                            `json:"plan_context_guard_used_percent,omitempty"`
+	PlanContextGuardMaxCompactions  *int                           `json:"plan_context_guard_max_compactions,omitempty"`
 	ReviewAutoArchiveMinutes        int                            `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
@@ -206,6 +209,9 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			ShowCompactButton:               false,
 			DefaultNewSessionMode:           "auto",
 			FollowupCheckpointPolicyDefault: "auto_start",
+			PlanContextGuardEnabled:         boolPointer(true),
+			PlanContextGuardUsedPercent:     80,
+			PlanContextGuardMaxCompactions:  intPointer(1),
 			SidebarHideInactiveHours:        intPointer(12),
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
@@ -250,6 +256,16 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Chat.DefaultNewSessionMode = normalizeDefaultNewSessionMode(record.Chat.DefaultNewSessionMode)
 	}
 	record.Chat.FollowupCheckpointPolicyDefault = normalizeFollowupCheckpointPolicyDefault(record.Chat.FollowupCheckpointPolicyDefault)
+	if record.Chat.PlanContextGuardEnabled == nil {
+		record.Chat.PlanContextGuardEnabled = boolPointer(true)
+	}
+	record.Chat.PlanContextGuardUsedPercent = normalizePlanContextGuardUsedPercent(record.Chat.PlanContextGuardUsedPercent)
+	if record.Chat.PlanContextGuardMaxCompactions == nil {
+		record.Chat.PlanContextGuardMaxCompactions = intPointer(1)
+	} else {
+		normalized := normalizePlanContextGuardMaxCompactions(*record.Chat.PlanContextGuardMaxCompactions)
+		record.Chat.PlanContextGuardMaxCompactions = intPointer(normalized)
+	}
 	record.Chat.ReviewAutoArchiveMinutes = normalizeReviewAutoArchiveMinutes(record.Chat.ReviewAutoArchiveMinutes)
 	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours < 0 {
 		record.Chat.SidebarHideInactiveHours = intPointer(12)
@@ -279,6 +295,29 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
 	return record
+}
+
+func normalizePlanContextGuardUsedPercent(value int) int {
+	if value == 0 {
+		return 80
+	}
+	if value < 50 {
+		return 50
+	}
+	if value > 95 {
+		return 95
+	}
+	return value
+}
+
+func normalizePlanContextGuardMaxCompactions(value int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > 3 {
+		return 3
+	}
+	return value
 }
 
 func normalizeReviewAutoArchiveMinutes(value int) int {

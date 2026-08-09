@@ -89,6 +89,7 @@ type ProviderManagedToolInvokerConfig struct {
 	ProviderID           string
 	Model                string
 	MediaContract        provideriface.SessionMediaContract
+	PlanContextGuard     *PlanContextGuard
 }
 
 type terminalPlanToolState struct {
@@ -137,6 +138,7 @@ type providerToolInvokerConfig struct {
 	providerID           string
 	model                string
 	mediaContract        provideriface.SessionMediaContract
+	planContextGuard     *PlanContextGuard
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -162,6 +164,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		providerID:           strings.ToLower(strings.TrimSpace(config.ProviderID)),
 		model:                strings.TrimSpace(config.Model),
 		mediaContract:        config.MediaContract,
+		planContextGuard:     config.PlanContextGuard,
 	}
 }
 
@@ -372,6 +375,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 	call.Name = name
 	call.CallID = callID
+	if canonicalToolName(call.Name) == "compact" {
+		if config.planContextGuard == nil || !config.planContextGuard.DecisionActive() || config.planContextGuard.FinalizationOnly() {
+			return tool.Result{}, 0, errors.New("compact rejected: no armed plan context guard compaction decision is active")
+		}
+	}
 	if strings.TrimSpace(call.Arguments) == "" {
 		call.Arguments = "{}"
 	}

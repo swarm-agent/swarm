@@ -70,6 +70,7 @@ const (
 	contextCompactionPlanTextMetadataKey    = "context_compaction_attached_plan_text"
 	contextCompactionOriginManual           = "manual"
 	contextCompactionOriginThreshold        = "threshold"
+	contextCompactionOriginPlanGuard        = "plan_guard"
 	contextCompactionOriginOverflow         = "overflow"
 	ContextCompactionOriginPlanFreshContext = "plan_fresh_context"
 
@@ -1418,6 +1419,20 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	reasoningSummary := ""
 	emptyStepRetries := 0
 	contextCompactionAttempts := 0
+	planContextGuard := newPlanContextGuardState(sessionSnapshot.Metadata)
+	if s.uiSettings != nil {
+		accountScopeID := firstNonEmptyString(options.Principal.AccountScopeID, sessionSnapshot.AccountScopeID)
+		settings, settingsErr := s.uiSettings.GetForAccount(accountScopeID)
+		if settingsErr != nil {
+			return RunResult{}, fmt.Errorf("resolve plan context guard settings: %w", settingsErr)
+		}
+		planContextGuard = newConfiguredPlanContextGuardState(
+			settings.Chat.PlanContextGuardEnabled,
+			float64(settings.Chat.PlanContextGuardUsedPercent),
+			settings.Chat.PlanContextGuardMaxCompactions,
+		)
+	}
+	planGuardFreshContext := false
 	accumulatedUsage := provideriface.TokenUsage{}
 	var (
 		turnUsageRecord   *pebblestore.SessionTurnUsageSnapshot
@@ -1667,12 +1682,24 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			ExecutionMode: executionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
 		})
 		stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
-		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
 		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
 		if stateErr != nil {
 			return RunResult{}, stateErr
 		}
 		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + runStateInstructions)
+		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
+		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && planContextGuard.beginDecision() {
+			warning := planContextGuard.warningInstructions()
+			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)
+			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: warning})
+			if planContextGuard.finalizationOnly {
+				stepToolDefinitions = filterToolDefinitionsExcept(stepToolDefinitions, map[string]struct{}{"exit_plan_mode": {}})
+			} else {
+				stepToolDefinitions = filterToolDefinitionsExcept(stepToolDefinitions, map[string]struct{}{"exit_plan_mode": {}, "compact": {}})
+			}
+		} else {
+			stepToolDefinitions = filterToolDefinitions(stepToolDefinitions, map[string]bool{"compact": true})
+		}
 		stepReasoningSummary := ""
 		stepReasoningMessages := make(map[string]*pebblestore.MessageSnapshot, 4)
 		stepReasoningByKey := make(map[string]string, 4)
@@ -1850,6 +1877,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		boundaryReason := "session_turn"
 		nativeContinuationAllowed := true
 		forceFreshProviderContext := false
+		if planGuardFreshContext {
+			boundaryReason = "context_compaction_plan_guard"
+			nativeContinuationAllowed = false
+			forceFreshProviderContext = true
+		}
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,
@@ -1913,6 +1945,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		// Keep request properties stable across one provider tool loop so native
 		// continuation and prompt caching can reuse the growing prefix.
 		stepRequest = stepRequest.WithRuntimeContext(providerID, runtimeContextAt)
+		planGuardFreshContext = false
 		if options.ApplySessionMutation != nil {
 			runnerCtx = withProviderAttemptObserver(runnerCtx, &durableProviderAttemptObserver{
 				sessionID: sessionID,
@@ -1999,6 +2032,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				TurnUsage:    turnUsageRecord,
 				UsageSummary: usageSummaryState,
 			})
+			if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) {
+				planContextGuard.observe(usageSummaryCopy)
+			}
 		}
 		if responseReasoningSummary := strings.TrimSpace(response.ReasoningSummary); responseReasoningSummary != "" {
 			if len(stepReasoningOrder) == 0 {
@@ -2074,6 +2110,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 
 		if len(response.FunctionCalls) == 0 {
+			if planContextGuard.decisionActive {
+				if refusalErr := planContextGuard.recordRefusal(); refusalErr != nil {
+					return RunResult{}, refusalErr
+				}
+				continue
+			}
 			// Let the model decide loop length:
 			// - text + no tool calls => assistant is done for this turn
 			// - reasoning-only + no tool calls => keep looping for final answer
@@ -2152,6 +2194,25 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				CallID:    callID,
 				Arguments: arguments,
 			})
+		}
+		guardDecisionCalls := 0
+		for i := range toolCalls {
+			name := canonicalToolName(toolCalls[i].Name)
+			if name == "compact" {
+				if !planContextGuard.decisionActive || planContextGuard.finalizationOnly {
+					return RunResult{}, errors.New("compact rejected: no armed plan context guard compaction decision is active")
+				}
+				guardDecisionCalls++
+			}
+			if name == "exit_plan_mode" && planContextGuard.decisionActive {
+				guardDecisionCalls++
+			}
+		}
+		if planContextGuard.decisionActive && (len(toolCalls) != 1 || guardDecisionCalls != 1) {
+			if refusalErr := planContextGuard.recordRefusal(); refusalErr != nil {
+				return RunResult{}, refusalErr
+			}
+			continue
 		}
 		executionMode, _, modeErr = s.resolveExecutionMode(requestMode, agentProfile)
 		if modeErr != nil {
@@ -2348,9 +2409,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		nextInputFunctionCalls := make([]map[string]any, 0, len(toolCalls))
 		nextInputFunctionOutputs := make([]map[string]any, 0, len(toolCalls))
+		guardCompactHandoff := ""
 		for i := range toolCalls {
 			call := toolCalls[i]
 			result := gatedResults[i]
+			if canonicalToolName(call.Name) == "compact" && strings.TrimSpace(result.Error) == "" {
+				if handoff, handoffErr := planContextGuardCompactHandoff(call.Arguments); handoffErr != nil {
+					return RunResult{}, handoffErr
+				} else {
+					guardCompactHandoff = handoff
+				}
+			}
 
 			if strings.TrimSpace(result.CallID) == "" {
 				result.CallID = call.CallID
@@ -2403,6 +2472,56 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			emit(StreamEvent{Type: StreamEventMessageStored, Step: step, Message: &storedToolMessage})
 			if err := s.appendPlanLifecycleMessageForToolResult(sessionID, call, result, options.ApplySessionMutation); err != nil {
 				return RunResult{}, err
+			}
+		}
+		if guardCompactHandoff != "" {
+			resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
+				sessionID,
+				guardCompactHandoff,
+				contextCompactionOriginPlanGuard,
+				resolvedPreference.ContextWindow,
+				providerID,
+				resolvedPreference.Preference.Model,
+				step,
+				emit,
+				runAppendMessageInput{RunID: runID, Step: step, LogicalKey: fmt.Sprintf("system:plan_context_guard_compaction:%d", step), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation},
+			)
+			if compactErr != nil {
+				return RunResult{}, fmt.Errorf("plan context guard compact bookkeeping failed: %w", compactErr)
+			}
+			if len(compactEvents) > 0 {
+				events = append(events, compactEvents...)
+			}
+			if resetSummary != nil {
+				usageSummaryState = resetSummary
+			}
+			turnUsageRecord = nil
+			accumulatedUsage = provideriface.TokenUsage{}
+			activePlan, planErr := s.activePlanForCompaction(sessionID)
+			if planErr != nil {
+				return RunResult{}, fmt.Errorf("plan context guard compact active plan lookup failed: %w", planErr)
+			}
+			input = buildCompactedContinuationInput(prompt, guardCompactHandoff, activePlan, contextCompactionOriginPlanGuard)
+			if len(input) == 0 {
+				return RunResult{}, errors.New("plan context guard compact produced empty continuation input")
+			}
+			planContextGuard.recordCompaction()
+			planGuardFreshContext = true
+			emptyStepRetries = 0
+			continue
+		}
+		if planContextGuard.decisionActive {
+			exitedPlanMode := false
+			for i := range toolCalls {
+				if canonicalToolName(toolCalls[i].Name) == "exit_plan_mode" && strings.TrimSpace(gatedResults[i].Error) == "" {
+					exitedPlanMode = true
+					break
+				}
+			}
+			if !exitedPlanMode {
+				if refusalErr := planContextGuard.recordRefusal(); refusalErr != nil {
+					return RunResult{}, refusalErr
+				}
 			}
 		}
 		nextInput = append(nextInput, nextInputFunctionCalls...)
@@ -2637,6 +2756,8 @@ func memoryCompactionOriginLabel(origin string) string {
 		return "Manual compact"
 	case contextCompactionOriginThreshold:
 		return "Auto compact"
+	case contextCompactionOriginPlanGuard:
+		return "Plan context compact"
 	case contextCompactionOriginOverflow:
 		return "Overflow compact"
 	case ContextCompactionOriginPlanFreshContext:
@@ -3543,7 +3664,7 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 			"If the user gave no specific compact note, summarize the full available session as well as possible: concise, not overly verbose, but detailed enough for the next agent to continue without rediscovery.",
 			"If this is Compact #2, #3, or later, preserve the original request and prior checkpoint state, then clearly describe what changed since that checkpoint.",
 		)
-	case contextCompactionOriginThreshold:
+	case contextCompactionOriginThreshold, contextCompactionOriginPlanGuard:
 		lines = append(lines,
 			"Compaction mode: proactive automatic compact before the context limit.",
 			"Write the summary as a better-formulated continuation problem for the next main-agent step, using the context that is about to be compacted away.",
@@ -3632,6 +3753,8 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 		}
 	case contextCompactionOriginThreshold:
 		lines = append(lines, "Formulate the continuation as a clear problem statement for the next main-agent step, with the compacted-away evidence embedded in the recap.")
+	case contextCompactionOriginPlanGuard:
+		lines = append(lines, "The main plan agent supplied this explicit research handoff. Preserve it verbatim in substance, carry the durable active plan state, and continue in fresh provider context without rerunning completed discovery.")
 	case contextCompactionOriginOverflow:
 		lines = append(lines, "The provider overflow means the previous agent may have stopped mid-thought or mid-action. Preserve in-progress intent and tell the resumed agent exactly what to do next.")
 	}
@@ -3662,6 +3785,8 @@ func normalizeContextCompactionOrigin(origin string) string {
 		return contextCompactionOriginManual
 	case contextCompactionOriginThreshold:
 		return contextCompactionOriginThreshold
+	case contextCompactionOriginPlanGuard:
+		return contextCompactionOriginPlanGuard
 	case contextCompactionOriginOverflow:
 		return contextCompactionOriginOverflow
 	case ContextCompactionOriginPlanFreshContext:
@@ -3677,6 +3802,8 @@ func memoryCompactionContextLine(origin string) string {
 		return "Compaction context: the user manually requested a durable context summary."
 	case contextCompactionOriginThreshold:
 		return "Compaction context: remaining context hit the configured proactive auto-compact threshold before provider overflow."
+	case contextCompactionOriginPlanGuard:
+		return "Compaction context: the plan-mode context guard accepted an explicit research handoff and started fresh provider context."
 	case ContextCompactionOriginPlanFreshContext:
 		return "Compaction context: an automatic checkpoint fresh-context run superseded earlier transcript history; preserve completed checkpoint evidence, plan state, and the user's next action context."
 	default:

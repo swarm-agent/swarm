@@ -8,6 +8,11 @@
 export const DEFAULT_SWARM_NAME = 'Local'
 export const DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS = 12
 export const REVIEW_AUTO_ARCHIVE_MINUTES = Array.from({ length: 12 }, (_, index) => (index + 1) * 5)
+export const DEFAULT_PLAN_CONTEXT_GUARD_USED_PERCENT = 80
+export const DEFAULT_PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 1
+export const PLAN_CONTEXT_GUARD_USED_PERCENT_MIN = 50
+export const PLAN_CONTEXT_GUARD_USED_PERCENT_MAX = 95
+export const PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 3
 
 export interface UISwarmingSettingsWire {
   title?: string
@@ -37,6 +42,9 @@ export interface UIChatSettingsWire {
   show_compact_button?: boolean
   default_new_session_mode?: DesktopSessionMode
   followup_checkpoint_policy_default?: FollowupCheckpointPolicyDefault
+  plan_context_guard_enabled?: boolean
+  plan_context_guard_used_percent?: number
+  plan_context_guard_max_compactions?: number
   review_auto_archive_minutes?: number
   sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
@@ -60,6 +68,12 @@ export interface UISettingsWire {
   updated_at?: number
 }
 
+export interface PlanContextGuardSettings {
+  enabled: boolean
+  usedPercent: number
+  maxCompactions: number
+}
+
 export interface GlobalThemeSettings {
   activeId: string
   activeLabel: string
@@ -80,6 +94,28 @@ export function normalizeSwarmName(value: string): string {
 
 export function normalizeSessionMode(value: unknown): DesktopSessionMode {
   return typeof value === 'string' && value.trim().toLowerCase() === 'plan' ? 'plan' : 'auto'
+}
+
+export function normalizePlanContextGuardEnabled(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : true
+}
+
+export function normalizePlanContextGuardUsedPercent(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return DEFAULT_PLAN_CONTEXT_GUARD_USED_PERCENT
+  return Math.min(PLAN_CONTEXT_GUARD_USED_PERCENT_MAX, Math.max(PLAN_CONTEXT_GUARD_USED_PERCENT_MIN, Math.round(value)))
+}
+
+export function normalizePlanContextGuardMaxCompactions(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PLAN_CONTEXT_GUARD_MAX_COMPACTIONS
+  return Math.min(PLAN_CONTEXT_GUARD_MAX_COMPACTIONS, Math.max(0, Math.round(value)))
+}
+
+export function normalizePlanContextGuardSettings(payload?: UISettingsWire | null): PlanContextGuardSettings {
+  return {
+    enabled: normalizePlanContextGuardEnabled(payload?.chat?.plan_context_guard_enabled),
+    usedPercent: normalizePlanContextGuardUsedPercent(payload?.chat?.plan_context_guard_used_percent),
+    maxCompactions: normalizePlanContextGuardMaxCompactions(payload?.chat?.plan_context_guard_max_compactions),
+  }
 }
 
 export function normalizeReviewAutoArchiveMinutes(value: unknown): number {
@@ -195,6 +231,18 @@ export function withFollowupCheckpointPolicyDefault(current: UISettingsWire, pol
     chat: {
       ...(current.chat ?? {}),
       followup_checkpoint_policy_default: normalizeFollowupCheckpointPolicyDefault(policy),
+    },
+  }
+}
+
+export function withPlanContextGuardSettings(current: UISettingsWire, settings: PlanContextGuardSettings): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      plan_context_guard_enabled: normalizePlanContextGuardEnabled(settings.enabled),
+      plan_context_guard_used_percent: normalizePlanContextGuardUsedPercent(settings.usedPercent),
+      plan_context_guard_max_compactions: normalizePlanContextGuardMaxCompactions(settings.maxCompactions),
     },
   }
 }

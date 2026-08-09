@@ -3373,6 +3373,9 @@ type uiChatSettingsPatchPresence struct {
 	ShowCompactButton               *bool                                  `json:"show_compact_button"`
 	DefaultNewSessionMode           *string                                `json:"default_new_session_mode"`
 	FollowupCheckpointPolicyDefault *string                                `json:"followup_checkpoint_policy_default"`
+	PlanContextGuardEnabled         *bool                                  `json:"plan_context_guard_enabled"`
+	PlanContextGuardUsedPercent     *int                                   `json:"plan_context_guard_used_percent"`
+	PlanContextGuardMaxCompactions  *int                                   `json:"plan_context_guard_max_compactions"`
 	ReviewAutoArchiveMinutes        *int                                   `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                                   `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          *map[string]string                     `json:"default_workspace_routes"`
@@ -3433,6 +3436,15 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		}
 		if raw.Chat.FollowupCheckpointPolicyDefault != nil {
 			settings.Chat.FollowupCheckpointPolicyDefault = patch.Chat.FollowupCheckpointPolicyDefault
+		}
+		if raw.Chat.PlanContextGuardEnabled != nil {
+			settings.Chat.PlanContextGuardEnabled = patch.Chat.PlanContextGuardEnabled
+		}
+		if raw.Chat.PlanContextGuardUsedPercent != nil {
+			settings.Chat.PlanContextGuardUsedPercent = patch.Chat.PlanContextGuardUsedPercent
+		}
+		if raw.Chat.PlanContextGuardMaxCompactions != nil {
+			settings.Chat.PlanContextGuardMaxCompactions = patch.Chat.PlanContextGuardMaxCompactions
 		}
 		if raw.Chat.ReviewAutoArchiveMinutes != nil {
 			settings.Chat.ReviewAutoArchiveMinutes = patch.Chat.ReviewAutoArchiveMinutes

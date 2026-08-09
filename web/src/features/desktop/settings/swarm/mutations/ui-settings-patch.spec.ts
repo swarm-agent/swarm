@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
+import { savePlanContextGuardSettings } from './save-plan-context-guard-settings'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
 import { saveShowCompactButtonSetting } from './save-show-compact-button-setting'
 import { saveShowTipsSetting } from './save-show-tips-setting'
@@ -68,6 +69,40 @@ test('saveShowCompactButtonSetting sends only show_compact_button patch', async 
     const response = await saveShowCompactButtonSetting(true)
     assert.equal(response.chat?.show_compact_button, true)
     assert.deepEqual(JSON.parse(capturedBody), { chat: { show_compact_button: true } })
+  } finally {
+    restore()
+  }
+})
+
+test('savePlanContextGuardSettings sends only normalized guard fields', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({
+      chat: {
+        plan_context_guard_enabled: false,
+        plan_context_guard_used_percent: 95,
+        plan_context_guard_max_compactions: 3,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await savePlanContextGuardSettings(
+      { theme: { active_id: 'tide' }, chat: { thinking_tags: false } },
+      { enabled: false, usedPercent: 99, maxCompactions: 9 },
+    )
+    assert.equal(response.chat?.plan_context_guard_used_percent, 95)
+    assert.deepEqual(JSON.parse(capturedBody), {
+      chat: {
+        plan_context_guard_enabled: false,
+        plan_context_guard_used_percent: 95,
+        plan_context_guard_max_compactions: 3,
+      },
+    })
   } finally {
     restore()
   }

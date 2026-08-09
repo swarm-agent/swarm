@@ -1217,6 +1217,8 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		return PolicyDecisionAllow
 	case "task":
 		return PolicyDecisionAsk
+	case "compact":
+		return PolicyDecisionAllow
 	case "ask_user", "exit_plan_mode":
 		return PolicyDecisionAsk
 	case "write", "edit":
