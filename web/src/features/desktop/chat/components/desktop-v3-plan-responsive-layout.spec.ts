@@ -27,5 +27,7 @@ test('plan execution adapts its desktop sidebar and shifts above the composer be
   assert.match(compactRegion, /busyAction=\{planExecutionBusyAction\}/)
   assert.match(compactRegion, /onAction=\{stablePlanExecutionAction\}/)
   assert.match(compactRegion, /belowActions=\{planSidebarBelowActions\}/)
-  assert.match(compactRegion, /policyMode === "automatic" \? "Automatic" : "Review each"/)
+  assert.doesNotMatch(compactRegion, />\s*Automatic\s*</)
+  assert.match(compactRegion, /policyMode !== "automatic"/)
+  assert.match(compactRegion, />\s*Review each\s*</)
 })
