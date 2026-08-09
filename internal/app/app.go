@@ -8643,6 +8643,7 @@ type gitRepoStatus struct {
 	AheadCount     int
 	BehindCount    int
 	Upstream       string
+	RepoRoot       string
 	HasGit         bool
 }
 
@@ -8699,7 +8700,12 @@ func gitStatusForPath(path string) (gitRepoStatus, bool) {
 	if err != nil {
 		return gitRepoStatus{Branch: "-"}, false
 	}
-	return parseGitStatusPorcelainV2(string(raw)), true
+	status := parseGitStatusPorcelainV2(string(raw))
+	rootCmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", target, "rev-parse", "--show-toplevel")
+	if rootRaw, rootErr := rootCmd.Output(); rootErr == nil {
+		status.RepoRoot = normalizePath(strings.TrimSpace(string(rootRaw)))
+	}
+	return status, true
 }
 
 func parseGitStatusPorcelainV2(raw string) gitRepoStatus {

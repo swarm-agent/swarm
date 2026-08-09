@@ -220,6 +220,30 @@ func TestApplyHomeWorkspaceBootstrapMarksUnsavedGitLaunchDirectory(t *testing.T)
 	}
 }
 
+func TestApplyHomeWorkspaceBootstrapTreatsUnrelatedGitRepoUnderBroadWorkspaceAsUnsaved(t *testing.T) {
+	workspacePath := t.TempDir()
+	launchPath := t.TempDir()
+	if output, err := exec.Command("git", "init", launchPath).CombinedOutput(); err != nil {
+		t.Fatalf("init unrelated git launch directory: %v: %s", err, output)
+	}
+
+	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
+		current:         client.WorkspaceResolution{WorkspacePath: workspacePath, ResolvedPath: workspacePath, WorkspaceName: "Default"},
+		hasCurrent:      true,
+		workspaces:      []client.WorkspaceEntry{{Path: workspacePath, WorkspaceName: "Default", Directories: []string{workspacePath}}},
+		selectedResolve: client.WorkspaceCWDResolveResponse{ResolvedPath: workspacePath, Workspace: &client.WorkspaceResolution{WorkspacePath: workspacePath, ResolvedPath: workspacePath}},
+		launchChecked:   true,
+		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: launchPath, ResolutionKind: "workspace", Workspace: &client.WorkspaceResolution{WorkspacePath: workspacePath, ResolvedPath: launchPath, WorkspaceName: "Default"}},
+	}, launchPath)
+
+	if selected != workspacePath || len(next.Workspaces) != 1 || !next.Workspaces[0].Active {
+		t.Fatalf("default workspace selection = %q %#v", selected, next.Workspaces)
+	}
+	if len(warnings) != 0 || next.WorkspaceSetupPath != launchPath || !next.WorkspaceSetupHasGit {
+		t.Fatalf("warnings = %#v, setup path = %q, has git = %v", warnings, next.WorkspaceSetupPath, next.WorkspaceSetupHasGit)
+	}
+}
+
 func TestApplyHomeWorkspaceBootstrapKeepsDefaultWorkspaceForUnregisteredLaunchCWD(t *testing.T) {
 	launchResolve := client.WorkspaceCWDResolveResponse{
 		ResolvedPath:   "/other",
