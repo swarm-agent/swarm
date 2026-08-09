@@ -58,7 +58,11 @@ const (
 	sessionV3StaleRecoveryMaxUtilization      = 99.0
 	sessionV3HandoffDefaultTailMessages       = 24
 	sessionV3HandoffDefaultToolOutputChars    = 1200
-	sessionV3HandoffDefaultTotalChars         = 60000
+	// Provider tokenizers differ, so handoff sizing uses the same deterministic
+	// approximation as memory compaction: four Unicode code points per token.
+	sessionV3HandoffApproxCharsPerToken = 4
+	sessionV3HandoffDefaultTotalTokens  = 40000
+	sessionV3HandoffDefaultTotalChars   = sessionV3HandoffDefaultTotalTokens * sessionV3HandoffApproxCharsPerToken
 )
 
 var sessionV3TitleWordPattern = regexp.MustCompile(`\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b`)
