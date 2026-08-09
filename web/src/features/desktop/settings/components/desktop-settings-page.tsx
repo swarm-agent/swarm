@@ -18,10 +18,10 @@ import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
-  { id: 'behavior', label: 'Behavior', icon: SlidersHorizontal },
   { id: 'account', label: 'Account', icon: UserRound },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'actions', label: 'Actions', icon: Zap },
+  { id: 'behavior', label: 'Behavior', icon: SlidersHorizontal },
   { id: 'permissions', label: 'Permissions', icon: Shield },
   { id: 'tailscale', label: 'Tailscale', icon: Network },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -161,10 +161,10 @@ export function DesktopSettingsPage() {
         </div>
         <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-5 md:px-6 md:py-8">
           <div className="w-full max-w-4xl">
-            {activeTab === 'behavior' ? <BehaviorSettingsPage /> : null}
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'actions' ? <ActionsSettingsPage workspaceSlug={routeWorkspaceSlug} /> : null}
+            {activeTab === 'behavior' ? <BehaviorSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
             {activeTab === 'tailscale' ? <TailscaleSettingsPage /> : null}
             {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}

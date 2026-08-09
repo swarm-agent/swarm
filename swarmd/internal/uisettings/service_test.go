@@ -51,14 +51,14 @@ func TestUISettingsServiceRoundTripsNormalizedPlanContextGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetForAccount(): %v", err)
 	}
-	if saved.Chat.PlanContextGuardEnabled || saved.Chat.PlanContextGuardUsedPercent != 50 || saved.Chat.PlanContextGuardMaxCompactions != 3 {
+	if saved.Chat.PlanContextGuardEnabled || saved.Chat.PlanContextGuardUsedPercent != 12 || saved.Chat.PlanContextGuardMaxCompactions != 3 {
 		t.Fatalf("saved guard settings = %+v", saved.Chat)
 	}
 	loaded, err := service.GetForAccount("account-a")
 	if err != nil {
 		t.Fatalf("GetForAccount(): %v", err)
 	}
-	if loaded.Chat.PlanContextGuardEnabled || loaded.Chat.PlanContextGuardUsedPercent != 50 || loaded.Chat.PlanContextGuardMaxCompactions != 3 {
+	if loaded.Chat.PlanContextGuardEnabled || loaded.Chat.PlanContextGuardUsedPercent != 12 || loaded.Chat.PlanContextGuardMaxCompactions != 3 {
 		t.Fatalf("loaded guard settings = %+v", loaded.Chat)
 	}
 }

@@ -145,8 +145,7 @@ Prefer maintained scripts over one-off replacements:
 
 - `./scripts/update-model-snapshot.sh [--check]` — canonical model snapshot fetch/verification/install workflow.
 - `./scripts/ssh-fast-test.sh <ssh-alias>` — explicit remote development rebuild/restart workflow.
-- `./scripts/local-session-db-inspect.sh --session-url <provider-url>` — safe copied-DB session inspection.
-- `./scripts/ssh-session-db-inspect.sh <ssh-alias> --latest 5` — bounded remote session inspection.
+- `./scripts/session-dump-via-api.sh <session-url>` — canonical same-machine development session dump through the authenticated Desktop API passthrough. Do not inspect the local Pebble database directly.
 - `./scripts/check-precommit.sh`, `./scripts/check-launch-readiness.sh`, and release verification scripts — public/release gates.
 
 Use each script’s `--help`. Do not manually reproduce a script’s contract, hardcode remote paths, pass raw secrets on command lines, or substitute an unrequested host/helper.

@@ -67,16 +67,13 @@ From a source checkout, the setup helper can build and install local development
 
 ## Development session dumps
 
-When `dev_mode = true` is set in `swarm.conf`, an authenticated caller can ask the daemon to write any local V3 session as a readable dump under the daemon data directory at `session-dumps/`:
+When `dev_mode = true` is set in `swarm.conf`, use the checked-in same-machine passthrough helper with a Desktop session URL:
 
-```http
-POST /v3/developer/session-dump
-Content-Type: application/json
-
-{"session_id":"<session-id>"}
+```bash
+./scripts/session-dump-via-api.sh http://127.0.0.1:5555/<workspace>/<session-id>
 ```
 
-The response returns the server-controlled absolute `path` and `bytes_written`. The API does not accept an output path. Dump files are private (`0600`) and include the session snapshot, projection, complete messages/events, run intents/state, plans, permissions, and usage summary. The endpoint returns `403` unless development mode is enabled and `404` when the session does not exist.
+The helper bootstraps an authenticated local Desktop session, calls `POST /v3/developer/session-dump`, and prints the server-controlled absolute dump path. It accepts only localhost or loopback session URLs and never reads the Pebble database directly. Dump files are private (`0600`) under the daemon data directory at `session-dumps/` and include the session snapshot, projection, complete messages/events, run intents/state, plans, permissions, and usage summary. The endpoint returns `403` unless development mode is enabled and `404` when the session does not exist.
 
 ## Quick start
 
