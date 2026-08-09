@@ -781,6 +781,29 @@ func TestApplySessionV3AgentPreferenceOverridesClearsUnsupportedServiceTierProvi
 	}
 }
 
+func TestSessionV3ToolNamesExceptUsesContractCanonicalNames(t *testing.T) {
+	tools := []provideriface.ToolDefinition{
+		{Name: "ask-user"},
+		{Name: "manage-sessions"},
+		{Name: "manage-skill"},
+		{Name: "manage-theme"},
+		{Name: "manage-worktree"},
+		{Name: "skill-use"},
+		{Name: "compact"},
+	}
+	allowed := sessionV3ToolNamesExcept(tools, "compact")
+	for _, name := range []string{"ask_user", "manage_sessions", "manage_skill", "manage_theme", "manage_worktree", "skill_use"} {
+		if _, ok := allowed[name]; !ok {
+			t.Fatalf("allowed names omit canonical %q: %v", name, allowed)
+		}
+	}
+	for _, rawName := range []string{"ask-user", "manage-sessions", "manage-skill", "manage-theme", "manage-worktree", "skill-use", "compact"} {
+		if _, ok := allowed[rawName]; ok {
+			t.Fatalf("allowed names retain raw provider name %q: %v", rawName, allowed)
+		}
+	}
+}
+
 func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T) {
 	runner := &sessionsV3ProviderToolsRunner{
 		definitions: []tool.Definition{
@@ -788,6 +811,7 @@ func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T)
 			{Type: "function", Name: "bash"},
 			{Type: "function", Name: "manage-agent"},
 			{Type: "function", Name: "manage-skill"},
+			{Type: "function", Name: "manage-sessions"},
 			{Type: "function", Name: "manage-worktree"},
 			{Type: "function", Name: "skill-use"},
 		},
@@ -796,6 +820,7 @@ func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T)
 			"bash":            {Enabled: true},
 			"manage_agent":    {Enabled: true},
 			"manage_skill":    {Enabled: true},
+			"manage_sessions": {Enabled: true},
 			"manage_worktree": {Enabled: true},
 			"skill_use":       {Enabled: true},
 		}},
@@ -812,7 +837,7 @@ func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T)
 		names = append(names, definition.Name)
 	}
 	sort.Strings(names)
-	expected := []string{"ask-user", "bash", "manage-agent", "manage-skill", "manage-worktree", "skill-use"}
+	expected := []string{"ask-user", "bash", "manage-agent", "manage-sessions", "manage-skill", "manage-worktree", "skill-use"}
 	if !reflect.DeepEqual(names, expected) {
 		t.Fatalf("provider tool names mismatch\n got: %v\nwant: %v", names, expected)
 	}

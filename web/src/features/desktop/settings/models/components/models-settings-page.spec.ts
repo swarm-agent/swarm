@@ -80,8 +80,12 @@ test('Models page uses canonical queries, mutations, invalidation, and explicit 
   assert.match(source, /role="alert"/)
 })
 
-test('Desktop settings exposes exactly one Models tab and one composed page', () => {
-  assert.equal((settingsPageSource.match(/id: 'models'/g) ?? []).length, 1)
-  assert.equal((settingsPageSource.match(/<ModelsSettingsPage \/>/g) ?? []).length, 1)
+test('Models page does not own Behavior settings', () => {
+  assert.doesNotMatch(source, /PlanContextGuardSettingsSection|savePlanContextGuardSettings/)
+})
+
+test('Desktop settings does not expose the retired Models page', () => {
+  assert.equal((settingsPageSource.match(/id: 'models'/g) ?? []).length, 0)
+  assert.equal((settingsPageSource.match(/<ModelsSettingsPage \/>/g) ?? []).length, 0)
   assert.doesNotMatch(settingsPageSource, /ModelFavoritesSettings|SwarmModelAssignmentSettings/)
 })

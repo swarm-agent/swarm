@@ -25,8 +25,8 @@ The API can be inspected directly with an authenticated desktop request:
 
 <copy label="workspace list request">curl --fail --silent --show-error "$SWARM_API_URL/v1/workspace/list"</copy>
 
-For durable session evidence, copy and inspect the configured local Pebble database with the checked-in helper. Use the hidden run session ID from daemon/session diagnostics:
+For durable session evidence in development mode, use the authenticated Desktop API passthrough with the hidden run session ID from daemon/session diagnostics:
 
-<copy label="durable Router session inspection">./scripts/local-session-db-inspect.sh --session "workspace-definition-SESSION_ID" --copy-db --dump</copy>
+<copy label="durable Router session inspection">./scripts/session-dump-via-api.sh "http://127.0.0.1:5555/WORKSPACE/workspace-definition-SESSION_ID"</copy>
 
 Expected workspace API fields are `definition`, `definition_status`, `definition_attempt_count`, `definition_generation`, `definition_error`, `definition_model_suggestion`, and `definition_updated_at`. The durable Pebble record additionally retains the detailed definition lifecycle timestamps. Hidden Router sessions use `source: workspace_definition` and `navigation_hidden: true` metadata.

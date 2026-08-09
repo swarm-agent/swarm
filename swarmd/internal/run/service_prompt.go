@@ -433,6 +433,23 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 	return strings.TrimSpace(strings.Join(blocks, "\n\n"))
 }
 
+func filterToolDefinitionsExcept(definitions []provideriface.ToolDefinition, allowed map[string]struct{}) []provideriface.ToolDefinition {
+	return FilterToolDefinitionsExcept(definitions, allowed)
+}
+
+func FilterToolDefinitionsExcept(definitions []provideriface.ToolDefinition, allowed map[string]struct{}) []provideriface.ToolDefinition {
+	if len(allowed) == 0 {
+		return nil
+	}
+	filtered := make([]provideriface.ToolDefinition, 0, len(allowed))
+	for _, definition := range definitions {
+		if _, ok := allowed[canonicalToolName(definition.Name)]; ok {
+			filtered = append(filtered, definition)
+		}
+	}
+	return filtered
+}
+
 func filterToolDefinitions(definitions []provideriface.ToolDefinition, disabled map[string]bool) []provideriface.ToolDefinition {
 	if len(disabled) == 0 {
 		return definitions
@@ -634,6 +651,7 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		if exitPlanModeEnabled {
 			lines = append(lines,
 				"Keep refining the plan with plan_manage as needed while staying in plan mode. For the final step, call exit_plan_mode once with the final structured document (info/checkpoints) and active plan_id when available; do not do a redundant plan_manage save immediately before exit_plan_mode just to submit the same plan. After approval, execution continues in auto on the same active plan/checklist, and plan_manage can still update it.",
+				"When the backend injects a plan context guard warning, stop open-ended research and choose exactly one exposed control: exit_plan_mode with the best actionable structured plan, or compact with a concise research handoff. compact is unavailable outside that warned decision step, and after the configured compact maximum the only valid choice is exit_plan_mode.",
 				"Because the current session mode is plan, you may call exit_plan_mode when the plan is actionable even if earlier transcript text says the session already exited plan mode or that exit_plan_mode cannot be called from auto.",
 			)
 		}

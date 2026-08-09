@@ -5,11 +5,15 @@ import {
   DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS,
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
+  normalizePlanContextGuardSettings,
+  normalizePlanContextGuardUsedPercent,
+  normalizePlanContextGuardMaxCompactions,
   normalizeSessionMode,
   normalizeShowTipsEnabled,
   normalizeSidebarHideInactiveHours,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
+  withPlanContextGuardSettings,
   withSidebarHideInactiveHours,
   type UISettingsWire,
 } from './swarm-settings'
@@ -44,6 +48,50 @@ test('withDefaultNewSessionMode preserves existing chat fields while updating de
   assert.deepEqual(withDefaultNewSessionMode(current, 'plan'), {
     ...current,
     chat: { thinking_tags: false, default_workspace_routes: { '/repo': 'self' }, default_new_session_mode: 'plan' },
+  })
+})
+
+test('plan context guard normalization defaults and clamps persisted wire values', () => {
+  assert.deepEqual(normalizePlanContextGuardSettings(undefined), {
+    enabled: true,
+    usedPercent: 80,
+    maxCompactions: 1,
+  })
+  assert.deepEqual(normalizePlanContextGuardSettings({
+    chat: {
+      plan_context_guard_enabled: false,
+      plan_context_guard_used_percent: 99,
+      plan_context_guard_max_compactions: -4,
+    },
+  }), {
+    enabled: false,
+    usedPercent: 95,
+    maxCompactions: 0,
+  })
+  assert.equal(normalizePlanContextGuardUsedPercent(49.6), 50)
+  assert.equal(normalizePlanContextGuardUsedPercent(Number.NaN), 80)
+  assert.equal(normalizePlanContextGuardMaxCompactions(9), 3)
+})
+
+test('plan context guard patch preserves unrelated settings and writes normalized fields', () => {
+  const current: UISettingsWire = {
+    theme: { active_id: 'tide' },
+    chat: { thinking_tags: false, default_new_session_mode: 'plan' },
+    swarm: { name: 'Local' },
+  }
+  assert.deepEqual(withPlanContextGuardSettings(current, {
+    enabled: false,
+    usedPercent: 97,
+    maxCompactions: 8,
+  }), {
+    ...current,
+    chat: {
+      thinking_tags: false,
+      default_new_session_mode: 'plan',
+      plan_context_guard_enabled: false,
+      plan_context_guard_used_percent: 95,
+      plan_context_guard_max_compactions: 3,
+    },
   })
 })
 

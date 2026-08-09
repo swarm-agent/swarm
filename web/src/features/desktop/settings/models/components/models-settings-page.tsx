@@ -102,7 +102,6 @@ export function ModelsSettingsPage() {
     mutationFn: saveSwarmAgentModelSettings,
     onSuccess: (settings) => queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, settings),
   })
-
   const profiles = profilesQuery.data?.profiles ?? []
   const favorites = profiles.map(toFlatModelFavorite)
   const modelOptions = useMemo(() => toFlatModelOptions(optionsQuery.data ?? []), [optionsQuery.data])

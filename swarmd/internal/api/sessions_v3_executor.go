@@ -564,6 +564,9 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 			return
 		}
 	}
+	if responseEpochID := strings.TrimSpace(response.EpochID); responseEpochID != "" {
+		job.EpochID = responseEpochID
+	}
 	if e.isRunCanceled(job) || runCtx.Err() != nil {
 		return
 	}
@@ -867,7 +870,7 @@ func (e *sessionV3Executor) recordRunPhase(job sessionV3ExecutorJob, phase RunPh
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ExecutorClientRequestID(eventType, job.RunID)
+	clientRequestID := sessionV3ExecutorJobClientRequestID(eventType, job)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -917,7 +920,7 @@ func (e *sessionV3Executor) recordRunProgress(job sessionV3ExecutorJob, progress
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := fmt.Sprintf("%s-%04d", sessionV3ExecutorClientRequestID("session.assistant.delta", job.RunID), deltaIndex)
+	clientRequestID := fmt.Sprintf("%s-%04d", sessionV3ExecutorJobClientRequestID("session.assistant.delta", job), deltaIndex)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -1007,7 +1010,7 @@ func (e *sessionV3Executor) recordProviderToolConstructionEvent(job sessionV3Exe
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ProviderToolConstructionClientRequestID(eventType, job.RunID, step, callID, event.ToolCallIndex, eventIndex)
+	clientRequestID := sessionV3ProviderToolConstructionClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step, callID, event.ToolCallIndex, eventIndex)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -1080,7 +1083,7 @@ func (e *sessionV3Executor) recordReasoningEvent(job sessionV3ExecutorJob, event
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ReasoningEventClientRequestID(eventType, job.RunID, step, reasoningKey, eventIndex)
+	clientRequestID := sessionV3ReasoningEventClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step, reasoningKey, eventIndex)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -1384,7 +1387,7 @@ func (e *sessionV3Executor) recordPreToolAssistantSegment(job sessionV3ExecutorJ
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
 	}
-	clientRequestID := sessionV3ExecutorStepClientRequestID("session.assistant.pre_tool", job.RunID, step)
+	clientRequestID := sessionV3ExecutorJobStepClientRequestID("session.assistant.pre_tool", job, step)
 	return e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -1619,7 +1622,23 @@ func (e *sessionV3Executor) assistantResponse(ctx context.Context, job sessionV3
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
-	return e.providerAssistantResponse(ctx, job, resolved, "", false)
+	var planContextGuard *runruntime.PlanContextGuard
+	if e.server != nil && e.server.uiSettings != nil {
+		accountScopeID := strings.TrimSpace(job.Principal.AccountScopeID)
+		if accountScopeID == "" {
+			accountScopeID = strings.TrimSpace(resolved.Session.AccountScopeID)
+		}
+		settings, settingsErr := e.server.uiSettings.GetForAccount(accountScopeID)
+		if settingsErr != nil {
+			return sessionV3AssistantResponse{}, fmt.Errorf("resolve plan context guard settings: %w", settingsErr)
+		}
+		planContextGuard = runruntime.NewConfiguredPlanContextGuard(
+			settings.Chat.PlanContextGuardEnabled,
+			float64(settings.Chat.PlanContextGuardUsedPercent),
+			settings.Chat.PlanContextGuardMaxCompactions,
+		)
+	}
+	return e.providerAssistantResponse(ctx, job, resolved, "", false, planContextGuard)
 }
 
 func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, cause error) (sessionV3AssistantResponse, sessionV3ExecutorJob, error) {
@@ -1649,7 +1668,7 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 	if err != nil {
 		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact continuation runtime resolve failed: %w", err)
 	}
-	response, err := e.providerAssistantResponse(ctx, job, resolved, "overflow-continuation", true)
+	response, err := e.providerAssistantResponse(ctx, job, resolved, "overflow-continuation", true, nil)
 	return response, job, err
 }
 
@@ -1658,7 +1677,7 @@ func sessionV3IsContextOverflowDiagnostic(detail string) bool {
 	return strings.Contains(normalized, "context_length_exceeded") || strings.Contains(normalized, "context window") || strings.Contains(normalized, "context length") || strings.Contains(normalized, "maximum context")
 }
 
-func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, requestPhaseSuffix string, forceCommittedContext bool) (sessionV3AssistantResponse, error) {
+func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, requestPhaseSuffix string, forceCommittedContext bool, planContextGuard *runruntime.PlanContextGuard) (sessionV3AssistantResponse, error) {
 	if e == nil || e.server == nil || e.server.providers == nil {
 		return sessionV3AssistantResponse{}, errors.New("provider registry is not configured")
 	}
@@ -1737,7 +1756,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	} else {
 		sink = newSessionV3DurableProgressSink(e, job, cancelStream)
 	}
-	loopResult, err := e.runProviderToolLoop(streamCtx, job, resolved, runner, baseReq, sink)
+	loopResult, err := e.runProviderToolLoop(streamCtx, job, resolved, runner, baseReq, sink, planContextGuard)
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer flushCancel()
 	closeErr := sink.CloseAndFlush(flushCtx)
@@ -2483,6 +2502,19 @@ func firstNonZeroUint64(values ...uint64) uint64 {
 	return 0
 }
 
+func sessionV3ToolNamesExcept(tools []provideriface.ToolDefinition, excluded string) map[string]struct{} {
+	excluded = agentToolCanonicalName(excluded)
+	allowed := make(map[string]struct{}, len(tools))
+	for _, definition := range tools {
+		name := agentToolCanonicalName(definition.Name)
+		if name == "" || name == excluded {
+			continue
+		}
+		allowed[name] = struct{}{}
+	}
+	return allowed
+}
+
 func sessionV3ProviderToolsLineageHash(tools []provideriface.ToolDefinition) string {
 	if len(tools) == 0 {
 		return ""
@@ -2515,7 +2547,7 @@ type sessionV3ProviderLoopResult struct {
 	StartNextCheckpoint bool
 }
 
-func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request, sink *sessionV3DurableProgressSink) (sessionV3ProviderLoopResult, error) {
+func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request, sink *sessionV3DurableProgressSink, planContextGuard *runruntime.PlanContextGuard) (sessionV3ProviderLoopResult, error) {
 	if runner == nil {
 		return sessionV3ProviderLoopResult{}, errors.New("provider runner is not configured")
 	}
@@ -2526,19 +2558,48 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
 	toolProgression := &runruntime.ToolProgressionState{}
 	finalizingPlanTerminal := false
+	if planContextGuard == nil {
+		planContextGuard = runruntime.NewPlanContextGuard(resolved.Session.Metadata)
+	}
+	planGuardFreshContext := false
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
-		toolsEnabled := len(baseReq.Tools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
+		stepInstructions := baseReq.Instructions
+		stepTools := baseReq.Tools
+		if strings.EqualFold(strings.TrimSpace(resolved.Session.Mode), sessionruntime.ModePlan) && pebblestore.AgentExitPlanModeEnabled(resolved.AgentProfile) && planContextGuard.BeginDecision() {
+			warning := planContextGuard.WarningInstructions()
+			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)
+			if planContextGuard.FinalizationOnly() {
+				stepTools = runruntime.FilterToolDefinitionsExcept(stepTools, map[string]struct{}{"exit_plan_mode": {}})
+			} else {
+				stepTools = runruntime.FilterToolDefinitionsExcept(stepTools, map[string]struct{}{"exit_plan_mode": {}, "compact": {}})
+			}
+		} else {
+			stepTools = runruntime.FilterToolDefinitionsExcept(stepTools, sessionV3ToolNamesExcept(stepTools, "compact"))
+		}
+		toolsEnabled := len(stepTools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
 		if toolsEnabled {
 			var invokerErr error
-			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step, toolProgression)
+			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step, toolProgression, planContextGuard)
 			if invokerErr != nil {
 				return sessionV3ProviderLoopResult{}, invokerErr
 			}
 		}
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
+		req.Instructions = stepInstructions
+		req.Tools = stepTools
+		if planGuardFreshContext {
+			req.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(req.BoundaryReason, "context_compaction_plan_guard")
+			req.StartNewChain = true
+			req.AllowContinuation = false
+			req.ReuseTransport = false
+			req.ResetTransport = true
+			req.NativeContinuationAllowed = false
+			req.ForceFreshProviderContext = true
+			planGuardFreshContext = false
+		}
 		req.ToolInvoker = toolInvoker
 		// Runtime context is part of the provider request properties and therefore
 		// must remain byte-stable while this epoch's response chain is active.
@@ -2586,6 +2647,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if stepErr != nil {
 			return sessionV3ProviderLoopResult{}, stepErr
 		}
+		planGuardArmed := false
 		usageProviderID := strings.TrimSpace(runner.ID())
 		if usageProviderID == "" {
 			usageProviderID = strings.TrimSpace(resolved.Preference.Provider)
@@ -2594,17 +2656,34 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if usageModel == "" {
 			usageModel = strings.TrimSpace(baseReq.Model)
 		}
-		if _, recorded, usageErr := e.recordProviderUsage(job, resolved, usageProviderID, usageModel, step, response.Usage, time.Now().UnixMilli()); usageErr != nil {
+		usageResult, recorded, usageErr := e.recordProviderUsage(job, resolved, usageProviderID, usageModel, step, response.Usage, time.Now().UnixMilli())
+		if usageErr != nil {
 			return sessionV3ProviderLoopResult{}, usageErr
-		} else if recorded {
+		}
+		if recorded {
 			e.recordSessionV3Diagnostic(job, "session.diagnostic.provider.usage", "backend.provider", fmt.Sprintf("step-%d-usage-recorded", step), map[string]any{
 				"step":     step,
 				"provider": usageProviderID,
 				"model":    usageModel,
 				"usage":    response.Usage,
 			})
+			if strings.EqualFold(strings.TrimSpace(resolved.Session.Mode), sessionruntime.ModePlan) && pebblestore.AgentExitPlanModeEnabled(resolved.AgentProfile) {
+				turnUsage, ok := sessionV3ProviderUsageRecord(usageProviderID, usageModel, resolved.ContextWindow, job.RunID, step, response.Usage)
+				if ok {
+					planGuardArmed = planContextGuard.Observe(sessionV3PlanContextGuardUsageSummary(usageResult, turnUsage))
+				}
+			}
 		}
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
+			if planGuardArmed {
+				continue
+			}
+			if planContextGuard.DecisionActive() {
+				if refusalErr := planContextGuard.RecordRefusal(); refusalErr != nil {
+					return sessionV3ProviderLoopResult{}, refusalErr
+				}
+				continue
+			}
 			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(stepText) != "" {
 				response.StopReason = "stop"
 			}
@@ -2747,6 +2826,99 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
 		input = append(input, sessionsV3ProviderToolMediaInputItems(toolResults)...)
+		guardCompactHandoff := ""
+		guardDecisionCalls := 0
+		if !planContextGuard.DecisionActive() {
+			for _, call := range response.FunctionCalls {
+				if strings.EqualFold(strings.TrimSpace(call.Name), "compact") {
+					return sessionV3ProviderLoopResult{}, errors.New("compact rejected: no armed plan context guard compaction decision is active")
+				}
+			}
+		}
+		if planContextGuard.DecisionActive() && len(response.FunctionCalls) != 1 {
+			if refusalErr := planContextGuard.RecordRefusal(); refusalErr != nil {
+				return sessionV3ProviderLoopResult{}, refusalErr
+			}
+			continue
+		}
+		for i, call := range response.FunctionCalls {
+			name := strings.ToLower(strings.TrimSpace(call.Name))
+			if name == "compact" {
+				guardDecisionCalls++
+				if i >= len(toolResults) || strings.TrimSpace(toolResults[i].Error) != "" {
+					continue
+				}
+				handoff, handoffErr := runruntime.PlanContextGuardCompactHandoff(call.Arguments)
+				if handoffErr != nil {
+					return sessionV3ProviderLoopResult{}, handoffErr
+				}
+				guardCompactHandoff = handoff
+			}
+			if name == "exit_plan_mode" && planContextGuard.DecisionActive() {
+				guardDecisionCalls++
+			}
+		}
+		if planContextGuard.DecisionActive() && guardDecisionCalls != 1 {
+			if refusalErr := planContextGuard.RecordRefusal(); refusalErr != nil {
+				return sessionV3ProviderLoopResult{}, refusalErr
+			}
+			continue
+		}
+		if guardCompactHandoff != "" {
+			compactor, ok := e.server.runner.(interface {
+				ApplyPlanContextGuardCompaction(runruntime.PlanContextGuardCompactionInput) (string, error)
+			})
+			if !ok || compactor == nil {
+				return sessionV3ProviderLoopResult{}, errors.New("v3 plan context guard compaction requires run service support")
+			}
+			epochID, compactErr := compactor.ApplyPlanContextGuardCompaction(runruntime.PlanContextGuardCompactionInput{
+				SessionID: job.SessionID, RunID: job.RunID, Handoff: guardCompactHandoff,
+				ContextWindow: resolved.ContextWindow, ProviderID: usageProviderID, Model: usageModel, Step: step,
+				Principal: job.Principal, ApplySessionMutation: e.server.applySessionV3PrimaryMutation,
+			})
+			if compactErr != nil {
+				return sessionV3ProviderLoopResult{}, fmt.Errorf("v3 plan context guard compaction failed: %w", compactErr)
+			}
+			job.EpochID = epochID
+			if sink != nil {
+				sink.job.EpochID = epochID
+			}
+			refreshed, refreshErr := e.resolveSessionV3Runtime(job)
+			if refreshErr != nil {
+				return sessionV3ProviderLoopResult{}, refreshErr
+			}
+			resolved = refreshed
+			refreshedRunner, runnerErr := e.sessionV3ProviderRunner(resolved)
+			if runnerErr != nil {
+				return sessionV3ProviderLoopResult{}, runnerErr
+			}
+			runner = refreshedRunner
+			input = e.sessionV3ProviderContinuationInput(job, false)
+			if len(input) == 0 {
+				return sessionV3ProviderLoopResult{}, errors.New("v3 plan context guard compaction produced empty continuation input")
+			}
+			baseReq, compactErr = e.sessionV3ProviderBaseRequest(job, resolved, input)
+			if compactErr != nil {
+				return sessionV3ProviderLoopResult{}, compactErr
+			}
+			planContextGuard.RecordCompaction()
+			planGuardFreshContext = true
+			continue
+		}
+		if planContextGuard.DecisionActive() {
+			exitedPlanMode := false
+			for i, call := range response.FunctionCalls {
+				if strings.EqualFold(strings.TrimSpace(call.Name), "exit_plan_mode") && i < len(toolResults) && strings.TrimSpace(toolResults[i].Error) == "" {
+					exitedPlanMode = true
+					break
+				}
+			}
+			if !exitedPlanMode {
+				if refusalErr := planContextGuard.RecordRefusal(); refusalErr != nil {
+					return sessionV3ProviderLoopResult{}, refusalErr
+				}
+			}
+		}
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
@@ -2934,7 +3106,7 @@ func sessionV3ProviderCanonicalToolCallKey(call provideriface.FunctionCall) stri
 	return name + ":" + canonicalArgs
 }
 
-func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int, toolProgression *runruntime.ToolProgressionState) (provideriface.ToolInvoker, error) {
+func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int, toolProgression *runruntime.ToolProgressionState, planContextGuard *runruntime.PlanContextGuard) (provideriface.ToolInvoker, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
 	}
@@ -2976,6 +3148,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		ProviderID:           resolved.Preference.Provider,
 		Model:                resolved.Preference.Model,
 		MediaContract:        resolved.MediaContract,
+		PlanContextGuard:     planContextGuard,
 	})
 	if invoker == nil {
 		return nil, errors.New("provider-managed tool invoker is not configured")
@@ -3021,6 +3194,11 @@ func (e *sessionV3Executor) applySessionV3ProviderToolMutation(job sessionV3Exec
 		if sessionV3ProviderToolTerminalEvent(input.EventType) && e.isRunCanceled(job) {
 			return sessionruntime.SessionMutationResult{}, context.Canceled
 		}
+		// Provider tools restart their step-local counters after overflow or stale
+		// compaction. Scope their mutation identity to the execution epoch while
+		// preserving the canonical parent run ID carried by the run intent.
+		input.ClientRequestID = sessionV3ExecutorEpochScopedID(input.ClientRequestID, job.EpochID)
+		input.IdempotencyKey = sessionV3ExecutorEpochScopedID(input.IdempotencyKey, job.EpochID)
 		return e.server.applySessionV3PrimaryMutation(input)
 	}
 }
@@ -3146,7 +3324,7 @@ func (e *sessionV3Executor) recordProviderToolEvent(job sessionV3ExecutorJob, ev
 	if err != nil {
 		return err
 	}
-	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, job.RunID, step, callID, deltaIndex)
+	clientRequestID := sessionV3ProviderToolEventClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step, callID, deltaIndex)
 	intent := sessionV3RunIntentForJob(job, sessionruntime.RunIntentRunning, now)
 	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
@@ -4759,6 +4937,28 @@ func sessionV3ExecutorRunKey(sessionID, runID string) string {
 func sessionV3ExecutorClientRequestID(eventType, runID string) string {
 	label := strings.NewReplacer(".", "_", "/", "_", " ", "_").Replace(strings.TrimSpace(eventType))
 	return "v3-executor-" + label + "-" + strings.TrimSpace(runID)
+}
+
+func sessionV3ExecutorEpochScopedID(id, epochID string) string {
+	id = strings.TrimSpace(id)
+	epochID = strings.TrimSpace(epochID)
+	if id == "" || epochID == "" {
+		return id
+	}
+	sum := sha256.Sum256([]byte(epochID))
+	return id + "-epoch-" + hex.EncodeToString(sum[:8])
+}
+
+func sessionV3ExecutorJobMutationRunID(job sessionV3ExecutorJob) string {
+	return sessionV3ExecutorEpochScopedID(job.RunID, job.EpochID)
+}
+
+func sessionV3ExecutorJobClientRequestID(eventType string, job sessionV3ExecutorJob) string {
+	return sessionV3ExecutorClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job))
+}
+
+func sessionV3ExecutorJobStepClientRequestID(eventType string, job sessionV3ExecutorJob, step int) string {
+	return sessionV3ExecutorStepClientRequestID(eventType, sessionV3ExecutorJobMutationRunID(job), step)
 }
 
 func sessionV3ProviderToolStepID(step int) string {

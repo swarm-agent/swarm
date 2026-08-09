@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { Button } from '../../../../../components/ui/button'
 import { Select } from '../../../../../components/ui/select'
 import type { AgentModelAssignment, SwarmAgentModelSettingsPatch } from '../../swarm/types/agent-model-settings'
@@ -21,6 +21,7 @@ export interface SwarmModelAssignmentSettingsProps {
   saving: boolean
   error?: string | null
   onSave: (input: SwarmModelAssignmentSaveInput) => void
+  children?: ReactNode
 }
 
 type AssignmentValidationResult =
@@ -137,7 +138,7 @@ function DirectModelEditor({
   )
 }
 
-export function SwarmModelAssignmentSettings({ modelOptions, action, plan, saving, error, onSave }: SwarmModelAssignmentSettingsProps) {
+export function SwarmModelAssignmentSettings({ modelOptions, action, plan, saving, error, onSave, children }: SwarmModelAssignmentSettingsProps) {
   const [draftAction, setDraftAction] = useState(() => normalizeSelectionForOptions(action, modelOptions))
   const [draftPlan, setDraftPlan] = useState(() => normalizeSelectionForOptions(plan, modelOptions))
   const [validationError, setValidationError] = useState<string | null>(null)
@@ -169,6 +170,7 @@ export function SwarmModelAssignmentSettings({ modelOptions, action, plan, savin
         <DirectModelEditor label="Plan model" value={draftPlan} modelOptions={normalizedOptions} disabled={disabled} onChange={(value) => { setDraftPlan(value); setValidationError(null) }} />
         <div className="flex justify-end"><Button type="submit" variant="primary" disabled={disabled}>{saving ? 'Saving…' : 'Save Swarm models'}</Button></div>
       </form>
+      {children}
     </section>
   )
 }

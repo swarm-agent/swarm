@@ -75,7 +75,7 @@ func TestSessionsV3ProviderManagedRead2000LineLatencyAndPayload(t *testing.T) {
 	sink := newSessionV3DurableProgressSinkWithWriter(exec, job, func() {}, sessionsV3ReadLatencyNoopProgressWriter{})
 	searchBefore := pebblestore.SnapshotV3PlanAcceptanceTelemetry()
 	totalStart := time.Now()
-	loopResult, err := exec.runProviderToolLoop(ctx, job, resolved, runner, baseReq, sink)
+	loopResult, err := exec.runProviderToolLoop(ctx, job, resolved, runner, baseReq, sink, nil)
 	if err != nil {
 		runner.mu.Lock()
 		requestCount := len(runner.requests)

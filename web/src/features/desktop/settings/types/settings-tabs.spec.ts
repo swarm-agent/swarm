@@ -5,8 +5,10 @@ import { SETTINGS_TABS, normalizeSettingsTabID } from './settings-tabs'
 
 test('account settings is the first/default settings tab', () => {
   assert.equal(SETTINGS_TABS[0], 'account')
+  assert.equal(SETTINGS_TABS[3], 'behavior')
   assert.equal(normalizeSettingsTabID(undefined), 'account')
   assert.equal(normalizeSettingsTabID('not-a-tab'), 'account')
+  assert.equal(normalizeSettingsTabID('behavior'), 'behavior')
   assert.equal(normalizeSettingsTabID('notifications'), 'notifications')
   assert.equal(normalizeSettingsTabID('models'), 'actions')
   assert.equal(normalizeSettingsTabID('actions'), 'actions')

@@ -95,7 +95,7 @@ func (e *sessionV3Executor) recordProviderUsage(job sessionV3ExecutorJob, resolv
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, false, err
 	}
-	clientRequestID := sessionV3ExecutorStepClientRequestID("run.usage.updated", job.RunID, step)
+	clientRequestID := sessionV3ExecutorJobStepClientRequestID("run.usage.updated", job, step)
 	result, err := e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       job.SessionID,
 		UserID:          job.Principal.UserID,
@@ -113,6 +113,22 @@ func (e *sessionV3Executor) recordProviderUsage(job sessionV3ExecutorJob, resolv
 		return sessionruntime.SessionMutationResult{}, false, err
 	}
 	return result, true, nil
+}
+
+func sessionV3PlanContextGuardUsageSummary(result sessionruntime.SessionMutationResult, usage pebblestore.SessionTurnUsageSnapshot) pebblestore.SessionUsageSummary {
+	if result.UsageSummary != nil {
+		return *result.UsageSummary
+	}
+	summary := pebblestore.SessionUsageSummary{
+		SessionID:      strings.TrimSpace(usage.SessionID),
+		UserID:         strings.TrimSpace(usage.UserID),
+		AccountScopeID: strings.TrimSpace(usage.AccountScopeID),
+		Provider:       strings.TrimSpace(usage.Provider),
+		Model:          strings.TrimSpace(usage.Model),
+		Source:         strings.TrimSpace(usage.Source),
+		ContextWindow:  usage.ContextWindow,
+	}
+	return pebblestore.ApplyProviderUsageSnapshotToSummary(summary, usage)
 }
 
 func sessionV3UsagePayloadHash(sessionID, runID string, usage pebblestore.SessionTurnUsageSnapshot) (string, error) {

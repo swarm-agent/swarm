@@ -348,11 +348,15 @@ func (s *Service) backfillBuiltInToolContractsForAccountLocked(accountScopeID st
 		if current.ToolContract == nil {
 			current.ToolContract = contract
 			changed = true
-		} else if normalizeName(current.Name) == "swarm" {
+		} else if normalizeName(current.Name) == SwarmAgentID {
 			if current.ToolContract.Tools == nil {
 				current.ToolContract.Tools = make(map[string]pebblestore.AgentToolConfig)
 			}
-			if _, explicit := current.ToolContract.Tools["manage_sessions"]; !explicit {
+			// Swarm's session-management capability is code-owned. Migrate both
+			// missing and stale explicitly-disabled entries so account-scoped
+			// profiles cannot narrow the compiled primary contract.
+			manageSessions := current.ToolContract.Tools["manage_sessions"]
+			if manageSessions.Enabled == nil || !*manageSessions.Enabled {
 				current.ToolContract.Tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 				changed = true
 			}

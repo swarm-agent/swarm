@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bell, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, UserRound, Zap, type LucideIcon } from 'lucide-react'
+import { Bell, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, SlidersHorizontal, UserRound, Zap, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
+import { BehaviorSettingsPage } from '../behavior/components/behavior-settings-page'
 import { AuthSettingsPage } from '../auth/components/auth-settings-page'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
 import { NotificationsSettingsPage } from '../notifications/components/notifications-settings-page'
@@ -20,6 +21,7 @@ const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }
   { id: 'account', label: 'Account', icon: UserRound },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'actions', label: 'Actions', icon: Zap },
+  { id: 'behavior', label: 'Behavior', icon: SlidersHorizontal },
   { id: 'permissions', label: 'Permissions', icon: Shield },
   { id: 'tailscale', label: 'Tailscale', icon: Network },
   { id: 'notifications', label: 'Notifications', icon: Bell },
@@ -162,6 +164,7 @@ export function DesktopSettingsPage() {
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'actions' ? <ActionsSettingsPage workspaceSlug={routeWorkspaceSlug} /> : null}
+            {activeTab === 'behavior' ? <BehaviorSettingsPage /> : null}
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
             {activeTab === 'tailscale' ? <TailscaleSettingsPage /> : null}
             {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}

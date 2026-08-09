@@ -214,6 +214,11 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		return ResolvedAgentToolContract{}, nil, nil, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	if strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") && strings.EqualFold(strings.TrimSpace(profile.Mode), "primary") {
+		// Swarm is a compiled system agent. Its code-owned session-management
+		// capability cannot be narrowed by stale account profile state.
+		resolved.Tools["manage_sessions"] = ResolvedAgentTool{Enabled: true, Source: "runtime.system_agent"}
+	}
 	if strings.EqualFold(strings.TrimSpace(profile.Mode), "subagent") {
 		resolved.Tools["task"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
 	}
@@ -296,11 +301,11 @@ func applyNamedAgentPreset(target map[string]ResolvedAgentTool, knownTools map[s
 	}
 	switch preset {
 	case "read_only":
-		enable("read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "compact", "exit_plan_mode")
 	case "read_write":
-		enable("read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "write", "edit", "websearch", "webfetch", "skill_use", "plan_manage", "ask_user", "compact", "exit_plan_mode")
 	case "bash_git_only":
-		enable("read", "search", "list", "bash", "skill_use", "plan_manage", "ask_user", "exit_plan_mode")
+		enable("read", "search", "list", "bash", "skill_use", "plan_manage", "ask_user", "compact", "exit_plan_mode")
 		target["bash"] = ResolvedAgentTool{
 			Enabled:      true,
 			Source:       "preset:" + preset,

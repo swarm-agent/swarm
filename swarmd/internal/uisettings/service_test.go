@@ -36,6 +36,33 @@ func TestUISettingsServicePreservesExplicitShowTipsOff(t *testing.T) {
 	}
 }
 
+func TestUISettingsServiceRoundTripsNormalizedPlanContextGuard(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-plan-guard.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	service := NewService(pebblestore.NewUISettingsStore(store))
+	settings := defaultUISettings()
+	settings.Chat.PlanContextGuardEnabled = false
+	settings.Chat.PlanContextGuardUsedPercent = 12
+	settings.Chat.PlanContextGuardMaxCompactions = 9
+	saved, err := service.SetForAccount("account-a", settings)
+	if err != nil {
+		t.Fatalf("SetForAccount(): %v", err)
+	}
+	if saved.Chat.PlanContextGuardEnabled || saved.Chat.PlanContextGuardUsedPercent != 50 || saved.Chat.PlanContextGuardMaxCompactions != 3 {
+		t.Fatalf("saved guard settings = %+v", saved.Chat)
+	}
+	loaded, err := service.GetForAccount("account-a")
+	if err != nil {
+		t.Fatalf("GetForAccount(): %v", err)
+	}
+	if loaded.Chat.PlanContextGuardEnabled || loaded.Chat.PlanContextGuardUsedPercent != 50 || loaded.Chat.PlanContextGuardMaxCompactions != 3 {
+		t.Fatalf("loaded guard settings = %+v", loaded.Chat)
+	}
+}
+
 func TestUISettingsServiceDoesNotExposeOrPersistAgentModels(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings.pebble"))
 	if err != nil {

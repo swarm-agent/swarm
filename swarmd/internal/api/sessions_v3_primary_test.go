@@ -1095,7 +1095,7 @@ func TestSessionsV3PrimaryAgentSwitchUpdatesStoredProfileAndRuntime(t *testing.T
 	}
 }
 
-func TestSessionsV3ExecutorBackfillsCurrentAccountAgentToolContract(t *testing.T) {
+func TestSessionsV3ExecutorRestoresCurrentAccountSwarmManageSessions(t *testing.T) {
 	server, _, closeStore := newSessionsV3PrimaryAPITestServer(t, filepath.Join(t.TempDir(), "account-tool-backfill.pebble"))
 	defer func() { _ = closeStore() }()
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "account-tool-backfill-create", "account tool backfill", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
@@ -1103,7 +1103,7 @@ func TestSessionsV3ExecutorBackfillsCurrentAccountAgentToolContract(t *testing.T
 	if err != nil || !ok {
 		t.Fatalf("GetProfileForAccount(swarm) ok=%v err=%v", ok, err)
 	}
-	delete(profile.ToolContract.Tools, "manage_sessions")
+	profile.ToolContract.Tools["manage_sessions"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
 	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{
 		Name: profile.Name, Mode: profile.Mode, Enabled: pebblestore.BoolPtr(profile.Enabled), Prompt: profile.Prompt, ToolContract: profile.ToolContract,
 	}); err != nil {
@@ -1117,7 +1117,7 @@ func TestSessionsV3ExecutorBackfillsCurrentAccountAgentToolContract(t *testing.T
 		t.Fatalf("provider call count = %d, want 1", runner.callCount)
 	}
 	if !sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools)["manage-sessions"] {
-		t.Fatalf("provider tools = %v, want backfilled manage-sessions", sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools))
+		t.Fatalf("provider tools = %v, want restored manage-sessions", sessionsV3ProviderRequestToolNames(runner.lastRequest.Tools))
 	}
 }
 
