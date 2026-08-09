@@ -68,3 +68,22 @@ node ./scripts/run-desktop-subagent-task-e2e.mjs https://example.invalid/swarm-g
 ```
 
 The script writes `summary.json`, `browser-events.json`, `network.json`, `browser-console.json`, `dom-snapshot.txt`, and a screenshot into a temp evidence directory printed in the test output. It fails unless Playwright observes `session.tool.started`, `session.tool.delta`, and two child session IDs in the task stream.
+
+## Canonical Desktop launch suite
+
+Use the parameterized Playwright launch suite for a provider-backed Desktop release pass:
+
+```bash
+scripts/run-desktop-launch-test.sh <ssh-alias> <provider> --desktop-url <served-desktop-url>
+```
+
+The SSH alias, provider, and served Desktop URL are invocation inputs and are never stored in the suite. Omit `--desktop-url` to tunnel the target's loopback Desktop listener through the supplied SSH alias. `--workspace <name-or-path>`, `--timeout-ms <ms>`, and `--headful` are optional.
+
+The suite exercises the real Desktop composer and verifies durable/runtime evidence for:
+
+- `/new <prompt>` (Auto), `/new plan <prompt>`, `/new worktree <prompt>`, and `/new wp <prompt>`;
+- `/task <prompt>` and `/task plan <prompt>` through the background Router worktree path;
+- a Plan-agent proposal with exactly two checkpoints, explicit exit-plan approval, automatic mode switching to Auto, and completion of both checkpoints without another permission;
+- provider/model role usage plus an AI response that reads and confirms the injected session mode for each start.
+
+The runner temporarily assigns the selected provider's catalog-recommended Plan and Auto models to Swarm and restores the original account-scoped assignments in teardown. It creates durable test sessions and managed worktrees on the target, but it does not modify workspace files.
