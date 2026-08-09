@@ -6,7 +6,6 @@ import type { ModelOptionRecord, ModelProfileRecord } from '../../../chat/types/
 
 const source = readFileSync(new URL('./models-settings-page.tsx', import.meta.url), 'utf8')
 const settingsPageSource = readFileSync(new URL('../../components/desktop-settings-page.tsx', import.meta.url), 'utf8')
-const guardSource = readFileSync(new URL('./plan-context-guard-settings.tsx', import.meta.url), 'utf8')
 
 const profile: ModelProfileRecord = {
   profileId: 'mp_daily', name: 'Daily', provider: 'codex', model: 'gpt-5.5', thinking: 'high',
@@ -81,19 +80,12 @@ test('Models page uses canonical queries, mutations, invalidation, and explicit 
   assert.match(source, /role="alert"/)
 })
 
-test('Models page renders the Plan context guard controls through the canonical settings patch', () => {
-  assert.match(source, /PlanContextGuardSettingsSection/)
-  assert.match(source, /normalizePlanContextGuardSettings\(uiSettingsQuery\.data\)/)
-  assert.match(source, /savePlanContextGuardSettings/)
-  assert.match(guardSource, /Used-context warning/)
-  assert.match(guardSource, /Maximum durable handoffs/)
-  assert.match(guardSource, /None — finalize immediately/)
-  assert.match(guardSource, /type="checkbox"/)
-  assert.match(guardSource, /Save guard/)
+test('Models page does not own Behavior settings', () => {
+  assert.doesNotMatch(source, /PlanContextGuardSettingsSection|savePlanContextGuardSettings/)
 })
 
-test('Desktop settings exposes exactly one Models tab and one composed page', () => {
-  assert.equal((settingsPageSource.match(/id: 'models'/g) ?? []).length, 1)
-  assert.equal((settingsPageSource.match(/<ModelsSettingsPage \/>/g) ?? []).length, 1)
+test('Desktop settings does not expose the retired Models page', () => {
+  assert.equal((settingsPageSource.match(/id: 'models'/g) ?? []).length, 0)
+  assert.equal((settingsPageSource.match(/<ModelsSettingsPage \/>/g) ?? []).length, 0)
   assert.doesNotMatch(settingsPageSource, /ModelFavoritesSettings|SwarmModelAssignmentSettings/)
 })

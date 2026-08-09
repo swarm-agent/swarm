@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
-import { Bell, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, UserRound, Zap, type LucideIcon } from 'lucide-react'
+import { Bell, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, SlidersHorizontal, UserRound, Zap, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
+import { BehaviorSettingsPage } from '../behavior/components/behavior-settings-page'
 import { AuthSettingsPage } from '../auth/components/auth-settings-page'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
 import { NotificationsSettingsPage } from '../notifications/components/notifications-settings-page'
@@ -17,6 +18,7 @@ import { cn } from '../../../../lib/cn'
 import { normalizeSettingsTabID, type SettingsTabID } from '../types/settings-tabs'
 
 const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }> = [
+  { id: 'behavior', label: 'Behavior', icon: SlidersHorizontal },
   { id: 'account', label: 'Account', icon: UserRound },
   { id: 'auth', label: 'Auth', icon: Key },
   { id: 'actions', label: 'Actions', icon: Zap },
@@ -159,6 +161,7 @@ export function DesktopSettingsPage() {
         </div>
         <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-5 md:px-6 md:py-8">
           <div className="w-full max-w-4xl">
+            {activeTab === 'behavior' ? <BehaviorSettingsPage /> : null}
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
             {activeTab === 'actions' ? <ActionsSettingsPage workspaceSlug={routeWorkspaceSlug} /> : null}

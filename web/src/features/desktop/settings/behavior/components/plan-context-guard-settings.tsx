@@ -36,7 +36,7 @@ export function PlanContextGuardSettingsSection({ value, saving, error, onSave }
 
   const fieldClass = 'grid gap-1.5 text-xs font-medium text-[var(--app-text-muted)]'
   return (
-    <section aria-labelledby="plan-context-guard-title" className="space-y-4 border-t border-[var(--app-border)] pt-5">
+    <section aria-labelledby="plan-context-guard-title" className="space-y-4">
       <div>
         <h3 id="plan-context-guard-title" className="text-base font-semibold text-[var(--app-text)]">Plan context guard</h3>
         <p className="mt-1 text-sm text-[var(--app-text-muted)]">
