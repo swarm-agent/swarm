@@ -15,6 +15,18 @@ import (
 // refreshHomeV3Model builds only the lightweight state needed to compose a
 // new V3 session. Session membership, history, transcripts, hydration, and
 // realtime are intentionally absent and are loaded by explicit chat features.
+func applySwarmModelAssignments(next model.HomeModel, settings client.AgentModelSettings) model.HomeModel {
+	if !strings.EqualFold(strings.TrimSpace(next.ActiveAgent), "swarm") {
+		return next
+	}
+	apply := func(assignment client.AgentModelAssignment) (string, string, string, string, string) {
+		return strings.TrimSpace(assignment.Provider), strings.TrimSpace(assignment.Model), strings.TrimSpace(assignment.Thinking), strings.TrimSpace(assignment.ServiceTier), strings.TrimSpace(assignment.ContextMode)
+	}
+	next.AutoModelProvider, next.AutoModelName, next.AutoThinkingLevel, next.AutoServiceTier, next.AutoContextMode = apply(settings.Swarm.Action)
+	next.PlanModelProvider, next.PlanModelName, next.PlanThinkingLevel, next.PlanServiceTier, next.PlanContextMode = apply(settings.Swarm.Plan)
+	return next
+}
+
 func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	next := model.EmptyHome()
 	next.ServerURL = a.api.BaseURL()
@@ -58,11 +70,13 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		profilesErr   error
 		agents        client.AgentState
 		agentsErr     error
+		agentModels   client.AgentModelSettings
+		agentModelErr error
 		update        client.UpdateStatus
 		updateErr     error
 	)
 	var wg sync.WaitGroup
-	wg.Add(7)
+	wg.Add(8)
 	go func() {
 		defer wg.Done()
 		preferLaunchWorkspace := a.shouldResolveLaunchWorkspace()
@@ -76,6 +90,7 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	go func() { defer wg.Done(); resolved, resolvedErr = a.api.GetModel(ctx) }()
 	go func() { defer wg.Done(); profiles, profilesErr = a.api.ListModelProfiles(ctx) }()
 	go func() { defer wg.Done(); agents, agentsErr = a.api.ListAgents(ctx, 200) }()
+	go func() { defer wg.Done(); agentModels, agentModelErr = a.api.GetAgentModelSettings(ctx) }()
 	go func() { defer wg.Done(); update, updateErr = a.api.GetUpdateStatus(ctx) }()
 	wg.Wait()
 
@@ -130,6 +145,11 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		next.ActiveAgentExitPlanMode = true
 		next.ActiveAgentRuntimeKnown = true
 		warnings = append(warnings, "agent state unavailable")
+	}
+	if agentModelErr == nil {
+		next = applySwarmModelAssignments(next, agentModels)
+	} else {
+		warnings = append(warnings, "agent model settings unavailable")
 	}
 	if updateErr == nil {
 		next.UpdateStatus = &update

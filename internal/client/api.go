@@ -62,11 +62,17 @@ type OnboardingConfig struct {
 	SwarmName string `json:"swarm_name"`
 }
 
+type OnboardingHeuristics struct {
+	CredentialCount int `json:"credential_count"`
+	AgentCount      int `json:"agent_count"`
+}
+
 type OnboardingStatus struct {
-	OK              bool               `json:"ok"`
-	NeedsOnboarding bool               `json:"needs_onboarding"`
-	Identity        OnboardingIdentity `json:"identity"`
-	Config          OnboardingConfig   `json:"config"`
+	OK              bool                 `json:"ok"`
+	NeedsOnboarding bool                 `json:"needs_onboarding"`
+	Identity        OnboardingIdentity   `json:"identity"`
+	Config          OnboardingConfig     `json:"config"`
+	Heuristics      OnboardingHeuristics `json:"heuristics"`
 }
 
 type SaveOnboardingInput struct {
@@ -2067,6 +2073,14 @@ func (c *API) ListAuthCredentials(ctx context.Context, provider, query string, l
 func (c *API) UpsertAuthCredential(ctx context.Context, req AuthCredentialUpsertRequest) (AuthCredential, error) {
 	var out AuthCredential
 	if err := c.postJSON(ctx, "/v1/auth/credentials", req, &out, true); err != nil {
+		return AuthCredential{}, err
+	}
+	return out, nil
+}
+
+func (c *API) AcceptOnboardingProviderCredential(ctx context.Context, req AuthCredentialUpsertRequest) (AuthCredential, error) {
+	var out AuthCredential
+	if err := c.postJSON(ctx, "/v1/onboarding/provider/credential", req, &out, true); err != nil {
 		return AuthCredential{}, err
 	}
 	return out, nil

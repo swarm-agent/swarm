@@ -226,7 +226,10 @@ func v3ChatHomeProfileLabel(profile model.ActiveModelProfile) string {
 	}
 }
 
-func v3ChatCreateModelProfile(profile model.ActiveModelProfile) *client.SessionV3ModelProfileChoice {
+func v3ChatCreateModelProfile(profile model.ActiveModelProfile, agentName string) *client.SessionV3ModelProfileChoice {
+	if strings.EqualFold(strings.TrimSpace(agentName), "swarm") {
+		return nil
+	}
 	switch strings.ToLower(strings.TrimSpace(profile.Source)) {
 	case "saved":
 		if profileID := strings.TrimSpace(profile.ProfileID); profileID != "" {
@@ -251,7 +254,7 @@ func (a *App) v3ChatDraftModeSelections() map[string]v3chat.DraftModeSelection {
 		contextWindow := model.CodexContextWindow(preference.Provider, preference.Model, preference.ContextMode, a.homeModel.ContextWindow)
 		selections[mode] = v3chat.DraftModeSelection{
 			Preference:    preference,
-			ModelProfile:  v3ChatCreateModelProfile(profile),
+			ModelProfile:  v3ChatCreateModelProfile(profile, intent.Agent),
 			ContextWindow: contextWindow,
 			AgentModelPolicy: client.SessionV3AgentModelPolicy{
 				Preference:    preference,
@@ -330,7 +333,7 @@ func (a *App) newV3ChatCreateOptions(intent ui.HomeSessionIntent, route model.Ch
 		TargetKind:               strings.TrimSpace(route.TargetKind),
 		TargetRelationship:       strings.TrimSpace(route.TargetRelationship),
 		Preference:               intent.Preference,
-		ModelProfile:             v3ChatCreateModelProfile(intent.Profile),
+		ModelProfile:             v3ChatCreateModelProfile(intent.Profile, intent.Agent),
 		WorktreeMode:             "off",
 		WorktreeUseCurrentBranch: nil,
 	}, nil

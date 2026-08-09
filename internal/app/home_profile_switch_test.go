@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -94,6 +95,46 @@ func TestSelectHomeModelProfileUpdatesDefaultAndFooterModel(t *testing.T) {
 		if selection.ModelProfile == nil || selection.ModelProfile.SavedProfileID != "focus" || selection.Preference.Model != "gpt-focus" {
 			t.Fatalf("%s /new selection not updated: %#v", mode, selection)
 		}
+	}
+}
+
+func TestSelectHomeModelProfileUpdatesSwarmActionAndPreservesPlan(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/agent-model-settings":
+			_, _ = w.Write([]byte(`{"agent_model_settings":{"swarm":{"action":{"provider":"codex","model":"old-action","thinking":"medium"},"plan":{"provider":"codex","model":"plan-model","thinking":"xhigh"}},"system_agents":{},"updated_at":1}}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/v1/agent-model-settings":
+			var patch client.AgentModelSettingsPatch
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				t.Fatal(err)
+			}
+			if patch.Swarm == nil || patch.Swarm.Action.Model != "gpt-focus" || patch.Swarm.Plan.Model != "plan-model" {
+				t.Fatalf("canonical model patch = %#v", patch)
+			}
+			_, _ = w.Write([]byte(`{"agent_model_settings":{"swarm":{"action":{"provider":"codex","model":"gpt-focus","thinking":"high"},"plan":{"provider":"codex","model":"plan-model","thinking":"xhigh"}},"system_agents":{},"updated_at":2}}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	profiles := []client.ModelProfile{{ProfileID: "focus", Name: "Focus", Provider: "codex", Model: "gpt-focus", Thinking: "high"}}
+	initial := model.HomeModel{AuthConfigured: true, ActiveAgent: "swarm", ActiveAgentExitPlanMode: true, ModelProfiles: profiles}
+	page := ui.NewHomePage(initial)
+	app := &App{api: testAPIWithToken(server.URL), home: page, homeModel: initial, route: "home"}
+	if err := app.selectHomeModelProfile("focus"); err != nil {
+		t.Fatalf("select profile: %v", err)
+	}
+	page.SetSessionMode("auto")
+	_, actionModel, _, _, _ := page.ModelState()
+	page.SetSessionMode("plan")
+	_, planModel, _, _, _ := page.ModelState()
+	if actionModel != "gpt-focus" || planModel != "plan-model" {
+		t.Fatalf("mode models = action %q plan %q", actionModel, planModel)
+	}
+	if app.homeModel.ActiveModelProfile.Source != "agent-default" || app.homeModel.DefaultModelProfileID != "" {
+		t.Fatalf("favorite became a session/default profile authority: %#v", app.homeModel.ActiveModelProfile)
 	}
 }
 

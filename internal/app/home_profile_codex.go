@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
-	"swarm-refactor/swarmtui/internal/ui/v3chat"
+	"swarm-refactor/swarmtui/internal/model"
 )
 
 func (a *App) cycleHomeModelProfile() {
@@ -49,39 +49,42 @@ func (a *App) selectHomeModelProfile(profileID string) error {
 		a.setModelProfileStatus("switch profile failed: " + err.Error())
 		return err
 	}
-	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil {
-		if _, active := v3chat.SelectActiveRun(a.v3Chat.Runtime().Store().Snapshot()); active {
-			err := fmt.Errorf("model profile cannot be changed during an active run")
-			a.setModelProfileStatus("switch profile failed: " + err.Error())
-			return err
-		}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
-	selected, err := a.api.SetDefaultModelProfile(ctx, profileID)
+	var selected *client.ModelProfile
+	for _, profile := range a.home.ModelProfiles() {
+		if strings.TrimSpace(profile.ProfileID) == profileID {
+			profile := profile
+			selected = &profile
+			break
+		}
+	}
+	if selected == nil {
+		err := fmt.Errorf("model favorite not found")
+		a.setModelProfileStatus("switch profile failed: " + err.Error())
+		return err
+	}
+	settings, err := a.api.GetAgentModelSettings(ctx)
 	if err != nil {
 		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
 		return err
 	}
-	// Project the daemon-confirmed selection before the collection refresh so
-	// the homepage footer switches immediately and is not left stale if the
-	// follow-up list request fails.
-	next := a.currentHomeModel()
-	next.DefaultModelProfileID = profileID
-	next = applyHomeModelProfile(next, selected)
-	a.applyHomeModel(next)
-
-	state, err := a.api.ListModelProfiles(ctx)
+	settings, err = a.api.PatchAgentModelSettings(ctx, client.AgentModelSettingsPatch{Swarm: &client.AgentModelSettingsSwarmPatch{
+		Action: client.AgentModelAssignment{
+			Provider:    strings.TrimSpace(selected.Provider),
+			Model:       strings.TrimSpace(selected.Model),
+			Thinking:    strings.TrimSpace(selected.Thinking),
+			ServiceTier: strings.TrimSpace(selected.ServiceTier),
+			ContextMode: strings.TrimSpace(selected.ContextMode),
+		},
+		Plan: settings.Swarm.Plan,
+	}})
 	if err != nil {
-		a.setModelProfileStatus(fmt.Sprintf("profile default updated, but refresh failed: %v", err))
-		a.queueReload(false)
+		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
 		return err
 	}
-	if err := a.applySelectedProfileToV3Chat(ctx, profileID); err != nil {
-		a.setModelProfileStatus(fmt.Sprintf("profile default updated, but chat update failed: %v", err))
-		return err
-	}
-	next = applyHomeModelProfiles(a.currentHomeModel(), state)
+	next := applySwarmModelAssignments(a.currentHomeModel(), settings)
+	next.ActiveModelProfile = model.ActiveModelProfile{Source: "agent-default"}
 	a.applyHomeModel(next)
 	if a.v3ChatDraftActive() {
 		a.syncPrimedV3ChatFromHomeDraft()
@@ -104,26 +107,6 @@ func (a *App) setModelProfileStatus(status string) {
 	if a.route == "v3chat" && a.v3Chat != nil {
 		a.v3Chat.SetStatus(status)
 	}
-}
-
-func (a *App) applySelectedProfileToV3Chat(ctx context.Context, profileID string) error {
-	return a.applyModelProfileChoiceToV3Chat(ctx, client.SessionV3ModelProfileChoice{SavedProfileID: strings.TrimSpace(profileID)})
-}
-
-func (a *App) applyModelProfileChoiceToV3Chat(ctx context.Context, choice client.SessionV3ModelProfileChoice) error {
-	if a.v3ChatDraftActive() {
-		return nil
-	}
-	if a == nil || a.route != "v3chat" || a.v3Chat == nil || a.v3Chat.Runtime() == nil || a.v3Chat.Runtime().Store() == nil {
-		return nil
-	}
-	sessionID := strings.TrimSpace(a.v3Chat.Runtime().Store().Snapshot().Session.ID)
-	policy, err := a.api.SetSessionV3ModelProfileChoice(ctx, sessionID, choice)
-	if err != nil {
-		return err
-	}
-	a.v3Chat.ApplyModelProfile(policy)
-	return nil
 }
 
 func (a *App) openCodexUsageModal() {

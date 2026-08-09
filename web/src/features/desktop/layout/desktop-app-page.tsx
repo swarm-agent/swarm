@@ -73,6 +73,7 @@ import { sessionWorkspaceBindingId } from '../services/session-workspace'
 import type { DesktopV3SessionView, SessionCreateMutationResponse, SessionMessageMutationResponse, V3SessionRunIntent, V3SessionRunState } from '../state/desktop-v3-cache-types'
 import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
+import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart, type DesktopV3RoutedSessionStartResponse } from '../session-v3/write-api'
 import { isDesktopV3NavigationHiddenRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
@@ -274,6 +275,7 @@ interface DesktopV3RoutedActivationDeps {
   getSnapshot: typeof getDesktopV3CacheSnapshot
   commitSnapshot: typeof commitDesktopV3CacheSnapshot
   requireRealtimeController: typeof requireDesktopV3RealtimeControllerReady
+  ensureSidebarBootstrap: typeof bootstrapDesktopV3SidebarMetadataOnly
   currentURL: () => string
   replaceURL: (url: string) => void
 }
@@ -287,6 +289,7 @@ const desktopV3RoutedActivationDeps: DesktopV3RoutedActivationDeps = {
   getSnapshot: getDesktopV3CacheSnapshot,
   commitSnapshot: commitDesktopV3CacheSnapshot,
   requireRealtimeController: requireDesktopV3RealtimeControllerReady,
+  ensureSidebarBootstrap: bootstrapDesktopV3SidebarMetadataOnly,
   currentURL: currentDesktopURL,
   replaceURL: (url) => {
     if (typeof window === 'undefined' || !url) return
@@ -380,12 +383,19 @@ export async function activateDesktopV3RoutedSession(
   const sessionId = response.session_id
   if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
 
-  const previousState = deps.getSnapshot()
+  let previousState = deps.getSnapshot()
+  let sidebarScopeId = previousState.desktopSidebarBootstrap.scopeId?.trim()
+  if (!sidebarScopeId) {
+    await deps.ensureSidebarBootstrap({ preferredSessionId: sessionId })
+    if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
+    previousState = deps.getSnapshot()
+    sidebarScopeId = previousState.desktopSidebarBootstrap.scopeId?.trim()
+  }
+  if (!sidebarScopeId) throw new Error('Routed Desktop activation could not bootstrap the canonical sidebar scope')
+
   const previousURL = deps.currentURL()
   const previousSelectedSessionId = previousState.selectedSessionId
   const previousSidebarOrderByScope = structuredClone(previousState.sessionOrderByScope)
-  const sidebarScopeId = previousState.desktopSidebarBootstrap.scopeId?.trim()
-  if (!sidebarScopeId) throw new Error('Routed Desktop activation requires the canonical sidebar scope')
 
   const createResponse: SessionCreateMutationResponse = {
     ok: true,

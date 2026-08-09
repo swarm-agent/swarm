@@ -17,6 +17,7 @@ import (
 )
 
 const v3SyncDefaultSurface = "desktop"
+const sessionsV3SyncOmissionInvalidSessionSnapshot = "invalid_session_snapshot"
 
 type sessionsV3SyncBootstrapRequest struct {
 	Surface       string                          `json:"surface,omitempty"`
@@ -741,7 +742,12 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		}
 		shell, err := sessionsV3SyncSessionShell(tombstone.Session)
 		if err != nil {
-			return sessionsV3SyncSnapshotResponseBody{}, err
+			snapshot.Omissions = append(snapshot.Omissions, pebblestore.V3SyncSnapshotOmission{
+				SessionID: sessionID,
+				Resource:  "tombstones",
+				Reason:    sessionsV3SyncOmissionInvalidSessionSnapshot,
+			})
+			continue
 		}
 		tombstone.Session = shell
 		tombstones[sessionID] = tombstone
@@ -751,9 +757,14 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		timings.totalDur = time.Since(totalStart)
 	}
 
-	sessionShells, err := sessionsV3SyncSessionShells(snapshot.SessionsByID)
-	if err != nil {
-		return sessionsV3SyncSnapshotResponseBody{}, err
+	sessionShells, invalidSessionIDs := sessionsV3SyncSessionShells(snapshot.SessionsByID)
+	for _, sessionID := range invalidSessionIDs {
+		quarantineSessionsV3SyncSnapshotSession(&snapshot, sessionID)
+		snapshot.Omissions = append(snapshot.Omissions, pebblestore.V3SyncSnapshotOmission{
+			SessionID: sessionID,
+			Resource:  "session",
+			Reason:    sessionsV3SyncOmissionInvalidSessionSnapshot,
+		})
 	}
 	response := sessionsV3SyncSnapshotResponseBody{
 		OK:                           true,
@@ -972,19 +983,53 @@ func (s *Server) sessionsV3AgentModelPolicyWithResolver(session pebblestore.Sess
 	return policy
 }
 
-func sessionsV3SyncSessionShells(sessions map[string]pebblestore.SessionSnapshot) (map[string]pebblestore.SessionSnapshot, error) {
+func sessionsV3SyncSessionShells(sessions map[string]pebblestore.SessionSnapshot) (map[string]pebblestore.SessionSnapshot, []string) {
 	if len(sessions) == 0 {
 		return sessions, nil
 	}
 	out := make(map[string]pebblestore.SessionSnapshot, len(sessions))
+	invalidSessionIDs := make([]string, 0)
 	for sessionID, session := range sessions {
 		shell, err := sessionsV3SyncSessionShell(session)
 		if err != nil {
-			return nil, err
+			invalidSessionIDs = append(invalidSessionIDs, sessionID)
+			continue
 		}
 		out[sessionID] = shell
 	}
-	return out, nil
+	sort.Strings(invalidSessionIDs)
+	return out, invalidSessionIDs
+}
+
+func quarantineSessionsV3SyncSnapshotSession(snapshot *pebblestore.V3SyncSnapshotResult, sessionID string) {
+	if snapshot == nil {
+		return
+	}
+	delete(snapshot.SessionsByID, sessionID)
+	delete(snapshot.ProjectionsBySession, sessionID)
+	delete(snapshot.MessagesBySession, sessionID)
+	delete(snapshot.EventsBySession, sessionID)
+	delete(snapshot.RunIntentsBySession, sessionID)
+	delete(snapshot.CurrentRunStateBySession, sessionID)
+	for _, descriptor := range snapshot.HistoryManifestsBySession[sessionID] {
+		delete(snapshot.HistoryChunksByID, descriptor.ChunkID)
+	}
+	delete(snapshot.HistoryManifestsBySession, sessionID)
+	snapshot.SessionOrder = removeSessionsV3SyncSessionID(snapshot.SessionOrder, sessionID)
+	snapshot.ActiveSessionIDs = removeSessionsV3SyncSessionID(snapshot.ActiveSessionIDs, sessionID)
+}
+
+func removeSessionsV3SyncSessionID(sessionIDs []string, excluded string) []string {
+	if len(sessionIDs) == 0 {
+		return sessionIDs
+	}
+	out := make([]string, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		if sessionID != excluded {
+			out = append(out, sessionID)
+		}
+	}
+	return out
 }
 
 func sessionsV3SyncSessionShell(session pebblestore.SessionSnapshot) (pebblestore.SessionSnapshot, error) {

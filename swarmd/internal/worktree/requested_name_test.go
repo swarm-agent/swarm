@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -40,20 +41,25 @@ func TestCanonicalizeRequestedWorktreeNameAppliesConfiguredPrefix(t *testing.T) 
 	}
 }
 
-func TestCanonicalizeRequestedWorktreeNameRetryUsesExactOneSuffix(t *testing.T) {
-	got, err := CanonicalizeRequestedWorktreeNameRetry("Fix API", "router/<id>")
+func TestCanonicalizeRequestedWorktreeNameRetryAppendsFiveDigitIdentifier(t *testing.T) {
+	got, retryRequestedName, err := CanonicalizeRequestedWorktreeNameRetry("Fix API", "router/<id>")
 	if err != nil {
 		t.Fatalf("CanonicalizeRequestedWorktreeNameRetry: %v", err)
 	}
-	if got != "router/fix-api-1" {
-		t.Fatalf("retry name = %q, want %q", got, "router/fix-api-1")
+	requestedMatch := regexp.MustCompile(`^Fix API ([1-9][0-9]{4})$`).FindStringSubmatch(retryRequestedName)
+	if requestedMatch == nil {
+		t.Fatalf("retry requested name = %q, want original plus five-digit identifier", retryRequestedName)
+	}
+	wantBranch := "router/fix-api-" + requestedMatch[1]
+	if got != wantBranch {
+		t.Fatalf("retry branch = %q, want %q", got, wantBranch)
 	}
 	first, err := CanonicalizeRequestedWorktreeName("Fix API", "router/<id>")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == first || strings.Contains(got, "-2") {
-		t.Fatalf("retry %q is not the exact one-suffix candidate after %q", got, first)
+	if got == first || !strings.HasPrefix(got, first+"-") {
+		t.Fatalf("retry %q does not preserve first candidate %q as its base", got, first)
 	}
 }
 

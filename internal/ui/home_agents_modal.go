@@ -10,7 +10,9 @@ import (
 	modelpkg "swarm-refactor/swarmtui/internal/model"
 )
 
-var canonicalAgentModelNames = []string{"swarm", "compact", "finder", "coder", "designer", "router"}
+var canonicalAgentModelNames = []string{"swarm", "finder", "coder", "designer", "compact", "router"}
+
+const utilityAgentModelStart = 4
 
 // AgentModalProfile is retained for auth-provider dependency warnings; /agents
 // itself no longer treats these records as editable profiles.
@@ -618,19 +620,23 @@ func (p *HomePage) drawAgentsModalAgentList(s tcell.Screen, rect Rect) {
 		style = p.theme.BorderActive
 	}
 	DrawBox(s, rect, style)
-	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, "Agents")
-	const (
-		cardH   = 4
-		cardGap = 0
-	)
-	visibleCards := maxInt(1, (rect.H-2+cardGap)/(cardH+cardGap))
+	const cardH = 4
+	visibleCards := maxInt(1, (rect.H-2)/cardH)
 	start := 0
 	if p.agentsModal.SelectedAgent >= visibleCards {
 		start = p.agentsModal.SelectedAgent - visibleCards + 1
 	}
+	listTitle := "Core system agents"
+	if start >= utilityAgentModelStart {
+		listTitle = "Utilities"
+	}
+	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, listTitle)
 	for i := start; i < len(canonicalAgentModelNames); i++ {
 		name := canonicalAgentModelNames[i]
-		card := Rect{X: rect.X + 1, Y: rect.Y + 1 + (i-start)*(cardH+cardGap), W: rect.W - 2, H: cardH}
+		card := Rect{X: rect.X + 1, Y: rect.Y + 1 + (i-start)*cardH, W: rect.W - 2, H: cardH}
+		if start < utilityAgentModelStart && i == utilityAgentModelStart {
+			DrawText(s, card.X+1, card.Y-1, card.W-2, p.theme.TextMuted.Bold(true), " Utilities ")
+		}
 		if card.Y+card.H > rect.Y+rect.H-1 {
 			break
 		}

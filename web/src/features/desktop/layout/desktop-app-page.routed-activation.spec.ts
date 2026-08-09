@@ -21,6 +21,7 @@ test('routed new-chat activation only publishes a validated canonical result', a
   assert.match(normalization, /normalizeDesktopV3RoutedSessionStartResponse\(result\)/)
   assert.match(activation, /const response = desktopV3RoutedResultResponse\(result\)/)
   assert.match(activation, /validateDesktopV3RoutedActivationResponse\(response\)/)
+  assert.match(activation, /if \(!sidebarScopeId\) \{[\s\S]*await deps\.ensureSidebarBootstrap\(\{ preferredSessionId: sessionId \}\)[\s\S]*previousState = deps\.getSnapshot\(\)[\s\S]*sidebarScopeId = previousState\.desktopSidebarBootstrap\.scopeId\?\.trim\(\)/)
   assert.match(activation, /requireRealtimeController\(\)[\s\S]*ensureSessionConnected\(sessionId\)[\s\S]*structuredClone\(previousState\)[\s\S]*commitSnapshot\(previousState, nextState, \[\.\.\.actions\]\)/)
   assert.match(activation, /await onActivated\?\.\(response\)/)
   assert.match(activation, /deps\.getSnapshot\(\) === nextState[\s\S]*routedSessionSuffix[\s\S]*ownsRoute = shouldActivate\(\)[\s\S]*commitSnapshot\(nextState, previousState, \[\]\)[\s\S]*replaceURL\(previousURL\)/)

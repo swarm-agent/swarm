@@ -1,13 +1,19 @@
 package worktree
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"unicode"
 )
 
-const maxRequestedWorktreeBranchNameBytes = 255
+const (
+	maxRequestedWorktreeBranchNameBytes   = 255
+	requestedWorktreeRetryIdentifierMin   = int64(10000)
+	requestedWorktreeRetryIdentifierRange = int64(90000)
+)
 
 // CanonicalizeRequestedWorktreeName converts a Router-supplied worktree name
 // into the exact branch name used for allocation. The configured branch name
@@ -38,11 +44,20 @@ func CanonicalizeRequestedWorktreeName(requestedName, configuredBranchName strin
 }
 
 // CanonicalizeRequestedWorktreeNameRetry returns the sole duplicate-name retry
-// candidate. The literal " (1)" suffix is applied to the original Router name
-// before the same canonical validation and prefix application as the first
+// candidate. A random five-digit identifier is appended to the original Router
+// name before the same canonical validation and prefix application as the first
 // allocation attempt.
-func CanonicalizeRequestedWorktreeNameRetry(requestedName, configuredBranchName string) (string, error) {
-	return CanonicalizeRequestedWorktreeName(requestedName+" (1)", configuredBranchName)
+func CanonicalizeRequestedWorktreeNameRetry(requestedName, configuredBranchName string) (branchName, retryRequestedName string, err error) {
+	identifier, err := rand.Int(rand.Reader, big.NewInt(requestedWorktreeRetryIdentifierRange))
+	if err != nil {
+		return "", "", fmt.Errorf("generate requested worktree retry identifier: %w", err)
+	}
+	retryRequestedName = fmt.Sprintf("%s %05d", strings.TrimSpace(requestedName), identifier.Int64()+requestedWorktreeRetryIdentifierMin)
+	branchName, err = CanonicalizeRequestedWorktreeName(retryRequestedName, configuredBranchName)
+	if err != nil {
+		return "", "", err
+	}
+	return branchName, retryRequestedName, nil
 }
 
 func requestedWorktreeBranchPrefix(configured string) (string, error) {

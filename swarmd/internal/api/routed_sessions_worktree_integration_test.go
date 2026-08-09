@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"regexp"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -13,8 +14,9 @@ func (f *fakeWorktreeService) RollbackAllocation(_ worktreeruntime.Allocation) e
 
 type routedWorktreeServiceStub struct {
 	fakeWorktreeService
-	allocationErrs  []error
-	allocationCalls int
+	allocationErrs     []error
+	allocationCalls    int
+	allocationBranches []string
 }
 
 func (s *routedWorktreeServiceStub) AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error) {
@@ -31,6 +33,7 @@ func (s *routedWorktreeServiceStub) AllocateDetachedWorkspace(workspacePath, nam
 func (s *routedWorktreeServiceStub) AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
 	s.lastBaseBranch = baseBranch
 	s.lastBranchName = branchName
+	s.allocationBranches = append(s.allocationBranches, branchName)
 	allocation, err := s.AllocateDetachedWorkspace(workspacePath, nameSeed)
 	if err != nil {
 		return worktreeruntime.Allocation{}, err
@@ -82,13 +85,12 @@ func TestAllocateRoutedSessionWorktreeIgnoresObsoleteDisabledConfig(t *testing.T
 func TestAllocateRoutedSessionWorktreeRetriesOnlyOneTypedConflict(t *testing.T) {
 	conflict := &worktreeruntime.RequestedWorktreeNameConflictError{WorktreeName: "router/fix-api", Cause: errors.New("taken")}
 	tests := []struct {
-		name       string
-		errs       []error
-		wantCalls  int
-		wantBranch string
-		wantErr    bool
+		name      string
+		errs      []error
+		wantCalls int
+		wantErr   bool
 	}{
-		{name: "typed conflict retries once", errs: []error{conflict, nil}, wantCalls: 2, wantBranch: "router/fix-api-1"},
+		{name: "typed conflict retries once", errs: []error{conflict, nil}, wantCalls: 2},
 		{name: "second typed conflict returns", errs: []error{conflict, conflict}, wantCalls: 2, wantErr: true},
 		{name: "non conflict never retries", errs: []error{errors.New("git unavailable")}, wantCalls: 1, wantErr: true},
 	}
@@ -97,7 +99,7 @@ func TestAllocateRoutedSessionWorktreeRetriesOnlyOneTypedConflict(t *testing.T) 
 			stub := &routedWorktreeServiceStub{
 				fakeWorktreeService: fakeWorktreeService{
 					config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "router"},
-					allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/retry", RepoRoot: "/source/repo", BranchName: test.wantBranch, WorkspaceID: "retry"},
+					allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/retry", RepoRoot: "/source/repo", WorkspaceID: "retry"},
 				},
 				allocationErrs: test.errs,
 			}
@@ -109,11 +111,19 @@ func TestAllocateRoutedSessionWorktreeRetriesOnlyOneTypedConflict(t *testing.T) 
 			if stub.allocationCalls != test.wantCalls {
 				t.Fatalf("allocation calls = %d, want %d", stub.allocationCalls, test.wantCalls)
 			}
-			if test.wantBranch != "" && stub.lastBranchName != test.wantBranch {
-				t.Fatalf("retry branch = %q, want %q", stub.lastBranchName, test.wantBranch)
+			if len(stub.allocationBranches) == 0 || stub.allocationBranches[0] != "router/fix-api" {
+				t.Fatalf("first allocation branches = %v, want unchanged router/fix-api", stub.allocationBranches)
 			}
-			if !test.wantErr && finalRequestedName != "Fix API (1)" {
-				t.Fatalf("retry final requested name = %q", finalRequestedName)
+			if test.wantCalls == 2 {
+				retryBranch := stub.allocationBranches[1]
+				if matched, _ := regexp.MatchString(`^router/fix-api-[1-9][0-9]{4}$`, retryBranch); !matched {
+					t.Fatalf("retry branch = %q, want five-digit identifier", retryBranch)
+				}
+				if !test.wantErr {
+					if matched, _ := regexp.MatchString(`^Fix API [1-9][0-9]{4}$`, finalRequestedName); !matched {
+						t.Fatalf("retry final requested name = %q, want five-digit identifier", finalRequestedName)
+					}
+				}
 			}
 			if stub.lastBaseBranch != "" {
 				t.Fatalf("current-branch config passed base %q", stub.lastBaseBranch)
@@ -181,10 +191,10 @@ func TestApplyRoutedSessionWorktreeDecisionOffDoesNotAllocate(t *testing.T) {
 
 func TestApplyRoutedSessionWorktreeAllocationPreservesSourceAndRecordsFacts(t *testing.T) {
 	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo", Metadata: map[string]any{"existing": true}}
-	allocation := worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api-1", RepoRoot: "/source/repo", BaseBranch: "dev", BaseCommit: "abc123", BranchName: "router/fix-api-1", WorkspaceID: "router-fix-api-1"}
-	applyRoutedSessionWorktreeAllocation(&candidate, "/source/repo", " Fix API ", "Fix API (1)", allocation)
+	allocation := worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api-12345", RepoRoot: "/source/repo", BaseBranch: "dev", BaseCommit: "abc123", BranchName: "router/fix-api-12345", WorkspaceID: "router-fix-api-12345"}
+	applyRoutedSessionWorktreeAllocation(&candidate, "/source/repo", " Fix API ", "Fix API 12345", allocation)
 
-	if candidate.WorkspacePath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeRootPath != allocation.WorkspacePath || candidate.WorktreeBaseBranch != "dev" || candidate.WorktreeBranch != "router/fix-api-1" {
+	if candidate.WorkspacePath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeRootPath != allocation.WorkspacePath || candidate.WorktreeBaseBranch != "dev" || candidate.WorktreeBranch != "router/fix-api-12345" {
 		t.Fatalf("candidate worktree facts = %+v", candidate)
 	}
 	for _, legacyKey := range []string{"routed_worktree_final_requested_name", "routed_worktree_final_branch"} {
@@ -195,11 +205,11 @@ func TestApplyRoutedSessionWorktreeAllocationPreservesSourceAndRecordsFacts(t *t
 	want := map[string]any{
 		"swarm_v3_source_workspace_path":  "/source/repo",
 		"swarm_v3_runtime_workspace_path": allocation.WorkspacePath,
-		"routed_worktree_name":            "Fix API (1)",
+		"routed_worktree_name":            "Fix API 12345",
 		"routed_worktree_original_name":   "Fix API",
-		"routed_worktree_requested_name":  "Fix API (1)",
-		"routed_worktree_branch":          "router/fix-api-1",
-		"workspace_id":                    "router-fix-api-1",
+		"routed_worktree_requested_name":  "Fix API 12345",
+		"routed_worktree_branch":          "router/fix-api-12345",
+		"workspace_id":                    "router-fix-api-12345",
 		"base_commit":                     "abc123",
 		"existing":                        true,
 	}
