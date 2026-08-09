@@ -4202,7 +4202,22 @@ export function DesktopAppPage() {
         handleOpenPreviousChat()
       },
     },
-  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, mergedSidebarWorkspaceEntries.length, topWorkspaceLabel, topWorkspacePath])
+    {
+      id: 'enable-new-session-plan',
+      label: 'Enable plan mode',
+      description: 'Enable plan mode for the new chat composer.',
+      keys: ['Shift', 'Tab'],
+      availability: 'Available only before a new chat is started.',
+      enabled: Boolean(topWorkspacePath && !routeSessionId),
+      disabledReason: 'Open a new chat before enabling plan mode.',
+      icon: ListChecks,
+      onRun: () => {
+        setQuickActionsOpen(false)
+        if (!topWorkspacePath || routeSessionId) return
+        handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel, { planModeRequested: true })
+      },
+    },
+  ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, mergedSidebarWorkspaceEntries.length, routeSessionId, topWorkspaceLabel, topWorkspacePath])
 
 
   const runDesktopUpdate = useCallback(async () => {
