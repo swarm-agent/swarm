@@ -86,8 +86,8 @@ func TestUISettingsStoreNormalizesLegacyPlanContextGuardFields(t *testing.T) {
 	if record.Chat.PlanContextGuardEnabled == nil || *record.Chat.PlanContextGuardEnabled {
 		t.Fatalf("explicit disabled guard was not preserved: %+v", record.Chat)
 	}
-	if record.Chat.PlanContextGuardUsedPercent != 10 {
-		t.Fatalf("legacy guard threshold = %d, want 10", record.Chat.PlanContextGuardUsedPercent)
+	if record.Chat.PlanContextGuardUsedPercent != 50 {
+		t.Fatalf("legacy guard threshold = %d, want clamped 50", record.Chat.PlanContextGuardUsedPercent)
 	}
 	if record.Chat.PlanContextGuardMaxCompactions == nil || *record.Chat.PlanContextGuardMaxCompactions != 3 {
 		t.Fatalf("legacy max compactions = %v, want clamped 3", record.Chat.PlanContextGuardMaxCompactions)

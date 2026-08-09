@@ -68,7 +68,7 @@ test('plan context guard normalization defaults and clamps persisted wire values
     usedPercent: 95,
     maxCompactions: 0,
   })
-  assert.equal(normalizePlanContextGuardUsedPercent(9.6), 10)
+  assert.equal(normalizePlanContextGuardUsedPercent(49.6), 50)
   assert.equal(normalizePlanContextGuardUsedPercent(Number.NaN), 80)
   assert.equal(normalizePlanContextGuardMaxCompactions(9), 3)
 })

@@ -48,7 +48,7 @@ export function PlanContextGuardSettingsSection({ value, saving, error, onSave }
         <label className={fieldClass}>
           Used-context warning
           <Select value={usedPercent} disabled={saving || !enabled} onChange={(event) => setUsedPercent(Number(event.target.value))}>
-            {[10, 50, 60, 70, 75, 80, 85, 90, 95].map((percent) => <option key={percent} value={percent}>{percent}% used</option>)}
+            {[50, 60, 70, 75, 80, 85, 90, 95].map((percent) => <option key={percent} value={percent}>{percent}% used</option>)}
           </Select>
         </label>
         <label className={fieldClass}>

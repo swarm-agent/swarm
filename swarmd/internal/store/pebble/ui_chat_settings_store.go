@@ -301,8 +301,8 @@ func normalizePlanContextGuardUsedPercent(value int) int {
 	if value == 0 {
 		return 80
 	}
-	if value < 10 {
-		return 10
+	if value < 50 {
+		return 50
 	}
 	if value > 95 {
 		return 95
