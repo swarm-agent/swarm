@@ -2145,10 +2145,26 @@ func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3Executor
 		}
 	}
 	packet := strings.TrimSpace(b.String())
-	if len([]rune(packet)) > caps.TotalChars {
-		return "", fmt.Errorf("bounded provider handoff packet exceeds safety cap: %d chars > %d; compact the session before provider/model handoff", len([]rune(packet)), caps.TotalChars)
+	return sessionV3FitProviderHandoffPacket(packet, caps.TotalChars), nil
+}
+
+func sessionV3FitProviderHandoffPacket(packet string, limit int) string {
+	packet = strings.TrimSpace(packet)
+	if limit <= 0 {
+		return packet
 	}
-	return packet, nil
+	runes := []rune(packet)
+	if len(runes) <= limit {
+		return packet
+	}
+	marker := []rune(fmt.Sprintf("\n\n[provider-handoff exceeded the bounded handoff cap by %d chars; middle context omitted]\n\n", len(runes)-limit))
+	if len(marker) >= limit {
+		return string(runes[:limit])
+	}
+	available := limit - len(marker)
+	headChars := available / 3
+	tailChars := available - headChars
+	return string(runes[:headChars]) + string(marker) + string(runes[len(runes)-tailChars:])
 }
 
 func (e *sessionV3Executor) appendSessionV3ProviderHandoffPlanState(b *strings.Builder, job sessionV3ExecutorJob) {
