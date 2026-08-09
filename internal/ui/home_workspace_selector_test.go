@@ -157,10 +157,19 @@ func TestEmptyWorkspaceIndicatorKeepsSelectorWithShortcutLabel(t *testing.T) {
 	}
 }
 
-func TestWorkspaceHeaderWarningUsesSaveCommandAndConfiguredSelectorKey(t *testing.T) {
-	page := NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside"})
-	if got := page.workspaceSetupWarning(); got != "Detected launch path: /outside is not a workspace. Type /workspace save to save this directory and switch." {
-		t.Fatalf("workspace setup warning = %q", got)
+func TestWorkspaceHeaderWarningDistinguishesUnsavedGitAndNoGitLaunchPaths(t *testing.T) {
+	page := NewHomePage(model.HomeModel{
+		WorkspaceSetupPath:   "/outside/repo",
+		WorkspaceSetupHasGit: true,
+		Workspaces:           []model.Workspace{{Name: "Default", Path: "/default", Active: true}},
+	})
+	if got := page.workspaceSetupWarning(); got != "Opened from unsaved Git repository /outside/repo. Using workspace Default. Run /workspace save to save the launch directory and switch to it." {
+		t.Fatalf("unsaved git warning = %q", got)
+	}
+
+	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/plain"})
+	if got := page.workspaceSetupWarning(); got != "Opened from /outside/plain, which is not a Git repository. Ask Swarm to create a Git repository there, then run /workspace save to save and switch to it." {
+		t.Fatalf("no-git warning = %q", got)
 	}
 	if err := page.keybinds.Set(KeybindGlobalWorkspaceSelect, "ctrl+w"); err != nil {
 		t.Fatal(err)

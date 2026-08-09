@@ -134,12 +134,9 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 				selectedResolve = data.launchResolve
 				selectedErr = nil
 			}
-		} else {
-			// A launch directory outside every saved workspace is an explicit
-			// TUI CWD scope. Do not silently leave the account's default saved
-			// workspace selected while sessions route from another directory.
-			selectedPath = ""
-			selectedName = ""
+		} else if selectedPath == "" {
+			// With no saved workspace to fall back to, keep the launch directory
+			// usable as the TUI CWD route while guiding the user to save it.
 			selectedResolve = data.launchResolve
 			selectedErr = nil
 			launchUsesCWDRoute = true
@@ -235,6 +232,10 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		next.WorkspaceSetupPath = firstNonEmpty(normalizePath(data.launchResolve.ResolvedPath), startupCWD)
 	} else if data.launchChecked && data.launchErr == nil && launchWorkspacePath == "" && startupCWD != "" && !homePathRegistered(startupCWD, next.Workspaces) {
 		next.WorkspaceSetupPath = startupCWD
+	}
+	if setupPath := normalizePath(next.WorkspaceSetupPath); setupPath != "" {
+		setupGitStatus, _ := gitStatusForPath(setupPath)
+		next.WorkspaceSetupHasGit = setupGitStatus.HasGit
 	}
 	return next, selectedPath, warnings
 }

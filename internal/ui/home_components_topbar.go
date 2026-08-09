@@ -393,7 +393,16 @@ func headerWorkspaceIndexes(workspaces []model.Workspace, limit int) ([]int, boo
 func (p *HomePage) workspaceSetupWarning() string {
 	setupPath := strings.TrimSpace(p.model.WorkspaceSetupPath)
 	if setupPath != "" {
-		return fmt.Sprintf("Detected launch path: %s is not a workspace. Type /workspace save to save this directory and switch.", setupPath)
+		if p.model.WorkspaceSetupHasGit {
+			name := strings.TrimSpace(p.activeWorkspaceName())
+			if name == "" {
+				name = "the default workspace"
+			} else {
+				name = "workspace " + name
+			}
+			return fmt.Sprintf("Opened from unsaved Git repository %s. Using %s. Run /workspace save to save the launch directory and switch to it.", setupPath, name)
+		}
+		return fmt.Sprintf("Opened from %s, which is not a Git repository. Ask Swarm to create a Git repository there, then run /workspace save to save and switch to it.", setupPath)
 	}
 
 	directory := p.primaryDirectory()
@@ -409,7 +418,7 @@ func (p *HomePage) workspaceSetupWarning() string {
 		if path == "" {
 			path = "."
 		}
-		return fmt.Sprintf("Saved workspace %s points to %s, which has no Git repository. Press Alt+W to switch, or run /workspace manage to fix its root.", name, path)
+		return fmt.Sprintf("Saved workspace %s at %s has no Git repository. Ask Swarm to create a Git repository in this workspace.", name, path)
 	}
 	return ""
 }

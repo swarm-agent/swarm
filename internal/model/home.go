@@ -178,6 +178,7 @@ type HomeModel struct {
 	Workspaces                  []Workspace
 	Directories                 []DirectoryItem
 	WorkspaceSetupPath          string
+	WorkspaceSetupHasGit        bool
 	PromptHint                  string
 	QuickActions                []string
 	HintLine                    string

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"sync"
 	"testing"
 
@@ -196,7 +197,30 @@ func TestApplyHomeWorkspaceBootstrapRejectsResolverPseudoWorkspace(t *testing.T)
 	}
 }
 
-func TestApplyHomeWorkspaceBootstrapUsesUnregisteredLaunchCWDWithoutDefaultWorkspace(t *testing.T) {
+func TestApplyHomeWorkspaceBootstrapMarksUnsavedGitLaunchDirectory(t *testing.T) {
+	launchPath := t.TempDir()
+	if output, err := exec.Command("git", "init", launchPath).CombinedOutput(); err != nil {
+		t.Fatalf("init git launch directory: %v: %s", err, output)
+	}
+
+	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
+		current:         client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default", WorkspaceName: "Default"},
+		hasCurrent:      true,
+		workspaces:      []client.WorkspaceEntry{{Path: "/default", WorkspaceName: "Default"}},
+		selectedResolve: client.WorkspaceCWDResolveResponse{ResolvedPath: "/default", Workspace: &client.WorkspaceResolution{WorkspacePath: "/default", ResolvedPath: "/default"}},
+		launchChecked:   true,
+		launchResolve:   client.WorkspaceCWDResolveResponse{ResolvedPath: launchPath, ResolutionKind: "non_workspace"},
+	}, launchPath)
+
+	if selected != "/default" || len(next.Workspaces) != 1 || !next.Workspaces[0].Active {
+		t.Fatalf("default workspace selection = %q %#v", selected, next.Workspaces)
+	}
+	if len(warnings) != 0 || next.WorkspaceSetupPath != launchPath || !next.WorkspaceSetupHasGit {
+		t.Fatalf("warnings = %#v, setup path = %q, has git = %v", warnings, next.WorkspaceSetupPath, next.WorkspaceSetupHasGit)
+	}
+}
+
+func TestApplyHomeWorkspaceBootstrapKeepsDefaultWorkspaceForUnregisteredLaunchCWD(t *testing.T) {
 	launchResolve := client.WorkspaceCWDResolveResponse{
 		ResolvedPath:   "/other",
 		ResolutionKind: "non_workspace",
@@ -220,17 +244,17 @@ func TestApplyHomeWorkspaceBootstrapUsesUnregisteredLaunchCWDWithoutDefaultWorks
 		launchResolve:   launchResolve,
 	}, "/other")
 
-	if selected != "" {
-		t.Fatalf("selected path = %q, want no saved workspace", selected)
+	if selected != "/default" {
+		t.Fatalf("selected path = %q, want /default", selected)
 	}
-	if len(next.Workspaces) != 1 || next.Workspaces[0].Active {
-		t.Fatalf("default workspace remained active: %#v", next.Workspaces)
+	if len(next.Workspaces) != 1 || !next.Workspaces[0].Active {
+		t.Fatalf("default workspace was not kept active: %#v", next.Workspaces)
 	}
-	if len(next.Directories) < 1 || next.Directories[0].ResolvedPath != "/other" || next.Directories[0].IsWorkspace {
-		t.Fatalf("launch directory = %#v", next.Directories)
+	if len(next.Directories) != 1 || next.Directories[0].ResolvedPath != "/default" || !next.Directories[0].IsWorkspace {
+		t.Fatalf("directories = %#v", next.Directories)
 	}
-	if len(next.ChatRoutes) != 1 || !next.ChatRoutes[0].TUIPrimaryCWD || next.ChatRoutes[0].HostWorkspacePath != "/other" {
-		t.Fatalf("launch CWD route = %#v", next.ChatRoutes)
+	if len(next.ChatRoutes) != 1 || next.ChatRoutes[0].HostWorkspacePath != "/default" || next.ChatRoutes[0].TUIPrimaryCWD {
+		t.Fatalf("default workspace route = %#v", next.ChatRoutes)
 	}
 	if len(warnings) != 0 || next.WorkspaceSetupPath != "/other" {
 		t.Fatalf("warnings = %#v, setup path = %q", warnings, next.WorkspaceSetupPath)

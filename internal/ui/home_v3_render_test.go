@@ -56,22 +56,23 @@ func TestHomepageOutsideWorkspaceWarningRendersBelowTipsAndKeepsWorkspaceRow(t *
 	defer screen.Fini()
 	screen.SetSize(120, 32)
 	page := NewHomePage(model.HomeModel{
-		WorkspaceSetupPath: "/outside/project",
-		Workspaces:         []model.Workspace{{Name: "Default", Path: "/workspace", Active: true}},
+		WorkspaceSetupPath:   "/outside/project",
+		WorkspaceSetupHasGit: true,
+		Workspaces:           []model.Workspace{{Name: "Default", Path: "/workspace", Active: true}},
 	})
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 120, 32)
 	for _, want := range []string{
 		"Default",
 		"Shift+Tab toggles Plan on/off • Ctrl+X sessions • / for commands",
-		"Detected launch path: /outside/project is not a workspace. Type /workspace save to save this",
-		"directory and switch.",
+		"Opened from unsaved Git repository /outside/project. Using workspace Default. Run /workspace",
+		"save to save the launch directory and switch to it.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("outside-workspace homepage missing %q:\n%s", want, text)
 		}
 	}
-	if tipsAt, warningAt := strings.Index(text, "Shift+Tab toggles Plan on/off"), strings.Index(text, "Detected launch path:"); tipsAt < 0 || warningAt <= tipsAt {
+	if tipsAt, warningAt := strings.Index(text, "Shift+Tab toggles Plan on/off"), strings.Index(text, "Opened from unsaved Git repository"); tipsAt < 0 || warningAt <= tipsAt {
 		t.Fatalf("outside-workspace warning was not rendered below tips:\n%s", text)
 	}
 }
@@ -105,9 +106,8 @@ func TestHomepageWarnsForRealInstallerHomeWorkspaceWithoutGit(t *testing.T) {
 
 	text := dumpHomeTestScreen(screen, 120, 32)
 	for _, want := range []string{
-		"Saved workspace installer points to ~, which has no Git repository.",
-		"Press Alt+W to switch",
-		"run /workspace manage to fix its root.",
+		"Saved workspace installer at ~ has no Git repository. Ask Swarm to create a Git repository",
+		"in this workspace.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("installer home workspace guidance missing %q:\n%s", want, text)
