@@ -2818,9 +2818,11 @@ export function DesktopV3ExistingConversationPane({
                       {planExecutionView.activeCheckpoint?.title || planExecutionView.plan.title || "Plan execution"}
                     </span>
                   </span>
-                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">
-                    {planExecutionView.policyMode === "automatic" ? "Automatic" : "Review each"}
-                  </span>
+                  {planExecutionView.policyMode !== "automatic" ? (
+                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">
+                      Review each
+                    </span>
+                  ) : null}
                   <span className="hidden shrink-0 text-[10px] font-medium capitalize text-[var(--app-text-muted)] sm:inline">
                     {(planExecutionView.activeCheckpoint?.status || planExecutionView.status || "ready").replace(/_/g, " ")}
                   </span>

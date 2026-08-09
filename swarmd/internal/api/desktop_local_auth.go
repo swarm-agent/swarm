@@ -330,5 +330,8 @@ func isLocalAdministrativeRequest(r *http.Request) bool {
 	if isLocalTransportRequest(r) {
 		return true
 	}
+	if _, ok := admittedDesktopOrigin(r); ok {
+		return isSameOriginBrowserRequest(r)
+	}
 	return isSameOriginBrowserRequest(r) && requestHasCanonicalLocalDesktopAuthority(r) && isLocalDesktopBrowserRequest(r)
 }

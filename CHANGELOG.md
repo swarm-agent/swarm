@@ -22,6 +22,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Separated core system agents from utility agents in Desktop and TUI model controls.
 - Improved TUI Codex model-profile switching and V3 chat integration, with a maintained helper for copying the local Swarm database for diagnostics.
 - Changed worktree-name conflict retries to use random five-digit identifiers.
+- Hid the redundant `Automatic` plan execution badge while keeping the `Review each` policy indicator visible.
 
 ### Fixed
 
@@ -38,6 +39,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Quarantined malformed durable sessions during sync and workset responses so one invalid session no longer prevents healthy sessions from loading.
 - Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
 - Allowed first-run OpenAI onboarding to accept credentials without depending on a live provider availability check; credentials remain explicitly unverified until a real provider request succeeds.
+- Allowed authenticated same-origin Tailscale Desktop requests admitted by daemon origin policy to trigger host update actions while spoofed requests remain fail-closed.
 
 ### Docs impact
 
@@ -51,6 +53,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public provider docs must not list Copilot as currently supported or runnable.
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
+- Docs impact: none for the Tailscale host-update authorization correction or plan execution badge cleanup.
 
 ## v0.1.19 - 2026-05-01
 
