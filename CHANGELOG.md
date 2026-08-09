@@ -37,6 +37,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Reframed `/voice` README guidance as experimental terminal voice input. The terminal STT path has been tested, but voice is not a polished or guaranteed workflow yet.
 - Quarantined malformed durable sessions during sync and workset responses so one invalid session no longer prevents healthy sessions from loading.
 - Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
+- Allowed first-run OpenAI onboarding to accept credentials without depending on a live provider availability check; credentials remain explicitly unverified until a real provider request succeeds.
 
 ### Docs impact
 

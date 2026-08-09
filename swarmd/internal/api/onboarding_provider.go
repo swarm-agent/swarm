@@ -12,9 +12,10 @@ import (
 )
 
 // acceptFirstOnboardingProviderCredential is the only first-run API-key path.
-// It synchronously verifies the submitted credential, activates it only after
-// verification succeeds, hydrates onboarding agent/model defaults, and only
-// then returns to the desktop client.
+// OpenAI has no offline key introspection, so first-run setup stores its key as
+// active but unverified without blocking on a provider availability probe. The
+// first real request supplies the definitive verdict. Other providers retain
+// synchronous verification before activation.
 func (s *Server) acceptFirstOnboardingProviderCredential(ctx context.Context, principal identity.Principal, req onboardingProviderCredentialRequest) (auth.CredentialStatus, error) {
 	if s == nil || s.auth == nil {
 		return auth.CredentialStatus{}, errors.New("auth service not configured")
@@ -46,22 +47,26 @@ func (s *Server) acceptFirstOnboardingProviderCredential(ctx context.Context, pr
 		Active:         false,
 	}
 
-	connection, verifyErr := s.verifyCredentialMaterialForAccount(ctx, accountScopeID, provideriface.AuthCredential{
-		Provider:     provider,
-		Type:         input.Type,
-		Label:        input.Label,
-		Tags:         append([]string(nil), input.Tags...),
-		APIKey:       input.APIKey,
-		AccessToken:  input.AccessToken,
-		RefreshToken: input.RefreshToken,
-		ExpiresAt:    input.ExpiresAt,
-		AccountID:    input.AccountID,
-	})
-	if verifyErr != nil {
-		return auth.CredentialStatus{}, verifyErr
-	}
-	if !authCredentialVerificationAccepted(connection) {
-		return auth.CredentialStatus{}, authCredentialVerificationError(connection)
+	var connection *auth.ConnectionStatus
+	if provider != "openai" {
+		var verifyErr error
+		connection, verifyErr = s.verifyCredentialMaterialForAccount(ctx, accountScopeID, provideriface.AuthCredential{
+			Provider:     provider,
+			Type:         input.Type,
+			Label:        input.Label,
+			Tags:         append([]string(nil), input.Tags...),
+			APIKey:       input.APIKey,
+			AccessToken:  input.AccessToken,
+			RefreshToken: input.RefreshToken,
+			ExpiresAt:    input.ExpiresAt,
+			AccountID:    input.AccountID,
+		})
+		if verifyErr != nil {
+			return auth.CredentialStatus{}, verifyErr
+		}
+		if !authCredentialVerificationAccepted(connection) {
+			return auth.CredentialStatus{}, authCredentialVerificationError(connection)
+		}
 	}
 
 	status, event, err := s.auth.UpsertCredential(input)
