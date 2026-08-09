@@ -23,6 +23,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Improved TUI Codex model-profile switching and V3 chat integration, with a maintained helper for copying the local Swarm database for diagnostics.
 - Changed worktree-name conflict retries to use random five-digit identifiers.
 - Hid the redundant `Automatic` plan execution badge while keeping the `Review each` policy indicator visible.
+- Refreshed the release candidate metadata to validate the updated in-app update workflow.
 
 ### Fixed
 
