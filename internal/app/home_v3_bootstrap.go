@@ -119,12 +119,16 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 	}
 	launchWorkspacePath := ""
 	launchUsesCWDRoute := false
+	launchPath := firstNonEmpty(normalizePath(data.launchResolve.ResolvedPath), normalizePath(startupCWD))
 	if data.launchChecked && data.launchErr == nil {
 		if data.launchResolve.Workspace != nil {
 			launchWorkspacePath = registeredWorkspacePath(data.workspaces, firstNonEmpty(
 				normalizePath(data.launchResolve.Workspace.WorkspacePath),
 				normalizePath(data.launchResolve.Workspace.ResolvedPath),
 			))
+			if launchWorkspacePath != "" && !registeredWorkspaceOwnsLaunchPath(data.workspaces, launchWorkspacePath, launchPath) {
+				launchWorkspacePath = ""
+			}
 			if launchWorkspacePath != "" {
 				selectedPath = launchWorkspacePath
 				selectedName = firstNonEmpty(
@@ -134,12 +138,9 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 				selectedResolve = data.launchResolve
 				selectedErr = nil
 			}
-		} else {
-			// A launch directory outside every saved workspace is an explicit
-			// TUI CWD scope. Do not silently leave the account's default saved
-			// workspace selected while sessions route from another directory.
-			selectedPath = ""
-			selectedName = ""
+		} else if selectedPath == "" {
+			// With no saved workspace to fall back to, keep the launch directory
+			// usable as the TUI CWD route while guiding the user to save it.
 			selectedResolve = data.launchResolve
 			selectedErr = nil
 			launchUsesCWDRoute = true
@@ -233,10 +234,22 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 	startupCWD = normalizePath(startupCWD)
 	if launchUsesCWDRoute {
 		next.WorkspaceSetupPath = firstNonEmpty(normalizePath(data.launchResolve.ResolvedPath), startupCWD)
-	} else if data.launchChecked && data.launchErr == nil && launchWorkspacePath == "" && startupCWD != "" && !homePathRegistered(startupCWD, next.Workspaces) {
+	} else if data.launchChecked && data.launchErr == nil && launchWorkspacePath == "" && startupCWD != "" {
 		next.WorkspaceSetupPath = startupCWD
 	}
+	if setupPath := normalizePath(next.WorkspaceSetupPath); setupPath != "" {
+		setupGitStatus, _ := gitStatusForPath(setupPath)
+		next.WorkspaceSetupHasGit = setupGitStatus.HasGit
+	}
 	return next, selectedPath, warnings
+}
+
+func gitRootForPath(path string) string {
+	status, ok := gitStatusForPath(path)
+	if !ok || !status.HasGit {
+		return ""
+	}
+	return normalizePath(status.RepoRoot)
 }
 
 func firstRegisteredWorkspacePath(workspaces []client.WorkspaceEntry) string {
@@ -271,15 +284,40 @@ func registeredWorkspacePath(workspaces []client.WorkspaceEntry, candidate strin
 	return ""
 }
 
-func homePathRegistered(path string, workspaces []model.Workspace) bool {
-	path = normalizePath(path)
-	if path == "" {
+func registeredWorkspaceOwnsLaunchPath(workspaces []client.WorkspaceEntry, workspacePath, launchPath string) bool {
+	workspacePath = normalizePath(workspacePath)
+	launchPath = normalizePath(launchPath)
+	if workspacePath == "" || launchPath == "" {
 		return false
 	}
+	launchGitRoot := gitRootForPath(launchPath)
 	for _, workspace := range workspaces {
-		if workspaceModelMatchDepth(workspace, path) >= 0 {
-			return true
+		if !pathsEqual(workspace.Path, workspacePath) {
+			continue
 		}
+		roots := append([]string(nil), workspace.Directories...)
+		if len(roots) == 0 {
+			roots = []string{workspace.Path}
+		}
+		for _, root := range roots {
+			root = normalizePath(root)
+			if root == "" {
+				continue
+			}
+			if pathsEqual(root, launchPath) {
+				return true
+			}
+			if launchGitRoot != "" {
+				if pathsEqual(gitRootForPath(root), launchGitRoot) {
+					return true
+				}
+				continue
+			}
+			if workspacePathMatchDepth(root, launchPath) >= 0 {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }

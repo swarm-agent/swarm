@@ -35,6 +35,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Removed public README claims that Copilot is currently available as a supported provider. Copilot implementation code remains in the tree, but it is intentionally not registered as a selectable or runnable provider until it can be validated end-to-end with the required paid Copilot plan.
 - Reframed `/voice` README guidance as experimental terminal voice input. The terminal STT path has been tested, but voice is not a polished or guaranteed workflow yet.
 - Quarantined malformed durable sessions during sync and workset responses so one invalid session no longer prevents healthy sessions from loading.
+- Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
 
 ### Docs impact
 
@@ -47,6 +48,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public install docs should point users to the release installer fast lane before source checkout workflows.
 - Public provider docs must not list Copilot as currently supported or runnable.
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
+- Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
 
 ## v0.1.19 - 2026-05-01
 
