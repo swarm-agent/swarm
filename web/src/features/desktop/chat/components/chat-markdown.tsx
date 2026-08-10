@@ -358,7 +358,6 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   );
 }
 
-const TASK_SWARM_THRESHOLD = 5;
 const TASK_SWARM_MAX_HEIGHT = 560;
 const TASK_SWARM_MIN_HEIGHT = 150;
 
@@ -1139,9 +1138,9 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   );
 }
 
-function TaskRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
+function TaskRowsView({ rows, actions, swarm = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; swarm?: boolean }) {
   if (rows.length === 0) return null;
-  if (rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} actions={actions} />;
+  if (swarm) return <TaskSwarmRowsView rows={rows} actions={actions} />;
   return <TaskAgentRowsView rows={rows} actions={actions} />;
 }
 
@@ -2093,7 +2092,7 @@ export function ToolMessageView({
     : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
   const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
-  const isTaskSwarm = hasTaskRows && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
+  const isTaskSwarm = hasTaskRows && (toolMessage.taskMode === "swarm" || toolMessage.taskRows.some((row) => row.swarmMode));
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
     ? ""
@@ -2196,7 +2195,7 @@ export function ToolMessageView({
         {!toolMessage.editDiff &&
         toolMessage.tool === "task" &&
         toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} />
+          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} swarm={isTaskSwarm} />
         ) : null}
         {!toolMessage.editDiff &&
         isSearch &&

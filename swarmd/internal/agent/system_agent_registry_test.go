@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -329,7 +329,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)

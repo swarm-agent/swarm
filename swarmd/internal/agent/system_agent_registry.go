@@ -23,6 +23,8 @@ const (
 	CoderAgentName               = "Coder"
 	DesignerAgentID              = "system-designer"
 	DesignerAgentName            = "Designer"
+	IdeaAgentID                  = "system-idea"
+	IdeaAgentName                = "Idea"
 	SwarmAgentID                 = "swarm"
 	SwarmAgentName               = "Swarm"
 	AITaskPreparerAgentID        = "system-ai-task-preparer"
@@ -251,6 +253,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileRouterAgentProfile,
 	},
 	{
+		ID:          IdeaAgentID,
+		DisplayName: IdeaAgentName,
+		Materialize: IdeaAgentProfileForParent,
+		Reconcile:   reconcileIdeaAgentProfile,
+	},
+	{
 		ID:           FinderAgentID,
 		DisplayName:  FinderAgentName,
 		UserVisible:  true,
@@ -442,6 +450,20 @@ Inspect the assigned workspace scope, create coherent reusable design variants a
 Use only the locked workspace discovery and file-editing tools. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
 }
 
+func IdeaAgentPrompt() string {
+	return strings.TrimSpace(`You are Idea, Swarm's compiled tool-free one-shot ideation agent.
+Answer only the assigned question independently and directly. Produce a concise useful response in one turn. Do not call tools, inspect the workspace, orchestrate agents, ask the user questions, or mutate any state.`)
+}
+
+func IdeaAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"read": {Enabled: pebblestore.BoolPtr(false)}, "media_inspect": {Enabled: pebblestore.BoolPtr(false)}, "search": {Enabled: pebblestore.BoolPtr(false)}, "find": {Enabled: pebblestore.BoolPtr(false)}, "list": {Enabled: pebblestore.BoolPtr(false)},
+		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
+		"task": {Enabled: pebblestore.BoolPtr(false)}, "manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
+		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
+	}}
+}
+
 func DesignerAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
@@ -465,6 +487,15 @@ func IsDesignerAgentName(name string) bool {
 func IsCoderAgentName(name string) bool {
 	switch normalizeName(name) {
 	case "coder", CoderAgentID:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsIdeaAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "idea", "ideas", IdeaAgentID:
 		return true
 	default:
 		return false
@@ -505,6 +536,8 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 		return CoderAgentID, true
 	case IsDesignerAgentName(name):
 		return DesignerAgentID, true
+	case IsIdeaAgentName(name):
+		return IdeaAgentID, true
 	case name == "ai sidechat":
 		return AISidechatAgentID, true
 	default:
@@ -645,6 +678,17 @@ func CoderAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.Age
 	})
 }
 
+func IdeaAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: IdeaAgentID, Mode: ModeSubagent, Description: "Compiled tool-free one-shot ideation subagent",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier), ContextMode: strings.TrimSpace(parent.ContextMode),
+		Prompt: IdeaAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: IdeaAgentToolContract(), Enabled: true,
+	})
+	profile.Protected = true
+	return profile
+}
+
 func DesignerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: DesignerAgentID, Mode: ModeSubagent, Description: "Compiled reusable UI and design implementation subagent",
@@ -722,6 +766,14 @@ func reconcileCoderAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.A
 	profile := CoderAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	return profile
+}
+
+func reconcileIdeaAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := IdeaAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	profile.ContextMode = strings.TrimSpace(snapshot.ContextMode)
 	return profile
 }
 

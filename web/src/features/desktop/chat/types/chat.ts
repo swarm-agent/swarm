@@ -48,6 +48,7 @@ export interface TaskToolRow {
   elapsedMs: number;
   currentToolMs: number;
   terminal: boolean;
+  swarmMode?: boolean;
 }
 
 export interface SearchToolLineMatch {
@@ -186,6 +187,7 @@ export interface StructuredToolMessage {
   bashData?: BashToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
+  taskMode?: string;
 }
 
 export interface WorkspaceSessionCacheRecord<SessionRecord> {

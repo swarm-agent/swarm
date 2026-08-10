@@ -184,6 +184,7 @@ function testTaskSwarmUsesCompactPreview(): void {
     callId: "call_task_swarm",
     outputText: JSON.stringify({
       tool: "task",
+      task_mode: "swarm",
       description: longAssignment,
       launch_count: 12,
       launches: Array.from({ length: 12 }, (_, index) => ({
@@ -200,7 +201,7 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(Boolean(message), "expected structured task swarm message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("SWARM MODE"), "expected the post-five swarm mode label");
+  assert(markup.includes("SWARM MODE"), "expected the explicit swarm mode label");
   assert((markup.match(/SWARM MODE/g) ?? []).length === 1, "swarm mode heading should render once");
   assert(!markup.includes("12 AI"), "swarm mode should omit the redundant AI population badge");
   assert(!markup.includes("finder"), "swarm rows should not show provider or agent metadata");
@@ -210,6 +211,25 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
   assert(!markup.includes("child child-session"), "swarm mode should not render child session ids");
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
+
+  const regularMessage = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_task_regular_many",
+    outputText: JSON.stringify({
+      tool: "task",
+      task_mode: "regular",
+      launch_count: 12,
+      launches: Array.from({ length: 12 }, (_, index) => ({
+        launch_index: index + 1,
+        child_session_id: `regular-child-${index + 1}`,
+        status: "done",
+        resolved_agent_name: "finder",
+        assignment_label: `Regular task ${index + 1}`,
+      })),
+    }),
+  });
+  assert(Boolean(regularMessage), "expected regular task message");
+  assert(!renderToolMarkup(regularMessage!).includes("SWARM MODE"), "large regular waves must not become swarm mode by count");
 }
 
 function testTaskRunningTimerUsesStartTimestamp(): void {

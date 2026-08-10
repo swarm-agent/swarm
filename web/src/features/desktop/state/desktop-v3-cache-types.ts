@@ -808,6 +808,7 @@ export interface LiveTaskToolStreamState {
   parentSessionId?: string
   taskCallId?: string
   launchCount?: number
+  taskMode?: string
   updatedAt: number
   launchesByKey: Record<string, Record<string, unknown>>
   launchOrder: string[]

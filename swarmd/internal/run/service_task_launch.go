@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -20,14 +22,36 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-const taskLaunchPermissionPathID = "permission.task_launch.v1"
+const (
+	taskLaunchPermissionPathID = "permission.task_launch.v1"
+	taskModeRegular            = "regular"
+	taskModeSwarm              = "swarm"
+	taskSwarmMaxAgents         = 256
+)
 
 type taskCallArguments struct {
 	Action          string
 	Description     string
 	Prompt          string
+	Mode            string
+	Swarm           *taskSwarmSpec
 	Launches        []taskLaunchSpec
 	SourceArguments map[string]any
+}
+
+type taskSwarmGroup struct {
+	Name         string `json:"name"`
+	Count        int    `json:"count"`
+	Instructions string `json:"instructions,omitempty"`
+}
+
+type taskSwarmSpec struct {
+	AgentType          string
+	Count              int
+	Themes             []string
+	Groups             []taskSwarmGroup
+	OutputContract     string
+	OwnedScopeTemplate string
 }
 
 type taskLaunchSpec struct {
@@ -38,6 +62,8 @@ type taskLaunchSpec struct {
 	ConcurrencyReason     string
 	OwnedScope            []string
 	DependencyEvidence    string
+	StreamKey             string
+	SwarmMode             bool
 	SourceArguments       map[string]any
 }
 
@@ -60,6 +86,8 @@ type taskLaunchManifest struct {
 	SourceArguments     map[string]any                 `json:"source_arguments,omitempty"`
 	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
+	TaskMode            string                         `json:"task_mode,omitempty"`
+	SwarmAgentType      string                         `json:"swarm_agent_type,omitempty"`
 	ManifestHash        string                         `json:"manifest_hash"`
 	ApprovedArguments   map[string]any                 `json:"approved_arguments,omitempty"`
 }
@@ -162,6 +190,8 @@ type taskLaunchManifestRow struct {
 	InheritedRuntimeMode  string                                   `json:"inherited_runtime_mode,omitempty"`
 	ProfileSnapshot       *pebblestore.AgentProfile                `json:"profile_snapshot,omitempty"`
 	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot `json:"model_profile_snapshot"`
+	StreamKey             string                                   `json:"stream_key,omitempty"`
+	SwarmMode             bool                                     `json:"swarm_mode,omitempty"`
 }
 
 type taskLaunchResolvedToolSummary struct {
@@ -217,6 +247,20 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, fmt.Errorf("task requires prompt")
 	}
 
+	mode := strings.ToLower(strings.TrimSpace(mapString(args, "mode")))
+	if mapBool(args, "swarm_mode") {
+		if mode != "" && mode != taskModeSwarm {
+			return taskCallArguments{}, errors.New("task mode conflicts with swarm_mode")
+		}
+		mode = taskModeSwarm
+	}
+	if mode == "" {
+		mode = taskModeRegular
+	}
+	if mode != taskModeRegular && mode != taskModeSwarm {
+		return taskCallArguments{}, fmt.Errorf("task mode must be %q or %q", taskModeRegular, taskModeSwarm)
+	}
+
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
 		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
 			return taskLaunchSpec{}, err
@@ -257,13 +301,24 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		case agentruntime.IsDesignerAgentName(launch.RequestedSubagentType):
 			launch.RequestedSubagentType = "designer"
 		default:
-			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, finder, or designer", label)
+			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, finder, or designer; Idea is available only through task mode=swarm", label)
 		}
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
 		}
 		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
+	}
+
+	if mode == taskModeSwarm {
+		swarm, launches, err := parseTaskSwarmArguments(args, prompt, description)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		return taskCallArguments{
+			Action: action, Description: description, Prompt: prompt, Mode: mode,
+			Swarm: swarm, Launches: launches, SourceArguments: args,
+		}, nil
 	}
 
 	launches := make([]taskLaunchSpec, 0, 8)
@@ -303,9 +358,205 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		Action:          action,
 		Description:     description,
 		Prompt:          prompt,
+		Mode:            mode,
 		Launches:        launches,
 		SourceArguments: args,
 	}, nil
+}
+
+func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*taskSwarmSpec, []taskLaunchSpec, error) {
+	allowed := map[string]bool{
+		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
+		"agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
+		"themes": true, "groups": true, "output_contract": true, "owned_scope_template": true, "launches": true,
+	}
+	for key := range args {
+		if !allowed[key] {
+			return nil, nil, fmt.Errorf("task swarm mode contains unsupported field %q", key)
+		}
+	}
+	if _, ok := args["launches"]; ok {
+		return nil, nil, errors.New("task swarm mode generates its launch wave; launches must be omitted")
+	}
+	agentType := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "agent_type"), mapString(args, "subagent_type"), mapString(args, "agent"), mapString(args, "purpose"))))
+	switch {
+	case agentruntime.IsCoderAgentName(agentType):
+		agentType = "coder"
+	case agentruntime.IsDesignerAgentName(agentType):
+		agentType = "designer"
+	case agentruntime.IsIdeaAgentName(agentType):
+		agentType = "idea"
+	default:
+		return nil, nil, errors.New("task swarm mode agent_type must be coder, designer, or idea")
+	}
+	count, err := taskPositiveInt(args, "count")
+	if err != nil {
+		return nil, nil, err
+	}
+	if count > taskSwarmMaxAgents {
+		return nil, nil, fmt.Errorf("task swarm mode count cannot exceed %d", taskSwarmMaxAgents)
+	}
+	themes, err := taskStringArray(args, "themes")
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(themes) != 0 && len(themes) != count {
+		return nil, nil, fmt.Errorf("task swarm mode themes must be omitted or contain exactly %d entries", count)
+	}
+	groups, err := taskSwarmGroups(args, count)
+	if err != nil {
+		return nil, nil, err
+	}
+	outputContract := strings.TrimSpace(mapString(args, "output_contract"))
+	if outputContract == "" {
+		outputContract = strings.TrimSpace(description)
+	}
+	ownedScopeTemplate := strings.TrimSpace(mapString(args, "owned_scope_template"))
+	if agentType == "designer" && ownedScopeTemplate == "" {
+		return nil, nil, errors.New("task Designer swarm requires owned_scope_template with exactly one {index} placeholder")
+	}
+	if ownedScopeTemplate != "" && strings.Count(ownedScopeTemplate, "{index}") != 1 {
+		return nil, nil, errors.New("task swarm owned_scope_template must contain exactly one {index} placeholder")
+	}
+	if agentType == "idea" {
+		if len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || ownedScopeTemplate != "" {
+			return nil, nil, errors.New("task Idea swarm accepts only mode, prompt, agent_type, count, and optional description")
+		}
+	}
+
+	swarm := &taskSwarmSpec{AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OwnedScopeTemplate: ownedScopeTemplate}
+	launches := make([]taskLaunchSpec, count)
+	for i := range launches {
+		index := i + 1
+		ownedScope := []string(nil)
+		if ownedScopeTemplate != "" {
+			target := strings.Replace(ownedScopeTemplate, "{index}", strconv.Itoa(index), 1)
+			if err := validateTaskSwarmOwnedScope(target); err != nil {
+				return nil, nil, fmt.Errorf("task swarm owned scope %d: %w", index, err)
+			}
+			ownedScope = []string{filepath.ToSlash(filepath.Clean(target))}
+		}
+		metaPrompt := prompt
+		if agentType != "idea" {
+			metaPrompt = fmt.Sprintf("Pending Router hydration for swarm item %d.", index)
+		}
+		launches[i] = taskLaunchSpec{
+			RequestedSubagentType: agentType,
+			MetaPrompt:            metaPrompt,
+			AssignmentLabel:       fmt.Sprintf("%s swarm %d", taskSwarmAgentLabel(agentType), index),
+			Deliverable:           outputContract,
+			ConcurrencyReason:     "Independent task swarm iteration",
+			OwnedScope:            ownedScope,
+			DependencyEvidence:    "The shared parent brief is complete before this task swarm wave starts.",
+			StreamKey:             fmt.Sprintf("swarm:%d", index),
+			SwarmMode:             true,
+			SourceArguments:       map[string]any{"swarm_index": index, "swarm_mode": true},
+		}
+		applyCanonicalCoderOwnedScope(&launches[i])
+	}
+	if err := validateTaskDesignerScopes(launches); err != nil {
+		return nil, nil, err
+	}
+	return swarm, launches, nil
+}
+
+func taskSwarmAgentLabel(agentType string) string {
+	switch agentType {
+	case "coder":
+		return "Coder"
+	case "designer":
+		return "Designer"
+	case "idea":
+		return "Idea"
+	default:
+		return "Swarm"
+	}
+}
+
+func taskPositiveInt(args map[string]any, key string) (int, error) {
+	value, ok := args[key]
+	if !ok {
+		return 0, fmt.Errorf("task swarm mode requires %s", key)
+	}
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < 1 {
+		return 0, fmt.Errorf("task swarm mode %s must be a positive integer", key)
+	}
+	return int(number), nil
+}
+
+func taskStringArray(args map[string]any, key string) ([]string, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	typed, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("task swarm mode %s must be an array of strings", key)
+	}
+	result := make([]string, 0, len(typed))
+	seen := map[string]struct{}{}
+	for i, entry := range typed {
+		text, ok := entry.(string)
+		text = strings.TrimSpace(text)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("task swarm mode %s[%d] must be a non-empty string", key, i)
+		}
+		normalized := strings.ToLower(text)
+		if _, duplicate := seen[normalized]; duplicate {
+			return nil, fmt.Errorf("task swarm mode %s[%d] duplicates another value", key, i)
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, text)
+	}
+	return result, nil
+}
+
+func taskSwarmGroups(args map[string]any, count int) ([]taskSwarmGroup, error) {
+	value, ok := args["groups"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	typed, ok := value.([]any)
+	if !ok || len(typed) == 0 {
+		return nil, errors.New("task swarm mode groups must be a non-empty array")
+	}
+	groups := make([]taskSwarmGroup, 0, len(typed))
+	total := 0
+	for i, entry := range typed {
+		row, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("task swarm mode groups[%d] must be an object", i)
+		}
+		for key := range row {
+			if key != "name" && key != "count" && key != "instructions" {
+				return nil, fmt.Errorf("task swarm mode groups[%d] contains unsupported field %q", i, key)
+			}
+		}
+		name := strings.TrimSpace(mapString(row, "name"))
+		if name == "" {
+			return nil, fmt.Errorf("task swarm mode groups[%d] requires name", i)
+		}
+		groupCount, err := taskPositiveInt(row, "count")
+		if err != nil {
+			return nil, fmt.Errorf("task swarm mode groups[%d]: %w", i, err)
+		}
+		groups = append(groups, taskSwarmGroup{Name: name, Count: groupCount, Instructions: strings.TrimSpace(mapString(row, "instructions"))})
+		total += groupCount
+	}
+	if total != count {
+		return nil, fmt.Errorf("task swarm mode group counts total %d, want %d", total, count)
+	}
+	return groups, nil
+}
+
+func validateTaskSwarmOwnedScope(scope string) error {
+	clean := filepath.Clean(filepath.FromSlash(strings.TrimSpace(scope)))
+	canonical := filepath.ToSlash(clean)
+	if scope == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.ContainsAny(scope, "*?[]") || canonical != scope {
+		return errors.New("must be a concrete clean workspace-relative path")
+	}
+	return nil
 }
 
 func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
@@ -1645,6 +1896,13 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		profile.AutoServiceTier, profile.ContextMode = preference.ServiceTier, preference.ContextMode
 		return profile, false, "", nil
 	}
+	if agentruntime.IsIdeaAgentName(requested) {
+		profile, err := s.agents.ResolveSystemAgent(agentruntime.IdeaAgentID, pebblestore.AgentProfile{
+			Provider: parentSession.Preference.Provider, Model: parentSession.Preference.Model, Thinking: parentSession.Preference.Thinking,
+			AutoServiceTier: parentSession.Preference.ServiceTier, ContextMode: parentSession.Preference.ContextMode,
+		})
+		return profile, false, "", err
+	}
 	if !agentruntime.IsCoderAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
 		return profile, false, "", err
@@ -1707,6 +1965,9 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		}
 		if row.ProfileSnapshot == nil {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
+		}
+		if strings.TrimSpace(row.StreamKey) != strings.TrimSpace(launchSpecs[i].StreamKey) || row.SwarmMode != launchSpecs[i].SwarmMode {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d swarm identity mismatch", i)
 		}
 	}
 	return envelope.Manifest, nil
@@ -1771,8 +2032,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var toolContract ResolvedAgentToolContract
 		var profileDisabledTools map[string]bool
 		var toolErr error
-		if virtualTarget || agentruntime.IsFinderAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) {
-			// Compiled Coder, Finder, and Designer profiles are trusted launch snapshots, not
+		if virtualTarget || agentruntime.IsFinderAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) || agentruntime.IsIdeaAgentName(resolvedName) {
+			// Compiled Coder, Finder, Designer, and Idea profiles are trusted launch snapshots, not
 			// persisted agent rows. Compile their immutable
 			// contracts directly instead of looking them up in the agent store.
 			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)
@@ -1817,6 +2078,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			SourceProfileMode:    strings.TrimSpace(subagentProfile.Mode),
 			InheritedRuntimeMode: pebblestore.AgentProfileRuntimeMode(subagentProfile),
 			ProfileSnapshot:      &subagentProfile,
+			StreamKey:            strings.TrimSpace(launch.StreamKey),
+			SwarmMode:            launch.SwarmMode,
 		})
 	}
 	if len(launches) == 0 {
@@ -1845,6 +2108,10 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		ResolvedTools:      launches[0].ResolvedTools,
 		SourceArguments:    parsed.SourceArguments,
 		Launches:           launches,
+		TaskMode:           parsed.Mode,
+	}
+	if parsed.Swarm != nil {
+		manifest.SwarmAgentType = parsed.Swarm.AgentType
 	}
 
 	parent, ok := s.lookupTaskLaunchParentSession(sessionID, parentMode)

@@ -39,6 +39,7 @@ interface StructuredToolMessageInput {
   taskStream?: {
     launchesByKey: Record<string, Record<string, unknown>>;
     launchOrder: string[];
+    taskMode?: string;
   };
   error?: string;
   durationMs?: number;
@@ -991,6 +992,7 @@ function buildTaskToolRow(
     elapsedMs,
     currentToolMs,
     terminal,
+    swarmMode: jsonBool(payload, "swarm_mode"),
   };
 }
 
@@ -1976,6 +1978,7 @@ export function buildStructuredToolMessage(
     bashData,
     previewLines,
     taskRows,
+    taskMode: firstNonEmpty(jsonStr(outputJson, "task_mode"), input.taskStream?.taskMode ?? "", jsonStr(argumentsJson, "mode")),
   };
 }
 

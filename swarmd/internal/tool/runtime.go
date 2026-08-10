@@ -1237,7 +1237,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a distinct research question to Finder, an independent dependency-ready implementation scope to Coder, or explicitly requested multiple UI/design iterations or variants to Designer. Designer is prohibited for ordinary UI work and single-design requests, which the parent handles directly. Eligible Designer children share the parent checkout, may inspect with read/search/find/list and implement with write/edit, have no Bash or Git, and produce ordinary reusable artifacts that remain until the user requests or chooses cleanup. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; give every launch a concise title of about three words for cosmetic UI display, while keeping the full instructive assignment in meta_prompt. Each launch also states its deliverable, concurrency reason, owned scope, and dependency evidence for review; Designer launches require complete briefs and distinct non-overlapping workspace-relative output targets, and dependency-ready variants should be batched.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, or set mode=swarm for rapid Coder/Designer iterations and tool-free one-shot Idea swarms. Swarm mode is part of this task tool, not another tool: Coder/Designer prompts are hydrated by Router from one parent brief, while every Idea receives the same question directly without Router. Both modes use the same subagent policy, reservation, permission, streaming, and child-session runtime; there is no extra permission path. Regular mode uses Finder for distinct research, Coder for dependency-ready implementation, and Designer only for explicitly requested multiple UI/design iterations or variants; Designer is prohibited for ordinary UI work and single-design requests. Designer children share the parent checkout, use read/search/find/list and write/edit with no Bash or Git, and produce ordinary reusable artifacts in distinct non-overlapping workspace-relative targets. Put regular-mode child definitions in the structured launches array. Do not embed launch JSON in prompt; each launch keeps its full instructive assignment in meta_prompt, not text embedded in prompt, plus a concise title ideally three words.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1245,13 +1245,21 @@ func (r *Runtime) Definitions() []Definition {
 						"type":        "string",
 						"description": "Optional action. Supported: spawn (default).",
 					},
+					"mode":                 map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches for heavy work. swarm generates a rapid wave from agent_type and count."},
+					"swarm_mode":           map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
+					"agent_type":           map[string]any{"type": "string", "enum": []string{"coder", "designer", "idea"}, "description": "Required for mode=swarm. Idea is tool-free and available only in swarm mode."},
+					"count":                map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm, bounded by the existing subagent policy and active-child limit."},
+					"themes":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer seed themes; cardinality must equal count."},
+					"groups":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
+					"output_contract":      map[string]any{"type": "string", "description": "Shared Coder/Designer swarm deliverable contract. Omit for Idea swarms."},
+					"owned_scope_template": map[string]any{"type": "string", "description": "Workspace-relative Coder/Designer target containing exactly one {index}; required for Designer swarms. Omit for Idea."},
 					"description": map[string]any{
 						"type":        "string",
 						"description": "Short overall task label shown in UI.",
 					},
 					"prompt": map[string]any{
 						"type":        "string",
-						"description": "Shared main task prompt only. Do not embed launch JSON, XML, or parameter tags here; put child launches in the top-level launches array.",
+						"description": "Shared parent task. In regular mode, pair it with explicit launches. In Coder/Designer swarm mode, Router preserves it in every hydrated child prompt. In Idea swarm mode, this exact question is sent unchanged to every one-shot Idea.",
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",

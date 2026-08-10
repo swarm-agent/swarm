@@ -25,6 +25,19 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if _, ok := properties["allow_bash"]; ok {
 		t.Fatal("task schema must not expose launch-time allow_bash")
 	}
+	for _, key := range []string{"mode", "agent_type", "count", "themes", "groups", "output_contract", "owned_scope_template"} {
+		if _, ok := properties[key]; !ok {
+			t.Fatalf("task schema missing swarm-mode field %q", key)
+		}
+	}
+	for _, definition := range rt.Definitions() {
+		if definition.Name == "swarm_mode" {
+			t.Fatal("swarm mode must remain part of task, not a separate tool")
+		}
+	}
+	if !definitionTextContains(taskDefinition, "same subagent policy") || !definitionTextContains(taskDefinition, "same question directly without Router") {
+		t.Fatalf("task definition must document shared permissions and direct Idea swarms: %#v", taskDefinition)
+	}
 	if !definitionTextContains(taskDefinition, "structured launches array") || !definitionTextContains(taskDefinition, "Do not embed launch JSON") || !definitionTextContains(taskDefinition, "not text embedded in prompt") {
 		t.Fatalf("task definition must warn models to use structured launch fields instead of prompt-embedded launch markup: %#v", taskDefinition)
 	}

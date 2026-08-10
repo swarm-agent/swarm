@@ -45,6 +45,8 @@ type taskLaunchPrepared struct {
 	ChildWorktreeBranch  string
 	TaskBase             *worktreeruntime.TaskBase
 	LaunchStartedAtMS    int64
+	StreamKey            string
+	SwarmMode            bool
 }
 
 func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
@@ -104,6 +106,8 @@ type taskLaunchOutcome struct {
 	Summary             string
 	Error               string
 	Reason              string
+	StreamKey           string
+	SwarmMode           bool
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -163,6 +167,8 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		WorktreeBranch:     strings.TrimSpace(launch.ChildSession.WorktreeBranch),
 		LaunchStartedAtMS:  launch.LaunchStartedAtMS,
 		WorktreeClean:      true,
+		StreamKey:          strings.TrimSpace(launch.StreamKey),
+		SwarmMode:          launch.SwarmMode,
 	}
 	if launch.TaskBase != nil {
 		outcome.BaseCommit = strings.TrimSpace(launch.TaskBase.BaseCommit)
@@ -355,6 +361,9 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 const taskStreamPathIDV2 = "tool.task.stream.v2"
 
 func taskLaunchStreamKey(launch taskLaunchOutcome) string {
+	if streamKey := strings.TrimSpace(launch.StreamKey); streamKey != "" {
+		return streamKey
+	}
 	if childSessionID := strings.TrimSpace(launch.ChildSessionID); childSessionID != "" {
 		return childSessionID
 	}
@@ -411,6 +420,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"report_chars":               launch.ReportChars,
 		"report_truncated":           launch.ReportTruncated,
 		"terminal":                   terminal,
+		"swarm_mode":                 launch.SwarmMode,
 	}
 	if launch.ReportRef != nil {
 		patch["report_ref"] = launch.ReportRef
@@ -453,6 +463,7 @@ func buildTaskStreamPatchPayload(parentSessionID, taskCallID, action, descriptio
 		"summary":           summary,
 		"details_truncated": false,
 		"launch":            patch,
+		"task_mode":         map[bool]string{true: taskModeSwarm, false: taskModeRegular}[launch.SwarmMode],
 	}
 }
 
@@ -3321,6 +3332,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
+	launchSpecs, err = s.hydrateTaskSwarm(ctx, parentSession, parsed, launchSpecs, step, taskCallID, emit, req.Principal)
+	if err != nil {
+		return "", err
+	}
+
 	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
 	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
@@ -3351,6 +3367,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.DesignerAgentID, profile)
 				if err != nil {
 					return "", fmt.Errorf("reconcile compiled Designer launch snapshot: %w", err)
+				}
+				trustedVirtualTargets[i] = false
+			} else if agentruntime.IsIdeaAgentName(launchSpecs[i].RequestedSubagentType) {
+				if row.ParentCopy || !agentruntime.IsIdeaAgentName(row.ResolvedAgentName) || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Idea", i)
+				}
+				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.IdeaAgentID, profile)
+				if err != nil {
+					return "", fmt.Errorf("reconcile compiled Idea launch snapshot: %w", err)
 				}
 				trustedVirtualTargets[i] = false
 			} else {
@@ -3412,6 +3437,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			MetaPrompt:        metaPrompt,
 			AssignmentLabel:   spec.AssignmentLabel,
 			OwnedScope:        append([]string(nil), spec.OwnedScope...),
+			StreamKey:         strings.TrimSpace(spec.StreamKey),
+			SwarmMode:         spec.SwarmMode,
 		}, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
 			return "", prepareErr
@@ -3544,20 +3571,23 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		outcome := buildTaskLaunchOutcome(launch)
 		metaPrompt := strings.TrimSpace(outcome.MetaPrompt)
 		perLaunchPrompt := prompt
-		if metaPrompt != "" {
+		if metaPrompt != "" && !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {
 			perLaunchPrompt = "Meta-prompt:\n" + metaPrompt + "\n\nPrompt:\n" + prompt
 		}
-		delegatedPrompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
-			Description:          description,
-			Prompt:               perLaunchPrompt,
-			ParentSession:        parentSession,
-			ParentMessages:       parentMessages,
-			ParentActivePlan:     parentActivePlan,
-			PermissionSessionID:  req.PermissionSessionID,
-			TargetedSubagentName: req.TargetedSubagentName,
-			RequestedSubagent:    launch.RequestedSubagent,
-			OwnedScope:           append([]string(nil), launch.OwnedScope...),
-		})
+		delegatedPrompt := perLaunchPrompt
+		if !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {
+			delegatedPrompt = buildTaskDelegationPrompt(taskDelegationPromptConfig{
+				Description:          description,
+				Prompt:               perLaunchPrompt,
+				ParentSession:        parentSession,
+				ParentMessages:       parentMessages,
+				ParentActivePlan:     parentActivePlan,
+				PermissionSessionID:  req.PermissionSessionID,
+				TargetedSubagentName: req.TargetedSubagentName,
+				RequestedSubagent:    launch.RequestedSubagent,
+				OwnedScope:           append([]string(nil), launch.OwnedScope...),
+			})
+		}
 		subResult, runErr := s.RunTurnStreaming(runCtx, launch.ChildSession.ID, RunRequest{
 			Prompt:     delegatedPrompt,
 			TargetKind: RunTargetKindSubagent,
@@ -3910,6 +3940,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		"elapsed_ms":              maxInt64(0, time.Now().UnixMilli()-taskStartedAtMS),
 		"summary":                 aggregateSummary,
 		"path_id":                 "tool.task.v1",
+		"task_mode":               parsed.Mode,
 		"details_truncated":       false,
 		"report_truncated":        reportTruncatedAny,
 		"report_inline_chars":     inlineReportChars,

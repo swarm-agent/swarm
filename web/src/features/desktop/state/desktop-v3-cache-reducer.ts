@@ -4306,6 +4306,7 @@ function applyTaskStreamPatch(
   stream.parentSessionId = stringValue(parsed.parent_session_id) || stream.parentSessionId
   stream.taskCallId = stringValue(parsed.task_call_id) || stream.taskCallId
   stream.launchCount = numberValue(parsed.launch_count) || stream.launchCount
+  stream.taskMode = stringValue(parsed.task_mode) || stream.taskMode
   stream.updatedAt = updatedAt
   stream.launchesByKey[launchKey] = mergeTaskStreamLaunchPatch(existing, launchPatch, launchKey)
   if (!stream.launchOrder.includes(launchKey)) {
