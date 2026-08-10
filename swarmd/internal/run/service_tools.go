@@ -540,6 +540,14 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childMetadata["shared_parent_checkout"] = true
 		childMetadata["reusable_workspace_artifacts"] = true
 	}
+	profileSnapshot, snapshotErr := cloneTaskAgentProfile(subagentProfile)
+	if snapshotErr != nil {
+		return taskLaunchPrepared{}, snapshotErr
+	}
+	childMetadata["source_agent_name"] = strings.TrimSpace(launch.SourceAgentName)
+	childMetadata["source_profile_mode"] = strings.TrimSpace(profileSnapshot.Mode)
+	childMetadata["inherited_runtime_mode"] = pebblestore.AgentProfileRuntimeMode(profileSnapshot)
+	childMetadata["agent_profile"] = profileSnapshot
 	if launch.VirtualTarget {
 		if isCoderTarget {
 			childWorktreeEnabled = false
@@ -548,15 +556,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childWorktreeBranch = ""
 			childTemporaryWorkspaceRoots = nil
 		}
-		profileSnapshot, snapshotErr := cloneTaskAgentProfile(subagentProfile)
-		if snapshotErr != nil {
-			return taskLaunchPrepared{}, snapshotErr
-		}
 		childMetadata["parent_copy"] = true
-		childMetadata["source_agent_name"] = strings.TrimSpace(launch.SourceAgentName)
-		childMetadata["source_profile_mode"] = strings.TrimSpace(profileSnapshot.Mode)
-		childMetadata["inherited_runtime_mode"] = pebblestore.AgentProfileRuntimeMode(profileSnapshot)
-		childMetadata["agent_profile"] = profileSnapshot
 		if isCoderTarget && launch.TaskBase != nil {
 			childMetadata["repository_root"] = strings.TrimSpace(launch.TaskBase.RepoRoot)
 			childMetadata["parent_branch"] = strings.TrimSpace(launch.TaskBase.ParentBranch)

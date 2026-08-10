@@ -714,6 +714,16 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 	if scope, _ := child.Metadata["owned_scope"].([]string); !slices.Equal(scope, []string{"web/src/variants/compact.tsx"}) {
 		t.Fatalf("Designer child owned scope = %#v", child.Metadata["owned_scope"])
 	}
+	storedProfile, err := sessionV3AgentProfileFromMetadataMap(child.Metadata)
+	if err != nil {
+		t.Fatalf("Designer child missing durable agent profile: %v", err)
+	}
+	if storedProfile.Name != agentruntime.DesignerAgentID || !AgentProfileAuthorizesMedia(storedProfile) {
+		t.Fatalf("Designer child durable profile = %#v, want media-authorized Designer", storedProfile)
+	}
+	if _, parentCopy := child.Metadata["parent_copy"]; parentCopy {
+		t.Fatalf("Designer shared-checkout child incorrectly marked parent_copy: %#v", child.Metadata)
+	}
 }
 
 func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
