@@ -1676,10 +1676,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: modeWarning})
 		}
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
+		mediaExecutionMode := requestMode
 		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
 			ProviderID: providerID, Model: resolvedPreference.Preference.Model, Catalog: catalogRecord, CatalogMeta: catalogMeta,
 			Adapter: ResolveMediaAdapterDeclaration(runnerCtx, providerID, providerRunner), AgentAuthorized: AgentProfileAuthorizesMedia(agentProfile) && !effectiveDisabledTools[mediaInspectToolName],
-			ExecutionMode: executionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
+			ExecutionMode: mediaExecutionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
 		})
 		stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
 		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
@@ -1910,6 +1911,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				runID:                runID,
 				step:                 step,
 				sessionMode:          executionMode,
+				mediaExecutionMode:   mediaExecutionMode,
 				agentProfile:         agentProfile,
 				workspacePath:        workspaceCtx.WorkspacePath,
 				workspaceRoots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),

@@ -15,6 +15,8 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -724,6 +726,96 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 	if _, parentCopy := child.Metadata["parent_copy"]; parentCopy {
 		t.Fatalf("Designer shared-checkout child incorrectly marked parent_copy: %#v", child.Metadata)
 	}
+}
+
+type taskDesignerMediaRecordingRunner struct {
+	requests []provideriface.Request
+}
+
+func (r *taskDesignerMediaRecordingRunner) ID() string { return "codex" }
+
+func (r *taskDesignerMediaRecordingRunner) MediaCapabilityDeclaration(context.Context) (provideriface.MediaAdapterDeclaration, error) {
+	return provideriface.MediaAdapterDeclaration{
+		AdapterID:             provideriface.MediaAdapterIDCodexChatGPTV1,
+		ProviderID:            "codex",
+		ProviderSurface:       provideriface.MediaProviderSurfaceCodexChatGPT,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceCodexOAuth,
+		CredentialFingerprint: "task-designer-test-credential",
+		Inputs: []provideriface.MediaAdapterCapability{{
+			Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes: []string{"image/gif", "image/jpeg", "image/png", "image/webp"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1,
+		}},
+	}, nil
+}
+
+func (r *taskDesignerMediaRecordingRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
+	return r.CreateResponseStreaming(ctx, req, nil)
+}
+
+func (r *taskDesignerMediaRecordingRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	r.requests = append(r.requests, req)
+	if onEvent != nil {
+		onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "designer completed"})
+	}
+	return provideriface.Response{Text: "designer completed"}, nil
+}
+
+func TestTaskLaunchedDesignerRunTurnStreamingProjectsMediaInspect(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	runner := &taskDesignerMediaRecordingRunner{}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	svc.providers = providers
+
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"description": "create media-aware variant",
+		"prompt":      "inspect the supplied image and create the variant",
+		"launches": []any{map[string]any{
+			"subagent_type": "designer",
+			"meta_prompt":   "Use the image as visual reference.",
+			"owned_scope":   []any{"web/src/variants/media-aware.tsx"},
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("parse Designer task: %v", err)
+	}
+	if _, err := svc.executeTaskToolWithParsed(context.Background(), parent.ID, sessionruntime.ModeAuto, 1, tool.Call{CallID: "call-designer-media", Name: "task"}, nil, taskExecutionRequest{Parsed: parsed, ParsedProvided: true, Principal: principal}); err != nil {
+		t.Fatalf("execute Designer task launch: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("Designer provider requests = %d, want 1", len(runner.requests))
+	}
+	request := runner.requests[0]
+	if !providerRequestHasTool(request.Tools, mediaInspectToolName) {
+		t.Fatalf("Designer RunTurnStreaming tools = %#v, want media_inspect; contract=%+v", providerToolNames(request.Tools), request.MediaContract)
+	}
+	if !SessionMediaContractAllows(request.MediaContract, "image", "image/png", "png") {
+		t.Fatalf("Designer RunTurnStreaming media contract does not allow PNG: %+v", request.MediaContract)
+	}
+}
+
+func providerRequestHasTool(definitions []provideriface.ToolDefinition, name string) bool {
+	for _, definition := range definitions {
+		if strings.EqualFold(strings.TrimSpace(definition.Name), strings.TrimSpace(name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerToolNames(definitions []provideriface.ToolDefinition) []string {
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	return names
 }
 
 func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {

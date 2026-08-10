@@ -122,6 +122,7 @@ type providerToolInvokerConfig struct {
 	sourceMessageID      string
 	step                 int
 	sessionMode          string
+	mediaExecutionMode   string
 	workspacePath        string
 	workspaceRoots       []string
 	workspaceOriginPath  string
@@ -149,6 +150,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		sourceMessageID:      strings.TrimSpace(config.SourceMessageID),
 		step:                 config.Step,
 		sessionMode:          strings.TrimSpace(config.SessionMode),
+		mediaExecutionMode:   strings.TrimSpace(config.SessionMode),
 		workspacePath:        strings.TrimSpace(config.WorkspacePath),
 		workspaceRoots:       append([]string(nil), config.WorkspaceRoots...),
 		workspaceOriginPath:  strings.TrimSpace(config.WorkspaceOriginPath),
@@ -667,7 +669,7 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 	currentContract := CompileSessionMediaContract(SessionMediaContractInput{
 		ProviderID: providerID, Model: modelID, Catalog: catalog, CatalogMeta: meta,
 		Adapter:         ResolveMediaAdapterDeclaration(ctx, providerID, runner),
-		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile), ExecutionMode: config.sessionMode,
+		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile), ExecutionMode: firstNonEmptyString(config.mediaExecutionMode, config.sessionMode),
 		WorkspaceScope: config.workspacePath, SessionScope: config.sessionID,
 	})
 	if currentContract.Hash != config.mediaContract.Hash {
