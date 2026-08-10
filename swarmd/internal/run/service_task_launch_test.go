@@ -3,7 +3,9 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -729,7 +731,10 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 }
 
 type taskDesignerMediaRecordingRunner struct {
-	requests []provideriface.Request
+	requests         []provideriface.Request
+	inspectImagePath string
+	invocationResult provideriface.ToolExecutionResult
+	invocationErr    error
 }
 
 func (r *taskDesignerMediaRecordingRunner) ID() string { return "codex" }
@@ -752,12 +757,30 @@ func (r *taskDesignerMediaRecordingRunner) CreateResponse(ctx context.Context, r
 	return r.CreateResponseStreaming(ctx, req, nil)
 }
 
-func (r *taskDesignerMediaRecordingRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+func (r *taskDesignerMediaRecordingRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.requests = append(r.requests, req)
+	if strings.TrimSpace(r.inspectImagePath) != "" && len(r.requests) == 1 {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("Designer media test request has no tool invoker")
+		}
+		r.invocationResult, r.invocationErr = req.ToolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{
+			CallID: "call-designer-media-inspect", Name: mediaInspectToolName,
+			Arguments: mustJSONForRunner(map[string]any{"path": r.inspectImagePath}),
+		})
+		return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{
+			CallID: "call-designer-media-inspect", Name: mediaInspectToolName,
+			Arguments: mustJSONForRunner(map[string]any{"path": r.inspectImagePath}),
+		}}}, nil
+	}
 	if onEvent != nil {
 		onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "designer completed"})
 	}
 	return provideriface.Response{Text: "designer completed"}, nil
+}
+
+func mustJSONForRunner(value any) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }
 
 func TestTaskLaunchedDesignerRunTurnStreamingProjectsMediaInspect(t *testing.T) {
@@ -798,6 +821,65 @@ func TestTaskLaunchedDesignerRunTurnStreamingProjectsMediaInspect(t *testing.T) 
 	}
 	if !SessionMediaContractAllows(request.MediaContract, "image", "image/png", "png") {
 		t.Fatalf("Designer RunTurnStreaming media contract does not allow PNG: %+v", request.MediaContract)
+	}
+}
+
+func TestTaskLaunchedDesignerRunTurnStreamingExecutesMediaInspect(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	imagePath := filepath.Join(parent.WorkspacePath, "designer-media.png")
+	if err := os.WriteFile(imagePath, []byte("\x89PNG\r\n\x1a\nmedia-test"), 0o600); err != nil {
+		t.Fatalf("write Designer media fixture: %v", err)
+	}
+	runner := &taskDesignerMediaRecordingRunner{inspectImagePath: imagePath}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	svc.providers = providers
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"description": "inspect a workspace image",
+		"prompt":      "inspect the supplied image",
+		"launches": []any{map[string]any{
+			"subagent_type": "designer",
+			"meta_prompt":   "Inspect the workspace image with media_inspect.",
+			"owned_scope":   []any{"docs/designer-media-report.md"},
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("parse Designer task: %v", err)
+	}
+	if _, err := svc.executeTaskToolWithParsed(context.Background(), parent.ID, sessionruntime.ModeAuto, 1, tool.Call{CallID: "call-designer-media-execution", Name: "task"}, nil, taskExecutionRequest{Parsed: parsed, ParsedProvided: true, Principal: principal}); err != nil {
+		t.Fatalf("execute Designer media task: %v", err)
+	}
+	if runner.invocationErr != nil {
+		t.Fatalf("Designer media_inspect invocation: %v", runner.invocationErr)
+	}
+	if runner.invocationResult.Error != "" || runner.invocationResult.Media == nil {
+		t.Fatalf("Designer media_inspect result = %+v, want admitted image payload", runner.invocationResult)
+	}
+	if runner.invocationResult.Media.MIMEType != "image/png" || len(runner.invocationResult.Media.Bytes) == 0 {
+		t.Fatalf("Designer media payload = %+v", runner.invocationResult.Media)
+	}
+	if len(runner.requests) < 2 {
+		t.Fatalf("Designer provider requests = %d, want continuation after media inspection", len(runner.requests))
+	}
+	foundMedia := false
+	for _, item := range runner.requests[1].Input {
+		content, _ := item["content"].([]map[string]any)
+		for _, part := range content {
+			if part["type"] == "session_media" {
+				foundMedia = true
+			}
+		}
+	}
+	if !foundMedia {
+		t.Fatalf("Designer continuation input omitted inspected media: %#v", runner.requests[1].Input)
 	}
 }
 

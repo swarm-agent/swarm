@@ -173,6 +173,33 @@ func sessionMediaCapability(contract provideriface.SessionMediaContract, modalit
 	return provideriface.MediaContractCapability{}, false
 }
 
+func providerToolMediaInputItems(results []tool.Result) []map[string]any {
+	out := make([]map[string]any, 0)
+	counts := map[string]int{}
+	for _, result := range results {
+		if result.Media == nil {
+			continue
+		}
+		modality := strings.ToLower(strings.TrimSpace(result.Media.Modality))
+		counts[modality]++
+		if counts[modality] > pebblestore.SessionMediaDefaultMaxCount {
+			continue
+		}
+		out = append(out, map[string]any{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "input_text", "text": "Inspect this authorized media asset and report its visual contents."},
+				{"type": "session_media", "media": provideriface.SessionMediaPayload{
+					AssetID: result.Media.AssetID, Modality: result.Media.Modality, MIMEType: result.Media.MIMEType,
+					FileType: result.Media.FileType, DigestSHA256: result.Media.DigestSHA256, Size: result.Media.Size,
+					Bytes: append([]byte(nil), result.Media.Bytes...),
+				}},
+			},
+		})
+	}
+	return out
+}
+
 func mediaInspectResult(asset pebblestore.SessionMediaAsset, capability provideriface.MediaContractCapability, contract provideriface.SessionMediaContract) (string, error) {
 	payload, err := json.Marshal(map[string]any{
 		"status":        "ok",

@@ -2220,9 +2220,39 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if modeErr != nil {
 			return RunResult{}, modeErr
 		}
-		gatedResults, approvedCalls, approvedIndexes, approvedMask, permissionFeedback, err := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, toolCalls, emit, compiledPolicy)
-		if err != nil {
-			return RunResult{}, err
+		gatedResults := make([]tool.Result, len(toolCalls))
+		approvedMask := make([]bool, len(toolCalls))
+		approvedCalls := make([]tool.Call, 0, len(toolCalls))
+		approvedIndexes := make([]int, 0, len(toolCalls))
+		permissionFeedback := make([]PermissionFeedback, 0, len(toolCalls))
+		permissionCalls := make([]tool.Call, 0, len(toolCalls))
+		permissionIndexes := make([]int, 0, len(toolCalls))
+		for i, call := range toolCalls {
+			gatedResults[i] = tool.Result{CallID: strings.TrimSpace(call.CallID), Name: strings.TrimSpace(call.Name)}
+			if canonicalToolName(call.Name) == mediaInspectToolName {
+				approvedMask[i] = true
+				continue
+			}
+			permissionCalls = append(permissionCalls, call)
+			permissionIndexes = append(permissionIndexes, i)
+		}
+		if len(permissionCalls) > 0 {
+			permissionResults, _, _, permissionApprovedMask, feedback, gateErr := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, permissionCalls, emit, compiledPolicy)
+			if gateErr != nil {
+				return RunResult{}, gateErr
+			}
+			permissionFeedback = append(permissionFeedback, feedback...)
+			for i, originalIndex := range permissionIndexes {
+				gatedResults[originalIndex] = permissionResults[i]
+				approvedMask[originalIndex] = permissionApprovedMask[i]
+			}
+		}
+		for i, call := range toolCalls {
+			if !approvedMask[i] {
+				continue
+			}
+			approvedCalls = append(approvedCalls, call)
+			approvedIndexes = append(approvedIndexes, i)
 		}
 
 		feedbackByCall := make(map[string]PermissionFeedback, len(permissionFeedback))
@@ -2239,6 +2269,39 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		for i := range approvedCalls {
 			call := approvedCalls[i]
 			target := approvedIndexes[i]
+			if canonicalToolName(call.Name) == mediaInspectToolName {
+				mediaResult, mediaErr := s.executeProviderManagedMediaInspect(ctx, providerToolInvokerConfig{
+					sessionID:            sessionID,
+					permissionSessionID:  permissionSessionID,
+					runID:                runID,
+					step:                 step,
+					sessionMode:          executionMode,
+					mediaExecutionMode:   mediaExecutionMode,
+					workspacePath:        workspaceCtx.WorkspacePath,
+					workspaceRoots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+					workspaceOriginPath:  workspaceCtx.OriginWorkspacePath,
+					workspaceOriginRoots: append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
+					workspaceName:        sessionSnapshot.WorkspaceName,
+					principal:            options.Principal,
+					agentProfile:         agentProfile,
+					providerID:           providerID,
+					model:                resolvedPreference.Preference.Model,
+					mediaContract:        mediaContract,
+				}, call, options.Principal)
+				if mediaErr != nil {
+					mediaResult.Error = strings.TrimSpace(mediaErr.Error())
+					if strings.TrimSpace(mediaResult.Output) == "" {
+						mediaResult.Output = strings.TrimSpace(mediaErr.Error())
+					}
+				}
+				gatedResults[target] = mediaResult
+				emit(StreamEvent{
+					Type: StreamEventToolCompleted, Step: step, ToolName: strings.TrimSpace(mediaResult.Name), CallID: strings.TrimSpace(mediaResult.CallID),
+					Output: formatToolCompletedOutput(call, mediaResult), RawOutput: liveStreamRawOutput(call, mediaResult), Error: strings.TrimSpace(mediaResult.Error), DurationMS: mediaResult.DurationMS,
+				})
+				markToolCompleted(step, call, mediaResult)
+				continue
+			}
 			feedback := feedbackByCall[strings.TrimSpace(call.CallID)]
 			handled, controlResult, controlErr := s.executeControlPlaneTool(ctx, sessionID, executionMode, agentProfile, step, call, feedback.ApprovedArguments, emit)
 			if !handled {
@@ -2528,6 +2591,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		nextInput = append(nextInput, nextInputFunctionCalls...)
 		nextInput = append(nextInput, nextInputFunctionOutputs...)
+		nextInput = append(nextInput, providerToolMediaInputItems(gatedResults)...)
 		if feedbackInput := buildPermissionFeedbackInput(permissionFeedback); feedbackInput != "" {
 			runPermissionDebugf("run_turn.feedback_append session=%s run=%s step=%d payload_chars=%d", sessionID, runID, step, len(feedbackInput))
 			nextInput = append(nextInput, map[string]any{
