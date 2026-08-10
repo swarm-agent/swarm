@@ -58,8 +58,11 @@ self_test() {
   local fixture
   local base_ref
 
-  : "${TMPDIR:?changelog self-test requires TMPDIR}"
-  test_root="$(mktemp -d "${TMPDIR%/}/swarm-changelog-check.XXXXXX")"
+  if [[ -n "${TMPDIR:-}" ]]; then
+    test_root="$(mktemp -d "${TMPDIR%/}/swarm-changelog-check.XXXXXX")"
+  else
+    test_root="$(mktemp -d)"
+  fi
   trap 'rm -rf -- "${test_root}"' RETURN
   fixture="${test_root}/repo"
   mkdir -p "${fixture}"
