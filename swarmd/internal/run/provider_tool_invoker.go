@@ -392,19 +392,24 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}
 	approvedCalls := []tool.Call{call}
 	permissionFeedback := []PermissionFeedback(nil)
-	var err error
-	gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
-		ctx,
-		permissionSessionID,
-		config.runID,
-		config.step,
-		config.sessionMode,
-		[]tool.Call{call},
-		config.emit,
-		config.policy,
-	)
-	if err != nil {
-		return tool.Result{}, 0, err
+	// media_inspect has no permission prompt: its provider-visible schema exists
+	// only after the current model/media intersection admits it, and the handler
+	// below revalidates that contract plus ownership, scope, type, and size.
+	if canonicalToolName(call.Name) != mediaInspectToolName {
+		var err error
+		gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
+			ctx,
+			permissionSessionID,
+			config.runID,
+			config.step,
+			config.sessionMode,
+			[]tool.Call{call},
+			config.emit,
+			config.policy,
+		)
+		if err != nil {
+			return tool.Result{}, 0, err
+		}
 	}
 
 	permissionWaitMS := int64(0)

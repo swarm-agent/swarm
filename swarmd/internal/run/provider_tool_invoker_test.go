@@ -402,6 +402,42 @@ func TestProviderManagedToolCallRefreshesTemporaryWorkspaceRoots(t *testing.T) {
 	}
 }
 
+func TestProviderManagedMediaInspectSkipsPermissionGateButStillRunsBackendValidation(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-media-auto-allow",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		providerManagedV3:    true,
+		applySessionMutation: providerManagedV3NoopMutation,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	result, err := invoker.ExecuteTool(ctx, toolInvocation("call-media", mediaInspectToolName, `{"path":"missing.png"}`))
+	if err != nil {
+		t.Fatalf("execute media_inspect: %v", err)
+	}
+	if result.Error != "media inspection runtime is not configured" {
+		t.Fatalf("media_inspect backend validation error = %q", result.Error)
+	}
+	pending, err := permissions.ListPending(sessionID, 10)
+	if err != nil {
+		t.Fatalf("list pending permissions: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("media_inspect created permission records: %#v", pending)
+	}
+}
+
 func TestProviderManagedV3ControlPlaneToolRequestsPermission(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
