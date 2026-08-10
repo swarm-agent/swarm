@@ -569,12 +569,12 @@ func TestExecutionEpochMessageRangeIsSnapshotBoundedAndLifecycleStateIsFixedSize
 		t.Fatalf("sealed range leaked later messages: epoch=%+v messages=%+v", sealed, messages)
 	}
 
-	state := ExecutionProviderLifecycleState{SessionID: first.SessionID, EpochID: first.EpochID, Provider: "codex", Model: "gpt-5", ConfigurationHash: "config", ProviderLineageID: "lineage", ContextBranchID: "branch", ProviderCacheKey: "cache", SessionAffinityKey: "affinity", TransportAffinityKey: "transport", BoundaryReason: "epoch_fresh_context", UpdatedAt: 4}
+	state := ExecutionProviderLifecycleState{SessionID: first.SessionID, EpochID: first.EpochID, Provider: "codex", Model: "gpt-5", ConfigurationHash: "config", MediaContractHash: "media-contract", MediaSnapshotID: "snapshot", MediaSnapshotVersion: "v1", MediaDenialReasons: []string{"catalog snapshot provenance is unavailable"}, ProviderLineageID: "lineage", ContextBranchID: "branch", ProviderCacheKey: "cache", SessionAffinityKey: "affinity", TransportAffinityKey: "transport", BoundaryReason: "epoch_fresh_context", UpdatedAt: 4}
 	if err := sessions.PutExecutionProviderLifecycleState(state); err != nil {
 		t.Fatalf("put provider lifecycle: %v", err)
 	}
 	got, ok, err := sessions.GetExecutionProviderLifecycleState(first.SessionID, first.EpochID)
-	if err != nil || !ok || got.Version != ExecutionProviderLifecycleStateVersion || got.ProviderLineageID != "lineage" {
+	if err != nil || !ok || got.Version != ExecutionProviderLifecycleStateVersion || got.ProviderLineageID != "lineage" || got.MediaContractHash != "media-contract" || len(got.MediaDenialReasons) != 1 {
 		t.Fatalf("get provider lifecycle: ok=%v err=%v state=%+v", ok, err, got)
 	}
 	raw, ok, err := store.GetBytes(KeyExecutionProviderLifecycleState(first.SessionID, first.EpochID))

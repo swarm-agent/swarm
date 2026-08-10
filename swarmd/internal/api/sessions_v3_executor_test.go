@@ -695,6 +695,24 @@ func TestResolveSessionV3EffectivePreferenceUsesImmutableModeSelection(t *testin
 	}
 }
 
+func TestResolveSessionV3EffectivePreferenceUsesSystemAgentAssignmentOverParentModelProfile(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		Mode:       sessionruntime.ModeAuto,
+		Preference: pebblestore.ModelPreference{Provider: "codex", Model: "parent-action", Thinking: "medium"},
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "parent-action", Thinking: "medium"},
+		},
+	}
+	agent := agentruntime.DesignerAgentProfileForParent(pebblestore.AgentProfile{Provider: "codex", Model: "gpt-5.6-sol", Thinking: "high"})
+	got, err := resolveSessionV3EffectivePreference(session, agent)
+	if err != nil {
+		t.Fatalf("resolve Designer preference: %v", err)
+	}
+	if got.Provider != "codex" || got.Model != "gpt-5.6-sol" || got.Thinking != "high" {
+		t.Fatalf("Designer effective preference = %#v, want canonical system-agent assignment", got)
+	}
+}
+
 func TestResolveSessionV3EffectivePreferenceRejectsDisabledPlanAndIgnoresPreferenceDrift(t *testing.T) {
 	profile := &pebblestore.SessionModelProfileSnapshot{Action: pebblestore.ModelProfileSelection{Provider: "codex", Model: "action-model"}}
 	if _, err := resolveSessionV3EffectivePreference(pebblestore.SessionSnapshot{Mode: sessionruntime.ModePlan, ModelProfile: profile}, pebblestore.AgentProfile{Name: agentruntime.SwarmAgentID}); err == nil || !strings.Contains(err.Error(), "Plan mode disabled") {

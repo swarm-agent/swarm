@@ -1147,6 +1147,8 @@ type sessionV3AssistantResponse struct {
 	ContextMode                   string
 	ProviderLineageID             string
 	ProviderConfigurationHash     string
+	MediaContract                 provideriface.SessionMediaContract
+	MediaInspectToolExposed       bool
 	ContextBranchID               string
 	ProviderCacheKey              string
 	SessionAffinityKey            string
@@ -1297,6 +1299,11 @@ func (e *sessionV3Executor) persistSessionV3ProviderLifecycle(job sessionV3Execu
 		Provider:                      response.ProviderID,
 		Model:                         response.Model,
 		ConfigurationHash:             response.ProviderConfigurationHash,
+		MediaContractHash:             response.MediaContract.Hash,
+		MediaSnapshotID:               response.MediaContract.SnapshotID,
+		MediaSnapshotVersion:          response.MediaContract.SnapshotVersion,
+		MediaDenialReasons:            append([]string(nil), response.MediaContract.DenialReasons...),
+		MediaInspectToolExposed:       response.MediaInspectToolExposed,
 		ProviderLineageID:             response.ProviderLineageID,
 		ContextBranchID:               response.ContextBranchID,
 		ProviderCacheKey:              response.ProviderCacheKey,
@@ -1794,6 +1801,8 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 			Model:                         modelName,
 			ProviderLineageID:             loopResult.FinalRequest.ProviderLineageID,
 			ProviderConfigurationHash:     loopResult.FinalRequest.ProviderConfigurationHash,
+			MediaContract:                 loopResult.FinalRequest.MediaContract,
+			MediaInspectToolExposed:       sessionsV3ProviderRequestHasTool(loopResult.FinalRequest.Tools, "media_inspect"),
 			ContextBranchID:               loopResult.FinalRequest.ContextBranchID,
 			ProviderCacheKey:              loopResult.FinalRequest.ProviderCacheKey,
 			SessionAffinityKey:            loopResult.FinalRequest.SessionAffinityKey,
@@ -1834,6 +1843,8 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		Usage:                         response.Usage,
 		ProviderLineageID:             loopResult.FinalRequest.ProviderLineageID,
 		ProviderConfigurationHash:     loopResult.FinalRequest.ProviderConfigurationHash,
+		MediaContract:                 loopResult.FinalRequest.MediaContract,
+		MediaInspectToolExposed:       sessionsV3ProviderRequestHasTool(loopResult.FinalRequest.Tools, "media_inspect"),
 		ContextBranchID:               loopResult.FinalRequest.ContextBranchID,
 		ProviderCacheKey:              loopResult.FinalRequest.ProviderCacheKey,
 		SessionAffinityKey:            loopResult.FinalRequest.SessionAffinityKey,
@@ -3770,6 +3781,16 @@ func trimStrings(values []string) []string {
 	return out
 }
 
+func sessionsV3ProviderRequestHasTool(tools []provideriface.ToolDefinition, name string) bool {
+	name = strings.TrimSpace(name)
+	for _, definition := range tools {
+		if strings.EqualFold(strings.TrimSpace(definition.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return sessionV3ResolvedRuntime{}, errors.New("v3 executor is not configured")
@@ -4824,7 +4845,7 @@ func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) str
 }
 
 func resolveSessionV3EffectivePreference(session pebblestore.SessionSnapshot, agentProfile pebblestore.AgentProfile) (pebblestore.ModelPreference, error) {
-	if session.ModelProfile != nil {
+	if session.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
 		preference, err := sessionV3ModelProfilePreferenceForMode(*session.ModelProfile, session.Mode)
 		if err != nil {
 			return pebblestore.ModelPreference{}, err

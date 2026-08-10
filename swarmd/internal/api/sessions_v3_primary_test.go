@@ -8130,6 +8130,102 @@ func (r sessionsV3UndeclaredLifecycleRunner) CreateResponseStreaming(context.Con
 	return provideriface.Response{}, nil
 }
 
+func TestSessionsV3DesignerProviderRequestMaterializesMediaInspectAndPersistsDenialProvenance(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	declaration := provideriface.MediaAdapterDeclaration{
+		AdapterID: provideriface.MediaAdapterIDCodexChatGPTV1, ProviderID: "codex",
+		ProviderSurface: provideriface.MediaProviderSurfaceCodexChatGPT, CredentialSurface: provideriface.MediaCredentialSurfaceCodexOAuth,
+		CredentialFingerprint: "designer-test-credential",
+		Inputs:                []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1}},
+	}
+	runner := &sessionsV3RecordingProviderRunner{id: "codex", text: "designer response", mediaDeclaration: &declaration}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, err := server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), testPrincipal()), "designer", pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.6-sol", Thinking: "high"}); err != nil {
+		t.Fatalf("configure Designer model assignment: %v", err)
+	}
+
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "designer-media-provider-request", "designer media provider request", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.6-sol", Thinking: "high"})
+	designer := agentruntime.DesignerAgentProfileForParent(pebblestore.AgentProfile{Provider: "codex", Model: "gpt-5.6-sol", Thinking: "high"})
+	metadata := make(map[string]any, len(created.Metadata)+5)
+	for key, value := range created.Metadata {
+		metadata[key] = value
+	}
+	metadata["agent_name"] = designer.Name
+	metadata["resolved_agent_name"] = designer.Name
+	metadata["agent_mode"] = designer.Mode
+	metadata["runtime_mode"] = designer.RuntimeMode
+	metadata["agent_profile"] = designer
+	metadata["model_profile"] = nil
+	if _, _, err := sessionSvc.UpdateMetadata(created.ID, metadata); err != nil {
+		t.Fatalf("set Designer session metadata: %v", err)
+	}
+
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	job := sessionV3ExecutorJob{SessionID: created.ID, RunID: "designer-media-run", Principal: testPrincipal()}
+	resolved, err := exec.resolveSessionV3Runtime(job)
+	if err != nil {
+		t.Fatalf("resolve Designer runtime: %v", err)
+	}
+	if !sessionsV3ProviderRequestHasTool(resolved.Tools, "media_inspect") {
+		t.Fatalf("Designer resolved tools = %#v, want media_inspect; contract=%+v catalog=%T/%+v meta=%+v", sessionsV3ProviderRequestToolNames(resolved.Tools), resolved.MediaContract, resolved.ModelCatalog, resolved.ModelCatalog, resolved.CatalogMeta)
+	}
+	request, err := exec.sessionV3ProviderBaseRequest(job, resolved, []map[string]any{{"role": "user", "content": "inspect the image"}})
+	if err != nil {
+		t.Fatalf("build Designer provider request: %v", err)
+	}
+	if !sessionsV3ProviderRequestHasTool(request.Tools, "media_inspect") {
+		t.Fatalf("Designer provider request tools = %#v, want media_inspect", sessionsV3ProviderRequestToolNames(request.Tools))
+	}
+
+	response := sessionV3AssistantResponse{
+		ProviderID: "codex", Model: "gpt-5.6-sol", EpochID: request.ExecutionEpochID,
+		ProviderConfigurationHash: request.ProviderConfigurationHash, MediaContract: request.MediaContract,
+		MediaInspectToolExposed: sessionsV3ProviderRequestHasTool(request.Tools, "media_inspect"),
+		ProviderLineageID:       request.ProviderLineageID, ContextBranchID: request.ContextBranchID, BoundaryReason: request.BoundaryReason,
+	}
+	if err := exec.persistSessionV3ProviderLifecycle(job, response, sessionruntime.SessionMutationResult{}); err != nil {
+		t.Fatalf("persist Designer provider lifecycle: %v", err)
+	}
+	state, ok, err := sessionSvc.GetExecutionProviderLifecycleState(created.ID, request.ExecutionEpochID)
+	if err != nil || !ok || !state.MediaInspectToolExposed || state.MediaContractHash == "" || len(state.MediaDenialReasons) != 0 {
+		t.Fatalf("allowed Designer media lifecycle ok=%t err=%v state=%+v", ok, err, state)
+	}
+
+	catalog, ok := resolved.ModelCatalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		t.Fatalf("Designer model catalog type = %T, want ModelCatalogRecord", resolved.ModelCatalog)
+	}
+	denied := resolved
+	denied.MediaContract = runruntime.CompileSessionMediaContract(runruntime.SessionMediaContractInput{
+		ProviderID: "codex", Model: "gpt-5.6-sol", Catalog: &catalog,
+		CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "mismatched", SnapshotVersion: resolved.MediaContract.SnapshotVersion},
+		Adapter:     declaration, AgentAuthorized: true, ExecutionMode: sessionruntime.ModeAuto, WorkspaceScope: workspace, SessionScope: created.ID,
+	})
+	denied.Tools = runruntime.MaterializeSessionMediaTool(resolved.Tools, denied.MediaContract)
+	deniedRequest, err := exec.sessionV3ProviderBaseRequest(job, denied, []map[string]any{{"role": "user", "content": "inspect the image"}})
+	if err != nil {
+		t.Fatalf("build denied Designer provider request: %v", err)
+	}
+	if sessionsV3ProviderRequestHasTool(deniedRequest.Tools, "media_inspect") || len(deniedRequest.MediaContract.DenialReasons) == 0 {
+		t.Fatalf("mismatched Designer media contract did not fail closed: contract=%+v tools=%#v", deniedRequest.MediaContract, sessionsV3ProviderRequestToolNames(deniedRequest.Tools))
+	}
+	deniedResponse := response
+	deniedResponse.ProviderConfigurationHash = deniedRequest.ProviderConfigurationHash
+	deniedResponse.MediaContract = deniedRequest.MediaContract
+	deniedResponse.MediaInspectToolExposed = false
+	if err := exec.persistSessionV3ProviderLifecycle(job, deniedResponse, sessionruntime.SessionMutationResult{}); err != nil {
+		t.Fatalf("persist denied Designer provider lifecycle: %v", err)
+	}
+	state, ok, err = sessionSvc.GetExecutionProviderLifecycleState(created.ID, deniedRequest.ExecutionEpochID)
+	if err != nil || !ok || state.MediaInspectToolExposed || len(state.MediaDenialReasons) == 0 || state.MediaSnapshotID == "" {
+		t.Fatalf("denied Designer media lifecycle ok=%t err=%v state=%+v", ok, err, state)
+	}
+}
+
 func TestSessionsV3ProviderBaseRequestFailsClosedWithoutLifecycleCapability(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	providers := registry.New()
@@ -8149,18 +8245,19 @@ func TestSessionsV3ProviderBaseRequestFailsClosedWithoutLifecycleCapability(t *t
 }
 
 type sessionsV3RecordingProviderRunner struct {
-	mu            sync.Mutex
-	id            string
-	text          string
-	deltas        []string
-	err           error
-	response      provideriface.Response
-	responses     []provideriface.Response
-	functionCalls []provideriface.FunctionCall
-	handler       func(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error)
-	callCount     int
-	lastRequest   provideriface.Request
-	requests      []provideriface.Request
+	mu               sync.Mutex
+	id               string
+	mediaDeclaration *provideriface.MediaAdapterDeclaration
+	text             string
+	deltas           []string
+	err              error
+	response         provideriface.Response
+	responses        []provideriface.Response
+	functionCalls    []provideriface.FunctionCall
+	handler          func(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error)
+	callCount        int
+	lastRequest      provideriface.Request
+	requests         []provideriface.Request
 }
 
 func (r *sessionsV3RecordingProviderRunner) ID() string {
@@ -8171,6 +8268,12 @@ func (r *sessionsV3RecordingProviderRunner) ID() string {
 }
 func (r *sessionsV3RecordingProviderRunner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
 	return provideriface.ExecutionEpochLifecycleCapabilities{ContextMode: provideriface.ExecutionEpochContextResponsesChain, TransportReusable: true}
+}
+func (r *sessionsV3RecordingProviderRunner) MediaCapabilityDeclaration(context.Context) (provideriface.MediaAdapterDeclaration, error) {
+	if r.mediaDeclaration == nil {
+		return provideriface.MediaAdapterDeclaration{}, errors.New("test media declaration is unavailable")
+	}
+	return *r.mediaDeclaration, nil
 }
 func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.CreateResponseStreaming(ctx, req, nil)

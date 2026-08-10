@@ -42,7 +42,11 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 		t.Fatalf("new event log: %v", err)
 	}
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
-	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, nil)
+	catalogSvc := modelruntime.NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	modelSvc := modelruntime.NewService(pebblestore.NewModelStore(store), eventLog, catalogSvc)
+	if err := modelSvc.EnsureBootDefaults(); err != nil {
+		t.Fatalf("ensure model defaults: %v", err)
+	}
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
 	permissionSvc.SetSessionResolver(sessionSvc)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
