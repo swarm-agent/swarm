@@ -1139,31 +1139,10 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   );
 }
 
-function TaskRowsView({ rows, actions, forceSwarm = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; forceSwarm?: boolean }) {
+function TaskRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
   if (rows.length === 0) return null;
-  if (forceSwarm || rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} actions={actions} />;
+  if (rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} actions={actions} />;
   return <TaskAgentRowsView rows={rows} actions={actions} />;
-}
-
-function SwarmModeProgress({ toolMessage }: { toolMessage: StructuredToolMessage }) {
-  const progress = toolMessage.swarmModeData;
-  if (!progress || toolMessage.taskRows.length > 0) return null;
-  const round = Math.max(1, Math.min(progress.rounds || 2, progress.round || 1));
-  const complete = progress.status.toLowerCase() === "completed";
-  return (
-    <div className="min-w-0 rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_7%,var(--app-surface))] p-3" data-swarm-mode-progress>
-      <div className="flex items-center gap-2">
-        <Layers3 size={15} className="text-[var(--app-primary)]" aria-hidden="true" />
-        <span className="font-semibold text-[var(--app-text)]">Router hydration {round}/{progress.rounds || 2}</span>
-        <span className="ml-auto text-[11px] text-[var(--app-text-subtle)]">{complete ? "complete" : "running"}</span>
-      </div>
-      <div className="mt-2 grid grid-cols-2 gap-1" aria-label={`Router hydration round ${round} of ${progress.rounds || 2}`}>
-        {[1, 2].map((item) => <span key={item} className={cn("h-1.5 rounded-full", item < round || (item === round && complete) ? "bg-[var(--app-success)]" : item === round ? "animate-pulse bg-[var(--app-primary)]" : "bg-[var(--app-border)]")} />)}
-      </div>
-      {progress.summary ? <p className="mt-2 text-[11px] text-[var(--app-text-muted)]">{progress.summary}</p> : null}
-      <p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">Tool-free Router one-shot; workers launch through the task stream after round 2.</p>
-    </div>
-  );
 }
 
 const SEARCH_READ_PATH_PREVIEW_LIMIT = 12;
@@ -2062,19 +2041,15 @@ export function ToolMessageView({
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
   const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
-  const isSwarmMode = normalizedToolName === "swarm_mode";
-  const isTaskLike = normalizedToolName === "task" || isSwarmMode;
-  const hasStructuredTaskRows = isTaskLike && toolMessage.taskRows.length > 0;
+  const hasStructuredTaskRows = normalizedToolName === "task" && toolMessage.taskRows.length > 0;
   const activityOnly = toolMessage.state === "running"
     && !hasStructuredTaskRows
-    && !toolMessage.swarmModeData
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim()
     && !toolMessage.error.trim();
   const terminalWithoutResult = (toolMessage.state === "error"
     || ["cancelled", "canceled", "interrupted"].includes(lifecycleStatus))
     && !hasStructuredTaskRows
-    && !toolMessage.swarmModeData
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim();
   if (normalizedToolName === "bash") {
@@ -2117,8 +2092,7 @@ export function ToolMessageView({
     ? state === "running" ? `${activityDescriptor.activeLabel}…` : activityDescriptor.label
     : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
-  const isTaskLikeCard = isTask || normalizedTool === "swarm_mode";
-  const hasTaskRows = isTaskLikeCard && toolMessage.taskRows.length > 0;
+  const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
   const isTaskSwarm = hasTaskRows && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
@@ -2144,8 +2118,7 @@ export function ToolMessageView({
   const hasBody = Boolean(
     toolMessage.error
     || toolMessage.editDiff
-    || (isTaskLikeCard && toolMessage.taskRows.length > 0)
-    || (normalizedTool === "swarm_mode" && toolMessage.swarmModeData)
+    || (normalizedTool === "task" && toolMessage.taskRows.length > 0)
     || (normalizedTool === "search" && toolMessage.searchData)
     || (showPreview && !isManageSessions && (toolMessage.previewLines.length > 0 || toolMessage.commandText))
     || isManageSessions,
@@ -2156,31 +2129,31 @@ export function ToolMessageView({
       <div className={cn(
         "min-w-0",
         isFileAction && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
-        isTaskLikeCard && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm",
-      )} data-task-tool-card={isTaskLikeCard || undefined}>
+        isTask && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm",
+      )} data-task-tool-card={isTask || undefined}>
         {!hasTaskRows ? (
           <div className={cn(
             "flex min-w-0 items-start gap-2 text-xs",
-            isFileAction || isTaskLikeCard ? "px-3 py-2.5" : "items-center",
+            isFileAction || isTask ? "px-3 py-2.5" : "items-center",
           )}>
             <span
               className={cn(
                 "inline-flex shrink-0 items-center justify-center font-semibold",
-                isFileAction || isTaskLikeCard ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
+                isFileAction || isTask ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
               )}
               style={{ color: toolTheme.color, backgroundColor: accentWash }}
             >
-              {isTaskLikeCard ? (isSwarmMode ? <Layers3 size={14} className="shrink-0" aria-hidden="true" /> : <Bot size={14} className="shrink-0" aria-hidden="true" />) : <ToolIcon size={isFileAction ? 13 : 12} className="shrink-0" />}
-              {!isFileAction && !isTaskLikeCard ? label : null}
+              {isTask ? <Bot size={14} className="shrink-0" aria-hidden="true" /> : <ToolIcon size={isFileAction ? 13 : 12} className="shrink-0" />}
+              {!isFileAction && !isTask ? label : null}
             </span>
             <div className="min-w-0 flex-1">
-              {isFileAction || isTaskLikeCard ? (
+              {isFileAction || isTask ? (
                 <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{label}</div>
               ) : null}
               {fileSummary ? (
                 <div className={cn(
                   "min-w-0 break-words [overflow-wrap:anywhere]",
-                  isFileAction || isTaskLikeCard ? "mt-0.5 text-[11px] font-normal leading-4 text-[var(--app-text-muted)]" : "font-medium text-[var(--app-text)]",
+                  isFileAction || isTask ? "mt-0.5 text-[11px] font-normal leading-4 text-[var(--app-text-muted)]" : "font-medium text-[var(--app-text)]",
                 )}>
                   {fileSummary}
                 </div>
@@ -2193,7 +2166,7 @@ export function ToolMessageView({
             </div>
             <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
               {toolMessage.durationMs > 0 ? <span>{formatDuration(toolMessage.durationMs)}</span> : null}
-              {!isTaskLikeCard && StateIcon ? (
+              {!isTask && StateIcon ? (
                 <StateIcon
                   size={12}
                   className={cn(
@@ -2210,7 +2183,7 @@ export function ToolMessageView({
         <div className={cn(
           "min-w-0",
           isFileAction && hasBody && "border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5",
-          isTaskLikeCard && hasBody && !hasTaskRows && "border-t border-[var(--app-border)]",
+          isTask && hasBody && !hasTaskRows && "border-t border-[var(--app-border)]",
         )}>
         {toolMessage.error ? (
           <div className="mt-1 break-words text-[12px] text-[var(--app-danger)]">
@@ -2220,11 +2193,10 @@ export function ToolMessageView({
         {toolMessage.editDiff ? (
           <EditDiffView toolMessage={toolMessage} />
         ) : null}
-        {!toolMessage.editDiff && normalizedTool === "swarm_mode" ? <SwarmModeProgress toolMessage={toolMessage} /> : null}
         {!toolMessage.editDiff &&
-        isTaskLikeCard &&
+        toolMessage.tool === "task" &&
         toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} forceSwarm={isSwarmMode} />
+          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} />
         ) : null}
         {!toolMessage.editDiff &&
         isSearch &&
@@ -2233,8 +2205,7 @@ export function ToolMessageView({
         ) : null}
         {!toolMessage.editDiff &&
         !isSearch &&
-        !(isTaskLikeCard && toolMessage.taskRows.length > 0) &&
-        normalizedTool !== "swarm_mode" &&
+        !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
         showPreview &&
         !isManageSessions &&
         (toolMessage.previewLines.length > 0 || toolMessage.commandText) ? (

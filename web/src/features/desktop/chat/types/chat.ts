@@ -159,14 +159,6 @@ export interface TaskChildCardActions {
   onNavigate: (sessionId: string, workspacePath: string) => void;
 }
 
-export interface SwarmModeToolData {
-  stage: string;
-  round: number;
-  rounds: number;
-  status: string;
-  summary: string;
-}
-
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;
@@ -192,7 +184,6 @@ export interface StructuredToolMessage {
   webFetchData?: WebFetchToolData | null;
   todoData?: TodoToolData | null;
   bashData?: BashToolData | null;
-  swarmModeData?: SwarmModeToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
 }

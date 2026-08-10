@@ -1092,73 +1092,6 @@ function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
   assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
 }
 
-function testSwarmModeHydrationAndWorkerLifecycleParsing(): void {
-  const hydration = buildStructuredToolMessage({
-    tool: "swarm_mode",
-    callId: "call_swarm_hydration",
-    outputText: JSON.stringify({
-      tool: "swarm_mode",
-      path_id: "tool.swarm_mode.hydration.v1",
-      stage: "hydration",
-      round: 2,
-      rounds: 2,
-      status: "running",
-      summary: "Router is hydrating final worker prompts",
-    }),
-    state: "running",
-  });
-  assert(hydration?.swarmModeData?.round === 2, "expected visible second hydration round");
-  assert(hydration?.swarmModeData?.rounds === 2, "expected exactly two hydration rounds");
-  assert(hydration?.taskRows.length === 0, "hydration should not manufacture worker rows");
-  assert(hydration?.summary.includes("hydrating final worker prompts") === true, "expected hydration summary");
-
-  const workers = buildStructuredToolMessage({
-    tool: "swarm_mode",
-    callId: "call_swarm_workers",
-    outputText: JSON.stringify({
-      tool: "task",
-      path_id: "tool.task.stream.v2",
-      status: "running",
-      launch: {
-        launch_index: 1,
-        child_session_id: "child-swarm-1",
-        subagent: "designer",
-        assignment_label: "Swarm designer 1",
-        status: "running",
-        phase: "tool.started",
-        current_tool: "edit",
-      },
-    }),
-    taskStream: {
-      launchOrder: ["child-swarm-1", "child-swarm-2"],
-      launchesByKey: {
-        "child-swarm-1": {
-          launch_index: 1,
-          child_session_id: "child-swarm-1",
-          subagent: "designer",
-          assignment_label: "Swarm designer 1",
-          status: "running",
-          phase: "tool.started",
-          current_tool: "edit",
-        },
-        "child-swarm-2": {
-          launch_index: 2,
-          child_session_id: "child-swarm-2",
-          subagent: "designer",
-          assignment_label: "Swarm designer 2",
-          status: "pending",
-          phase: "spawned",
-        },
-      },
-    },
-    state: "running",
-  });
-  assert(workers?.swarmModeData == null, "worker lifecycle should replace hydration data");
-  assert(workers?.taskRows.length === 2, `expected two Swarm worker rows, got ${workers?.taskRows.length}`);
-  assert(workers?.taskRows[0]?.childSessionId === "child-swarm-1", "expected canonical first child session");
-  assert(workers?.taskRows[1]?.status === "pending", "expected canonical queued worker status");
-}
-
 function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('edit').kind === 'edit', 'edit should use edit semantics');
   assert(describeToolActivity('edit').activeLabel === 'Editing', 'edit should expose active label');
@@ -1176,7 +1109,6 @@ function testProviderNeutralToolActivityDescriptors(): void {
 
 function main(): void {
   testProviderNeutralToolActivityDescriptors();
-  testSwarmModeHydrationAndWorkerLifecycleParsing();
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
   testExitPlanDefaultApprovalFeedbackIsHidden();

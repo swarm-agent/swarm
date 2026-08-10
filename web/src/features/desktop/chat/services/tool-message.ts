@@ -65,9 +65,6 @@ export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   if (normalized === "plan" || normalized === "plan_manage" || normalized === "exit_plan_mode") {
     return { kind: "plan", label: "Plan", activeLabel: "Planning" };
   }
-  if (normalized === "swarm_mode") {
-    return { kind: "task", label: "Swarm mode", activeLabel: "Hydrating Swarm" };
-  }
   if (normalized === "task" || normalized === "subagent" || normalized === "launch_subagent") {
     return { kind: "task", label: "Subagents", activeLabel: "Launching subagents" };
   }
@@ -531,16 +528,6 @@ function summarizeToolOutput(
       if (successCount > 0) notes.push(`${successCount} ok`);
       if (url) return summaryWithNotes(`webfetch ${url}`, notes);
       return summaryWithNotes("webfetch", notes);
-    }
-    case "swarm_mode": {
-      const round = jsonNum(effective, "round");
-      const rounds = jsonNum(effective, "rounds") || 2;
-      const stageSummary = jsonStr(effective, "summary");
-      const launchCount = jsonNum(effective, "launch_count");
-      if (stageSummary) return `swarm mode · ${stageSummary}`;
-      if (round > 0) return `swarm mode · hydration ${round}/${rounds}`;
-      if (launchCount > 0) return `swarm mode · ${launchCount} workers`;
-      return "swarm mode";
     }
     case "task": {
       const description =
@@ -1008,20 +995,9 @@ function buildTaskToolRow(
 }
 
 function isTerminalTaskPayload(payload: Record<string, unknown> | null): boolean {
-  if (!payload || !["tool.task.v1", "tool.swarm_mode.v1"].includes(jsonStr(payload, "path_id"))) return false;
+  if (!payload || jsonStr(payload, "path_id") !== "tool.task.v1") return false;
   const status = jsonStr(payload, "status").toLowerCase();
   return ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(status);
-}
-
-function extractSwarmModeToolData(payload: Record<string, unknown> | null): StructuredToolMessage["swarmModeData"] {
-  if (!payload || jsonStr(payload, "path_id") !== "tool.swarm_mode.hydration.v1") return null;
-  return {
-    stage: jsonStr(payload, "stage"),
-    round: jsonNum(payload, "round"),
-    rounds: jsonNum(payload, "rounds") || 2,
-    status: jsonStr(payload, "status"),
-    summary: jsonStr(payload, "summary"),
-  };
 }
 
 function buildTaskToolRows(
@@ -1036,7 +1012,7 @@ function buildTaskToolRows(
       })
       .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
   }
-  if (!payload || jsonStr(payload, "path_id") === "tool.swarm_mode.hydration.v1") return [];
+  if (!payload) return [];
 
   const launches = jsonObjectSlice(payload, "launches");
   if (launches.length > 0) {
@@ -1946,7 +1922,7 @@ export function buildStructuredToolMessage(
     normalizedToolName === "bash"
       ? extractBashToolData(outputJson, outputText || completedOutputText, argumentsJson)
       : null;
-  const previewLines = searchData || webSearchData || webFetchData || normalizedToolName === "swarm_mode"
+  const previewLines = searchData || webSearchData || webFetchData
     ? []
     : extractPreviewLines(
         toolName,
@@ -1954,9 +1930,10 @@ export function buildStructuredToolMessage(
         outputText || completedOutputText,
         argumentsJson,
       );
-  const isTaskLikeTool = normalizedToolName === "task" || normalizedToolName === "swarm_mode";
-  const taskRows = isTaskLikeTool ? buildTaskToolRows(outputJson, input.taskStream) : [];
-  const swarmModeData = normalizedToolName === "swarm_mode" ? extractSwarmModeToolData(outputJson) : null;
+  const taskRows =
+    toolName.toLowerCase() === "task"
+      ? buildTaskToolRows(outputJson, input.taskStream)
+      : [];
   const error = String(input.error ?? "").trim();
 
   const retainOutputJson = [
@@ -1997,7 +1974,6 @@ export function buildStructuredToolMessage(
     webFetchData,
     todoData,
     bashData,
-    swarmModeData,
     previewLines,
     taskRows,
   };

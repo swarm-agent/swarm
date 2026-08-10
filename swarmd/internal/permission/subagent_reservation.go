@@ -24,7 +24,6 @@ type SubagentReservationRequest struct {
 	ManifestHash   string
 	LaunchCount    int
 	Delegated      bool
-	AlwaysAsk      bool
 }
 
 type SubagentReservationResult struct {
@@ -77,8 +76,6 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		decision, reason = SubagentReservationDeny, fmt.Sprintf("subagent wave exceeds active child limit of %d", policy.ActiveChildLimit)
 	} else if policy.Mode == SubagentModeDirect {
 		decision, reason = SubagentReservationDeny, "direct orchestration mode denies delegation"
-	} else if request.AlwaysAsk {
-		decision, reason = SubagentReservationAsk, "this delegation surface requires fresh approval for every exact wave"
 	} else if policy.Mode == SubagentModeAsk {
 		decision, reason = SubagentReservationAsk, "ask orchestration mode reviews every exact wave"
 	}
