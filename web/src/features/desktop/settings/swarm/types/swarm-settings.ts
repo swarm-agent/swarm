@@ -10,9 +10,6 @@ export const DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS = 12
 export const REVIEW_AUTO_ARCHIVE_MINUTES = Array.from({ length: 12 }, (_, index) => (index + 1) * 5)
 export const DEFAULT_PLAN_CONTEXT_GUARD_USED_PERCENT = 80
 export const DEFAULT_PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 1
-export const DEFAULT_MAX_SWARM_AGENTS = 10
-export const MIN_SWARM_AGENTS = 1
-export const MAX_SWARM_AGENTS = 100
 export const PLAN_CONTEXT_GUARD_USED_PERCENT_MIN = 50
 export const PLAN_CONTEXT_GUARD_USED_PERCENT_MAX = 95
 export const PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 3
@@ -48,7 +45,6 @@ export interface UIChatSettingsWire {
   plan_context_guard_enabled?: boolean
   plan_context_guard_used_percent?: number
   plan_context_guard_max_compactions?: number
-  max_swarm_agents?: number
   review_auto_archive_minutes?: number
   sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
@@ -81,10 +77,6 @@ export interface PlanContextGuardSettings {
 export interface GlobalThemeSettings {
   activeId: string
   activeLabel: string
-}
-
-export interface SwarmModeSettings {
-  maxAgents: number
 }
 
 export interface SwarmSettings {
@@ -123,25 +115,6 @@ export function normalizePlanContextGuardSettings(payload?: UISettingsWire | nul
     enabled: normalizePlanContextGuardEnabled(payload?.chat?.plan_context_guard_enabled),
     usedPercent: normalizePlanContextGuardUsedPercent(payload?.chat?.plan_context_guard_used_percent),
     maxCompactions: normalizePlanContextGuardMaxCompactions(payload?.chat?.plan_context_guard_max_compactions),
-  }
-}
-
-export function normalizeMaxSwarmAgents(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_MAX_SWARM_AGENTS
-  return Math.min(MAX_SWARM_AGENTS, Math.max(MIN_SWARM_AGENTS, Math.round(value)))
-}
-
-export function normalizeSwarmModeSettings(payload?: UISettingsWire | null): SwarmModeSettings {
-  return { maxAgents: normalizeMaxSwarmAgents(payload?.chat?.max_swarm_agents) }
-}
-
-export function withMaxSwarmAgents(current: UISettingsWire, maxAgents: number): UISettingsWire {
-  return {
-    ...current,
-    chat: {
-      ...(current.chat ?? {}),
-      max_swarm_agents: normalizeMaxSwarmAgents(maxAgents),
-    },
   }
 }
 

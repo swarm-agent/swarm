@@ -33,7 +33,6 @@ import (
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/swarmmode"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
@@ -1237,24 +1236,6 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
-			Name:        "swarm_mode",
-			Description: "Generate and launch a large hierarchical Designer or Coder swarm through the backend's strict two-stage tool-free Router pipeline. Use only for genuinely broad work that benefits from many independent themed agents. The requested count is capped by the account setting and active-child policy. Designer swarms require an indexed workspace-relative owned_scope_template containing exactly one {index} placeholder; Coder swarms preserve clean-parent worktrees, scoped commits, recall, and explicit parent integration. Router calls never create durable child sessions, and any invalid or incomplete stage fails the whole launch before children are created.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"prompt":               map[string]any{"type": "string", "minLength": 1, "maxLength": swarmmode.MaxPromptRunes, "description": "Complete shared parent brief for every final child."},
-					"agent_type":           map[string]any{"type": "string", "enum": []string{"designer", "coder"}, "description": "Final compiled child type."},
-					"count":                map[string]any{"type": "integer", "minimum": 1, "maximum": swarmmode.HardMaxAgents, "description": "Requested final-agent count before account and active-child policy caps."},
-					"themes":               map[string]any{"type": "array", "maxItems": swarmmode.HardMaxAgents, "items": map[string]any{"type": "string", "minLength": 1, "maxLength": swarmmode.MaxThemeRunes}, "description": "Optional unique seed themes. When supplied, cardinality must equal count."},
-					"output_contract":      map[string]any{"type": "string", "minLength": 1, "maxLength": swarmmode.MaxOutputContractRunes, "description": "Shared concrete deliverable and verification contract for all final children."},
-					"owned_scope_template": map[string]any{"type": "string", "maxLength": swarmmode.MaxOwnedScopeTemplateRunes, "description": "Workspace-relative output target template containing exactly one {index} placeholder. Required for Designer and expanded to unique one-based targets before provider calls."},
-				},
-				"required":             []string{"prompt", "agent_type", "count", "output_contract"},
-				"additionalProperties": false,
-			},
-		},
-		{
-			Type:        "function",
 			Name:        "task",
 			Description: "Delegate a distinct research question to Finder, an independent dependency-ready implementation scope to Coder, or explicitly requested multiple UI/design iterations or variants to Designer. Designer is prohibited for ordinary UI work and single-design requests, which the parent handles directly. Eligible Designer children share the parent checkout, may inspect with read/search/find/list and implement with write/edit, have no Bash or Git, and produce ordinary reusable artifacts that remain until the user requests or chooses cleanup. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; give every launch a concise title of about three words for cosmetic UI display, while keeping the full instructive assignment in meta_prompt. Each launch also states its deliverable, concurrency reason, owned scope, and dependency evidence for review; Designer launches require complete briefs and distinct non-overlapping workspace-relative output targets, and dependency-ready variants should be batched.",
 			Parameters: map[string]any{
@@ -1584,8 +1565,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageTodos(scope, args)
 	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":
 		return executeStubTool(name, args)
-	case "task", "swarm_mode":
-		return "", fmt.Errorf("%s must be handled by run-service control-plane", name)
+	case "task":
+		return "", errors.New("task must be handled by run-service control-plane")
 	default:
 		return r.executeCustomTool(ctx, scope, name, args, onProgress)
 	}
@@ -8340,7 +8321,7 @@ func manageAgentToolGroup(name string) string {
 		return "shell"
 	case "websearch", "webfetch", "webdownload":
 		return "web"
-	case "task", "swarm_mode":
+	case "task":
 		return "delegation"
 	case "ask-user", "ask_user", "exit_plan_mode", "plan_manage":
 		return "conversation_control"
@@ -8359,7 +8340,6 @@ func manageAgentKnownToolSet(definitions []Definition, customTools []pebblestore
 		"exit_plan_mode": {},
 		"plan_manage":    {},
 		"task":           {},
-		"swarm_mode":     {},
 	}
 	for _, definition := range definitions {
 		name := manageAgentCanonicalToolName(definition.Name)

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
-import { saveMaxSwarmAgents } from './save-max-swarm-agents'
 import { savePlanContextGuardSettings } from './save-plan-context-guard-settings'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
 import { saveShowCompactButtonSetting } from './save-show-compact-button-setting'
@@ -104,25 +103,6 @@ test('savePlanContextGuardSettings sends only normalized guard fields', async ()
         plan_context_guard_max_compactions: 3,
       },
     })
-  } finally {
-    restore()
-  }
-})
-
-test('saveMaxSwarmAgents sends only the normalized maximum patch', async () => {
-  let capturedBody = ''
-  const restore = installFetchMock(async (_input, init) => {
-    capturedBody = String(init?.body ?? '')
-    return new Response(JSON.stringify({ chat: { max_swarm_agents: 100, thinking_tags: false } }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  })
-
-  try {
-    const response = await saveMaxSwarmAgents(101)
-    assert.equal(response.chat?.max_swarm_agents, 100)
-    assert.deepEqual(JSON.parse(capturedBody), { chat: { max_swarm_agents: 100 } })
   } finally {
     restore()
   }

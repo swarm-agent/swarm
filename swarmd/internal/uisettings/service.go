@@ -80,7 +80,6 @@ type ChatSettings struct {
 	PlanContextGuardEnabled         bool                   `json:"plan_context_guard_enabled"`
 	PlanContextGuardUsedPercent     int                    `json:"plan_context_guard_used_percent"`
 	PlanContextGuardMaxCompactions  int                    `json:"plan_context_guard_max_compactions"`
-	MaxSwarmAgents                  int                    `json:"max_swarm_agents"`
 	ReviewAutoArchiveMinutes        int                    `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        int                    `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string      `json:"default_workspace_routes,omitempty"`
@@ -225,7 +224,6 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			PlanContextGuardEnabled:         *record.Chat.PlanContextGuardEnabled,
 			PlanContextGuardUsedPercent:     record.Chat.PlanContextGuardUsedPercent,
 			PlanContextGuardMaxCompactions:  *record.Chat.PlanContextGuardMaxCompactions,
-			MaxSwarmAgents:                  *record.Chat.MaxSwarmAgents,
 			ReviewAutoArchiveMinutes:        record.Chat.ReviewAutoArchiveMinutes,
 			SidebarHideInactiveHours:        *record.Chat.SidebarHideInactiveHours,
 			DefaultWorkspaceRoutes:          cloneMap(record.Chat.DefaultWorkspaceRoutes),
@@ -322,7 +320,6 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 		PlanContextGuardEnabled:         boolPointer(settings.PlanContextGuardEnabled),
 		PlanContextGuardUsedPercent:     settings.PlanContextGuardUsedPercent,
 		PlanContextGuardMaxCompactions:  intPointer(settings.PlanContextGuardMaxCompactions),
-		MaxSwarmAgents:                  intPointer(settings.MaxSwarmAgents),
 		ReviewAutoArchiveMinutes:        settings.ReviewAutoArchiveMinutes,
 		SidebarHideInactiveHours:        intPointer(settings.SidebarHideInactiveHours),
 		DefaultWorkspaceRoutes:          cloneMap(settings.DefaultWorkspaceRoutes),

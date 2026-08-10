@@ -2,21 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  DEFAULT_MAX_SWARM_AGENTS,
   DEFAULT_SIDEBAR_HIDE_INACTIVE_HOURS,
   normalizeFollowupCheckpointPolicyDefault,
   normalizeGlobalThemeSettings,
   normalizePlanContextGuardSettings,
   normalizePlanContextGuardUsedPercent,
   normalizePlanContextGuardMaxCompactions,
-  normalizeMaxSwarmAgents,
   normalizeSessionMode,
   normalizeShowTipsEnabled,
   normalizeSidebarHideInactiveHours,
-  normalizeSwarmModeSettings,
   normalizeSwarmSettings,
   withDefaultNewSessionMode,
-  withMaxSwarmAgents,
   withPlanContextGuardSettings,
   withSidebarHideInactiveHours,
   type UISettingsWire,
@@ -96,24 +92,6 @@ test('plan context guard patch preserves unrelated settings and writes normalize
       plan_context_guard_used_percent: 95,
       plan_context_guard_max_compactions: 3,
     },
-  })
-})
-
-test('swarm mode maximum defaults to 10, clamps to 1–100, and preserves partial settings', () => {
-  assert.equal(normalizeMaxSwarmAgents(undefined), DEFAULT_MAX_SWARM_AGENTS)
-  assert.equal(normalizeMaxSwarmAgents(0), 1)
-  assert.equal(normalizeMaxSwarmAgents(-3), 1)
-  assert.equal(normalizeMaxSwarmAgents(101), 100)
-  assert.equal(normalizeSwarmModeSettings({ chat: { max_swarm_agents: 42 } }).maxAgents, 42)
-
-  const current: UISettingsWire = {
-    theme: { active_id: 'tide' },
-    chat: { thinking_tags: false, default_new_session_mode: 'plan' },
-    swarm: { name: 'Local' },
-  }
-  assert.deepEqual(withMaxSwarmAgents(current, 500), {
-    ...current,
-    chat: { thinking_tags: false, default_new_session_mode: 'plan', max_swarm_agents: 100 },
   })
 })
 

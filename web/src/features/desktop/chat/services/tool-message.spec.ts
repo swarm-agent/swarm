@@ -1092,53 +1092,6 @@ function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
   assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
 }
 
-function testSwarmModeParsesStagesAndFinalChildrenWithoutPromptLeak(): void {
-  const progress = buildStructuredToolMessage({
-    tool: 'swarm_mode',
-    argumentsText: JSON.stringify({ prompt: 'private parent brief', agent_type: 'designer', count: 100 }),
-    outputText: JSON.stringify({
-      tool: 'swarm_mode',
-      path_id: 'tool.swarm_mode.stream.v1',
-      status: 'running',
-      stage: 'refinement',
-      summary: 'refining 100 themes',
-      completed: 25,
-      total: 100,
-    }),
-    state: 'running',
-  })
-  assert(progress?.swarmModeData?.stage === 'refinement', `unexpected swarm stage: ${progress?.swarmModeData?.stage}`)
-  assert(progress?.swarmModeData?.completed === 25 && progress.swarmModeData.total === 100, 'expected bounded stage progress')
-  assert(progress?.taskRows.length === 0, 'Router progress must not create fake child rows')
-  assert(progress?.previewLines.length === 0, 'swarm progress must not render raw prompts')
-  assert(progress?.summary.includes('refining 100 themes') === true, `unexpected swarm summary: ${progress?.summary}`)
-
-  const final = buildStructuredToolMessage({
-    tool: 'swarm_mode',
-    outputText: JSON.stringify({
-      tool: 'swarm_mode',
-      path_id: 'tool.swarm_mode.v1',
-      status: 'ok',
-      router_group_count: 10,
-      router_refinement_count: 100,
-      launches: Array.from({ length: 100 }, (_, index) => ({
-        launch_index: index + 1,
-        session_id: `child-${index + 1}`,
-        resolved_agent_name: index % 2 === 0 ? 'designer' : 'coder',
-        assignment_label: `Swarm agent ${index + 1}`,
-        status: 'ok',
-        meta_prompt: `private refined prompt ${index + 1}`,
-      })),
-    }),
-  })
-  assert(final?.taskRows.length === 100, `expected 100 final child rows, got ${final?.taskRows.length}`)
-  assert(final?.taskRows[0]?.childSessionId === 'child-1', 'expected canonical final child action target')
-  assert(final?.taskRows[99]?.childSessionId === 'child-100', 'expected final bounded child row')
-  assert(final?.swarmModeData?.routerGroupCount === 10, 'expected Router group metadata')
-  assert(final?.swarmModeData?.routerRefinementCount === 100, 'expected Router refinement metadata')
-  assert(final?.previewLines.length === 0, 'final swarm card must not dump prompts')
-}
-
 function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('edit').kind === 'edit', 'edit should use edit semantics');
   assert(describeToolActivity('edit').activeLabel === 'Editing', 'edit should expose active label');
@@ -1146,8 +1099,6 @@ function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('plan').activeLabel === 'Planning', 'plan should expose planning label');
   assert(describeToolActivity('task').kind === 'task', 'task should use subagent semantics');
   assert(describeToolActivity('task').activeLabel === 'Launching subagents', 'task should expose launch label');
-  assert(describeToolActivity('swarm_mode').kind === 'task', 'swarm_mode should use subagent semantics');
-  assert(describeToolActivity('swarm_mode').label === 'Swarm mode', 'swarm_mode should expose a distinct activity label');
   assert(describeToolActivity('search').kind === 'investigation', 'search should use investigation semantics');
   assert(describeToolActivity('search').activeLabel === 'Investigating', 'search should expose a stable investigation label');
   assert(describeToolActivity('read').kind === 'investigation', 'read should use investigation semantics');
@@ -1158,7 +1109,6 @@ function testProviderNeutralToolActivityDescriptors(): void {
 
 function main(): void {
   testProviderNeutralToolActivityDescriptors();
-  testSwarmModeParsesStagesAndFinalChildrenWithoutPromptLeak();
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
   testExitPlanDefaultApprovalFeedbackIsHidden();
