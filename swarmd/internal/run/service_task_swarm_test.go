@@ -61,6 +61,43 @@ func TestValidateTaskSwarmHydrationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDecodeTaskSwarmHydrationAcceptsSingleJSONFence(t *testing.T) {
+	valid := `{"prompts":[{"index":1,"title":"One","theme":"A","prompt":"complete prompt"}]}`
+	for _, raw := range []string{
+		valid,
+		"```json\n" + valid + "\n```",
+		"```JSON\n" + valid + "\n```",
+		"```\n" + valid + "\n```",
+	} {
+		result, err := decodeTaskSwarmHydrationResult(raw, 1)
+		if err != nil {
+			t.Fatalf("decode %q: %v", raw, err)
+		}
+		if len(result.Prompts) != 1 || result.Prompts[0].Prompt != "complete prompt" {
+			t.Fatalf("unexpected result for %q: %#v", raw, result)
+		}
+	}
+}
+
+func TestDecodeTaskSwarmHydrationRejectsNonFenceWrappersAndInvalidPayloads(t *testing.T) {
+	valid := `{"prompts":[{"index":1,"title":"One","theme":"A","prompt":"complete prompt"}]}`
+	cases := map[string]string{
+		"leading commentary":  "Here is the result:\n" + valid,
+		"trailing commentary": valid + "\nDone",
+		"fenced commentary":   "```json\n" + valid + "\n```\nDone",
+		"unknown field":       `{"prompts":[{"index":1,"title":"One","theme":"A","prompt":"complete prompt","extra":true}]}`,
+		"incomplete prompt":   `{"prompts":[{"index":1,"title":"","theme":"A","prompt":"complete prompt"}]}`,
+		"out of order":        `{"prompts":[{"index":2,"title":"One","theme":"A","prompt":"complete prompt"}]}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeTaskSwarmHydrationResult(raw, 1); err == nil {
+				t.Fatalf("expected %s to fail", name)
+			}
+		})
+	}
+}
+
 func TestIdeaProfileIsCompiledToolFreeAndProtected(t *testing.T) {
 	profile := agentruntime.IdeaAgentProfileForParent(pebblestore.AgentProfile{Provider: "codex", Model: "model", Thinking: "high"})
 	if !agentruntime.IsIdeaAgentName(profile.Name) || !profile.Protected || profile.ToolContract == nil {

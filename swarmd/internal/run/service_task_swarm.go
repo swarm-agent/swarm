@@ -136,6 +136,11 @@ Produce exactly one entry for every supplied item in ascending index order. Pres
 	if raw == "" {
 		return taskSwarmHydrationResult{}, errors.New("task swarm Router returned no output")
 	}
+	return decodeTaskSwarmHydrationResult(raw, len(request.Items))
+}
+
+func decodeTaskSwarmHydrationResult(raw string, count int) (taskSwarmHydrationResult, error) {
+	raw = normalizeTaskSwarmRouterJSONResponse(raw)
 	var result taskSwarmHydrationResult
 	decoder := json.NewDecoder(bytes.NewBufferString(raw))
 	decoder.DisallowUnknownFields()
@@ -146,10 +151,35 @@ Produce exactly one entry for every supplied item in ascending index order. Pres
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return taskSwarmHydrationResult{}, errors.New("decode task swarm Router output: trailing content is forbidden")
 	}
-	if err := validateTaskSwarmHydrationResult(result, len(request.Items)); err != nil {
+	if err := validateTaskSwarmHydrationResult(result, count); err != nil {
 		return taskSwarmHydrationResult{}, err
 	}
 	return result, nil
+}
+
+// normalizeTaskSwarmRouterJSONResponse removes only one complete JSON Markdown
+// fence. The strict decoder remains authoritative for the enclosed object,
+// unknown fields, and trailing content.
+func normalizeTaskSwarmRouterJSONResponse(raw string) string {
+	raw = strings.TrimSpace(raw)
+	openingEnd := strings.IndexByte(raw, '\n')
+	if openingEnd < 0 {
+		return raw
+	}
+	opener := strings.TrimSpace(raw[:openingEnd])
+	if opener != "```" && !strings.EqualFold(opener, "```json") {
+		return raw
+	}
+	bodyAndClosing := raw[openingEnd+1:]
+	closingStart := strings.LastIndexByte(bodyAndClosing, '\n')
+	if closingStart < 0 || strings.TrimSpace(bodyAndClosing[closingStart+1:]) != "```" {
+		return raw
+	}
+	body := strings.TrimSpace(bodyAndClosing[:closingStart])
+	if body == "" {
+		return raw
+	}
+	return body
 }
 
 func validateTaskSwarmHydrationResult(result taskSwarmHydrationResult, count int) error {
