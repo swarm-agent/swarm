@@ -65,6 +65,9 @@ export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   if (normalized === "plan" || normalized === "plan_manage" || normalized === "exit_plan_mode") {
     return { kind: "plan", label: "Plan", activeLabel: "Planning" };
   }
+  if (normalized === "swarm_mode") {
+    return { kind: "task", label: "Swarm mode", activeLabel: "Preparing swarm" };
+  }
   if (normalized === "task" || normalized === "subagent" || normalized === "launch_subagent") {
     return { kind: "task", label: "Subagents", activeLabel: "Launching subagents" };
   }
@@ -528,6 +531,17 @@ function summarizeToolOutput(
       if (successCount > 0) notes.push(`${successCount} ok`);
       if (url) return summaryWithNotes(`webfetch ${url}`, notes);
       return summaryWithNotes("webfetch", notes);
+    }
+    case "swarm_mode": {
+      const stage = jsonStr(effective, "stage");
+      const stageSummary = jsonStr(effective, "summary");
+      const completed = jsonNum(effective, "completed");
+      const total = jsonNum(effective, "total");
+      const launchCount = jsonNum(effective, "launch_count") || jsonObjectSlice(effective, "launches").length;
+      if (stageSummary) return total > 0 ? `swarm mode · ${stageSummary} (${completed}/${total})` : `swarm mode · ${stageSummary}`;
+      if (stage) return `swarm mode · ${stage}`;
+      if (launchCount > 0) return `swarm mode (${launchCount} final agents)`;
+      return "swarm mode";
     }
     case "task": {
       const description =
@@ -995,9 +1009,21 @@ function buildTaskToolRow(
 }
 
 function isTerminalTaskPayload(payload: Record<string, unknown> | null): boolean {
-  if (!payload || jsonStr(payload, "path_id") !== "tool.task.v1") return false;
+  if (!payload || !["tool.task.v1", "tool.swarm_mode.v1"].includes(jsonStr(payload, "path_id"))) return false;
   const status = jsonStr(payload, "status").toLowerCase();
   return ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(status);
+}
+
+function extractSwarmModeToolData(payload: Record<string, unknown> | null): StructuredToolMessage["swarmModeData"] {
+  if (!payload) return null;
+  const stage = jsonStr(payload, "stage");
+  const summary = jsonStr(payload, "summary");
+  const completed = jsonNum(payload, "completed");
+  const total = jsonNum(payload, "total");
+  const routerGroupCount = jsonNum(payload, "router_group_count");
+  const routerRefinementCount = jsonNum(payload, "router_refinement_count");
+  if (!stage && !summary && total <= 0 && routerGroupCount <= 0 && routerRefinementCount <= 0) return null;
+  return { stage, summary, completed, total, routerGroupCount, routerRefinementCount };
 }
 
 function buildTaskToolRows(
@@ -1922,7 +1948,7 @@ export function buildStructuredToolMessage(
     normalizedToolName === "bash"
       ? extractBashToolData(outputJson, outputText || completedOutputText, argumentsJson)
       : null;
-  const previewLines = searchData || webSearchData || webFetchData
+  const previewLines = searchData || webSearchData || webFetchData || normalizedToolName === "swarm_mode"
     ? []
     : extractPreviewLines(
         toolName,
@@ -1930,10 +1956,13 @@ export function buildStructuredToolMessage(
         outputText || completedOutputText,
         argumentsJson,
       );
-  const taskRows =
-    toolName.toLowerCase() === "task"
-      ? buildTaskToolRows(outputJson, input.taskStream)
-      : [];
+  const isTaskLikeTool = normalizedToolName === "task" || normalizedToolName === "swarm_mode";
+  const swarmHasFinalRows = normalizedToolName !== "swarm_mode"
+    || Boolean(input.taskStream)
+    || jsonObjectSlice(outputJson, "launches").length > 0
+    || jsonStr(outputJson, "path_id").startsWith("tool.task.stream.");
+  const taskRows = isTaskLikeTool && swarmHasFinalRows ? buildTaskToolRows(outputJson, input.taskStream) : [];
+  const swarmModeData = normalizedToolName === "swarm_mode" ? extractSwarmModeToolData(outputJson) : null;
   const error = String(input.error ?? "").trim();
 
   const retainOutputJson = [
@@ -1974,6 +2003,7 @@ export function buildStructuredToolMessage(
     webFetchData,
     todoData,
     bashData,
+    swarmModeData,
     previewLines,
     taskRows,
   };

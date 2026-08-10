@@ -212,6 +212,51 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
 }
 
+function testSwarmModeRendersStagesAndHundredFinalRows(): void {
+  const progress = buildStructuredToolMessage({
+    tool: 'swarm_mode',
+    outputText: JSON.stringify({
+      tool: 'swarm_mode',
+      path_id: 'tool.swarm_mode.stream.v1',
+      status: 'running',
+      stage: 'expansion',
+      summary: 'expanding 10 bounded theme groups',
+      completed: 4,
+      total: 10,
+    }),
+    state: 'running',
+  })
+  assert(Boolean(progress), 'expected swarm progress message')
+  const progressMarkup = renderToolMarkup(progress!)
+  assert(progressMarkup.includes('Expanding themes'), 'expected compact expansion stage')
+  assert(progressMarkup.includes('4/10'), 'expected stage progress counts')
+  assert(progressMarkup.includes('do not create child sessions'), 'expected non-durable Router explanation')
+  assert(!progressMarkup.includes('data-task-child-row'), 'Router stages must not render fake children')
+
+  const final = buildStructuredToolMessage({
+    tool: 'swarm_mode',
+    outputText: JSON.stringify({
+      tool: 'swarm_mode',
+      path_id: 'tool.swarm_mode.v1',
+      status: 'ok',
+      launches: Array.from({ length: 100 }, (_, index) => ({
+        launch_index: index + 1,
+        session_id: `child-${index + 1}`,
+        resolved_agent_name: index % 2 === 0 ? 'designer' : 'coder',
+        assignment_label: `Final agent ${index + 1}`,
+        status: 'running',
+        current_tool: 'thinking',
+      })),
+    }),
+  })
+  assert(Boolean(final), 'expected final swarm message')
+  const finalMarkup = renderToolMarkup(final!)
+  assert(finalMarkup.includes('data-task-swarm-mode'), '100 final agents should reuse scalable swarm grid')
+  assert(finalMarkup.includes('data-swarm-stage="100"'), '100 agents should use final bounded density stage')
+  assert((finalMarkup.match(/data-task-child-row/g) ?? []).length === 100, 'expected one interactive row per durable final child')
+  assert(!finalMarkup.includes('private refined prompt'), 'final card must not dump generated prompts')
+}
+
 function testTaskRunningTimerUsesStartTimestamp(): void {
   const startedAt = Date.now() - 2400;
   const message = buildStructuredToolMessage({
@@ -768,6 +813,7 @@ function main(): void {
   testPlanManageSubtaskUsesCanonicalUpdatedMetadata();
   testTaskSwarmLayoutProgressivelyCompacts();
   testTaskSwarmUsesCompactPreview();
+  testSwarmModeRendersStagesAndHundredFinalRows();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
   testTaskElapsedClockUsesDisplayCadence();

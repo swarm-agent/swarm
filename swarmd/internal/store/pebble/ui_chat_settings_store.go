@@ -5,6 +5,8 @@ import (
 	"time"
 
 	sharedtheme "swarm-refactor/swarmtui/theme"
+
+	"swarm/packages/swarmd/internal/swarmmode"
 )
 
 type UIThemePaletteRecord struct {
@@ -71,6 +73,7 @@ type UIChatSettingsRecord struct {
 	PlanContextGuardEnabled         *bool                          `json:"plan_context_guard_enabled,omitempty"`
 	PlanContextGuardUsedPercent     int                            `json:"plan_context_guard_used_percent,omitempty"`
 	PlanContextGuardMaxCompactions  *int                           `json:"plan_context_guard_max_compactions,omitempty"`
+	MaxSwarmAgents                  *int                           `json:"max_swarm_agents,omitempty"`
 	ReviewAutoArchiveMinutes        int                            `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
@@ -212,6 +215,7 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			PlanContextGuardEnabled:         boolPointer(true),
 			PlanContextGuardUsedPercent:     80,
 			PlanContextGuardMaxCompactions:  intPointer(1),
+			MaxSwarmAgents:                  intPointer(swarmmode.DefaultMaxAgents),
 			SidebarHideInactiveHours:        intPointer(12),
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
@@ -265,6 +269,12 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	} else {
 		normalized := normalizePlanContextGuardMaxCompactions(*record.Chat.PlanContextGuardMaxCompactions)
 		record.Chat.PlanContextGuardMaxCompactions = intPointer(normalized)
+	}
+	if record.Chat.MaxSwarmAgents == nil {
+		record.Chat.MaxSwarmAgents = intPointer(swarmmode.DefaultMaxAgents)
+	} else {
+		normalized := swarmmode.NormalizeMaxAgents(*record.Chat.MaxSwarmAgents)
+		record.Chat.MaxSwarmAgents = intPointer(normalized)
 	}
 	record.Chat.ReviewAutoArchiveMinutes = normalizeReviewAutoArchiveMinutes(record.Chat.ReviewAutoArchiveMinutes)
 	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours < 0 {

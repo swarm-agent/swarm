@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('./behavior-settings-page.tsx', import.meta.url), 'utf8')
 const guardSource = readFileSync(new URL('./plan-context-guard-settings.tsx', import.meta.url), 'utf8')
+const swarmModeSource = readFileSync(new URL('./swarm-mode-settings.tsx', import.meta.url), 'utf8')
 const settingsPageSource = readFileSync(new URL('../../components/desktop-settings-page.tsx', import.meta.url), 'utf8')
 
 test('Behavior follows Actions in the visible settings hierarchy', () => {
@@ -27,4 +28,19 @@ test('Behavior owns the Plan context guard controls and canonical save path', ()
   assert.match(guardSource, /None — finalize immediately/)
   assert.match(guardSource, /type="checkbox"/)
   assert.match(guardSource, /Save guard/)
+})
+
+test('Behavior exposes the bounded swarm mode maximum and policy explanation', () => {
+  assert.match(source, /SwarmModeSettingsSection/)
+  assert.match(source, /normalizeSwarmModeSettings\(settingsQuery\.data\)/)
+  assert.match(source, /saveMaxSwarmAgents/)
+  assert.match(swarmModeSource, /Maximum agents/)
+  assert.match(swarmModeSource, /min=\{MIN_SWARM_AGENTS\}/)
+  assert.match(swarmModeSource, /max=\{MAX_SWARM_AGENTS\}/)
+  assert.match(swarmModeSource, /lower of this maximum and the current subagent concurrency policy/)
+  assert.match(swarmModeSource, /expand themes, then refine each prompt/)
+  assert.match(swarmModeSource, /not child sessions/)
+  assert.match(swarmModeSource, /only final Designer or Coder agents/)
+  assert.match(swarmModeSource, /Saving…/)
+  assert.match(swarmModeSource, /role="alert"/)
 })

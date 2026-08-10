@@ -214,13 +214,20 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		return ResolvedAgentToolContract{}, nil, nil, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
-	if strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") && strings.EqualFold(strings.TrimSpace(profile.Mode), "primary") {
-		// Swarm is a compiled system agent. Its code-owned session-management
-		// capability cannot be narrowed by stale account profile state.
+	isSwarmPrimary := profile.Protected && strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") && strings.EqualFold(strings.TrimSpace(profile.Mode), "primary")
+	if isSwarmPrimary {
+		// Swarm is a compiled system agent. Its code-owned control-plane
+		// capabilities cannot be narrowed by stale account profile state.
 		resolved.Tools["manage_sessions"] = ResolvedAgentTool{Enabled: true, Source: "runtime.system_agent"}
+		resolved.Tools["swarm_mode"] = ResolvedAgentTool{Enabled: true, Source: "runtime.system_agent"}
+	} else {
+		// swarm_mode is a compiled Swarm-parent capability, never an inheritable
+		// delegation primitive for other primaries, sidechats, or child sessions.
+		resolved.Tools["swarm_mode"] = ResolvedAgentTool{Enabled: false, Source: "runtime.swarm_primary_boundary"}
 	}
 	if strings.EqualFold(strings.TrimSpace(profile.Mode), "subagent") {
 		resolved.Tools["task"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
+		resolved.Tools["swarm_mode"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
 	}
 
 	policyRules := make([]permission.PolicyRule, 0, len(knownTools)+8)

@@ -1474,7 +1474,7 @@ func sanitizePermissionIDPart(value string) string {
 func authorizationRequirement(mode, toolName, toolArguments string) string {
 	toolName = normalizePolicyToolName(toolName)
 	switch toolName {
-	case "task":
+	case "task", "swarm_mode":
 		return "task_launch"
 	case "manage_skill":
 		if ShouldApproveManageSkillMutation(toolArguments) {

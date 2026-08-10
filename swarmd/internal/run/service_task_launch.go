@@ -706,6 +706,12 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 			return "", err
 		}
 		return marshalPayload(payload)
+	case "swarm_mode":
+		payload, err := s.buildSwarmModePermissionPayload(sessionID, sessionMode, call)
+		if err != nil {
+			return "", err
+		}
+		return marshalPayload(payload)
 	case "manage_skill":
 		if !permission.ShouldApproveManageSkillMutation(arguments) {
 			return arguments, nil

@@ -2947,6 +2947,48 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
   assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')
 })
 
+test('realtime swarm_mode task stream v2 deltas merge canonical final child patches', () => {
+  const state = bootstrappedState()
+  const patch = JSON.stringify({
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
+    tool: 'task',
+    status: 'running',
+    launch_count: 100,
+    task_call_id: 'call-swarm',
+    launch_key: 'child-100',
+    launch_index: 100,
+    launch: {
+      launch_key: 'child-100',
+      launch_index: 100,
+      child_session_id: 'child-100',
+      status: 'running',
+      subagent: 'coder',
+      current_tool: 'edit',
+    },
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-swarm',
+      step_id: 'step-swarm',
+      tool_instance_id: 'tool-instance-swarm',
+      tool_name: 'swarm_mode',
+      arguments: '{"agent_type":"coder","count":100}',
+    }, 5, 'cursor-swarm-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-swarm',
+      tool_name: 'swarm_mode',
+      output: patch,
+    }, 6, 'cursor-swarm-delta'),
+  })
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-swarm']
+  assert.deepEqual(tool.taskStream?.launchOrder, ['child-100'])
+  assert.equal(tool.taskStream?.launchesByKey['child-100']?.current_tool, 'edit')
+})
+
 test('restored assistant delta with old seq is ignored', () => {
   const state = bootstrappedState()
   state.liveRunsBySession[sessionA.id] = {

@@ -145,6 +145,15 @@ export interface TodoToolData {
   summary: TodoToolSummaryCounts | null;
 }
 
+export interface SwarmModeToolData {
+  stage: string;
+  summary: string;
+  completed: number;
+  total: number;
+  routerGroupCount: number;
+  routerRefinementCount: number;
+}
+
 export interface BashToolData {
   command: string;
   output: string;
@@ -184,6 +193,7 @@ export interface StructuredToolMessage {
   webFetchData?: WebFetchToolData | null;
   todoData?: TodoToolData | null;
   bashData?: BashToolData | null;
+  swarmModeData?: SwarmModeToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
 }

@@ -1139,10 +1139,37 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   );
 }
 
-function TaskRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
+function TaskRowsView({ rows, actions, forceSwarm = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; forceSwarm?: boolean }) {
   if (rows.length === 0) return null;
-  if (rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} actions={actions} />;
+  if (forceSwarm || rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} actions={actions} />;
   return <TaskAgentRowsView rows={rows} actions={actions} />;
+}
+
+function SwarmModeProgress({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const progress = toolMessage.swarmModeData;
+  if (!progress || toolMessage.taskRows.length > 0) return null;
+  const stage = progress.stage.trim().toLowerCase();
+  const label = stage === 'expansion' ? 'Expanding themes' : stage === 'refinement' ? 'Refining prompts' : stage === 'launch' ? 'Launching final agents' : 'Preparing swarm';
+  const total = Math.max(0, progress.total);
+  const completed = Math.max(0, Math.min(total, progress.completed));
+  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+  return (
+    <div className="min-w-0 rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_7%,var(--app-surface))] p-3" data-swarm-mode-progress>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--app-primary)_55%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_18%,transparent)] text-[var(--app-primary)]"><Layers3 size={14} aria-hidden="true" /></span>
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)]">SWARM MODE</div>
+          <div className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">{label}</div>
+        </div>
+        {total > 0 ? <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--app-text-subtle)]">{completed}/{total}</span> : null}
+      </div>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--app-border)]" aria-label={`${label}: ${completed} of ${total}`} role="progressbar" aria-valuemin={0} aria-valuemax={total || 1} aria-valuenow={completed}>
+        <span className="block h-full rounded-full bg-[var(--app-primary)] transition-[width]" style={{ width: `${percent}%` }} />
+      </div>
+      {progress.summary ? <p className="mt-2 text-[11px] text-[var(--app-text-subtle)]">{progress.summary}</p> : null}
+      <p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">Internal Router stages do not create child sessions. Final Designer/Coder agents appear below after launch.</p>
+    </div>
+  );
 }
 
 const SEARCH_READ_PATH_PREVIEW_LIMIT = 12;
@@ -2041,15 +2068,19 @@ export function ToolMessageView({
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
   const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
-  const hasStructuredTaskRows = normalizedToolName === "task" && toolMessage.taskRows.length > 0;
+  const isSwarmMode = normalizedToolName === "swarm_mode";
+  const isTaskLike = normalizedToolName === "task" || isSwarmMode;
+  const hasStructuredTaskRows = isTaskLike && toolMessage.taskRows.length > 0;
   const activityOnly = toolMessage.state === "running"
     && !hasStructuredTaskRows
+    && !toolMessage.swarmModeData
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim()
     && !toolMessage.error.trim();
   const terminalWithoutResult = (toolMessage.state === "error"
     || ["cancelled", "canceled", "interrupted"].includes(lifecycleStatus))
     && !hasStructuredTaskRows
+    && !toolMessage.swarmModeData
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim();
   if (normalizedToolName === "bash") {
@@ -2092,8 +2123,9 @@ export function ToolMessageView({
     ? state === "running" ? `${activityDescriptor.activeLabel}…` : activityDescriptor.label
     : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
-  const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
-  const isTaskSwarm = hasTaskRows && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
+  const isTaskLikeCard = isTask || normalizedTool === "swarm_mode";
+  const hasTaskRows = isTaskLikeCard && toolMessage.taskRows.length > 0;
+  const isTaskSwarm = hasTaskRows && (normalizedTool === "swarm_mode" || toolMessage.taskRows.length > TASK_SWARM_THRESHOLD);
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
     ? ""
@@ -2118,7 +2150,8 @@ export function ToolMessageView({
   const hasBody = Boolean(
     toolMessage.error
     || toolMessage.editDiff
-    || (normalizedTool === "task" && toolMessage.taskRows.length > 0)
+    || (isTaskLikeCard && toolMessage.taskRows.length > 0)
+    || (normalizedTool === "swarm_mode" && toolMessage.swarmModeData)
     || (normalizedTool === "search" && toolMessage.searchData)
     || (showPreview && !isManageSessions && (toolMessage.previewLines.length > 0 || toolMessage.commandText))
     || isManageSessions,
@@ -2129,31 +2162,31 @@ export function ToolMessageView({
       <div className={cn(
         "min-w-0",
         isFileAction && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
-        isTask && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm",
-      )} data-task-tool-card={isTask || undefined}>
+        isTaskLikeCard && "overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-sm",
+      )} data-task-tool-card={isTaskLikeCard || undefined}>
         {!hasTaskRows ? (
           <div className={cn(
             "flex min-w-0 items-start gap-2 text-xs",
-            isFileAction || isTask ? "px-3 py-2.5" : "items-center",
+            isFileAction || isTaskLikeCard ? "px-3 py-2.5" : "items-center",
           )}>
             <span
               className={cn(
                 "inline-flex shrink-0 items-center justify-center font-semibold",
-                isFileAction || isTask ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
+                isFileAction || isTaskLikeCard ? "h-7 w-7 rounded-lg" : "h-5 gap-1 rounded-md px-1.5",
               )}
               style={{ color: toolTheme.color, backgroundColor: accentWash }}
             >
-              {isTask ? <Bot size={14} className="shrink-0" aria-hidden="true" /> : <ToolIcon size={isFileAction ? 13 : 12} className="shrink-0" />}
-              {!isFileAction && !isTask ? label : null}
+              {isTaskLikeCard ? (normalizedTool === "swarm_mode" ? <Layers3 size={14} className="shrink-0" aria-hidden="true" /> : <Bot size={14} className="shrink-0" aria-hidden="true" />) : <ToolIcon size={isFileAction ? 13 : 12} className="shrink-0" />}
+              {!isFileAction && !isTaskLikeCard ? label : null}
             </span>
             <div className="min-w-0 flex-1">
-              {isFileAction || isTask ? (
+              {isFileAction || isTaskLikeCard ? (
                 <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{label}</div>
               ) : null}
               {fileSummary ? (
                 <div className={cn(
                   "min-w-0 break-words [overflow-wrap:anywhere]",
-                  isFileAction || isTask ? "mt-0.5 text-[11px] font-normal leading-4 text-[var(--app-text-muted)]" : "font-medium text-[var(--app-text)]",
+                  isFileAction || isTaskLikeCard ? "mt-0.5 text-[11px] font-normal leading-4 text-[var(--app-text-muted)]" : "font-medium text-[var(--app-text)]",
                 )}>
                   {fileSummary}
                 </div>
@@ -2166,7 +2199,7 @@ export function ToolMessageView({
             </div>
             <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-[10px] text-[var(--app-text-subtle)]">
               {toolMessage.durationMs > 0 ? <span>{formatDuration(toolMessage.durationMs)}</span> : null}
-              {!isTask && StateIcon ? (
+              {!isTaskLikeCard && StateIcon ? (
                 <StateIcon
                   size={12}
                   className={cn(
@@ -2183,7 +2216,7 @@ export function ToolMessageView({
         <div className={cn(
           "min-w-0",
           isFileAction && hasBody && "border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5",
-          isTask && hasBody && !hasTaskRows && "border-t border-[var(--app-border)]",
+          isTaskLikeCard && hasBody && !hasTaskRows && "border-t border-[var(--app-border)]",
         )}>
         {toolMessage.error ? (
           <div className="mt-1 break-words text-[12px] text-[var(--app-danger)]">
@@ -2193,10 +2226,11 @@ export function ToolMessageView({
         {toolMessage.editDiff ? (
           <EditDiffView toolMessage={toolMessage} />
         ) : null}
+        {!toolMessage.editDiff && normalizedTool === "swarm_mode" ? <SwarmModeProgress toolMessage={toolMessage} /> : null}
         {!toolMessage.editDiff &&
-        toolMessage.tool === "task" &&
+        isTaskLikeCard &&
         toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} />
+          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} forceSwarm={normalizedTool === "swarm_mode"} />
         ) : null}
         {!toolMessage.editDiff &&
         isSearch &&
@@ -2205,7 +2239,8 @@ export function ToolMessageView({
         ) : null}
         {!toolMessage.editDiff &&
         !isSearch &&
-        !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
+        !(isTaskLikeCard && toolMessage.taskRows.length > 0) &&
+        normalizedTool !== "swarm_mode" &&
         showPreview &&
         !isManageSessions &&
         (toolMessage.previewLines.length > 0 || toolMessage.commandText) ? (

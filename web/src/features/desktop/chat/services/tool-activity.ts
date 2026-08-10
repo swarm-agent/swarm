@@ -72,6 +72,11 @@ export function toolActivityStartSummary(message: StructuredToolMessage): string
       const action = jsonString(args, 'action').replace(/_/g, ' ')
       return title || action
     }
+    case 'swarm_mode': {
+      const agentType = jsonString(args, 'agent_type')
+      const count = jsonNumber(args, 'count')
+      return count > 0 ? `${count} ${agentType ? `${agentType} ` : ''}${count === 1 ? 'agent' : 'agents'}` : agentType
+    }
     case 'task':
     case 'subagent':
     case 'launch_subagent': {

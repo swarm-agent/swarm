@@ -4262,8 +4262,13 @@ function finiteNumberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+function isTaskLikeToolName(toolName: string | undefined): boolean {
+  const normalized = (toolName ?? '').trim().toLowerCase().replace(/-/g, '_')
+  return normalized === 'task' || normalized === 'swarm_mode'
+}
+
 function isTaskStreamSnapshotOutput(toolName: string | undefined, output: string): boolean {
-  if ((toolName ?? '').trim().toLowerCase() !== 'task') return false
+  if (!isTaskLikeToolName(toolName)) return false
   const parsed = parseJsonRecord(output)
   if (!parsed) return false
   return stringValue(parsed.path_id) === 'tool.task.stream.v1' && stringValue(parsed.tool) === 'task'
@@ -4274,7 +4279,7 @@ function applyTaskStreamPatch(
   output: string,
   updatedAt: number,
 ): boolean {
-  if ((tool.toolName ?? '').trim().toLowerCase() !== 'task') return false
+  if (!isTaskLikeToolName(tool.toolName)) return false
   const parsed = parseJsonRecord(output)
   if (!parsed) return false
   if (stringValue(parsed.path_id) !== 'tool.task.stream.v2' || stringValue(parsed.tool) !== 'task') return false

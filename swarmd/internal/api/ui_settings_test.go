@@ -224,6 +224,42 @@ func TestUISettingsPostPreservesExistingThinkingTagsWhenChatOmitted(t *testing.T
 	}
 }
 
+func TestUISettingsPostPatchesMaxSwarmAgentsWithoutOverwritingOtherSettings(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-max-swarm-agents.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server.SetUISettingsService(settingsSvc)
+	if _, err := settingsSvc.SetForAccount("swarm-account", uisettings.UISettings{
+		Chat:  uisettings.ChatSettings{MaxSwarmAgents: 25, ThinkingTags: true, DefaultNewSessionMode: "plan"},
+		Theme: uisettings.ThemeSettings{ActiveID: "crimson"},
+	}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"chat":{"max_swarm_agents":101}}`)))
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "swarm-account"}))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Chat.MaxSwarmAgents != 100 {
+		t.Fatalf("max swarm agents = %d, want 100", response.Chat.MaxSwarmAgents)
+	}
+	if !response.Chat.ThinkingTags || response.Chat.DefaultNewSessionMode != "plan" || response.Theme.ActiveID != "crimson" {
+		t.Fatalf("partial patch overwrote settings: %+v", response)
+	}
+}
+
 func TestUISettingsPostPatchesShowTipsWithoutOverwritingOtherSettings(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-show-tips.pebble"))
 	if err != nil {
