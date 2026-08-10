@@ -2163,12 +2163,15 @@ function taskLaunchToolsSummary(tools: TaskLaunchResolvedTools): string {
 
 function taskLaunchModalTitle(payload: TaskLaunchPayload): string {
   const task = promptWordPreview(payload.description || payload.prompt, 10)
-  const prefix = payload.launchCount === 1 ? 'Launch subagent' : `Launch ${payload.launchCount} subagents`
+  const prefix = payload.swarmMode
+    ? (payload.launchCount === 1 ? 'Launch Swarm worker' : `Launch ${payload.launchCount} Swarm workers`)
+    : (payload.launchCount === 1 ? 'Launch subagent' : `Launch ${payload.launchCount} subagents`)
   return task ? `${prefix}: ${task}` : prefix
 }
 
 function taskLaunchSubtitle(payload: TaskLaunchPayload): string {
-  const parts = ['Review before launch']
+  const parts = [payload.swarmMode ? 'Fresh approval required every time' : 'Review before launch']
+  if (payload.swarmMode) parts.push(`${payload.hydrationRounds || 2} Router hydration rounds`)
   if (payload.reportMaxChars > 0) parts.push(`report ${payload.reportMaxChars} chars`)
   return parts.join(' · ')
 }
@@ -2249,9 +2252,9 @@ function TaskLaunchModal({
           loading={loading}
           onApprove={() => void resolve('approve')}
           onDeny={() => void resolve('deny')}
-          approveLabel="Launch subagents"
+          approveLabel={payload.swarmMode ? 'Hydrate & launch Swarm' : 'Launch subagents'}
           denyVariant="secondary"
-          shortcutHint="Enter launches · Esc denies"
+          shortcutHint="Enter launches once · Esc denies"
         />
       }
       onOpenChange={onOpenChange}
@@ -2267,6 +2270,16 @@ function TaskLaunchModal({
     >
       <div className="grid min-w-0 gap-5">
         {payload.resolvedAgentError ? <div className="rounded-xl border border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 px-3 py-2 text-sm text-[var(--app-danger)]">{payload.resolvedAgentError}</div> : null}
+        {payload.swarmMode ? (
+          <section className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4 text-sm leading-6 text-[var(--app-text)]">
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Visible Swarm pipeline</div>
+            <ol className="mt-2 list-decimal space-y-1 pl-5 text-[var(--app-text-muted)]">
+              <li>Approve this exact wave once; no always-allow or bypass path exists.</li>
+              <li>Run exactly {payload.hydrationRounds || 2} sequential Router hydration rounds with no tools.</li>
+              <li>Launch the hydrated workers through the existing task tool stream shown in this conversation.</li>
+            </ol>
+          </section>
+        ) : null}
 
         <section className="min-w-0">
           <div className="mb-3 text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Subagents</div>

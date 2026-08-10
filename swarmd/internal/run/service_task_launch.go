@@ -60,6 +60,8 @@ type taskLaunchManifest struct {
 	SourceArguments     map[string]any                 `json:"source_arguments,omitempty"`
 	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
+	SwarmMode           bool                           `json:"swarm_mode,omitempty"`
+	HydrationRounds     int                            `json:"hydration_rounds,omitempty"`
 	ManifestHash        string                         `json:"manifest_hash"`
 	ApprovedArguments   map[string]any                 `json:"approved_arguments,omitempty"`
 }
@@ -702,6 +704,12 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		return normalizeAskUserPermissionArguments(arguments)
 	case "task":
 		payload, err := s.buildTaskLaunchPermissionPayload(sessionID, sessionMode, call)
+		if err != nil {
+			return "", err
+		}
+		return marshalPayload(payload)
+	case "swarm_mode":
+		payload, err := s.buildSwarmModePermissionPayload(sessionID, sessionMode, call)
 		if err != nil {
 			return "", err
 		}

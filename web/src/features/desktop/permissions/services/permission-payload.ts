@@ -166,6 +166,8 @@ export interface TaskLaunchPayload {
   resolvedTools: TaskLaunchResolvedTools
   automaticBudgetUsed: number
   automaticBudgetRemaining: number
+  swarmMode: boolean
+  hydrationRounds: number
   launches: TaskLaunchRow[]
 }
 
@@ -625,6 +627,7 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
     case 'ask_user':
       return 'ask-user'
     case 'task':
+    case 'swarm_mode':
       if (safeString(permission.requirement).toLowerCase() === 'task_launch') {
         return 'task-launch'
       }
@@ -1145,6 +1148,8 @@ export function parseTaskLaunchPermission(permission: DesktopPermissionRecord): 
     resolvedTools: parseTaskLaunchResolvedTools(payload.resolved_tools),
     automaticBudgetUsed: mapNumberArg(payload, 'automatic_budget_used'),
     automaticBudgetRemaining: mapNumberArg(payload, 'automatic_budget_remaining'),
+    swarmMode: mapBoolArg(payload, 'swarm_mode'),
+    hydrationRounds: mapNumberArg(payload, 'hydration_rounds'),
     launches,
   }
 }

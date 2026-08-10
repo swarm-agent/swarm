@@ -736,7 +736,8 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 		var subagentReservation *permission.SubagentReservationResult
 		var sessionDeployReservation *permission.SessionDeployReservationResult
 		selectedCount := 0
-		if canonicalToolName(toolCalls[i].Name) == "task" {
+		canonicalCallName := canonicalToolName(toolCalls[i].Name)
+		if canonicalCallName == "task" || canonicalCallName == "swarm_mode" {
 			var manifest taskLaunchManifest
 			if err := json.Unmarshal([]byte(permissionArguments), &manifest); err != nil {
 				decisions[i].Err = err
@@ -758,6 +759,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
 				SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
 				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, Delegated: delegated,
+				AlwaysAsk: canonicalCallName == "swarm_mode",
 			})
 			if reserveErr != nil {
 				decisions[i].Err = reserveErr
@@ -823,7 +825,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 			}
 			planAcceptance := canonical == "exit_plan_mode" || (canonical == "plan_manage" && permission.IsPlanAcceptanceLifecycleRequirement(permission.PlanManageLifecycleRequirement(toolCalls[i].Arguments)))
-			if canonical == "task" || canonical == "manage_skill" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
+			if canonical == "task" || canonical == "swarm_mode" || canonical == "manage_skill" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
 				var permissionPayload map[string]any
 				if json.Unmarshal([]byte(permissionArguments), &permissionPayload) == nil {
 					if approved, ok := permissionPayload["approved_arguments"].(map[string]any); ok {
@@ -924,7 +926,8 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 	wg.Wait()
 
 	for i := range decisions {
-		if !decisions[i].Approved && canonicalToolName(toolCalls[i].Name) == "task" && strings.TrimSpace(runID) != "" && strings.TrimSpace(toolCalls[i].CallID) != "" {
+		canonical := canonicalToolName(toolCalls[i].Name)
+		if !decisions[i].Approved && (canonical == "task" || canonical == "swarm_mode") && strings.TrimSpace(runID) != "" && strings.TrimSpace(toolCalls[i].CallID) != "" {
 			if finishErr := s.permissions.FinishSubagentWave(sessionID, runID, toolCalls[i].CallID, "failed"); finishErr != nil && decisions[i].Err == nil {
 				decisions[i].Err = fmt.Errorf("release subagent wave reservation: %w", finishErr)
 				decisions[i].Result.Error = decisions[i].Err.Error()
@@ -1057,6 +1060,14 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		return true, result, err
 	case "edit_pending_plan":
 		output, err := s.executeEditPendingPlanTool(sessionID, call.Arguments)
+		result.Output = output
+		return true, result, err
+	case "swarm_mode":
+		if !agentProfile.Protected || !strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) || !strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModePrimary) {
+			return true, result, errors.New("swarm_mode is restricted to the compiled Swarm parent")
+		}
+		principal, _ := identity.PrincipalFromContext(ctx)
+		output, err := s.executeSwarmModeTool(ctx, sessionID, sessionMode, step, call, approvedArguments, emit, taskExecutionRequest{RunID: lifecycleRun.RunID, Principal: principal, ApplySessionMutation: applySessionMutation})
 		result.Output = output
 		return true, result, err
 	case "task":

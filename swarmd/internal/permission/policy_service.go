@@ -316,6 +316,9 @@ func (s *Service) ResolveWithPolicyAndArguments(sessionID, permissionID, action,
 			return pebblestore.PermissionRecord{}, nil, lookupErr
 		}
 		requirement := authorizationRequirement(pending.Mode, pending.ToolName, pending.ToolArguments)
+		if normalizePolicyToolName(pending.ToolName) == "swarm_mode" {
+			return pebblestore.PermissionRecord{}, nil, errors.New("swarm_mode approval is one-time only")
+		}
 		if requirement == "session_deploy" || requirement == "plan_acceptance" || IsPlanAcceptanceLifecycleRequirement(requirement) {
 			accountScopeID, scopeErr := s.accountScopeIDForSession(sessionID)
 			if scopeErr != nil {

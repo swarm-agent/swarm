@@ -99,8 +99,8 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		if profile.Mode == ModeSubagent && (profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled) {
 			return nil, fmt.Errorf("system subagent %q must disable exit plan mode", definition.ID)
 		}
-		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
-			return nil, fmt.Errorf("system subagent %q must disable task delegation", definition.ID)
+		if profile.Mode == ModeSubagent && (agentToolEnabled(profile.ToolContract, "task") || agentToolEnabled(profile.ToolContract, "swarm_mode")) {
+			return nil, fmt.Errorf("system subagent %q must disable delegation tools", definition.ID)
 		}
 		if profile.Mode == ModePrimary && (pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModePlanAuto || profile.ExitPlanModeEnabled == nil || !*profile.ExitPlanModeEnabled) {
 			return nil, fmt.Errorf("system primary %q must use plan_auto runtime", definition.ID)
@@ -308,6 +308,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"webfetch":        {Enabled: pebblestore.BoolPtr(true)},
 			"webdownload":     {Enabled: pebblestore.BoolPtr(true)},
 			"task":            {Enabled: pebblestore.BoolPtr(true)},
+			"swarm_mode":      {Enabled: pebblestore.BoolPtr(true)},
 			"skill_use":       {Enabled: pebblestore.BoolPtr(true)},
 			"manage_skill":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_actions":  {Enabled: pebblestore.BoolPtr(true)},
@@ -675,7 +676,7 @@ func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestor
 	if profile.ToolContract.Tools == nil {
 		profile.ToolContract.Tools = map[string]pebblestore.AgentToolConfig{}
 	}
-	for _, name := range []string{"task", "plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {
+	for _, name := range []string{"task", "swarm_mode", "plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {
 		profile.ToolContract.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)

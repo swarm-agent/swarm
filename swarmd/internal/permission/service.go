@@ -386,6 +386,12 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: explicit.Reason, Source: explicit.Source, RulePreview: explicit.RulePreview}, nil
 		}
 	}
+	// Swarm launches always require a fresh visible approval. This boundary is
+	// stronger than generic permission bypass and persisted tool rules.
+	if input.SubagentReservation != nil && input.SubagentReservation.Decision == SubagentReservationAsk && normalizePolicyToolName(input.ToolName) == "swarm_mode" {
+		reservation := input.SubagentReservation
+		return s.createPendingAuthorization(input, sessionID, requirement, reservation.Reason, "swarm_mode_approval", "ask exact hydrated swarm wave")
+	}
 	// Deployment accounting is resolved before generic bypass and generic rules.
 	if input.SessionDeployReservation != nil {
 		reservation := input.SessionDeployReservation
@@ -1474,7 +1480,7 @@ func sanitizePermissionIDPart(value string) string {
 func authorizationRequirement(mode, toolName, toolArguments string) string {
 	toolName = normalizePolicyToolName(toolName)
 	switch toolName {
-	case "task":
+	case "task", "swarm_mode":
 		return "task_launch"
 	case "manage_skill":
 		if ShouldApproveManageSkillMutation(toolArguments) {

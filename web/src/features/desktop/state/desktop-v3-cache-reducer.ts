@@ -3246,6 +3246,9 @@ export function applyToolLifecycleToRun(
     // Native task lifecycle state is retained separately from textual output.
   } else if (rawOutput || (isExecutionTerminal && outputText)) {
     tool.outputText = rawOutput || outputText
+  } else if (isExecutionDelta && outputText && isSwarmHydrationOutput(tool.toolName, outputText)) {
+    // Hydration deltas are complete stage snapshots, not textual fragments.
+    tool.outputText = outputText
   } else if (isExecutionDelta && outputText && isTaskStreamSnapshotOutput(tool.toolName, outputText)) {
     tool.outputText = outputText
   } else if (outputDelta || (isExecutionDelta && outputText)) {
@@ -4262,11 +4265,21 @@ function finiteNumberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
+function isTaskLikeToolName(toolName: string | undefined): boolean {
+  return ['task', 'swarm_mode'].includes((toolName ?? '').trim().toLowerCase())
+}
+
 function isTaskStreamSnapshotOutput(toolName: string | undefined, output: string): boolean {
-  if ((toolName ?? '').trim().toLowerCase() !== 'task') return false
+  if (!isTaskLikeToolName(toolName)) return false
   const parsed = parseJsonRecord(output)
   if (!parsed) return false
   return stringValue(parsed.path_id) === 'tool.task.stream.v1' && stringValue(parsed.tool) === 'task'
+}
+
+function isSwarmHydrationOutput(toolName: string | undefined, output: string): boolean {
+  if ((toolName ?? '').trim().toLowerCase() !== 'swarm_mode') return false
+  const parsed = parseJsonRecord(output)
+  return Boolean(parsed && stringValue(parsed.path_id) === 'tool.swarm_mode.hydration.v1')
 }
 
 function applyTaskStreamPatch(
@@ -4274,7 +4287,7 @@ function applyTaskStreamPatch(
   output: string,
   updatedAt: number,
 ): boolean {
-  if ((tool.toolName ?? '').trim().toLowerCase() !== 'task') return false
+  if (!isTaskLikeToolName(tool.toolName)) return false
   const parsed = parseJsonRecord(output)
   if (!parsed) return false
   if (stringValue(parsed.path_id) !== 'tool.task.stream.v2' || stringValue(parsed.tool) !== 'task') return false
