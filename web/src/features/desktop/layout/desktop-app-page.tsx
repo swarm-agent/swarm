@@ -5380,7 +5380,7 @@ export function DesktopAppPage() {
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
             workspaces={mergedSidebarWorkspaceEntries}
-            onOpenWorkspacePicker={mergedSidebarWorkspaceEntries.length > 1 ? () => setWorkspacePickerOpen(true) : undefined}
+            onSelectWorkspace={mergedSidebarWorkspaceEntries.length > 1 ? handleSelectWorkspaceFromPicker : undefined}
             onSetWorkspaceIcon={setWorkspaceIcon}
             onOpenActionSettings={() => handleOpenSettingsTab('actions')}
           />

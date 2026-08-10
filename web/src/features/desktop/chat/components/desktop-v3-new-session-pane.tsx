@@ -40,7 +40,7 @@ export interface DesktopV3NewSessionPaneProps {
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   workspaces?: WorkspaceEntry[]
-  onOpenWorkspacePicker?: () => void
+  onSelectWorkspace?: (workspace: WorkspaceEntry) => void
   onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
   onOpenActionSettings?: () => void
   composerFocusSignal?: number
@@ -63,7 +63,7 @@ export function DesktopV3NewSessionPane({
   mobileSessionQuickMenu,
   onSlashCommand,
   workspaces = [workspace],
-  onOpenWorkspacePicker,
+  onSelectWorkspace,
   onSetWorkspaceIcon,
   onOpenActionSettings,
   composerFocusSignal = 0,
@@ -362,7 +362,7 @@ export function DesktopV3NewSessionPane({
         onDisableTips={tipsSaving ? undefined : () => { void handleDisableTips() }}
         workspace={workspace}
         workspaces={workspaces}
-        onOpenWorkspacePicker={onOpenWorkspacePicker}
+        onSelectWorkspace={onSelectWorkspace}
         onSetWorkspaceIcon={onSetWorkspaceIcon}
         className={mobileSessionQuickMenu ? 'hidden sm:flex' : undefined}
       />

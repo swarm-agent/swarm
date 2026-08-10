@@ -1,5 +1,5 @@
-import { useRef, useState, type ChangeEvent } from 'react'
-import { ChevronDown, ImagePlus, Trash2, Upload } from 'lucide-react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { Check, ChevronDown, ImagePlus, Trash2, Upload } from 'lucide-react'
 
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -10,7 +10,7 @@ const MAX_WORKSPACE_ICON_BYTES = 1024 * 1024
 interface WorkspaceHomeIdentityProps {
   workspace: WorkspaceEntry
   workspaces: WorkspaceEntry[]
-  onOpenWorkspacePicker?: () => void
+  onSelectWorkspace?: (workspace: WorkspaceEntry) => void
   onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
 }
 
@@ -37,15 +37,33 @@ function WorkspaceIcon({ workspace, imageClassName, fallbackClassName }: { works
 export function WorkspaceHomeIdentity({
   workspace,
   workspaces,
-  onOpenWorkspacePicker,
+  onSelectWorkspace,
   onSetWorkspaceIcon,
 }: WorkspaceHomeIdentityProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
+  const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
   const [managerOpen, setManagerOpen] = useState(false)
   const [targetPath, setTargetPath] = useState('')
   const [error, setError] = useState('')
   const [savingPath, setSavingPath] = useState('')
-  const canSwitch = workspaces.length > 1 && Boolean(onOpenWorkspacePicker)
+  const canSwitch = workspaces.length > 1 && Boolean(onSelectWorkspace)
+
+  useEffect(() => {
+    if (!workspaceDropdownOpen) return
+    const dismiss = (event: MouseEvent) => {
+      if (!workspaceDropdownRef.current?.contains(event.target as Node)) setWorkspaceDropdownOpen(false)
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setWorkspaceDropdownOpen(false)
+    }
+    document.addEventListener('mousedown', dismiss)
+    window.addEventListener('keydown', dismissOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', dismiss)
+      window.removeEventListener('keydown', dismissOnEscape)
+    }
+  }, [workspaceDropdownOpen])
 
   function choosePNG(path: string) {
     setTargetPath(path)
@@ -112,15 +130,43 @@ export function WorkspaceHomeIdentity({
       </button>
 
       {canSwitch ? (
-        <button
-          type="button"
-          className="inline-flex items-center gap-1 text-lg font-semibold text-[var(--app-text)] hover:text-[var(--app-primary)]"
-          aria-label={`Switch workspace. Current workspace: ${workspace.workspaceName}`}
-          onClick={onOpenWorkspacePicker}
-        >
-          <span>{workspace.workspaceName}</span>
-          <ChevronDown size={16} aria-hidden="true" />
-        </button>
+        <div ref={workspaceDropdownRef} className="relative">
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 text-lg font-semibold text-[var(--app-text)] hover:text-[var(--app-primary)]"
+            aria-label={`Switch workspace. Current workspace: ${workspace.workspaceName}`}
+            aria-haspopup="menu"
+            aria-expanded={workspaceDropdownOpen}
+            onClick={() => setWorkspaceDropdownOpen((open) => !open)}
+          >
+            <span>{workspace.workspaceName}</span>
+            <ChevronDown size={16} className={workspaceDropdownOpen ? 'rotate-180 transition-transform' : 'transition-transform'} aria-hidden="true" />
+          </button>
+          {workspaceDropdownOpen ? (
+            <div
+              role="menu"
+              aria-label="Select workspace"
+              className="absolute left-1/2 top-full z-40 mt-2 max-h-64 min-w-56 -translate-x-1/2 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1.5 text-left shadow-xl"
+            >
+              {workspaces.map((entry) => (
+                <button
+                  key={entry.path}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={entry.path === workspace.path}
+                  className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-sm text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                  onClick={() => {
+                    setWorkspaceDropdownOpen(false)
+                    onSelectWorkspace?.(entry)
+                  }}
+                >
+                  <span className="min-w-0 flex-1 truncate">{entry.workspaceName}</span>
+                  {entry.path === workspace.path ? <Check size={14} aria-hidden="true" /> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
       ) : (
         <h1 className="text-lg font-semibold text-[var(--app-text)]">{workspace.workspaceName}</h1>
       )}

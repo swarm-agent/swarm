@@ -19,7 +19,7 @@ export interface DesktopV3RoutedPendingShellProps {
   onDisableTips?: () => void
   workspace?: WorkspaceEntry
   workspaces?: WorkspaceEntry[]
-  onOpenWorkspacePicker?: () => void
+  onSelectWorkspace?: (workspace: WorkspaceEntry) => void
   onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
   className?: string
 }
@@ -39,7 +39,7 @@ export function DesktopV3RoutedPendingShell({
   onDisableTips,
   workspace,
   workspaces = workspace ? [workspace] : [],
-  onOpenWorkspacePicker,
+  onSelectWorkspace,
   onSetWorkspaceIcon,
   className,
 }: DesktopV3RoutedPendingShellProps) {
@@ -76,7 +76,7 @@ export function DesktopV3RoutedPendingShell({
               <WorkspaceHomeIdentity
                 workspace={workspace}
                 workspaces={workspaces}
-                onOpenWorkspacePicker={onOpenWorkspacePicker}
+                onSelectWorkspace={onSelectWorkspace}
                 onSetWorkspaceIcon={onSetWorkspaceIcon}
               />
             ) : null}
