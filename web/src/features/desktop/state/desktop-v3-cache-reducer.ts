@@ -3051,9 +3051,7 @@ function applyLiveRunOverlayFromEvent(
     || event.eventType === 'session.tool.failed'
     || event.eventType === 'session.tool.cancelled'
     || event.eventType === 'session.tool.canceled'
-  const replaySafeTaskDelta = event.eventType === 'session.tool.delta'
-    && isReplaySafeTaskToolDelta(payload)
-  if (eventSeq > 0 && eventSeq <= priorEventSeq && !toolLifecycleEvent && !replaySafeTaskDelta) {
+  if (eventSeq > 0 && eventSeq <= priorEventSeq && !toolLifecycleEvent) {
     return
   }
   liveRun.lastEventSeqSeen = Math.max(priorEventSeq, eventSeq)
@@ -4282,20 +4280,6 @@ function isSwarmHydrationOutput(toolName: string | undefined, output: string): b
   if ((toolName ?? '').trim().toLowerCase() !== 'swarm_mode') return false
   const parsed = parseJsonRecord(output)
   return Boolean(parsed && stringValue(parsed.path_id) === 'tool.swarm_mode.hydration.v1')
-}
-
-function isReplaySafeTaskToolDelta(payload: Record<string, unknown>): boolean {
-  const toolName = stringValue(payload.tool_name)
-  const output = stringValue(payload.output)
-  if (!output) return false
-  if (isSwarmHydrationOutput(toolName, output) || isTaskStreamSnapshotOutput(toolName, output)) return true
-  const parsed = parseJsonRecord(output)
-  return Boolean(
-    isTaskLikeToolName(toolName)
-    && parsed
-    && stringValue(parsed.path_id) === 'tool.task.stream.v2'
-    && stringValue(parsed.tool) === 'task',
-  )
 }
 
 function applyTaskStreamPatch(

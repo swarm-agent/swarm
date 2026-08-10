@@ -46,7 +46,6 @@ import {
 } from './desktop-v3-cache.backend-fixtures'
 import { isDesktopV3SessionTailReady, selectDesktopPlanExecutionView, selectDesktopSidebarRows, selectDesktopV3HydratedTranscriptDiagnostics, selectLiveRuns, selectRenderedSessionMessages } from './desktop-v3-cache-selectors'
 import { buildDesktopV3ConversationRenderItems, isDesktopV3ManualCompactionAckMessage } from '../chat/components/desktop-v3-existing-conversation-pane'
-import { buildStructuredToolMessage } from '../chat/services/tool-message'
 import type { CacheEvent, DesktopV3CacheState, MessageSnapshot, SessionCreateMutationResponse, SessionSnapshot, V3ExecutionEpoch, V3SessionEvent, V3SessionProjection } from './desktop-v3-cache-types'
 import type { SessionV3RealtimeLivePatchWire } from '../session-v3/types'
 
@@ -2946,87 +2945,6 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
   assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool, 'search')
   assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool_display, 'search x2')
   assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')
-})
-
-test('hydrated swarm task deltas survive a newer unrelated event and transition into worker rows', () => {
-  const state = bootstrappedState()
-  const hydration = JSON.stringify({
-    path_id: 'tool.swarm_mode.hydration.v1',
-    tool: 'swarm_mode',
-    stage: 'hydration',
-    round: 2,
-    rounds: 2,
-    status: 'launching',
-    summary: 'Hydration complete; launching workers through the task tool',
-  })
-  const workerPatch = JSON.stringify({
-    path_id: 'tool.task.stream.v2',
-    stream_version: 2,
-    tool: 'task',
-    status: 'running',
-    launch_count: 1,
-    task_call_id: 'call-swarm',
-    launch_key: 'child-swarm-1',
-    launch_index: 1,
-    launch: {
-      launch_key: 'child-swarm-1',
-      launch_index: 1,
-      child_session_id: 'child-swarm-1',
-      status: 'running',
-      subagent: 'coder',
-      current_tool: 'search',
-    },
-  })
-
-  applyRealtimeFrame(state, {
-    frame: deltaFrame('session.tool.started', {
-      call_id: 'call-swarm',
-      step_id: 'step-swarm',
-      tool_instance_id: 'tool-instance-swarm',
-      tool_name: 'swarm_mode',
-      arguments: '{"prompt":"fix it"}',
-    }, 5, 'cursor-swarm-start'),
-  })
-  applyRealtimeFrame(state, {
-    frame: deltaFrame('session.tool.delta', {
-      call_id: 'call-swarm',
-      tool_name: 'swarm_mode',
-      output: hydration,
-    }, 6, 'cursor-swarm-hydration'),
-  })
-  applyRealtimeFrame(state, {
-    frame: deltaFrame('session.reasoning.started', {
-      reasoning_id: 'reasoning-after-hydration',
-      text: 'Launching workers',
-    }, 8, 'cursor-swarm-newer-event'),
-  })
-  applyRealtimeFrame(state, {
-    frame: deltaFrame('session.tool.delta', {
-      call_id: 'call-swarm',
-      tool_name: 'swarm_mode',
-      output: workerPatch,
-    }, 7, 'cursor-swarm-worker'),
-  })
-
-  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-swarm']
-  assert.equal(tool.outputText, hydration)
-  assert.deepEqual(tool.taskStream?.launchOrder, ['child-swarm-1'])
-  assert.equal(tool.taskStream?.launchesByKey['child-swarm-1']?.current_tool, 'search')
-  const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
-  const swarmCard = rendered.find((item) => item.type === 'live-tool' && item.tool.callId === 'call-swarm')
-  assert.ok(swarmCard)
-  if (!swarmCard || swarmCard.type !== 'live-tool') throw new Error('expected live swarm task card')
-  const structured = buildStructuredToolMessage({
-    tool: swarmCard.tool.toolName || 'tool',
-    callId: swarmCard.tool.callId,
-    outputText: swarmCard.tool.outputText ?? '',
-    taskStream: swarmCard.tool.taskStream,
-    lifecycleStatus: swarmCard.tool.status,
-    state: 'running',
-  })
-  assert.equal(structured?.swarmModeData?.status, 'launching')
-  assert.equal(structured?.taskRows.length, 1)
-  assert.equal(structured?.taskRows[0]?.childSessionId, 'child-swarm-1')
 })
 
 test('restored assistant delta with old seq is ignored', () => {
