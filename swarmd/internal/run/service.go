@@ -1859,6 +1859,22 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			reasoningStreamingActive = false
 		}
 
+		providerConfigurationHash := provideriface.ShortProviderLineageKey(
+			providerID,
+			resolvedPreference.Preference.Model,
+			stepInstructions,
+			providerToolsLineageHash(stepToolDefinitions),
+			executionMode,
+			strings.TrimSpace(agentProfile.Name),
+			strings.TrimSpace(agentProfile.Mode),
+			strings.TrimSpace(agentProfile.RuntimeMode),
+			strings.TrimSpace(agentProfile.ExecutionSetting),
+			resolvedPreference.Preference.Thinking,
+			serviceTier,
+			resolvedPreference.Preference.ContextMode,
+			mediaContract.Hash,
+			mediaContract.SnapshotID,
+		)
 		providerLineageID := provideriface.ShortProviderLineageKey(
 			sessionID,
 			providerID,
@@ -1886,6 +1902,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,
+			ProviderConfigurationHash: providerConfigurationHash,
 			ContextBranchID:           provideriface.ShortProviderLineageKey("session", sessionID, executionMode),
 			ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
 			SessionAffinityKey:        providerScopedKey("affinity", providerLineageID),

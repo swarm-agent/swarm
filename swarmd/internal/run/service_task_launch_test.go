@@ -881,6 +881,9 @@ func TestTaskLaunchedDesignerRunTurnStreamingExecutesMediaInspect(t *testing.T) 
 	if !foundMedia {
 		t.Fatalf("Designer continuation input omitted inspected media: %#v", runner.requests[1].Input)
 	}
+	if strings.TrimSpace(runner.requests[1].ProviderConfigurationHash) == "" {
+		t.Fatal("Designer media continuation omitted provider configuration identity")
+	}
 }
 
 func providerRequestHasTool(definitions []provideriface.ToolDefinition, name string) bool {
