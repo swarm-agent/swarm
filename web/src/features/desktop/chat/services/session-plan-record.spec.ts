@@ -91,6 +91,11 @@ test('normalizeDesktopSessionPlan decodes the versioned final handoff projection
           recommendation: { decision: 'ship', action: 'review', reason: 'All criteria met', action_state: 'ready' },
           suggested_prompts: [{ label: 'Review changes', prompt: 'Review the completed changes.' }],
           pull_request_url: 'https://github.com/swarm/repository/pull/42',
+          artifacts: [
+            { artifact_id: 'artifact-html', label: 'Interactive gallery', description: 'Rendered iteration', media_type: 'text/html', previewable: true },
+            { id: 'artifact-image', description: 'Overview image', media_type: 'image/png', previewable: true },
+            { path: 'changed/file.ts', description: 'Changed file is not an artifact' },
+          ],
           details: {
             report: '## Report\nFull **Markdown** evidence.',
             result: 'done',
@@ -110,6 +115,10 @@ test('normalizeDesktopSessionPlan decodes the versioned final handoff projection
   assert.equal(handoff?.recommendation?.actionState, 'ready')
   assert.deepEqual(handoff?.suggestedPrompts, [{ label: 'Review changes', prompt: 'Review the completed changes.' }])
   assert.equal(handoff?.pullRequestUrl, 'https://github.com/swarm/repository/pull/42')
+  assert.deepEqual(handoff?.artifacts, [
+    { artifactId: 'artifact-html', label: 'Interactive gallery', description: 'Rendered iteration', mediaType: 'text/html', previewable: true },
+    { artifactId: 'artifact-image', label: 'Overview image', description: 'Overview image', mediaType: 'image/png', previewable: true },
+  ])
   assert.equal(handoff?.details.report, '## Report\nFull **Markdown** evidence.')
   assert.deepEqual(handoff?.details.changedFiles, ['web/src/final.tsx'])
 })
@@ -135,4 +144,5 @@ test('normalizeDesktopSessionPlan omits unsafe final handoff pull request URLs',
   })
 
   assert.equal(plan.document?.checkpoints[0]?.finalHandoff?.pullRequestUrl, '')
+  assert.deepEqual(plan.document?.checkpoints[0]?.finalHandoff?.artifacts, [])
 })

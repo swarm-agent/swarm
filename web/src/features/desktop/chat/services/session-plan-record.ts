@@ -288,6 +288,20 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
     })
     .filter((entry: { label: string; prompt: string }) => entry.label && entry.prompt)
     .slice(0, 3)
+  const artifacts = (Array.isArray(record.artifacts) ? record.artifacts : [])
+    .map((entry: unknown) => {
+      const artifact = objectValue(entry) ?? {}
+      const artifactId = stringValue(artifact, 'artifactId', 'artifact_id', 'id')
+      const description = stringValue(artifact, 'description')
+      return {
+        artifactId,
+        label: stringValue(artifact, 'label') || description || 'Artifact',
+        description,
+        mediaType: stringValue(artifact, 'mediaType', 'media_type'),
+        previewable: artifact.previewable === true,
+      }
+    })
+    .filter((artifact) => artifact.artifactId)
   const handoff: DesktopPlanFinalHandoff = {
     schemaVersion,
     title: stringValue(record, 'title'),
@@ -296,6 +310,7 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
     recommendation,
     suggestedPrompts,
     pullRequestUrl: normalizeGitHubPullRequestUrl(record.pullRequestUrl ?? record.pull_request_url),
+    artifacts,
     details: {
       report: rawStringValue(detailsRecord, 'report'),
       result: rawStringValue(detailsRecord, 'result'),

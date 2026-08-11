@@ -525,6 +525,14 @@ export interface DesktopPlanFinalHandoffDetails {
   validation: string[];
 }
 
+export interface DesktopPlanFinalHandoffArtifact {
+  artifactId: string;
+  label: string;
+  description: string;
+  mediaType: string;
+  previewable: boolean;
+}
+
 export interface DesktopPlanFinalHandoff {
   schemaVersion: number;
   title: string;
@@ -533,6 +541,7 @@ export interface DesktopPlanFinalHandoff {
   recommendation: DesktopSessionPlanCheckpointRecommendation | null;
   suggestedPrompts: DesktopPlanFinalHandoffSuggestedPrompt[];
   pullRequestUrl: string;
+  artifacts: DesktopPlanFinalHandoffArtifact[];
   details: DesktopPlanFinalHandoffDetails;
 }
 
