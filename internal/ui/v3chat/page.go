@@ -2944,6 +2944,8 @@ func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresen
 	return rows
 }
 
+const maxVisibleTaskSwarmAgents = 100
+
 type taskSwarmRenderLayout struct {
 	columns     int
 	bodyRows    int
@@ -2953,17 +2955,17 @@ type taskSwarmRenderLayout struct {
 }
 
 func taskSwarmLayout(rowCount, width, availableHeight int) taskSwarmRenderLayout {
-	count := maxInt(1, rowCount)
 	if availableHeight <= 0 {
 		availableHeight = 24
 	}
-	// Give the swarm most of the live transcript without swallowing the whole
-	// conversation. The ceiling keeps giant terminals readable; width then turns
-	// that bounded height into a dense matrix, like Desktop's responsive grid.
+	// Start with a height-aware matrix, then let the card grow past the viewport
+	// when needed so swarms do not summarize away any of their first 100 agents.
+	targetVisible := minInt(rowCount, maxVisibleTaskSwarmAgents)
 	bodyRows := maxInt(3, minInt(20, (availableHeight*2)/3))
 	maxColumns := maxInt(1, width/8)
-	desiredColumns := maxInt(1, (count+bodyRows-1)/bodyRows)
+	desiredColumns := maxInt(1, (maxInt(1, targetVisible)+bodyRows-1)/bodyRows)
 	columns := minInt(maxColumns, desiredColumns)
+	bodyRows = maxInt(bodyRows, (maxInt(1, targetVisible)+columns-1)/columns)
 	cellWidth := maxInt(1, (width-(columns-1))/columns)
 	density := "signal"
 	switch {
@@ -2974,7 +2976,7 @@ func taskSwarmLayout(rowCount, width, availableHeight int) taskSwarmRenderLayout
 	case cellWidth >= 9:
 		density = "micro"
 	}
-	visible := minInt(rowCount, bodyRows*columns)
+	visible := minInt(targetVisible, bodyRows*columns)
 	return taskSwarmRenderLayout{columns: columns, bodyRows: bodyRows, cellWidth: cellWidth, density: density, visibleRows: visible}
 }
 
@@ -2996,7 +2998,14 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 			pending++
 		}
 	}
-	header := fmt.Sprintf("✦ SWARM MODE  ·  %d AGENTS  ·  RUN %d  OK %d", len(presentation.TaskRows), running, done)
+	headerLabel := "SWARM MODE"
+	if presentation.TaskSwarmAgent == "idea" {
+		headerLabel = "IDEA SWARM"
+		if presentation.TaskSwarmModel != "" {
+			headerLabel += "  ·  " + presentation.TaskSwarmModel
+		}
+	}
+	header := fmt.Sprintf("✦ %s  ·  %d AGENTS  ·  RUN %d  OK %d", headerLabel, len(presentation.TaskRows), running, done)
 	if pending > 0 {
 		header += fmt.Sprintf("  WAIT %d", pending)
 	}
@@ -3004,7 +3013,7 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 		header += fmt.Sprintf("  ERR %d", failed)
 	}
 	rows := []renderRow{{text: truncateCells(header, width), style: styles.Secondary.Bold(true)}}
-	matrix := fmt.Sprintf("  %s matrix  ·  %d×%d  ·  responsive to %d terminal rows", strings.ToUpper(layout.density), layout.columns, maxInt(1, (layout.visibleRows+layout.columns-1)/layout.columns), maxInt(0, availableHeight))
+	matrix := fmt.Sprintf("  %s matrix  ·  %d×%d  ·  showing %d/%d agents", strings.ToUpper(layout.density), layout.columns, maxInt(1, (layout.visibleRows+layout.columns-1)/layout.columns), layout.visibleRows, len(presentation.TaskRows))
 	rows = append(rows, renderRow{text: truncateCells(matrix, width), style: styles.Muted})
 
 	for start := 0; start < layout.visibleRows; start += layout.columns {
@@ -3048,20 +3057,53 @@ func taskSwarmCell(row taskPresentationRow, layout taskSwarmRenderLayout, styles
 		index = fmt.Sprintf("%03d", row.Index)
 	}
 	label := firstNonEmptyToolRaw(row.Title, row.Agent, "subagent")
+	ideaAgent := strings.EqualFold(strings.TrimSpace(row.Agent), "idea")
+	if ideaAgent {
+		label = fmt.Sprintf("Agent #%d", row.Index)
+	}
 	cell := symbol + index
+	if ideaAgent {
+		cell = symbol
+	}
 	switch layout.density {
 	case "detail":
-		cell += " " + taskPresentationStatusLabel(row.Status) + " " + label
+		cell = taskSwarmCellWithActivity(cell+" "+taskPresentationStatusLabel(row.Status), label, row.Tool, layout.cellWidth)
 	case "compact":
-		cell += " " + label
+		cell = taskSwarmCellWithActivity(cell, label, row.Tool, layout.cellWidth)
 	case "micro":
-		cell += " " + firstNonEmptyToolRaw(row.Agent, label)
+		if ideaAgent {
+			cell += " " + label
+		} else {
+			cell += " " + firstNonEmptyToolRaw(row.Agent, label)
+		}
 	}
 	cell = truncateCells(cell, layout.cellWidth)
 	if padding := layout.cellWidth - displayWidth(cell); padding > 0 {
 		cell += strings.Repeat(" ", padding)
 	}
 	return cell, style
+}
+
+func taskSwarmCellWithActivity(prefix, title, activity string, width int) string {
+	prefix = strings.TrimSpace(prefix)
+	title = strings.TrimSpace(title)
+	activity = strings.TrimSpace(activity)
+	if activity == "" || activity == "-" {
+		return prefix + " " + title
+	}
+	available := width - displayWidth(prefix) - 2
+	if available < 8 {
+		return prefix + " " + title
+	}
+	activityWidth := minInt(displayWidth(activity), maxInt(5, available/3))
+	titleWidth := available - activityWidth - 1
+	if titleWidth < 4 {
+		return prefix + " " + title
+	}
+	title = truncateCells(title, titleWidth)
+	activity = truncateCells(activity, activityWidth)
+	gap := maxInt(1, width-displayWidth(prefix)-displayWidth(title)-displayWidth(activity)-1)
+	return prefix + " " + title + strings.Repeat(" ", gap) + activity
 }
 
 func taskPresentationStatusLabel(status string) string {

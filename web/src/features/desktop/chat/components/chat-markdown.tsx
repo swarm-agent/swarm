@@ -984,7 +984,15 @@ function taskRowsCounts(rows: TaskToolRow[]) {
   );
 }
 
-function TaskRowsHeader({ counts, swarm = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; swarm?: boolean; density?: TaskSwarmDensity }) {
+function taskSwarmHeaderLabel(rows: TaskToolRow[]): string {
+  const ideaSwarm = rows.length > 0 && rows.every((row) => row.agent.trim().toLowerCase() === "idea");
+  if (!ideaSwarm) return "SWARM MODE";
+  const models = Array.from(new Set(rows.map((row) => row.modelLabel.trim().replace(/\s*\/\s*/g, "/")).filter(Boolean)));
+  return models.length === 1 ? `IDEA SWARM · ${models[0]}` : "IDEA SWARM";
+}
+
+function TaskRowsHeader({ counts, rows = [], swarm = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; rows?: TaskToolRow[]; swarm?: boolean; density?: TaskSwarmDensity }) {
+  const headerLabel = swarm ? taskSwarmHeaderLabel(rows) : "Subagent stream";
   return (
     <div className={cn("flex min-w-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-2", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))]" : "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)]")} data-task-card-header>
       <div className="flex min-w-0 items-center gap-2">
@@ -992,7 +1000,7 @@ function TaskRowsHeader({ counts, swarm = false, density = "detailed" }: { count
           {swarm ? <Layers3 size={14} aria-hidden="true" /> : <Bot size={14} aria-hidden="true" />}
         </span>
         <span className="break-words text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)] [overflow-wrap:anywhere]">
-          {swarm ? "SWARM MODE" : "Subagent stream"}
+          {headerLabel}
         </span>
       </div>
       <div className={cn("shrink-0 items-center gap-1.5 font-mono text-[10px]", swarm && (density === "micro" || density === "signal") ? "hidden" : "flex")} data-task-card-counts>
@@ -1025,7 +1033,8 @@ function TaskSwarmCompactRowContent({ row, index, density }: { row: TaskToolRow;
   const rowNumber = row.launchIndex || index + 1;
   const agent = displayAgentName(row.agent) || "subagent";
   const toolLabel = taskActivityLabel(row);
-  const title = row.assignmentLabel || agent;
+  const ideaAgent = row.agent.trim().toLowerCase() === "idea";
+  const title = ideaAgent ? `Agent #${rowNumber}` : row.assignmentLabel || agent;
   const accessibleLabel = `${rowNumber}. ${title}. ${toolLabel}. ${statusLabel}`;
   const signal = density === "signal";
   const dense = density === "dense";
@@ -1041,9 +1050,9 @@ function TaskSwarmCompactRowContent({ row, index, density }: { row: TaskToolRow;
       aria-label={accessibleLabel}
     >
       <span className={cn("shrink-0 rounded-full", signal || dense || micro ? "size-1.5" : "size-2", taskStatusDotClass(kind), kind === "running" && "animate-pulse")} aria-hidden="true" />
-      {!signal ? <span className="shrink-0 font-mono text-[9px] text-[var(--app-text-subtle)] tabular-nums">{rowNumber.toString().padStart(2, "0")}</span> : null}
-      <span className={cn("min-w-0 flex-1 truncate font-semibold text-[var(--app-text)]", signal ? "text-[8px]" : dense || micro ? "text-[9px]" : "text-[10px]")}>{title}</span>
-      {!dense && !signal ? <span className={cn("min-w-0 flex-1 truncate font-mono text-[var(--app-text-muted)]", micro ? "text-[8px]" : "text-[9px]")}>{toolLabel}</span> : null}
+      {!signal && !ideaAgent ? <span className="shrink-0 font-mono text-[9px] text-[var(--app-text-subtle)] tabular-nums">{rowNumber.toString().padStart(2, "0")}</span> : null}
+      <span className={cn("min-w-0 flex-[2_1_0%] truncate font-semibold text-[var(--app-text)]", signal ? "text-[8px]" : dense || micro ? "text-[9px]" : "text-[10px]")}>{title}</span>
+      {!dense && !signal ? <span className={cn("ml-auto min-w-0 max-w-[38%] flex-[0_1_38%] truncate text-right font-mono text-[var(--app-text-muted)]", micro ? "text-[8px]" : "text-[9px]")}>{toolLabel}</span> : null}
       {density === "detailed" ? <span className={cn("shrink-0 font-mono text-[9px] tabular-nums", taskStatusTextClass(kind))}><TaskElapsedTime row={row} /></span> : null}
     </div>
   );
@@ -1090,7 +1099,7 @@ function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
 
   return (
     <div ref={rootRef} className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows data-task-swarm-mode data-swarm-density={layout.density} data-swarm-stage={layout.stage}>
-      <TaskRowsHeader counts={counts} swarm density={layout.density} />
+      <TaskRowsHeader counts={counts} rows={rows} swarm density={layout.density} />
       <div
         className={cn("task-card-swarm-grid grid min-w-0 p-2", layout.maxHeight ? "overflow-y-auto" : "overflow-hidden")}
         style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`, gridAutoRows: layout.rowHeight, gap: layout.gap, maxHeight: layout.maxHeight }}

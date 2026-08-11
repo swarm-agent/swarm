@@ -440,10 +440,14 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if agentType != "idea" {
 			metaPrompt = fmt.Sprintf("Pending Router hydration for swarm item %d.", index)
 		}
+		assignmentLabel := fmt.Sprintf("%s swarm %d", taskSwarmAgentLabel(agentType), index)
+		if agentType == "idea" {
+			assignmentLabel = fmt.Sprintf("Agent #%d", index)
+		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType,
 			MetaPrompt:            metaPrompt,
-			AssignmentLabel:       fmt.Sprintf("%s swarm %d", taskSwarmAgentLabel(agentType), index),
+			AssignmentLabel:       assignmentLabel,
 			Deliverable:           outputContract,
 			ConcurrencyReason:     "Independent task swarm iteration",
 			OwnedScope:            ownedScope,

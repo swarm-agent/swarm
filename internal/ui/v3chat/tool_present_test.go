@@ -295,14 +295,14 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 	shortRows := page.renderToolRowsForHeight(swarm, 80, 12, testPageStyles())
 	tallRows := page.renderToolRowsForHeight(swarm, 80, 36, testPageStyles())
 	shortText := renderRowsText(shortRows)
-	if !strings.Contains(shortText, "SWARM MODE") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "responsive to 12 terminal rows") {
+	if !strings.Contains(shortText, "SWARM MODE") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "showing 100/100 agents") {
 		t.Fatalf("short swarm matrix missing dashboard details:\n%s", shortText)
 	}
-	if len(shortRows) >= len(tallRows) {
-		t.Fatalf("swarm row count should grow with terminal height: short=%d tall=%d", len(shortRows), len(tallRows))
-	}
-	if len(shortRows) > 12 {
-		t.Fatalf("short swarm should stay bounded by available height: got %d rows", len(shortRows))
+	for name, rows := range map[string][]renderRow{"short": shortRows, "tall": tallRows} {
+		text := renderRowsText(rows)
+		if !strings.Contains(text, "showing 100/100 agents") || !strings.Contains(text, "✓100") {
+			t.Fatalf("%s 100-agent swarm matrix truncated the final agent:\n%s", name, text)
+		}
 	}
 	for _, row := range shortRows {
 		if displayWidth(row.text) > 80 {
@@ -318,6 +318,39 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 	regularText := renderRowsText(page.renderToolRowsForHeight(regular, 80, 12, testPageStyles()))
 	if strings.Contains(regularText, "SWARM MODE") || !strings.Contains(regularText, "SUBAGENT STREAM") {
 		t.Fatalf("regular task rendering changed:\n%s", regularText)
+	}
+}
+
+func TestIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels(t *testing.T) {
+	launches := []map[string]any{
+		{"launch_index": 1, "subagent": "idea", "assignment_label": "Idea swarm 1", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "running"},
+		{"launch_index": 2, "subagent": "idea", "assignment_label": "Idea swarm 2", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "ok"},
+	}
+	payload, err := json.Marshal(map[string]any{"tool": "task", "task_mode": "swarm", "launch_count": len(launches), "launches": launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","agent_type":"idea"}`, Output: string(payload), Status: "running"}
+	presentation := buildToolPresentation(tool)
+	if presentation.TaskSwarmAgent != "idea" || presentation.TaskSwarmModel != "codex/gpt-5.6-sol" {
+		t.Fatalf("Idea swarm metadata = %#v", presentation)
+	}
+	text := renderRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 96, 16, testPageStyles()))
+	for _, want := range []string{"IDEA SWARM", "codex/gpt-5.6-sol", "Agent #1", "Agent #2"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Idea swarm rendering missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Idea swarm 1") || strings.Contains(text, "Idea swarm 2") {
+		t.Fatalf("Idea implementation labels leaked into rows:\n%s", text)
+	}
+}
+
+func TestTaskSwarmCellKeepsTitleBeforeRightAlignedActivity(t *testing.T) {
+	layout := taskSwarmRenderLayout{cellWidth: 36, density: "detail"}
+	cell, _ := taskSwarmCell(taskPresentationRow{Index: 1, Status: "running", Title: "Long hydrated worker title", Agent: "coder", Tool: "search x3"}, layout, testPageStyles())
+	if displayWidth(cell) != layout.cellWidth || !strings.Contains(cell, "Long hydrated") || !strings.HasSuffix(strings.TrimSpace(cell), "search x3") {
+		t.Fatalf("swarm cell did not preserve title and right-side activity: %q", cell)
 	}
 }
 

@@ -22,11 +22,13 @@ type toolPresentationLine struct {
 }
 
 type toolPresentation struct {
-	Summary   string
-	Lines     []toolPresentationLine
-	Kind      string
-	TaskRows  []taskPresentationRow
-	TaskSwarm bool
+	Summary        string
+	Lines          []toolPresentationLine
+	Kind           string
+	TaskRows       []taskPresentationRow
+	TaskSwarm      bool
+	TaskSwarmAgent string
+	TaskSwarmModel string
 }
 
 type taskPresentationRow struct {
@@ -919,8 +921,28 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		})
 	}
 	summary := "subagent stream"
+	swarmAgent := ""
+	swarmModel := ""
 	if swarm {
 		summary = "swarm mode"
+		for _, row := range rows {
+			agent := strings.ToLower(strings.TrimSpace(row.Agent))
+			if swarmAgent == "" {
+				swarmAgent = agent
+			} else if swarmAgent != agent {
+				swarmAgent = "mixed"
+			}
+			model := strings.TrimSpace(row.Model)
+			if model == "" {
+				continue
+			}
+			if swarmModel == "" {
+				swarmModel = model
+			} else if swarmModel != model {
+				swarmModel = ""
+				break
+			}
+		}
 	}
 	if len(rows) == 0 && toolStatusRank(tool.Status) < 3 {
 		if swarm {
@@ -931,7 +953,7 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	} else if launchCount > 0 {
 		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
 	}
-	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows, TaskSwarm: swarm}
+	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows, TaskSwarm: swarm, TaskSwarmAgent: swarmAgent, TaskSwarmModel: swarmModel}
 }
 
 func taskPresentationIsSwarm(arguments, output map[string]any, launches []map[string]any) bool {

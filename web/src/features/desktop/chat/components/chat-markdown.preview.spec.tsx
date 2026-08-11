@@ -177,6 +177,34 @@ function testTaskSwarmLayoutProgressivelyCompacts(): void {
   assert(hundredOne.stage === 101 && hundredOne.maxHeight !== undefined, "only swarms above one hundred should become vertically bounded and scrollable");
 }
 
+function testIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels(): void {
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_idea_swarm",
+    argumentsText: JSON.stringify({ mode: "swarm", agent_type: "idea", count: 2, prompt: "Name this feature" }),
+    outputText: JSON.stringify({
+      tool: "task",
+      task_mode: "swarm",
+      launch_count: 2,
+      launches: [1, 2].map((index) => ({
+        launch_index: index,
+        subagent: "idea",
+        assignment_label: `Idea swarm ${index}`,
+        subagent_provider: "codex",
+        subagent_model: "gpt-5.6-sol",
+        status: "done",
+      })),
+    }),
+  });
+  assert(Boolean(message), "expected Idea swarm message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("IDEA SWARM"), "Idea swarm should identify its mode in the shared header");
+  assert(markup.includes("codex/gpt-5.6-sol"), "Idea swarm should show the shared provider/model in the header");
+  assert(markup.includes("Agent #1") && markup.includes("Agent #2"), "Idea swarm rows should use generic Agent labels");
+  assert(!markup.includes("Idea swarm 1") && !markup.includes("Idea swarm 2"), "Idea swarm implementation labels should not leak into rows");
+}
+
 function testTaskSwarmUsesCompactPreview(): void {
   const longAssignment = "Coordinate an extremely detailed research and implementation assignment that would normally push the desktop task header sideways";
   const message = buildStructuredToolMessage({
@@ -787,6 +815,7 @@ function main(): void {
   testPlanManageFollowupUsesCanonicalCheckpointMetadata();
   testPlanManageSubtaskUsesCanonicalUpdatedMetadata();
   testTaskSwarmLayoutProgressivelyCompacts();
+  testIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels();
   testTaskSwarmUsesCompactPreview();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();

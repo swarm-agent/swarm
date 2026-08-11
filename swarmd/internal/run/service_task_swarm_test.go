@@ -20,7 +20,7 @@ func TestParseTaskSwarmIdeaRepeatsExactQuestionWithoutRouterFields(t *testing.T)
 		t.Fatalf("unexpected Idea swarm: %#v", parsed)
 	}
 	for i, launch := range parsed.Launches {
-		if launch.RequestedSubagentType != "idea" || launch.MetaPrompt != parsed.Prompt || launch.StreamKey != fmt.Sprintf("swarm:%d", i+1) || !launch.SwarmMode {
+		if launch.RequestedSubagentType != "idea" || launch.MetaPrompt != parsed.Prompt || launch.AssignmentLabel != fmt.Sprintf("Agent #%d", i+1) || launch.StreamKey != fmt.Sprintf("swarm:%d", i+1) || !launch.SwarmMode {
 			t.Fatalf("launch %d = %#v", i, launch)
 		}
 	}
