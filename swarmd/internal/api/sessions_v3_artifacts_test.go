@@ -122,3 +122,56 @@ func TestOpenSessionV3ArtifactPackageFileConfinesContentToHTMLDirectory(t *testi
 		t.Fatal("unsupported package media type was accepted")
 	}
 }
+
+func TestCollectSessionV3ArtifactBundleIncludesHTMLPackageTree(t *testing.T) {
+	root := t.TempDir()
+	for path, content := range map[string]string{
+		"gallery/index.html":             "<iframe src=\"variant/index.html\"></iframe>",
+		"gallery/variant/index.html":     "<script src=\"../assets/app.js\"></script>",
+		"gallery/assets/app.js":          "document.body.dataset.ready = 'true'",
+		"gallery/assets/styles/site.css": "body { color: red; }",
+	} {
+		absolute := filepath.Join(root, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packageRoot, files, err := collectSessionV3ArtifactBundle(root, "gallery/index.html", true)
+	if err != nil {
+		t.Fatalf("collect bundle: %v", err)
+	}
+	if packageRoot != "gallery" {
+		t.Fatalf("package root = %q", packageRoot)
+	}
+	got := make([]string, 0, len(files))
+	for _, file := range files {
+		got = append(got, file.RelativePath)
+	}
+	want := []string{"assets/app.js", "assets/styles/site.css", "index.html", "variant/index.html"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("bundle files = %v, want %v", got, want)
+	}
+}
+
+func TestCollectSessionV3ArtifactBundleRejectsPackageSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "gallery"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gallery", "index.html"), []byte("preview"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "private.txt")
+	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "gallery", "private.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := collectSessionV3ArtifactBundle(root, "gallery/index.html", true); err == nil {
+		t.Fatal("bundle accepted a package symlink")
+	}
+}

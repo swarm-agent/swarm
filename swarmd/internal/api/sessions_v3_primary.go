@@ -333,6 +333,15 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	default:
 		if strings.HasPrefix(subpath, "artifacts/") {
 			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
+			if artifactID, hasBundle := strings.CutSuffix(artifactPath, "/bundle"); hasBundle {
+				artifactID = strings.TrimSpace(artifactID)
+				if artifactID == "" || strings.Contains(artifactID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+					return
+				}
+				s.handleSessionV3ArtifactBundle(w, r, principal, sessionID, artifactID)
+				return
+			}
 			artifactID, contentPath, hasContent := strings.Cut(artifactPath, "/content/")
 			artifactID = strings.TrimSpace(artifactID)
 			if artifactID == "" || strings.Contains(artifactID, "/") {

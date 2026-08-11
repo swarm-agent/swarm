@@ -1,15 +1,18 @@
 package api
 
 import (
+	"archive/zip"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +24,8 @@ import (
 
 const (
 	sessionsV3ArtifactMaxBytes          int64 = 32 << 20
+	sessionsV3ArtifactBundleMaxBytes    int64 = 128 << 20
+	sessionsV3ArtifactBundleMaxFiles          = 2_000
 	sessionsV3ArtifactPreviewTokenTTL         = 5 * time.Minute
 	sessionsV3ArtifactPreviewAccessPath       = "access/"
 	// Package HTML is nested beneath a srcdoc iframe sandboxed without
@@ -241,6 +246,190 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; frame-ancestors 'self'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	http.ServeContent(w, r, artifact.Descriptor.Filename, info.ModTime(), file)
+}
+
+func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, artifactID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	artifact, found, err := s.resolveSessionV3Artifact(sessionID, artifactID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, errors.New("artifact not found"))
+		return
+	}
+
+	packageRoot, files, err := collectSessionV3ArtifactBundle(sessionV3ArtifactWorkspaceRoot(session), artifact.Reference.Path, artifact.Descriptor.Kind == "html")
+	if err != nil {
+		writeError(w, http.StatusNotFound, errors.New("artifact bundle is unavailable"))
+		return
+	}
+	bundleName := sessionV3ArtifactBundleFilename(artifact.Descriptor.Filename)
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": bundleName})
+	if disposition == "" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", disposition)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if r.Method == http.MethodHead {
+		return
+	}
+
+	archive := zip.NewWriter(w)
+	for _, bundled := range files {
+		header, err := zip.FileInfoHeader(bundled.Info)
+		if err != nil {
+			archive.Close()
+			return
+		}
+		header.Name = path.Join(packageRoot, bundled.RelativePath)
+		header.Method = zip.Deflate
+		header.SetMode(bundled.Info.Mode() & 0o777)
+		entry, err := archive.CreateHeader(header)
+		if err != nil {
+			archive.Close()
+			return
+		}
+		file, _, err := openSessionV3ArtifactFile(sessionV3ArtifactWorkspaceRoot(session), bundled.WorkspacePath)
+		if err != nil {
+			archive.Close()
+			return
+		}
+		_, copyErr := io.Copy(entry, file)
+		closeErr := file.Close()
+		if copyErr != nil || closeErr != nil {
+			archive.Close()
+			return
+		}
+	}
+	_ = archive.Close()
+}
+
+type sessionsV3ArtifactBundleFile struct {
+	WorkspacePath string
+	RelativePath  string
+	Info          os.FileInfo
+}
+
+func collectSessionV3ArtifactBundle(workspaceRoot, artifactPath string, includePackage bool) (string, []sessionsV3ArtifactBundleFile, error) {
+	artifactPath = strings.TrimSpace(artifactPath)
+	if artifactPath == "" || filepath.IsAbs(artifactPath) || strings.Contains(artifactPath, "\\") {
+		return "", nil, errors.New("invalid artifact path")
+	}
+	cleanArtifact := filepath.Clean(filepath.FromSlash(artifactPath))
+	if cleanArtifact == "." || cleanArtifact == ".." || strings.HasPrefix(cleanArtifact, ".."+string(filepath.Separator)) {
+		return "", nil, errors.New("artifact path escapes workspace")
+	}
+	packageRelativeRoot := filepath.Dir(cleanArtifact)
+	if packageRelativeRoot == "." || !includePackage {
+		file, info, err := openSessionV3ArtifactFile(workspaceRoot, filepath.ToSlash(cleanArtifact))
+		if err != nil {
+			return "", nil, err
+		}
+		file.Close()
+		return sessionV3ArtifactBundleRootName(filepath.Base(cleanArtifact)), []sessionsV3ArtifactBundleFile{{
+			WorkspacePath: filepath.ToSlash(cleanArtifact),
+			RelativePath:  filepath.Base(cleanArtifact),
+			Info:          info,
+		}}, nil
+	}
+
+	resolvedWorkspace, err := filepath.EvalSymlinks(strings.TrimSpace(workspaceRoot))
+	if err != nil {
+		return "", nil, err
+	}
+	resolvedWorkspace, err = filepath.Abs(resolvedWorkspace)
+	if err != nil {
+		return "", nil, err
+	}
+	packageRoot := filepath.Join(resolvedWorkspace, packageRelativeRoot)
+	resolvedPackageRoot, err := filepath.EvalSymlinks(packageRoot)
+	if err != nil || filepath.Clean(packageRoot) != filepath.Clean(resolvedPackageRoot) {
+		return "", nil, errors.New("artifact package path contains a symlink")
+	}
+	packageInfo, err := os.Stat(resolvedPackageRoot)
+	if err != nil || !packageInfo.IsDir() {
+		return "", nil, errors.New("artifact package directory is unavailable")
+	}
+
+	files := make([]sessionsV3ArtifactBundleFile, 0, 16)
+	var totalBytes int64
+	err = filepath.WalkDir(resolvedPackageRoot, func(candidate string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if candidate == resolvedPackageRoot {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("artifact package contains a symlink")
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("artifact package contains a non-regular file")
+		}
+		totalBytes += info.Size()
+		if len(files) >= sessionsV3ArtifactBundleMaxFiles || totalBytes > sessionsV3ArtifactBundleMaxBytes {
+			return errors.New("artifact package exceeds the bundle limit")
+		}
+		relative, err := filepath.Rel(resolvedPackageRoot, candidate)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return errors.New("artifact package file escapes its directory")
+		}
+		workspacePath := filepath.Join(packageRelativeRoot, relative)
+		files = append(files, sessionsV3ArtifactBundleFile{
+			WorkspacePath: filepath.ToSlash(workspacePath),
+			RelativePath:  filepath.ToSlash(relative),
+			Info:          info,
+		})
+		return nil
+	})
+	if err != nil || len(files) == 0 {
+		return "", nil, errors.New("artifact package is empty or unavailable")
+	}
+	return sessionV3ArtifactBundleRootName(filepath.Base(packageRelativeRoot)), files, nil
+}
+
+func sessionV3ArtifactBundleRootName(value string) string {
+	name := strings.TrimSpace(value)
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	name = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '-'
+	}, name)
+	name = strings.Trim(name, ".-")
+	if name == "" {
+		return "artifact"
+	}
+	return name
+}
+
+func sessionV3ArtifactBundleFilename(artifactFilename string) string {
+	return sessionV3ArtifactBundleRootName(artifactFilename) + ".zip"
 }
 
 func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, artifactID, contentPath string) {

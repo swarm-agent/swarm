@@ -9,6 +9,10 @@ export function desktopV3ArtifactEndpoint(sessionId: string, artifactId: string)
   return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/${encodeURIComponent(normalizedArtifactId)}`
 }
 
+export function desktopV3ArtifactBundleEndpoint(sessionId: string, artifactId: string): string {
+  return `${desktopV3ArtifactEndpoint(sessionId, artifactId)}/bundle`
+}
+
 export function desktopV3ArtifactPreviewAccessEndpoint(sessionId: string): string {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) throw new Error('Artifact preview access requires a session ID')
@@ -59,6 +63,17 @@ export async function fetchDesktopV3ArtifactPreviewToken(sessionId: string, arti
   const token = typeof payload.token === 'string' ? payload.token.trim() : ''
   if (!token) throw new Error('Artifact preview access did not return a token')
   return token
+}
+
+export async function fetchDesktopV3ArtifactBundle(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await apiFetch(desktopV3ArtifactBundleEndpoint(sessionId, artifactId), {
+    method: 'GET',
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response))
+  }
+  return response.blob()
 }
 
 export async function fetchDesktopV3Artifact(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<Blob> {
