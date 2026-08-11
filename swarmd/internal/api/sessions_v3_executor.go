@@ -3629,6 +3629,12 @@ func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID str
 	if parentEpochID == "" {
 		return messages, nil
 	}
+	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") {
+		// A final handoff deliberately starts a fresh provider-context epoch. The
+		// canonical handoff is already injected above, so replaying this epoch's
+		// parent would cross the boundary and duplicate that handoff.
+		return messages, nil
+	}
 	_, parentMessages, err := e.server.sessions.ListExecutionEpochMessages(sessionID, parentEpochID, 0)
 	if err != nil {
 		return nil, fmt.Errorf("v3 resume checkpoint parent context resolve failed: %w", err)

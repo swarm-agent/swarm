@@ -276,6 +276,14 @@ func TestSessionV3ProviderCheckpointOwnershipKeepsProviderContext(t *testing.T) 
 func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "resume-parent-context-create", "resume parent context", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"})
+	parentMessage := pebblestore.MessageSnapshot{ID: created.ID + "-parent-context", SessionID: created.ID, Role: "user", Content: "resume parent context"}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+		ClientRequestID: "resume-parent-context-message", IdempotencyKey: "resume-parent-context-message", PayloadHash: "resume-parent-context-message", RequestHash: "resume-parent-context-message",
+		Kind: sessionruntime.SessionMutationAppendMessage, Message: &parentMessage,
+	}); err != nil {
+		t.Fatalf("append resume parent context: %v", err)
+	}
 	parent, ok, err := sessionSvc.GetActiveExecutionEpoch(created.ID)
 	if err != nil || !ok {
 		t.Fatalf("get parent epoch: ok=%t err=%v", ok, err)
@@ -308,6 +316,105 @@ func TestSessionV3ProviderCheckpointResumeFallsBackToParentEpochInput(t *testing
 	}
 	if result.Epoch.ParentEpochID != parent.EpochID {
 		t.Fatalf("resume parent epoch = %q, want %q", result.Epoch.ParentEpochID, parent.EpochID)
+	}
+}
+
+func TestSessionV3ProviderPausedCheckpointAfterFinalHandoffDoesNotReplayPreHandoffEpoch(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "paused-post-handoff-create", "paused post-handoff context", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"})
+
+	for index, content := range []string{
+		"checkpoint one transcript sentinel that must stay behind the final handoff boundary",
+		"checkpoint two transcript sentinel that must stay behind the final handoff boundary",
+	} {
+		message := pebblestore.MessageSnapshot{ID: fmt.Sprintf("%s-pre-handoff-%d", created.ID, index+1), SessionID: created.ID, Role: "assistant", Content: content}
+		key := fmt.Sprintf("paused-post-handoff-history-%d", index+1)
+		if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+			SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+			ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+			Kind: sessionruntime.SessionMutationAppendMessage, Message: &message,
+		}); err != nil {
+			t.Fatalf("append pre-handoff checkpoint transcript: %v", err)
+		}
+	}
+
+	const finalHandoff = "final handoff sentinel after multiple checkpoints"
+	handoff := pebblestore.MessageSnapshot{
+		ID: created.ID + "-final-handoff", SessionID: created.ID, Role: "system", Content: finalHandoff,
+		Metadata: map[string]any{"source": runruntime.PlanExecutionFinalHandoffMessageSource, "plan_id": "plan-final", "checkpoint_id": "cp-3"},
+	}
+	boundary, err := sessionSvc.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{
+		SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+		ClientRequestID: "paused-post-handoff-boundary", PayloadHash: "paused-post-handoff-boundary-hash",
+		Reason: "final_plan_handoff", PlanID: "plan-final", CheckpointID: "cp-3", FinalHandoffMessage: &handoff, SkipRunIntent: true,
+	})
+	if err != nil {
+		t.Fatalf("begin final handoff successor epoch: %v", err)
+	}
+
+	postHandoffMessages := []pebblestore.MessageSnapshot{
+		{ID: created.ID + "-request-x", SessionID: created.ID, Role: "user", Content: "user requests x after the final handoff"},
+		{ID: created.ID + "-started-x", SessionID: created.ID, Role: "assistant", Content: "assistant started the next checkpoint for x"},
+		{ID: created.ID + "-pause-y", SessionID: created.ID, Role: "user", Content: "user pauses again and says y"},
+	}
+	markSessionsV3CheckpointResumeRouting(&postHandoffMessages[2], "run-resume-y", "followup-x", "rebind_in_progress_user_message")
+	for index := range postHandoffMessages {
+		key := fmt.Sprintf("paused-post-handoff-successor-%d", index+1)
+		if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+			SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID,
+			ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+			Kind: sessionruntime.SessionMutationAppendMessage, Message: &postHandoffMessages[index],
+		}); err != nil {
+			t.Fatalf("append post-handoff message %d: %v", index+1, err)
+		}
+	}
+
+	exec := newSessionV3Executor(server)
+	messages, err := exec.sessionV3ProviderContextMessages(sessionV3ExecutorJob{
+		SessionID: created.ID, RunID: "run-resume-y", EpochID: boundary.Epoch.EpochID,
+		CheckpointID: "followup-x", ResumeContext: true,
+	})
+	if err != nil {
+		t.Fatalf("construct resumed post-handoff provider context: %v", err)
+	}
+
+	if len(messages) != 5 {
+		t.Fatalf("resumed post-handoff context has %d messages, want final handoff plus four post-handoff inputs; reconstructed context: %+v", len(messages), messages)
+	}
+	for index, want := range []string{
+		finalHandoff,
+		"user requests x after the final handoff",
+		"assistant started the next checkpoint for x",
+		"Active checkpoint resumed by this user message",
+		"user pauses again and says y",
+	} {
+		if !strings.Contains(messages[index].Content, want) {
+			t.Fatalf("resumed post-handoff context message %d = %q, want %q", index, messages[index].Content, want)
+		}
+	}
+	var combined strings.Builder
+	for _, message := range messages {
+		combined.WriteString(message.Content)
+		combined.WriteByte('\n')
+	}
+	contextText := combined.String()
+	if count := strings.Count(contextText, finalHandoff); count != 1 {
+		t.Fatalf("final handoff appears %d times, want exactly once; reconstructed context:\n%s", count, contextText)
+	}
+	for _, stale := range []string{"checkpoint one transcript sentinel", "checkpoint two transcript sentinel"} {
+		if strings.Contains(contextText, stale) {
+			t.Fatalf("resumed post-handoff context replayed pre-handoff history %q; reconstructed context:\n%s", stale, contextText)
+		}
+	}
+	for _, want := range []string{
+		"user requests x after the final handoff",
+		"assistant started the next checkpoint for x",
+		"Active checkpoint resumed by this user message",
+		"user pauses again and says y",
+	} {
+		if !strings.Contains(contextText, want) {
+			t.Fatalf("resumed post-handoff context is missing %q; reconstructed context:\n%s", want, contextText)
+		}
 	}
 }
 
