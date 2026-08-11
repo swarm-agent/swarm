@@ -189,6 +189,7 @@ func ProjectPlanFinalHandoffArtifacts(planID, checkpointID string, artifacts []p
 			Filename:    filename,
 			MediaType:   mediaType,
 			Kind:        kind,
+			Previewable: true,
 		})
 	}
 	return result

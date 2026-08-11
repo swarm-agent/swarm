@@ -134,6 +134,11 @@ func (s *Service) UpdateSubagentPolicyMapForAccount(accountScopeID string, input
 	if err := decoder.Decode(&subagents); err != nil {
 		return nil, err
 	}
+	// Older clients know only active_child_limit. Treat an omitted swarm limit as
+	// the same ceiling so saving through them preserves the pre-split behavior.
+	if subagents.SwarmActiveChildLimit == 0 && subagents.ActiveChildLimit > 0 {
+		subagents.SwarmActiveChildLimit = subagents.ActiveChildLimit
+	}
 	_, err = s.UpdateSubagentPolicyForAccount(accountScopeID, subagents)
 	if err != nil {
 		return nil, err

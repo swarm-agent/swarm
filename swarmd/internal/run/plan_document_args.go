@@ -121,7 +121,7 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 		}
 	}
 	if planManageActionUsesDocumentPatch(action) {
-		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "suggested_prompts", "pull_request_url")
+		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "artifacts", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "suggested_prompts", "pull_request_url")
 		return keys
 	}
 	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
@@ -179,6 +179,11 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		Result:             rawStringArg(args, "result"),
 		ChangedFiles:       mapStringSlice(args, "changed_files"),
 		Validation:         mapStringSlice(args, "validation"),
+	}
+	if artifacts, err := planArtifactsFromArgs(args); err != nil {
+		return nil, err
+	} else {
+		patch.Artifacts = artifacts
 	}
 	if value, ok := args["recommendation"]; ok && value != nil {
 		var recommendation pebblestore.SessionPlanCheckpointRecommendation
@@ -300,7 +305,7 @@ func planFinalHandoffArgsPresent(args map[string]any) bool {
 }
 
 func planDocumentPatchArgsPresent(args map[string]any) bool {
-	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "suggested_prompts", "pull_request_url", "operations"}
+	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "artifacts", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "suggested_prompts", "pull_request_url", "operations"}
 	for _, key := range keys {
 		value, ok := args[key]
 		if !ok {

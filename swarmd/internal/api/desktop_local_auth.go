@@ -239,6 +239,15 @@ func requestWithActorContext(r *http.Request, actor identity.ActorContext) *http
 	return r.WithContext(ctx)
 }
 
+func requestWithPrincipalContext(r *http.Request, principal identity.Principal) *http.Request {
+	if r == nil || !principal.Valid() {
+		return r
+	}
+	ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, principal)
+	ctx = identity.ContextWithPrincipal(ctx, principal)
+	return r.WithContext(ctx)
+}
+
 func productActorFromRequest(r *http.Request) (identity.ActorContext, bool) {
 	if r == nil {
 		return identity.ActorContext{}, false

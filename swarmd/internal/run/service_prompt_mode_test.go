@@ -139,6 +139,7 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 		"- mode: bounded",
 		"- automatic_launches_per_parent_run: 5",
 		"- active_child_limit: 5",
+		"- swarm_active_child_limit: 5",
 		"- over_budget_action: ask",
 		"- require_write_isolation: true",
 		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
@@ -147,7 +148,7 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 			t.Fatalf("subagent policy instructions missing %q:\n%s", want, instructions)
 		}
 	}
-	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "hard ceiling for both one task call and aggregate active children"} {
+	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "default hard ceiling for a regular task call", "separate hard ceiling for a swarm-mode task call", "Use active_child_limit for regular task launches and swarm_active_child_limit for mode=swarm"} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("subagent policy instructions do not explain independent wave and concurrency semantics; missing %q:\n%s", want, instructions)
 		}

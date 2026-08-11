@@ -328,11 +328,23 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3SystemSidechat(w, r, principal, sessionID, "ai")
 	case "permissions/resolve_all":
 		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
+	case "artifacts/preview-access":
+		s.handleSessionV3ArtifactPreviewAccess(w, r, principal, sessionID)
 	default:
 		if strings.HasPrefix(subpath, "artifacts/") {
-			artifactID := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
+			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
+			artifactID, contentPath, hasContent := strings.Cut(artifactPath, "/content/")
+			artifactID = strings.TrimSpace(artifactID)
 			if artifactID == "" || strings.Contains(artifactID, "/") {
 				writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+				return
+			}
+			if hasContent {
+				s.handleSessionV3ArtifactContent(w, r, principal, sessionID, artifactID, contentPath)
+				return
+			}
+			if strings.Contains(artifactPath, "/") {
+				writeError(w, http.StatusBadRequest, errors.New("invalid artifact path"))
 				return
 			}
 			s.handleSessionV3Artifact(w, r, principal, sessionID, artifactID)

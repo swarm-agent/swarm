@@ -99,11 +99,14 @@ func TestPlanDocumentArgsParseAndValidateFinalHandoff(t *testing.T) {
 			"label": "Review", "prompt": "Review the contract for gaps.",
 		}},
 		"pull_request_url": "https://github.com/swarm/repository/pull/42",
+		"artifacts": []any{map[string]any{
+			"path": "gallery/index.html", "role": "deliverable", "description": "Interactive gallery", "media_type": "text/html",
+		}},
 	})
 	if err != nil {
 		t.Fatalf("parse handoff args: %v", err)
 	}
-	if patch == nil || patch.Handoff == nil || patch.Handoff.Title != "Ready" || len(patch.Handoff.SuggestedPrompts) != 1 || patch.Handoff.PullRequestURL != "https://github.com/swarm/repository/pull/42" {
+	if patch == nil || patch.Handoff == nil || patch.Handoff.Title != "Ready" || len(patch.Handoff.SuggestedPrompts) != 1 || patch.Handoff.PullRequestURL != "https://github.com/swarm/repository/pull/42" || len(patch.Artifacts) != 1 || patch.Artifacts[0].Path != "gallery/index.html" || patch.Artifacts[0].Role != "deliverable" {
 		t.Fatalf("patch = %#v", patch)
 	}
 	_, err = planDocumentPatchFromArgs(map[string]any{"action": "complete_checkpoint", "handoff_title": "missing overview"})

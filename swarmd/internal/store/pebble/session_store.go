@@ -329,7 +329,7 @@ type PlanFinalHandoff struct {
 	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
 	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
 	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
-	Artifacts        []PlanFinalHandoffArtifact            `json:"artifacts,omitempty"`
+	Artifacts        []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
 	Details          PlanFinalHandoffDetails              `json:"details"`
 }
 
@@ -343,6 +343,7 @@ type PlanFinalHandoffArtifact struct {
 	Filename    string `json:"filename"`
 	MediaType   string `json:"media_type"`
 	Kind        string `json:"kind"`
+	Previewable bool   `json:"previewable"`
 }
 
 // PlanFinalHandoffDetails keeps the complete terminal evidence available to

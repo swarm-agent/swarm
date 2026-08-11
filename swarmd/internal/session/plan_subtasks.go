@@ -260,7 +260,7 @@ func completePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op Plan
 		_, err := ApplyPlanCheckpointOutcome(doc, PlanCheckpointOutcomeOptions{
 			CheckpointID: checkpoint.ID, Outcome: PlanCheckpointStatusCompleted,
 			AttemptID: op.AttemptID, RunID: op.RunID, SessionID: op.RunSessionID, ParentSessionID: op.ParentSessionID,
-			Report: op.Report, Result: op.Result, ChangedFiles: op.ChangedFiles, Validation: op.Validation,
+			Report: op.Report, Result: op.Result, ChangedFiles: op.ChangedFiles, Validation: op.Validation, Artifacts: op.Artifacts,
 			Recommendation: op.Recommendation, Handoff: op.Handoff, StartedAt: op.StartedAt, CompletedAt: op.CompletedAt,
 		})
 		return err

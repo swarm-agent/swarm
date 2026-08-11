@@ -768,7 +768,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 			reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
 				SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
-				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, Delegated: delegated,
+				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, SwarmMode: manifest.TaskMode == taskModeSwarm, Delegated: delegated,
 			})
 			if reserveErr != nil {
 				decisions[i].Err = reserveErr

@@ -129,7 +129,7 @@ func TestProjectPlanFinalHandoffArtifactsFiltersAndHidesPaths(t *testing.T) {
 	if len(projected) != 2 {
 		t.Fatalf("projected artifacts = %#v", projected)
 	}
-	if projected[0].ID == "" || projected[0].ID == "gallery/index.html" || projected[0].Label != "Interactive gallery" || projected[0].Filename != "index.html" || projected[0].MediaType != "text/html" || projected[0].Kind != "html" {
+	if projected[0].ID == "" || projected[0].ID == "gallery/index.html" || projected[0].Label != "Interactive gallery" || projected[0].Filename != "index.html" || projected[0].MediaType != "text/html" || projected[0].Kind != "html" || !projected[0].Previewable {
 		t.Fatalf("html descriptor = %#v", projected[0])
 	}
 	if projected[1].Filename != "overview.png" || projected[1].MediaType != "image/png" || projected[1].Kind != "image" {

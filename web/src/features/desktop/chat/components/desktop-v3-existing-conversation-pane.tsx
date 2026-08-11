@@ -166,7 +166,7 @@ import {
   type DesktopPlanExecutionSidebarActionInput,
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
-import { fetchDesktopV3Artifact } from "../../session-v3/artifact-api";
+import { buildDesktopV3ArtifactSandboxDocument, fetchDesktopV3Artifact, fetchDesktopV3ArtifactPreviewToken } from "../../session-v3/artifact-api";
 import { Dialog, DialogBackdrop, DialogPanel } from "../../../../components/ui/dialog";
 import {
   effectiveDesktopSidebarDisplayMode,
@@ -3395,6 +3395,16 @@ function DesktopV3ArtifactGallery({
     void fetchDesktopV3Artifact(sessionId, selected.artifactId, controller.signal)
       .then(async (blob) => {
         if (controller.signal.aborted) return;
+        if (selected.mediaType === "text/html") {
+          const [source, previewToken] = await Promise.all([
+            blob.text(),
+            fetchDesktopV3ArtifactPreviewToken(sessionId, selected.artifactId, controller.signal),
+          ]);
+          if (!controller.signal.aborted) {
+            setPreviewText(buildDesktopV3ArtifactSandboxDocument(source, sessionId, selected.artifactId, previewToken));
+          }
+          return;
+        }
         if (selected.mediaType === "text/markdown" || selected.mediaType === "text/plain") {
           const text = await blob.text();
           if (!controller.signal.aborted) setPreviewText(text);
@@ -3486,7 +3496,7 @@ function DesktopV3ArtifactGallery({
                       {previewError ? <div className="mx-auto mt-8 max-w-lg rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">Preview unavailable: {previewError}</div> : null}
                       {!loading && !previewError && !selected.previewable ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
                       {!loading && !previewError && selected.mediaType.startsWith("image/") && previewURL ? <div className="grid min-h-full place-items-center"><img src={previewURL} alt={selected.description || selected.label} className="max-h-full max-w-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" /></div> : null}
-                      {!loading && !previewError && selected.mediaType === "text/html" && previewURL ? <iframe title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-[480px] w-full rounded-lg border border-[var(--app-border)] bg-white" /> : null}
+                      {!loading && !previewError && selected.mediaType === "text/html" && previewText ? <iframe title={selected.label} srcDoc={previewText} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-[480px] w-full rounded-lg border border-[var(--app-border)] bg-white" /> : null}
                       {!loading && !previewError && selected.mediaType === "application/pdf" && previewURL ? <iframe title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-[480px] w-full rounded-lg border border-[var(--app-border)] bg-white" /> : null}
                       {!loading && !previewError && selected.mediaType === "text/markdown" && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
                       {!loading && !previewError && selected.mediaType === "text/plain" && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}

@@ -23,6 +23,7 @@ type SubagentReservationRequest struct {
 	CallID         string
 	ManifestHash   string
 	LaunchCount    int
+	SwarmMode      bool
 	Delegated      bool
 }
 
@@ -68,12 +69,18 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		return SubagentReservationResult{}, err
 	}
 	policy := NormalizePolicy(state.Policy).Subagents
+	launchLimit := policy.ActiveChildLimit
+	limitLabel := "default subagent limit"
+	if request.SwarmMode {
+		launchLimit = policy.SwarmActiveChildLimit
+		limitLabel = "swarm-mode subagent limit"
+	}
 	decision := SubagentReservationApprove
 	reason := "wave is within the bounded automatic delegation allowance"
 	if request.Delegated {
 		decision, reason = SubagentReservationDeny, "task delegation is parent-only; child sessions cannot delegate"
-	} else if request.LaunchCount > policy.ActiveChildLimit {
-		decision, reason = SubagentReservationDeny, fmt.Sprintf("subagent wave exceeds active child limit of %d", policy.ActiveChildLimit)
+	} else if request.LaunchCount > launchLimit {
+		decision, reason = SubagentReservationDeny, fmt.Sprintf("subagent wave exceeds %s of %d", limitLabel, launchLimit)
 	} else if policy.Mode == SubagentModeDirect {
 		decision, reason = SubagentReservationDeny, "direct orchestration mode denies delegation"
 	} else if policy.Mode == SubagentModeAsk {
@@ -91,10 +98,14 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		// Each accepted task call consumes exactly one automatic wave, regardless
 		// of how many children it launches. Completion releases only concurrency.
 		automaticWaves++
-		activeChildren += reservation.ActiveCount
+		// Regular and swarm calls have independent configured concurrency pools.
+		// Legacy records omit SwarmMode and therefore remain regular reservations.
+		if reservation.SwarmMode == request.SwarmMode {
+			activeChildren += reservation.ActiveCount
+		}
 	}
-	if decision != SubagentReservationDeny && activeChildren+request.LaunchCount > policy.ActiveChildLimit {
-		decision, reason = SubagentReservationDeny, "active child concurrency limit would be exceeded"
+	if decision != SubagentReservationDeny && activeChildren+request.LaunchCount > launchLimit {
+		decision, reason = SubagentReservationDeny, fmt.Sprintf("%s would be exceeded by active child concurrency", limitLabel)
 	}
 	if decision == SubagentReservationApprove && automaticWaves >= policy.AutomaticLaunchesPerParentRun {
 		if policy.OverBudgetAction == SubagentOverBudgetDeny {
@@ -104,7 +115,7 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		}
 	}
 	status := string(decision)
-	record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, Status: status}
+	record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Status: status}
 	if decision != SubagentReservationDeny {
 		record.ActiveCount = request.LaunchCount
 	}

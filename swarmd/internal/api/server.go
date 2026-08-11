@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -147,6 +148,7 @@ type Server struct {
 	desktopLocalSessions   *desktopLocalSessionManager
 	identityService        *identity.Service
 	identitySessions       *identity.SessionService
+	artifactPreviewKey     []byte
 	gitRealtime            *gitRealtimeManager
 	swarmStore             *pebblestore.SwarmStore
 	tailscaleServePolicy   *pebblestore.TailscaleServeAllowlistStore
@@ -256,6 +258,10 @@ type mcpService interface {
 
 func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
+	artifactPreviewKey := make([]byte, 32)
+	if _, err := rand.Read(artifactPreviewKey); err != nil {
+		artifactPreviewKey = nil
+	}
 	server := &Server{
 		auth:                 authSvc,
 		agents:               agentSvc,
@@ -277,6 +283,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		startedAt:            time.Now(),
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
+		artifactPreviewKey:   artifactPreviewKey,
 		gitRealtime:          nil,
 		reviewCommitActive:   make(map[string]string),
 		runCtx:               runCtx,
@@ -3855,6 +3862,11 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				next.ServeHTTP(w, requestWithActorContext(r, actor))
 				return
 			}
+		}
+
+		if principal, ok := s.validateSessionV3ArtifactPreviewRequest(r); ok {
+			next.ServeHTTP(w, requestWithPrincipalContext(r, principal))
+			return
 		}
 
 		if isLocalTransportRequest(r) {

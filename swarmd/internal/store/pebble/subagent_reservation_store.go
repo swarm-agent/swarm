@@ -9,13 +9,15 @@ import (
 )
 
 // SubagentWaveReservation is the durable, idempotent accounting record for one
-// task call. All delegated child purposes consume LaunchCount from the same run.
+// task call. All delegated child purposes consume LaunchCount from the same run;
+// SwarmMode records which configured child ceiling authorized the call.
 type SubagentWaveReservation struct {
 	SessionID    string `json:"session_id"`
 	RunID        string `json:"run_id"`
 	CallID       string `json:"call_id"`
 	ManifestHash string `json:"manifest_hash"`
 	LaunchCount  int    `json:"launch_count"`
+	SwarmMode    bool   `json:"swarm_mode,omitempty"`
 	ActiveCount  int    `json:"active_count"`
 	Status       string `json:"status"`
 	CreatedAt    int64  `json:"created_at"`

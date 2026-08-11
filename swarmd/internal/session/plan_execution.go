@@ -97,10 +97,26 @@ type PlanCheckpointOutcomeOptions struct {
 	Result          string
 	ChangedFiles    []string
 	Validation      []string
+	Artifacts       []pebblestore.SessionPlanArtifactReference
 	Recommendation  *pebblestore.SessionPlanCheckpointRecommendation
 	Handoff         *pebblestore.SessionPlanCheckpointHandoff
 	StartedAt       int64
 	CompletedAt     int64
+}
+
+func mergePlanCheckpointArtifacts(existing, added []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {
+	merged := trimPlanArtifacts(append(append([]pebblestore.SessionPlanArtifactReference(nil), existing...), added...))
+	result := make([]pebblestore.SessionPlanArtifactReference, 0, len(merged))
+	seen := make(map[string]struct{}, len(merged))
+	for _, artifact := range merged {
+		key := strings.Join([]string{artifact.Path, artifact.Role, artifact.Description, artifact.MediaType}, "\x00")
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, artifact)
+	}
+	return result
 }
 
 type PlanCheckpointOutcomeDecision struct {
@@ -1113,6 +1129,9 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	}
 	if len(options.Validation) > 0 {
 		checkpoint.Validation = trimStringSlice(options.Validation)
+	}
+	if len(options.Artifacts) > 0 {
+		checkpoint.Artifacts = mergePlanCheckpointArtifacts(checkpoint.Artifacts, options.Artifacts)
 	}
 	if options.Recommendation != nil {
 		recommendation := normalizePlanCheckpointRecommendation(*options.Recommendation)
