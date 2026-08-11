@@ -59,6 +59,12 @@ export function ThemesSettingsPage({ activeWorkspacePath, activeWorkspaceSlug = 
     () => workspaces.find((workspace) => workspace.path === resolvedActiveWorkspacePath) ?? null,
     [resolvedActiveWorkspacePath, workspaces],
   )
+  const orderedWorkspaces = useMemo(
+    () => activeWorkspace
+      ? [activeWorkspace, ...workspaces.filter((workspace) => workspace.path !== activeWorkspace.path)]
+      : workspaces,
+    [activeWorkspace, workspaces],
+  )
 
   const handleGlobalThemeChange = async (newThemeId: string) => {
     setSavingGlobalTheme(true)
@@ -164,7 +170,7 @@ export function ThemesSettingsPage({ activeWorkspacePath, activeWorkspaceSlug = 
               You don't have any saved workspaces yet.
             </div>
           ) : (
-            workspaces.map((workspace) => {
+            orderedWorkspaces.map((workspace) => {
               const isCurrent = workspace.path === resolvedActiveWorkspacePath
               const busy = savingPath === workspace.path
               const normalizedThemeId = (workspace.themeId || 'inherit').trim().toLowerCase() || 'inherit'
@@ -176,7 +182,7 @@ export function ThemesSettingsPage({ activeWorkspacePath, activeWorkspaceSlug = 
                   className={[
                     'rounded-2xl border px-4 py-4 shadow-sm transition-colors',
                     isCurrent
-                      ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface-subtle))]'
+                      ? 'order-first border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface-subtle))]'
                       : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]',
                   ].join(' ')}
                 >
