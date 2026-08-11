@@ -418,7 +418,7 @@ func TestPrepareTaskIntegrationPreflightsCompleteStackAndLeavesParentUnchangedOn
 		{SessionID: "second", BaseCommit: base, HeadCommit: second},
 	})
 	var conflict *TaskIntegrationConflictError
-	if !errors.As(err, &conflict) || conflict.Commit != second {
+	if !errors.As(err, &conflict) || conflict.SessionID != "second" || conflict.Commit != second {
 		t.Fatalf("conflict = %#v, err = %v", conflict, err)
 	}
 	head, _ := runGit(repo, "rev-parse", "HEAD")

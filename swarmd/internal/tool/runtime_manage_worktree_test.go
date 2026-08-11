@@ -3,6 +3,7 @@ package tool
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestManageWorktreeDefinitionKeepsIntegrateInputMinimal(t *testing.T) {
 			t.Fatalf("manage-worktree exposes model-authored %s", forbidden)
 		}
 	}
-	for _, required := range []string{"action", "session_ids"} {
+	for _, required := range []string{"action", "session_ids", "task_call_id"} {
 		if _, ok := properties[required]; !ok {
 			t.Fatalf("manage-worktree missing %s", required)
 		}
@@ -158,6 +159,111 @@ func TestManageWorktreeIntegrateAppliesSelectedCoderBatchInDurableOrder(t *testi
 	}
 }
 
+func TestManageWorktreeRecallScopesLargeWaveAndReturnsCompactIntegrateRequest(t *testing.T) {
+	runtime, scope, _, childIDs := newCoderWaveRuntime(t, 100)
+	output, err := runtime.manageWorktreeRecall(scope, map[string]any{"task_call_id": "call-wave", "limit": 25})
+	if err != nil {
+		t.Fatalf("recall large Coder wave: %v", err)
+	}
+	var response struct {
+		TaskCallID  string         `json:"task_call_id"`
+		Total       int            `json:"total"`
+		Returned    int            `json:"returned"`
+		HasMore     bool           `json:"has_more"`
+		StateCounts map[string]int `json:"state_counts"`
+		Integration struct {
+			ReadyCount       int            `json:"ready_count"`
+			ReadySessionIDs  []string       `json:"ready_session_ids"`
+			IntegrateRequest map[string]any `json:"integrate_request"`
+		} `json:"integration"`
+	}
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatalf("decode large recall response: %v", err)
+	}
+	if response.TaskCallID != "call-wave" || response.Total != len(childIDs) || response.Returned != 25 || !response.HasMore {
+		t.Fatalf("large recall response = %s", output)
+	}
+	if response.StateCounts["committed"] != len(childIDs) || response.Integration.ReadyCount != len(childIDs) {
+		t.Fatalf("large recall counts = %#v", response)
+	}
+	if len(response.Integration.ReadySessionIDs) != 0 || response.Integration.IntegrateRequest["task_call_id"] != "call-wave" {
+		t.Fatalf("large recall did not return compact task-call integration request: %s", output)
+	}
+}
+
+func TestManageWorktreeIntegrateSelectsCompleteLargeWaveByTaskCall(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderWaveRuntime(t, 100)
+	output, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"task_call_id": "call-wave"})
+	if err != nil {
+		t.Fatalf("integrate large Coder wave: %v\n%s", err, output)
+	}
+	if len(worktrees.preparedChildren) != len(childIDs) {
+		t.Fatalf("prepared %d children, want %d", len(worktrees.preparedChildren), len(childIDs))
+	}
+	for index, child := range worktrees.preparedChildren {
+		if child.SessionID != childIDs[index] {
+			t.Fatalf("prepared child %d = %q, want %q", index, child.SessionID, childIDs[index])
+		}
+	}
+	var response struct {
+		Status        string `json:"status"`
+		Selection     string `json:"selection"`
+		TaskCallID    string `json:"task_call_id"`
+		SelectedCount int    `json:"selected_count"`
+	}
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatalf("decode large integrate response: %v", err)
+	}
+	if response.Status != "ok" || response.Selection != "complete_task_call" || response.TaskCallID != "call-wave" || response.SelectedCount != len(childIDs) {
+		t.Fatalf("large integration response = %s", output)
+	}
+}
+
+func TestManageWorktreeIntegrateLargeWavePropagatesDirtyChildWithoutApply(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderWaveRuntime(t, 100)
+	dirtyPath := "/worktrees/" + childIDs[73]
+	dirty := worktrees.states[dirtyPath]
+	dirty.Clean = false
+	dirty.Status = " M conflicted.go"
+	worktrees.states[dirtyPath] = dirty
+
+	_, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"task_call_id": "call-wave"})
+	if err == nil || !strings.Contains(err.Error(), childIDs[73]) || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("dirty large-wave error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("integration apply unexpectedly ran %d times", worktrees.applyCalls)
+	}
+}
+
+func TestManageWorktreeIntegrateLargeWavePropagatesChildFailureWithoutApply(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderWaveRuntime(t, 100)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	entry := sessions.parent.Metadata["task_launches"].(map[string]any)["call-wave"].(map[string]any)
+	rows := entry["launches"].([]any)
+	failed := rows[41].(map[string]any)
+	failed["error"] = "provider run failed"
+
+	_, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"task_call_id": "call-wave"})
+	if err == nil || !strings.Contains(err.Error(), childIDs[41]) || !strings.Contains(err.Error(), "provider run failed") {
+		t.Fatalf("failed large-wave error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("integration apply unexpectedly ran %d times", worktrees.applyCalls)
+	}
+}
+
+func TestManageWorktreeIntegrateRejectsAmbiguousSelectors(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderWaveRuntime(t, 2)
+	_, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"task_call_id": "call-wave", "session_ids": []any{childIDs[0]}})
+	if err == nil || !strings.Contains(err.Error(), "exactly one selector") {
+		t.Fatalf("ambiguous selector error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("integration apply unexpectedly ran %d times", worktrees.applyCalls)
+	}
+}
+
 func TestManageWorktreeIntegrateRejectsChildWithoutIndependentParentLineage(t *testing.T) {
 	runtime, scope, worktrees, childIDs := newCoderLineageRuntime(t)
 	sessions := runtime.sessions.(*coderLineageSessionService)
@@ -176,7 +282,7 @@ func TestManageWorktreeIntegrateRejectsChildWithoutIndependentParentLineage(t *t
 
 func TestManageWorktreeIntegrateReturnsActionableConflictWithoutApply(t *testing.T) {
 	runtime, scope, worktrees, childIDs := newCoderLineageRuntime(t)
-	worktrees.prepareErr = &worktreeruntime.TaskIntegrationConflictError{Commit: "child-one-head", Detail: "content conflict in AGENTS.md"}
+	worktrees.prepareErr = &worktreeruntime.TaskIntegrationConflictError{SessionID: childIDs[0], Commit: "child-one-head", Detail: "content conflict in AGENTS.md"}
 	output, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"session_ids": []any{childIDs[0], childIDs[1]}})
 	if err == nil {
 		t.Fatal("expected integration conflict")
@@ -184,13 +290,14 @@ func TestManageWorktreeIntegrateReturnsActionableConflictWithoutApply(t *testing
 	var response struct {
 		Status            string `json:"status"`
 		ParentUnchanged   bool   `json:"parent_unchanged"`
+		ConflictingChild  string `json:"conflicting_child_session_id"`
 		ConflictingCommit string `json:"conflicting_commit"`
 		NextAction        string `json:"next_action"`
 	}
 	if decodeErr := json.Unmarshal([]byte(output), &response); decodeErr != nil {
 		t.Fatalf("decode conflict response: %v; output=%s", decodeErr, output)
 	}
-	if response.Status != "conflict" || !response.ParentUnchanged || response.ConflictingCommit != "child-one-head" || !strings.Contains(response.NextAction, "Resolve") {
+	if response.Status != "conflict" || !response.ParentUnchanged || response.ConflictingChild != childIDs[0] || response.ConflictingCommit != "child-one-head" || !strings.Contains(response.NextAction, "Resolve") {
 		t.Fatalf("conflict response = %s", output)
 	}
 	if worktrees.applyCalls != 0 {
@@ -209,29 +316,57 @@ func newCoderLineageRuntime(t *testing.T) (*Runtime, WorkspaceScope, *coderLinea
 		parentPath: {WorkspacePath: parentPath, BranchName: "dev", HeadCommit: "parent-head", Clean: true},
 	}
 	for index, id := range childIDs {
-		path := "/worktrees/" + id
-		branch := "agent/" + id
-		head := id + "-head"
 		callID := "call-b"
 		if index == 0 {
 			callID = "call-a"
 		}
-		launches[callID] = map[string]any{"launches": []any{map[string]any{
-			"launch_index": index + 1, "child_session_id": id, "subagent": "system-coder",
-			"worktree_root_path": path, "worktree_branch": branch,
-			"base_commit": "parent-head", "head_commit": head,
-		}}}
-		states[path] = worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: branch, HeadCommit: head, Clean: true}
-		children[id] = pebblestore.SessionSnapshot{
-			ID: id, AccountScopeID: "account", UserID: "user", WorkspacePath: path,
-			WorktreeRootPath: path, WorktreeBranch: branch,
-			Metadata: map[string]any{
-				"parent_session_id": parentID,
-				"lineage_kind":      "delegated_subagent",
-				"subagent":          "system-coder",
-			},
-		}
+		row := coderLineageRow(parentID, id, index+1, states, children)
+		launches[callID] = map[string]any{"launches": []any{row}}
 	}
+	return coderLineageRuntime(parentID, parentPath, launches, states, children, childIDs)
+}
+
+func newCoderWaveRuntime(t *testing.T, count int) (*Runtime, WorkspaceScope, *coderLineageWorktreeService, []string) {
+	t.Helper()
+	const parentID = "parent-session"
+	const parentPath = "/repo"
+	childIDs := make([]string, 0, count)
+	children := map[string]pebblestore.SessionSnapshot{}
+	states := map[string]worktreeruntime.TaskWorkspaceState{
+		parentPath: {WorkspacePath: parentPath, BranchName: "dev", HeadCommit: "parent-head", Clean: true},
+	}
+	rows := make([]any, 0, count)
+	for index := 0; index < count; index++ {
+		id := fmt.Sprintf("child-%03d", index+1)
+		childIDs = append(childIDs, id)
+		rows = append(rows, coderLineageRow(parentID, id, index+1, states, children))
+	}
+	launches := map[string]any{"call-wave": map[string]any{"launches": rows}}
+	return coderLineageRuntime(parentID, parentPath, launches, states, children, childIDs)
+}
+
+func coderLineageRow(parentID, id string, launchIndex int, states map[string]worktreeruntime.TaskWorkspaceState, children map[string]pebblestore.SessionSnapshot) map[string]any {
+	path := "/worktrees/" + id
+	branch := "agent/" + id
+	head := id + "-head"
+	states[path] = worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: branch, HeadCommit: head, Clean: true}
+	children[id] = pebblestore.SessionSnapshot{
+		ID: id, AccountScopeID: "account", UserID: "user", WorkspacePath: path,
+		WorktreeRootPath: path, WorktreeBranch: branch,
+		Metadata: map[string]any{
+			"parent_session_id": parentID,
+			"lineage_kind":      "delegated_subagent",
+			"subagent":          "system-coder",
+		},
+	}
+	return map[string]any{
+		"launch_index": launchIndex, "child_session_id": id, "subagent": "system-coder",
+		"worktree_root_path": path, "worktree_branch": branch,
+		"base_commit": "parent-head", "head_commit": head,
+	}
+}
+
+func coderLineageRuntime(parentID, parentPath string, launches map[string]any, states map[string]worktreeruntime.TaskWorkspaceState, children map[string]pebblestore.SessionSnapshot, childIDs []string) (*Runtime, WorkspaceScope, *coderLineageWorktreeService, []string) {
 	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, Metadata: map[string]any{"task_launches": launches}}
 	worktrees := &coderLineageWorktreeService{states: states}
 	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees}

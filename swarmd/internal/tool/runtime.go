@@ -1062,15 +1062,16 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Coder child lineage or atomically integrate a selected committed child batch. For integrate, pass only action and session_ids. The tool derives and validates all lineage and parent state, preflights the complete ordered stack, applies automatically without confirmation, and leaves the parent unchanged on any conflict.",
+			Description: "Recall durable Coder child lineage or atomically integrate a committed child batch. For large waves, pass action=integrate with task_call_id so the tool selects every Coder child from that durable task call without copying session IDs. Explicit session_ids remain supported. The tool validates the full selection, preflights the complete ordered stack, applies automatically without confirmation, and propagates errors without partially mutating the parent.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|recall|integrate"},
-					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session ids from durable current-parent lineage"},
+					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Explicit selected Coder child session ids from durable current-parent lineage; mutually exclusive with task_call_id"},
+					"task_call_id":   map[string]any{"type": "string", "description": "Durable parent task call to recall or integrate as one complete Coder wave; mutually exclusive with session_ids for integrate"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
 					"branch_name":    map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
-					"limit":          map[string]any{"type": "integer", "description": "Page size for returned commits (default 25)"},
+					"limit":          map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
 					"cursor":         map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
 				},
 				"required":             []string{"action"},
@@ -6153,6 +6154,19 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 	return string(encoded), nil
 }
 
+func manageWorktreeLaunchRows(entry map[string]any) []any {
+	rows := make([]any, 0)
+	switch typed := entry["launches"].(type) {
+	case []any:
+		rows = append(rows, typed...)
+	case []map[string]any:
+		for _, row := range typed {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
 func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.sessions == nil || r.worktrees == nil {
 		return "", errors.New("manage-worktree integrate requires session and worktree services")
@@ -6170,8 +6184,38 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		return "", err
 	}
 	selected := asStringSlice(args["session_ids"])
+	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
+	if len(selected) > 0 && selectedTaskCallID != "" {
+		return "", errors.New("integrate accepts exactly one selector: session_ids or task_call_id")
+	}
+	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
 	if len(selected) == 0 {
-		return "", errors.New("integrate requires selected committed child session_ids; call recall once to obtain them")
+		if selectedTaskCallID == "" {
+			return "", errors.New("integrate requires session_ids or task_call_id; use task_call_id for a complete large Coder wave")
+		}
+		rawEntry, exists := launchMap[selectedTaskCallID]
+		if !exists {
+			return "", fmt.Errorf("task call %q is not present in this parent's durable Coder lineage", selectedTaskCallID)
+		}
+		entry, _ := rawEntry.(map[string]any)
+		rows := manageWorktreeLaunchRows(entry)
+		for _, rawRow := range rows {
+			row, _ := rawRow.(map[string]any)
+			if !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
+				continue
+			}
+			id := strings.TrimSpace(asString(row["child_session_id"]))
+			if id == "" {
+				return "", fmt.Errorf("task call %q contains a Coder launch without a durable child session id", selectedTaskCallID)
+			}
+			if childErr := strings.TrimSpace(asString(row["error"])); childErr != "" {
+				return "", fmt.Errorf("task call %q child %q failed: %s", selectedTaskCallID, id, childErr)
+			}
+			selected = append(selected, id)
+		}
+		if len(selected) == 0 {
+			return "", fmt.Errorf("task call %q contains no Coder children", selectedTaskCallID)
+		}
 	}
 	selectedSet := map[string]bool{}
 	for _, id := range selected {
@@ -6181,7 +6225,6 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		selectedSet[id] = true
 	}
-	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
 	type candidate struct {
 		callID string
 		index  int
@@ -6189,14 +6232,11 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	}
 	candidates := make([]candidate, 0, len(selected))
 	for callID, raw := range launchMap {
-		entry, _ := raw.(map[string]any)
-		rows, _ := entry["launches"].([]any)
-		if typed, ok := entry["launches"].([]map[string]any); ok {
-			for _, row := range typed {
-				rows = append(rows, row)
-			}
+		if selectedTaskCallID != "" && callID != selectedTaskCallID {
+			continue
 		}
-		for _, rawRow := range rows {
+		entry, _ := raw.(map[string]any)
+		for _, rawRow := range manageWorktreeLaunchRows(entry) {
 			row, _ := rawRow.(map[string]any)
 			id := strings.TrimSpace(asString(row["child_session_id"]))
 			if !selectedSet[id] || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
@@ -6251,8 +6291,8 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		if errors.As(err, &conflict) {
 			encoded, _ := json.Marshal(map[string]any{
 				"status": "conflict", "action": "integrate", "parent_unchanged": true,
-				"parent_head": parentState.HeadCommit, "conflicting_commit": conflict.Commit,
-				"detail":      conflict.Detail,
+				"parent_head": parentState.HeadCommit, "conflicting_child_session_id": conflict.SessionID,
+				"conflicting_commit": conflict.Commit, "detail": conflict.Detail,
 				"next_action": "Resolve the reported child-stack conflict in a dedicated child or choose a non-conflicting subset, then call integrate once with the final selected session_ids. Do not retry the same batch unchanged.",
 				"path_id":     toolPathID("manage-worktree"),
 			})
@@ -6268,7 +6308,14 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	for _, entry := range result.Entries {
 		childStates[entry.SessionID] = "integrated"
 	}
-	encoded, err := json.Marshal(map[string]any{"status": "ok", "action": "integrate", "parent_session_id": parentSessionID, "child_states": childStates, "resulting_parent_head": result.ResultingParentHead, "integration": result, "path_id": toolPathID("manage-worktree")})
+	response := map[string]any{"status": "ok", "action": "integrate", "parent_session_id": parentSessionID, "selected_count": len(selectedSet), "child_states": childStates, "resulting_parent_head": result.ResultingParentHead, "integration": result, "path_id": toolPathID("manage-worktree")}
+	if selectedTaskCallID != "" {
+		response["task_call_id"] = selectedTaskCallID
+		response["selection"] = "complete_task_call"
+	} else {
+		response["selection"] = "explicit_session_ids"
+	}
+	encoded, err := json.Marshal(response)
 	if err != nil {
 		return "", err
 	}
@@ -6307,22 +6354,22 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
 	}
 	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
+	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
+	if selectedTaskCallID != "" {
+		if _, exists := launchMap[selectedTaskCallID]; !exists {
+			return "", fmt.Errorf("task call %q is not present in this parent's durable Coder lineage", selectedTaskCallID)
+		}
+	}
 	children := make([]map[string]any, 0)
 	for callID, raw := range launchMap {
+		if selectedTaskCallID != "" && callID != selectedTaskCallID {
+			continue
+		}
 		entry, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		rows := make([]any, 0)
-		switch typed := entry["launches"].(type) {
-		case []any:
-			rows = typed
-		case []map[string]any:
-			for _, row := range typed {
-				rows = append(rows, row)
-			}
-		}
-		for _, rawRow := range rows {
+		for _, rawRow := range manageWorktreeLaunchRows(entry) {
 			row, ok := rawRow.(map[string]any)
 			if !ok || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
 				continue
@@ -6403,21 +6450,32 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		"automatic":         true,
 	}
 	committedIDs := make([]string, 0)
+	stateCounts := map[string]int{}
 	for _, child := range children {
-		if strings.EqualFold(asString(child["child_state"]), "committed") {
+		state := strings.TrimSpace(asString(child["child_state"]))
+		stateCounts[state]++
+		if strings.EqualFold(state, "committed") {
 			committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
 		}
 	}
 	if len(committedIDs) > 0 {
-		integrationInfo["ready_session_ids"] = committedIDs
-		integrationInfo["integrate_request"] = map[string]any{"action": "integrate", "session_ids": committedIDs}
+		integrationInfo["ready_count"] = len(committedIDs)
+		if selectedTaskCallID != "" && len(committedIDs) == total {
+			integrationInfo["integrate_request"] = map[string]any{"action": "integrate", "task_call_id": selectedTaskCallID}
+		} else {
+			integrationInfo["ready_session_ids"] = committedIDs
+			integrationInfo["integrate_request"] = map[string]any{"action": "integrate", "session_ids": committedIDs}
+		}
 	}
 	response := map[string]any{
 		"status": "ok", "action": "recall", "parent_session_id": parentSessionID,
 		"children": page, "total": total, "returned": len(page), "cursor": cursor, "limit": limit,
-		"next_cursor": nextCursor, "has_more": nextCursor > 0,
+		"next_cursor": nextCursor, "has_more": nextCursor > 0, "state_counts": stateCounts,
 		"integration": integrationInfo,
 		"path_id":     toolPathID("manage-worktree"), "details_truncated": false,
+	}
+	if selectedTaskCallID != "" {
+		response["task_call_id"] = selectedTaskCallID
 	}
 	encoded, err := json.Marshal(response)
 	if err != nil {

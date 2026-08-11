@@ -140,13 +140,17 @@ type TaskIntegrationResult struct {
 }
 
 type TaskIntegrationConflictError struct {
-	Commit string `json:"commit"`
-	Detail string `json:"detail"`
+	SessionID string `json:"session_id,omitempty"`
+	Commit    string `json:"commit"`
+	Detail    string `json:"detail"`
 }
 
 func (e *TaskIntegrationConflictError) Error() string {
 	if e == nil {
 		return "integration conflict"
+	}
+	if strings.TrimSpace(e.SessionID) != "" {
+		return fmt.Sprintf("integration conflict in child %s at commit %s: %s", e.SessionID, e.Commit, e.Detail)
 	}
 	return fmt.Sprintf("integration conflict at commit %s: %s", e.Commit, e.Detail)
 }
@@ -519,7 +523,7 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 		})
 		plan.Commits = append(plan.Commits, commits...)
 	}
-	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Commits); err != nil {
+	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Entries); err != nil {
 		return TaskIntegrationPlan{}, err
 	}
 	return plan, nil
@@ -638,7 +642,7 @@ func taskCommitAlreadyIntegrated(parentPath, parentHead, commit string) (bool, e
 	return integrated, nil
 }
 
-func preflightCherryPick(parentPath, parentHead string, commits []string) error {
+func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegrationEntry) error {
 	gitDir, err := runGit(parentPath, "rev-parse", "--git-dir")
 	if err != nil {
 		return fmt.Errorf("resolve git directory for integration preflight: %w", err)
@@ -661,21 +665,23 @@ func preflightCherryPick(parentPath, parentHead string, commits []string) error 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("initialize integration preflight: %s", strings.TrimSpace(string(out)))
 	}
-	for _, commit := range commits {
-		patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
-		data, err := patch.Output()
-		if err != nil {
-			return fmt.Errorf("read commit %s patch: %w", commit, err)
-		}
-		apply := exec.Command("git", "-C", parentPath, "apply", "--cached", "--3way", "--whitespace=nowarn", "-")
-		apply.Env = env
-		apply.Stdin = bytes.NewReader(data)
-		if out, err := apply.CombinedOutput(); err != nil {
-			detail := strings.TrimSpace(string(out))
-			if detail == "" {
-				detail = err.Error()
+	for _, entry := range entries {
+		for _, commit := range entry.Commits {
+			patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
+			data, err := patch.Output()
+			if err != nil {
+				return fmt.Errorf("read child %q commit %s patch: %w", entry.SessionID, commit, err)
 			}
-			return &TaskIntegrationConflictError{Commit: commit, Detail: detail}
+			apply := exec.Command("git", "-C", parentPath, "apply", "--cached", "--3way", "--whitespace=nowarn", "-")
+			apply.Env = env
+			apply.Stdin = bytes.NewReader(data)
+			if out, err := apply.CombinedOutput(); err != nil {
+				detail := strings.TrimSpace(string(out))
+				if detail == "" {
+					detail = err.Error()
+				}
+				return &TaskIntegrationConflictError{SessionID: entry.SessionID, Commit: commit, Detail: detail}
+			}
 		}
 	}
 	return nil
