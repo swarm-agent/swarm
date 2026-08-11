@@ -809,8 +809,16 @@ func TestTaskLaunchedDesignerRunTurnStreamingProjectsMediaInspect(t *testing.T) 
 	if err != nil {
 		t.Fatalf("parse Designer task: %v", err)
 	}
-	if _, err := svc.executeTaskToolWithParsed(context.Background(), parent.ID, sessionruntime.ModeAuto, 1, tool.Call{CallID: "call-designer-media", Name: "task"}, nil, taskExecutionRequest{Parsed: parsed, ParsedProvided: true, Principal: principal}); err != nil {
+	output, err := svc.executeTaskToolWithParsed(context.Background(), parent.ID, sessionruntime.ModeAuto, 1, tool.Call{CallID: "call-designer-media", Name: "task"}, nil, taskExecutionRequest{Parsed: parsed, ParsedProvided: true, Principal: principal})
+	if err != nil {
 		t.Fatalf("execute Designer task launch: %v", err)
+	}
+	var taskResult map[string]any
+	if err := json.Unmarshal([]byte(output), &taskResult); err != nil {
+		t.Fatalf("decode Designer task result: %v", err)
+	}
+	if got := taskResult["task_call_id"]; got != "call-designer-media" {
+		t.Fatalf("task_call_id = %#v, want durable lineage identifier", got)
 	}
 	if len(runner.requests) != 1 {
 		t.Fatalf("Designer provider requests = %d, want 1", len(runner.requests))
@@ -1769,6 +1777,36 @@ func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.
 	for _, name := range []string{"bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
 		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
 			t.Fatalf("Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
+		}
+	}
+}
+
+func TestIdeaSwarmUsesConfiguredRouterModelInsteadOfParentModel(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"})
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentRouter, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"}); err != nil {
+		t.Fatalf("save Router settings: %v", err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"mode":"swarm","prompt":"same exact question","agent_type":"idea","count":2}`})
+	if err != nil {
+		t.Fatalf("build Idea swarm manifest: %v", err)
+	}
+	if len(manifest.Launches) != 2 {
+		t.Fatalf("Idea swarm launches = %#v", manifest.Launches)
+	}
+	for i, launch := range manifest.Launches {
+		if launch.ProfileSnapshot == nil || launch.ProfileSnapshot.Name != agentruntime.IdeaAgentID || !launch.ProfileSnapshot.Protected {
+			t.Fatalf("Idea launch %d profile = %#v", i, launch.ProfileSnapshot)
+		}
+		if launch.SubagentProvider != "codex" || launch.SubagentModel != "gpt-5.4" || launch.SubagentThinking != "medium" {
+			t.Fatalf("Idea launch %d preference = %#v, want configured Router model", i, launch)
+		}
+		if launch.SubagentProvider == "parent-provider" || launch.SubagentModel == "parent-model" {
+			t.Fatalf("Idea launch %d inherited parent model: %#v", i, launch)
+		}
+		if launch.MetaPrompt != "same exact question" {
+			t.Fatalf("Idea launch %d prompt = %q, want exact question", i, launch.MetaPrompt)
 		}
 	}
 }

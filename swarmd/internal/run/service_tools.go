@@ -3996,6 +3996,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 
 	payload := map[string]any{
 		"tool":                    "task",
+		"task_call_id":            taskCallID,
 		"action":                  action,
 		"status":                  overallStatus,
 		"description":             description,

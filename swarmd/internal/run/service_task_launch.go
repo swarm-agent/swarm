@@ -2016,10 +2016,11 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		return profile, false, "", nil
 	}
 	if agentruntime.IsIdeaAgentName(requested) {
-		profile, err := s.agents.ResolveSystemAgent(agentruntime.IdeaAgentID, pebblestore.AgentProfile{
-			Provider: parentSession.Preference.Provider, Model: parentSession.Preference.Model, Thinking: parentSession.Preference.Thinking,
-			AutoServiceTier: parentSession.Preference.ServiceTier, ContextMode: parentSession.Preference.ContextMode,
-		})
+		_, routerProfile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, parentSession.AccountScopeID, agentruntime.RouterAgentID, "")
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("resolve Idea Router model: %w", err)
+		}
+		profile, err := s.agents.ResolveSystemAgent(agentruntime.IdeaAgentID, routerProfile)
 		return profile, false, "", err
 	}
 	if !agentruntime.IsCoderAgentName(requested) {
