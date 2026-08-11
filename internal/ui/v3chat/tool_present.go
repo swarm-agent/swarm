@@ -22,10 +22,11 @@ type toolPresentationLine struct {
 }
 
 type toolPresentation struct {
-	Summary  string
-	Lines    []toolPresentationLine
-	Kind     string
-	TaskRows []taskPresentationRow
+	Summary   string
+	Lines     []toolPresentationLine
+	Kind      string
+	TaskRows  []taskPresentationRow
+	TaskSwarm bool
 }
 
 type taskPresentationRow struct {
@@ -66,7 +67,7 @@ func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
 	case "manage-sessions":
 		presentation = presentManageSessionsTool(tool, arguments, output)
 	case "task":
-		presentation = presentTaskTool(tool, output)
+		presentation = presentTaskTool(tool, arguments, output)
 	default:
 		presentation = presentGenericTool(name, tool.Output, arguments, output)
 	}
@@ -857,7 +858,7 @@ func manageSessionsStatusTone(status string) string {
 	}
 }
 
-func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentation {
+func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
 	launches := make([]map[string]any, 0)
 	launchCount := 0
 	if tool.TaskStream != nil {
@@ -878,6 +879,7 @@ func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentat
 		}
 	}
 	launchCount = maxInt(launchCount, len(launches))
+	swarm := taskPresentationIsSwarm(arguments, output, launches)
 	rows := make([]taskPresentationRow, 0, len(launches))
 	for index, launch := range launches {
 		launchIndex := toolInt(launch, "launch_index")
@@ -917,12 +919,35 @@ func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentat
 		})
 	}
 	summary := "subagent stream"
+	if swarm {
+		summary = "swarm mode"
+	}
 	if len(rows) == 0 && toolStatusRank(tool.Status) < 3 {
-		summary = "launching subagents…"
+		if swarm {
+			summary = "awakening swarm…"
+		} else {
+			summary = "launching subagents…"
+		}
 	} else if launchCount > 0 {
 		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
 	}
-	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows}
+	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows, TaskSwarm: swarm}
+}
+
+func taskPresentationIsSwarm(arguments, output map[string]any, launches []map[string]any) bool {
+	for _, payload := range []map[string]any{arguments, output} {
+		if strings.EqualFold(strings.TrimSpace(toolString(payload, "mode")), "swarm") ||
+			strings.EqualFold(strings.TrimSpace(toolString(payload, "task_mode")), "swarm") ||
+			toolBool(payload, "swarm_mode") {
+			return true
+		}
+	}
+	for _, launch := range launches {
+		if toolBool(launch, "swarm_mode") || strings.EqualFold(strings.TrimSpace(toolString(launch, "task_mode")), "swarm") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeTaskPresentationStatus(status string) string {

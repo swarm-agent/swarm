@@ -267,6 +267,69 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 	}
 }
 
+func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing.T) {
+	launches := make([]map[string]any, 0, 100)
+	for index := 1; index <= 100; index++ {
+		status := "running"
+		if index%4 == 0 {
+			status = "ok"
+		}
+		launches = append(launches, map[string]any{
+			"launch_index":     index,
+			"subagent":         "coder",
+			"assignment_label": fmt.Sprintf("Epic agent %d", index),
+			"status":           status,
+		})
+	}
+	payload, err := json.Marshal(map[string]any{"tool": "task", "launch_count": len(launches), "launches": launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	swarm := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","count":100}`, Output: string(payload), Status: "running"}
+	presentation := buildToolPresentation(swarm)
+	if !presentation.TaskSwarm || !strings.HasPrefix(presentation.Summary, "swarm mode") {
+		t.Fatalf("explicit swarm presentation = %#v", presentation)
+	}
+
+	page := NewPage(nil, testPageStyles())
+	shortRows := page.renderToolRowsForHeight(swarm, 80, 12, testPageStyles())
+	tallRows := page.renderToolRowsForHeight(swarm, 80, 36, testPageStyles())
+	shortText := renderRowsText(shortRows)
+	if !strings.Contains(shortText, "SWARM MODE") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "responsive to 12 terminal rows") {
+		t.Fatalf("short swarm matrix missing dashboard details:\n%s", shortText)
+	}
+	if len(shortRows) >= len(tallRows) {
+		t.Fatalf("swarm row count should grow with terminal height: short=%d tall=%d", len(shortRows), len(tallRows))
+	}
+	if len(shortRows) > 12 {
+		t.Fatalf("short swarm should stay bounded by available height: got %d rows", len(shortRows))
+	}
+	for _, row := range shortRows {
+		if displayWidth(row.text) > 80 {
+			t.Fatalf("swarm matrix row exceeds width: %q", row.text)
+		}
+	}
+
+	regular := ToolTimelineItem{Name: "task", Arguments: `{"mode":"regular"}`, Output: string(payload), Status: "running"}
+	regularPresentation := buildToolPresentation(regular)
+	if regularPresentation.TaskSwarm {
+		t.Fatal("regular task wave must not become swarm mode by count")
+	}
+	regularText := renderRowsText(page.renderToolRowsForHeight(regular, 80, 12, testPageStyles()))
+	if strings.Contains(regularText, "SWARM MODE") || !strings.Contains(regularText, "SUBAGENT STREAM") {
+		t.Fatalf("regular task rendering changed:\n%s", regularText)
+	}
+}
+
+func renderRowsText(rows []renderRow) string {
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	return rendered.String()
+}
+
 func TestTaskStreamV2RetainsProgressionWhenLaterPatchHasEmptyCurrentTool(t *testing.T) {
 	item := ToolTimelineItem{Name: "task"}
 	started := `{"tool":"task","path_id":"tool.task.stream.v2","launch_key":"child-1","launch":{"launch_index":1,"current_tool":"read","current_tool_identity":"read","current_tool_run_count":2,"current_tool_display":"read x2"}}`
