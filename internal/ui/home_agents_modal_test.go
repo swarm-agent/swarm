@@ -272,7 +272,7 @@ func TestAgentsModalRenderHasNoProfileOrPolicyWorkflow(t *testing.T) {
 		}
 	}
 	text := rendered.String()
-	for _, want := range []string{"Swarm", "codex/action-model", "high • priority", "Compact", "Finder", "Coder", "Designer", "Router", "Default model", "Plan model", "Save changes and exit"} {
+	for _, want := range []string{"Swarm", "codex/action-model", "high • priority", "Compact", "Finder", "Coder", "Designer", "Router", "Default model", "Plan model", "Save & Continue", "Save & Exit"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("render missing %q:\n%s", want, text)
 		}

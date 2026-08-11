@@ -5205,7 +5205,7 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 	case ui.HomeActionSelectWorkspace:
 		a.activateWorkspaceAtIndex(action.WorkspaceIndex)
 	case ui.HomeActionOpenAgentsModal:
-		a.openAgentsModal()
+		a.openAgentsModalForProfile(action.ModelProfileID)
 	case ui.HomeActionOpenProfilesModal:
 		a.openProfilesModal()
 	case ui.HomeActionSelectModelProfile:
@@ -5785,8 +5785,48 @@ func (a *App) handleAgentsModalAction(action ui.AgentsModalAction) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		if _, err := a.api.PatchAgentModelSettings(ctx, patch); err != nil {
+		savedSettings, err := a.api.PatchAgentModelSettings(ctx, patch)
+		if err != nil {
 			a.home.SetAgentsModalError(fmt.Sprintf("save agent model settings failed: %v", err))
+			return
+		}
+		if strings.TrimSpace(action.ModelProfileID) != "" && action.Swarm != nil {
+			var favorite *client.ModelProfile
+			for _, profile := range a.home.ModelProfiles() {
+				if strings.TrimSpace(profile.ProfileID) == strings.TrimSpace(action.ModelProfileID) {
+					profile := profile
+					favorite = &profile
+					break
+				}
+			}
+			if favorite == nil {
+				a.home.SetAgentsModalError("model favorite is unavailable")
+				return
+			}
+			favorite.Single = &client.ModelProfileSelection{
+				Provider: action.Swarm.Action.Provider, Model: action.Swarm.Action.Model,
+				Thinking: action.Swarm.Action.Thinking, ServiceTier: action.Swarm.Action.ServiceTier,
+				ContextMode: action.Swarm.Action.ContextMode,
+			}
+			if _, err := a.api.UpdateModelProfile(ctx, favorite.ProfileID, client.ModelProfileInput{Name: favorite.Name, ModelMode: "single", Single: favorite.Single}); err != nil {
+				a.home.SetAgentsModalError(fmt.Sprintf("save model favorite failed: %v", err))
+				return
+			}
+			if state, err := a.api.ListModelProfiles(ctx); err == nil {
+				a.applyHomeModel(refreshHomeModelProfiles(a.currentHomeModel(), state))
+			}
+		}
+		if action.Swarm != nil {
+			a.applyHomeModel(applySwarmModelAssignments(a.currentHomeModel(), savedSettings))
+			if a.v3ChatDraftActive() {
+				a.syncPrimedV3ChatFromHomeDraft()
+			}
+		}
+		if action.StayOpen {
+			a.refreshAgentsModalData("Agent model settings saved; continue editing")
+			if a.route == "home" {
+				a.showToast(ui.ToastSuccess, "agent model settings saved")
+			}
 			return
 		}
 		a.home.HideAgentsModal()
@@ -6542,6 +6582,10 @@ func (a *App) openProfilesModal() {
 }
 
 func (a *App) openAgentsModal() {
+	a.openAgentsModalForProfile("")
+}
+
+func (a *App) openAgentsModalForProfile(profileID string) {
 	a.home.ClearCommandOverlay()
 	a.home.HideSessionsModal()
 	a.home.HideAuthModal()
@@ -6553,7 +6597,7 @@ func (a *App) openAgentsModal() {
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
-	a.home.ShowAgentsModal()
+	a.home.ShowAgentsModalForProfile(profileID)
 	a.refreshAgentsModalData("Loading agent model settings...")
 }
 

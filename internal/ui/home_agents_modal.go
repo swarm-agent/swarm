@@ -36,11 +36,13 @@ const (
 )
 
 type AgentsModalAction struct {
-	Kind       AgentsModalActionKind
-	Agent      string
-	Swarm      *client.AgentModelSettingsSwarmPatch
-	Assignment *client.AgentModelAssignment
-	StatusHint string
+	Kind           AgentsModalActionKind
+	Agent          string
+	Swarm          *client.AgentModelSettingsSwarmPatch
+	Assignment     *client.AgentModelAssignment
+	ModelProfileID string
+	StayOpen       bool
+	StatusHint     string
 }
 
 type agentsModalFocus int
@@ -69,10 +71,15 @@ type agentsModalState struct {
 	EditingOptionSet   bool
 	Drafts             map[string][]client.AgentModelAssignment
 	InitialDrafts      map[string][]client.AgentModelAssignment
+	EditingProfileID   string
 }
 
 func (p *HomePage) ShowAgentsModal() {
-	p.agentsModal = agentsModalState{Visible: true, Loading: true, SelectedAgent: 0, Focus: agentsModalFocusAgents}
+	p.ShowAgentsModalForProfile("")
+}
+
+func (p *HomePage) ShowAgentsModalForProfile(profileID string) {
+	p.agentsModal = agentsModalState{Visible: true, Loading: true, SelectedAgent: 0, Focus: agentsModalFocusAgents, EditingProfileID: strings.TrimSpace(profileID)}
 }
 
 func (p *HomePage) HideAgentsModal() {
@@ -123,6 +130,27 @@ func (p *HomePage) SetAgentsModalData(data AgentsModalData) {
 		p.agentsModal.ModelCatalog[key] = record
 	}
 	p.agentsModal.Drafts = agentModelSettingsDrafts(data.Settings)
+	if profileID := strings.TrimSpace(p.agentsModal.EditingProfileID); profileID != "" {
+		for _, profile := range p.model.ModelProfiles {
+			if strings.TrimSpace(profile.ProfileID) != profileID {
+				continue
+			}
+			selection := profile.Single
+			if selection == nil && strings.TrimSpace(profile.Provider) != "" && strings.TrimSpace(profile.Model) != "" {
+				selection = &client.ModelProfileSelection{
+					Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking,
+					ServiceTier: profile.ServiceTier, ContextMode: profile.ContextMode,
+				}
+			}
+			if selection != nil {
+				p.agentsModal.Drafts["swarm"][0] = client.AgentModelAssignment{
+					Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking,
+					ServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode,
+				}
+			}
+			break
+		}
+	}
 	p.agentsModal.InitialDrafts = cloneAgentModelDrafts(p.agentsModal.Drafts)
 	p.agentsModal.SelectedAgent = minInt(maxInt(0, p.agentsModal.SelectedAgent), len(canonicalAgentModelNames)-1)
 	p.agentsModal.Focus = agentsModalFocusAgents
@@ -268,7 +296,11 @@ func (p *HomePage) handleAgentsModalKey(ev *tcell.EventKey) {
 		return
 	}
 	if p.keybinds.Match(ev, KeybindAgentsEditorSave) {
-		p.submitAgentsModalSave()
+		p.submitAgentsModalSave(true)
+		return
+	}
+	if ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S') {
+		p.submitAgentsModalSave(false)
 		return
 	}
 	if p.keybinds.Match(ev, KeybindModalClose) {
@@ -339,7 +371,7 @@ func (p *HomePage) handleAgentsModalKey(ev *tcell.EventKey) {
 		case tcell.KeyLeft:
 			p.agentsModal.Focus = agentsModalFocusAgents
 		case tcell.KeyEnter:
-			p.submitAgentsModalSave()
+			p.submitAgentsModalSave(true)
 		}
 	}
 }
@@ -373,7 +405,7 @@ func (p *HomePage) handleAgentsModalFieldKey(ev *tcell.EventKey) {
 	}
 	if p.keybinds.Match(ev, KeybindAgentsEditorSave) {
 		p.commitAgentsModalFieldEdit()
-		p.submitAgentsModalSave()
+		p.submitAgentsModalSave(true)
 		return
 	}
 	index := findAgentsModalOptionIndex(options, p.agentsModal.EditingOption)
@@ -504,14 +536,14 @@ func normalizeAgentsModalOptionValues(options []string, normalize func(string) s
 	return dedupeAgentsModalOptions(values)
 }
 
-func (p *HomePage) submitAgentsModalSave() {
+func (p *HomePage) submitAgentsModalSave(closeAfterSave bool) {
 	name := p.selectedAgentsModalName()
 	assignments := p.agentsModal.Drafts[name]
 	if (name == "swarm" && len(assignments) != 2) || (name != "swarm" && len(assignments) != 1) {
 		p.agentsModal.Error = "canonical agent assignments are unavailable; refresh and try again"
 		return
 	}
-	if !p.agentsModalHasChanges() {
+	if !p.agentsModalHasChanges() && strings.TrimSpace(p.agentsModal.EditingProfileID) == "" {
 		p.agentsModal.Status = "No pending changes to save"
 		return
 	}
@@ -521,7 +553,7 @@ func (p *HomePage) submitAgentsModalSave() {
 			return
 		}
 	}
-	action := AgentsModalAction{Kind: AgentsModalActionSave, Agent: name, StatusHint: "Saving agent model settings..."}
+	action := AgentsModalAction{Kind: AgentsModalActionSave, Agent: name, ModelProfileID: strings.TrimSpace(p.agentsModal.EditingProfileID), StayOpen: !closeAfterSave, StatusHint: "Saving agent model settings..."}
 	if name == "swarm" {
 		action.Swarm = &client.AgentModelSettingsSwarmPatch{Action: assignments[0], Plan: assignments[1]}
 	} else {
@@ -572,8 +604,10 @@ func (p *HomePage) handleAgentsModalMouse(ev *tcell.EventMouse) bool {
 		p.agentsModal.EditingOption = target.Meta
 		p.agentsModal.EditingOptionSet = true
 		p.commitAgentsModalFieldEdit()
-	case "agents-save":
-		p.submitAgentsModalSave()
+	case "agents-save-continue":
+		p.submitAgentsModalSave(false)
+	case "agents-save-exit":
+		p.submitAgentsModalSave(true)
 	}
 	return true
 }
@@ -610,7 +644,7 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	right := Rect{X: body.X + leftW + 1, Y: body.Y, W: body.W - leftW - 1, H: body.H}
 	p.drawAgentsModalAgentList(s, left)
 	p.drawAgentsModalEditor(s, right)
-	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, "↑/↓ navigate • Enter opens • Ctrl+Y saves and exits • Esc cancels")
+	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, "↑/↓ navigate • Enter opens • S saves and continues • Ctrl+Y saves and exits • Esc cancels")
 	DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "All values read and write /v1/agent-model-settings")
 }
 
@@ -737,8 +771,13 @@ func (p *HomePage) drawAgentsModalEditor(s tcell.Screen, rect Rect) {
 		saveStyle, savePrefix = p.theme.Accent.Bold(true), "> "
 	}
 	saveY := rect.Y + rect.H - 2
-	DrawText(s, rect.X+2, saveY, rect.W-4, saveStyle, savePrefix+"[ Save changes and exit ]")
-	p.registerAgentsModalTarget(Rect{X: rect.X + 1, Y: saveY, W: rect.W - 2, H: 1}, "agents-save", -1, "")
+	continueLabel := "[ Save & Continue ]"
+	exitLabel := "[ Save & Exit ]"
+	DrawText(s, rect.X+2, saveY, rect.W-4, saveStyle, savePrefix+continueLabel+"  "+exitLabel)
+	continueX := rect.X + 2 + len([]rune(savePrefix))
+	p.registerAgentsModalTarget(Rect{X: continueX, Y: saveY, W: len([]rune(continueLabel)), H: 1}, "agents-save-continue", -1, "")
+	exitX := continueX + len([]rune(continueLabel)) + 2
+	p.registerAgentsModalTarget(Rect{X: exitX, Y: saveY, W: len([]rune(exitLabel)), H: 1}, "agents-save-exit", -1, "")
 }
 
 func (p *HomePage) agentsModalCatalogRecord(providerID, modelID string) (client.ModelCatalogRecord, bool) {

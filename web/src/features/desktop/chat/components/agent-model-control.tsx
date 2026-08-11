@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
+import { ChevronDown, GitBranch, Lightbulb, Lock, Pencil, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { displayAgentName } from '../services/agent-display'
 import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../settings/swarm/queries/get-agent-model-settings'
 import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
 import type { AgentModelAssignment, AgentModelSettings, SystemAgentModelName } from '../../settings/swarm/types/agent-model-settings'
-import { createModelProfile, deleteModelProfile, invalidateModelProfiles } from '../queries/model-profile-queries'
+import { createModelProfile, deleteModelProfile, invalidateModelProfiles, updateModelProfile } from '../queries/model-profile-queries'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'provider'
@@ -374,7 +374,7 @@ export function AgentModelControl({
     setSingleDraft(fallback)
     setActionDraft(action)
     setPlanDraft(plan)
-    setEditingProfileId(activeModelProfile?.source === 'saved' ? activeModelProfile.profileId : '')
+    setEditingProfileId(profile && !isCompiledSystemAgent(profile.name) && activeModelProfile?.source === 'saved' ? activeModelProfile.profileId : '')
   }
 
   useEffect(() => {
@@ -555,6 +555,25 @@ export function AgentModelControl({
     }
   }
 
+  function editFavorite(profile: ModelProfileRecord) {
+    const option = modelOptionFor(profile.provider, profile.model, modelOptions, profile.contextMode)
+    setDraftAgentName(SWARM_AGENT_NAME)
+    setActionDraft({
+      provider: profile.provider,
+      upstreamFamily: option ? modelOptionUpstreamFamily(option) : '',
+      model: profile.model,
+      thinking: profile.thinking,
+      serviceTier: normalizeDraftServiceTier(profile.provider, profile.serviceTier),
+      contextMode: profile.contextMode,
+    })
+    setEditingProfileId(profile.profileId)
+    setFavoriteName(profile.name)
+    setFavoriteEditorOpen(false)
+    setDeleteCandidateId('')
+    setError(null)
+    setScreen('setup')
+  }
+
   async function deleteFavorite(profile: ModelProfileRecord) {
     if (saving || busy) return
     setSaving(true)
@@ -601,7 +620,7 @@ export function AgentModelControl({
     }
   }
 
-  async function confirm() {
+  async function confirm(closeAfterSave: boolean) {
     const profile = draftProfile
     if ((draftAgentName !== SWARM_AGENT_NAME && !profile) || saving || busy) return
     setSaving(true)
@@ -609,6 +628,13 @@ export function AgentModelControl({
     try {
       if (draftAgentName === SWARM_AGENT_NAME) {
         await saveSwarmModels()
+        if (editingProfileId) {
+          const name = favoriteName.trim()
+          if (!name) throw new Error('Enter a favorite name.')
+          const favorite = await updateModelProfile(editingProfileId, validateDraft(name, actionDraft))
+          await invalidateModelProfiles(queryClient)
+          await onApplyModelFavorite?.(favorite)
+        }
       } else if (profile && isSystemUtility(profile.name)) {
         const agentPatch = validateDraft(`${displayAgentName(profile.name)} model`, singleDraft)
         const agent: SystemAgentModelName = profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : profile.name === ROUTER_AGENT_NAME ? 'router' : 'finder'
@@ -633,7 +659,7 @@ export function AgentModelControl({
           makeDefault: false,
         })
       }
-      setOpen(false)
+      if (closeAfterSave) setOpen(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -680,9 +706,12 @@ export function AgentModelControl({
                           <Star size={17} fill={active ? 'currentColor' : 'none'} className={active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'} />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
-                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider} / {displayModelName(profile.provider, profile.model, profile.contextMode)} · {profile.thinking}</span>
+                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider} / {displayModelName(profile.provider, profile.model, profile.contextMode)} · thinking {profile.thinking || 'off'} · priority {serviceTierLabel(profile.provider, profile.model, modelOptions, profile.serviceTier)}</span>
                           </span>
                           <span className="shrink-0 text-[11px] font-semibold text-[var(--app-text-subtle)]">{switchingFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use'}</span>
+                        </button>
+                        <button type="button" disabled={saving || busy} aria-label={`Edit favorite ${profile.name}`} title={`Edit favorite ${profile.name}`} onClick={() => editFavorite(profile)} className="shrink-0 rounded-lg p-2 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">
+                          <Pencil size={15} />
                         </button>
                         {confirmingDelete ? (
                           <div className="flex shrink-0 items-center gap-1" role="group" aria-label={`Confirm deletion of ${profile.name}`}>
@@ -708,7 +737,7 @@ export function AgentModelControl({
               {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
             </div>
             <div className="flex shrink-0 justify-end border-t border-[var(--app-border)] px-4 py-3 sm:px-5">
-              <button type="button" onClick={() => { setError(null); setScreen('setup') }} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-xs font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)]">
+              <button type="button" onClick={() => { setError(null); setEditingProfileId(''); setFavoriteName(''); setScreen('setup') }} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-xs font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)]">
                 <Settings2 size={14} /> Agent Setup
               </button>
             </div>
@@ -801,7 +830,14 @@ export function AgentModelControl({
           <section aria-label="Agent model settings" className="min-h-0 p-4 min-[900px]:overflow-y-auto min-[900px]:p-5">
             {draftAgentName === SWARM_AGENT_NAME ? (
               <div className="grid gap-4">
-                <ModelDraftEditor title="Default Model" draft={actionDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setActionDraft, provider)} onModelChange={(model) => updateModel(setActionDraft, model)} onThinkingChange={(thinking) => setActionDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setActionDraft((current) => ({ ...current, serviceTier }))} onFavorite={beginFavorite} showServiceTier />
+                <ModelDraftEditor title={editingProfileId ? `Favorite: ${favoriteName}` : 'Default Model'} draft={actionDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setActionDraft, provider)} onModelChange={(model) => updateModel(setActionDraft, model)} onThinkingChange={(thinking) => setActionDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setActionDraft((current) => ({ ...current, serviceTier }))} onFavorite={editingProfileId ? undefined : beginFavorite} showServiceTier />
+                {editingProfileId ? (
+                  <label className="grid gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Favorite name
+                    <input value={favoriteName} onChange={(event) => setFavoriteName(event.target.value)} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)]" />
+                    <span className="normal-case font-normal tracking-normal">Saving updates this favorite, the canonical Default Model, and the current chat.</span>
+                  </label>
+                ) : null}
                 {favoriteEditorOpen ? (
                   <form className="grid gap-3 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface)] p-4" onSubmit={(event) => { event.preventDefault(); void createFavoriteFromDefault() }}>
                     <div>
@@ -844,8 +880,11 @@ export function AgentModelControl({
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 sm:px-5 sm:py-4">
           <button type="button" onClick={() => { setError(null); setScreen('favorites') }} className="mr-auto min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Favorites</button>
           <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
-          <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm() }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
-            {saving || busy ? 'Saving…' : `Save ${draftAgentName === SWARM_AGENT_NAME ? 'Swarm models' : `${draftProfile ? displayAgentName(draftProfile.name) : 'agent'} model`}`}
+          <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(false) }} className="min-h-10 rounded-lg border border-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
+            {saving || busy ? 'Saving…' : 'Save & Continue'}
+          </button>
+          <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(true) }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
+            {saving || busy ? 'Saving…' : 'Save & Exit'}
           </button>
         </div>
           </>
