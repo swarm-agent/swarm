@@ -41,8 +41,12 @@ test('running edit renders an accessible stable activity card without raw argume
   assert.match(rendered, /aria-live="polite"/)
   assert.match(rendered, /aria-busy="true"/)
   assert.match(rendered, /min-h-\[4\.25rem\]/)
+  assert.match(rendered, /w-full/)
+  assert.match(rendered, /max-w-full/)
+  assert.match(rendered, /self-stretch/)
   assert.match(rendered, /motion-safe:animate-\[pulse_2\.8s_ease-in-out_infinite\]/)
   assert.match(rendered, /motion-reduce:animate-none/)
+  assert.doesNotMatch(rendered, />Active</)
   assert.doesNotMatch(rendered, /unrendered argument body/)
 })
 

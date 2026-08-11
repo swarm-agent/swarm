@@ -3989,20 +3989,14 @@ function DesktopV3ToolMessage({
   taskChildActions?: TaskChildCardActions;
 }) {
   const toolName = toolMessage?.tool.trim().toLowerCase();
-  const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit", "websearch", "webfetch", "plan-manage", "plan_manage", "exit-plan-mode", "exit_plan_mode"].includes(toolName ?? "");
   return (
     <div
       className={cn(
-        "flex justify-start",
+        "flex w-full min-w-0 justify-start",
         toolName === "bash" && "translate-x-[5px]",
       )}
     >
-      <div
-        className={cn(
-          "min-w-0",
-          usesFullWidthCard ? "w-full max-w-full" : "max-w-[calc(100%-2rem)]",
-        )}
-      >
+      <div className="w-full min-w-0 max-w-full">
         <ChatMarkdown
           content={content}
           toolMessage={toolMessage ?? undefined}

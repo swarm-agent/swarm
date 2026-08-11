@@ -52,14 +52,12 @@ export function ToolActivityShell({
     ? 'text-[var(--app-danger)]'
     : activity.state === 'cancelled'
       ? 'text-[var(--app-text-muted)]'
-      : active
-        ? 'text-[var(--app-primary)]'
-        : 'text-[var(--app-success)]'
+      : 'text-[var(--app-success)]'
 
   return (
     <section
       className={cn(
-        'tool-activity-card min-h-[4.25rem] w-full min-w-0 overflow-hidden rounded-xl border bg-[var(--app-surface-subtle)] shadow-sm transition-[border-color,background-color] duration-200',
+        'tool-activity-card block min-h-[4.25rem] w-full min-w-0 max-w-full self-stretch overflow-hidden rounded-xl border bg-[var(--app-surface-subtle)] shadow-sm transition-[border-color,background-color] duration-200',
         activityToneClass(activity.state),
         active && 'motion-safe:animate-[pulse_2.8s_ease-in-out_infinite] motion-reduce:animate-none',
         className,
@@ -90,10 +88,12 @@ export function ToolActivityShell({
             </div>
           ) : null}
         </div>
-        <span className={cn('inline-flex shrink-0 items-center gap-1 text-[10px] font-medium', stateColor)}>
-          {StateIcon ? <StateIcon size={12} aria-hidden="true" /> : null}
-          <span className="hidden min-[360px]:inline">{activity.statusLabel}</span>
-        </span>
+        {!active ? (
+          <span className={cn('inline-flex shrink-0 items-center gap-1 text-[10px] font-medium', stateColor)}>
+            {StateIcon ? <StateIcon size={12} aria-hidden="true" /> : null}
+            <span className="hidden min-[360px]:inline">{activity.statusLabel}</span>
+          </span>
+        ) : null}
       </header>
       {children ? <div className={cn('min-w-0 border-t border-[var(--app-border)]', bodyClassName)}>{children}</div> : null}
     </section>
