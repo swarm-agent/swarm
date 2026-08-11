@@ -90,7 +90,8 @@ type PlanAcceptancePolicy struct {
 
 // SubagentPolicy is the single account-scoped delegation policy. Each accepted
 // parent task call consumes one automatic wave. Regular and swarm task calls have
-// independent child ceilings and independently accounted active-child counts.
+// independent approval-free child limits and independently accounted active counts;
+// over-limit waves follow OverBudgetAction within the absolute safety bound.
 type SubagentPolicy struct {
 	Mode                          SubagentOrchestrationMode `json:"mode"`
 	AutomaticLaunchesPerParentRun int                       `json:"automatic_launches_per_parent_run"`

@@ -148,7 +148,7 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 			t.Fatalf("subagent policy instructions missing %q:\n%s", want, instructions)
 		}
 	}
-	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "default hard ceiling for a regular task call", "separate hard ceiling for a swarm-mode task call", "Use active_child_limit for regular task launches and swarm_active_child_limit for mode=swarm"} {
+	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "approval-free limit for a regular task call", "separate approval-free limit for a swarm-mode task call", "an over-limit exact wave follows over_budget_action", "backend absolute safety bound still fails closed"} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("subagent policy instructions do not explain independent wave and concurrency semantics; missing %q:\n%s", want, instructions)
 		}

@@ -50,6 +50,10 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	if request.LaunchCount < 1 {
 		return SubagentReservationResult{}, errors.New("subagent wave must contain at least one launch")
 	}
+	if request.LaunchCount > MaxSubagentWaveSize {
+		record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Status: string(SubagentReservationDeny)}
+		return SubagentReservationResult{Decision: SubagentReservationDeny, Reason: fmt.Sprintf("subagent wave exceeds absolute safety bound of %d", MaxSubagentWaveSize), Reservation: record}, nil
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,12 +83,12 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	reason := "wave is within the bounded automatic delegation allowance"
 	if request.Delegated {
 		decision, reason = SubagentReservationDeny, "task delegation is parent-only; child sessions cannot delegate"
-	} else if request.LaunchCount > launchLimit {
-		decision, reason = SubagentReservationDeny, fmt.Sprintf("subagent wave exceeds %s of %d", limitLabel, launchLimit)
 	} else if policy.Mode == SubagentModeDirect {
 		decision, reason = SubagentReservationDeny, "direct orchestration mode denies delegation"
 	} else if policy.Mode == SubagentModeAsk {
 		decision, reason = SubagentReservationAsk, "ask orchestration mode reviews every exact wave"
+	} else if request.LaunchCount > launchLimit {
+		decision, reason = overBudgetSubagentDecision(policy, fmt.Sprintf("subagent wave exceeds %s of %d", limitLabel, launchLimit))
 	}
 	reservations, err := s.store.ListSubagentWaveReservations(request.SessionID, request.RunID)
 	if err != nil {
@@ -104,15 +108,11 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 			activeChildren += reservation.ActiveCount
 		}
 	}
-	if decision != SubagentReservationDeny && activeChildren+request.LaunchCount > launchLimit {
-		decision, reason = SubagentReservationDeny, fmt.Sprintf("%s would be exceeded by active child concurrency", limitLabel)
+	if decision == SubagentReservationApprove && activeChildren+request.LaunchCount > launchLimit {
+		decision, reason = overBudgetSubagentDecision(policy, fmt.Sprintf("%s would be exceeded by active child concurrency", limitLabel))
 	}
 	if decision == SubagentReservationApprove && automaticWaves >= policy.AutomaticLaunchesPerParentRun {
-		if policy.OverBudgetAction == SubagentOverBudgetDeny {
-			decision, reason = SubagentReservationDeny, "automatic wave budget is exhausted"
-		} else {
-			decision, reason = SubagentReservationAsk, "wave requires approval because the automatic wave budget is exhausted"
-		}
+		decision, reason = overBudgetSubagentDecision(policy, "the automatic wave budget is exhausted")
 	}
 	status := string(decision)
 	record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Status: status}
@@ -123,6 +123,13 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		return SubagentReservationResult{}, err
 	}
 	return SubagentReservationResult{Decision: decision, Reason: reason, Reservation: record}, nil
+}
+
+func overBudgetSubagentDecision(policy SubagentPolicy, reason string) (SubagentReservationDecision, string) {
+	if policy.OverBudgetAction == SubagentOverBudgetDeny {
+		return SubagentReservationDeny, strings.TrimPrefix(reason, "the ")
+	}
+	return SubagentReservationAsk, "wave requires approval because " + reason
 }
 
 func reservationResult(record pebblestore.SubagentWaveReservation) SubagentReservationResult {

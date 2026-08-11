@@ -76,15 +76,18 @@ test('request explainer UI and its supporting code are removed', () => {
   assert.doesNotMatch(settingsSource, /explainTool|explainArguments|explainResult|explaining/)
 })
 
-test('subagent settings expose an automatic wave budget and independent concurrency ceiling', () => {
+test('subagent settings explain approval-free regular and swarm limits', () => {
   assert.match(settingsSource, />Automatic waves per run</)
   assert.match(settingsSource, /number of task-call waves a parent can start without asking/)
   assert.match(settingsSource, /Every accepted task call consumes one wave, regardless of how many children it starts/)
-  assert.match(settingsSource, />Concurrent subagents</)
+  assert.match(settingsSource, />Default subagent limit</)
+  assert.match(settingsSource, />Swarm mode limit</)
   assert.match(settingsSource, />When the limit is reached</)
-  assert.match(settingsSource, /hard ceiling for both one task call and all currently active children/)
+  assert.match(settingsSource, /approval-free limit for a regular task call and all active regular subagents/)
+  assert.match(settingsSource, /An exact over-limit wave asks or is denied according to the selected action/)
+  assert.match(settingsSource, /separate approval-free limit for a swarm-mode task call and all active swarm subagents/)
   assert.match(settingsSource, /Only parent sessions can delegate; child sessions cannot start their own subagents/)
-  assert.doesNotMatch(settingsSource, /Largest single wave|Delegation depth/)
+  assert.doesNotMatch(settingsSource, /hard ceiling|Largest single wave|Delegation depth/)
   assert.doesNotMatch(settingsSource, /absolute_wave_maximum|max_depth|MAX_SUBAGENT_DEPTH/)
 })
 

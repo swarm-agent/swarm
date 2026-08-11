@@ -485,8 +485,8 @@ export function PermissionsSettingsPage() {
           </div>
           <div className="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)]">
             <div><span className="font-medium text-[var(--app-text)]">Automatic waves per run:</span> The number of task-call waves a parent can start without asking during one run. Every accepted task call consumes one wave, regardless of how many children it starts.</div>
-            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Default subagent limit:</span> The hard ceiling for a regular task call and all active regular subagents.</div>
-            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Swarm mode limit:</span> The separate hard ceiling for a swarm-mode task call and all active swarm subagents. Completed or failed children release capacity in their matching pool.</div>
+            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Default subagent limit:</span> The approval-free limit for a regular task call and all active regular subagents. An exact over-limit wave asks or is denied according to the selected action.</div>
+            <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Swarm mode limit:</span> The separate approval-free limit for a swarm-mode task call and all active swarm subagents. Completed or failed children release capacity in their matching pool.</div>
             <div className="mt-1"><span className="font-medium text-[var(--app-text)]">Delegation:</span> Only parent sessions can delegate; child sessions cannot start their own subagents.</div>
           </div>
         </section>

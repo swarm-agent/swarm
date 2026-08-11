@@ -354,12 +354,12 @@ func subagentPolicyInstructions(subagents permission.SubagentPolicy) string {
 		"Current backend orchestration policy (account-scoped):",
 		"- mode: " + string(subagents.Mode),
 		fmt.Sprintf("- automatic_launches_per_parent_run: %d (cumulative approval-free wave/task-call budget for this parent run; each accepted task call consumes one wave regardless of child count)", subagents.AutomaticLaunchesPerParentRun),
-		fmt.Sprintf("- active_child_limit: %d (default hard ceiling for a regular task call and aggregate active regular children; completed regular children release capacity)", subagents.ActiveChildLimit),
-		fmt.Sprintf("- swarm_active_child_limit: %d (separate hard ceiling for a swarm-mode task call and aggregate active swarm children; completed swarm children release capacity)", subagents.SwarmActiveChildLimit),
+		fmt.Sprintf("- active_child_limit: %d (approval-free limit for a regular task call and aggregate active regular children; completed regular children release capacity)", subagents.ActiveChildLimit),
+		fmt.Sprintf("- swarm_active_child_limit: %d (separate approval-free limit for a swarm-mode task call and aggregate active swarm children; completed swarm children release capacity)", subagents.SwarmActiveChildLimit),
 		"- over_budget_action: " + string(subagents.OverBudgetAction),
 		fmt.Sprintf("- require_write_isolation: %t", subagents.RequireWriteIsolation),
 		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
-		"Use active_child_limit for regular task launches and swarm_active_child_limit for mode=swarm. Both are maximums, never targets. These values are loaded when runtime instructions are composed; backend reservation enforcement remains authoritative if policy changes during an active run.",
+		"Use active_child_limit for regular task launches and swarm_active_child_limit for mode=swarm. Both are approval-free limits, never targets; an over-limit exact wave follows over_budget_action, while the backend absolute safety bound still fails closed. These values are loaded when runtime instructions are composed; backend reservation enforcement remains authoritative if policy changes during an active run.",
 	}, "\n"))
 }
 
