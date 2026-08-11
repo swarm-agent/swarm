@@ -28,6 +28,7 @@ const (
 	sessionsV3ArtifactBundleMaxFiles          = 2_000
 	sessionsV3ArtifactPreviewTokenTTL         = 5 * time.Minute
 	sessionsV3ArtifactPreviewAccessPath       = "access/"
+	sessionsV3ArtifactPackageEntryPath        = "__swarm_artifact_entry__.html"
 	// Package HTML is nested beneath a srcdoc iframe sandboxed without
 	// allow-same-origin, so its immediate ancestor has an opaque origin. CSP
 	// cannot express that as a frame-ancestors source. Keep framing controlled
@@ -547,12 +548,15 @@ func sessionV3ArtifactWorkspaceRoot(session pebblestore.SessionSnapshot) string 
 func openSessionV3ArtifactPackageFile(workspaceRoot, artifactPath, contentPath string) (*os.File, os.FileInfo, string, error) {
 	artifactPath = strings.TrimSpace(artifactPath)
 	contentPath = strings.TrimSpace(contentPath)
+	if contentPath == sessionsV3ArtifactPackageEntryPath {
+		contentPath = filepath.Base(filepath.FromSlash(artifactPath))
+	}
 	if artifactPath == "" || contentPath == "" || filepath.IsAbs(contentPath) || strings.Contains(contentPath, "\\") {
 		return nil, nil, "", errors.New("invalid artifact package path")
 	}
 	packageRoot := filepath.Clean(filepath.Dir(filepath.FromSlash(artifactPath)))
-	if packageRoot == "." || packageRoot == ".." || strings.HasPrefix(packageRoot, ".."+string(filepath.Separator)) {
-		return nil, nil, "", errors.New("html artifact is not in a dedicated package directory")
+	if packageRoot == ".." || strings.HasPrefix(packageRoot, ".."+string(filepath.Separator)) {
+		return nil, nil, "", errors.New("html artifact package escapes workspace")
 	}
 	cleanContent := filepath.Clean(filepath.FromSlash(contentPath))
 	if cleanContent == "." || cleanContent == ".." || strings.HasPrefix(cleanContent, ".."+string(filepath.Separator)) {

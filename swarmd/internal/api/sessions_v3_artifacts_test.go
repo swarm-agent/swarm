@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -101,6 +102,9 @@ func TestOpenSessionV3ArtifactPackageFileConfinesContentToHTMLDirectory(t *testi
 	if err := os.MkdirAll(filepath.Join(root, "gallery", "variant-1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "gallery", "index.html"), []byte("<iframe src=\"variant-1/index.html\"></iframe>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "gallery", "variant-1", "index.html"), []byte("<script>requestAnimationFrame(()=>{})</script>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +116,77 @@ func TestOpenSessionV3ArtifactPackageFileConfinesContentToHTMLDirectory(t *testi
 	if !info.Mode().IsRegular() || mediaType != "text/html; charset=utf-8" {
 		t.Fatalf("package file = mode %v media %q", info.Mode(), mediaType)
 	}
+	file, _, mediaType, err = openSessionV3ArtifactPackageFile(root, "gallery/index.html", sessionsV3ArtifactPackageEntryPath)
+	if err != nil {
+		t.Fatalf("open package entry alias: %v", err)
+	}
+	entry, err := io.ReadAll(file)
+	file.Close()
+	if err != nil {
+		t.Fatalf("read package entry alias: %v", err)
+	}
+	if string(entry) != "<iframe src=\"variant-1/index.html\"></iframe>" || mediaType != "text/html; charset=utf-8" {
+		t.Fatalf("package entry alias = %q media %q", string(entry), mediaType)
+	}
 	if _, _, _, err := openSessionV3ArtifactPackageFile(root, "gallery/index.html", "../outside.html"); err == nil {
 		t.Fatal("package directory escape was accepted")
 	}
-	if _, _, _, err := openSessionV3ArtifactPackageFile(root, "index.html", "variant-1/index.html"); err == nil {
-		t.Fatal("root-level html artifact was accepted as a package")
+	if _, _, _, err := openSessionV3ArtifactPackageFile(root, "index.html", "../outside.html"); err == nil {
+		t.Fatal("root-level package escape was accepted")
 	}
 	if _, _, _, err := openSessionV3ArtifactPackageFile(root, "gallery/index.html", "variant-1/program.exe"); err == nil {
 		t.Fatal("unsupported package media type was accepted")
+	}
+}
+
+func TestOpenSessionV3ArtifactPackageFileUsesExactRootAndNestedLocations(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	locations := map[string]string{
+		"index.html":                                  "<iframe src=\"variants/swarm-14/index.html\"></iframe>",
+		"variants/swarm-14/index.html":                "<link rel=\"stylesheet\" href=\"assets/css/site.css\"><script src=\"assets/js/app.js\"></script>",
+		"variants/swarm-14/assets/css/site.css":       "body { color: #b7ff32; }",
+		"variants/swarm-14/assets/js/app.js":          "document.body.dataset.ready = 'true'",
+		"variants/swarm-14/assets/images/cluster.svg": "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+	}
+	for relative, content := range locations {
+		absolute := filepath.Join(workspaceRoot, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+			t.Fatalf("mkdir exact artifact location %q: %v", absolute, err)
+		}
+		if err := os.WriteFile(absolute, []byte(content), 0o600); err != nil {
+			t.Fatalf("write exact artifact location %q: %v", absolute, err)
+		}
+	}
+
+	tests := []struct {
+		name         string
+		artifactPath string
+		contentPath  string
+		wantPath     string
+		wantType     string
+	}{
+		{name: "root entry alias", artifactPath: "index.html", contentPath: sessionsV3ArtifactPackageEntryPath, wantPath: "index.html", wantType: "text/html; charset=utf-8"},
+		{name: "root nested html", artifactPath: "index.html", contentPath: "variants/swarm-14/index.html", wantPath: "variants/swarm-14/index.html", wantType: "text/html; charset=utf-8"},
+		{name: "root nested css", artifactPath: "index.html", contentPath: "variants/swarm-14/assets/css/site.css", wantPath: "variants/swarm-14/assets/css/site.css", wantType: "text/css; charset=utf-8"},
+		{name: "nested entry alias", artifactPath: "variants/swarm-14/index.html", contentPath: sessionsV3ArtifactPackageEntryPath, wantPath: "variants/swarm-14/index.html", wantType: "text/html; charset=utf-8"},
+		{name: "nested sibling script", artifactPath: "variants/swarm-14/index.html", contentPath: "assets/js/app.js", wantPath: "variants/swarm-14/assets/js/app.js", wantType: "text/javascript; charset=utf-8"},
+		{name: "nested sibling image", artifactPath: "variants/swarm-14/index.html", contentPath: "assets/images/cluster.svg", wantPath: "variants/swarm-14/assets/images/cluster.svg", wantType: "image/svg+xml"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			file, _, mediaType, err := openSessionV3ArtifactPackageFile(workspaceRoot, test.artifactPath, test.contentPath)
+			if err != nil {
+				t.Fatalf("open workspace_root=%q artifact_path=%q content_path=%q: %v", workspaceRoot, test.artifactPath, test.contentPath, err)
+			}
+			got, readErr := io.ReadAll(file)
+			closeErr := file.Close()
+			if readErr != nil || closeErr != nil {
+				t.Fatalf("read workspace_root=%q artifact_path=%q content_path=%q: read=%v close=%v", workspaceRoot, test.artifactPath, test.contentPath, readErr, closeErr)
+			}
+			if string(got) != locations[test.wantPath] || mediaType != test.wantType {
+				t.Fatalf("workspace_root=%q artifact_path=%q content_path=%q resolved=%q media=%q, want content from %q media=%q", workspaceRoot, test.artifactPath, test.contentPath, string(got), mediaType, test.wantPath, test.wantType)
+			}
+		})
 	}
 }
 

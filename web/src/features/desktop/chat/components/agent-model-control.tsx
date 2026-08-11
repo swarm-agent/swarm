@@ -328,7 +328,7 @@ export function AgentModelControl({
   const [favoriteEditorOpen, setFavoriteEditorOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const favoritesPopoverRef = useRef<HTMLDivElement | null>(null)
-  const [favoritesPosition, setFavoritesPosition] = useState<{ bottom: number; left: number; width: number; maxHeight: number } | null>(null)
+  const [favoritesPosition, setFavoritesPosition] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null)
   const initializedOpenRef = useRef(false)
   const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && !isCompiledSystemAgent(agent.name)), compactProfile, finderProfile, coderProfile, designerProfile, routerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile, routerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
@@ -405,14 +405,20 @@ export function AgentModelControl({
     }
     const rect = anchor.getBoundingClientRect()
     const gutter = 8
-    const viewportWidth = window.innerWidth
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight
-    const width = Math.min(420, viewportWidth - gutter * 2)
+    const width = Math.max(0, Math.min(420, viewportWidth - gutter * 2))
+    const left = Math.min(Math.max(gutter, rect.left), Math.max(gutter, viewportWidth - width - gutter))
+    const spaceAbove = Math.max(0, rect.top - gutter * 2)
+    const spaceBelow = Math.max(0, viewportHeight - rect.bottom - gutter * 2)
+    const openAbove = spaceAbove >= spaceBelow
     setFavoritesPosition({
-      bottom: Math.max(gutter, viewportHeight - rect.top + gutter),
-      left: Math.min(Math.max(gutter, rect.left), Math.max(gutter, viewportWidth - width - gutter)),
+      ...(openAbove
+        ? { bottom: Math.max(gutter, viewportHeight - rect.top + gutter) }
+        : { top: Math.max(gutter, rect.bottom + gutter) }),
+      left,
       width,
-      maxHeight: Math.max(180, Math.min(460, rect.top - gutter * 2)),
+      maxHeight: Math.min(460, openAbove ? spaceAbove : spaceBelow),
     })
   }, [findVisibleFavoritesAnchor, open, screen])
 
@@ -671,10 +677,11 @@ export function AgentModelControl({
     <div
       ref={screen === 'favorites' ? favoritesPopoverRef : undefined}
       className={screen === 'favorites'
-        ? 'fixed z-[9999] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/30'
+        ? 'fixed z-[9999] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/30'
         : 'fixed inset-0 z-[9999] flex items-stretch justify-center overflow-hidden bg-black/50 pt-[var(--app-safe-area-top)] pr-[var(--app-safe-area-right)] pb-[var(--app-safe-area-bottom)] pl-[var(--app-safe-area-left)] sm:items-center sm:pt-[calc(var(--app-safe-area-top)+0.75rem)] sm:pr-[calc(var(--app-safe-area-right)+0.75rem)] sm:pb-[calc(var(--app-safe-area-bottom)+0.75rem)] sm:pl-[calc(var(--app-safe-area-left)+0.75rem)]'}
       style={screen === 'favorites' && favoritesPosition ? {
-        bottom: `${favoritesPosition.bottom}px`,
+        top: favoritesPosition.top === undefined ? undefined : `${favoritesPosition.top}px`,
+        bottom: favoritesPosition.bottom === undefined ? undefined : `${favoritesPosition.bottom}px`,
         left: `${favoritesPosition.left}px`,
         width: `${favoritesPosition.width}px`,
         maxHeight: `${favoritesPosition.maxHeight}px`,
@@ -686,27 +693,28 @@ export function AgentModelControl({
       <div className={`flex w-full flex-col overflow-hidden bg-[var(--app-surface)] ${screen === 'favorites' ? 'max-h-[inherit]' : 'h-full max-h-full max-w-6xl shadow-xl sm:h-auto sm:max-h-[min(94dvh,880px)] sm:rounded-xl sm:border sm:border-[var(--app-border)]'}`}>
         {screen === 'favorites' ? (
           <>
-            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-4 sm:px-5">
-              <div>
+            <div className="flex min-w-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-4 sm:px-5">
+              <div className="min-w-0">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Model favorites</div>
                 <div className="mt-1 text-base font-semibold text-[var(--app-text)]">Choose a model</div>
-                <div className="mt-1 text-xs text-[var(--app-text-muted)]">Switch the current chat and the canonical Default Model.</div>
+                <div className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Switch the current chat and the canonical Default Model.</div>
               </div>
-              <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
+              <button type="button" onClick={() => setOpen(false)} className="shrink-0 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
+            <div className="min-h-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-4 sm:p-5">
               {modelProfiles.length > 0 ? (
                 <div className="grid gap-2" aria-label="Model favorites">
                   {modelProfiles.map((profile) => {
                     const active = favoriteMatchesCurrentChat(profile)
                     const confirmingDelete = deleteCandidateId === profile.profileId
                     return (
-                      <div key={profile.profileId} className={`flex items-center gap-1 rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                      <div key={profile.profileId} className={`flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
                         <button type="button" disabled={saving || busy} onClick={() => { void applyFavorite(profile) }} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2 text-left disabled:cursor-default disabled:opacity-70">
                           <Star size={17} fill={active ? 'currentColor' : 'none'} className={active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'} />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
-                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider} / {displayModelName(profile.provider, profile.model, profile.contextMode)} · thinking {profile.thinking || 'off'} · priority {serviceTierLabel(profile.provider, profile.model, modelOptions, profile.serviceTier)}</span>
+                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider}/{displayModelName(profile.provider, profile.model, profile.contextMode)}</span>
+                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.thinking || 'off'} · {serviceTierLabel(profile.provider, profile.model, modelOptions, profile.serviceTier)}</span>
                           </span>
                           <span className="shrink-0 text-[11px] font-semibold text-[var(--app-text-subtle)]">{switchingFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use'}</span>
                         </button>

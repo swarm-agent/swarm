@@ -46,11 +46,13 @@ export function ComposerPlanModelControl({
     title={selectionLabel}
     data-composer-agent-model-control
     data-model-favorites-anchor={popoverAnchorId}
-    className="group inline-flex min-h-9 min-w-0 max-w-[9.5rem] items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-left shadow-sm transition-colors hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[20rem]"
+    className="group inline-flex min-h-10 min-w-0 max-w-[9.5rem] items-center gap-1.5 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-left shadow-sm transition-colors hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[20rem]"
   >
     <Settings2 size={13} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
-    <span className="min-w-0 truncate text-xs font-semibold text-[var(--app-text-subtle)]">{modelLabel}</span>
-    {detailLabel ? <span className="hidden shrink-0 text-[10px] text-[var(--app-text-subtle)] lg:inline">{detailLabel}</span> : null}
+    <span className="flex min-w-0 flex-1 flex-col leading-tight">
+      <span className="truncate text-xs font-semibold text-[var(--app-text-subtle)]">{modelLabel}</span>
+      {detailLabel ? <span className="truncate text-[10px] text-[var(--app-text-muted)]">{detailLabel}</span> : null}
+    </span>
     <ChevronDown size={13} className="shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />
   </button>
 }

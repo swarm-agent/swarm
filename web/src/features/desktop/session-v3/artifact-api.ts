@@ -19,14 +19,21 @@ export function desktopV3ArtifactPreviewAccessEndpoint(sessionId: string): strin
   return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/preview-access`
 }
 
+const desktopV3ArtifactPackageEntryPath = '__swarm_artifact_entry__.html'
+
 export function desktopV3ArtifactPackageBaseEndpoint(sessionId: string, artifactId: string, previewToken: string): string {
   const normalizedToken = previewToken.trim()
   if (!normalizedToken) throw new Error('Artifact preview access token is required')
   return `${desktopV3ArtifactEndpoint(sessionId, artifactId)}/content/access/${encodeURIComponent(normalizedToken)}/`
 }
 
+export function desktopV3ArtifactPackageEntryEndpoint(sessionId: string, artifactId: string, previewToken: string): string {
+  return `${desktopV3ArtifactPackageBaseEndpoint(sessionId, artifactId, previewToken)}${desktopV3ArtifactPackageEntryPath}`
+}
+
 export function buildDesktopV3ArtifactSandboxDocument(source: string, sessionId: string, artifactId: string, previewToken: string): string {
   const packageBase = new URL(desktopV3ArtifactPackageBaseEndpoint(sessionId, artifactId, previewToken), window.location.origin)
+  const packageEntry = new URL(desktopV3ArtifactPackageEntryEndpoint(sessionId, artifactId, previewToken), window.location.origin)
   const document = new DOMParser().parseFromString(source, 'text/html')
   const packageSource = packageBase.toString()
   const policy = document.createElement('meta')
@@ -42,11 +49,11 @@ export function buildDesktopV3ArtifactSandboxDocument(source: string, sessionId:
     "connect-src 'none'",
     "worker-src blob:",
     "object-src 'none'",
-    `base-uri ${packageSource}`,
+    `base-uri ${packageEntry.toString()}`,
     "form-action 'none'",
   ].join('; ')
   const base = document.createElement('base')
-  base.href = packageBase.toString()
+  base.href = packageEntry.toString()
   document.head.prepend(policy, base)
   return `<!doctype html>\n${document.documentElement.outerHTML}`
 }
