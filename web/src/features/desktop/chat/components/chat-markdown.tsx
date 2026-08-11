@@ -2114,7 +2114,7 @@ export function ToolMessageView({
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
   const isExitPlanMode = ["exit-plan-mode", "exit_plan_mode"].includes(normalizedTool);
   const isSearch = normalizedTool === "search";
-  const isFileAction = ["read", "list", "search", "edit"].includes(normalizedTool);
+  const isFileAction = ["read", "list", "search", "write", "edit"].includes(normalizedTool);
   const fileSummary = isSearch
     ? ""
     : isFileAction && toolMessage.target

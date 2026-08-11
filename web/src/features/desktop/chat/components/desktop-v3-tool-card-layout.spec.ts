@@ -22,3 +22,9 @@ test('expanded tool result bodies stay within half the viewport and scroll inter
   assert.match(markdownSource, /className=\{TOOL_RESULT_BODY_CLASS\}/)
   assert.match(markdownSource, /cn\(TOOL_RESULT_BODY_CLASS, "mt-2 grid gap-2 font-mono pr-1"\)/)
 })
+
+test('write tool results use the full-width file action card treatment', () => {
+  assert.match(markdownSource, /\["read", "list", "search", "write", "edit"\]\.includes\(normalizedTool\)/)
+  assert.match(markdownSource, /isFileAction && "overflow-hidden rounded-xl border border-\[var\(--app-border\)\] bg-\[var\(--app-surface-subtle\)\]/)
+  assert.match(markdownSource, /isFileAction && !isSearch && toolMessage\.target/)
+})
