@@ -208,6 +208,10 @@ type manageWorktreeConfigService interface {
 	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
 }
 
+type manageWorktreeIntegrationClassifier interface {
+	TaskCommitRangeIntegratedInto(workspacePath, baseCommit, headCommit, parentHead string) (bool, error)
+}
+
 type manageOrchestrationPolicyService interface {
 	CurrentSubagentPolicyForAccount(accountScopeID string) (map[string]any, error)
 	UpdateSubagentPolicyMapForAccount(accountScopeID string, input map[string]any) (map[string]any, error)
@@ -6407,9 +6411,9 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 						// whether this clean child has a durable committed handoff.
 						childState = "committed"
 					default:
-						integrated, ancestryErr := r.worktrees.TaskCommitDescendsFrom(parentPath, recordedHead, parentState.HeadCommit)
-						if ancestryErr != nil {
-							child["integration_inspection_error"] = ancestryErr.Error()
+						integrated, integrationErr := r.manageWorktreeCommitIntegrated(parentPath, recordedBase, recordedHead, parentState.HeadCommit)
+						if integrationErr != nil {
+							child["integration_inspection_error"] = integrationErr.Error()
 							childState = "blocked"
 						} else if integrated {
 							childState = "integrated"
@@ -6482,6 +6486,15 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func (r *Runtime) manageWorktreeCommitIntegrated(parentPath, baseCommit, headCommit, parentHead string) (bool, error) {
+	if classifier, ok := r.worktrees.(manageWorktreeIntegrationClassifier); ok {
+		return classifier.TaskCommitRangeIntegratedInto(parentPath, baseCommit, headCommit, parentHead)
+	}
+	// Compatibility for narrow test doubles and alternate implementations: the
+	// canonical worktree service provides patch-equivalent range classification.
+	return r.worktrees.TaskCommitDescendsFrom(parentPath, headCommit, parentHead)
 }
 
 func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]any) (string, error) {
@@ -6630,8 +6643,11 @@ git log --format=%%H%%x09%%h%%x09%%cI%%x09%%s --branches=%s | while IFS=$'\t' re
 	printf '%%s\t%%s\t%%s\t%%s\t%%s\n' "$commit" "$short" "$committed_at" "$merged" "$subject"
 done`, branchGlob, branchGlob)
 	bashArgs := map[string]any{
-		"command":    command,
-		"timeout_ms": 20000,
+		"command":     command,
+		"timeout_ms":  20000,
+		"explanation": []any{"Inspect worktree-family Git commits and compare them with the current branch without changing repository state."},
+		"category":    "read",
+		"critical":    false,
 	}
 	output, err := executeBash(context.Background(), normalizeWorkspaceScope(workspacePath, scope.Roots), bashArgs, nil)
 	if err != nil {

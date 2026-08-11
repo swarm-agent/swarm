@@ -608,6 +608,28 @@ func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChil
 	return out
 }
 
+// TaskCommitRangeIntegratedInto reports whether every commit in base..head is
+// represented in parentHead by ancestry, a stable patch-equivalent cherry-pick,
+// or a conflict-resolved cherry-pick. Integration changes commit IDs, so
+// ancestry alone is insufficient for post-integration recall.
+func (s *Service) TaskCommitRangeIntegratedInto(parentPath, base, head, parentHead string) (bool, error) {
+	commitText, err := runGit(parentPath, "rev-list", "--reverse", base+".."+head)
+	if err != nil {
+		return false, fmt.Errorf("list child commits for integration classification: %w", err)
+	}
+	commits := strings.Fields(commitText)
+	if len(commits) == 0 {
+		return false, nil
+	}
+	for _, commit := range commits {
+		integrated, classifyErr := taskCommitAlreadyIntegrated(parentPath, parentHead, commit)
+		if classifyErr != nil || !integrated {
+			return false, classifyErr
+		}
+	}
+	return true, nil
+}
+
 func taskCommitAlreadyIntegrated(parentPath, parentHead, commit string) (bool, error) {
 	reachable, err := (&Service{}).TaskCommitDescendsFrom(parentPath, commit, parentHead)
 	if err != nil {

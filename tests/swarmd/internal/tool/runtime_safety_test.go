@@ -1002,17 +1002,17 @@ func TestToolRuntimeSafetyManageSkillInspectIncludesInvalidSkills(t *testing.T) 
 	}
 }
 
-func TestToolRuntimeManageWorktreeInspectReturnsPaginatedCommitsForConfiguredBranchPrefix(t *testing.T) {
+func TestToolRuntimeManageWorktreeListReturnsPaginatedCommitsForConfiguredBranchPrefix(t *testing.T) {
 	workspace := t.TempDir()
 	setupManageWorktreeTestRepo(t, workspace)
 	rt := NewRuntime(2)
 	rt.SetManageWorktreeServices(fakeManageWorktreeSessionService{}, fakeManageWorktreeWorkspaceService{current: manageWorktreeWorkspaceBinding{ResolvedPath: workspace, WorkspacePath: workspace, WorkspaceName: "demo"}, scope: manageWorktreeWorkspaceScopeInfo{WorkspacePath: workspace, WorkspaceName: "demo"}}, fakeManageWorktreeConfigService{config: manageWorktreeConfig{WorkspacePath: workspace, Enabled: true, BaseBranch: "main", BranchName: "agent", UpdatedAt: 123}})
 	scope := WorkspaceScope{PrimaryPath: workspace, Roots: []string{workspace}, SessionID: "parent-session", Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent-session"}}
 	output, err := rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{
-		CallID: "manage-worktree-inspect",
+		CallID: "manage-worktree-list",
 		Name:   "manage-worktree",
 		Arguments: mustArgsJSON(t, map[string]any{
-			"action": "inspect",
+			"action": "list",
 			"limit":  10,
 			"cursor": 0,
 		}),

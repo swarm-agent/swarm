@@ -237,6 +237,12 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if result.ResultingParentHead == "" || result.ResultingParentHead == base {
 		t.Fatalf("result = %#v", result)
 	}
+	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || descends {
+		t.Fatalf("cherry-picked child unexpectedly reachable by ancestry: descends=%t err=%v", descends, err)
+	}
+	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, head, result.ResultingParentHead); err != nil || !integrated {
+		t.Fatalf("cherry-picked child not classified integrated: integrated=%t err=%v", integrated, err)
+	}
 	if _, err := os.Stat(filepath.Join(repo, "child.txt")); err != nil {
 		t.Fatalf("integrated file: %v", err)
 	}
@@ -317,6 +323,9 @@ func TestTaskIntegrationSkipsAlreadyIntegratedCommitAndAppliesRemainingCommit(t 
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".git", "CHERRY_PICK_HEAD")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cherry-pick state remains after integration: %v", err)
+	}
+	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, second, result.ResultingParentHead); err != nil || !integrated {
+		t.Fatalf("multi-commit child range not classified integrated: integrated=%t err=%v", integrated, err)
 	}
 }
 

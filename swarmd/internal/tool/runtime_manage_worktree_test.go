@@ -57,6 +57,7 @@ type coderLineageWorktreeService struct {
 	prepareErr       error
 	applyResult      worktreeruntime.TaskIntegrationResult
 	applyCalls       int
+	integrated       map[string]bool
 }
 
 func (s *coderLineageWorktreeService) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {
@@ -69,6 +70,10 @@ func (s *coderLineageWorktreeService) InspectTaskWorkspace(path string) (worktre
 
 func (s *coderLineageWorktreeService) TaskCommitDescendsFrom(_, _, _ string) (bool, error) {
 	return false, nil
+}
+
+func (s *coderLineageWorktreeService) TaskCommitRangeIntegratedInto(_, _, headCommit, _ string) (bool, error) {
+	return s.integrated[headCommit], nil
 }
 
 func (s *coderLineageWorktreeService) VerifyTaskIntegrationWorkspace(_, childPath, _, branchName, _, headCommit string) (worktreeruntime.TaskWorkspaceState, error) {
@@ -98,6 +103,15 @@ func (s *coderLineageWorktreeService) ApplyTaskIntegration(_ string, plan worktr
 	if s.applyResult.ResultingParentHead == "" {
 		s.applyResult = worktreeruntime.TaskIntegrationResult{TaskIntegrationPlan: plan, ResultingParentHead: "integrated-parent-head"}
 	}
+	if s.integrated == nil {
+		s.integrated = map[string]bool{}
+	}
+	for _, entry := range s.applyResult.Entries {
+		s.integrated[entry.HeadCommit] = true
+	}
+	parent := s.states["/repo"]
+	parent.HeadCommit = s.applyResult.ResultingParentHead
+	s.states["/repo"] = parent
 	return s.applyResult, nil
 }
 
@@ -156,6 +170,42 @@ func TestManageWorktreeIntegrateAppliesSelectedCoderBatchInDurableOrder(t *testi
 		if response.ChildStates[id] != "integrated" {
 			t.Fatalf("child %s state = %q, want integrated", id, response.ChildStates[id])
 		}
+	}
+}
+
+func TestManageWorktreeRecallReportsIntegratedAfterBatchApply(t *testing.T) {
+	runtime, scope, _, childIDs := newCoderWaveRuntime(t, 5)
+	if _, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"task_call_id": "call-wave"}); err != nil {
+		t.Fatalf("integrate Coder wave: %v", err)
+	}
+	output, err := runtime.manageWorktreeRecall(scope, map[string]any{"task_call_id": "call-wave"})
+	if err != nil {
+		t.Fatalf("recall integrated Coder wave: %v", err)
+	}
+	var response struct {
+		Children []struct {
+			SessionID string `json:"child_session_id"`
+			State     string `json:"child_state"`
+		} `json:"children"`
+		StateCounts map[string]int `json:"state_counts"`
+		Integration struct {
+			ReadyCount       int            `json:"ready_count"`
+			IntegrateRequest map[string]any `json:"integrate_request"`
+		} `json:"integration"`
+	}
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatalf("decode integrated recall response: %v", err)
+	}
+	if response.StateCounts["integrated"] != len(childIDs) || response.StateCounts["committed"] != 0 {
+		t.Fatalf("post-integration state counts = %#v, want integrated:%d", response.StateCounts, len(childIDs))
+	}
+	for _, child := range response.Children {
+		if child.State != "integrated" {
+			t.Fatalf("child %s state = %q, want integrated", child.SessionID, child.State)
+		}
+	}
+	if response.Integration.ReadyCount != 0 || response.Integration.IntegrateRequest != nil {
+		t.Fatalf("integrated wave remains ready for integration: %#v", response.Integration)
 	}
 }
 
