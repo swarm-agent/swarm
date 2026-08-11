@@ -1571,6 +1571,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	planModal, planModalScroll, planModalPlan := p.planModal, p.planModalScroll, p.planModalPlan
 	bashOutputModal, bashOutputModalScroll, bashOutputModalTool := p.bashOutputModal, p.bashOutputModalScroll, p.bashOutputModalTool
 	handoffDetailsModal, handoffDetailsScroll, handoffDetailsSection := p.handoffDetailsModal, p.handoffDetailsScroll, p.handoffDetailsSection
+	handoffDetailsMessageID := p.handoffDetailsMessageID
 	var handoffDetails *client.PlanFinalHandoff
 	if p.handoffDetails != nil {
 		copy := cloneFinalHandoff(p.handoffDetails)
@@ -1595,6 +1596,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if p.runtime != nil && p.runtime.Store() != nil {
 		state = p.runtime.Store().Snapshot()
 	}
+	handoffDetailsSessionID := finalHandoffMessageSessionID(state.Messages, handoffDetailsMessageID)
 	title := strings.TrimSpace(SelectTitle(state))
 	if title == "" {
 		if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
@@ -1745,7 +1747,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if taskLaunchModalIndex >= 0 && taskLaunchModalIndex < len(pendingPermissions) {
 		p.drawTaskLaunchPermissionModal(screen, width, height, styles, pendingPermissions[taskLaunchModalIndex], permissionContentScroll)
 	} else if handoffDetailsModal {
-		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsSection, handoffDetailsScroll)
+		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsSection, handoffDetailsSessionID, handoffDetailsScroll)
 	} else if planModal {
 		plan := state.Plan.ActivePlan
 		if planModalPlan != nil {

@@ -50,7 +50,7 @@ func finalHandoffExpandableSections(handoff *client.PlanFinalHandoff) []string {
 	if handoff == nil {
 		return nil
 	}
-	sections := make([]string, 0, 3)
+	sections := make([]string, 0, 4)
 	if strings.TrimSpace(handoff.Details.Report) != "" || strings.TrimSpace(handoff.Details.Result) != "" {
 		sections = append(sections, "details")
 	}
@@ -59,6 +59,9 @@ func finalHandoffExpandableSections(handoff *client.PlanFinalHandoff) []string {
 	}
 	if len(handoff.Details.Validation) > 0 {
 		sections = append(sections, "validation")
+	}
+	if len(handoff.Artifacts) > 0 {
+		sections = append(sections, "artifacts")
 	}
 	return sections
 }
@@ -214,6 +217,7 @@ func cloneFinalHandoff(value *client.PlanFinalHandoff) client.PlanFinalHandoff {
 	out := *value
 	out.ImpactBullets = append([]string(nil), value.ImpactBullets...)
 	out.SuggestedPrompts = append([]client.PlanFinalHandoffSuggestedPrompt(nil), value.SuggestedPrompts...)
+	out.Artifacts = append([]client.PlanFinalHandoffArtifact(nil), value.Artifacts...)
 	out.Details.ChangedFiles = append([]string(nil), value.Details.ChangedFiles...)
 	out.Details.Validation = append([]string(nil), value.Details.Validation...)
 	if value.Recommendation != nil {
@@ -389,6 +393,8 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 		for sectionIndex, section := range sections {
 			label := ""
 			switch section {
+			case "artifacts":
+				label = fmt.Sprintf("▸ Artifacts (%d)", len(handoff.Artifacts))
 			case "details":
 				facts := make([]string, 0, 2)
 				if strings.TrimSpace(handoff.Details.Report) != "" {
@@ -418,7 +424,7 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 	return append(rows, renderRow{text: "", style: styles.Text})
 }
 
-func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, section string, width int, styles PageStyles) []permissionCardLine {
+func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, section, sessionID string, width int, styles PageStyles) []permissionCardLine {
 	if handoff == nil {
 		return nil
 	}
@@ -455,6 +461,8 @@ func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, section string, 
 		}
 	}
 	switch section {
+	case "artifacts":
+		appendArtifactList(&lines, handoff.Artifacts, sessionID, width, styles)
 	case "details":
 		appendSection("REPORT", handoff.Details.Report)
 		appendSection("RESULT", handoff.Details.Result)
@@ -463,6 +471,7 @@ func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, section string, 
 	case "validation":
 		appendList("VALIDATION", handoff.Details.Validation)
 	default:
+		appendArtifactList(&lines, handoff.Artifacts, sessionID, width, styles)
 		appendSection("REPORT", handoff.Details.Report)
 		appendSection("RESULT", handoff.Details.Result)
 		appendList("CHANGED FILES", handoff.Details.ChangedFiles)
@@ -474,7 +483,59 @@ func finalHandoffDetailsLines(handoff *client.PlanFinalHandoff, section string, 
 	return lines
 }
 
-func (p *Page) drawFinalHandoffDetailsModal(screen tcell.Screen, width, height int, styles PageStyles, handoff *client.PlanFinalHandoff, section string, scroll int) {
+func appendArtifactList(lines *[]permissionCardLine, artifacts []client.PlanFinalHandoffArtifact, sessionID string, width int, styles PageStyles) {
+	if len(artifacts) == 0 {
+		return
+	}
+	*lines = append(*lines, permissionCardLine{Text: "DELIVERABLE ARTIFACTS", Style: styles.Secondary.Bold(true)})
+	for index, artifact := range artifacts {
+		label := firstNonEmpty(strings.TrimSpace(artifact.Label), strings.TrimSpace(artifact.Description), strings.TrimSpace(artifact.WorkspaceRelativePath), strings.TrimSpace(artifact.RelativePath), strings.TrimSpace(artifact.Path), fmt.Sprintf("Artifact %d", index+1))
+		mediaType := firstNonEmpty(strings.TrimSpace(artifact.MediaType), "file")
+		preview := "download"
+		if artifact.Previewable {
+			preview = "preview available"
+		}
+		for lineIndex, line := range wrapDisplayText(fmt.Sprintf("%d. %s  ·  %s  ·  %s", index+1, label, mediaType, preview), maxInt(1, width-2)) {
+			prefix := "  "
+			if lineIndex == 0 {
+				prefix = "• "
+			}
+			*lines = append(*lines, permissionCardLine{Text: prefix + line, Style: styles.Text})
+		}
+		path := firstNonEmpty(strings.TrimSpace(artifact.WorkspaceRelativePath), strings.TrimSpace(artifact.RelativePath), strings.TrimSpace(artifact.Path))
+		if path != "" {
+			for _, line := range wrapDisplayText("Path: "+path, maxInt(1, width-2)) {
+				*lines = append(*lines, permissionCardLine{Text: "  " + line, Style: styles.Muted})
+			}
+		}
+		artifactID := firstNonEmpty(strings.TrimSpace(artifact.ArtifactID), strings.TrimSpace(artifact.ID))
+		if artifactID != "" {
+			sessionSegment := firstNonEmpty(strings.TrimSpace(sessionID), "{session_id}")
+			route := firstNonEmpty(strings.TrimSpace(artifact.PreviewURL), "/v3/sessions/"+sessionSegment+"/artifacts/"+artifactID)
+			for _, line := range wrapDisplayText("Route: "+route, maxInt(1, width-2)) {
+				*lines = append(*lines, permissionCardLine{Text: "  " + line, Style: styles.Muted})
+			}
+		}
+		if index+1 < len(artifacts) {
+			*lines = append(*lines, permissionCardLine{Text: "", Style: styles.Muted})
+		}
+	}
+	*lines = append(*lines,
+		permissionCardLine{Text: "", Style: styles.Muted},
+		permissionCardLine{Text: "Use the authenticated route through the same local or remote Swarm connection. The path is only a workspace-relative fallback.", Style: styles.Muted},
+	)
+}
+
+func finalHandoffMessageSessionID(messages []Message, messageID string) string {
+	for _, message := range messages {
+		if message.ID == messageID {
+			return strings.TrimSpace(message.SessionID)
+		}
+	}
+	return ""
+}
+
+func (p *Page) drawFinalHandoffDetailsModal(screen tcell.Screen, width, height int, styles PageStyles, handoff *client.PlanFinalHandoff, section, sessionID string, scroll int) {
 	if handoff == nil || width < 8 || height < 6 {
 		return
 	}
@@ -484,7 +545,7 @@ func (p *Page) drawFinalHandoffDetailsModal(screen tcell.Screen, width, height i
 	fill(screen, x, y, modalWidth, modalHeight, styles.Panel)
 	drawBox(screen, x, y, modalWidth, modalHeight, styles.BorderActive)
 	contentWidth := maxInt(1, modalWidth-4)
-	title := map[string]string{"details": "FINAL HANDOFF DETAILS", "files": "FINAL HANDOFF FILES", "validation": "FINAL HANDOFF VALIDATION"}[section]
+	title := map[string]string{"artifacts": "FINAL HANDOFF ARTIFACTS", "details": "FINAL HANDOFF DETAILS", "files": "FINAL HANDOFF FILES", "validation": "FINAL HANDOFF VALIDATION"}[section]
 	if title == "" {
 		title = "FINAL HANDOFF EVIDENCE"
 	}
@@ -492,7 +553,7 @@ func (p *Page) drawFinalHandoffDetailsModal(screen tcell.Screen, width, height i
 	if modalHeight > 4 {
 		drawText(screen, x+2, y+2, contentWidth, styles.Muted, "↑/↓ scroll  ·  d, q, or Esc close")
 	}
-	lines := finalHandoffDetailsLines(handoff, section, contentWidth, styles)
+	lines := finalHandoffDetailsLines(handoff, section, sessionID, contentWidth, styles)
 	visibleRows := maxInt(1, modalHeight-5)
 	maxScroll := maxInt(0, len(lines)-visibleRows)
 	scroll = minInt(maxInt(0, scroll), maxScroll)

@@ -1005,6 +1005,7 @@ func finalHandoffFromMetadata(metadata map[string]any) *client.PlanFinalHandoff 
 	handoff.Overview = strings.TrimSpace(handoff.Overview)
 	handoff.ImpactBullets = cleanStrings(handoff.ImpactBullets, 3)
 	handoff.SuggestedPrompts = cleanHandoffPrompts(handoff.SuggestedPrompts, 3)
+	handoff.Artifacts = cleanHandoffArtifacts(handoff.Artifacts, 20)
 	handoff.Details.ChangedFiles = cleanStrings(handoff.Details.ChangedFiles, 0)
 	handoff.Details.Validation = cleanStrings(handoff.Details.Validation, 0)
 	return &handoff
@@ -1038,6 +1039,29 @@ func cleanHandoffPrompts(values []client.PlanFinalHandoffSuggestedPrompt, limit 
 	return out
 }
 
+func cleanHandoffArtifacts(values []client.PlanFinalHandoffArtifact, limit int) []client.PlanFinalHandoffArtifact {
+	out := make([]client.PlanFinalHandoffArtifact, 0, len(values))
+	for _, value := range values {
+		value.ArtifactID = strings.TrimSpace(value.ArtifactID)
+		value.ID = strings.TrimSpace(value.ID)
+		value.Label = strings.TrimSpace(value.Label)
+		value.Description = strings.TrimSpace(value.Description)
+		value.MediaType = strings.TrimSpace(value.MediaType)
+		value.Path = strings.TrimSpace(value.Path)
+		value.RelativePath = strings.TrimSpace(value.RelativePath)
+		value.WorkspaceRelativePath = strings.TrimSpace(value.WorkspaceRelativePath)
+		value.PreviewURL = strings.TrimSpace(value.PreviewURL)
+		if value.ArtifactID == "" && value.ID == "" {
+			continue
+		}
+		out = append(out, value)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out
+}
+
 func cloneAnyMap(value map[string]any) map[string]any {
 	if value == nil {
 		return nil
@@ -1064,6 +1088,7 @@ func cloneState(value State) State {
 			handoff := *value.Messages[index].FinalHandoff
 			handoff.ImpactBullets = append([]string(nil), handoff.ImpactBullets...)
 			handoff.SuggestedPrompts = append([]client.PlanFinalHandoffSuggestedPrompt(nil), handoff.SuggestedPrompts...)
+			handoff.Artifacts = append([]client.PlanFinalHandoffArtifact(nil), handoff.Artifacts...)
 			handoff.Details.ChangedFiles = append([]string(nil), handoff.Details.ChangedFiles...)
 			handoff.Details.Validation = append([]string(nil), handoff.Details.Validation...)
 			out.Messages[index].FinalHandoff = &handoff

@@ -114,6 +114,7 @@ func TestStructuredFinalHandoffRendersCompactCardAndLegacyMarkersAreSanitized(t 
 		"NEXT STEPS",
 		"1. Review",
 		"EVIDENCE",
+		"▸ Artifacts (1)",
 		"▸ Details  ·  report  ·  result",
 		"▸ Files (2)",
 		"▸ Validation (1)",
@@ -288,6 +289,28 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	if page.handoffDetailsModal || !page.handoffFocus {
 		t.Fatal("Esc did not close details and return to the handoff controls")
 	}
+	for index := 0; index < 3; index++ {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	}
+	if page.handoffControl != 5 {
+		t.Fatalf("Right did not move to the artifacts control: %d", page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if !page.handoffDetailsModal || page.handoffDetailsSection != "artifacts" {
+		t.Fatal("Enter did not open the artifacts modal")
+	}
+	lines := finalHandoffDetailsLines(page.handoffDetails, "artifacts", "session-handoff", 96, testPageStyles())
+	var artifactText []string
+	for _, line := range lines {
+		artifactText = append(artifactText, line.Text)
+	}
+	joinedArtifacts := strings.Join(artifactText, "\n")
+	for _, want := range []string{"Interactive gallery", "gallery/index.html", "/v3/sessions/session-handoff/artifacts/artifact-preview", "local or remote Swarm connection"} {
+		if !strings.Contains(joinedArtifacts, want) {
+			t.Fatalf("artifacts modal missing %q:\n%s", want, joinedArtifacts)
+		}
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
 	if page.handoffFocus {
 		t.Fatal("Esc did not return focus to the composer")
@@ -375,6 +398,9 @@ func testFinalHandoffMetadata() map[string]any {
 			"suggested_prompts": []any{
 				map[string]any{"label": "Review", "prompt": "Review the final handoff."},
 				map[string]any{"label": "Continue", "prompt": "Continue with the next task."},
+			},
+			"artifacts": []any{
+				map[string]any{"artifact_id": "artifact-preview", "label": "Interactive gallery", "media_type": "text/html", "workspace_relative_path": "gallery/index.html", "previewable": true},
 			},
 			"details": map[string]any{
 				"report":        "Full durable report\nwith additional evidence lines.",

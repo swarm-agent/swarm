@@ -1055,8 +1055,25 @@ type PlanFinalHandoff struct {
 	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
 	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
 	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	Artifacts        []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
 	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
 	Details          PlanFinalHandoffDetails              `json:"details"`
+}
+
+// PlanFinalHandoffArtifact is a safe client projection of a concrete
+// deliverable. ArtifactID is opaque; clients resolve it through the session
+// artifact API rather than treating Path as filesystem authority.
+type PlanFinalHandoffArtifact struct {
+	ArtifactID            string `json:"artifact_id,omitempty"`
+	ID                    string `json:"id,omitempty"`
+	Label                 string `json:"label,omitempty"`
+	Description           string `json:"description,omitempty"`
+	MediaType             string `json:"media_type,omitempty"`
+	Path                  string `json:"path,omitempty"`
+	RelativePath          string `json:"relative_path,omitempty"`
+	WorkspaceRelativePath string `json:"workspace_relative_path,omitempty"`
+	Previewable           bool   `json:"previewable,omitempty"`
+	PreviewURL            string `json:"preview_url,omitempty"`
 }
 
 type PlanFinalHandoffSuggestedPrompt struct {
