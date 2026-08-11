@@ -188,7 +188,6 @@ func providerToolMediaInputItems(results []tool.Result) []map[string]any {
 		out = append(out, map[string]any{
 			"role": "user",
 			"content": []map[string]any{
-				{"type": "input_text", "text": "Inspect this authorized media asset and report its visual contents."},
 				{"type": "session_media", "media": provideriface.SessionMediaPayload{
 					AssetID: result.Media.AssetID, Modality: result.Media.Modality, MIMEType: result.Media.MIMEType,
 					FileType: result.Media.FileType, DigestSHA256: result.Media.DigestSHA256, Size: result.Media.Size,

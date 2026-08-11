@@ -40,12 +40,12 @@ func TestSessionsV3ProviderToolMediaInputItemsCarriesAuthorizedPayload(t *testin
 		t.Fatalf("media input items = %#v", items)
 	}
 	content, ok := items[0]["content"].([]map[string]any)
-	if !ok || len(content) != 2 || content[1]["type"] != "session_media" {
+	if !ok || len(content) != 1 || content[0]["type"] != "session_media" {
 		t.Fatalf("media input content = %#v", items[0]["content"])
 	}
-	got, ok := content[1]["media"].(provideriface.SessionMediaPayload)
+	got, ok := content[0]["media"].(provideriface.SessionMediaPayload)
 	if !ok || got.AssetID != payload.AssetID || string(got.Bytes) != "png" {
-		t.Fatalf("media input payload = %#v", content[1]["media"])
+		t.Fatalf("media input payload = %#v", content[0]["media"])
 	}
 }
 

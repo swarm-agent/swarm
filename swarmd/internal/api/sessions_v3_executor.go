@@ -4659,7 +4659,6 @@ func sessionsV3ProviderToolMediaInputItems(results []provideriface.ToolExecution
 		out = append(out, map[string]any{
 			"role": "user",
 			"content": []map[string]any{
-				{"type": "input_text", "text": "Inspect this authorized media asset and report its visual contents."},
 				{"type": "session_media", "media": *result.Media},
 			},
 		})

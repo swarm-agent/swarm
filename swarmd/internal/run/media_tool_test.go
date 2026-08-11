@@ -88,6 +88,22 @@ func TestSessionMediaToolOmittedForEmptyAndNonPilotContracts(t *testing.T) {
 	}
 }
 
+func TestProviderToolMediaInputItemsCarriesOnlyAuthorizedPayload(t *testing.T) {
+	payload := tool.MediaPayload{AssetID: "asset", Modality: "image", MIMEType: "image/png", Size: 3, Bytes: []byte("png")}
+	items := providerToolMediaInputItems([]tool.Result{{Name: mediaInspectToolName, Media: &payload}})
+	if len(items) != 1 {
+		t.Fatalf("media input items = %#v", items)
+	}
+	content, ok := items[0]["content"].([]map[string]any)
+	if !ok || len(content) != 1 || content[0]["type"] != "session_media" {
+		t.Fatalf("media input content = %#v", items[0]["content"])
+	}
+	got, ok := content[0]["media"].(provideriface.SessionMediaPayload)
+	if !ok || got.AssetID != payload.AssetID || string(got.Bytes) != "png" {
+		t.Fatalf("media input payload = %#v", content[0]["media"])
+	}
+}
+
 func TestMediaInspectInvocationRejectsForgedStaleAndDeniedCalls(t *testing.T) {
 	contract := provideriface.SessionMediaContract{Hash: "current", Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, MIMETypes: []string{"image/png"}, FileTypes: []string{"png"}, MaxBytes: 1024, MaxCount: 1}}}
 	if _, err := validateMediaInspectInvocation(contract, "image", "image/png", "png"); err != nil {
