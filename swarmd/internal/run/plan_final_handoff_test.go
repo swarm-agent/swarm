@@ -15,7 +15,7 @@ func TestBuildFinalPlanExecutionHandoffProjectsStructuredMetadataAndConciseConte
 		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1"},
 		Artifacts:       []pebblestore.SessionPlanArtifactReference{{Path: "docs/shared-index.json", Role: "input"}},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
-			ID: "cp-1", Title: "Durable handoff", Status: sessionruntime.PlanCheckpointStatusCompleted, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/visible-list.md", Role: "deliverable"}},
+			ID: "cp-1", Title: "Durable handoff", Status: sessionruntime.PlanCheckpointStatusCompleted, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/visible-list.md", Role: "deliverable", Description: "Visible list"}},
 			Report: "full report sentinel", Result: "result sentinel", ChangedFiles: []string{"file.go"}, Validation: []string{"focused test"},
 			Recommendation: recommendation,
 			Handoff: &pebblestore.SessionPlanCheckpointHandoff{
@@ -48,6 +48,9 @@ func TestBuildFinalPlanExecutionHandoffProjectsStructuredMetadataAndConciseConte
 	}
 	if projection.SchemaVersion != 1 || projection.Recommendation == nil || projection.Recommendation.Action != "review" || projection.Details.Report != "full report sentinel" || projection.Details.Result != "result sentinel" || projection.PullRequestURL != "https://github.com/swarm/repository/pull/42" {
 		t.Fatalf("projection = %#v", projection)
+	}
+	if len(projection.Artifacts) != 1 || projection.Artifacts[0].ID == "" || projection.Artifacts[0].Label != "Visible list" || projection.Artifacts[0].Filename != "visible-list.md" || projection.Artifacts[0].MediaType != "text/markdown" {
+		t.Fatalf("final handoff artifacts = %#v", projection.Artifacts)
 	}
 	artifacts, ok := message.Metadata["artifacts"].([]pebblestore.SessionPlanArtifactReference)
 	if !ok || len(artifacts) != 2 || artifacts[0].Path != "docs/shared-index.json" || artifacts[1].Path != "out/visible-list.md" || artifacts[1].Role != "deliverable" {

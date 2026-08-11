@@ -329,7 +329,20 @@ type PlanFinalHandoff struct {
 	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
 	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
 	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
+	Artifacts        []PlanFinalHandoffArtifact            `json:"artifacts,omitempty"`
 	Details          PlanFinalHandoffDetails              `json:"details"`
+}
+
+// PlanFinalHandoffArtifact is a safe client-facing descriptor for one declared
+// deliverable. It intentionally omits the workspace-relative path; clients use
+// ID with the authenticated session artifact route instead.
+type PlanFinalHandoffArtifact struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Filename    string `json:"filename"`
+	MediaType   string `json:"media_type"`
+	Kind        string `json:"kind"`
 }
 
 // PlanFinalHandoffDetails keeps the complete terminal evidence available to

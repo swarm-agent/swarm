@@ -117,6 +117,34 @@ func TestApplyPlanCheckpointOutcomePersistsHandoffAndProjectsLosslessEvidence(t 
 	}
 }
 
+func TestProjectPlanFinalHandoffArtifactsFiltersAndHidesPaths(t *testing.T) {
+	artifacts := []pebblestore.SessionPlanArtifactReference{
+		{Path: "gallery/index.html", Role: "deliverable", Description: "Interactive gallery", MediaType: "text/html; charset=utf-8"},
+		{Path: "gallery/overview.png", Role: "deliverable"},
+		{Path: "notes/idea.txt", Role: "input", MediaType: "text/plain"},
+		{Path: "bundle/source.zip", Role: "deliverable", MediaType: "application/zip"},
+		{Path: "gallery/disguised.txt", Role: "deliverable", MediaType: "text/html"},
+	}
+	projected := ProjectPlanFinalHandoffArtifacts("plan-1", "cp-1", artifacts)
+	if len(projected) != 2 {
+		t.Fatalf("projected artifacts = %#v", projected)
+	}
+	if projected[0].ID == "" || projected[0].ID == "gallery/index.html" || projected[0].Label != "Interactive gallery" || projected[0].Filename != "index.html" || projected[0].MediaType != "text/html" || projected[0].Kind != "html" {
+		t.Fatalf("html descriptor = %#v", projected[0])
+	}
+	if projected[1].Filename != "overview.png" || projected[1].MediaType != "image/png" || projected[1].Kind != "image" {
+		t.Fatalf("image descriptor = %#v", projected[1])
+	}
+	repeated := ProjectPlanFinalHandoffArtifacts("plan-1", "cp-1", artifacts)
+	if repeated[0].ID != projected[0].ID {
+		t.Fatalf("artifact id is not deterministic: %q != %q", repeated[0].ID, projected[0].ID)
+	}
+	otherCheckpoint := ProjectPlanFinalHandoffArtifacts("plan-1", "cp-2", artifacts)
+	if otherCheckpoint[0].ID == projected[0].ID {
+		t.Fatal("artifact id must bind checkpoint identity")
+	}
+}
+
 func TestBuildPlanFinalHandoffAllowsLegacyCheckpointWithoutSourceFields(t *testing.T) {
 	projection, err := BuildPlanFinalHandoff(pebblestore.SessionPlanCheckpoint{Report: "legacy report"})
 	if err != nil || projection != nil {

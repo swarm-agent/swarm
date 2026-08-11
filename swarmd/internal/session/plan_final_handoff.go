@@ -1,10 +1,14 @@
 package session
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/url"
+	pathpkg "path"
 	"strings"
 	"unicode/utf8"
 
@@ -22,6 +26,36 @@ const (
 	PlanFinalHandoffMaxPromptLabelRunes     = 80
 	PlanFinalHandoffMaxSuggestedPromptRunes = 800
 )
+
+var planFinalHandoffViewableMediaTypes = map[string]string{
+	"text/html":       "html",
+	"image/png":       "image",
+	"image/jpeg":      "image",
+	"image/gif":       "image",
+	"image/webp":      "image",
+	"image/svg+xml":   "image",
+	"text/markdown":   "markdown",
+	"text/plain":      "text",
+	"application/pdf": "pdf",
+}
+
+var planFinalHandoffViewableExtensions = map[string]struct {
+	mediaType string
+	kind      string
+}{
+	".html":     {mediaType: "text/html", kind: "html"},
+	".htm":      {mediaType: "text/html", kind: "html"},
+	".png":      {mediaType: "image/png", kind: "image"},
+	".jpg":      {mediaType: "image/jpeg", kind: "image"},
+	".jpeg":     {mediaType: "image/jpeg", kind: "image"},
+	".gif":      {mediaType: "image/gif", kind: "image"},
+	".webp":     {mediaType: "image/webp", kind: "image"},
+	".svg":      {mediaType: "image/svg+xml", kind: "image"},
+	".md":       {mediaType: "text/markdown", kind: "markdown"},
+	".markdown": {mediaType: "text/markdown", kind: "markdown"},
+	".txt":      {mediaType: "text/plain", kind: "text"},
+	".pdf":      {mediaType: "application/pdf", kind: "pdf"},
+}
 
 // NormalizePlanCheckpointHandoff validates and normalizes the concise source
 // fields authored with a terminal checkpoint outcome. Limits are rejected,
@@ -110,6 +144,81 @@ func normalizeGitHubPullRequestURL(value string) (string, error) {
 	parsed.Host = "github.com"
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
 	return parsed.String(), nil
+}
+
+// ProjectPlanFinalHandoffArtifacts filters durable artifact references down to
+// concrete, client-viewable deliverables and assigns stable opaque IDs. The ID
+// binds the plan/checkpoint identity and canonical durable artifact metadata.
+func ProjectPlanFinalHandoffArtifacts(planID, checkpointID string, artifacts []pebblestore.SessionPlanArtifactReference) []pebblestore.PlanFinalHandoffArtifact {
+	result := make([]pebblestore.PlanFinalHandoffArtifact, 0, len(artifacts))
+	seen := make(map[string]struct{}, len(artifacts))
+	for _, artifact := range artifacts {
+		if strings.ToLower(strings.TrimSpace(artifact.Role)) != "deliverable" {
+			continue
+		}
+		mediaType, kind, ok := PlanFinalHandoffArtifactPresentation(artifact)
+		if !ok {
+			continue
+		}
+		path := strings.TrimSpace(artifact.Path)
+		filename := pathpkg.Base(path)
+		description := strings.TrimSpace(artifact.Description)
+		label := description
+		if label == "" {
+			label = filename
+		}
+		canonical := strings.Join([]string{
+			"swarm-final-handoff-artifact-v1",
+			strings.TrimSpace(planID),
+			strings.TrimSpace(checkpointID),
+			path,
+			"deliverable",
+			description,
+			mediaType,
+		}, "\x00")
+		digest := sha256.Sum256([]byte(canonical))
+		id := "art_" + base64.RawURLEncoding.EncodeToString(digest[:18])
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, pebblestore.PlanFinalHandoffArtifact{
+			ID:          id,
+			Label:       label,
+			Description: description,
+			Filename:    filename,
+			MediaType:   mediaType,
+			Kind:        kind,
+		})
+	}
+	return result
+}
+
+// PlanFinalHandoffArtifactPresentation returns the canonical safe media type
+// and presentation kind for an eligible deliverable reference.
+func PlanFinalHandoffArtifactPresentation(artifact pebblestore.SessionPlanArtifactReference) (string, string, bool) {
+	if strings.ToLower(strings.TrimSpace(artifact.Role)) != "deliverable" {
+		return "", "", false
+	}
+	extension := strings.ToLower(pathpkg.Ext(strings.TrimSpace(artifact.Path)))
+	presentation, extensionOK := planFinalHandoffViewableExtensions[extension]
+	declared := strings.TrimSpace(artifact.MediaType)
+	if declared != "" {
+		parsed, _, err := mime.ParseMediaType(declared)
+		if err != nil {
+			return "", "", false
+		}
+		parsed = strings.ToLower(strings.TrimSpace(parsed))
+		kind, mediaOK := planFinalHandoffViewableMediaTypes[parsed]
+		if !mediaOK || !extensionOK || presentation.mediaType != parsed {
+			return "", "", false
+		}
+		return parsed, kind, true
+	}
+	if !extensionOK {
+		return "", "", false
+	}
+	return presentation.mediaType, presentation.kind, true
 }
 
 func looksLikeExecutableFinalHandoffDirective(value string) bool {

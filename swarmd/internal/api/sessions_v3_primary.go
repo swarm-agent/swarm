@@ -329,6 +329,15 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	case "permissions/resolve_all":
 		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
 	default:
+		if strings.HasPrefix(subpath, "artifacts/") {
+			artifactID := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
+			if artifactID == "" || strings.Contains(artifactID, "/") {
+				writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+				return
+			}
+			s.handleSessionV3Artifact(w, r, principal, sessionID, artifactID)
+			return
+		}
 		if strings.HasPrefix(subpath, "plan-mode/") {
 			if locked, found, _ := s.requireSessionV3Access(principal, sessionID); found && s.rejectSystemSidechatMutation(w, locked) {
 				return

@@ -435,6 +435,7 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 	}
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionFinalHandoffMessageSource, "plan_final_checkpoint_handoff")
 	if finalHandoff != nil {
+		finalHandoff.Artifacts = sessionruntime.ProjectPlanFinalHandoffArtifacts(input.Plan.ID, checkpointID, planLifecycleArtifacts(doc, checkpointID))
 		metadata["final_handoff"] = finalHandoff
 	}
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
