@@ -40,6 +40,9 @@ interface StructuredToolMessageInput {
     launchesByKey: Record<string, Record<string, unknown>>;
     launchOrder: string[];
     taskMode?: string;
+    swarmStrategy?: string;
+    integrationContract?: string;
+    integrationRequired?: boolean;
   };
   error?: string;
   durationMs?: number;
@@ -934,6 +937,27 @@ function normalizeTaskToolDisplay(
   };
 }
 
+function normalizeSwarmStrategy(...values: string[]): "explore" | "assembly" | undefined {
+  for (const value of values) {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "assembly") return "assembly";
+    if (normalized === "explore") return "explore";
+  }
+  return undefined;
+}
+
+function taskAssemblyPart(payload: Record<string, unknown> | null): StructuredToolMessage["taskRows"][number]["assemblyPart"] {
+  const part = jsonRecord(payload?.assembly_part);
+  if (!part) return null;
+  const name = jsonStr(part, "name");
+  if (!name) return null;
+  return {
+    name,
+    instructions: jsonStr(part, "instructions"),
+    ownedScope: jsonStrArray(part, "owned_scope"),
+  };
+}
+
 function buildTaskToolRow(
   payload: Record<string, unknown> | null,
   fallbackLaunchIndex = 0,
@@ -957,7 +981,8 @@ function buildTaskToolRow(
     jsonStr(payload, "requested_subagent"),
     "subagent",
   );
-  const assignmentLabel = jsonStr(payload, "assignment_label");
+  const assemblyPart = taskAssemblyPart(payload);
+  const assignmentLabel = firstNonEmpty(assemblyPart?.name ?? "", jsonStr(payload, "assignment_label"));
   const modelLabel = [jsonStr(payload, "subagent_provider"), jsonStr(payload, "subagent_model")].filter(Boolean).join(" / ");
   const rawPreviewKind = jsonStr(payload, "current_preview_kind");
   const error = jsonStr(payload, "error");
@@ -993,6 +1018,10 @@ function buildTaskToolRow(
     currentToolMs,
     terminal,
     swarmMode: jsonBool(payload, "swarm_mode"),
+    swarmStrategy: normalizeSwarmStrategy(jsonStr(payload, "swarm_strategy")) ?? (jsonBool(payload, "swarm_mode") ? "explore" : undefined),
+    assemblyPart,
+    integrationContract: jsonStr(payload, "integration_contract"),
+    integrationRequired: jsonBool(payload, "integration_required"),
   };
 }
 
@@ -1936,6 +1965,23 @@ export function buildStructuredToolMessage(
     toolName.toLowerCase() === "task"
       ? buildTaskToolRows(outputJson, input.taskStream)
       : [];
+  const taskMode = firstNonEmpty(jsonStr(outputJson, "task_mode"), input.taskStream?.taskMode ?? "", jsonStr(argumentsJson, "mode"));
+  const isSwarm = taskMode === "swarm" || taskRows.some((row) => row.swarmMode);
+  const swarmStrategy = normalizeSwarmStrategy(
+    jsonStr(outputJson, "swarm_strategy"),
+    input.taskStream?.swarmStrategy ?? "",
+    jsonStr(argumentsJson, "swarm_strategy"),
+    ...taskRows.map((row) => row.swarmStrategy ?? ""),
+  ) ?? (isSwarm ? "explore" : undefined);
+  const integrationContract = firstNonEmpty(
+    jsonStr(outputJson, "integration_contract"),
+    input.taskStream?.integrationContract ?? "",
+    jsonStr(argumentsJson, "integration_contract"),
+    ...taskRows.map((row) => row.integrationContract ?? ""),
+  );
+  const integrationRequired = jsonBool(outputJson, "integration_required")
+    || input.taskStream?.integrationRequired === true
+    || taskRows.some((row) => row.integrationRequired);
   const error = String(input.error ?? "").trim();
 
   const retainOutputJson = [
@@ -1978,7 +2024,12 @@ export function buildStructuredToolMessage(
     bashData,
     previewLines,
     taskRows,
-    taskMode: firstNonEmpty(jsonStr(outputJson, "task_mode"), input.taskStream?.taskMode ?? "", jsonStr(argumentsJson, "mode")),
+    taskMode,
+    swarmStrategy,
+    integrationContract,
+    integrationRequired,
+    integrationStatus: jsonStr(outputJson, "integration_status"),
+    readyForDependentWork: jsonBool(outputJson, "ready_for_dependent_work"),
   };
 }
 

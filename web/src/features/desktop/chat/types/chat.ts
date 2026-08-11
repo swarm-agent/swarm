@@ -29,6 +29,12 @@ export interface EditDiffPreview {
 
 export type ToolMessageState = "done" | "running" | "error";
 
+export interface TaskAssemblyPart {
+  name: string;
+  instructions: string;
+  ownedScope: string[];
+}
+
 export interface TaskToolRow {
   launchKey?: string;
   launchIndex: number;
@@ -49,6 +55,10 @@ export interface TaskToolRow {
   currentToolMs: number;
   terminal: boolean;
   swarmMode?: boolean;
+  swarmStrategy?: "explore" | "assembly";
+  assemblyPart?: TaskAssemblyPart | null;
+  integrationContract?: string;
+  integrationRequired?: boolean;
 }
 
 export interface SearchToolLineMatch {
@@ -188,6 +198,11 @@ export interface StructuredToolMessage {
   previewLines: string[];
   taskRows: TaskToolRow[];
   taskMode?: string;
+  swarmStrategy?: "explore" | "assembly";
+  integrationContract?: string;
+  integrationRequired?: boolean;
+  integrationStatus?: string;
+  readyForDependentWork?: boolean;
 }
 
 export interface WorkspaceSessionCacheRecord<SessionRecord> {

@@ -229,8 +229,9 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(Boolean(message), "expected structured task swarm message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("SWARM MODE"), "expected the explicit swarm mode label");
-  assert((markup.match(/SWARM MODE/g) ?? []).length === 1, "swarm mode heading should render once");
+  assert(markup.includes("EXPLORE SWARM"), "legacy swarm payload should render as Explore Swarm");
+  assert((markup.match(/EXPLORE SWARM/g) ?? []).length === 1, "Explore Swarm heading should render once");
+  assert(markup.includes("Independent alternatives"), "Explore Swarm should describe workers as alternatives");
   assert(!markup.includes("12 AI"), "swarm mode should omit the redundant AI population badge");
   assert(!markup.includes("finder"), "swarm rows should not show provider or agent metadata");
   assert(markup.includes("search"), "12–25 agent rows should retain the current tool");
@@ -257,7 +258,42 @@ function testTaskSwarmUsesCompactPreview(): void {
     }),
   });
   assert(Boolean(regularMessage), "expected regular task message");
-  assert(!renderToolMarkup(regularMessage!).includes("SWARM MODE"), "large regular waves must not become swarm mode by count");
+  assert(!renderToolMarkup(regularMessage!).includes("EXPLORE SWARM"), "large regular waves must not become swarm mode by count");
+}
+
+function testAssemblySwarmShowsPartsAndParentIntegrationRequirement(): void {
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_assembly_swarm",
+    outputText: JSON.stringify({
+      tool: "task",
+      path_id: "tool.task.v1",
+      task_mode: "swarm",
+      swarm_strategy: "assembly",
+      integration_contract: "Combine committed parts into the parent deliverable.",
+      integration_required: true,
+      integration_status: "pending_parent_assembly",
+      ready_for_dependent_work: false,
+      launches: [{
+        launch_index: 1,
+        child_session_id: "part-1",
+        swarm_mode: true,
+        swarm_strategy: "assembly",
+        assembly_part: { name: "Backend API", owned_scope: ["swarmd/internal/api/**"] },
+        integration_contract: "Combine committed parts into the parent deliverable.",
+        integration_required: true,
+        subagent: "coder",
+        status: "done",
+      }],
+    }),
+  });
+  assert(Boolean(message), "expected Assembly swarm message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("ASSEMBLY SWARM"), "Assembly swarm should use the explicit Assembly label");
+  assert(markup.includes("Complementary parts"), "Assembly swarm should describe workers as parts");
+  assert(markup.includes("parent integration required"), "completed Assembly children must retain the parent integration obligation");
+  assert(markup.includes("Contract: Combine committed parts into the parent deliverable."), "Assembly contract should be visible");
+  assert(markup.includes("Backend API"), "Assembly part identity should label the worker row");
 }
 
 function testTaskRunningTimerUsesStartTimestamp(): void {
@@ -817,6 +853,7 @@ function main(): void {
   testTaskSwarmLayoutProgressivelyCompacts();
   testIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels();
   testTaskSwarmUsesCompactPreview();
+  testAssemblySwarmShowsPartsAndParentIntegrationRequirement();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
   testTaskElapsedClockUsesDisplayCadence();

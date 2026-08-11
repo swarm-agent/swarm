@@ -287,19 +287,19 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 	}
 	swarm := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","count":100}`, Output: string(payload), Status: "running"}
 	presentation := buildToolPresentation(swarm)
-	if !presentation.TaskSwarm || !strings.HasPrefix(presentation.Summary, "swarm mode") {
+	if !presentation.TaskSwarm || presentation.TaskSwarmStrategy != "explore" || !strings.HasPrefix(presentation.Summary, "Explore Swarm") {
 		t.Fatalf("explicit swarm presentation = %#v", presentation)
 	}
 
 	page := NewPage(nil, testPageStyles())
 	shortRows := page.renderToolRowsForHeight(swarm, 80, 12, testPageStyles())
 	tallRows := page.renderToolRowsForHeight(swarm, 80, 36, testPageStyles())
-	shortText := renderRowsText(shortRows)
-	if !strings.Contains(shortText, "SWARM MODE") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "showing 100/100 agents") {
+	shortText := renderTaskPresentationRowsText(shortRows)
+	if !strings.Contains(shortText, "EXPLORE SWARM") || !strings.Contains(shortText, "independent alternatives") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "showing 100/100 agents") {
 		t.Fatalf("short swarm matrix missing dashboard details:\n%s", shortText)
 	}
 	for name, rows := range map[string][]renderRow{"short": shortRows, "tall": tallRows} {
-		text := renderRowsText(rows)
+		text := renderTaskPresentationRowsText(rows)
 		if !strings.Contains(text, "showing 100/100 agents") || !strings.Contains(text, "✓100") {
 			t.Fatalf("%s 100-agent swarm matrix truncated the final agent:\n%s", name, text)
 		}
@@ -315,9 +315,27 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 	if regularPresentation.TaskSwarm {
 		t.Fatal("regular task wave must not become swarm mode by count")
 	}
-	regularText := renderRowsText(page.renderToolRowsForHeight(regular, 80, 12, testPageStyles()))
-	if strings.Contains(regularText, "SWARM MODE") || !strings.Contains(regularText, "SUBAGENT STREAM") {
+	regularText := renderTaskPresentationRowsText(page.renderToolRowsForHeight(regular, 80, 12, testPageStyles()))
+	if strings.Contains(regularText, "EXPLORE SWARM") || strings.Contains(regularText, "ASSEMBLY SWARM") || !strings.Contains(regularText, "SUBAGENT STREAM") {
 		t.Fatalf("regular task rendering changed:\n%s", regularText)
+	}
+}
+
+func TestAssemblySwarmShowsPartsAndPendingParentIntegration(t *testing.T) {
+	payload := `{"tool":"task","path_id":"tool.task.v1","task_mode":"swarm","swarm_strategy":"assembly","integration_contract":"Combine committed parts into the parent deliverable.","integration_required":true,"integration_status":"pending_parent_assembly","ready_for_dependent_work":false,"launch_count":1,"launches":[{"launch_index":1,"swarm_mode":true,"swarm_strategy":"assembly","assembly_part":{"name":"Backend API","owned_scope":["swarmd/internal/api/**"]},"integration_contract":"Combine committed parts into the parent deliverable.","integration_required":true,"subagent":"coder","status":"ok"}]}`
+	tool := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","swarm_strategy":"assembly"}`, Output: payload, Status: "completed"}
+	presentation := buildToolPresentation(tool)
+	if presentation.TaskSwarmStrategy != "assembly" || presentation.TaskRows[0].Title != "Backend API" || !presentation.TaskIntegrationRequired {
+		t.Fatalf("Assembly presentation = %#v", presentation)
+	}
+	text := renderTaskPresentationRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 100, 18, testPageStyles()))
+	for _, want := range []string{"ASSEMBLY SWARM", "complementary parts", "parent integration required", "contract: Combine committed parts", "Backend API"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Assembly rendering missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "ready for dependent work") {
+		t.Fatalf("Assembly children falsely imply integrated parent work:\n%s", text)
 	}
 }
 
@@ -335,7 +353,7 @@ func TestIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels(t *testing.T) {
 	if presentation.TaskSwarmAgent != "idea" || presentation.TaskSwarmModel != "codex/gpt-5.6-sol" {
 		t.Fatalf("Idea swarm metadata = %#v", presentation)
 	}
-	text := renderRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 96, 16, testPageStyles()))
+	text := renderTaskPresentationRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 96, 16, testPageStyles()))
 	for _, want := range []string{"IDEA SWARM", "codex/gpt-5.6-sol", "Agent #1", "Agent #2"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Idea swarm rendering missing %q:\n%s", want, text)
@@ -354,7 +372,7 @@ func TestTaskSwarmCellKeepsTitleBeforeRightAlignedActivity(t *testing.T) {
 	}
 }
 
-func renderRowsText(rows []renderRow) string {
+func renderTaskPresentationRowsText(rows []renderRow) string {
 	var rendered strings.Builder
 	for _, row := range rows {
 		rendered.WriteString(row.text)

@@ -1120,6 +1120,89 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 }
 
+func TestPrepareAssemblyDesignerLaunchPersistsStrategyThroughHydration(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         "assembly-user",
+		AccountScopeID: "test-account",
+		Title:          "Assembly Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"},
+	})
+	if err != nil {
+		t.Fatalf("create Assembly parent: %v", err)
+	}
+	part := taskSwarmAssemblyPart{Name: "Navigation", Instructions: "Build the reusable navigation", OwnedScope: []string{"web/src/navigation.tsx"}}
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex:         1,
+		RequestedSubagent:   agentruntime.DesignerAgentID,
+		MetaPrompt:          "Implement the Navigation part",
+		AssignmentLabel:     part.Name,
+		OwnedScope:          append([]string(nil), part.OwnedScope...),
+		StreamKey:           "assembly:1",
+		SwarmMode:           true,
+		SwarmStrategy:       taskSwarmStrategyAssembly,
+		AssemblyPart:        &part,
+		IntegrationContract: "Parent wires Navigation into the assembled project before continuing.",
+		IntegrationRequired: true,
+	}, "assemble the project", "", nil)
+	if err != nil {
+		t.Fatalf("prepare Assembly Designer launch: %v", err)
+	}
+	if launch.ChildWorkspacePath != parent.WorkspacePath || launch.ChildWorktreeEnabled != parent.WorktreeEnabled {
+		t.Fatalf("Designer execution escaped parent checkout: child=%q parent=%q worktree=%v", launch.ChildWorkspacePath, parent.WorkspacePath, launch.ChildWorktreeEnabled)
+	}
+
+	hydrated, ok, err := svc.sessions.HydrateSessionSnapshot(launch.ChildSession.ID, 100, 100)
+	if err != nil || !ok {
+		t.Fatalf("hydrate Assembly child ok=%v err=%v", ok, err)
+	}
+	metadata := hydrated.Session.Metadata
+	for key, want := range map[string]string{
+		"parent_session_id":    parent.ID,
+		"lineage_kind":         "delegated_subagent",
+		"swarm_strategy":       taskSwarmStrategyAssembly,
+		"stream_key":           "assembly:1",
+		"integration_contract": "Parent wires Navigation into the assembled project before continuing.",
+	} {
+		if got := strings.TrimSpace(metadataStringForTest(metadata, key)); got != want {
+			t.Fatalf("hydrated metadata[%q] = %q, want %q; metadata=%#v", key, got, want, metadata)
+		}
+	}
+	for key := range map[string]bool{"swarm_mode": true, "integration_required": true, "shared_parent_checkout": true, "reusable_workspace_artifacts": true} {
+		if got, ok := metadata[key].(bool); !ok || !got {
+			t.Fatalf("hydrated metadata[%q] = %#v, want true", key, metadata[key])
+		}
+	}
+	rawPart, err := json.Marshal(metadata["assembly_part"])
+	if err != nil {
+		t.Fatalf("marshal hydrated Assembly part: %v", err)
+	}
+	var hydratedPart taskSwarmAssemblyPart
+	if err := json.Unmarshal(rawPart, &hydratedPart); err != nil {
+		t.Fatalf("decode hydrated Assembly part: %v", err)
+	}
+	if hydratedPart.Name != part.Name || !slices.Equal(hydratedPart.OwnedScope, part.OwnedScope) {
+		t.Fatalf("hydrated Assembly part = %#v, want %#v", hydratedPart, part)
+	}
+	if len(hydrated.Events) != 1 || hydrated.Events[0].EventType != "session.created" {
+		t.Fatalf("hydrated events = %#v, want durable session.created", hydrated.Events)
+	}
+	var created struct {
+		Session *pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(hydrated.Events[0].Payload, &created); err != nil || created.Session == nil {
+		t.Fatalf("decode durable child creation payload: session=%#v err=%v", created.Session, err)
+	}
+	if got := metadataStringForTest(created.Session.Metadata, "swarm_strategy"); got != taskSwarmStrategyAssembly {
+		t.Fatalf("replayed session.created strategy = %q, want Assembly", got)
+	}
+}
+
 func TestPrepareDelegatedSubagentLaunchUsesFlatProfileInPlanMode(t *testing.T) {
 	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()

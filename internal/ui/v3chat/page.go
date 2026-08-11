@@ -3000,7 +3000,15 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 			pending++
 		}
 	}
-	headerLabel := "SWARM MODE"
+	headerLabel := "EXPLORE SWARM"
+	contextLabel := "independent alternatives · choose or synthesize"
+	if presentation.TaskSwarmStrategy == "assembly" {
+		headerLabel = "ASSEMBLY SWARM"
+		contextLabel = "complementary parts"
+		if presentation.TaskIntegrationRequired {
+			contextLabel += " · parent integration required"
+		}
+	}
 	if presentation.TaskSwarmAgent == "idea" {
 		headerLabel = "IDEA SWARM"
 		if presentation.TaskSwarmModel != "" {
@@ -3015,6 +3023,10 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 		header += fmt.Sprintf("  ERR %d", failed)
 	}
 	rows := []renderRow{{text: truncateCells(header, width), style: styles.Secondary.Bold(true)}}
+	rows = append(rows, renderRow{text: truncateCells("  "+contextLabel, width), style: styles.Muted})
+	if presentation.TaskSwarmStrategy == "assembly" && strings.TrimSpace(presentation.TaskIntegrationContract) != "" {
+		rows = append(rows, renderRow{text: truncateCells("  contract: "+presentation.TaskIntegrationContract, width), style: styles.Muted})
+	}
 	matrix := fmt.Sprintf("  %s matrix  ·  %d×%d  ·  showing %d/%d agents", strings.ToUpper(layout.density), layout.columns, maxInt(1, (layout.visibleRows+layout.columns-1)/layout.columns), layout.visibleRows, len(presentation.TaskRows))
 	rows = append(rows, renderRow{text: truncateCells(matrix, width), style: styles.Muted})
 

@@ -2852,6 +2852,10 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
     tool: 'task',
     status: 'running',
     launch_count: 2,
+    task_mode: 'swarm',
+    swarm_strategy: 'assembly',
+    integration_contract: 'Combine complementary parts in the parent.',
+    integration_required: true,
     task_call_id: 'call-task',
     launch_key: 'child-1',
     launch_index: 1,
@@ -2942,6 +2946,10 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
   const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-task']
   assert.equal(tool.outputText, undefined)
   assert.deepEqual(tool.taskStream?.launchOrder, ['child-1', 'child-2'])
+  assert.equal(tool.taskStream?.taskMode, 'swarm')
+  assert.equal(tool.taskStream?.swarmStrategy, 'assembly')
+  assert.equal(tool.taskStream?.integrationContract, 'Combine complementary parts in the parent.')
+  assert.equal(tool.taskStream?.integrationRequired, true)
   assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool, 'search')
   assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool_display, 'search x2')
   assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')

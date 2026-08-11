@@ -984,17 +984,22 @@ function taskRowsCounts(rows: TaskToolRow[]) {
   );
 }
 
-function taskSwarmHeaderLabel(rows: TaskToolRow[]): string {
+function taskSwarmHeaderLabel(rows: TaskToolRow[], strategy: "explore" | "assembly"): string {
+  if (strategy === "assembly") return "ASSEMBLY SWARM";
   const ideaSwarm = rows.length > 0 && rows.every((row) => row.agent.trim().toLowerCase() === "idea");
-  if (!ideaSwarm) return "SWARM MODE";
+  if (!ideaSwarm) return "EXPLORE SWARM";
   const models = Array.from(new Set(rows.map((row) => row.modelLabel.trim().replace(/\s*\/\s*/g, "/")).filter(Boolean)));
   return models.length === 1 ? `IDEA SWARM · ${models[0]}` : "IDEA SWARM";
 }
 
-function TaskRowsHeader({ counts, rows = [], swarm = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; rows?: TaskToolRow[]; swarm?: boolean; density?: TaskSwarmDensity }) {
-  const headerLabel = swarm ? taskSwarmHeaderLabel(rows) : "Subagent stream";
+function TaskRowsHeader({ counts, rows = [], swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; rows?: TaskToolRow[]; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean; density?: TaskSwarmDensity }) {
+  const headerLabel = swarm ? taskSwarmHeaderLabel(rows, strategy) : "Subagent stream";
+  const swarmContext = strategy === "assembly"
+    ? integrationRequired ? "Complementary parts · parent integration required" : "Complementary parts"
+    : "Independent alternatives · choose or synthesize";
   return (
-    <div className={cn("flex min-w-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-2", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))]" : "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)]")} data-task-card-header>
+    <div className={cn("min-w-0 border-b px-3 py-2", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))]" : "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)]")} data-task-card-header data-swarm-strategy={swarm ? strategy : undefined}>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
       <div className="flex min-w-0 items-center gap-2">
         <span className={cn("inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[var(--app-primary)]", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_55%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_18%,transparent)] shadow-[0_0_18px_color-mix(in_srgb,var(--app-primary)_20%,transparent)]" : "border-[color-mix(in_srgb,var(--app-primary)_28%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)]")}>
           {swarm ? <Layers3 size={14} aria-hidden="true" /> : <Bot size={14} aria-hidden="true" />}
@@ -1009,6 +1014,11 @@ function TaskRowsHeader({ counts, rows = [], swarm = false, density = "detailed"
         {counts.pending > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-text-muted)_10%,transparent)] px-1.5 py-0.5 text-[var(--app-text-subtle)]">WAIT {counts.pending}</span> : null}
         {counts.error > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-danger)]">ERR {counts.error}</span> : null}
       </div>
+      </div>
+      {swarm ? <div className="mt-1 min-w-0 break-words pl-9 text-[10px] leading-4 text-[var(--app-text-muted)] [overflow-wrap:anywhere]">
+        <span>{swarmContext}</span>
+        {strategy === "assembly" && integrationContract ? <span title={integrationContract}> · Contract: {integrationContract}</span> : null}
+      </div> : null}
     </div>
   );
 }
@@ -1072,7 +1082,7 @@ const MemoizedTaskSwarmCompactRow = memo(TaskSwarmCompactRow, (previous, next) =
   && taskRowsEqual(previous.row, next.row, { comparePreview: false })
 ));
 
-function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
+function TaskSwarmRowsView({ rows, actions, strategy, integrationContract, integrationRequired }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; strategy: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const counts = taskRowsCounts(rows);
   const [layout, setLayout] = useState(() => taskSwarmLayout(rows.length, 420, 720));
@@ -1099,7 +1109,7 @@ function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
 
   return (
     <div ref={rootRef} className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows data-task-swarm-mode data-swarm-density={layout.density} data-swarm-stage={layout.stage}>
-      <TaskRowsHeader counts={counts} rows={rows} swarm density={layout.density} />
+      <TaskRowsHeader counts={counts} rows={rows} swarm strategy={strategy} integrationContract={integrationContract} integrationRequired={integrationRequired} density={layout.density} />
       <div
         className={cn("task-card-swarm-grid grid min-w-0 p-2", layout.maxHeight ? "overflow-y-auto" : "overflow-hidden")}
         style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`, gridAutoRows: layout.rowHeight, gap: layout.gap, maxHeight: layout.maxHeight }}
@@ -1147,9 +1157,9 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   );
 }
 
-function TaskRowsView({ rows, actions, swarm = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; swarm?: boolean }) {
+function TaskRowsView({ rows, actions, swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean }) {
   if (rows.length === 0) return null;
-  if (swarm) return <TaskSwarmRowsView rows={rows} actions={actions} />;
+  if (swarm) return <TaskSwarmRowsView rows={rows} actions={actions} strategy={strategy} integrationContract={integrationContract} integrationRequired={integrationRequired} />;
   return <TaskAgentRowsView rows={rows} actions={actions} />;
 }
 
@@ -2101,7 +2111,9 @@ export function ToolMessageView({
     : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
   const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
-  const isTaskSwarm = hasTaskRows && (toolMessage.taskMode === "swarm" || toolMessage.taskRows.some((row) => row.swarmMode));
+  const isTaskSwarm = (isTask && toolMessage.taskMode === "swarm") || (hasTaskRows && toolMessage.taskRows.some((row) => row.swarmMode));
+  const swarmStrategy = toolMessage.swarmStrategy ?? "explore";
+  const taskLabel = isTaskSwarm ? (swarmStrategy === "assembly" ? "Assembly Swarm" : "Explore Swarm") : label;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
     ? ""
@@ -2156,7 +2168,7 @@ export function ToolMessageView({
             </span>
             <div className="min-w-0 flex-1">
               {isFileAction || isTask ? (
-                <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{label}</div>
+                <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{isTask ? taskLabel : label}</div>
               ) : null}
               {fileSummary ? (
                 <div className={cn(
@@ -2204,7 +2216,7 @@ export function ToolMessageView({
         {!toolMessage.editDiff &&
         toolMessage.tool === "task" &&
         toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} swarm={isTaskSwarm} />
+          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} swarm={isTaskSwarm} strategy={swarmStrategy} integrationContract={toolMessage.integrationContract} integrationRequired={toolMessage.integrationRequired} />
         ) : null}
         {!toolMessage.editDiff &&
         isSearch &&

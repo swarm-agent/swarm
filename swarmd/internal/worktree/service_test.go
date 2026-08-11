@@ -440,7 +440,7 @@ func TestPrepareTaskIntegrationRejectsStaleParentHead(t *testing.T) {
 	}
 	_, _ = runGit(repo, "add", "base.txt")
 	_, _ = runGit(repo, "commit", "-m", "base")
-	_, err := (&Service{}).PrepareTaskIntegration(repo, "stale", []TaskIntegrationChild{{SessionID: "child", BaseCommit: "base", HeadCommit: "head"}})
+	_, err := (&Service{}).PrepareTaskIntegration(repo, strings.Repeat("a", 40), []TaskIntegrationChild{{SessionID: "child", BaseCommit: strings.Repeat("b", 40), HeadCommit: strings.Repeat("c", 40)}})
 	if err == nil || !strings.Contains(err.Error(), "stale parent HEAD") {
 		t.Fatalf("error = %v", err)
 	}

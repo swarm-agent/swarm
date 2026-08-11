@@ -809,6 +809,9 @@ export interface LiveTaskToolStreamState {
   taskCallId?: string
   launchCount?: number
   taskMode?: string
+  swarmStrategy?: string
+  integrationContract?: string
+  integrationRequired?: boolean
   updatedAt: number
   launchesByKey: Record<string, Record<string, unknown>>
   launchOrder: string[]

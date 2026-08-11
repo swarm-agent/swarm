@@ -22,25 +22,30 @@ type toolPresentationLine struct {
 }
 
 type toolPresentation struct {
-	Summary        string
-	Lines          []toolPresentationLine
-	Kind           string
-	TaskRows       []taskPresentationRow
-	TaskSwarm      bool
-	TaskSwarmAgent string
-	TaskSwarmModel string
+	Summary                 string
+	Lines                   []toolPresentationLine
+	Kind                    string
+	TaskRows                []taskPresentationRow
+	TaskSwarm               bool
+	TaskSwarmAgent          string
+	TaskSwarmModel          string
+	TaskSwarmStrategy       string
+	TaskIntegrationContract string
+	TaskIntegrationRequired bool
 }
 
 type taskPresentationRow struct {
-	Index   int
-	Status  string
-	Agent   string
-	Title   string
-	Model   string
-	Tool    string
-	Time    string
-	Preview string
-	Error   string
+	Index         int
+	Status        string
+	Agent         string
+	Title         string
+	Model         string
+	Tool          string
+	Time          string
+	Preview       string
+	Error         string
+	SwarmStrategy string
+	AssemblyPart  string
 }
 
 func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
@@ -882,6 +887,9 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	}
 	launchCount = maxInt(launchCount, len(launches))
 	swarm := taskPresentationIsSwarm(arguments, output, launches)
+	swarmStrategy := taskPresentationSwarmStrategy(arguments, output, tool.TaskStream, launches, swarm)
+	integrationContract := taskPresentationIntegrationContract(arguments, output, tool.TaskStream, launches)
+	integrationRequired := taskPresentationIntegrationRequired(output, tool.TaskStream, launches)
 	rows := make([]taskPresentationRow, 0, len(launches))
 	for index, launch := range launches {
 		launchIndex := toolInt(launch, "launch_index")
@@ -908,23 +916,29 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		if status == "running" {
 			timeMS = toolInt(launch, "current_tool_ms")
 		}
+		assemblyPart := toolObject(launch, "assembly_part")
 		rows = append(rows, taskPresentationRow{
-			Index:   launchIndex,
-			Status:  status,
-			Agent:   firstNonEmptyToolRaw(toolString(launch, "resolved_agent_name"), toolString(launch, "requested_subagent_type"), toolString(launch, "agent_type"), toolString(launch, "subagent"), toolString(launch, "requested_subagent"), "subagent"),
-			Title:   firstNonEmptyToolRaw(toolString(launch, "assignment_label"), toolString(launch, "meta_prompt"), "subagent"),
-			Model:   taskPresentationModel(launch),
-			Tool:    firstNonEmptyToolRaw(currentTool, "-"),
-			Time:    toolDurationLabel(int64(timeMS)),
-			Preview: preview,
-			Error:   toolString(launch, "error"),
+			Index:         launchIndex,
+			Status:        status,
+			Agent:         firstNonEmptyToolRaw(toolString(launch, "resolved_agent_name"), toolString(launch, "requested_subagent_type"), toolString(launch, "agent_type"), toolString(launch, "subagent"), toolString(launch, "requested_subagent"), "subagent"),
+			Title:         firstNonEmptyToolRaw(toolString(assemblyPart, "name"), toolString(launch, "assignment_label"), toolString(launch, "meta_prompt"), "subagent"),
+			Model:         taskPresentationModel(launch),
+			Tool:          firstNonEmptyToolRaw(currentTool, "-"),
+			Time:          toolDurationLabel(int64(timeMS)),
+			Preview:       preview,
+			Error:         toolString(launch, "error"),
+			SwarmStrategy: firstNonEmptyToolRaw(toolString(launch, "swarm_strategy"), swarmStrategy),
+			AssemblyPart:  toolString(assemblyPart, "name"),
 		})
 	}
 	summary := "subagent stream"
 	swarmAgent := ""
 	swarmModel := ""
 	if swarm {
-		summary = "swarm mode"
+		summary = "Explore Swarm"
+		if swarmStrategy == "assembly" {
+			summary = "Assembly Swarm"
+		}
 		for _, row := range rows {
 			agent := strings.ToLower(strings.TrimSpace(row.Agent))
 			if swarmAgent == "" {
@@ -946,14 +960,18 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	}
 	if len(rows) == 0 && toolStatusRank(tool.Status) < 3 {
 		if swarm {
-			summary = "awakening swarm…"
+			if swarmStrategy == "assembly" {
+				summary = "hydrating Assembly Swarm…"
+			} else {
+				summary = "hydrating Explore Swarm…"
+			}
 		} else {
 			summary = "launching subagents…"
 		}
 	} else if launchCount > 0 {
 		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
 	}
-	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows, TaskSwarm: swarm, TaskSwarmAgent: swarmAgent, TaskSwarmModel: swarmModel}
+	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows, TaskSwarm: swarm, TaskSwarmAgent: swarmAgent, TaskSwarmModel: swarmModel, TaskSwarmStrategy: swarmStrategy, TaskIntegrationContract: integrationContract, TaskIntegrationRequired: integrationRequired}
 }
 
 func taskPresentationIsSwarm(arguments, output map[string]any, launches []map[string]any) bool {
@@ -966,6 +984,55 @@ func taskPresentationIsSwarm(arguments, output map[string]any, launches []map[st
 	}
 	for _, launch := range launches {
 		if toolBool(launch, "swarm_mode") || strings.EqualFold(strings.TrimSpace(toolString(launch, "task_mode")), "swarm") {
+			return true
+		}
+	}
+	return false
+}
+
+func taskPresentationSwarmStrategy(arguments, output map[string]any, stream *TaskStreamState, launches []map[string]any, swarm bool) string {
+	for _, value := range []string{toolString(output, "swarm_strategy"), toolString(arguments, "swarm_strategy")} {
+		if strategy := strings.ToLower(strings.TrimSpace(value)); strategy == "assembly" || strategy == "explore" {
+			return strategy
+		}
+	}
+	if stream != nil {
+		if strategy := strings.ToLower(strings.TrimSpace(stream.SwarmStrategy)); strategy == "assembly" || strategy == "explore" {
+			return strategy
+		}
+	}
+	for _, launch := range launches {
+		if strategy := strings.ToLower(strings.TrimSpace(toolString(launch, "swarm_strategy"))); strategy == "assembly" || strategy == "explore" {
+			return strategy
+		}
+	}
+	if swarm {
+		return "explore"
+	}
+	return ""
+}
+
+func taskPresentationIntegrationContract(arguments, output map[string]any, stream *TaskStreamState, launches []map[string]any) string {
+	if contract := firstToolString(output, arguments, "integration_contract"); contract != "" {
+		return contract
+	}
+	if stream != nil && strings.TrimSpace(stream.IntegrationContract) != "" {
+		return strings.TrimSpace(stream.IntegrationContract)
+	}
+	for _, launch := range launches {
+		if contract := toolString(launch, "integration_contract"); contract != "" {
+			return contract
+		}
+	}
+	return ""
+}
+
+func taskPresentationIntegrationRequired(output map[string]any, stream *TaskStreamState, launches []map[string]any) bool {
+	if toolBool(output, "integration_required") || (stream != nil && stream.IntegrationRequired) {
+		return true
+	}
+	for _, launch := range launches {
+		if toolBool(launch, "integration_required") {
 			return true
 		}
 	}

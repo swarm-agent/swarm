@@ -35,11 +35,15 @@ type ToolTimelineItem struct {
 }
 
 type TaskStreamState struct {
-	PathID        string
-	Status        string
-	LaunchCount   int
-	LaunchesByKey map[string]map[string]any
-	LaunchOrder   []string
+	PathID              string
+	Status              string
+	LaunchCount         int
+	TaskMode            string
+	SwarmStrategy       string
+	IntegrationContract string
+	IntegrationRequired bool
+	LaunchesByKey       map[string]map[string]any
+	LaunchOrder         []string
 }
 
 type toolHistoryPayload struct {
@@ -349,6 +353,12 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 	})
 	stream.Status = firstNonEmpty(anyString(payload["status"]), stream.Status)
 	stream.LaunchCount = maxInt(anyInt(payload["launch_count"]), len(stream.LaunchOrder))
+	stream.TaskMode = firstNonEmpty(anyString(payload["task_mode"]), stream.TaskMode)
+	stream.SwarmStrategy = firstNonEmpty(anyString(payload["swarm_strategy"]), stream.SwarmStrategy)
+	stream.IntegrationContract = firstNonEmpty(anyString(payload["integration_contract"]), stream.IntegrationContract)
+	if required, ok := payload["integration_required"].(bool); ok {
+		stream.IntegrationRequired = required
+	}
 	item.TaskStream = stream
 	return true
 }

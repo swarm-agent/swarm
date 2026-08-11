@@ -47,6 +47,10 @@ type taskLaunchPrepared struct {
 	LaunchStartedAtMS    int64
 	StreamKey            string
 	SwarmMode            bool
+	SwarmStrategy        string
+	AssemblyPart         *taskSwarmAssemblyPart
+	IntegrationContract  string
+	IntegrationRequired  bool
 }
 
 func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
@@ -108,6 +112,10 @@ type taskLaunchOutcome struct {
 	Reason              string
 	StreamKey           string
 	SwarmMode           bool
+	SwarmStrategy       string
+	AssemblyPart        *taskSwarmAssemblyPart
+	IntegrationContract string
+	IntegrationRequired bool
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -148,27 +156,31 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	requested := strings.TrimSpace(launch.RequestedSubagent)
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 	outcome := taskLaunchOutcome{
-		LaunchIndex:        launch.LaunchIndex,
-		VirtualTarget:      launch.VirtualTarget,
-		RequestedSubagent:  requested,
-		ResolvedSubagent:   resolved,
-		MetaPrompt:         metaPrompt,
-		AssignmentLabel:    strings.TrimSpace(launch.AssignmentLabel),
-		OwnedScope:         append([]string(nil), launch.OwnedScope...),
-		SubagentProvider:   strings.TrimSpace(launch.SubagentProvider),
-		SubagentModel:      strings.TrimSpace(launch.SubagentModel),
-		ChildSessionID:     strings.TrimSpace(launch.ChildSession.ID),
-		ChildMode:          strings.TrimSpace(launch.ChildMode),
-		WorkspacePath:      strings.TrimSpace(launch.ChildSession.WorkspacePath),
-		WorkspaceName:      strings.TrimSpace(launch.ChildSession.WorkspaceName),
-		WorktreeEnabled:    launch.ChildSession.WorktreeEnabled,
-		WorktreeRootPath:   strings.TrimSpace(launch.ChildSession.WorktreeRootPath),
-		WorktreeBaseBranch: strings.TrimSpace(launch.ChildSession.WorktreeBaseBranch),
-		WorktreeBranch:     strings.TrimSpace(launch.ChildSession.WorktreeBranch),
-		LaunchStartedAtMS:  launch.LaunchStartedAtMS,
-		WorktreeClean:      true,
-		StreamKey:          strings.TrimSpace(launch.StreamKey),
-		SwarmMode:          launch.SwarmMode,
+		LaunchIndex:         launch.LaunchIndex,
+		VirtualTarget:       launch.VirtualTarget,
+		RequestedSubagent:   requested,
+		ResolvedSubagent:    resolved,
+		MetaPrompt:          metaPrompt,
+		AssignmentLabel:     strings.TrimSpace(launch.AssignmentLabel),
+		OwnedScope:          append([]string(nil), launch.OwnedScope...),
+		SubagentProvider:    strings.TrimSpace(launch.SubagentProvider),
+		SubagentModel:       strings.TrimSpace(launch.SubagentModel),
+		ChildSessionID:      strings.TrimSpace(launch.ChildSession.ID),
+		ChildMode:           strings.TrimSpace(launch.ChildMode),
+		WorkspacePath:       strings.TrimSpace(launch.ChildSession.WorkspacePath),
+		WorkspaceName:       strings.TrimSpace(launch.ChildSession.WorkspaceName),
+		WorktreeEnabled:     launch.ChildSession.WorktreeEnabled,
+		WorktreeRootPath:    strings.TrimSpace(launch.ChildSession.WorktreeRootPath),
+		WorktreeBaseBranch:  strings.TrimSpace(launch.ChildSession.WorktreeBaseBranch),
+		WorktreeBranch:      strings.TrimSpace(launch.ChildSession.WorktreeBranch),
+		LaunchStartedAtMS:   launch.LaunchStartedAtMS,
+		WorktreeClean:       true,
+		StreamKey:           strings.TrimSpace(launch.StreamKey),
+		SwarmMode:           launch.SwarmMode,
+		SwarmStrategy:       strings.TrimSpace(launch.SwarmStrategy),
+		AssemblyPart:        launch.AssemblyPart,
+		IntegrationContract: strings.TrimSpace(launch.IntegrationContract),
+		IntegrationRequired: launch.IntegrationRequired,
 	}
 	if launch.TaskBase != nil {
 		outcome.BaseCommit = strings.TrimSpace(launch.TaskBase.BaseCommit)
@@ -319,6 +331,11 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"reason":                     strings.TrimSpace(launch.Reason),
 		"report_chars":               launch.ReportChars,
 		"report_truncated":           launch.ReportTruncated,
+		"swarm_mode":                 launch.SwarmMode,
+		"swarm_strategy":             strings.TrimSpace(launch.SwarmStrategy),
+		"assembly_part":              launch.AssemblyPart,
+		"integration_contract":       strings.TrimSpace(launch.IntegrationContract),
+		"integration_required":       launch.IntegrationRequired,
 	}
 	if launch.ReportRef != nil {
 		row["report_ref"] = launch.ReportRef
@@ -421,6 +438,10 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"report_truncated":           launch.ReportTruncated,
 		"terminal":                   terminal,
 		"swarm_mode":                 launch.SwarmMode,
+		"swarm_strategy":             strings.TrimSpace(launch.SwarmStrategy),
+		"assembly_part":              launch.AssemblyPart,
+		"integration_contract":       strings.TrimSpace(launch.IntegrationContract),
+		"integration_required":       launch.IntegrationRequired,
 	}
 	if launch.ReportRef != nil {
 		patch["report_ref"] = launch.ReportRef
@@ -445,25 +466,28 @@ func buildTaskStreamPatchPayload(parentSessionID, taskCallID, action, descriptio
 	patch := buildTaskStreamLaunchPatchPayload(launch, status, phase, terminal)
 	launchKey := taskLaunchStreamKey(launch)
 	return map[string]any{
-		"tool":              "task",
-		"action":            action,
-		"status":            status,
-		"phase":             strings.TrimSpace(phase),
-		"launch_count":      launchCount,
-		"description":       description,
-		"goal":              description,
-		"parent_session_id": strings.TrimSpace(parentSessionID),
-		"task_call_id":      strings.TrimSpace(taskCallID),
-		"path_id":           taskStreamPathIDV2,
-		"stream_version":    2,
-		"event":             "launch.patch",
-		"launch_index":      launch.LaunchIndex,
-		"launch_key":        launchKey,
-		"child_session_id":  strings.TrimSpace(launch.ChildSessionID),
-		"summary":           summary,
-		"details_truncated": false,
-		"launch":            patch,
-		"task_mode":         map[bool]string{true: taskModeSwarm, false: taskModeRegular}[launch.SwarmMode],
+		"tool":                 "task",
+		"action":               action,
+		"status":               status,
+		"phase":                strings.TrimSpace(phase),
+		"launch_count":         launchCount,
+		"description":          description,
+		"goal":                 description,
+		"parent_session_id":    strings.TrimSpace(parentSessionID),
+		"task_call_id":         strings.TrimSpace(taskCallID),
+		"path_id":              taskStreamPathIDV2,
+		"stream_version":       2,
+		"event":                "launch.patch",
+		"launch_index":         launch.LaunchIndex,
+		"launch_key":           launchKey,
+		"child_session_id":     strings.TrimSpace(launch.ChildSessionID),
+		"summary":              summary,
+		"details_truncated":    false,
+		"launch":               patch,
+		"task_mode":            map[bool]string{true: taskModeSwarm, false: taskModeRegular}[launch.SwarmMode],
+		"swarm_strategy":       strings.TrimSpace(launch.SwarmStrategy),
+		"integration_contract": strings.TrimSpace(launch.IntegrationContract),
+		"integration_required": launch.IntegrationRequired,
 	}
 }
 
@@ -546,6 +570,20 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 	if len(launch.OwnedScope) > 0 {
 		childMetadata["owned_scope"] = append([]string(nil), launch.OwnedScope...)
+	}
+	if launch.SwarmMode {
+		childMetadata["swarm_mode"] = true
+		childMetadata["swarm_strategy"] = strings.TrimSpace(launch.SwarmStrategy)
+		childMetadata["stream_key"] = strings.TrimSpace(launch.StreamKey)
+		childMetadata["integration_required"] = launch.IntegrationRequired
+		if launch.AssemblyPart != nil {
+			part := *launch.AssemblyPart
+			part.OwnedScope = append([]string(nil), launch.AssemblyPart.OwnedScope...)
+			childMetadata["assembly_part"] = part
+		}
+		if contract := strings.TrimSpace(launch.IntegrationContract); contract != "" {
+			childMetadata["integration_contract"] = contract
+		}
 	}
 	if isDesignerTarget {
 		childMetadata["shared_parent_checkout"] = true
@@ -3430,15 +3468,19 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchTaskBase = coderTaskBase
 		}
 		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
-			LaunchIndex:       i + 1,
-			VirtualTarget:     trustedVirtualTargets[i],
-			TaskBase:          launchTaskBase,
-			RequestedSubagent: requestedSubagent,
-			MetaPrompt:        metaPrompt,
-			AssignmentLabel:   spec.AssignmentLabel,
-			OwnedScope:        append([]string(nil), spec.OwnedScope...),
-			StreamKey:         strings.TrimSpace(spec.StreamKey),
-			SwarmMode:         spec.SwarmMode,
+			LaunchIndex:         i + 1,
+			VirtualTarget:       trustedVirtualTargets[i],
+			TaskBase:            launchTaskBase,
+			RequestedSubagent:   requestedSubagent,
+			MetaPrompt:          metaPrompt,
+			AssignmentLabel:     spec.AssignmentLabel,
+			OwnedScope:          append([]string(nil), spec.OwnedScope...),
+			StreamKey:           strings.TrimSpace(spec.StreamKey),
+			SwarmMode:           spec.SwarmMode,
+			SwarmStrategy:       strings.TrimSpace(spec.SwarmStrategy),
+			AssemblyPart:        spec.AssemblyPart,
+			IntegrationContract: strings.TrimSpace(spec.IntegrationContract),
+			IntegrationRequired: strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
 		}, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
 			return "", prepareErr
@@ -3464,7 +3506,27 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchMap = map[string]any{}
 		}
 		entry := map[string]any{
-			"call_id":                 taskCallID,
+			"call_id":   taskCallID,
+			"task_mode": parsed.Mode,
+			"swarm_strategy": func() string {
+				if parsed.Swarm != nil {
+					return parsed.Swarm.Strategy
+				}
+				return ""
+			}(),
+			"assembly_parts": func() []taskSwarmAssemblyPart {
+				if parsed.Swarm != nil {
+					return append([]taskSwarmAssemblyPart(nil), parsed.Swarm.AssemblyParts...)
+				}
+				return nil
+			}(),
+			"integration_contract": func() string {
+				if parsed.Swarm != nil {
+					return parsed.Swarm.IntegrationContract
+				}
+				return ""
+			}(),
+			"integration_required":    parsed.Swarm != nil && parsed.Swarm.Strategy == taskSwarmStrategyAssembly,
 			"status":                  strings.TrimSpace(status),
 			"goal":                    description,
 			"action":                  action,
@@ -3528,6 +3590,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"error":                  strings.TrimSpace(launch.Error),
 				"reason":                 strings.TrimSpace(launch.Reason),
 				"phase":                  strings.TrimSpace(launch.Phase),
+				"swarm_mode":             launch.SwarmMode,
+				"swarm_strategy":         strings.TrimSpace(launch.SwarmStrategy),
+				"assembly_part":          launch.AssemblyPart,
+				"integration_contract":   strings.TrimSpace(launch.IntegrationContract),
+				"integration_required":   launch.IntegrationRequired,
 			}
 			if launch.ReportRef != nil {
 				launchRow["report_ref"] = launch.ReportRef
@@ -3909,14 +3976,22 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if aggregateReportBudgetExceeded {
 		aggregateSummary += " | warning: aggregate subagent reports exceeded inline context budget; inspect report_ref child session transcripts for full reports"
 	}
+	swarmStrategy := ""
+	if parsed.Swarm != nil {
+		swarmStrategy = parsed.Swarm.Strategy
+	}
+	integrationRequired, integrationStatus, readyForDependentWork := taskAssemblyIntegrationState(swarmStrategy, successCount, failedCount, cancelledCount, len(outcomes))
 	lineageUpdate(overallStatus, outcomes, map[string]any{
-		"success_count":   successCount,
-		"failed_count":    failedCount,
-		"cancelled_count": cancelledCount,
-		"tool_started":    totalToolStarted,
-		"tool_completed":  totalToolCompleted,
-		"tool_failed":     totalToolFailed,
-		"summary":         aggregateSummary,
+		"success_count":            successCount,
+		"failed_count":             failedCount,
+		"cancelled_count":          cancelledCount,
+		"tool_started":             totalToolStarted,
+		"tool_completed":           totalToolCompleted,
+		"tool_failed":              totalToolFailed,
+		"summary":                  aggregateSummary,
+		"integration_required":     integrationRequired,
+		"integration_status":       integrationStatus,
+		"ready_for_dependent_work": readyForDependentWork,
 	})
 
 	payload := map[string]any{
@@ -3941,9 +4016,24 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		"summary":                 aggregateSummary,
 		"path_id":                 "tool.task.v1",
 		"task_mode":               parsed.Mode,
-		"details_truncated":       false,
-		"report_truncated":        reportTruncatedAny,
-		"report_inline_chars":     inlineReportChars,
+		"swarm_strategy": func() string {
+			if parsed.Swarm != nil {
+				return parsed.Swarm.Strategy
+			}
+			return ""
+		}(),
+		"integration_contract": func() string {
+			if parsed.Swarm != nil {
+				return parsed.Swarm.IntegrationContract
+			}
+			return ""
+		}(),
+		"integration_required":     integrationRequired,
+		"integration_status":       integrationStatus,
+		"ready_for_dependent_work": readyForDependentWork,
+		"details_truncated":        false,
+		"report_truncated":         reportTruncatedAny,
+		"report_inline_chars":      inlineReportChars,
 	}
 	if aggregateReportBudgetExceeded {
 		payload["report_context_warning"] = "aggregate subagent reports exceeded inline context budget; summaries/excerpts are returned inline and full reports remain in child session transcripts via report_ref"
@@ -3975,6 +4065,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		return string(encoded), firstErr
 	}
 	return string(encoded), nil
+}
+
+func taskAssemblyIntegrationState(strategy string, successCount, failedCount, cancelledCount, outcomeCount int) (required bool, status string, readyForDependentWork bool) {
+	if !strings.EqualFold(strings.TrimSpace(strategy), taskSwarmStrategyAssembly) {
+		return false, "not_required", true
+	}
+	if failedCount > 0 || cancelledCount > 0 || successCount != outcomeCount {
+		return true, "incomplete_children", false
+	}
+	return true, "pending_parent_assembly", false
 }
 
 func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {

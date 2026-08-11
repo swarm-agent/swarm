@@ -82,10 +82,40 @@ test("plan subagents collapse to a labeled bot control and retain navigable sess
   assert.match(markup, /^<details(?![^>]* open)[^>]*data-plan-subagent-list/);
   assert.match(markup, /<summary[^>]*aria-label="Show 2 subagents"[^>]*>/);
   assert.match(markup, /<summary[^>]*>\s*<svg[^>]*class="lucide lucide-bot/);
-  assert.match(markup, /<span>2 subagents<\/span>/);
+  assert.match(markup, /<span[^>]*>2 subagents<\/span>/);
   assert.match(markup, /aria-label="Open Child session 1\./);
   assert.match(markup, /aria-label="Open Child session 2\./);
   assert.match(markup, /aria-label="Stop Child session 1"/);
   assert.match(markup, /read x5/);
   assert.doesNotMatch(markup, /uppercase tracking/);
+});
+
+test("plan subagent list describes Assembly children as parts with parent integration remaining", () => {
+  const part = child(1);
+  part.row = {
+    ...part.row,
+    swarmMode: true,
+    swarmStrategy: "assembly",
+    assemblyPart: { name: "Backend API", instructions: "Implement API", ownedScope: ["swarmd/internal/api/**"] },
+    assignmentLabel: "Backend API",
+    integrationContract: "Combine committed parts into the parent deliverable.",
+    integrationRequired: true,
+    terminal: true,
+    status: "completed",
+  };
+  part.view = { ...part.view, terminal: true, status: "completed" };
+  const markup = renderToStaticMarkup(<DesktopPlanSubagentList children={[part]} mode="compact" />);
+  assert.match(markup, /aria-label="Show 1 part"/);
+  assert.match(markup, /Assembly Swarm · complementary parts/);
+  assert.match(markup, /Parent integration required after child completion\./);
+  assert.match(markup, /Contract: Combine committed parts into the parent deliverable\./);
+  assert.doesNotMatch(markup, /Show 1 subagent/);
+});
+
+test("plan subagent list describes legacy swarm_mode children as Explore alternatives", () => {
+  const alternative = child(1);
+  alternative.row = { ...alternative.row, swarmMode: true };
+  const markup = renderToStaticMarkup(<DesktopPlanSubagentList children={[alternative]} mode="compact" />);
+  assert.match(markup, /aria-label="Show 1 alternative"/);
+  assert.match(markup, /Explore Swarm · independent alternatives/);
 });

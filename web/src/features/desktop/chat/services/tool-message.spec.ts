@@ -704,6 +704,48 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
   assert(row?.terminal === false, 'running task stream row should not be terminal')
 }
 
+function testAssemblyTaskMetadataAndLegacyExploreCompatibility(): void {
+  const assembly = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', swarm_strategy: 'assembly' }),
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      task_mode: 'swarm',
+      swarm_strategy: 'assembly',
+      integration_contract: 'Combine committed parts into the parent deliverable.',
+      integration_required: true,
+      integration_status: 'pending_parent_assembly',
+      ready_for_dependent_work: false,
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'part-one',
+        swarm_mode: true,
+        swarm_strategy: 'assembly',
+        assembly_part: { name: 'Backend API', instructions: 'Implement API', owned_scope: ['swarmd/internal/api/**'] },
+        integration_contract: 'Combine committed parts into the parent deliverable.',
+        integration_required: true,
+        subagent: 'coder',
+        status: 'ok',
+      }],
+    }),
+  });
+  assert(assembly?.swarmStrategy === 'assembly', `unexpected assembly strategy: ${assembly?.swarmStrategy}`);
+  assert(assembly?.integrationRequired === true, 'assembly must preserve parent integration requirement');
+  assert(assembly?.integrationStatus === 'pending_parent_assembly', `unexpected integration status: ${assembly?.integrationStatus}`);
+  assert(assembly?.readyForDependentWork === false, 'completed parts must not imply dependent work is ready');
+  assert(assembly?.taskRows[0]?.assignmentLabel === 'Backend API', `assembly part name must be the row identity: ${assembly?.taskRows[0]?.assignmentLabel}`);
+  assert(assembly?.taskRows[0]?.assemblyPart?.ownedScope[0] === 'swarmd/internal/api/**', 'assembly part owned scope must be preserved');
+
+  const legacy = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm' }),
+    outputText: JSON.stringify({ tool: 'task', path_id: 'tool.task.v1', task_mode: 'swarm', launches: [{ launch_index: 1, swarm_mode: true, subagent: 'finder', status: 'running' }] }),
+  });
+  assert(legacy?.swarmStrategy === 'explore', `legacy swarm payload must default to Explore: ${legacy?.swarmStrategy}`);
+  assert(legacy?.taskRows[0]?.swarmStrategy === 'explore', `legacy swarm row must default to Explore: ${legacy?.taskRows[0]?.swarmStrategy}`);
+}
+
 function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void {
   const message = buildStructuredToolMessage({
     tool: 'task',
@@ -1129,6 +1171,7 @@ function main(): void {
   testSearchToolParsesCompactGroupedResults();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
+  testAssemblyTaskMetadataAndLegacyExploreCompatibility();
   testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();
   testTerminalTaskPayloadOverridesStaleNativeTaskStream();
   testTaskRowsParseSingleV2PatchAsHistoricalCompatibility();

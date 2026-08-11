@@ -57,12 +57,17 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 		"Current agent runtime contract: plan_auto",
 		"Current agent exit-plan-mode enabled: true.",
 		"Plan-mode expectation:",
-		"Plan-mode Coder-wave assessment:",
+		"Plan-mode swarm-wave assessment:",
 		"do not overload one Coder with several independent systems or deliverables",
 		"do not split a cohesive change into tiny artificial assignments",
 		"do not create a separate dependency graph, planning file, wave manifest artifact, or orchestration document",
 		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
 		"place them in sequential waves after parent integration",
+		"early Explore checkpoints",
+		"later Assembly checkpoints",
+		"explicit parent assembly/integration and validation tasks",
+		"ordinary ordered checkpoints, without adding another plan schema or executor",
+		"later dependent waves only after prior outcomes are incorporated",
 		"Because the current session mode is plan",
 	} {
 		if !strings.Contains(instructions, want) {
@@ -83,7 +88,7 @@ func TestModeCapabilityInstructionsKeepCoderWavePlanningOutOfAutoMode(t *testing
 
 	instructions := modeCapabilityInstructions(sessionruntime.ModeAuto, false, profile)
 	for _, forbidden := range []string{
-		"Plan-mode Coder-wave assessment:",
+		"Plan-mode swarm-wave assessment:",
 		"do not create a separate dependency graph",
 		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
 	} {
@@ -93,16 +98,24 @@ func TestModeCapabilityInstructionsKeepCoderWavePlanningOutOfAutoMode(t *testing
 	}
 }
 
-func TestMasterHarnessAllowsApprovedPlanCoderWavesWithoutGenericSessionDelegation(t *testing.T) {
+func TestMasterHarnessEnforcesExploreAssemblyLifecycle(t *testing.T) {
 	instructions := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
-		"approved structured-plan checkpoint that calls for a dependency-ready Coder wave",
-		"Concurrent Coder assignments must have non-overlapping owned scopes",
-		"sequence dependent or overlapping implementation work into later waves after the parent integrates the prerequisite wave",
+		"swarm_strategy=explore",
+		"substitutes, alternatives, or independent trials",
+		"swarm_strategy=assembly",
+		"Strategy follows output relationships, independently of whether workers are Coders or Designers",
+		"not satisfied merely because all child sessions reached terminal success",
+		"Treat task outcome swarm_strategy and integration_required metadata as durable lifecycle facts",
+		"call manage_worktree integrate exactly once",
+		"recall the same batch again",
+		"resulting parent HEAD",
+		"Designer Assembly wave",
+		"Do not launch a later Coder wave",
 		"Never reinterpret a generic new-session request as delegation",
 	} {
 		if !strings.Contains(instructions, want) {
-			t.Fatalf("master harness missing Coder-wave contract %q\n--- instructions ---\n%s", want, instructions)
+			t.Fatalf("master harness missing Explore/Assembly contract %q\n--- instructions ---\n%s", want, instructions)
 		}
 	}
 	if strings.Contains(instructions, "Intentional overlapping Coder scopes are allowed") {
