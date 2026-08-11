@@ -168,7 +168,7 @@ export function DesktopSettingsPage() {
             {activeTab === 'permissions' ? <PermissionsSettingsPage /> : null}
             {activeTab === 'tailscale' ? <TailscaleSettingsPage /> : null}
             {activeTab === 'notifications' ? <NotificationsSettingsPage /> : null}
-            {activeTab === 'themes' ? <ThemesSettingsPage /> : null}
+            {activeTab === 'themes' ? <ThemesSettingsPage activeWorkspaceSlug={routeWorkspaceSlug} /> : null}
             {activeTab === 'shortcuts' ? <ShortcutsSettingsPage /> : null}
             {activeTab === 'vault' ? <VaultSettingsPage /> : null}
             {activeTab === 'worktrees' ? <WorktreeSettingsPage /> : null}

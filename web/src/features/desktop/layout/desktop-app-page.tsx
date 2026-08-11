@@ -5400,6 +5400,7 @@ export function DesktopAppPage() {
 
       <DesktopQuickSettingsModal
         tab={quickSettingsTab}
+        activeWorkspacePath={topWorkspacePath || null}
         onClose={() => setQuickSettingsTab(null)}
         onOpenFullSettings={handleOpenSettingsTab}
       />
