@@ -25,15 +25,15 @@ import (
 )
 
 const (
-	sessionsV3ArtifactMaxBytes          int64 = 32 << 20
-	sessionsV3ArtifactBundleMaxBytes    int64 = 128 << 20
-	sessionsV3ArtifactBundleMaxFiles          = 2_000
-	sessionsV3ArtifactPreviewTokenTTL         = 5 * time.Minute
-	sessionsV3ArtifactPreviewAccessPath       = "access/"
-	sessionsV3ArtifactPackageEntryPath        = "__swarm_artifact_entry__.html"
-	sessionsV3ArtifactCatalogDefaultLimit     = 500
-	sessionsV3ArtifactCatalogMaxLimit         = 2_000
-	sessionsV3ArtifactCatalogSessionLimit     = 10_000
+	sessionsV3ArtifactMaxBytes            int64 = 32 << 20
+	sessionsV3ArtifactBundleMaxBytes      int64 = 128 << 20
+	sessionsV3ArtifactBundleMaxFiles            = 2_000
+	sessionsV3ArtifactPreviewTokenTTL           = 5 * time.Minute
+	sessionsV3ArtifactPreviewAccessPath         = "access/"
+	sessionsV3ArtifactPackageEntryPath          = "__swarm_artifact_entry__.html"
+	sessionsV3ArtifactCatalogDefaultLimit       = 500
+	sessionsV3ArtifactCatalogMaxLimit           = 2_000
+	sessionsV3ArtifactCatalogSessionLimit       = 10_000
 	// Package HTML is nested beneath a srcdoc iframe sandboxed without
 	// allow-same-origin, so its immediate ancestor has an opaque origin. CSP
 	// cannot express that as a frame-ancestors source. Keep framing controlled
