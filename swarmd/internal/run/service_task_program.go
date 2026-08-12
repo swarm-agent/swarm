@@ -368,18 +368,41 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 	if record.State != pebblestore.TaskProgramStateBlocked && record.State != pebblestore.TaskProgramStateFailed && record.State != pebblestore.TaskProgramStateCancelled && record.State != pebblestore.TaskProgramStateRunning {
 		return record, 0, fmt.Errorf("task program state %q is not resumable", record.State)
 	}
+	repairedParentHead := ""
+	repairedJobs := make(map[string]bool)
 	if s.worktrees != nil {
 		base, baseErr := s.worktrees.ResolveTaskBase(parent.WorkspacePath)
 		if baseErr != nil {
 			return record, 0, fmt.Errorf("task program blocker is not resolved: %w", baseErr)
 		}
 		if record.ParentHead != "" && record.ParentHead != base.BaseCommit {
-			return record, 0, fmt.Errorf("task program blocker is not resolved: expected parent HEAD %s, found %s", record.ParentHead, base.BaseCommit)
+			if record.Blocker == nil || record.Blocker.Code != "integration_conflict" || record.Blocker.ExpectedParentHead != record.ParentHead {
+				return record, 0, fmt.Errorf("task program blocker is not resolved: expected parent HEAD %s, found %s", record.ParentHead, base.BaseCommit)
+			}
+			for _, job := range record.Jobs {
+				jobIndex := taskProgramJobIndex(record, job.JobID)
+				if jobIndex < 0 || job.StageID != record.ActiveStageID || !agentruntime.IsCoderAgentName(record.Definition.Jobs[jobIndex].AgentType) {
+					continue
+				}
+				integrated, integrationErr := s.worktrees.TaskCommitRangeIntegratedInto(parent.WorkspacePath, job.ImmutableStageBase, job.ChildHead, base.BaseCommit)
+				if integrationErr != nil {
+					return record, 0, fmt.Errorf("verify repaired task program integration for job %q: %w", job.JobID, integrationErr)
+				}
+				if !integrated {
+					return record, 0, fmt.Errorf("task program blocker is not resolved: parent HEAD %s does not contain repaired integration for job %q", base.BaseCommit, job.JobID)
+				}
+				repairedJobs[job.JobID] = true
+			}
+			repairedParentHead = base.BaseCommit
 		}
 	}
 	updates := make([]pebblestore.TaskProgramJobTransition, 0)
 	readyCount := 0
 	for i, job := range record.Jobs {
+		if repairedJobs[job.JobID] {
+			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobIntegrated, ClearBlocker: true, IntegrationState: "integrated"})
+			continue
+		}
 		if job.State == pebblestore.TaskProgramJobDeclared {
 			readyCount++
 			continue
@@ -452,7 +475,11 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 	}
 	state, next := pebblestore.TaskProgramStateRunning, "resume_program_scheduler"
 	mutationID := fmt.Sprintf("resume:%d:%d", parsed.ExpectedRevision, parsed.ExpectedGeneration)
-	returnRecord, _, err := s.sessions.TransitionTaskProgram(parent.ID, record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: parsed.ExpectedRevision, MutationID: mutationID, State: &state, NextAction: &next, ClearBlocker: true, Jobs: updates, IncrementResumeGeneration: true, ResumeFromRevision: parsed.ExpectedRevision, ResumeFromGeneration: parsed.ExpectedGeneration})
+	transition := pebblestore.TaskProgramTransition{ExpectedRevision: parsed.ExpectedRevision, MutationID: mutationID, State: &state, NextAction: &next, ClearBlocker: true, Jobs: updates, IncrementResumeGeneration: true, ResumeFromRevision: parsed.ExpectedRevision, ResumeFromGeneration: parsed.ExpectedGeneration}
+	if repairedParentHead != "" {
+		transition.ParentHead = &repairedParentHead
+	}
+	returnRecord, _, err := s.sessions.TransitionTaskProgram(parent.ID, record.ProgramID, transition)
 	return returnRecord, readyCount, err
 }
 

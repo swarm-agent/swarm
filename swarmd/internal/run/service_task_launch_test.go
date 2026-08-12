@@ -573,6 +573,10 @@ func (s *taskLaunchWorktreeStub) TaskCommitDescendsFrom(_, baseCommit, headCommi
 	return strings.TrimSpace(baseCommit) != "" && strings.TrimSpace(headCommit) != "" && baseCommit != headCommit, nil
 }
 
+func (s *taskLaunchWorktreeStub) TaskCommitRangeIntegratedInto(_, baseCommit, headCommit, parentHead string) (bool, error) {
+	return strings.TrimSpace(baseCommit) != "" && strings.TrimSpace(headCommit) != "" && strings.TrimSpace(parentHead) != "" && baseCommit != headCommit, nil
+}
+
 func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {
 	return worktreeruntime.TaskWorkspaceState{WorkspacePath: path, BranchName: s.allocation.BranchName, HeadCommit: s.taskBase.BaseCommit, Clean: true}, nil
 }
