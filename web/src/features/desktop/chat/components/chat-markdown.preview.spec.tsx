@@ -229,9 +229,9 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(Boolean(message), "expected structured task swarm message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("EXPLORE SWARM"), "legacy swarm payload should render as Explore Swarm");
-  assert((markup.match(/EXPLORE SWARM/g) ?? []).length === 1, "Explore Swarm heading should render once");
-  assert(markup.includes("Independent alternatives"), "Explore Swarm should describe workers as alternatives");
+  assert(markup.includes("ITERATION SWARM"), "legacy explore payload should render as Iteration Swarm");
+  assert((markup.match(/ITERATION SWARM/g) ?? []).length === 1, "Iteration Swarm heading should render once");
+  assert(markup.includes("Fast parallel iterations"), "Iteration Swarm should describe fast parallel iteration");
   assert(!markup.includes("12 AI"), "swarm mode should omit the redundant AI population badge");
   assert(!markup.includes("finder"), "swarm rows should not show provider or agent metadata");
   assert(markup.includes("search"), "12–25 agent rows should retain the current tool");
@@ -258,7 +258,7 @@ function testTaskSwarmUsesCompactPreview(): void {
     }),
   });
   assert(Boolean(regularMessage), "expected regular task message");
-  assert(!renderToolMarkup(regularMessage!).includes("EXPLORE SWARM"), "large regular waves must not become swarm mode by count");
+  assert(!renderToolMarkup(regularMessage!).includes("ITERATION SWARM"), "large regular waves must not become swarm mode by count");
 }
 
 function testAssemblySwarmShowsPartsAndParentIntegrationRequirement(): void {

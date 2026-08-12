@@ -935,7 +935,7 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	swarmAgent := ""
 	swarmModel := ""
 	if swarm {
-		summary = "Explore Swarm"
+		summary = "Iteration Swarm"
 		if swarmStrategy == "assembly" {
 			summary = "Assembly Swarm"
 		}
@@ -963,7 +963,7 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 			if swarmStrategy == "assembly" {
 				summary = "hydrating Assembly Swarm…"
 			} else {
-				summary = "hydrating Explore Swarm…"
+				summary = "hydrating Iteration Swarm…"
 			}
 		} else {
 			summary = "launching subagents…"

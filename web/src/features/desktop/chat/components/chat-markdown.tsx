@@ -987,7 +987,7 @@ function taskRowsCounts(rows: TaskToolRow[]) {
 function taskSwarmHeaderLabel(rows: TaskToolRow[], strategy: "explore" | "assembly"): string {
   if (strategy === "assembly") return "ASSEMBLY SWARM";
   const ideaSwarm = rows.length > 0 && rows.every((row) => row.agent.trim().toLowerCase() === "idea");
-  if (!ideaSwarm) return "EXPLORE SWARM";
+  if (!ideaSwarm) return "ITERATION SWARM";
   const models = Array.from(new Set(rows.map((row) => row.modelLabel.trim().replace(/\s*\/\s*/g, "/")).filter(Boolean)));
   return models.length === 1 ? `IDEA SWARM · ${models[0]}` : "IDEA SWARM";
 }
@@ -996,7 +996,7 @@ function TaskRowsHeader({ counts, rows = [], swarm = false, strategy = "explore"
   const headerLabel = swarm ? taskSwarmHeaderLabel(rows, strategy) : "Subagent stream";
   const swarmContext = strategy === "assembly"
     ? integrationRequired ? "Complementary parts · parent integration required" : "Complementary parts"
-    : "Independent alternatives · choose or synthesize";
+    : "Fast parallel iterations · choose or synthesize";
   return (
     <div className={cn("min-w-0 border-b px-3 py-2", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))]" : "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)]")} data-task-card-header data-swarm-strategy={swarm ? strategy : undefined}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
@@ -2113,7 +2113,7 @@ export function ToolMessageView({
   const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
   const isTaskSwarm = (isTask && toolMessage.taskMode === "swarm") || (hasTaskRows && toolMessage.taskRows.some((row) => row.swarmMode));
   const swarmStrategy = toolMessage.swarmStrategy ?? "explore";
-  const taskLabel = isTaskSwarm ? (swarmStrategy === "assembly" ? "Assembly Swarm" : "Explore Swarm") : label;
+  const taskLabel = isTaskSwarm ? (swarmStrategy === "assembly" ? "Assembly Swarm" : "Iteration Swarm") : label;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
     ? ""

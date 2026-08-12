@@ -3293,6 +3293,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 	}
+	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
+		return "", err
+	}
 
 	action := parsed.Action
 	if strings.TrimSpace(action) == "" {

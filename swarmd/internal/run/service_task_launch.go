@@ -24,12 +24,13 @@ import (
 )
 
 const (
-	taskLaunchPermissionPathID = "permission.task_launch.v1"
-	taskModeRegular            = "regular"
-	taskModeSwarm              = "swarm"
-	taskSwarmStrategyExplore   = "explore"
-	taskSwarmStrategyAssembly  = "assembly"
-	taskSwarmMaxAgents         = 256
+	taskLaunchPermissionPathID     = "permission.task_launch.v1"
+	taskModeRegular                = "regular"
+	taskModeSwarm                  = "swarm"
+	taskSwarmStrategyExplore       = "explore"
+	taskSwarmStrategyAssembly      = "assembly"
+	taskAssemblySwarmLaunchEnabled = false
+	taskSwarmMaxAgents             = 256
 )
 
 type taskCallArguments struct {
@@ -405,7 +406,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		strategy = taskSwarmStrategyExplore
 	}
 	if strategy != taskSwarmStrategyExplore && strategy != taskSwarmStrategyAssembly {
-		return nil, nil, fmt.Errorf("task swarm_strategy must be %q or %q", taskSwarmStrategyExplore, taskSwarmStrategyAssembly)
+		return nil, nil, fmt.Errorf("task swarm_strategy must be %q", taskSwarmStrategyExplore)
 	}
 	agentType := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "agent_type"), mapString(args, "subagent_type"), mapString(args, "agent"), mapString(args, "purpose"))))
 	switch {
@@ -433,7 +434,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		return parseTaskAssemblySwarm(args, agentType, count)
 	}
 	if _, ok := args["assembly_parts"]; ok || strings.TrimSpace(mapString(args, "integration_contract")) != "" {
-		return nil, nil, errors.New("task Explore swarm does not accept assembly_parts or integration_contract")
+		return nil, nil, errors.New("task Iteration Swarm does not accept assembly_parts or integration_contract")
 	}
 	themes, err := taskStringArray(args, "themes")
 	if err != nil {
@@ -483,7 +484,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
-			Deliverable: outputContract, ConcurrencyReason: "Independent task swarm iteration", OwnedScope: ownedScope,
+			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope,
 			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
 			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
 			SourceArguments: map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy},
@@ -494,6 +495,13 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		return nil, nil, err
 	}
 	return swarm, launches, nil
+}
+
+func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {
+	if parsed.Swarm != nil && parsed.Swarm.Strategy == taskSwarmStrategyAssembly && !taskAssemblySwarmLaunchEnabled {
+		return errors.New("task Assembly Swarm is not available in this launch")
+	}
+	return nil
 }
 
 func parseTaskAssemblySwarm(args map[string]any, agentType string, count int) (*taskSwarmSpec, []taskLaunchSpec, error) {
@@ -2099,6 +2107,9 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string, call tool.Call) (taskLaunchManifest, error) {
 	parsed, err := parseTaskCallArguments(call.Arguments)
 	if err != nil {
+		return taskLaunchManifest{}, err
+	}
+	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
 		return taskLaunchManifest{}, err
 	}
 

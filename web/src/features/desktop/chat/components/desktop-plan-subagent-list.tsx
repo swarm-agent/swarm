@@ -50,13 +50,13 @@ function contextPercent(view: DesktopV3TaskChildViewModel | null): number | null
 export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlanSubagentListProps) {
   if (children.length === 0) return null;
   const assembly = children.some(({ row }) => row.swarmStrategy === "assembly");
-  const explore = !assembly && children.some(({ row }) => row.swarmMode || row.swarmStrategy === "explore");
-  const noun = assembly ? "part" : explore ? "alternative" : "subagent";
+  const iteration = !assembly && children.some(({ row }) => row.swarmMode || row.swarmStrategy === "explore");
+  const noun = assembly ? "part" : iteration ? "iteration" : "subagent";
   const label = `${children.length} ${noun}${children.length === 1 ? "" : "s"}`;
   const integrationContract = children.find(({ row }) => row.integrationContract?.trim())?.row.integrationContract?.trim() ?? "";
   const integrationRequired = assembly && children.some(({ row }) => row.integrationRequired);
   return (
-    <details className={cn("group min-w-0 overflow-hidden", mode !== "thin" && "mx-4 my-3")} data-plan-subagent-list data-display-mode={mode} aria-label={assembly ? "Assembly parts" : explore ? "Explore alternatives" : "Subagents"}>
+    <details className={cn("group min-w-0 overflow-hidden", mode !== "thin" && "mx-4 my-3")} data-plan-subagent-list data-display-mode={mode} aria-label={assembly ? "Assembly parts" : iteration ? "Iteration Swarm alternatives" : "Subagents"}>
       <summary
         className={cn(
           "flex min-h-9 cursor-pointer list-none items-center rounded-lg border border-[var(--app-border)] text-xs font-medium text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden",
@@ -70,8 +70,8 @@ export function DesktopPlanSubagentList({ children, actions, mode }: DesktopPlan
         <span className={mode === "thin" ? undefined : "font-medium tracking-normal"}>{mode === "thin" ? children.length : label}</span>
         <ChevronRight aria-hidden="true" className={cn("size-3.5 text-[var(--app-text-muted)] transition-transform group-open:rotate-90", mode === "thin" ? "absolute ml-7" : "ml-auto text-[var(--app-text-subtle)] opacity-70")} />
       </summary>
-      {mode !== "thin" && (assembly || explore) ? <div className="mt-2.5 rounded-md border border-[var(--app-border)]/40 bg-[var(--app-surface-subtle)] px-3 py-2 text-[10px] leading-4 text-[var(--app-text-muted)]">
-        <div className="font-semibold text-[var(--app-text)]">{assembly ? "Assembly Swarm · complementary parts" : "Explore Swarm · independent alternatives"}</div>
+      {mode !== "thin" && (assembly || iteration) ? <div className="mt-2.5 rounded-md border border-[var(--app-border)]/40 bg-[var(--app-surface-subtle)] px-3 py-2 text-[10px] leading-4 text-[var(--app-text-muted)]">
+        <div className="font-semibold text-[var(--app-text)]">{assembly ? "Assembly Swarm · complementary parts" : "Iteration Swarm · fast parallel iterations"}</div>
         {integrationRequired ? <div>Parent integration required after child completion.</div> : null}
         {assembly && integrationContract ? <div title={integrationContract}>Contract: {integrationContract}</div> : null}
       </div> : null}

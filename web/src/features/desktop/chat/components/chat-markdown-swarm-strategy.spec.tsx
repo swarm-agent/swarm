@@ -16,7 +16,7 @@ function renderTask(output: Record<string, unknown>, argumentsValue: Record<stri
   return renderToStaticMarkup(<ToolMessageView toolMessage={message} />);
 }
 
-test("legacy swarm payload renders as Explore alternatives", () => {
+test("legacy explore payload renders as Iteration Swarm", () => {
   const markup = renderTask({
     tool: "task",
     path_id: "tool.task.v1",
@@ -30,8 +30,8 @@ test("legacy swarm payload renders as Explore alternatives", () => {
     }],
   }, { mode: "swarm" });
 
-  assert.match(markup, /EXPLORE SWARM/);
-  assert.match(markup, /Independent alternatives · choose or synthesize/);
+  assert.match(markup, /ITERATION SWARM/);
+  assert.match(markup, /Fast parallel iterations · choose or synthesize/);
   assert.doesNotMatch(markup, /SWARM MODE/);
 });
 

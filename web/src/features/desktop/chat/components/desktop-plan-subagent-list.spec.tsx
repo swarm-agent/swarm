@@ -117,5 +117,5 @@ test("plan subagent list describes legacy swarm_mode children as Explore alterna
   alternative.row = { ...alternative.row, swarmMode: true };
   const markup = renderToStaticMarkup(<DesktopPlanSubagentList children={[alternative]} mode="compact" />);
   assert.match(markup, /aria-label="Show 1 alternative"/);
-  assert.match(markup, /Explore Swarm · independent alternatives/);
+  assert.match(markup, /Iteration Swarm · fast parallel iterations/);
 });

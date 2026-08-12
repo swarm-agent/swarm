@@ -25,9 +25,14 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if _, ok := properties["allow_bash"]; ok {
 		t.Fatal("task schema must not expose launch-time allow_bash")
 	}
-	for _, key := range []string{"mode", "swarm_strategy", "agent_type", "count", "themes", "groups", "output_contract", "owned_scope_template", "assembly_parts", "integration_contract"} {
+	for _, key := range []string{"mode", "agent_type", "count", "themes", "groups", "output_contract", "owned_scope_template"} {
 		if _, ok := properties[key]; !ok {
 			t.Fatalf("task schema missing swarm-mode field %q", key)
+		}
+	}
+	for _, key := range []string{"swarm_strategy", "assembly_parts", "integration_contract"} {
+		if _, ok := properties[key]; ok {
+			t.Fatalf("task schema must not advertise disabled Assembly field %q", key)
 		}
 	}
 	for _, definition := range rt.Definitions() {
@@ -38,17 +43,13 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	for _, want := range []string{
 		"same subagent policy",
 		"same question directly without Router",
-		"substitutes, alternatives, or independent trials",
-		"complementary production parts",
-		"Strategy depends on output relationships, not worker type",
-		"integration_required=true",
-		"pending_parent_assembly",
-		"atomically integrate the complete selected Coder batch",
-		"wire shared-checkout Designer artifacts",
-		"Idea supports explore only",
+		"Iteration Swarm",
+		"fast parallel alternatives or independent trials",
+		"internal explore strategy remains implicit for backward compatibility",
+		"Idea Swarm",
 	} {
 		if !definitionTextContains(taskDefinition, want) {
-			t.Fatalf("task definition missing swarm lifecycle contract %q: %#v", want, taskDefinition)
+			t.Fatalf("task definition missing launch swarm contract %q: %#v", want, taskDefinition)
 		}
 	}
 	if !definitionTextContains(taskDefinition, "structured launches array") || !definitionTextContains(taskDefinition, "Do not embed launch JSON") || !definitionTextContains(taskDefinition, "not text embedded in prompt") {

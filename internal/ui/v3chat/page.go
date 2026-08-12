@@ -3000,8 +3000,8 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 			pending++
 		}
 	}
-	headerLabel := "EXPLORE SWARM"
-	contextLabel := "independent alternatives · choose or synthesize"
+	headerLabel := "ITERATION SWARM"
+	contextLabel := "fast parallel iterations · choose or synthesize"
 	if presentation.TaskSwarmStrategy == "assembly" {
 		headerLabel = "ASSEMBLY SWARM"
 		contextLabel = "complementary parts"

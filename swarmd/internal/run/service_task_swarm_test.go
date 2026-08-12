@@ -76,16 +76,13 @@ func TestParseTaskSwarmDefaultsToExploreAndPreservesCompatibilityAlias(t *testin
 	}
 }
 
-func TestParseTaskAssemblySwarmBuildsComplementaryParts(t *testing.T) {
+func TestTaskAssemblySwarmIsDisabledAtLaunchGate(t *testing.T) {
 	parsed, err := parseTaskCallArguments(`{"mode":"swarm","swarm_strategy":"assembly","prompt":"build feature","agent_type":"designer","count":2,"assembly_parts":[{"name":"Navigation","instructions":"Build nav","owned_scope":["web/src/nav.tsx"]},{"name":"Content","owned_scope":["web/src/content.tsx","web/src/content.css"]}],"integration_contract":"Parent assembles a complete page"}`)
 	if err != nil {
-		t.Fatalf("parse Assembly swarm: %v", err)
+		t.Fatalf("parse dormant Assembly implementation: %v", err)
 	}
-	if parsed.Swarm.Strategy != taskSwarmStrategyAssembly || len(parsed.Swarm.AssemblyParts) != 2 || parsed.Swarm.IntegrationContract == "" {
-		t.Fatalf("Assembly metadata = %#v", parsed.Swarm)
-	}
-	if parsed.Launches[0].AssignmentLabel != "Navigation" || parsed.Launches[0].AssemblyPart == nil || parsed.Launches[1].IntegrationContract != "Parent assembles a complete page" {
-		t.Fatalf("Assembly launches = %#v", parsed.Launches)
+	if err := validateTaskSwarmLaunchEnabled(parsed); err == nil || !strings.Contains(err.Error(), "Assembly Swarm is not available in this launch") {
+		t.Fatalf("Assembly launch gate error = %v", err)
 	}
 }
 

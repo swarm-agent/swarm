@@ -287,7 +287,7 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 	}
 	swarm := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","count":100}`, Output: string(payload), Status: "running"}
 	presentation := buildToolPresentation(swarm)
-	if !presentation.TaskSwarm || presentation.TaskSwarmStrategy != "explore" || !strings.HasPrefix(presentation.Summary, "Explore Swarm") {
+	if !presentation.TaskSwarm || presentation.TaskSwarmStrategy != "explore" || !strings.HasPrefix(presentation.Summary, "Iteration Swarm") {
 		t.Fatalf("explicit swarm presentation = %#v", presentation)
 	}
 
@@ -295,7 +295,7 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 	shortRows := page.renderToolRowsForHeight(swarm, 80, 12, testPageStyles())
 	tallRows := page.renderToolRowsForHeight(swarm, 80, 36, testPageStyles())
 	shortText := renderTaskPresentationRowsText(shortRows)
-	if !strings.Contains(shortText, "EXPLORE SWARM") || !strings.Contains(shortText, "independent alternatives") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "showing 100/100 agents") {
+	if !strings.Contains(shortText, "ITERATION SWARM") || !strings.Contains(shortText, "fast parallel iterations") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "showing 100/100 agents") {
 		t.Fatalf("short swarm matrix missing dashboard details:\n%s", shortText)
 	}
 	for name, rows := range map[string][]renderRow{"short": shortRows, "tall": tallRows} {
@@ -316,7 +316,7 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 		t.Fatal("regular task wave must not become swarm mode by count")
 	}
 	regularText := renderTaskPresentationRowsText(page.renderToolRowsForHeight(regular, 80, 12, testPageStyles()))
-	if strings.Contains(regularText, "EXPLORE SWARM") || strings.Contains(regularText, "ASSEMBLY SWARM") || !strings.Contains(regularText, "SUBAGENT STREAM") {
+	if strings.Contains(regularText, "ITERATION SWARM") || strings.Contains(regularText, "ASSEMBLY SWARM") || !strings.Contains(regularText, "SUBAGENT STREAM") {
 		t.Fatalf("regular task rendering changed:\n%s", regularText)
 	}
 }
