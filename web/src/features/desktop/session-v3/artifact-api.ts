@@ -69,7 +69,7 @@ function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV3Artifa
 }
 
 export async function fetchDesktopV3ArtifactCatalog(signal?: AbortSignal): Promise<DesktopV3ArtifactCatalogEntry[]> {
-  const response = await apiFetch('/v3/artifacts', { method: 'GET', signal })
+  const response = await apiFetch('/v3/artifacts?limit=2000', { method: 'GET', signal })
   if (!response.ok) throw new Error(await readErrorMessage(response))
   const payload = await response.json() as DesktopV3ArtifactCatalogResponse
   if (payload.ok !== true || !Array.isArray(payload.artifacts)) throw new Error('Artifact catalog returned an invalid response')

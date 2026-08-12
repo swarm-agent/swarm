@@ -96,7 +96,7 @@ export function DesktopV3ArtifactGallery({
   }, [artifacts, query, showPlans])
 
   const selected = visibleArtifacts.find((artifact) => artifactSelectionKey(artifact) === selectedId) ?? visibleArtifacts[0]
-  const selectedIndex = selected ? visibleArtifacts.findIndex((artifact) => artifact.artifactId === selected.artifactId) : -1
+  const selectedIndex = selected ? visibleArtifacts.findIndex((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected)) : -1
 
   useEffect(() => {
     if (!open) return undefined

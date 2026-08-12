@@ -3987,6 +3987,7 @@ export function DesktopAppPage() {
         }
         return
       }
+      case 'open-artifact-viewer':
       case 'open-action-chooser':
       case 'open-model-picker':
       case 'toggle-thinking':

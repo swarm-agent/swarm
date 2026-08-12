@@ -21,9 +21,9 @@ import {
   CircleAlert,
   CircleDot,
   LoaderCircle,
+  Loader2,
   Github,
   ExternalLink,
-  X,
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
