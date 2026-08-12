@@ -2,7 +2,9 @@ package pebblestore
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -65,6 +67,150 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 	if err != nil || len(ready) != 1 || ready[0].SelectedVariantID != "variant-1" { t.Fatalf("ready collections = %+v err=%v", ready, err) }
 }
 
+func TestConcurrentArtifactLifecycleMutationsRemainIdempotent(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-concurrent")
+	input := V3SessionMutationInput{
+		SessionID: "artifact-concurrent", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-concurrent-create", PayloadHash: "artifact-concurrent-create-hash", Kind: V3SessionMutationCreateArtifact, NowUnixMs: 2000,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Concurrent"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain"}},
+	}
+
+	const writers = 8
+	start := make(chan struct{})
+	results := make(chan V3SessionMutationResult, writers)
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := sessions.ApplyV3SessionMutation(input)
+			results <- result
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent artifact mutation: %v", err)
+		}
+	}
+	var primarySeq uint64
+	fresh := 0
+	for result := range results {
+		if primarySeq == 0 {
+			primarySeq = result.PrimarySeq
+		}
+		if result.PrimarySeq != primarySeq {
+			t.Fatalf("primary seq = %d, want %d", result.PrimarySeq, primarySeq)
+		}
+		if !result.Replayed {
+			fresh++
+		}
+	}
+	if fresh != 1 {
+		t.Fatalf("fresh mutations = %d, want 1", fresh)
+	}
+	variants, err := sessions.ListSessionArtifactVariants("account-1", "artifact-concurrent", "collection-1", 10)
+	if err != nil || len(variants) != 1 {
+		t.Fatalf("variants = %+v err=%v", variants, err)
+	}
+}
+
+func TestArtifactMutationRejectsCrossAccountSessionOwnership(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-owned")
+
+	for _, tc := range []struct {
+		name, userID, accountID string
+	}{
+		{name: "wrong-account", userID: "user-1", accountID: "account-2"},
+		{name: "wrong-user", userID: "user-2", accountID: "account-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+				SessionID: "artifact-owned", UserID: tc.userID, AccountScopeID: tc.accountID,
+				ClientRequestID: "artifact-owned-" + tc.name, PayloadHash: "artifact-owned-" + tc.name, Kind: V3SessionMutationCreateArtifact,
+				Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-" + tc.accountID, Name: "Forbidden"}},
+			})
+			if err == nil {
+				t.Fatal("artifact mutation accepted mismatched session ownership")
+			}
+		})
+	}
+	collections, err := sessions.ListSessionArtifactCollections("account-1", "artifact-owned", "", 10)
+	if err != nil || len(collections) != 0 {
+		t.Fatalf("unauthorized metadata persisted: %+v err=%v", collections, err)
+	}
+}
+
+func TestArtifactEventProjectionContainsMetadataButNoBytesOrPrivatePaths(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-projection")
+	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-projection", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-projection-create", PayloadHash: "artifact-projection-create", Kind: V3SessionMutationCreateArtifact,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Metadata only"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain", Presentation: SessionArtifactPresentation{Kind: "text", Label: "Preview", Description: "Safe metadata"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Assert artifact projections never introduce byte/private-path fields. The
+	// generic realtime membership may carry the trusted workspace route, so scope
+	// that check to its artifact-bearing event and projection.
+	for name, value := range map[string]any{"event": result.Event, "projection": result.Projection} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		assertNoArtifactByteFields(t, name, decoded)
+	}
+	if result.RealtimeOutbox == nil {
+		t.Fatal("artifact mutation has no durable realtime outbox")
+	}
+	for name, value := range map[string]any{"realtime event": result.RealtimeOutbox.Event, "realtime projection": result.RealtimeOutbox.Projection} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		assertNoArtifactByteFields(t, name, decoded)
+	}
+}
+
+func assertNoArtifactByteFields(t *testing.T, location string, value any) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			switch strings.ToLower(key) {
+			case "content", "bytes", "body", "storage_path", "private_path", "filesystem_path":
+				t.Fatalf("%s contains private artifact field %q", location, key)
+			}
+			assertNoArtifactByteFields(t, fmt.Sprintf("%s.%s", location, key), child)
+		}
+	case []any:
+		for i, child := range typed {
+			assertNoArtifactByteFields(t, fmt.Sprintf("%s[%d]", location, i), child)
+		}
+	}
+}
+
 func TestDeleteSessionPurgesArtifactMetadataAndIndexes(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
@@ -86,7 +232,7 @@ func TestDeleteSessionPurgesArtifactMetadataAndIndexes(t *testing.T) {
 	}
 }
 
-func TestArchiveSessionPreservesArtifactMetadata(t *testing.T) {
+func TestArchiveAndUnarchiveSessionPreserveArtifactMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-archive")
@@ -98,6 +244,16 @@ func TestArchiveSessionPreservesArtifactMetadata(t *testing.T) {
 	if err := sessions.ArchiveSessions([]string{"artifact-archive"}); err != nil { t.Fatal(err) }
 	if _, ok, err := sessions.GetSessionArtifactCollection("account-1", "artifact-archive", "collection-1"); err != nil || !ok {
 		t.Fatalf("archived artifact metadata missing: ok=%t err=%v", ok, err)
+	}
+	tombstone, ok, err := sessions.GetV3SessionTombstone("artifact-archive")
+	if err != nil || !ok {
+		t.Fatalf("archived tombstone missing: ok=%t err=%v", ok, err)
+	}
+	if err := sessions.ReactivateArchivedSessions([]string{"artifact-archive"}, map[string]int64{"artifact-archive": tombstone.UpdatedAt}); err != nil {
+		t.Fatalf("reactivate archived session: %v", err)
+	}
+	if _, ok, err := sessions.GetSessionArtifactCollection("account-1", "artifact-archive", "collection-1"); err != nil || !ok {
+		t.Fatalf("unarchived artifact metadata missing: ok=%t err=%v", ok, err)
 	}
 }
 

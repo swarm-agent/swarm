@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -168,6 +169,48 @@ func TestPackageLimitsAndTraversalRejected(t *testing.T) {
 	}
 }
 
+func TestImportPackageCopiesOrdinaryDirectoryWithPrivateEntries(t *testing.T) {
+	service := newTestService(t, Limits{})
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>package</h1>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets", "site.css"), []byte("body{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	variant := testVariant("package-import", "bundle.zip", "application/zip", "package")
+	staged, err := service.ImportPackage(context.Background(), variant, dir)
+	if err != nil {
+		t.Fatalf("ImportPackage: %v", err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, staged.DigestSHA256, staged.Size)
+	if err != nil {
+		t.Fatalf("Finalize package: %v", err)
+	}
+	variant.Status = pebblestore.SessionArtifactStatusReady
+	variant.DigestSHA256 = blob.DigestSHA256
+	variant.Size = blob.Size
+	data, _, err := service.Read(context.Background(), variant, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.File) != 2 || archive.File[0].Name != "assets/site.css" || archive.File[1].Name != "index.html" {
+		t.Fatalf("package entries = %+v", archive.File)
+	}
+	for _, entry := range archive.File {
+		if entry.Mode().Perm() != 0o600 {
+			t.Fatalf("package entry mode = %v", entry.Mode())
+		}
+	}
+}
+
 func TestReconcileRemovesStagingWithoutPromoting(t *testing.T) {
 	service := newTestService(t, Limits{})
 	variant := testVariant("variant-1", "note.txt", "text/plain", "text")
@@ -212,6 +255,101 @@ func TestFinalizeConcurrentHandlesAreIdempotentForSameBytes(t *testing.T) {
 	}
 	if _, err := service.Finalize(context.Background(), second, "", 0); err != nil {
 		t.Fatalf("second Finalize: %v", err)
+	}
+}
+
+func TestConcurrentStageAndFinalizeSameVariantIsIdempotent(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("variant-concurrent", "note.txt", "text/plain", "text")
+	payload := []byte("same concurrent artifact")
+
+	const writers = 8
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			staged, err := service.Stage(context.Background(), variant, bytes.NewReader(payload))
+			if err == nil {
+				_, err = service.Finalize(context.Background(), staged, staged.DigestSHA256, staged.Size)
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent stage/finalize: %v", err)
+		}
+	}
+
+	ready := variant
+	digest := sha256.Sum256(payload)
+	ready.Status = pebblestore.SessionArtifactStatusReady
+	ready.DigestSHA256 = hex.EncodeToString(digest[:])
+	ready.Size = int64(len(payload))
+	data, _, err := service.Read(context.Background(), ready, 1024)
+	if err != nil || !bytes.Equal(data, payload) {
+		t.Fatalf("read concurrent artifact = %q, err=%v", data, err)
+	}
+}
+
+func TestImportFileCopiesOrdinaryFileIntoManagedStorage(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("import-file", "source.txt", "text/plain", "text")
+	source := filepath.Join(t.TempDir(), "source.txt")
+	if err := os.WriteFile(source, []byte("legacy ordinary file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := service.ImportFile(context.Background(), variant, source)
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, staged.DigestSHA256, staged.Size)
+	if err != nil {
+		t.Fatalf("Finalize imported file: %v", err)
+	}
+	variant.Status = pebblestore.SessionArtifactStatusReady
+	variant.DigestSHA256 = blob.DigestSHA256
+	variant.Size = blob.Size
+	data, _, err := service.Read(context.Background(), variant, 1024)
+	if err != nil || string(data) != "legacy ordinary file" {
+		t.Fatalf("imported bytes = %q err=%v", data, err)
+	}
+}
+
+func TestPackageExpandedByteQuotaRejectsCompressedBomb(t *testing.T) {
+	service := newTestService(t, Limits{MaxArtifactBytes: 1 << 20, MaxSessionBytes: 2 << 20, MaxPackageFiles: 10, MaxPackageBytes: 32})
+	variant := testVariant("package-expanded", "bundle.zip", "application/zip", "package")
+	compressed := zipBytes(t, "large.txt", bytes.Repeat([]byte("a"), 1024))
+	if int64(len(compressed)) >= 1024 {
+		t.Fatalf("zip fixture did not compress: compressed=%d expanded=%d", len(compressed), 1024)
+	}
+	if _, err := service.Stage(context.Background(), variant, bytes.NewReader(compressed)); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("expanded package quota error = %v, want ErrQuotaExceeded", err)
+	}
+}
+
+func TestDeleteSessionRejectsSymlinkWithoutTouchingTarget(t *testing.T) {
+	service := newTestService(t, Limits{})
+	outside := t.TempDir()
+	protected := filepath.Join(outside, "protected.txt")
+	if err := os.WriteFile(protected, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, service.sessionDir("session-symlink")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := service.DeleteSession("session-symlink"); err == nil {
+		t.Fatal("DeleteSession accepted symlink session root")
+	}
+	if data, err := os.ReadFile(protected); err != nil || string(data) != "keep" {
+		t.Fatalf("symlink target changed: data=%q err=%v", data, err)
 	}
 }
 

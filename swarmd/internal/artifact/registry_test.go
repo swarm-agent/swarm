@@ -108,6 +108,46 @@ func TestRegistryMaintenancePreservesArchivedAndDeletesDeleted(t *testing.T) {
 	}
 }
 
+func TestRegistryMaintenanceRetriesPendingDeleteAndMarksComplete(t *testing.T) {
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "data"))
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &registryResolver{tombstones: []pebblestore.V3SessionTombstone{{
+		SessionID: "pending-delete", WorkspacePath: workspace, Deleted: true, Kind: "deleted", ArtifactCleanupPending: true,
+	}}}
+	registry := NewRegistry(resolver, Limits{})
+	service, err := registry.ServiceForWorkspace(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant := testVariant("variant-1", "note.txt", "text/plain", "text")
+	variant.SessionID = "pending-delete"
+	staged, err := service.Stage(context.Background(), variant, strings.NewReader("delete me"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Finalize(context.Background(), staged, "", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := registry.RunMaintenance(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DeletedSessions != 1 || resolver.tombstones[0].ArtifactCleanupPending {
+		t.Fatalf("maintenance retry = %+v tombstone=%+v", report, resolver.tombstones[0])
+	}
+	if _, err := os.Stat(service.sessionDir("pending-delete")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending delete bytes remain: %v", err)
+	}
+	second, err := registry.RunMaintenance(10)
+	if err != nil || second.DeletedSessions != 0 {
+		t.Fatalf("idempotent maintenance = %+v err=%v", second, err)
+	}
+}
+
 func TestRegistryRestartReconcilesActiveStaging(t *testing.T) {
 	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "data"))
 	workspace := filepath.Join(t.TempDir(), "workspace")

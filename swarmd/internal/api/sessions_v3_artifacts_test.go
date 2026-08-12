@@ -3,15 +3,20 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"io"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func TestOpenSessionV3ArtifactFileRejectsSymlinkAndEscape(t *testing.T) {
@@ -240,6 +245,163 @@ func TestLegacyManagedArtifactIDsAreStableAndOpaque(t *testing.T) {
 	if other == variantA {
 		t.Fatal("managed variant ID was reused across sessions")
 	}
+}
+
+func TestImportLegacySessionV3ArtifactOrdinaryFileIsConcurrentAndIdempotent(t *testing.T) {
+	server, sessionSvc, registry, plan, checkpoint, reference, descriptor := newLegacyArtifactImportFixture(t, "note.txt", "legacy file")
+	collectionID, variantID := sessionsV3LegacyManagedArtifactIDs(plan.SessionID, plan.ID, checkpoint.ID, descriptor.ID)
+	principal := testPrincipal()
+
+	const imports = 8
+	start := make(chan struct{})
+	results := make(chan pebblestore.SessionArtifactVariant, imports)
+	errs := make(chan error, imports)
+	var wg sync.WaitGroup
+	for i := 0; i < imports; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			managed, err := server.importLegacySessionV3Artifact(context.Background(), principal, plan, checkpoint, reference, descriptor, collectionID, variantID)
+			results <- managed
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent legacy import: %v", err)
+		}
+	}
+	var digest string
+	for managed := range results {
+		if managed.Status != pebblestore.SessionArtifactStatusReady || managed.ID != variantID || managed.DigestSHA256 == "" {
+			t.Fatalf("managed artifact = %+v", managed)
+		}
+		if digest == "" {
+			digest = managed.DigestSHA256
+		} else if managed.DigestSHA256 != digest {
+			t.Fatalf("legacy import digest = %q, want %q", managed.DigestSHA256, digest)
+		}
+	}
+	managed, ok, err := sessionSvc.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID)
+	if err != nil || !ok {
+		t.Fatalf("managed variant missing: ok=%t variant=%+v err=%v", ok, managed, err)
+	}
+	service, err := registry.ServiceForSession(plan.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := service.Read(context.Background(), managed, 1024)
+	if err != nil || string(data) != "legacy file" {
+		t.Fatalf("managed legacy bytes = %q err=%v", data, err)
+	}
+}
+
+func TestImportLegacySessionV3ArtifactPackageAndMissingSource(t *testing.T) {
+	t.Run("html package", func(t *testing.T) {
+		server, _, registry, plan, checkpoint, reference, descriptor := newLegacyArtifactImportFixture(t, "gallery/index.html", "<h1>legacy</h1>")
+		asset := filepath.Join(sessionV3ArtifactWorkspaceRoot(mustSession(t, server, plan.SessionID)), "gallery", "site.css")
+		if err := os.WriteFile(asset, []byte("body{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		collectionID, variantID := sessionsV3LegacyManagedArtifactIDs(plan.SessionID, plan.ID, checkpoint.ID, descriptor.ID)
+		managed, err := server.importLegacySessionV3Artifact(context.Background(), testPrincipal(), plan, checkpoint, reference, descriptor, collectionID, variantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if managed.Status != pebblestore.SessionArtifactStatusReady || managed.MediaType != "application/zip" || managed.Presentation.Kind != "package" {
+			t.Fatalf("managed package = %+v", managed)
+		}
+		service, err := registry.ServiceForSession(plan.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _, err := service.Read(context.Background(), managed, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(archive.File) != 2 || archive.File[0].Name != "index.html" || archive.File[1].Name != "site.css" {
+			t.Fatalf("managed package entries = %+v", archive.File)
+		}
+	})
+
+	t.Run("missing source unavailable", func(t *testing.T) {
+		server, _, _, plan, checkpoint, reference, descriptor := newLegacyArtifactImportFixture(t, "missing.txt", "")
+		if err := os.Remove(filepath.Join(sessionV3ArtifactWorkspaceRoot(mustSession(t, server, plan.SessionID)), reference.Path)); err != nil {
+			t.Fatal(err)
+		}
+		collectionID, variantID := sessionsV3LegacyManagedArtifactIDs(plan.SessionID, plan.ID, checkpoint.ID, descriptor.ID)
+		managed, err := server.importLegacySessionV3Artifact(context.Background(), testPrincipal(), plan, checkpoint, reference, descriptor, collectionID, variantID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if managed.Status != pebblestore.SessionArtifactStatusUnavailable || managed.FailureCode != "legacy_source_unavailable" || managed.DigestSHA256 != "" || managed.Size != 0 {
+			t.Fatalf("missing legacy artifact = %+v", managed)
+		}
+		repeated, err := server.importLegacySessionV3Artifact(context.Background(), testPrincipal(), plan, checkpoint, reference, descriptor, collectionID, variantID)
+		if err != nil || repeated.Status != pebblestore.SessionArtifactStatusUnavailable {
+			t.Fatalf("repeated missing import = %+v err=%v", repeated, err)
+		}
+	})
+}
+
+func TestImportLegacySessionV3ArtifactRejectsOwnershipMismatch(t *testing.T) {
+	server, _, _, plan, checkpoint, reference, descriptor := newLegacyArtifactImportFixture(t, "note.txt", "legacy file")
+	collectionID, variantID := sessionsV3LegacyManagedArtifactIDs(plan.SessionID, plan.ID, checkpoint.ID, descriptor.ID)
+	wrong := testPrincipal()
+	wrong.AccountScopeID = "account-2"
+	if _, err := server.importLegacySessionV3Artifact(context.Background(), wrong, plan, checkpoint, reference, descriptor, collectionID, variantID); err == nil {
+		t.Fatal("legacy import accepted mismatched account ownership")
+	}
+}
+
+func newLegacyArtifactImportFixture(t *testing.T, relativePath, content string) (*Server, *sessionruntime.Service, *artifact.Registry, pebblestore.SessionPlanSnapshot, pebblestore.SessionPlanCheckpoint, pebblestore.SessionPlanArtifactReference, pebblestore.PlanFinalHandoffArtifact) {
+	t.Helper()
+	workspace := t.TempDir()
+	t.Setenv("STATE_DIRECTORY", filepath.Join(workspace, "..", "private-data"))
+	absolute := filepath.Join(workspace, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absolute, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "legacy-artifact-session", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID,
+		Title: "Legacy artifact", WorkspacePath: workspace, WorkspaceName: "workspace",
+		Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test-model", Thinking: "medium"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
+	server.SetArtifactRegistry(registry)
+	checkpoint := pebblestore.SessionPlanCheckpoint{ID: "cp-1", Status: sessionruntime.PlanCheckpointStatusCompleted, RunID: "run-1", AttemptID: "attempt-1", Handoff: &pebblestore.SessionPlanCheckpointHandoff{Overview: "done"}}
+	reference := pebblestore.SessionPlanArtifactReference{Path: filepath.ToSlash(relativePath), Role: "deliverable", Description: "Legacy deliverable"}
+	descriptors := sessionruntime.ProjectPlanFinalHandoffArtifacts("plan-1", checkpoint.ID, []pebblestore.SessionPlanArtifactReference{reference})
+	if len(descriptors) != 1 {
+		t.Fatalf("project legacy descriptor = %+v", descriptors)
+	}
+	plan := pebblestore.SessionPlanSnapshot{ID: "plan-1", SessionID: created.ID, UserID: created.UserID, AccountScopeID: created.AccountScopeID}
+	return server, sessionSvc, registry, plan, checkpoint, reference, descriptors[0]
+}
+
+func mustSession(t *testing.T, server *Server, sessionID string) pebblestore.SessionSnapshot {
+	t.Helper()
+	session, ok, err := server.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%t err=%v", ok, err)
+	}
+	return session
 }
 
 func TestBuildSessionV3LegacyArtifactPackageRejectsSymlinkAndPreservesFiles(t *testing.T) {
