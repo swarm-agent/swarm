@@ -762,6 +762,7 @@ function testTaskProgramGroupsCanonicalOrderedStagesAndStatus(): void {
   assert(message?.taskProgram?.id === 'release_program', `unexpected program id: ${message?.taskProgram?.id}`);
   assert(message?.taskProgram?.stages.map((stage) => stage.id).join('|') === 'research|implement', 'program stages must preserve declared order');
   assert(message?.taskProgram?.stages[0]?.state === 'done', `research should derive done from terminal job states: ${message?.taskProgram?.stages[0]?.state}`);
+  assert(message?.taskProgram?.stages[0]?.rows.every((row) => !row.liveToolCalls), 'completed Task Program rows must not retain a tool stream');
   assert(message?.taskProgram?.stages[1]?.state === 'active', `implement should use canonical active stage: ${message?.taskProgram?.stages[1]?.state}`);
   assert(message?.taskProgram?.stages[1]?.dependsOn.join('|') === 'research', 'stage dependencies must be retained');
   assert(message?.taskProgram?.stages[1]?.rows[0]?.programJobId === 'desktop', 'source_arguments must assign the live row to its canonical job');
@@ -824,7 +825,7 @@ function testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting(): void {
   assert(message?.taskProgram?.stages[0]?.rows[0]?.childSessionId === 'scan-child', 'status child identity must attach an untagged live row');
   assert(message?.taskProgram?.stages[0]?.rows[0]?.agent === 'finder', 'program job identity must attach the designated agent');
   assert(message?.taskProgram?.stages[0]?.rows[0]?.modelLabel === 'google / gemini-3.6-flash', 'program job identity must retain the resolved model');
-  assert(message?.taskProgram?.stages[0]?.rows[0]?.liveToolCalls === 'read\nsearch\nsearch x2 · running', 'program job identity must retain ordered live tools');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.liveToolCalls === 'search x2 · running', 'Task Program must expose only the active tool instead of accumulated tool history');
   assert(message?.taskProgram?.stages[1]?.state === 'waiting', `dependent declared stage should wait: ${message?.taskProgram?.stages[1]?.state}`);
   assert(message?.taskProgram?.stages[1]?.rows[0]?.status === 'pending', 'declared jobs must render pending');
 }

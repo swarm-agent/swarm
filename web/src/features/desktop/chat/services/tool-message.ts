@@ -1187,6 +1187,7 @@ function buildTaskProgram(
       const liveRow = rowByJob.get(jobId);
       const jobStatus = statusByJob.get(jobId);
       const state = firstNonEmpty(jsonStr(jobStatus, "state"), liveRow?.status ?? "", "declared");
+      const rowStatus = jobStatus ? taskProgramJobStateToRowStatus(state) : liveRow?.status || taskProgramJobStateToRowStatus(state);
       const base: StructuredToolMessage["taskRows"][number] = liveRow ?? {
         launchIndex: Math.max(1, jobSpecs.findIndex((candidate) => jsonStr(candidate, "id") === jobId) + 1),
         childSessionId: jsonStr(jobStatus, "child_session_id"),
@@ -1211,7 +1212,8 @@ function buildTaskProgram(
         programJobId: jobId,
         programStageId: id,
         dependsOn: jsonStrArray(job, "depends_on"),
-        status: jobStatus ? taskProgramJobStateToRowStatus(state) : liveRow?.status || taskProgramJobStateToRowStatus(state),
+        status: rowStatus,
+        liveToolCalls: rowStatus === "running" && base.tool && base.tool !== "-" ? `${base.tool} · running` : undefined,
       };
     });
     const normalizedStates = stageRows.map((row) => row.status.trim().toLowerCase());

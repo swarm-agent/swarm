@@ -74,6 +74,9 @@ test("active Task Program renders its complete phased roadmap expanded", () => {
       subagent: "finder",
       assignment_label: "Scan contracts",
       status: "running",
+      current_tool: "search",
+      current_tool_display: "search x2",
+      tool_order: ["read", "search", "search"],
       source_arguments: { program_id: "release_program", program_job_id: "scan", program_stage_id: "research" },
     }],
   }, { action: "spawn", program });
@@ -88,6 +91,9 @@ test("active Task Program renders its complete phased roadmap expanded", () => {
   assert.match(markup, /data-stage-state="active"/);
   assert.match(markup, /data-stage-state="waiting"/);
   assert.match(markup, /waiting on dependencies/);
+  assert.match(markup, /search x2 · running/);
+  assert.doesNotMatch(markup, /tools:<\/span><span class="whitespace-pre-wrap">read/);
+  assert.equal((markup.match(/data-task-live-stream=/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /ITERATION SWARM/);
 });
 

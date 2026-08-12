@@ -884,7 +884,7 @@ function TaskChildInteractiveRow({
   );
 }
 
-function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions; forceLiveDemand?: boolean }) {
+function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false, showLiveStream = true, activeToolOnly = false }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions; forceLiveDemand?: boolean; showLiveStream?: boolean; activeToolOnly?: boolean }) {
   return (
     <TaskChildInteractiveRow
       row={row}
@@ -892,7 +892,7 @@ function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false 
       className="group min-w-0 border-t border-[var(--app-border)] transition-colors hover:bg-[color-mix(in_srgb,var(--app-text-muted)_5%,transparent)]"
       forceLiveDemand={forceLiveDemand}
     >
-      {(effectiveRow) => <TaskAgentListRowContent row={effectiveRow} index={index} dense={dense} />}
+      {(effectiveRow) => <TaskAgentListRowContent row={effectiveRow} index={index} dense={dense} showLiveStream={showLiveStream} activeToolOnly={activeToolOnly} />}
     </TaskChildInteractiveRow>
   );
 }
@@ -918,7 +918,7 @@ function TaskNarrowRowContent({ row, index }: { row: TaskToolRow; index: number 
   );
 }
 
-function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; index: number; dense: boolean }) {
+function TaskAgentListRowContent({ row, index, dense, showLiveStream = true, activeToolOnly = false }: { row: TaskToolRow; index: number; dense: boolean; showLiveStream?: boolean; activeToolOnly?: boolean }) {
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
   const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
@@ -929,7 +929,9 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
   const errorText = row.status.trim().toLowerCase() === 'failed' || row.status.trim().toLowerCase() === 'error' ? row.previewText.trim() : '';
   const previewText = errorText ? '' : row.previewText.trim();
   const liveAssistantText = row.liveAssistantText?.trim() || '';
-  const liveToolCalls = row.liveToolCalls?.trim() || '';
+  const liveToolCalls = activeToolOnly && row.tool && row.tool !== '-'
+    ? `${row.tool} · running`
+    : row.liveToolCalls?.trim() || '';
   const rowNumber = row.launchIndex || index + 1;
 
   return (
@@ -964,7 +966,7 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
           <TaskElapsedTime row={row} />
         </div>
       </div>
-      {(liveAssistantText || liveToolCalls || previewText || errorText) && !dense ? (
+      {showLiveStream && (liveAssistantText || liveToolCalls || previewText || errorText) && !dense ? (
         <div className="task-card-wide-only grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3" data-task-live-stream>
           <div />
           <div className="hidden sm:block" />
@@ -1083,6 +1085,8 @@ const MemoizedTaskAgentListRow = memo(TaskAgentListRow, (previous, next) => (
   && previous.dense === next.dense
   && previous.actions === next.actions
   && previous.forceLiveDemand === next.forceLiveDemand
+  && previous.showLiveStream === next.showLiveStream
+  && previous.activeToolOnly === next.activeToolOnly
   && taskRowsEqual(previous.row, next.row)
 ));
 
@@ -1230,7 +1234,10 @@ function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actio
                   Dependencies: {dependencyLabel}{stage.dependencyEvidence ? ` · ${stage.dependencyEvidence}` : ""}
                 </div>
                 <div className="min-w-0 overflow-hidden">
-                  {stage.rows.map((row, rowIndex) => <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && stage.state === "active"} />)}
+                  {stage.rows.map((row, rowIndex) => {
+                    const rowIsActive = stage.state === "active" && taskStatusKind(row) === "running" && !row.terminal;
+                    return <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && rowIsActive} showLiveStream={rowIsActive} activeToolOnly={rowIsActive} />;
+                  })}
                 </div>
               </section>
             );
