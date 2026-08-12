@@ -50,6 +50,8 @@ export interface TaskToolRow {
   modelLabel: string;
   tool: string;
   toolActivitySummary?: string;
+  liveToolCalls?: string;
+  liveAssistantText?: string;
   time: string;
   previewKind: string;
   previewText: string;

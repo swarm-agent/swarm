@@ -40,7 +40,7 @@ test("legacy explore payload renders as Iteration Swarm", () => {
   assert.doesNotMatch(markup, /SWARM MODE/);
 });
 
-test("Task Program renders one collapsed expandable card from explicit metadata", () => {
+test("active Task Program renders its complete phased roadmap expanded", () => {
   const program = {
     id: "release_program",
     stages: [
@@ -81,10 +81,13 @@ test("Task Program renders one collapsed expandable card from explicit metadata"
 
   assert.equal((markup.match(/data-task-program-card=/g) ?? []).length, 1);
   assert.match(markup, /data-task-program-card="release_program"/);
-  assert.match(markup, /aria-expanded="false"/);
+  assert.match(markup, /aria-expanded="true"/);
   assert.match(markup, /Task Program/);
   assert.match(markup, /0\/2 jobs · 0\/2 phases/);
-  assert.doesNotMatch(markup, /data-task-program-stage=/);
+  assert.equal((markup.match(/data-task-program-stage=/g) ?? []).length, 2);
+  assert.match(markup, /data-stage-state="active"/);
+  assert.match(markup, /data-stage-state="waiting"/);
+  assert.match(markup, /waiting on dependencies/);
   assert.doesNotMatch(markup, /ITERATION SWARM/);
 });
 
@@ -97,6 +100,9 @@ test("Task Program source exposes ordered phase, dependency, and interactive row
   assert.match(source, /waiting on dependencies/);
   assert.match(source, /Dependencies: \{dependencyLabel\}/);
   assert.match(source, /MemoizedTaskAgentListRow/);
+  assert.match(source, /data-task-live-stream/);
+  assert.match(source, /data-task-live-tools/);
+  assert.match(source, /data-task-live-assistant/);
 });
 
 test("ordinary task rows do not render a Task Program card", () => {

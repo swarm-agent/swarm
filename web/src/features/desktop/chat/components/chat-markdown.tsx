@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -661,6 +661,8 @@ function taskRowsEqual(left: TaskToolRow, right: TaskToolRow, options: { compare
     || left.modelLabel !== right.modelLabel
     || left.tool !== right.tool
     || left.toolActivitySummary !== right.toolActivitySummary
+    || left.liveToolCalls !== right.liveToolCalls
+    || left.liveAssistantText !== right.liveAssistantText
     || left.time !== right.time
     || left.terminal !== right.terminal) return false;
 
@@ -704,6 +706,8 @@ function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewMo
     status: child.status || row.status,
     tool: child.currentTool || row.tool,
     toolActivitySummary: child.toolActivitySummary || row.toolActivitySummary,
+    liveToolCalls: child.liveToolCalls || row.liveToolCalls,
+    liveAssistantText: child.liveAssistantText || row.liveAssistantText,
     modelLabel: child.modelLabel || row.modelLabel,
     launchStartedAtMs: child.startedAt || row.launchStartedAtMs,
     elapsedMs: child.elapsedMs || row.elapsedMs,
@@ -733,6 +737,7 @@ function TaskChildInteractiveRow({
   children,
   showContext = true,
   viewportDemand = true,
+  forceLiveDemand = false,
 }: {
   row: TaskToolRow;
   actions?: TaskChildCardActions;
@@ -740,6 +745,7 @@ function TaskChildInteractiveRow({
   children: (effectiveRow: TaskToolRow, child: DesktopV3TaskChildViewModel | null) => ReactNode;
   showContext?: boolean;
   viewportDemand?: boolean;
+  forceLiveDemand?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -755,7 +761,7 @@ function TaskChildInteractiveRow({
   );
   const child = useDesktopV3CacheSelector(selectChild, taskChildModelsEqual);
   const effectiveRow = useMemo(() => taskRowWithChildState(row, child), [child, row]);
-  const engaged = Boolean(actions && row.childSessionId.trim() && !effectiveRow.terminal && (focused || hovered || (viewportDemand && visible)));
+  const engaged = Boolean(actions && row.childSessionId.trim() && !effectiveRow.terminal && (forceLiveDemand || focused || hovered || (viewportDemand && visible)));
   const ownerKey = `${actions?.parentSessionId || 'parent'}:task-card:${row.launchKey || row.childSessionId}`;
 
   useEffect(() => {
@@ -878,12 +884,13 @@ function TaskChildInteractiveRow({
   );
 }
 
-function TaskAgentListRow({ row, index, dense, actions }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions }) {
+function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions; forceLiveDemand?: boolean }) {
   return (
     <TaskChildInteractiveRow
       row={row}
       actions={actions}
       className="group min-w-0 border-t border-[var(--app-border)] transition-colors hover:bg-[color-mix(in_srgb,var(--app-text-muted)_5%,transparent)]"
+      forceLiveDemand={forceLiveDemand}
     >
       {(effectiveRow) => <TaskAgentListRowContent row={effectiveRow} index={index} dense={dense} />}
     </TaskChildInteractiveRow>
@@ -921,6 +928,8 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
   const toolLabel = taskActivityLabel(row);
   const errorText = row.status.trim().toLowerCase() === 'failed' || row.status.trim().toLowerCase() === 'error' ? row.previewText.trim() : '';
   const previewText = errorText ? '' : row.previewText.trim();
+  const liveAssistantText = row.liveAssistantText?.trim() || '';
+  const liveToolCalls = row.liveToolCalls?.trim() || '';
   const rowNumber = row.launchIndex || index + 1;
 
   return (
@@ -955,15 +964,14 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
           <TaskElapsedTime row={row} />
         </div>
       </div>
-      {(previewText || errorText) && !dense ? (
-        <div className="task-card-wide-only grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3">
+      {(liveAssistantText || liveToolCalls || previewText || errorText) && !dense ? (
+        <div className="task-card-wide-only grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3" data-task-live-stream>
           <div />
           <div className="hidden sm:block" />
-          <div className={cn("col-start-2 min-w-0 break-words border-l pl-2 text-[11px] leading-4 [overflow-wrap:anywhere] sm:col-start-3", errorText ? "border-[var(--app-danger)] text-[var(--app-danger)]" : "border-[var(--app-border)] text-[var(--app-text-subtle)]")}>
-            <span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">
-              {errorText ? 'error' : taskPreviewLabel(row)}:
-            </span>
-            {errorText || previewText}
+          <div className={cn("col-start-2 min-w-0 space-y-1 border-l pl-2 text-[11px] leading-4 [overflow-wrap:anywhere] sm:col-start-3", errorText ? "border-[var(--app-danger)] text-[var(--app-danger)]" : "border-[var(--app-primary)] text-[var(--app-text-subtle)]")}>
+            {liveToolCalls ? <div data-task-live-tools><span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">tools:</span><span className="whitespace-pre-wrap">{liveToolCalls}</span></div> : null}
+            {liveAssistantText ? <div data-task-live-assistant><span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">stream:</span><span className="whitespace-pre-wrap">{liveAssistantText}</span></div> : null}
+            {previewText || errorText ? <div><span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">{errorText ? 'error' : taskPreviewLabel(row)}:</span>{errorText || previewText}</div> : null}
           </div>
         </div>
       ) : null}
@@ -1074,6 +1082,7 @@ const MemoizedTaskAgentListRow = memo(TaskAgentListRow, (previous, next) => (
   previous.index === next.index
   && previous.dense === next.dense
   && previous.actions === next.actions
+  && previous.forceLiveDemand === next.forceLiveDemand
   && taskRowsEqual(previous.row, next.row)
 ));
 
@@ -1178,7 +1187,8 @@ function taskProgramStageLabel(state: TaskProgram["stages"][number]["state"]): s
 }
 
 function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actions?: TaskChildCardActions }) {
-  const [expanded, setExpanded] = useState(false);
+  const programIsActive = ["declared", "pending", "running", "active", "waiting"].includes(program.state.trim().toLowerCase());
+  const [expanded, setExpanded] = useState(programIsActive);
   const progress = taskProgramProgress(program);
   const finishedPhases = program.stages.filter((stage) => stage.state === "done").length;
   const percent = progress.counts.total > 0 ? Math.round((progress.finished / progress.counts.total) * 100) : 0;
@@ -1209,17 +1219,18 @@ function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actio
             const dependencyLabel = stage.dependsOn.length > 0 ? `after ${stage.dependsOn.join(", ")}` : "ready";
             return (
               <section key={stage.id} className="min-w-0 border-t border-[var(--app-border)] first:border-t-0" data-task-program-stage={stage.id} data-stage-state={stage.state}>
-                <header className="flex min-w-0 flex-wrap items-center gap-2 bg-[color-mix(in_srgb,var(--app-bg-alt)_55%,transparent)] px-3 py-2">
+                <header className={cn("flex min-w-0 flex-wrap items-center gap-2 px-3 py-2", stage.state === "active" ? "bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-bg-alt))]" : "bg-[color-mix(in_srgb,var(--app-bg-alt)_55%,transparent)]")}>
+                  <span className={cn("inline-flex size-4 shrink-0 items-center justify-center rounded-full border", stage.state === "done" ? "border-[var(--app-success)] bg-[var(--app-success)]" : stage.state === "active" ? "animate-pulse border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_22%,transparent)]" : "border-[var(--app-text-subtle)] bg-transparent")} aria-hidden="true" />
                   <span className="font-mono text-[10px] text-[var(--app-text-subtle)]">PHASE {(stageIndex + 1).toString().padStart(2, "0")}</span>
                   <span className="min-w-0 flex-1 break-words text-[12px] font-semibold text-[var(--app-text)]">{stage.id}</span>
-                  <span className={cn("rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase", stage.state === "active" ? taskStatusBadgeClass("running") : stage.state === "done" ? taskStatusBadgeClass("success") : stage.state === "failed" || stage.state === "blocked" ? taskStatusBadgeClass("error") : taskStatusBadgeClass("pending"))}>{taskProgramStageLabel(stage.state)}</span>
+                  <span className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase", stage.state === "active" ? taskStatusBadgeClass("running") : stage.state === "done" ? taskStatusBadgeClass("success") : stage.state === "failed" || stage.state === "blocked" ? taskStatusBadgeClass("error") : taskStatusBadgeClass("pending"))}>{stage.state === "active" ? <Loader2 size={10} className="animate-spin" aria-hidden="true" /> : null}{taskProgramStageLabel(stage.state)}</span>
                   <span className="font-mono text-[9px] text-[var(--app-text-subtle)]">{counts.done}/{counts.total}</span>
                 </header>
                 <div className="border-t border-[var(--app-border)] px-3 py-1.5 text-[10px] text-[var(--app-text-muted)]">
                   Dependencies: {dependencyLabel}{stage.dependencyEvidence ? ` · ${stage.dependencyEvidence}` : ""}
                 </div>
                 <div className="min-w-0 overflow-hidden">
-                  {stage.rows.map((row, rowIndex) => <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} />)}
+                  {stage.rows.map((row, rowIndex) => <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && stage.state === "active"} />)}
                 </div>
               </section>
             );

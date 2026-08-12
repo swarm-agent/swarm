@@ -50,10 +50,30 @@ test('task child view joins canonical child run, usage, target, and bounded tool
 
   assert.deepEqual(selectDesktopV3TaskChildViewModel(state, row), {
     sessionId: 'child-1', hydrated: true, loading: false, unavailable: false, stale: false, terminal: false,
-    status: 'running', runId: 'run-1', currentTool: 'search', toolActivitySummary: 'search', startedAt: 20, elapsedMs: 0,
+    status: 'running', runId: 'run-1', currentTool: 'search', toolActivitySummary: 'search', liveToolCalls: 'search · running', liveAssistantText: '', startedAt: 20, elapsedMs: 0,
     modelLabel: 'model-x', contextWindow: 1000, remainingTokens: 250, contextUpdatedAt: 40,
     workspacePath: '/workspace', workspaceName: 'Workspace', targetSwarmId: 'swarm-local', error: '',
   })
+})
+
+test('task child view exposes bounded progressive assistant text and ordered tool calls', () => {
+  const state = createInitialDesktopV3CacheState()
+  state.currentRunIntentBySession['child-1'] = { session_id: 'child-1', run_id: 'run-live', status: 'running', created_at: 1, updated_at: 2, event_seq: 1 }
+  state.liveRunsBySession['child-1'] = {
+    'run-live': {
+      sessionId: 'child-1', runId: 'run-live', status: 'running',
+      assistantSegments: [{ id: 'a1', content: 'Planning ', createdAt: 1, updatedAt: 1, timelineSeq: 2 }],
+      assistantDraft: { content: 'the launch', updatedAt: 2, timelineSeq: 3 },
+      toolCallsByCallId: {
+        read: { callId: 'read', toolDisplay: 'read', status: 'completed', updatedAt: 1, timelineSeq: 1 },
+        search: { callId: 'search', toolDisplay: 'search x2', status: 'running', updatedAt: 2, timelineSeq: 4 },
+      },
+    },
+  }
+
+  const view = selectDesktopV3TaskChildViewModel(state, row)
+  assert.equal(view?.liveAssistantText, 'Planning the launch')
+  assert.equal(view?.liveToolCalls, 'read\nsearch x2 · running')
 })
 
 test('task child view renders the latest backend-owned progression label', () => {
@@ -85,6 +105,8 @@ test('task child view keeps launch metadata bounded before child hydration', () 
   assert.equal(view?.hydrated, false)
   assert.equal(view?.status, 'pending')
   assert.equal(view?.runId, '')
+  assert.equal(view?.liveToolCalls, '')
+  assert.equal(view?.liveAssistantText, '')
   assert.equal(view?.contextWindow, 0)
   assert.equal(view?.remainingTokens, null)
   assert.equal(JSON.stringify(view).includes('must not drive card state'), false)

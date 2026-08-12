@@ -101,6 +101,8 @@ export interface DesktopV3TaskChildViewModel {
   runId: string
   currentTool: string
   toolActivitySummary: string
+  liveToolCalls: string
+  liveAssistantText: string
   startedAt: number
   elapsedMs: number
   modelLabel: string
@@ -168,6 +170,26 @@ export function selectDesktopV3TaskChildViewModel(
     .find(Boolean)
     || row.tool.trim()
   const toolActivitySummary = summarizeDesktopV3TaskToolActivity(toolCalls) || (row.tool === '-' ? '' : row.tool.trim())
+  const liveToolCalls = [...toolCalls]
+    .sort((left, right) => {
+      if ((left.timelineSeq ?? 0) !== (right.timelineSeq ?? 0)) return (left.timelineSeq ?? 0) - (right.timelineSeq ?? 0)
+      if (left.updatedAt !== right.updatedAt) return left.updatedAt - right.updatedAt
+      return left.callId.localeCompare(right.callId)
+    })
+    .map((tool) => {
+      const label = tool.toolDisplay?.trim() || tool.toolName?.trim() || 'tool'
+      const status = (tool.status || '').trim().toLowerCase()
+      return status && !DESKTOP_V3_TERMINAL_TOOL_STATUSES.has(status) ? `${label} · ${status}` : label
+    })
+    .filter(Boolean)
+    .slice(-8)
+    .join('\n')
+  const liveAssistantText = [...(liveRun?.assistantSegments ?? []), ...(liveRun?.assistantDraft ? [liveRun.assistantDraft] : [])]
+    .sort((left, right) => (left.timelineSeq ?? 0) - (right.timelineSeq ?? 0) || left.updatedAt - right.updatedAt)
+    .map((segment) => segment.content)
+    .join('')
+    .trim()
+    .slice(-4000)
   const preference = objectRecord(state.preferencesBySession[sessionId])
   const metadata = session?.metadata
   const targetSwarmId = metadataString(metadata, 'swarm_v3_runtime_swarm_id')
@@ -185,6 +207,8 @@ export function selectDesktopV3TaskChildViewModel(
     runId: intent?.run_id?.trim() || view?.current_run_state?.run_id?.trim() || '',
     currentTool: currentTool && currentTool !== '-' ? currentTool : '',
     toolActivitySummary,
+    liveToolCalls,
+    liveAssistantText,
     startedAt,
     elapsedMs,
     modelLabel: stringValue(usage?.model) || stringValue(preference?.model) || stringValue(settings?.effective_preference && objectRecord(settings.effective_preference)?.model) || row.modelLabel,
