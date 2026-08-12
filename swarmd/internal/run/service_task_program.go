@@ -309,6 +309,42 @@ func taskProgramLaunchesFromSpec(spec *taskProgramSpec) []taskLaunchSpec {
 	return launches
 }
 
+func taskProgramResumeLaunches(prepared, prior pebblestore.TaskProgramRecord, spec *taskProgramSpec) []taskLaunchSpec {
+	launches := taskProgramLaunchesFromSpec(spec)
+	for i := range launches {
+		if i >= len(prepared.Jobs) || prepared.Jobs[i].State != pebblestore.TaskProgramJobDeclared {
+			continue
+		}
+		job := prepared.Jobs[i]
+		if strings.TrimSpace(job.ChildSessionID) == "" {
+			continue
+		}
+		launches[i].ResumeChildSessionID = strings.TrimSpace(job.ChildSessionID)
+		launches[i].ResumeWorkspacePath = strings.TrimSpace(job.WorkspacePath)
+		launches[i].ResumeWorktreeBranch = strings.TrimSpace(job.WorktreeBranch)
+		launches[i].ResumeImmutableBase = strings.TrimSpace(job.ImmutableStageBase)
+		launches[i].ResumeAttemptNumber = job.AttemptNumber
+		if i < len(prior.Jobs) && prior.Jobs[i].Blocker != nil {
+			launches[i].ResumeReason = firstNonEmptyString(prior.Jobs[i].Blocker.Message, prior.Jobs[i].Blocker.Code)
+		}
+		if launches[i].ResumeReason == "" && prior.Blocker != nil && (prior.Blocker.JobID == "" || prior.Blocker.JobID == job.JobID) {
+			launches[i].ResumeReason = firstNonEmptyString(prior.Blocker.Message, prior.Blocker.Code)
+		}
+	}
+	return launches
+}
+
+func taskProgramRecoveryPrompt(spec taskLaunchSpec) string {
+	return fmt.Sprintf(`Resume the same interrupted Task Program job in this existing child session.
+
+Before doing more work, inspect the durable conversation and current workspace state to determine what completed since the interruption. Preserve valid progress; do not blindly repeat completed steps. Continue under the original assignment and acceptance criteria, then finish with the normal child handoff. If completion is impossible, return one actionable blocker.
+
+Recovery context:
+- prior attempt: %d
+- interruption: %s
+- original assignment: %s`, spec.ResumeAttemptNumber, firstNonEmptyString(strings.TrimSpace(spec.ResumeReason), "the prior run stopped or was interrupted"), strings.TrimSpace(spec.MetaPrompt))
+}
+
 func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, record pebblestore.TaskProgramRecord, parsed taskCallArguments) (pebblestore.TaskProgramRecord, int, error) {
 	if record.Revision != parsed.ExpectedRevision || record.ResumeGeneration != parsed.ExpectedGeneration {
 		if record.LastResumeRevision == parsed.ExpectedRevision && record.LastResumeGeneration == parsed.ExpectedGeneration && record.State == pebblestore.TaskProgramStateRunning && record.NextAction == "resume_program_scheduler" {
@@ -329,7 +365,7 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 	if record.State == pebblestore.TaskProgramStateCompleted {
 		return record, 0, nil
 	}
-	if record.State != pebblestore.TaskProgramStateBlocked && record.State != pebblestore.TaskProgramStateFailed && record.State != pebblestore.TaskProgramStateCancelled {
+	if record.State != pebblestore.TaskProgramStateBlocked && record.State != pebblestore.TaskProgramStateFailed && record.State != pebblestore.TaskProgramStateCancelled && record.State != pebblestore.TaskProgramStateRunning {
 		return record, 0, fmt.Errorf("task program state %q is not resumable", record.State)
 	}
 	if s.worktrees != nil {
@@ -348,13 +384,32 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 			readyCount++
 			continue
 		}
-		if job.State != pebblestore.TaskProgramJobFailed && job.State != pebblestore.TaskProgramJobBlocked && job.State != pebblestore.TaskProgramJobCancelled {
+		if job.State != pebblestore.TaskProgramJobRunning && job.State != pebblestore.TaskProgramJobFailed && job.State != pebblestore.TaskProgramJobBlocked && job.State != pebblestore.TaskProgramJobCancelled {
 			continue
 		}
 		definition := record.Definition.Jobs[i]
+		childCompleted := false
+		if strings.TrimSpace(job.ChildSessionID) != "" {
+			lifecycle, ok, lifecycleErr := s.GetSessionLifecycle(job.ChildSessionID)
+			if lifecycleErr != nil {
+				return record, 0, fmt.Errorf("inspect task program child %q lifecycle: %w", job.JobID, lifecycleErr)
+			}
+			if ok {
+				if lifecycle.Active || isLifecycleActivePhase(lifecycle.Phase) {
+					return record, 0, fmt.Errorf("task program job %q child session %s is still active; wait for its durable outcome before resuming", job.JobID, job.ChildSessionID)
+				}
+				childCompleted = strings.EqualFold(strings.TrimSpace(lifecycle.Phase), lifecyclePhaseCompleted)
+			}
+		}
 		if !agentruntime.IsCoderAgentName(definition.AgentType) || job.ChildSessionID == "" || job.WorkspacePath == "" {
-			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobDeclared, ClearBlocker: true, IntegrationState: "retry_pending"})
-			readyCount++
+			nextState, integration := pebblestore.TaskProgramJobDeclared, "resume_existing_child"
+			if childCompleted {
+				nextState, integration = pebblestore.TaskProgramJobCompleted, "not_required"
+			}
+			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: nextState, ClearBlocker: true, IntegrationState: integration})
+			if nextState == pebblestore.TaskProgramJobDeclared {
+				readyCount++
+			}
 			continue
 		}
 		if s.worktrees == nil {
@@ -365,13 +420,15 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 			return record, 0, fmt.Errorf("task program blocker is not resolved for job %q: %w", job.JobID, inspectErr)
 		}
 		if !state.Clean {
-			return record, 0, fmt.Errorf("task program blocker is not resolved for job %q: child worktree remains dirty", job.JobID)
+			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobDeclared, ClearBlocker: true, IntegrationState: "resume_existing_child"})
+			readyCount++
+			continue
 		}
 		if job.WorktreeBranch != "" && state.BranchName != job.WorktreeBranch {
 			return record, 0, fmt.Errorf("task program blocker is not resolved for job %q: expected branch %s, found %s", job.JobID, job.WorktreeBranch, state.BranchName)
 		}
 		if state.HeadCommit == "" || state.HeadCommit == job.ImmutableStageBase {
-			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobDeclared, ClearBlocker: true, IntegrationState: "retry_pending"})
+			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobDeclared, ClearBlocker: true, IntegrationState: "resume_existing_child"})
 			readyCount++
 			continue
 		}

@@ -120,6 +120,12 @@ type taskLaunchSpec struct {
 	OwnedScope            []string
 	DependencyEvidence    string
 	StreamKey             string
+	ResumeChildSessionID  string
+	ResumeWorkspacePath   string
+	ResumeWorktreeBranch  string
+	ResumeImmutableBase   string
+	ResumeAttemptNumber   int
+	ResumeReason          string
 	SwarmMode             bool
 	SwarmStrategy         string
 	AssemblyPart          *taskSwarmAssemblyPart

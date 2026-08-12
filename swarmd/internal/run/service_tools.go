@@ -713,6 +713,62 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	return s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launch, description, targetedSubagentName, nil, "", applySessionMutation)
 }
 
+func (s *Service) prepareResumedTaskProgramLaunch(parentSession pebblestore.SessionSnapshot, launch taskLaunchPrepared, spec taskLaunchSpec) (taskLaunchPrepared, error) {
+	childID := strings.TrimSpace(spec.ResumeChildSessionID)
+	if childID == "" {
+		return taskLaunchPrepared{}, errors.New("task program recovery requires an existing child session")
+	}
+	child, ok, err := s.sessions.GetSession(childID)
+	if err != nil {
+		return taskLaunchPrepared{}, err
+	}
+	if !ok {
+		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child session %q no longer exists", childID)
+	}
+	if got := strings.TrimSpace(mapString(child.Metadata, "parent_session_id")); got != "" && got != strings.TrimSpace(parentSession.ID) {
+		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q belongs to parent %q, not %q", childID, got, parentSession.ID)
+	}
+	profile, err := sessionV3AgentProfileFromMetadataMap(child.Metadata)
+	if err != nil {
+		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q original agent profile is unavailable: %w", childID, err)
+	}
+	requested := strings.TrimSpace(spec.RequestedSubagentType)
+	if stored := strings.TrimSpace(mapString(child.Metadata, "requested_subagent")); stored != "" && !strings.EqualFold(stored, requested) {
+		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q agent type %q does not match declared %q", childID, stored, requested)
+	}
+	if agentruntime.IsCoderAgentName(requested) {
+		if strings.TrimSpace(spec.ResumeWorkspacePath) == "" || strings.TrimSpace(child.WorkspacePath) != strings.TrimSpace(spec.ResumeWorkspacePath) {
+			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q workspace identity changed", childID)
+		}
+		if strings.TrimSpace(spec.ResumeWorktreeBranch) != "" && strings.TrimSpace(child.WorktreeBranch) != strings.TrimSpace(spec.ResumeWorktreeBranch) {
+			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q worktree branch changed", childID)
+		}
+		launch.TaskBase = &worktreeruntime.TaskBase{
+			RepoRoot:     strings.TrimSpace(mapString(child.Metadata, "repository_root")),
+			ParentBranch: strings.TrimSpace(mapString(child.Metadata, "parent_branch")),
+			BaseCommit:   strings.TrimSpace(spec.ResumeImmutableBase),
+		}
+	}
+	launch.RequestedSubagent = requested
+	launch.MetaPrompt = taskProgramRecoveryPrompt(spec)
+	launch.AssignmentLabel = taskAssignmentLabel(spec.AssignmentLabel, spec.MetaPrompt, "resume task program", strings.TrimSpace(profile.Name))
+	launch.SubagentProvider = strings.TrimSpace(child.Preference.Provider)
+	launch.SubagentModel = strings.TrimSpace(child.Preference.Model)
+	launch.SubagentProfile = profile
+	launch.SourceAgentName = strings.TrimSpace(mapString(child.Metadata, "source_agent_name"))
+	launch.VirtualTarget = mapBool(child.Metadata, "parent_copy")
+	launch.ChildSession = child
+	launch.ChildMode = strings.TrimSpace(child.Mode)
+	launch.ChildWorkspacePath = strings.TrimSpace(child.WorkspacePath)
+	launch.ChildWorkspaceName = strings.TrimSpace(child.WorkspaceName)
+	launch.ChildWorktreeEnabled = child.WorktreeEnabled
+	launch.ChildWorktreeRoot = strings.TrimSpace(child.WorktreeRootPath)
+	launch.ChildWorktreeBase = strings.TrimSpace(child.WorktreeBaseBranch)
+	launch.ChildWorktreeBranch = strings.TrimSpace(child.WorktreeBranch)
+	launch.LaunchStartedAtMS = time.Now().UnixMilli()
+	return launch, nil
+}
+
 func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, step int, sessionMode string, toolCalls []tool.Call, emit StreamHandler, overlay *permission.Policy) ([]tool.Result, []tool.Call, []int, []bool, []PermissionFeedback, error) {
 	results := make([]tool.Result, len(toolCalls))
 	approvedCalls := make([]tool.Call, 0, len(toolCalls))
@@ -3337,7 +3393,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return marshalTaskProgramStatus(resumed, false)
 		}
 		spec := taskProgramSpecFromRecord(resumed)
-		resumeParsed := taskCallArguments{Action: taskProgramActionStart, Description: "resume task program " + resumed.ProgramID, Prompt: "Continue the stored task program from its guarded barrier.", Mode: taskModeRegular, Program: spec, ProgramID: resumed.ProgramID, Launches: taskProgramLaunchesFromSpec(spec)}
+		resumeParsed := taskCallArguments{Action: taskProgramActionResume, Description: "resume task program " + resumed.ProgramID, Prompt: "Reconcile durable child progress and continue the stored task program from its guarded barrier.", Mode: taskModeRegular, Program: spec, ProgramID: resumed.ProgramID, Launches: taskProgramResumeLaunches(resumed, record, spec)}
 		resumeCall := call
 		resumeCall.CallID = resumed.ReservationCallID
 		resumeReq := req
@@ -3534,7 +3590,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if agentruntime.IsCoderAgentName(requestedSubagent) {
 			launchTaskBase = coderTaskBase
 		}
-		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
+		launchInput := taskLaunchPrepared{
 			LaunchIndex:         i + 1,
 			VirtualTarget:       trustedVirtualTargets[i],
 			TaskBase:            launchTaskBase,
@@ -3548,7 +3604,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			AssemblyPart:        spec.AssemblyPart,
 			IntegrationContract: strings.TrimSpace(spec.IntegrationContract),
 			IntegrationRequired: strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
-		}, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
+		}
+		var launch taskLaunchPrepared
+		var prepareErr error
+		if strings.TrimSpace(spec.ResumeChildSessionID) != "" {
+			launch, prepareErr = s.prepareResumedTaskProgramLaunch(parentSession, launchInput, spec)
+		} else {
+			launch, prepareErr = s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launchInput, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
+		}
 		if prepareErr != nil {
 			return "", prepareErr
 		}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -457,6 +458,76 @@ func TestTaskProgramSpecReconstructionDoesNotInventJobs(t *testing.T) {
 	launches := taskProgramLaunchesFromSpec(spec)
 	if spec.ID != "release" || len(spec.Jobs) != 1 || len(launches) != 1 || launches[0].SourceArguments["program_job_id"] != "api" {
 		t.Fatalf("reconstructed spec=%#v launches=%#v", spec, launches)
+	}
+}
+
+func TestTaskProgramResumeLaunchesPreserveChildIdentityAndRecoveryContext(t *testing.T) {
+	prior := pebblestore.TaskProgramRecord{
+		ProgramID: "release",
+		Blocker:   &pebblestore.TaskProgramBlocker{JobID: "api", Message: "user stopped subagent"},
+		Definition: pebblestore.TaskProgramDefinition{
+			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build"}},
+			Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "implement API", Deliverable: "commit", AcceptanceCriteria: []string{"done"}}},
+		},
+		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobCancelled, AttemptNumber: 2, ChildSessionID: "child-api", WorkspacePath: "/worktree/api", WorktreeBranch: "agent/api", ImmutableStageBase: "base"}},
+	}
+	prepared := prior
+	prepared.Jobs = append([]pebblestore.TaskProgramJobRecord(nil), prior.Jobs...)
+	prepared.Jobs[0].State = pebblestore.TaskProgramJobDeclared
+	spec := taskProgramSpecFromRecord(prepared)
+	launches := taskProgramResumeLaunches(prepared, prior, spec)
+	if len(launches) != 1 {
+		t.Fatalf("launch count = %d", len(launches))
+	}
+	launch := launches[0]
+	if launch.ResumeChildSessionID != "child-api" || launch.ResumeWorkspacePath != "/worktree/api" || launch.ResumeWorktreeBranch != "agent/api" || launch.ResumeImmutableBase != "base" || launch.ResumeAttemptNumber != 2 || launch.ResumeReason != "user stopped subagent" {
+		t.Fatalf("resume launch lost durable identity: %#v", launch)
+	}
+	prompt := taskProgramRecoveryPrompt(launch)
+	for _, want := range []string{"existing child session", "inspect the durable conversation", "Preserve valid progress", "user stopped subagent", "implement API"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("recovery prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
+func TestPrepareResumedTaskProgramLaunchUsesOriginalSessionAgentAndModel(t *testing.T) {
+	svc, parentID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentID)
+	if err != nil || !ok {
+		t.Fatalf("get parent: ok=%t err=%v", ok, err)
+	}
+	profile := pebblestore.AgentProfile{Name: "finder", Mode: "subagent", Enabled: true, Prompt: "original finder prompt"}
+	child, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         parent.UserID,
+		AccountScopeID: parent.AccountScopeID,
+		Title:          "Interrupted Finder",
+		WorkspacePath:  parent.WorkspacePath,
+		WorkspaceName:  parent.WorkspaceName,
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "original-provider", Model: "original-model", Thinking: "high"},
+		Metadata: map[string]any{
+			"parent_session_id":  parent.ID,
+			"requested_subagent": "finder",
+			"source_agent_name":  "finder",
+			"agent_profile":      profile,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	launch, err := svc.prepareResumedTaskProgramLaunch(parent, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "finder"}, taskLaunchSpec{
+		RequestedSubagentType: "finder", MetaPrompt: "inspect repository", AssignmentLabel: "Resume Finder", ResumeChildSessionID: child.ID, ResumeAttemptNumber: 1, ResumeReason: "daemon restart",
+	})
+	if err != nil {
+		t.Fatalf("prepare resumed launch: %v", err)
+	}
+	if launch.ChildSession.ID != child.ID || launch.SubagentProfile.Prompt != "original finder prompt" || launch.SubagentProvider != "original-provider" || launch.SubagentModel != "original-model" {
+		t.Fatalf("resumed launch drifted from original identity: %#v", launch)
+	}
+	if !strings.Contains(launch.MetaPrompt, "daemon restart") || !strings.Contains(launch.MetaPrompt, "inspect repository") {
+		t.Fatalf("resumed launch lacks bounded recovery reprompt: %q", launch.MetaPrompt)
 	}
 }
 

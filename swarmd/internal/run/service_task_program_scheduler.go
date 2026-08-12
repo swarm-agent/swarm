@@ -207,13 +207,16 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	}
 	p.emitProgramProgress("cohort.running", fmt.Sprintf("Stage %s is running", p.record.ActiveStageID))
 	cohort := p.parsed
-	cohort.Program = nil
+	// A resumed cohort uses the ordinary launch executor after the outer lifecycle
+	// action has already reconciled and guarded the durable program record.
+	cohort.Action = "spawn"
 	cohort.Launches = make([]taskLaunchSpec, 0, len(indexes))
 	jobs := make([]taskProgramJob, 0, len(indexes))
 	for _, index := range indexes {
 		cohort.Launches = append(cohort.Launches, p.parsed.Launches[index])
 		jobs = append(jobs, p.parsed.Program.Jobs[index])
 	}
+	cohort.Program = nil
 	approved := ""
 	if strings.TrimSpace(p.req.ApprovedArguments) != "" {
 		var err error
@@ -498,7 +501,7 @@ func (p *taskProgramScheduler) finishCompleted() (string, error) {
 		return "", err
 	}
 	payload := taskProgramStatusPayload(record, true)
-	payload["action"] = taskProgramActionStart
+	payload["action"] = p.parsed.Action
 	payload["launches"] = p.allOutcomes
 	payload["resulting_parent_head"] = record.ParentHead
 	raw, err := json.Marshal(payload)
