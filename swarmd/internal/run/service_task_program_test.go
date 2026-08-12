@@ -348,8 +348,8 @@ func TestTaskProgramLaunchPatchPreservesGranularAgentModelAndToolMetadata(t *tes
 		"current_tool_display": "edit x2",
 		"tool_order":           []string{"search", "read", "edit", "edit"},
 	}
-	patch := taskProgramLaunchPatch(launch, "api", "build", "tool.started")
-	if patch["agent_type"] != "coder" || patch["subagent_model"] != "gpt-5.6-codex" || patch["program_job_id"] != "api" || patch["program_stage_id"] != "build" {
+	patch := taskProgramLaunchPatch(launch, "release", "api", "build", "tool.started")
+	if patch["agent_type"] != "coder" || patch["subagent_model"] != "gpt-5.6-codex" || patch["program_id"] != "release" || patch["program_job_id"] != "api" || patch["program_stage_id"] != "build" {
 		t.Fatalf("program launch patch lost identity/model metadata: %#v", patch)
 	}
 	order, ok := patch["tool_order"].([]string)

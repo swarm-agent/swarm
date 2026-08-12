@@ -808,6 +808,13 @@ function testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting(): void {
           status: 'running',
           subagent: 'finder',
           assignment_label: 'Scan',
+          subagent_provider: 'google',
+          subagent_model: 'gemini-3.6-flash',
+          current_tool: 'search',
+          current_tool_display: 'search x2',
+          tool_order: ['read', 'search', 'search'],
+          program_job_id: 'scan',
+          program_stage_id: 'discover',
         },
       },
     },
@@ -815,6 +822,9 @@ function testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting(): void {
 
   assert(message?.taskProgram?.activeStageId === 'discover', 'live active stage metadata must be retained');
   assert(message?.taskProgram?.stages[0]?.rows[0]?.childSessionId === 'scan-child', 'status child identity must attach an untagged live row');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.agent === 'finder', 'program job identity must attach the designated agent');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.modelLabel === 'google / gemini-3.6-flash', 'program job identity must retain the resolved model');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.liveToolCalls === 'read\nsearch\nsearch x2 · running', 'program job identity must retain ordered live tools');
   assert(message?.taskProgram?.stages[1]?.state === 'waiting', `dependent declared stage should wait: ${message?.taskProgram?.stages[1]?.state}`);
   assert(message?.taskProgram?.stages[1]?.rows[0]?.status === 'pending', 'declared jobs must render pending');
 }

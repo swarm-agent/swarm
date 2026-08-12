@@ -1064,7 +1064,11 @@ function buildTaskToolRows(
     return taskStream.launchOrder
       .map((launchKey, index) => {
         const launch = taskStream.launchesByKey[launchKey] ?? null;
-        return buildTaskToolRow(launch ? { ...launch, launch_key: jsonStr(launch, "launch_key") || launchKey } : null, index + 1);
+        return buildTaskToolRow(launch ? {
+          ...launch,
+          launch_key: jsonStr(launch, "launch_key") || launchKey,
+          program_id: jsonStr(launch, "program_id") || taskStream.programId,
+        } : null, index + 1);
       })
       .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
   }
@@ -1149,7 +1153,7 @@ function buildTaskProgram(
   const statusByJob = new Map(statusJobs.map((job) => [jsonStr(job, "job_id"), job]));
   const rowByJob = new Map(
     rows
-      .filter((row) => row.programId === programId && Boolean(row.programJobId))
+      .filter((row) => (!row.programId || row.programId === programId) && Boolean(row.programJobId))
       .map((row) => [row.programJobId ?? "", row]),
   );
   for (const row of rows) {

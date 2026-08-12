@@ -179,11 +179,12 @@ func (p *taskProgramScheduler) emitProgramProgress(event, summary string) {
 	emitTaskStreamPayload(p.emit, p.step, "task", fmt.Sprint(payload["task_call_id"]), payload)
 }
 
-func taskProgramLaunchPatch(launch map[string]any, jobID, stageID, phase string) map[string]any {
+func taskProgramLaunchPatch(launch map[string]any, programID, jobID, stageID, phase string) map[string]any {
 	patch := cloneGenericMap(launch)
 	if patch == nil {
 		patch = map[string]any{}
 	}
+	patch["program_id"] = programID
 	patch["job_id"] = jobID
 	patch["program_job_id"] = jobID
 	patch["stage_id"] = stageID
@@ -255,7 +256,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		}
 		presentation := taskProgramPresentationPayload(p.record)
 		program, status := taskProgramStreamMetadata(p.record)
-		patch := taskProgramLaunchPatch(launch, jobID, p.record.ActiveStageID, mapString(payload, "phase"))
+		patch := taskProgramLaunchPatch(launch, p.record.ProgramID, jobID, p.record.ActiveStageID, mapString(payload, "phase"))
 		launchKey := "program-job:" + jobID
 		patch["launch_key"] = launchKey
 		programPayload := map[string]any{
