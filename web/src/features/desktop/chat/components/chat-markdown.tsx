@@ -9,6 +9,7 @@ import type {
   WebResourceData,
   WebSearchToolData,
   TaskToolRow,
+  TaskProgram,
   TaskChildCardActions,
 } from "../types/chat";
 import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
@@ -1157,9 +1158,81 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   );
 }
 
-function TaskRowsView({ rows, actions, swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean }) {
+function taskProgramProgress(program: TaskProgram) {
+  const rows = program.stages.flatMap((stage) => stage.rows);
+  const counts = taskRowsCounts(rows);
+  const finished = counts.done + counts.error;
+  return { counts, finished };
+}
+
+function taskProgramStageLabel(state: TaskProgram["stages"][number]["state"]): string {
+  switch (state) {
+    case "active": return "active";
+    case "done": return "complete";
+    case "waiting": return "waiting on dependencies";
+    case "blocked": return "blocked";
+    case "failed": return "failed";
+    default: return "pending";
+  }
+}
+
+function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actions?: TaskChildCardActions }) {
+  const [expanded, setExpanded] = useState(false);
+  const progress = taskProgramProgress(program);
+  const finishedPhases = program.stages.filter((stage) => stage.state === "done").length;
+  const percent = progress.counts.total > 0 ? Math.round((progress.finished / progress.counts.total) * 100) : 0;
+  return (
+    <section className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-program-card={program.id}>
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-3 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))] px-3 py-2.5 text-left"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        aria-controls={`task-program-${program.id}`}
+      >
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--app-primary)_45%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_15%,transparent)] text-[var(--app-primary)]"><Layers3 size={14} /></span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)]">Task Program</span>
+          <span className="block truncate font-mono text-[10px] text-[var(--app-text-muted)]">{program.id} · {progress.finished}/{progress.counts.total} jobs · {finishedPhases}/{program.stages.length} phases</span>
+        </span>
+        <span className="hidden w-24 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)] sm:block"><span className="block h-1.5 bg-[var(--app-primary)]" style={{ width: `${percent}%` }} /></span>
+        <span className="hidden shrink-0 rounded-md border border-[var(--app-border)] px-1.5 py-0.5 font-mono text-[9px] uppercase text-[var(--app-text-muted)] sm:inline-flex">{program.state}</span>
+        <span className="shrink-0 font-mono text-[10px] text-[var(--app-text-muted)]">{percent}%</span>
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+      {expanded ? (
+        <div id={`task-program-${program.id}`} className="min-w-0" data-task-program-expanded>
+          {program.nextAction ? <div className="border-b border-[var(--app-border)] px-3 py-1.5 font-mono text-[10px] text-[var(--app-text-muted)]">Next: {program.nextAction.replaceAll("_", " ")}</div> : null}
+          {program.stages.map((stage, stageIndex) => {
+            const counts = taskRowsCounts(stage.rows);
+            const dependencyLabel = stage.dependsOn.length > 0 ? `after ${stage.dependsOn.join(", ")}` : "ready";
+            return (
+              <section key={stage.id} className="min-w-0 border-t border-[var(--app-border)] first:border-t-0" data-task-program-stage={stage.id} data-stage-state={stage.state}>
+                <header className="flex min-w-0 flex-wrap items-center gap-2 bg-[color-mix(in_srgb,var(--app-bg-alt)_55%,transparent)] px-3 py-2">
+                  <span className="font-mono text-[10px] text-[var(--app-text-subtle)]">PHASE {(stageIndex + 1).toString().padStart(2, "0")}</span>
+                  <span className="min-w-0 flex-1 break-words text-[12px] font-semibold text-[var(--app-text)]">{stage.id}</span>
+                  <span className={cn("rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase", stage.state === "active" ? taskStatusBadgeClass("running") : stage.state === "done" ? taskStatusBadgeClass("success") : stage.state === "failed" || stage.state === "blocked" ? taskStatusBadgeClass("error") : taskStatusBadgeClass("pending"))}>{taskProgramStageLabel(stage.state)}</span>
+                  <span className="font-mono text-[9px] text-[var(--app-text-subtle)]">{counts.done}/{counts.total}</span>
+                </header>
+                <div className="border-t border-[var(--app-border)] px-3 py-1.5 text-[10px] text-[var(--app-text-muted)]">
+                  Dependencies: {dependencyLabel}{stage.dependencyEvidence ? ` · ${stage.dependencyEvidence}` : ""}
+                </div>
+                <div className="min-w-0 overflow-hidden">
+                  {stage.rows.map((row, rowIndex) => <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} />)}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function TaskRowsView({ rows, actions, program = null, swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; program?: TaskProgram | null; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean }) {
+  if (swarm) return rows.length > 0 ? <TaskSwarmRowsView rows={rows} actions={actions} strategy={strategy} integrationContract={integrationContract} integrationRequired={integrationRequired} /> : null;
+  if (program) return <TaskProgramRowsView program={program} actions={actions} />;
   if (rows.length === 0) return null;
-  if (swarm) return <TaskSwarmRowsView rows={rows} actions={actions} strategy={strategy} integrationContract={integrationContract} integrationRequired={integrationRequired} />;
   return <TaskAgentRowsView rows={rows} actions={actions} />;
 }
 
@@ -2059,7 +2132,7 @@ export function ToolMessageView({
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
   const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
-  const hasStructuredTaskRows = normalizedToolName === "task" && toolMessage.taskRows.length > 0;
+  const hasStructuredTaskRows = normalizedToolName === "task" && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram));
   const activityOnly = toolMessage.state === "running"
     && !hasStructuredTaskRows
     && !toolMessage.output.trim()
@@ -2110,7 +2183,7 @@ export function ToolMessageView({
     ? state === "running" ? `${activityDescriptor.activeLabel}…` : activityDescriptor.label
     : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
-  const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
+  const hasTaskRows = isTask && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram));
   const isTaskSwarm = (isTask && toolMessage.taskMode === "swarm") || (hasTaskRows && toolMessage.taskRows.some((row) => row.swarmMode));
   const swarmStrategy = toolMessage.swarmStrategy ?? "explore";
   const taskLabel = isTaskSwarm ? (swarmStrategy === "assembly" ? "Assembly Swarm" : "Iteration Swarm") : label;
@@ -2138,7 +2211,7 @@ export function ToolMessageView({
   const hasBody = Boolean(
     toolMessage.error
     || toolMessage.editDiff
-    || (normalizedTool === "task" && toolMessage.taskRows.length > 0)
+    || (normalizedTool === "task" && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram)))
     || (normalizedTool === "search" && toolMessage.searchData)
     || (showPreview && !isManageSessions && (toolMessage.previewLines.length > 0 || toolMessage.commandText))
     || isManageSessions,
@@ -2215,8 +2288,8 @@ export function ToolMessageView({
         ) : null}
         {!toolMessage.editDiff &&
         toolMessage.tool === "task" &&
-        toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} swarm={isTaskSwarm} strategy={swarmStrategy} integrationContract={toolMessage.integrationContract} integrationRequired={toolMessage.integrationRequired} />
+        (toolMessage.taskRows.length > 0 || toolMessage.taskProgram) ? (
+          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} program={toolMessage.taskProgram} swarm={isTaskSwarm} strategy={swarmStrategy} integrationContract={toolMessage.integrationContract} integrationRequired={toolMessage.integrationRequired} />
         ) : null}
         {!toolMessage.editDiff &&
         isSearch &&
@@ -2225,7 +2298,7 @@ export function ToolMessageView({
         ) : null}
         {!toolMessage.editDiff &&
         !isSearch &&
-        !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
+        !(toolMessage.tool === "task" && (toolMessage.taskRows.length > 0 || toolMessage.taskProgram)) &&
         showPreview &&
         !isManageSessions &&
         (toolMessage.previewLines.length > 0 || toolMessage.commandText) ? (

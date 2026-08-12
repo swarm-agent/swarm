@@ -39,6 +39,10 @@ export interface TaskToolRow {
   launchKey?: string;
   launchIndex: number;
   childSessionId: string;
+  programId?: string;
+  programJobId?: string;
+  programStageId?: string;
+  dependsOn?: string[];
   status: string;
   phase: string;
   agent: string;
@@ -59,6 +63,22 @@ export interface TaskToolRow {
   assemblyPart?: TaskAssemblyPart | null;
   integrationContract?: string;
   integrationRequired?: boolean;
+}
+
+export interface TaskProgramStage {
+  id: string;
+  dependsOn: string[];
+  dependencyEvidence: string;
+  state: "done" | "active" | "waiting" | "blocked" | "pending" | "failed";
+  rows: TaskToolRow[];
+}
+
+export interface TaskProgram {
+  id: string;
+  state: string;
+  activeStageId: string;
+  nextAction: string;
+  stages: TaskProgramStage[];
 }
 
 export interface SearchToolLineMatch {
@@ -197,6 +217,7 @@ export interface StructuredToolMessage {
   bashData?: BashToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
+  taskProgram?: TaskProgram | null;
   taskMode?: string;
   swarmStrategy?: "explore" | "assembly";
   integrationContract?: string;

@@ -40,6 +40,12 @@ interface StructuredToolMessageInput {
     launchesByKey: Record<string, Record<string, unknown>>;
     launchOrder: string[];
     taskMode?: string;
+    programId?: string;
+    programState?: string;
+    activeStageId?: string;
+    nextAction?: string;
+    program?: Record<string, unknown>;
+    programStatus?: Record<string, unknown>;
     swarmStrategy?: string;
     integrationContract?: string;
     integrationRequired?: boolean;
@@ -99,7 +105,7 @@ function parseJsonRecord(value: string, maxBytes = Number.POSITIVE_INFINITY): Re
   }
 }
 
-function jsonStr(obj: Record<string, unknown> | null, key: string): string {
+function jsonStr(obj: Record<string, unknown> | null | undefined, key: string): string {
   if (!obj) return "";
   const v = obj[key];
   return typeof v === "string" ? v.trim() : "";
@@ -968,6 +974,7 @@ function buildTaskToolRow(
   const normalizedStatus = status.trim().toLowerCase();
   const terminal = ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(normalizedStatus);
   const launchKey = jsonStr(payload, "launch_key");
+  const sourceArguments = jsonRecord(payload.source_arguments);
   const launchIndex = Math.max(0, jsonNum(payload, "launch_index") || fallbackLaunchIndex);
   const childSessionId = firstNonEmpty(
     jsonStr(payload, "session_id"),
@@ -1003,6 +1010,10 @@ function buildTaskToolRow(
     launchKey: launchKey || undefined,
     launchIndex,
     childSessionId,
+    programId: firstNonEmpty(jsonStr(payload, "program_id"), jsonStr(sourceArguments, "program_id")) || undefined,
+    programJobId: firstNonEmpty(jsonStr(payload, "program_job_id"), jsonStr(payload, "job_id"), jsonStr(sourceArguments, "program_job_id")) || undefined,
+    programStageId: firstNonEmpty(jsonStr(payload, "program_stage_id"), jsonStr(payload, "stage_id"), jsonStr(sourceArguments, "program_stage_id")) || undefined,
+    dependsOn: jsonStrArray(sourceArguments, "depends_on").length > 0 ? jsonStrArray(sourceArguments, "depends_on") : jsonStrArray(payload, "depends_on"),
     status,
     phase,
     agent,
@@ -1062,6 +1073,155 @@ function buildTaskToolRows(
 
   const row = buildTaskToolRow(payload, 1);
   return row ? [row] : [];
+}
+
+function taskProgramJobStateToRowStatus(state: string): string {
+  switch (state.trim().toLowerCase()) {
+    case "integrated":
+    case "completed":
+      return "completed";
+    case "handoff_ready":
+      return "pending";
+    case "running":
+      return "running";
+    case "failed":
+    case "blocked":
+    case "cancelled":
+      return state.trim().toLowerCase();
+    default:
+      return "pending";
+  }
+}
+
+function taskProgramRecord(
+  outputJson: Record<string, unknown> | null,
+  taskStream?: StructuredToolMessageInput["taskStream"],
+): Record<string, unknown> | null {
+  const terminalStatus = jsonRecord(outputJson?.program_status);
+  if (terminalStatus) return terminalStatus;
+  const outputHasProgramStatus = Boolean(
+    jsonStr(outputJson, "program_state")
+    || jsonStr(outputJson, "active_stage_id")
+    || jsonObjectSlice(outputJson, "jobs").length > 0,
+  );
+  if (outputHasProgramStatus) return outputJson;
+  return taskStream?.programStatus ?? outputJson ?? null;
+}
+
+function buildTaskProgram(
+  argumentsJson: Record<string, unknown> | null,
+  outputJson: Record<string, unknown> | null,
+  taskStream: StructuredToolMessageInput["taskStream"] | undefined,
+  rows: StructuredToolMessage["taskRows"],
+): StructuredToolMessage["taskProgram"] {
+  const argumentProgram = jsonRecord(argumentsJson?.program);
+  const streamProgram = taskStream?.program ?? null;
+  const definition = argumentProgram ?? streamProgram;
+  const status = taskProgramRecord(outputJson, taskStream);
+  const definitionProgramId = jsonStr(definition, "id");
+  const programId = firstNonEmpty(
+    jsonStr(status, "program_id"),
+    jsonStr(outputJson, "program_id"),
+    taskStream?.programId ?? "",
+    definitionProgramId,
+  );
+  if (!programId || !definition || definitionProgramId !== programId) return null;
+
+  const stageSpecs = jsonObjectSlice(definition, "stages");
+  const jobSpecs = jsonObjectSlice(definition, "jobs");
+  if (stageSpecs.length === 0 || jobSpecs.length === 0) return null;
+
+  const statusJobs = jsonObjectSlice(status, "jobs");
+  const statusByJob = new Map(statusJobs.map((job) => [jsonStr(job, "job_id"), job]));
+  const rowByJob = new Map(
+    rows
+      .filter((row) => row.programId === programId && Boolean(row.programJobId))
+      .map((row) => [row.programJobId ?? "", row]),
+  );
+  for (const row of rows) {
+    if (row.programJobId || (row.programId && row.programId !== programId)) continue;
+    const matchingJob = jobSpecs.find((job) => {
+      const jobId = jsonStr(job, "id");
+      const statusJob = statusByJob.get(jobId);
+      return Boolean(row.childSessionId)
+        && row.childSessionId === jsonStr(statusJob, "child_session_id");
+    });
+    const jobId = jsonStr(matchingJob, "id");
+    if (jobId && !rowByJob.has(jobId)) rowByJob.set(jobId, row);
+  }
+  const activeStageId = firstNonEmpty(
+    jsonStr(status, "active_stage_id"),
+    jsonStr(outputJson, "active_stage_id"),
+    taskStream?.activeStageId ?? "",
+  );
+  const programState = firstNonEmpty(
+    jsonStr(status, "program_state"),
+    jsonStr(outputJson, "program_state"),
+    taskStream?.programState ?? "",
+    "running",
+  );
+
+  const stages = stageSpecs.map((stage) => {
+    const id = jsonStr(stage, "id");
+    const stageJobs = jobSpecs.filter((job) => jsonStr(job, "stage_id") === id);
+    const stageRows = stageJobs.map((job) => {
+      const jobId = jsonStr(job, "id");
+      const liveRow = rowByJob.get(jobId);
+      const jobStatus = statusByJob.get(jobId);
+      const state = firstNonEmpty(jsonStr(jobStatus, "state"), liveRow?.status ?? "", "declared");
+      const base: StructuredToolMessage["taskRows"][number] = liveRow ?? {
+        launchIndex: Math.max(1, jobSpecs.findIndex((candidate) => jsonStr(candidate, "id") === jobId) + 1),
+        childSessionId: jsonStr(jobStatus, "child_session_id"),
+        status: taskProgramJobStateToRowStatus(state),
+        phase: state,
+        agent: firstNonEmpty(jsonStr(job, "agent_type"), "subagent"),
+        assignmentLabel: firstNonEmpty(jsonStr(job, "title"), jobId),
+        modelLabel: "",
+        tool: "-",
+        time: "",
+        previewKind: "",
+        previewText: "",
+        launchStartedAtMs: 0,
+        currentToolStartedAtMs: 0,
+        elapsedMs: 0,
+        currentToolMs: 0,
+        terminal: ["integrated", "completed", "failed", "cancelled"].includes(state.toLowerCase()),
+      };
+      return {
+        ...base,
+        programId,
+        programJobId: jobId,
+        programStageId: id,
+        dependsOn: jsonStrArray(job, "depends_on"),
+        status: jobStatus ? taskProgramJobStateToRowStatus(state) : liveRow?.status || taskProgramJobStateToRowStatus(state),
+      };
+    });
+    const normalizedStates = stageRows.map((row) => row.status.trim().toLowerCase());
+    const allDone = normalizedStates.length > 0 && normalizedStates.every((state) => ["done", "ok", "success", "completed", "complete"].includes(state));
+    const hasFailure = normalizedStates.some((state) => state === "failed" || state === "error");
+    const hasBlocked = normalizedStates.some((state) => state === "blocked");
+    const stageState = hasFailure ? "failed"
+      : hasBlocked ? "blocked"
+      : allDone ? "done"
+      : id === activeStageId ? "active"
+      : jsonStrArray(stage, "depends_on").length > 0 ? "waiting"
+      : "pending";
+    return {
+      id,
+      dependsOn: jsonStrArray(stage, "depends_on"),
+      dependencyEvidence: jsonStr(stage, "dependency_evidence"),
+      state: stageState,
+      rows: stageRows,
+    } satisfies NonNullable<StructuredToolMessage["taskProgram"]>["stages"][number];
+  });
+
+  return {
+    id: programId,
+    state: programState,
+    activeStageId,
+    nextAction: firstNonEmpty(jsonStr(status, "next_action"), jsonStr(outputJson, "next_action"), taskStream?.nextAction ?? ""),
+    stages,
+  };
 }
 
 function pushPreviewLine(
@@ -1966,6 +2126,9 @@ export function buildStructuredToolMessage(
       ? buildTaskToolRows(outputJson, input.taskStream)
       : [];
   const taskMode = firstNonEmpty(jsonStr(outputJson, "task_mode"), input.taskStream?.taskMode ?? "", jsonStr(argumentsJson, "mode"));
+  const taskProgram = normalizedToolName === "task" && taskMode !== "swarm"
+    ? buildTaskProgram(argumentsJson, outputJson, input.taskStream, taskRows)
+    : null;
   const isSwarm = taskMode === "swarm" || taskRows.some((row) => row.swarmMode);
   const swarmStrategy = normalizeSwarmStrategy(
     jsonStr(outputJson, "swarm_strategy"),
@@ -2024,6 +2187,7 @@ export function buildStructuredToolMessage(
     bashData,
     previewLines,
     taskRows,
+    taskProgram,
     taskMode,
     swarmStrategy,
     integrationContract,

@@ -43,6 +43,20 @@ test('task cards switch to a titleless vertical subagent list from their own wid
   assert.match(theme, /@container task-card \(max-width: 12rem\)[\s\S]*\.task-card-narrow-detail/)
 })
 
+test('Task Programs expose one expandable phased card with dependency state and interactive child rows', async () => {
+  const source = await readFile(sourceURL, 'utf8')
+  assert.match(source, /data-task-program-card=\{program\.id\}/)
+  assert.match(source, /aria-expanded=\{expanded\}/)
+  assert.match(source, /data-task-program-expanded/)
+  assert.match(source, /program\.stages\.map\(\(stage, stageIndex\)/)
+  assert.match(source, /data-task-program-stage=\{stage\.id\}/)
+  assert.match(source, /waiting on dependencies/)
+  assert.match(source, /Dependencies: \{dependencyLabel\}/)
+  assert.match(source, /MemoizedTaskAgentListRow/)
+  assert.match(source, /if \(swarm\).*TaskSwarmRowsView/)
+  assert.match(source, /if \(program\).*TaskProgramRowsView/)
+})
+
 test('task swarms remove internal scrolling and measure adaptive density after five agents', async () => {
   const source = await readFile(sourceURL, 'utf8')
   assert.match(source, /const TASK_SWARM_THRESHOLD = 5/)

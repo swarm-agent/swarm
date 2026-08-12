@@ -3690,6 +3690,8 @@ function cloneToolActivityForMutation(tool: DesktopToolActivity): DesktopToolAct
         Object.entries(tool.taskStream.launchesByKey).map(([launchKey, launch]) => [launchKey, { ...launch }]),
       ),
       launchOrder: [...tool.taskStream.launchOrder],
+      program: tool.taskStream.program ? { ...tool.taskStream.program } : undefined,
+      programStatus: tool.taskStream.programStatus ? { ...tool.taskStream.programStatus } : undefined,
     } : undefined,
   }
 }
@@ -4307,6 +4309,12 @@ function applyTaskStreamPatch(
   stream.taskCallId = stringValue(parsed.task_call_id) || stream.taskCallId
   stream.launchCount = numberValue(parsed.launch_count) || stream.launchCount
   stream.taskMode = stringValue(parsed.task_mode) || stream.taskMode
+  stream.programId = stringValue(parsed.program_id) || stream.programId
+  stream.programState = stringValue(parsed.program_state) || stream.programState
+  stream.activeStageId = stringValue(parsed.active_stage_id) || stream.activeStageId
+  stream.nextAction = stringValue(parsed.next_action) || stream.nextAction
+  stream.program = recordValue(parsed.program) || stream.program
+  stream.programStatus = recordValue(parsed.program_status) || stream.programStatus
   stream.swarmStrategy = stringValue(parsed.swarm_strategy) || stream.swarmStrategy
   stream.integrationContract = stringValue(parsed.integration_contract) || stream.integrationContract
   if (typeof parsed.integration_required === 'boolean') stream.integrationRequired = parsed.integration_required

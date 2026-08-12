@@ -2,18 +2,23 @@ import React from "react";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFile } from "node:fs/promises";
 
 import { ToolMessageView } from "./chat-markdown";
 import { buildStructuredToolMessage } from "../services/tool-message";
 
-function renderTask(output: Record<string, unknown>, argumentsValue: Record<string, unknown> = {}) {
+function buildTask(output: Record<string, unknown>, argumentsValue: Record<string, unknown> = {}) {
   const message = buildStructuredToolMessage({
     tool: "task",
     argumentsText: JSON.stringify(argumentsValue),
     outputText: JSON.stringify(output),
   });
   assert(message, "expected structured task message");
-  return renderToStaticMarkup(<ToolMessageView toolMessage={message} />);
+  return message;
+}
+
+function renderTask(output: Record<string, unknown>, argumentsValue: Record<string, unknown> = {}) {
+  return renderToStaticMarkup(<ToolMessageView toolMessage={buildTask(output, argumentsValue)} />);
 }
 
 test("legacy explore payload renders as Iteration Swarm", () => {
@@ -33,6 +38,94 @@ test("legacy explore payload renders as Iteration Swarm", () => {
   assert.match(markup, /ITERATION SWARM/);
   assert.match(markup, /Fast parallel iterations · choose or synthesize/);
   assert.doesNotMatch(markup, /SWARM MODE/);
+});
+
+test("Task Program renders one collapsed expandable card from explicit metadata", () => {
+  const program = {
+    id: "release_program",
+    stages: [
+      { id: "research", dependency_evidence: "Inputs are independent." },
+      { id: "implement", depends_on: ["research"], dependency_evidence: "Uses research handoffs." },
+    ],
+    jobs: [
+      { id: "scan", stage_id: "research", agent_type: "finder", title: "Scan contracts" },
+      { id: "desktop", stage_id: "implement", depends_on: ["scan"], agent_type: "coder", title: "Build Desktop" },
+    ],
+  };
+  const message = buildTask({
+    tool: "task",
+    path_id: "tool.task.v1",
+    status: "running",
+    program_id: "release_program",
+    program_state: "running",
+    active_stage_id: "research",
+    program_status: {
+      program_id: "release_program",
+      program_state: "running",
+      active_stage_id: "research",
+      jobs: [
+        { job_id: "scan", stage_id: "research", state: "running", child_session_id: "scan-child" },
+        { job_id: "desktop", stage_id: "implement", state: "declared" },
+      ],
+    },
+    launches: [{
+      launch_index: 1,
+      child_session_id: "scan-child",
+      subagent: "finder",
+      assignment_label: "Scan contracts",
+      status: "running",
+      source_arguments: { program_id: "release_program", program_job_id: "scan", program_stage_id: "research" },
+    }],
+  }, { action: "spawn", program });
+  const markup = renderToStaticMarkup(<ToolMessageView toolMessage={message} />);
+
+  assert.equal((markup.match(/data-task-program-card=/g) ?? []).length, 1);
+  assert.match(markup, /data-task-program-card="release_program"/);
+  assert.match(markup, /aria-expanded="false"/);
+  assert.match(markup, /Task Program/);
+  assert.match(markup, /0\/2 jobs · 0\/2 phases/);
+  assert.doesNotMatch(markup, /data-task-program-stage=/);
+  assert.doesNotMatch(markup, /ITERATION SWARM/);
+});
+
+test("Task Program source exposes ordered phase, dependency, and interactive row expansion markup", async () => {
+  const source = await readFile(new URL("./chat-markdown.tsx", import.meta.url), "utf8");
+  assert.match(source, /data-task-program-expanded/);
+  assert.match(source, /program\.nextAction/);
+  assert.match(source, /program\.stages\.map\(\(stage, stageIndex\)/);
+  assert.match(source, /data-task-program-stage=\{stage\.id\}/);
+  assert.match(source, /waiting on dependencies/);
+  assert.match(source, /Dependencies: \{dependencyLabel\}/);
+  assert.match(source, /MemoizedTaskAgentListRow/);
+});
+
+test("ordinary task rows do not render a Task Program card", () => {
+  const markup = renderTask({
+    tool: "task",
+    path_id: "tool.task.v1",
+    status: "running",
+    launches: [{ launch_index: 1, child_session_id: "ordinary", subagent: "finder", assignment_label: "Phase-like title", status: "running" }],
+  });
+  assert.match(markup, /Subagent stream/);
+  assert.doesNotMatch(markup, /data-task-program-card=/);
+});
+
+test("Iteration Swarm remains authoritative when unrelated program-shaped metadata is present", () => {
+  const program = {
+    id: "ignored_program",
+    stages: [{ id: "only" }],
+    jobs: [{ id: "worker", stage_id: "only", agent_type: "finder", title: "Worker" }],
+  };
+  const markup = renderTask({
+    tool: "task",
+    path_id: "tool.task.v1",
+    task_mode: "swarm",
+    program_id: "ignored_program",
+    launches: [{ launch_index: 1, swarm_mode: true, subagent: "finder", status: "running" }],
+  }, { mode: "swarm", program });
+
+  assert.match(markup, /ITERATION SWARM/);
+  assert.doesNotMatch(markup, /data-task-program-card=/);
 });
 
 test("Assembly swarm renders part identity and pending parent integration", () => {

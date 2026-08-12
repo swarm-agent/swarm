@@ -2955,6 +2955,68 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
   assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')
 })
 
+test('realtime task stream v2 retains Task Program definition and status metadata', () => {
+  const state = bootstrappedState()
+  const program = {
+    id: 'release_program',
+    stages: [{ id: 'research' }, { id: 'build', depends_on: ['research'] }],
+    jobs: [{ id: 'scan', stage_id: 'research' }, { id: 'code', stage_id: 'build', depends_on: ['scan'] }],
+  }
+  const programStatus = {
+    program_id: 'release_program',
+    program_state: 'running',
+    active_stage_id: 'research',
+    jobs: [{ job_id: 'scan', stage_id: 'research', state: 'running', child_session_id: 'scan-child' }],
+  }
+  const patch = JSON.stringify({
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
+    tool: 'task',
+    status: 'running',
+    task_call_id: 'call-program',
+    launch_key: 'scan-child',
+    launch_index: 1,
+    program_id: 'release_program',
+    program_state: 'running',
+    active_stage_id: 'research',
+    next_action: 'launch_ready_jobs',
+    program,
+    program_status: programStatus,
+    launch: {
+      launch_key: 'scan-child',
+      launch_index: 1,
+      child_session_id: 'scan-child',
+      status: 'running',
+      subagent: 'finder',
+    },
+  })
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-program',
+      step_id: 'step-program',
+      tool_instance_id: 'tool-instance-program',
+      tool_name: 'task',
+      arguments: JSON.stringify({ action: 'spawn', program }),
+    }, 20, 'cursor-program-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-program',
+      tool_name: 'task',
+      output: patch,
+    }, 21, 'cursor-program-delta'),
+  })
+
+  const stream = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-program'].taskStream
+  assert.equal(stream?.programId, 'release_program')
+  assert.equal(stream?.programState, 'running')
+  assert.equal(stream?.activeStageId, 'research')
+  assert.equal(stream?.nextAction, 'launch_ready_jobs')
+  assert.deepEqual(stream?.program, program)
+  assert.deepEqual(stream?.programStatus, programStatus)
+})
+
 test('restored assistant delta with old seq is ignored', () => {
   const state = bootstrappedState()
   state.liveRunsBySession[sessionA.id] = {

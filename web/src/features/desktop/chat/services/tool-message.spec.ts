@@ -704,6 +704,140 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
   assert(row?.terminal === false, 'running task stream row should not be terminal')
 }
 
+function testTaskProgramGroupsCanonicalOrderedStagesAndStatus(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_program',
+    argumentsText: JSON.stringify({
+      action: 'spawn',
+      program: {
+        id: 'release_program',
+        stages: [
+          { id: 'research', dependency_evidence: 'Inputs are independent.' },
+          { id: 'implement', depends_on: ['research'], dependency_evidence: 'Uses research handoffs.' },
+        ],
+        jobs: [
+          { id: 'api_research', stage_id: 'research', agent_type: 'finder', title: 'Map API' },
+          { id: 'ui_research', stage_id: 'research', agent_type: 'finder', title: 'Map UI' },
+          { id: 'desktop', stage_id: 'implement', depends_on: ['api_research', 'ui_research'], agent_type: 'coder', title: 'Build Desktop' },
+        ],
+      },
+    }),
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'running',
+      program_id: 'release_program',
+      program_state: 'running',
+      active_stage_id: 'implement',
+      next_action: 'launch_ready_jobs',
+      launches: [{
+        launch_index: 3,
+        child_session_id: 'desktop-child',
+        status: 'running',
+        subagent: 'coder',
+        assignment_label: 'Build Desktop',
+        source_arguments: {
+          program_id: 'release_program',
+          program_job_id: 'desktop',
+          program_stage_id: 'implement',
+          depends_on: ['api_research', 'ui_research'],
+        },
+      }],
+      program_status: {
+        program_id: 'release_program',
+        program_state: 'running',
+        active_stage_id: 'implement',
+        next_action: 'launch_ready_jobs',
+        jobs: [
+          { job_id: 'api_research', stage_id: 'research', state: 'integrated', child_session_id: 'api-child' },
+          { job_id: 'ui_research', stage_id: 'research', state: 'completed', child_session_id: 'ui-child' },
+          { job_id: 'desktop', stage_id: 'implement', state: 'running', child_session_id: 'desktop-child' },
+        ],
+      },
+    }),
+  });
+
+  assert(Boolean(message?.taskProgram), 'canonical program metadata should enable Task Program presentation');
+  assert(message?.taskProgram?.id === 'release_program', `unexpected program id: ${message?.taskProgram?.id}`);
+  assert(message?.taskProgram?.stages.map((stage) => stage.id).join('|') === 'research|implement', 'program stages must preserve declared order');
+  assert(message?.taskProgram?.stages[0]?.state === 'done', `research should derive done from terminal job states: ${message?.taskProgram?.stages[0]?.state}`);
+  assert(message?.taskProgram?.stages[1]?.state === 'active', `implement should use canonical active stage: ${message?.taskProgram?.stages[1]?.state}`);
+  assert(message?.taskProgram?.stages[1]?.dependsOn.join('|') === 'research', 'stage dependencies must be retained');
+  assert(message?.taskProgram?.stages[1]?.rows[0]?.programJobId === 'desktop', 'source_arguments must assign the live row to its canonical job');
+  assert(message?.taskProgram?.stages[1]?.rows[0]?.childSessionId === 'desktop-child', 'interactive live child row must remain attached');
+}
+
+function testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting(): void {
+  const program = {
+    id: 'live_program',
+    stages: [
+      { id: 'discover' },
+      { id: 'build', depends_on: ['discover'], dependency_evidence: 'Discover must complete first.' },
+    ],
+    jobs: [
+      { id: 'scan', stage_id: 'discover', agent_type: 'finder', title: 'Scan' },
+      { id: 'code', stage_id: 'build', depends_on: ['scan'], agent_type: 'coder', title: 'Code' },
+    ],
+  };
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_program_live',
+    argumentsText: JSON.stringify({ action: 'spawn', program }),
+    state: 'running',
+    taskStream: {
+      programId: 'live_program',
+      programState: 'running',
+      activeStageId: 'discover',
+      nextAction: 'launch_ready_jobs',
+      program,
+      programStatus: {
+        program_id: 'live_program',
+        program_state: 'running',
+        active_stage_id: 'discover',
+        jobs: [
+          { job_id: 'scan', stage_id: 'discover', state: 'running', child_session_id: 'scan-child' },
+          { job_id: 'code', stage_id: 'build', state: 'declared' },
+        ],
+      },
+      launchOrder: ['scan-child'],
+      launchesByKey: {
+        'scan-child': {
+          launch_index: 1,
+          child_session_id: 'scan-child',
+          status: 'running',
+          subagent: 'finder',
+          assignment_label: 'Scan',
+        },
+      },
+    },
+  });
+
+  assert(message?.taskProgram?.activeStageId === 'discover', 'live active stage metadata must be retained');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.childSessionId === 'scan-child', 'status child identity must attach an untagged live row');
+  assert(message?.taskProgram?.stages[1]?.state === 'waiting', `dependent declared stage should wait: ${message?.taskProgram?.stages[1]?.state}`);
+  assert(message?.taskProgram?.stages[1]?.rows[0]?.status === 'pending', 'declared jobs must render pending');
+}
+
+function testOrdinaryTaskDoesNotInferTaskProgramFromRows(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_ordinary',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'running',
+      launches: [
+        { launch_index: 1, child_session_id: 'child-a', subagent: 'finder', assignment_label: 'Phase One', status: 'running' },
+        { launch_index: 2, child_session_id: 'child-b', subagent: 'coder', assignment_label: 'Phase Two', status: 'pending' },
+      ],
+    }),
+  });
+
+  assert(message?.taskRows.length === 2, 'ordinary task rows must remain available');
+  assert(message?.taskProgram == null, 'adjacent rows or phase-like titles must never infer a Task Program');
+}
+
 function testAssemblyTaskMetadataAndLegacyExploreCompatibility(): void {
   const assembly = buildStructuredToolMessage({
     tool: 'task',
@@ -1171,6 +1305,9 @@ function main(): void {
   testSearchToolParsesCompactGroupedResults();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
+  testTaskProgramGroupsCanonicalOrderedStagesAndStatus();
+  testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting();
+  testOrdinaryTaskDoesNotInferTaskProgramFromRows();
   testAssemblyTaskMetadataAndLegacyExploreCompatibility();
   testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();
   testTerminalTaskPayloadOverridesStaleNativeTaskStream();
