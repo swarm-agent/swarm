@@ -171,6 +171,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v3/subagents:stop", s.handleSessionsV3SubagentStop)
 	mux.HandleFunc("/v3/sessions:unarchive", s.handleSessionsV3Unarchive)
 	mux.HandleFunc("/v3/sessions:delete", s.handleSessionsV3Delete)
+	mux.HandleFunc("/v3/artifacts", s.handleSessionsV3Artifacts)
 	mux.HandleFunc(V3SyncLegacySessionsWorksetPath, s.handleSessionsV3Workset)
 	mux.HandleFunc(V3SyncLegacyTUIWorksetPath, s.handleSessionsV3TUIWorkset)
 	mux.HandleFunc("/v3/tui/sessions", s.handleSessionsV3TUI)

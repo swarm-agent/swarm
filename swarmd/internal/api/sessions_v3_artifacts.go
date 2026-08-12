@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,6 +31,9 @@ const (
 	sessionsV3ArtifactPreviewTokenTTL         = 5 * time.Minute
 	sessionsV3ArtifactPreviewAccessPath       = "access/"
 	sessionsV3ArtifactPackageEntryPath        = "__swarm_artifact_entry__.html"
+	sessionsV3ArtifactCatalogDefaultLimit     = 500
+	sessionsV3ArtifactCatalogMaxLimit         = 2_000
+	sessionsV3ArtifactCatalogSessionLimit     = 10_000
 	// Package HTML is nested beneath a srcdoc iframe sandboxed without
 	// allow-same-origin, so its immediate ancestor has an opaque origin. CSP
 	// cannot express that as a frame-ancestors source. Keep framing controlled
@@ -69,6 +74,169 @@ var sessionsV3ArtifactPackageMediaTypes = map[string]string{
 type sessionsV3ResolvedArtifact struct {
 	Reference  pebblestore.SessionPlanArtifactReference
 	Descriptor pebblestore.PlanFinalHandoffArtifact
+}
+
+type sessionsV3ArtifactCatalogItem struct {
+	ArtifactID      string `json:"artifact_id"`
+	SessionID       string `json:"session_id"`
+	SessionTitle    string `json:"session_title"`
+	WorkspacePath   string `json:"workspace_path"`
+	WorkspaceName   string `json:"workspace_name"`
+	PlanID          string `json:"plan_id"`
+	PlanTitle       string `json:"plan_title"`
+	CheckpointID    string `json:"checkpoint_id"`
+	CheckpointTitle string `json:"checkpoint_title"`
+	Label           string `json:"label"`
+	Description     string `json:"description"`
+	Filename        string `json:"filename"`
+	MediaType       string `json:"media_type"`
+	Kind            string `json:"kind"`
+	Previewable     bool   `json:"previewable"`
+	Category        string `json:"category"`
+	UpdatedAt       int64  `json:"updated_at"`
+	Content         string `json:"content,omitempty"`
+}
+
+func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if s == nil || s.sessions == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("sessions v3 service is not configured"))
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	limit, ok := parseRequestPositiveLimit(w, r, sessionsV3ArtifactCatalogDefaultLimit)
+	if !ok {
+		return
+	}
+	if limit > sessionsV3ArtifactCatalogMaxLimit {
+		writeError(w, http.StatusBadRequest, errors.New("artifact limit cannot exceed 2000"))
+		return
+	}
+
+	sessions, err := s.sessions.ListSessionsForAccountUser(principal.AccountScopeID, principal.UserID, sessionsV3ArtifactCatalogSessionLimit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	artifacts := make([]sessionsV3ArtifactCatalogItem, 0, limit)
+	seen := make(map[string]struct{})
+	for _, session := range sessions {
+		if sessionsV3SystemSidechat(session) {
+			continue
+		}
+		plans, _, err := s.sessions.ListPlans(session.ID, sessionsV3PlansPageMaxLimit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		workspacePath, workspaceName := sessionsV3ArtifactCatalogWorkspace(session)
+		for _, plan := range plans {
+			if plan.AccountScopeID != "" && strings.TrimSpace(plan.AccountScopeID) != principal.AccountScopeID || plan.UserID != "" && strings.TrimSpace(plan.UserID) != principal.UserID {
+				continue
+			}
+			planText := strings.TrimSpace(plan.Plan)
+			if plan.Document != nil {
+				if display := strings.TrimSpace(plan.Document.DisplayText); display != "" {
+					planText = display
+				} else if rendered := strings.TrimSpace(plan.Document.RenderedText); rendered != "" {
+					planText = rendered
+				}
+			}
+			planTitle := strings.TrimSpace(plan.Title)
+			if planTitle == "" && plan.Document != nil {
+				planTitle = strings.TrimSpace(plan.Document.Title)
+			}
+			if planTitle == "" {
+				planTitle = "Plan"
+			}
+			planArtifactID := sessionsV3PlanArtifactID(session.ID, plan.ID)
+			appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+planArtifactID, sessionsV3ArtifactCatalogItem{
+				ArtifactID: planArtifactID, SessionID: session.ID, SessionTitle: session.Title,
+				WorkspacePath: workspacePath, WorkspaceName: workspaceName,
+				PlanID: plan.ID, PlanTitle: planTitle, Label: planTitle,
+				Description: "Durable session plan", Filename: "plan.md", MediaType: "text/markdown",
+				Kind: "markdown", Previewable: true, Category: "plan", UpdatedAt: plan.UpdatedAt, Content: planText,
+			})
+
+			if plan.Document == nil {
+				continue
+			}
+			for _, checkpoint := range plan.Document.Checkpoints {
+				if checkpoint.Handoff == nil || strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusCompleted {
+					continue
+				}
+				references := append([]pebblestore.SessionPlanArtifactReference(nil), plan.Document.Artifacts...)
+				references = append(references, checkpoint.Artifacts...)
+				for _, descriptor := range sessionruntime.ProjectPlanFinalHandoffArtifacts(plan.ID, checkpoint.ID, references) {
+					category := "document"
+					if descriptor.Kind == "html" || descriptor.Kind == "image" || descriptor.Kind == "pdf" {
+						category = "visual"
+					}
+					updatedAt := checkpoint.CompletedAt
+					if updatedAt == 0 {
+						updatedAt = plan.UpdatedAt
+					}
+					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+descriptor.ID, sessionsV3ArtifactCatalogItem{
+						ArtifactID: descriptor.ID, SessionID: session.ID, SessionTitle: session.Title,
+						WorkspacePath: workspacePath, WorkspaceName: workspaceName,
+						PlanID: plan.ID, PlanTitle: planTitle, CheckpointID: checkpoint.ID, CheckpointTitle: checkpoint.Title,
+						Label: descriptor.Label, Description: descriptor.Description, Filename: descriptor.Filename,
+						MediaType: descriptor.MediaType, Kind: descriptor.Kind, Previewable: descriptor.Previewable,
+						Category: category, UpdatedAt: updatedAt,
+					})
+				}
+			}
+		}
+	}
+	sort.Slice(artifacts, func(i, j int) bool {
+		if artifacts[i].UpdatedAt == artifacts[j].UpdatedAt {
+			if artifacts[i].SessionID == artifacts[j].SessionID {
+				return artifacts[i].ArtifactID < artifacts[j].ArtifactID
+			}
+			return artifacts[i].SessionID < artifacts[j].SessionID
+		}
+		return artifacts[i].UpdatedAt > artifacts[j].UpdatedAt
+	})
+	if len(artifacts) > limit {
+		artifacts = artifacts[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artifacts": artifacts})
+}
+
+func appendCatalogArtifact(artifacts *[]sessionsV3ArtifactCatalogItem, seen map[string]struct{}, key string, artifact sessionsV3ArtifactCatalogItem) {
+	if _, exists := seen[key]; exists {
+		return
+	}
+	seen[key] = struct{}{}
+	*artifacts = append(*artifacts, artifact)
+}
+
+func sessionsV3ArtifactCatalogWorkspace(session pebblestore.SessionSnapshot) (string, string) {
+	workspacePath := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
+	if workspacePath == "" {
+		workspacePath = strings.TrimSpace(session.WorkspacePath)
+	}
+	workspaceName := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_name"))
+	if workspaceName == "" {
+		workspaceName = strings.TrimSpace(session.WorkspaceName)
+	}
+	if workspaceName == "" {
+		workspaceName = filepath.Base(workspacePath)
+	}
+	return workspacePath, workspaceName
+}
+
+func sessionsV3PlanArtifactID(sessionID, planID string) string {
+	canonical := strings.Join([]string{"swarm-plan-artifact-v1", strings.TrimSpace(sessionID), strings.TrimSpace(planID)}, "\x00")
+	digest := sha256.Sum256([]byte(canonical))
+	return "plan_art_" + base64.RawURLEncoding.EncodeToString(digest[:18])
 }
 
 func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
