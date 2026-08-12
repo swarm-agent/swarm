@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -528,6 +529,54 @@ func TestPrepareResumedTaskProgramLaunchUsesOriginalSessionAgentAndModel(t *test
 	}
 	if !strings.Contains(launch.MetaPrompt, "daemon restart") || !strings.Contains(launch.MetaPrompt, "inspect repository") {
 		t.Fatalf("resumed launch lacks bounded recovery reprompt: %q", launch.MetaPrompt)
+	}
+}
+
+func TestPrepareTaskProgramResumeReconcilesCompletedChildWithoutReplay(t *testing.T) {
+	svc, parentID, permissions, cleanup := newTaskLaunchPermissionServiceWithPermissions(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentID)
+	if err != nil || !ok {
+		t.Fatalf("get parent: ok=%t err=%v", ok, err)
+	}
+	profile := pebblestore.AgentProfile{Name: "finder", Mode: "subagent", Enabled: true, Prompt: "finder"}
+	child, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		AccountScopeID: parent.AccountScopeID, Title: "Completed Finder", WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Mode: sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{Provider: "original-provider", Model: "original-model", Thinking: "high"},
+		Metadata:   map[string]any{"parent_session_id": parent.ID, "requested_subagent": "finder", "agent_profile": profile},
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := svc.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{SessionID: child.ID, RunID: "child-run", Active: false, Phase: lifecyclePhaseCompleted, Generation: 1}); err != nil {
+		t.Fatalf("persist completed child lifecycle: %v", err)
+	}
+	definition := pebblestore.TaskProgramDefinition{
+		Stages: []pebblestore.TaskProgramStageSpec{{ID: "inspect"}},
+		Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "finder", StageID: "inspect", AgentType: "finder", Title: "Find", MetaPrompt: "inspect", Deliverable: "report", AcceptanceCriteria: []string{"done"}}},
+	}
+	record := pebblestore.TaskProgramRecord{
+		ParentSessionID: parent.ID, ProgramID: "resume_completed", DefinitionHash: "hash", Definition: definition,
+		ReservationRunID: "parent-run", ReservationCallID: "task-call", State: pebblestore.TaskProgramStateRunning, ActiveStageID: "inspect", NextAction: "await_running_jobs",
+		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "finder", StageID: "inspect", State: pebblestore.TaskProgramJobRunning, AttemptNumber: 1, ChildSessionID: child.ID}},
+	}
+	record, _, err = svc.sessions.CreateTaskProgram(record)
+	if err != nil {
+		t.Fatalf("create task program: %v", err)
+	}
+	reserved, err := permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+		SessionID: parent.ID, AccountScopeID: parent.AccountScopeID, RunID: record.ReservationRunID, CallID: record.ReservationCallID,
+		ManifestHash: "manifest", LaunchCount: 1, Program: true, ReadyCount: 1,
+	})
+	if err != nil || reserved.Decision != permission.SubagentReservationApprove {
+		t.Fatalf("reserve program: decision=%s err=%v", reserved.Decision, err)
+	}
+	resumed, readyCount, err := svc.prepareTaskProgramResume(parent, record, taskCallArguments{ExpectedRevision: record.Revision, ExpectedGeneration: record.ResumeGeneration})
+	if err != nil {
+		t.Fatalf("resume program: %v", err)
+	}
+	if readyCount != 1 || resumed.State != pebblestore.TaskProgramStateRunning || resumed.Jobs[0].State != pebblestore.TaskProgramJobCompleted || resumed.ResumeGeneration != record.ResumeGeneration+1 {
+		t.Fatalf("completed child reconciliation = ready:%d record:%#v", readyCount, resumed)
 	}
 }
 
