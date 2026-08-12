@@ -18,6 +18,11 @@ type SessionRunStateRepairResult = pebblestore.V3SessionRunStateRepairResult
 type SessionReplay = pebblestore.V3SessionReplay
 type RealtimeOutboxRecord = pebblestore.V3RealtimeOutboxRecord
 type SessionTombstone = pebblestore.V3SessionTombstone
+type ArtifactMutation = pebblestore.V3ArtifactMutation
+type ArtifactProjection = pebblestore.V3ArtifactProjection
+type ArtifactCollection = pebblestore.SessionArtifactCollection
+type ArtifactVariant = pebblestore.SessionArtifactVariant
+type ArtifactSelectionReference = pebblestore.SessionArtifactSelectionReference
 
 type SessionIdempotencyRecord = pebblestore.V3SessionIdempotencyRecord
 
@@ -38,6 +43,11 @@ const (
 	SessionMutationAcceptPlan               = pebblestore.V3SessionMutationAcceptPlan
 	SessionMutationCommitCheckpointBoundary = pebblestore.V3SessionMutationCommitCheckpointBoundary
 	SessionMutationArchiveSession           = pebblestore.V3SessionMutationArchiveSession
+	SessionMutationCreateArtifact           = pebblestore.V3SessionMutationCreateArtifact
+	SessionMutationUpdateArtifact           = pebblestore.V3SessionMutationUpdateArtifact
+	SessionMutationFinalizeArtifact         = pebblestore.V3SessionMutationFinalizeArtifact
+	SessionMutationFailArtifact             = pebblestore.V3SessionMutationFailArtifact
+	SessionMutationSelectArtifact           = pebblestore.V3SessionMutationSelectArtifact
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
 	RunIntentRunning         = pebblestore.V3RunIntentRunning

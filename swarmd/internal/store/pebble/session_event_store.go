@@ -31,6 +31,11 @@ const (
 	V3SessionMutationDeleteSession            = "session.delete"
 	V3SessionMutationArchiveSession           = "session.archive"
 	V3SessionMutationReactivateSession        = "session.reactivate"
+	V3SessionMutationCreateArtifact           = "artifact.create"
+	V3SessionMutationUpdateArtifact           = "artifact.update"
+	V3SessionMutationFinalizeArtifact         = "artifact.finalize"
+	V3SessionMutationFailArtifact             = "artifact.fail"
+	V3SessionMutationSelectArtifact           = "artifact.select"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
 	V3SessionMutationStatusCompleted = "completed"
@@ -89,6 +94,7 @@ type V3SessionMutationInput struct {
 	PlanAcceptance       *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
 	PlanSave             *V3PlanSaveMutation           `json:"plan_save,omitempty"`
 	CheckpointBoundary   *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
+	Artifact             *V3ArtifactMutation           `json:"artifact,omitempty"`
 	MediaStagingBindings []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
 	EpochID              string                        `json:"epoch_id,omitempty"`
 	TurnUsage            *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
@@ -121,6 +127,7 @@ type V3SessionMutationResult struct {
 	Events           []V3SessionEvent           `json:"events,omitempty"`
 	RealtimeOutboxes []V3RealtimeOutboxRecord   `json:"realtime_outboxes,omitempty"`
 	Plan             *SessionPlanSnapshot       `json:"plan,omitempty"`
+	Artifact         *V3ArtifactProjection      `json:"artifact,omitempty"`
 	Replayed         bool                       `json:"replayed,omitempty"`
 }
 
@@ -451,6 +458,7 @@ type v3SessionEventReplayPayload struct {
 	Error              string                        `json:"error,omitempty"`
 	HasActivePlan      bool                          `json:"has_active_plan,omitempty"`
 	ActivePlan         *SessionPlanSnapshot          `json:"active_plan,omitempty"`
+	Artifact           *V3ArtifactProjection         `json:"artifact,omitempty"`
 }
 
 func KeyV3SessionSequence(sessionID string) string {
@@ -816,7 +824,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary)
+	artifact, err := s.prepareV3ArtifactMutation(input, seq, now)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary, artifact.Projection)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -931,6 +943,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := setV3PlanSaveInBatch(batch, input.SessionID, *input.PlanSave); err != nil {
 			return V3SessionMutationResult{}, err
 		}
+	}
+	if err := setV3ArtifactMutationInBatch(batch, artifact); err != nil {
+		return V3SessionMutationResult{}, err
 	}
 	if initialEpoch != nil {
 		initialEpoch.CreatedAt = now
@@ -1144,6 +1159,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		result.UsageSummary = &usageSummary
 	}
 	result.Plan = committedV3PlanSaveResult(input.PlanSave)
+	if artifact.Projection.Collection.ID != "" {
+		projection := artifact.Projection
+		result.Artifact = &projection
+	}
 	return result, nil
 }
 
@@ -2109,6 +2128,16 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 		return V3SessionMutationResult{}, err
 	} else if ok {
 		result.Event = event
+		var payload v3SessionEventReplayPayload
+		if len(event.Payload) != 0 {
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return V3SessionMutationResult{}, fmt.Errorf("decode replayed v3 mutation payload: %w", err)
+			}
+		}
+		if payload.Artifact != nil {
+			artifact := *payload.Artifact
+			result.Artifact = &artifact
+		}
 	}
 	result.Projection = V3SessionProjection{
 		SessionID:                  record.Result.SessionID,
@@ -2709,6 +2738,7 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 	input.EventType = strings.TrimSpace(input.EventType)
 	input.CausationID = strings.TrimSpace(input.CausationID)
 	input.CorrelationID = strings.TrimSpace(input.CorrelationID)
+	normalizeV3ArtifactMutation(&input)
 	if input.ClientRequestID == "" {
 		input.ClientRequestID = input.IdempotencyKey
 	}
@@ -2795,6 +2825,9 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	}
 	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
+	}
+	if err := validateV3ArtifactMutation(input); err != nil {
+		return err
 	}
 	if planSave := input.PlanSave; planSave != nil {
 		if err := validateV3MutationEmbeddedOwnership(input, "plan save", planSave.Plan.SessionID, planSave.Plan.UserID, planSave.Plan.AccountScopeID); err != nil {
@@ -2929,12 +2962,22 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.plan.saved"
 	case V3SessionMutationAcceptPlan:
 		return "session.plan.saved"
+	case V3SessionMutationCreateArtifact:
+		return "session.artifact.created"
+	case V3SessionMutationUpdateArtifact:
+		return "session.artifact.updated"
+	case V3SessionMutationFinalizeArtifact:
+		return "session.artifact.finalized"
+	case V3SessionMutationFailArtifact:
+		return "session.artifact.failed"
+	case V3SessionMutationSelectArtifact:
+		return "session.artifact.selected"
 	default:
 		return input.Kind
 	}
 }
 
-func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent, turnUsage SessionTurnUsageSnapshot, usageSummary SessionUsageSummary) (json.RawMessage, error) {
+func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent, turnUsage SessionTurnUsageSnapshot, usageSummary SessionUsageSummary, artifact ...V3ArtifactProjection) (json.RawMessage, error) {
 	if len(input.EventPayload) > 0 {
 		return append(json.RawMessage(nil), input.EventPayload...), nil
 	}
@@ -2987,6 +3030,10 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if input.CheckpointBoundary != nil {
 		boundary := *input.CheckpointBoundary
 		payload.CheckpointBoundary = &boundary
+	}
+	if len(artifact) != 0 && artifact[0].Collection.ID != "" {
+		projection := artifact[0]
+		payload.Artifact = &projection
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
