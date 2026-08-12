@@ -849,6 +849,20 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = "task manifest is invalid"
 				continue
 			}
+			if manifest.Action == taskProgramActionStatus {
+				// Status is a read-only lookup scoped to the authenticated parent session.
+				// It must never create an approval interaction before a guarded resume.
+				if _, ok, statusErr := s.sessions.GetTaskProgram(sessionID, manifest.ProgramID); statusErr != nil {
+					decisions[i].Err = statusErr
+					decisions[i].Result.Error = statusErr.Error()
+				} else if !ok {
+					decisions[i].Err = fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
+					decisions[i].Result.Error = decisions[i].Err.Error()
+				} else {
+					decisions[i].Approved = true
+				}
+				continue
+			}
 			if manifest.Action == taskProgramActionResume {
 				// Resume is a guarded continuation of an already-reserved durable program,
 				// not a new delegation wave. Reuse that reservation so generic task policy

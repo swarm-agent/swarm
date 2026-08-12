@@ -607,6 +607,14 @@ func TestGateTaskProgramResumeReusesReservationWithoutApproval(t *testing.T) {
 	if err != nil || reserved.Decision != permission.SubagentReservationApprove {
 		t.Fatalf("reserve program: decision=%s err=%v", reserved.Decision, err)
 	}
+	statusCall := tool.Call{CallID: "status-lifecycle-call", Name: "task", Arguments: mustJSON(t, map[string]any{
+		"action": "status", "program_id": record.ProgramID,
+	})}
+	statusResults, statusApproved, _, statusMask, _, err := svc.gateToolCalls(context.Background(), parent.ID, "status-parent-run", 1, sessionruntime.ModeAuto, []tool.Call{statusCall}, nil, nil)
+	if err != nil || len(statusResults) != 1 || len(statusApproved) != 1 || len(statusMask) != 1 || !statusMask[0] {
+		t.Fatalf("read-only status was not approved inline: results=%#v approved=%d mask=%v err=%v", statusResults, len(statusApproved), statusMask, err)
+	}
+
 	call := tool.Call{CallID: "resume-lifecycle-call", Name: "task", Arguments: mustJSON(t, map[string]any{
 		"action": "resume", "program_id": record.ProgramID, "expected_revision": record.Revision, "expected_generation": record.ResumeGeneration,
 	})}
