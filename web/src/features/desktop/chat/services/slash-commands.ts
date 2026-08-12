@@ -21,6 +21,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
   | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
+  | { kind: 'open-artifact-viewer' }
 
 export interface DesktopSlashCommand {
   id: string
@@ -264,6 +265,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/permissions', 'Review always-allow and always-deny rules', 'Explain how a tool request will resolve'],
     state: 'ready',
     action: { kind: 'open-quick-settings', tab: 'permissions' },
+  },
+  {
+    id: 'artifact',
+    command: '/artifact',
+    aliases: ['/artifacts'],
+    hint: 'Browse artifacts across your workspaces',
+    actionLabel: 'Open Artifact Viewer',
+    tips: ['/artifact', '/artifacts', 'Search plans, visual artifacts, and documents without leaving chat'],
+    state: 'ready',
+    action: { kind: 'open-artifact-viewer' },
   },
   {
     id: 'plan',

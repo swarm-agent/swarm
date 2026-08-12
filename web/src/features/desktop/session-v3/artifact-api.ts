@@ -1,5 +1,81 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
 
+export type DesktopV3ArtifactCategory = 'plan' | 'visual' | 'document'
+
+export interface DesktopV3ArtifactCatalogEntry {
+  artifactId: string
+  sessionId: string
+  sessionTitle: string
+  workspacePath: string
+  workspaceName: string
+  planId: string
+  planTitle: string
+  checkpointId: string
+  checkpointTitle: string
+  label: string
+  description: string
+  filename: string
+  mediaType: string
+  kind: string
+  previewable: boolean
+  category: DesktopV3ArtifactCategory
+  updatedAt: number
+  content?: string
+}
+
+type DesktopV3ArtifactCatalogResponse = {
+  ok?: unknown
+  artifacts?: unknown
+}
+
+function artifactCatalogString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV3ArtifactCatalogEntry | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const artifactId = artifactCatalogString(record.artifact_id)
+  const sessionId = artifactCatalogString(record.session_id)
+  if (!artifactId || !sessionId) return null
+  const rawCategory = artifactCatalogString(record.category)
+  const category: DesktopV3ArtifactCategory = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : 'document'
+  const rawUpdatedAt = record.updated_at
+  const updatedAt = typeof rawUpdatedAt === 'number' && Number.isFinite(rawUpdatedAt)
+    ? rawUpdatedAt
+    : typeof rawUpdatedAt === 'string' && rawUpdatedAt.trim()
+      ? Date.parse(rawUpdatedAt)
+      : 0
+  return {
+    artifactId,
+    sessionId,
+    sessionTitle: artifactCatalogString(record.session_title),
+    workspacePath: artifactCatalogString(record.workspace_path),
+    workspaceName: artifactCatalogString(record.workspace_name),
+    planId: artifactCatalogString(record.plan_id),
+    planTitle: artifactCatalogString(record.plan_title),
+    checkpointId: artifactCatalogString(record.checkpoint_id),
+    checkpointTitle: artifactCatalogString(record.checkpoint_title),
+    label: artifactCatalogString(record.label) || artifactCatalogString(record.filename) || 'Artifact',
+    description: artifactCatalogString(record.description),
+    filename: artifactCatalogString(record.filename),
+    mediaType: artifactCatalogString(record.media_type) || 'application/octet-stream',
+    kind: artifactCatalogString(record.kind),
+    previewable: record.previewable === true,
+    category,
+    updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
+    ...(typeof record.content === 'string' ? { content: record.content } : {}),
+  }
+}
+
+export async function fetchDesktopV3ArtifactCatalog(signal?: AbortSignal): Promise<DesktopV3ArtifactCatalogEntry[]> {
+  const response = await apiFetch('/v3/artifacts', { method: 'GET', signal })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const payload = await response.json() as DesktopV3ArtifactCatalogResponse
+  if (payload.ok !== true || !Array.isArray(payload.artifacts)) throw new Error('Artifact catalog returned an invalid response')
+  return payload.artifacts.map(normalizeDesktopV3ArtifactCatalogEntry).filter((entry): entry is DesktopV3ArtifactCatalogEntry => entry !== null)
+}
+
 export function desktopV3ArtifactEndpoint(sessionId: string, artifactId: string): string {
   const normalizedSessionId = sessionId.trim()
   const normalizedArtifactId = artifactId.trim()

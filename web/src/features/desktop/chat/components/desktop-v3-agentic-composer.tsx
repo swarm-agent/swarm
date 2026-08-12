@@ -36,6 +36,7 @@ import type { WorkspaceAction } from '../../../workspaces/actions/types'
 import type { WorkspaceSkill } from '../services/workspace-skills'
 import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
 import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
+import { DesktopV3ArtifactCatalogGallery } from './desktop-v3-artifact-gallery'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -335,6 +336,7 @@ export function DesktopV3AgenticComposer({
   const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
   const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
   const [workspaceActionChooserOpen, setWorkspaceActionChooserOpen] = useState(false)
+  const [artifactViewerOpen, setArtifactViewerOpen] = useState(false)
   const [workspaceActionAutoLaunch, setWorkspaceActionAutoLaunch] = useState(false)
   const [workspaceActionLaunchToken, setWorkspaceActionLaunchToken] = useState(0)
   const [selectedWorkspaceSkill, setSelectedWorkspaceSkill] = useState<WorkspaceSkill | null>(null)
@@ -666,6 +668,11 @@ export function DesktopV3AgenticComposer({
     }
     if (routedNewSession && routedSubmissionRef.current) return
     const rawDraft = textareaRef.current?.value ?? dictationComposer
+    if (slashPalette.exactMatch?.action.kind === 'open-artifact-viewer' && !slashPalette.hasArguments) {
+      setArtifactViewerOpen(true)
+      onDraftChange('')
+      return
+    }
     if (isDesktopWorktreeOnCommand(rawDraft)) {
       handleWorktreeOnCommand()
       return
@@ -749,7 +756,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
+  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -770,6 +777,11 @@ export function DesktopV3AgenticComposer({
 
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
+    if (command.action.kind === 'open-artifact-viewer') {
+      setArtifactViewerOpen(true)
+      onDraftChange('')
+      return
+    }
     if (command.action.kind === 'open-action-chooser') {
       openWorkspaceActionChooser()
       onDraftChange('')
@@ -1099,6 +1111,7 @@ export function DesktopV3AgenticComposer({
 
   return (
     <div ref={composerRootRef} className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
+      <DesktopV3ArtifactCatalogGallery open={artifactViewerOpen} onOpenChange={setArtifactViewerOpen} />
       {fileDropZone && filesDraggingOverChat ? createPortal(
         <div className="pointer-events-none absolute inset-3 z-50 grid place-items-center rounded-2xl border-2 border-dashed border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-bg))] p-6 shadow-xl" data-testid="desktop-chat-file-drop-overlay" role="status" aria-live="polite">
           <div className="flex max-w-md flex-col items-center gap-3 rounded-2xl bg-[var(--app-surface-elevated)] px-8 py-6 text-center shadow-lg">

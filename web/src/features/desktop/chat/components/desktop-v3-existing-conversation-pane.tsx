@@ -10,24 +10,16 @@ import {
   type MutableRefObject,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMatchRoute, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown,
-  ArrowLeft,
   ArrowRight,
-  ChevronLeft,
-  ChevronRight,
-  Download,
-  FileText,
-  GalleryHorizontal,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
   CircleDot,
-  Loader2,
   LoaderCircle,
   Github,
   ExternalLink,
@@ -68,7 +60,6 @@ import type {
   ModelProfileRecord,
   ChatMessageRecord,
   DesktopPlanFinalHandoff,
-  DesktopPlanFinalHandoffArtifact,
   DesktopSessionPlanCheckpointRecommendation,
   TaskChildCardActions,
   TaskToolRow,
@@ -169,7 +160,7 @@ import {
   type DesktopPlanExecutionSidebarActionInput,
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
-import { buildDesktopV3ArtifactSandboxDocument, fetchDesktopV3Artifact, fetchDesktopV3ArtifactBundle, fetchDesktopV3ArtifactPreviewToken } from "../../session-v3/artifact-api";
+import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import {
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
@@ -3348,203 +3339,6 @@ export function selectDesktopV3SuggestedPrompt(
   void onSuggestedPrompt(prompt);
 }
 
-function artifactBundleDownloadName(artifact: DesktopPlanFinalHandoffArtifact): string {
-  const label = artifact.label.trim().replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "") || "artifact";
-  const base = label.replace(/\.[a-z0-9]{1,8}$/i, "") || "artifact";
-  return `${base}.zip`;
-}
-
-function DesktopV3ArtifactGallery({
-  sessionId,
-  artifacts,
-}: {
-  sessionId: string;
-  artifacts: DesktopPlanFinalHandoffArtifact[];
-}) {
-  const [open, setOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState(artifacts[0]?.artifactId ?? "");
-  const [previewURL, setPreviewURL] = useState("");
-  const [previewText, setPreviewText] = useState("");
-  const [previewError, setPreviewError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const galleryButtonRef = useRef<HTMLButtonElement>(null);
-  const backButtonRef = useRef<HTMLButtonElement>(null);
-  const selected = artifacts.find((artifact) => artifact.artifactId === selectedId) ?? artifacts[0];
-  const selectedIndex = selected ? artifacts.findIndex((artifact) => artifact.artifactId === selected.artifactId) : -1;
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    backButtonRef.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      document.body.style.overflow = previousOverflow;
-      galleryButtonRef.current?.focus();
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || !selected) return undefined;
-    setPreviewURL("");
-    setPreviewText("");
-    setPreviewError("");
-    if (!selected.previewable) {
-      setLoading(false);
-      return undefined;
-    }
-    const controller = new AbortController();
-    let objectURL = "";
-    setLoading(true);
-    void fetchDesktopV3Artifact(sessionId, selected.artifactId, controller.signal)
-      .then(async (blob) => {
-        if (controller.signal.aborted) return;
-        if (selected.mediaType === "text/html") {
-          const [source, previewToken] = await Promise.all([
-            blob.text(),
-            fetchDesktopV3ArtifactPreviewToken(sessionId, selected.artifactId, controller.signal),
-          ]);
-          if (!controller.signal.aborted) {
-            setPreviewText(buildDesktopV3ArtifactSandboxDocument(source, sessionId, selected.artifactId, previewToken));
-          }
-          return;
-        }
-        if (selected.mediaType === "text/markdown" || selected.mediaType === "text/plain") {
-          const text = await blob.text();
-          if (!controller.signal.aborted) setPreviewText(text);
-          return;
-        }
-        objectURL = URL.createObjectURL(blob);
-        setPreviewURL(objectURL);
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) {
-          setPreviewError(error instanceof Error ? error.message : "Artifact preview failed");
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => {
-      controller.abort();
-      if (objectURL) URL.revokeObjectURL(objectURL);
-    };
-  }, [open, selected?.artifactId, selected?.mediaType, selected?.previewable, sessionId]);
-
-  if (artifacts.length === 0) return null;
-
-  const selectAdjacentArtifact = (offset: -1 | 1) => {
-    if (artifacts.length < 2 || selectedIndex < 0) return;
-    const nextIndex = (selectedIndex + offset + artifacts.length) % artifacts.length;
-    const nextArtifact = artifacts[nextIndex];
-    if (nextArtifact) setSelectedId(nextArtifact.artifactId);
-  };
-
-  const downloadArtifact = async (artifact: DesktopPlanFinalHandoffArtifact) => {
-    try {
-      setPreviewError("");
-      const blob = await fetchDesktopV3ArtifactBundle(sessionId, artifact.artifactId);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = artifactBundleDownloadName(artifact);
-      anchor.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      setPreviewError(error instanceof Error ? error.message : "Artifact download failed");
-    }
-  };
-
-  return (
-    <div className="mt-3" data-final-handoff-artifacts>
-      <button
-        ref={galleryButtonRef}
-        type="button"
-        className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
-        onClick={() => setOpen(true)}
-      >
-        <GalleryHorizontal size={14} aria-hidden="true" />
-        Open gallery ({artifacts.length})
-      </button>
-      {open ? createPortal(
-        <section
-          aria-label="Session artifact gallery"
-          className="fixed inset-0 z-[85] flex h-[100dvh] w-[100dvw] min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]"
-          data-artifact-gallery-page
-        >
-          <header className="flex min-h-14 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 sm:px-5">
-            <button
-              ref={backButtonRef}
-              type="button"
-              className="inline-flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
-              onClick={() => setOpen(false)}
-            >
-              <ArrowLeft size={16} aria-hidden="true" />
-              <span className="hidden sm:inline">Back to conversation</span>
-              <span className="sm:hidden">Back</span>
-            </button>
-            <div className="min-w-0 text-center">
-              <div className="flex items-center justify-center gap-2 text-sm font-semibold"><GalleryHorizontal size={16} aria-hidden="true" /> Session artifacts</div>
-              <div className="text-[10px] text-[var(--app-text-subtle)]">{selectedIndex + 1} of {artifacts.length}</div>
-            </div>
-            <button type="button" className="grid size-9 shrink-0 place-items-center rounded-lg text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" aria-label="Exit artifact gallery" onClick={() => setOpen(false)}><X size={17} /></button>
-          </header>
-          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] md:grid-cols-[260px_minmax(0,1fr)] md:grid-rows-1">
-            <aside className="min-w-0 overflow-x-auto border-b border-[var(--app-border)] bg-[var(--app-surface)] p-2 md:min-h-0 md:overflow-x-hidden md:overflow-y-auto md:border-b-0 md:border-r md:p-3" aria-label="Artifacts in this session">
-              <div className="flex gap-1.5 md:grid">
-                {artifacts.map((artifact, index) => (
-                  <button
-                    key={artifact.artifactId}
-                    type="button"
-                    className={cn("w-48 shrink-0 rounded-lg border px-3 py-2 text-left transition md:w-auto md:min-w-0", artifact.artifactId === selected?.artifactId ? "border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface))]" : "border-transparent hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]")}
-                    aria-current={artifact.artifactId === selected?.artifactId ? "page" : undefined}
-                    onClick={() => setSelectedId(artifact.artifactId)}
-                  >
-                    <span className="flex items-center gap-2 text-xs font-medium text-[var(--app-text)]"><FileText size={13} className="shrink-0" /> <span className="truncate">{artifact.label}</span></span>
-                    <span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{index + 1} · {artifact.mediaType || "Artifact"}</span>
-                  </button>
-                ))}
-              </div>
-            </aside>
-            <main className="flex min-h-0 min-w-0 flex-col bg-[var(--app-bg-alt)]">
-              {selected ? (
-                <>
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold">{selected.label}</div>
-                      {selected.description && selected.description !== selected.label ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={artifacts.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentArtifact(-1)}><ChevronLeft size={15} /></button>
-                      <button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={artifacts.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentArtifact(1)}><ChevronRight size={15} /></button>
-                      <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">Download bundle</span></button>
-                    </div>
-                  </div>
-                  <div className={cn("relative min-h-0 flex-1 overflow-auto", selected.mediaType === "text/html" || selected.mediaType === "application/pdf" ? "p-0" : "p-3 sm:p-4")}>
-                    {loading ? <div className="grid h-full min-h-40 place-items-center text-sm text-[var(--app-text-muted)]"><Loader2 className="mr-2 inline size-4 animate-spin" /> Loading preview…</div> : null}
-                    {previewError ? <div className="mx-auto mt-8 max-w-lg rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">Preview unavailable: {previewError}</div> : null}
-                    {!loading && !previewError && !selected.previewable ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
-                    {!loading && !previewError && selected.mediaType.startsWith("image/") && previewURL ? <div className="grid min-h-full place-items-center"><img src={previewURL} alt={selected.description || selected.label} className="max-h-full max-w-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" /></div> : null}
-                    {!loading && !previewError && selected.mediaType === "text/html" && previewText ? <iframe title={selected.label} srcDoc={previewText} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
-                    {!loading && !previewError && selected.mediaType === "application/pdf" && previewURL ? <iframe title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
-                    {!loading && !previewError && selected.mediaType === "text/markdown" && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
-                    {!loading && !previewError && selected.mediaType === "text/plain" && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}
-                  </div>
-                </>
-              ) : null}
-            </main>
-          </div>
-        </section>,
-        document.body,
-      ) : null}
-    </div>
-  );
-}
-
 function DesktopV3StructuredFinalHandoff({
   item,
   handoff,
@@ -3599,7 +3393,21 @@ function DesktopV3StructuredFinalHandoff({
         ) : null}
 
         {handoff.artifacts.length > 0 ? (
-          <DesktopV3ArtifactGallery sessionId={item.message.session_id} artifacts={handoff.artifacts} />
+          <DesktopV3ArtifactGallery artifacts={handoff.artifacts.map((artifact): DesktopV3ArtifactGalleryEntry => ({
+            ...artifact,
+            sessionId: item.message.session_id,
+            sessionTitle: "This session",
+            workspacePath: "",
+            workspaceName: "",
+            planId: "",
+            planTitle: "",
+            checkpointId: "",
+            checkpointTitle: "",
+            filename: artifact.label,
+            kind: artifact.mediaType,
+            category: artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") ? "visual" : "document",
+            updatedAt: 0,
+          }))} title="Session artifacts" />
         ) : null}
 
         {handoff.pullRequestUrl ? (
