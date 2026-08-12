@@ -78,6 +78,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/new", Hint: "Open a local session draft; explicit worktree forms route", QuickTips: []string{"/new [<prompt>]", "/new worktree [<prompt>]", "/new plan [<prompt>]", "/new wp [<prompt>]"}},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
 		{Command: "/plan", Hint: "Show or close the existing session plan"},
+		{Command: "/program", Hint: "Collapse or expand the latest Task Program card"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
 		{Command: "/rebuild", Hint: "Rebuild the current lane and exit swarmtui"},
 		{Command: "/sessions", Hint: "Open the card-style session manager (active conversations first)"},
@@ -2174,6 +2175,8 @@ func (a *App) executeCommand(raw string) {
 		a.handlePermissionsCommand(args)
 	case "output":
 		a.handleOutputCommand(args)
+	case "program":
+		a.handleProgramCommand(args)
 	case "worktree":
 		a.handleWorktreePrimerCommand(raw)
 	case "worktrees":
@@ -2339,6 +2342,25 @@ func (a *App) handleCopyCommand(args []string) {
 		a.v3Chat.SetStatus(successStatus)
 	}
 	a.showToast(ui.ToastSuccess, successStatus)
+}
+
+func (a *App) handleProgramCommand(args []string) {
+	a.home.ClearCommandOverlay()
+	if len(args) > 0 {
+		a.home.SetStatus("usage: /program")
+		return
+	}
+	if a.route != "v3chat" || a.v3Chat == nil {
+		a.home.SetStatus("/program is available in V3 chat sessions only")
+		return
+	}
+	if !a.v3Chat.ToggleLatestTaskProgram() {
+		a.home.SetStatus("no task program available")
+		return
+	}
+	if status := strings.TrimSpace(a.v3Chat.Status()); status != "" {
+		a.home.SetStatus(status)
+	}
 }
 
 func (a *App) handleOutputCommand(args []string) {

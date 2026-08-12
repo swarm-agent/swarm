@@ -106,6 +106,7 @@ type Page struct {
 	bashOutputModal              bool
 	bashOutputModalScroll        int
 	bashOutputModalTool          ToolTimelineItem
+	taskProgramCollapsed        map[string]bool
 	modelOptions                 []client.ModelCatalogRecord
 	modelIndex                   int
 	commandSuggestions           []CommandSuggestion
@@ -176,7 +177,7 @@ const (
 )
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, rowCache: make(map[string]cachedRows), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
+	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, rowCache: make(map[string]cachedRows), taskProgramCollapsed: make(map[string]bool), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
 }
 
 func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
@@ -987,6 +988,58 @@ func (p *Page) ToggleLatestBashOutput() bool {
 	p.status = "full bash output"
 	p.mu.Unlock()
 	return true
+}
+
+// ToggleLatestTaskProgram collapses or expands the newest canonical Task Program
+// card. It deliberately ignores ordinary task calls and swarm presentations.
+func (p *Page) ToggleLatestTaskProgram() bool {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return false
+	}
+	_, presentation, ok := latestTaskProgram(p.runtime.Store().Snapshot())
+	if !ok {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.taskProgramCollapsed == nil {
+		p.taskProgramCollapsed = make(map[string]bool)
+	}
+	next := !p.taskProgramCollapsed[presentation.TaskProgramID]
+	p.taskProgramCollapsed[presentation.TaskProgramID] = next
+	if next {
+		p.status = "task program collapsed"
+	} else {
+		p.status = "task program expanded"
+	}
+	return true
+}
+
+func latestTaskProgram(state State) (ToolTimelineItem, toolPresentation, bool) {
+	var latest ToolTimelineItem
+	var latestPresentation toolPresentation
+	found := false
+	consider := func(tool ToolTimelineItem) {
+		if normalizeToolDisplayName(tool.Name) != "task" {
+			return
+		}
+		presentation := buildToolPresentation(tool)
+		if !presentation.TaskProgram {
+			return
+		}
+		if !found || tool.GlobalSeq > latest.GlobalSeq || (tool.GlobalSeq == latest.GlobalSeq && tool.CreatedAt >= latest.CreatedAt) {
+			latest, latestPresentation, found = tool, presentation, true
+		}
+	}
+	for _, message := range SelectMessages(state) {
+		if tool, ok := parseToolMessage(message); ok {
+			consider(tool)
+		}
+	}
+	for _, tool := range SelectLiveTools(state) {
+		consider(tool)
+	}
+	return latest, latestPresentation, found
 }
 
 func latestBashTool(state State) (ToolTimelineItem, bool) {
@@ -2880,6 +2933,9 @@ func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresen
 	if width <= 0 {
 		return nil
 	}
+	if presentation.TaskProgram {
+		return p.renderTaskProgramRows(tool, presentation, width, styles)
+	}
 	if presentation.TaskSwarm {
 		return p.renderTaskSwarmRows(presentation, width, availableHeight, styles)
 	}
@@ -2944,6 +3000,103 @@ func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresen
 	}
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows
+}
+
+func (p *Page) renderTaskProgramRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {
+	if width < 12 {
+		return []renderRow{{text: truncateCells("TASK PROGRAM · "+presentation.TaskProgramID, width), style: styles.Secondary.Bold(true)}, {text: "", style: styles.Text}}
+	}
+	innerWidth := width - 2
+	contentWidth := maxInt(1, innerWidth-2)
+	borderStyle := styles.Border
+	switch normalizeTaskPresentationStatus(presentation.TaskProgramState) {
+	case "running":
+		borderStyle = styles.Accent
+	case "done":
+		borderStyle = styles.Success
+	case "error", "cancelled":
+		borderStyle = styles.Error
+	}
+	rows := []renderRow{{text: "┌" + strings.Repeat("─", innerWidth) + "┐", style: borderStyle}}
+	appendLine := func(key, text string, style tcell.Style) {
+		for _, wrapped := range p.cachedWrap("task-program:"+tool.ID+":"+key, strings.TrimSpace(text), contentWidth) {
+			wrapped = truncateCells(wrapped, contentWidth)
+			padding := strings.Repeat(" ", maxInt(0, contentWidth-displayWidth(wrapped)))
+			rows = append(rows, renderRow{text: "│ " + wrapped + padding + " │", style: style, spans: []renderSpan{{text: "│ ", style: borderStyle}, {text: wrapped + padding, style: style}, {text: " │", style: borderStyle}}})
+		}
+	}
+	collapsed := p != nil && p.taskProgramCollapsed[presentation.TaskProgramID]
+	marker := "▾"
+	if collapsed {
+		marker = "▸"
+	}
+	done, running, waiting, failed := 0, 0, 0, 0
+	for _, stage := range presentation.TaskProgramStages {
+		switch stage.Status {
+		case "done":
+			done++
+		case "running":
+			running++
+		case "error":
+			failed++
+		default:
+			waiting++
+		}
+	}
+	header := fmt.Sprintf("%s TASK PROGRAM · %s · %s · %d/%d phases", marker, presentation.TaskProgramID, firstNonEmptyToolRaw(presentation.TaskProgramState, "running"), done, len(presentation.TaskProgramStages))
+	appendLine("header", header, styles.Secondary.Bold(true))
+	appendLine("progress", fmt.Sprintf("RUN %d  WAIT %d  ERR %d", running, waiting, failed), styles.Muted)
+	if !collapsed {
+		for phaseIndex, stage := range presentation.TaskProgramStages {
+			symbol, style := "○", styles.Muted
+			switch stage.Status {
+			case "done":
+				symbol, style = "✓", styles.Success
+			case "running":
+				symbol, style = "◆", styles.Accent.Bold(true)
+			case "error":
+				symbol, style = "!", styles.Error.Bold(true)
+			case "waiting":
+				symbol = "◇"
+			}
+			phaseLabel := fmt.Sprintf("%s PHASE %d · %s · %s", symbol, phaseIndex+1, stage.ID, strings.ToUpper(stage.Status))
+			if len(stage.DependsOn) > 0 {
+				phaseLabel += " · after " + strings.Join(stage.DependsOn, ", ")
+			}
+			appendLine(fmt.Sprintf("phase-%d", phaseIndex), phaseLabel, style)
+			for jobIndex, row := range stage.Rows {
+				jobSymbol := taskPresentationStatusLabel(row.Status)
+				job := "  [" + jobSymbol + "] " + firstNonEmptyToolRaw(row.Title, row.ProgramJobID, row.Agent)
+				identity := strings.TrimSpace(row.Agent)
+				if identity != "" && !strings.HasPrefix(identity, "@") {
+					identity = "@" + identity
+				}
+				if identity != "" {
+					job += " · " + identity
+				}
+				if row.Tool != "" && row.Tool != "-" {
+					job += " · " + row.Tool
+				}
+				appendLine(fmt.Sprintf("phase-%d-job-%d", phaseIndex, jobIndex), job, styles.Text)
+			}
+		}
+	}
+	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle}, renderRow{text: "", style: styles.Text})
+	return rows
+}
+
+// SetTaskProgramCollapsed updates only ephemeral presentation state. The
+// canonical program/stage/job identity remains owned by TaskStreamState.
+func (p *Page) SetTaskProgramCollapsed(programID string, collapsed bool) {
+	if p == nil || strings.TrimSpace(programID) == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.taskProgramCollapsed == nil {
+		p.taskProgramCollapsed = make(map[string]bool)
+	}
+	p.taskProgramCollapsed[strings.TrimSpace(programID)] = collapsed
 }
 
 const maxVisibleTaskSwarmAgents = 100

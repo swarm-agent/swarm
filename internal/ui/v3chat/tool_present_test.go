@@ -381,6 +381,81 @@ func renderTaskPresentationRowsText(rows []renderRow) string {
 	return rendered.String()
 }
 
+func TestTaskProgramUsesCanonicalPhasesAndSingleBorderedCard(t *testing.T) {
+	arguments := `{"action":"start","program":{"id":"release-program","stages":[{"id":"research"},{"id":"implement","depends_on":["research"]}],"jobs":[{"id":"map","stage_id":"research","agent_type":"finder","title":"Map system"},{"id":"build","stage_id":"implement","agent_type":"coder","title":"Build change","depends_on":["map"]}]}}`
+	output := `{"tool":"task","program_id":"release-program","program_state":"running","active_stage_id":"research","program_status":{"program_id":"release-program","program_state":"running","active_stage_id":"research","jobs":[{"job_id":"map","stage_id":"research","state":"running","child_session_id":"child-map"},{"job_id":"build","stage_id":"implement","state":"declared"}]},"launches":[{"launch_index":1,"child_session_id":"child-map","assignment_label":"Map system","requested_subagent_type":"finder","status":"running","current_tool":"search"}]}`
+	tool := ToolTimelineItem{ID: "program-tool", Name: "task", Arguments: arguments, Output: output, Status: "running"}
+	presentation := buildToolPresentation(tool)
+	if !presentation.TaskProgram || presentation.TaskProgramID != "release-program" || len(presentation.TaskProgramStages) != 2 {
+		t.Fatalf("program presentation = %#v", presentation)
+	}
+	if presentation.TaskProgramStages[1].Status != "waiting" || len(presentation.TaskProgramStages[1].DependsOn) != 1 {
+		t.Fatalf("dependent phase = %#v", presentation.TaskProgramStages[1])
+	}
+	if presentation.TaskProgramStages[0].Rows[0].ProgramJobID != "map" {
+		t.Fatalf("launch was not joined to canonical job by child session: %#v", presentation.TaskProgramStages[0].Rows)
+	}
+	page := NewPage(nil, testPageStyles())
+	text := renderTaskPresentationRowsText(page.renderToolRowsForHeight(tool, 78, 20, testPageStyles()))
+	for _, want := range []string{"TASK PROGRAM", "release-program", "PHASE 1 · research · RUNNING", "PHASE 2 · implement · WAITING", "after research", "Map system", "Build change"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("program card missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Count(text, "┌") != 1 || strings.Count(text, "└") != 1 || strings.Contains(text, "SUBAGENT STREAM") {
+		t.Fatalf("program was not grouped in one card:\n%s", text)
+	}
+
+	page.SetTaskProgramCollapsed("release-program", true)
+	collapsed := renderTaskPresentationRowsText(page.renderToolRowsForHeight(tool, 78, 20, testPageStyles()))
+	if !strings.Contains(collapsed, "▸ TASK PROGRAM") || strings.Contains(collapsed, "PHASE 1") || strings.Count(collapsed, "┌") != 1 {
+		t.Fatalf("collapsed program card =\n%s", collapsed)
+	}
+}
+
+func TestTaskProgramStreamRetainsCanonicalMetadataWithoutLaunchAdjacency(t *testing.T) {
+	item := ToolTimelineItem{Name: "task"}
+	definition := `{"tool":"task","path_id":"tool.task.stream.v2","program_id":"p","program_state":"running","active_stage_id":"one","program":{"id":"p","stages":[{"id":"one"},{"id":"two","depends_on":["one"]}],"jobs":[{"id":"a","stage_id":"one","title":"A","agent_type":"finder"},{"id":"b","stage_id":"two","title":"B","agent_type":"coder","depends_on":["a"]}]}}`
+	if !applyTaskStreamPatch(&item, definition) {
+		t.Fatal("canonical metadata-only program patch was not applied")
+	}
+	launch := `{"tool":"task","path_id":"tool.task.stream.v2","program_id":"p","launch_key":"child-a","launch":{"launch_index":1,"assignment_label":"A","status":"running","source_arguments":{"program_id":"p","program_job_id":"a","program_stage_id":"one"}}}`
+	if !applyTaskStreamPatch(&item, launch) {
+		t.Fatal("program launch patch was not applied")
+	}
+	if item.TaskStream == nil || item.TaskStream.ProgramID != "p" || len(item.TaskStream.ProgramStages) != 2 || item.TaskStream.LaunchesByKey["child-a"]["program_job_id"] != "a" {
+		t.Fatalf("program stream state = %#v", item.TaskStream)
+	}
+	presentation := buildToolPresentation(item)
+	if !presentation.TaskProgram || len(presentation.TaskProgramStages) != 2 || presentation.TaskProgramStages[1].Rows[0].ProgramJobID != "b" {
+		t.Fatalf("program stream presentation = %#v", presentation)
+	}
+}
+
+func TestTaskProgramTerminalStatusCanProvideCanonicalDefinition(t *testing.T) {
+	tool := ToolTimelineItem{Name: "task", Status: "completed", Output: `{"program_id":"terminal","program_state":"completed","program_status":{"program_id":"terminal","program_state":"completed","definition":{"stages":[{"id":"only"}],"jobs":[{"id":"job","stage_id":"only","title":"Terminal job","agent_type":"finder"}]},"jobs":[{"job_id":"job","stage_id":"only","state":"completed"}]}}`}
+	presentation := buildToolPresentation(tool)
+	if !presentation.TaskProgram || len(presentation.TaskProgramStages) != 1 || presentation.TaskProgramStages[0].Status != "done" || presentation.TaskProgramStages[0].Rows[0].Title != "Terminal job" {
+		t.Fatalf("terminal program presentation = %#v", presentation)
+	}
+}
+
+func TestToggleLatestTaskProgramUsesPageInteractionState(t *testing.T) {
+	store := NewStore()
+	state := NewState()
+	state.Tools["program"] = ToolTimelineItem{ID: "program", CallID: "program", GlobalSeq: 9, Name: "task", Status: "running", Arguments: `{"program":{"id":"p","stages":[{"id":"one"}],"jobs":[{"id":"a","stage_id":"one","title":"A","agent_type":"finder"}]}}`}
+	store.mu.Lock()
+	store.state = state
+	store.mu.Unlock()
+	page := NewPage(NewRuntime(nil, store, nil), testPageStyles())
+	if !page.ToggleLatestTaskProgram() || !page.taskProgramCollapsed["p"] || page.Status() != "task program collapsed" {
+		t.Fatalf("first task program toggle failed: collapsed=%v status=%q", page.taskProgramCollapsed, page.Status())
+	}
+	if !page.ToggleLatestTaskProgram() || page.taskProgramCollapsed["p"] || page.Status() != "task program expanded" {
+		t.Fatalf("second task program toggle failed: collapsed=%v status=%q", page.taskProgramCollapsed, page.Status())
+	}
+}
+
 func TestTaskStreamV2RetainsProgressionWhenLaterPatchHasEmptyCurrentTool(t *testing.T) {
 	item := ToolTimelineItem{Name: "task"}
 	started := `{"tool":"task","path_id":"tool.task.stream.v2","launch_key":"child-1","launch":{"launch_index":1,"current_tool":"read","current_tool_identity":"read","current_tool_run_count":2,"current_tool_display":"read x2"}}`

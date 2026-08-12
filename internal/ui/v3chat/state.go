@@ -1079,6 +1079,17 @@ func sortedEvents(events []client.SessionV3Event) []client.SessionV3Event {
 	return out
 }
 
+func cloneTaskStreamObjects(values map[string]map[string]any) map[string]map[string]any {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(values))
+	for key, value := range values {
+		out[key] = cloneAnyObject(value)
+	}
+	return out
+}
+
 func cloneState(value State) State {
 	out := value
 	out.Messages = append([]Message(nil), value.Messages...)
@@ -1112,6 +1123,13 @@ func cloneState(value State) State {
 		if item.TaskStream != nil {
 			stream := *item.TaskStream
 			stream.LaunchOrder = append([]string(nil), item.TaskStream.LaunchOrder...)
+			stream.ProgramStages = append([]TaskProgramStageState(nil), item.TaskStream.ProgramStages...)
+			for index := range stream.ProgramStages {
+				stream.ProgramStages[index].DependsOn = append([]string(nil), stream.ProgramStages[index].DependsOn...)
+			}
+			stream.ProgramJobOrder = append([]string(nil), item.TaskStream.ProgramJobOrder...)
+			stream.ProgramJobsByID = cloneTaskStreamObjects(item.TaskStream.ProgramJobsByID)
+			stream.ProgramJobStates = cloneTaskStreamObjects(item.TaskStream.ProgramJobStates)
 			stream.LaunchesByKey = make(map[string]map[string]any, len(item.TaskStream.LaunchesByKey))
 			for launchKey, launch := range item.TaskStream.LaunchesByKey {
 				cloned := make(map[string]any, len(launch))
