@@ -10,6 +10,7 @@ import (
 	"math"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,16 +32,59 @@ const (
 	taskSwarmStrategyAssembly      = "assembly"
 	taskAssemblySwarmLaunchEnabled = false
 	taskSwarmMaxAgents             = 256
+	taskProgramActionStart         = "start"
+	taskProgramActionStatus        = "status"
+	taskProgramActionResume        = "resume"
 )
 
+var taskProgramIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
 type taskCallArguments struct {
-	Action          string
-	Description     string
-	Prompt          string
-	Mode            string
-	Swarm           *taskSwarmSpec
-	Launches        []taskLaunchSpec
-	SourceArguments map[string]any
+	Action             string
+	Description        string
+	Prompt             string
+	Mode               string
+	Swarm              *taskSwarmSpec
+	Program            *taskProgramSpec
+	ProgramID          string
+	ExpectedRevision   int
+	ExpectedGeneration int
+	Launches           []taskLaunchSpec
+	SourceArguments    map[string]any
+}
+
+type taskProgramSpec struct {
+	ID             string             `json:"id"`
+	MaxConcurrency *int               `json:"max_concurrency,omitempty"`
+	Stages         []taskProgramStage `json:"stages"`
+	Jobs           []taskProgramJob   `json:"jobs"`
+}
+
+type taskProgramStage struct {
+	ID                 string   `json:"id"`
+	DependsOn          []string `json:"depends_on,omitempty"`
+	DependencyEvidence string   `json:"dependency_evidence"`
+}
+
+type taskProgramJob struct {
+	ID                    string   `json:"id"`
+	StageID               string   `json:"stage_id"`
+	DependsOn             []string `json:"depends_on,omitempty"`
+	RequestedSubagentType string   `json:"agent_type"`
+	MetaPrompt            string   `json:"meta_prompt"`
+	AssignmentLabel       string   `json:"title"`
+	Deliverable           string   `json:"deliverable"`
+	OwnedScope            []string `json:"owned_scope"`
+	AcceptanceCriteria    []string `json:"acceptance_criteria"`
+	DependencyEvidence    string   `json:"dependency_evidence"`
+}
+
+type taskProgramCapacity struct {
+	TotalJobs             int  `json:"total_jobs"`
+	ReadyJobs             int  `json:"ready_jobs"`
+	ActiveAccountCapacity int  `json:"active_account_capacity"`
+	ExplicitLowerCap      *int `json:"explicit_lower_cap,omitempty"`
+	EffectiveCapacity     int  `json:"effective_capacity"`
 }
 
 type taskSwarmGroup struct {
@@ -103,6 +147,11 @@ type taskLaunchManifest struct {
 	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
 	TaskMode            string                         `json:"task_mode,omitempty"`
+	Program             *taskProgramSpec               `json:"program,omitempty"`
+	ProgramID           string                         `json:"program_id,omitempty"`
+	ExpectedRevision    int                            `json:"expected_revision,omitempty"`
+	ExpectedGeneration  int                            `json:"expected_generation,omitempty"`
+	ProgramReadyCount   int                            `json:"program_ready_count,omitempty"`
 	SwarmAgentType      string                         `json:"swarm_agent_type,omitempty"`
 	SwarmStrategy       string                         `json:"swarm_strategy,omitempty"`
 	AssemblyParts       []taskSwarmAssemblyPart        `json:"assembly_parts,omitempty"`
@@ -249,12 +298,23 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, err
 	}
 
+	_, hasProgram := args["program"]
 	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
-	switch action {
-	case "", "spawn", "start", "run":
-		action = "spawn"
-	default:
-		return taskCallArguments{}, fmt.Errorf("task action %q is not supported", action)
+	if hasProgram {
+		switch action {
+		case "", "spawn", "start", "run":
+			action = taskProgramActionStart
+		default:
+			return taskCallArguments{}, fmt.Errorf("task program action %q is not supported", action)
+		}
+	} else {
+		switch action {
+		case "", "spawn", "start", "run":
+			action = "spawn"
+		case taskProgramActionStatus, taskProgramActionResume:
+		default:
+			return taskCallArguments{}, fmt.Errorf("task action %q is not supported", action)
+		}
 	}
 
 	description := strings.TrimSpace(mapString(args, "description"))
@@ -265,7 +325,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if prompt == "" {
 		prompt = strings.TrimSpace(mapString(args, "message"))
 	}
-	if prompt == "" {
+	if prompt == "" && action != taskProgramActionStatus && action != taskProgramActionResume {
 		return taskCallArguments{}, fmt.Errorf("task requires prompt")
 	}
 
@@ -281,6 +341,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}
 	if mode != taskModeRegular && mode != taskModeSwarm {
 		return taskCallArguments{}, fmt.Errorf("task mode must be %q or %q", taskModeRegular, taskModeSwarm)
+	}
+	if (hasProgram || action == taskProgramActionStatus || action == taskProgramActionResume) && mode != taskModeRegular {
+		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
 	}
 
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
@@ -330,6 +393,38 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
+	}
+
+	if hasProgram {
+		if _, ok := args["launches"]; ok {
+			return taskCallArguments{}, errors.New("task program start declares jobs in program.jobs; launches must be omitted")
+		}
+		program, launches, err := parseTaskProgram(args, prompt)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		return taskCallArguments{
+			Action: action, Description: description, Prompt: prompt, Mode: mode,
+			Program: program, ProgramID: program.ID, Launches: launches, SourceArguments: args,
+		}, nil
+	}
+	if action == taskProgramActionStatus || action == taskProgramActionResume {
+		programID := strings.TrimSpace(mapString(args, "program_id"))
+		if !taskProgramIDPattern.MatchString(programID) {
+			return taskCallArguments{}, errors.New("task program_id must match ^[a-z][a-z0-9_-]{0,63}$")
+		}
+		revision, err := taskOptionalNonNegativeInt(args, "expected_revision")
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		generation, err := taskOptionalNonNegativeInt(args, "expected_generation")
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		if action == taskProgramActionResume && (revision < 1 || generation < 1) {
+			return taskCallArguments{}, errors.New("task program resume requires positive expected_revision and expected_generation guards")
+		}
+		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, ProgramID: programID, ExpectedRevision: revision, ExpectedGeneration: generation, SourceArguments: args}, nil
 	}
 
 	if mode == taskModeSwarm {
@@ -384,6 +479,268 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		Launches:        launches,
 		SourceArguments: args,
 	}, nil
+}
+
+func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []taskLaunchSpec, error) {
+	for key := range args {
+		switch key {
+		case "action", "description", "prompt", "message", "mode", "program":
+		default:
+			return nil, nil, fmt.Errorf("task program start contains unsupported field %q", key)
+		}
+	}
+	raw, ok := args["program"].(map[string]any)
+	if !ok {
+		return nil, nil, errors.New("task program must be an object")
+	}
+	for key := range raw {
+		switch key {
+		case "id", "max_concurrency", "stages", "jobs":
+		default:
+			return nil, nil, fmt.Errorf("task program contains unsupported field %q", key)
+		}
+	}
+	program := &taskProgramSpec{ID: strings.TrimSpace(mapString(raw, "id"))}
+	if !taskProgramIDPattern.MatchString(program.ID) {
+		return nil, nil, errors.New("task program id must match ^[a-z][a-z0-9_-]{0,63}$")
+	}
+	if value, exists := raw["max_concurrency"]; exists {
+		cap, err := taskRequiredPositiveIntValue(value, "task program max_concurrency")
+		if err != nil {
+			return nil, nil, err
+		}
+		program.MaxConcurrency = &cap
+	}
+
+	rawStages, ok := raw["stages"].([]any)
+	if !ok || len(rawStages) == 0 {
+		return nil, nil, errors.New("task program stages must be a non-empty array")
+	}
+	stageIndexes := make(map[string]int, len(rawStages))
+	for i, value := range rawStages {
+		row, ok := value.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("task program stages[%d] must be an object", i)
+		}
+		for key := range row {
+			switch key {
+			case "id", "depends_on", "dependency_evidence":
+			default:
+				return nil, nil, fmt.Errorf("task program stages[%d] contains unsupported field %q", i, key)
+			}
+		}
+		stage := taskProgramStage{ID: strings.TrimSpace(mapString(row, "id")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence"))}
+		if !taskProgramIDPattern.MatchString(stage.ID) {
+			return nil, nil, fmt.Errorf("task program stages[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)
+		}
+		if _, duplicate := stageIndexes[stage.ID]; duplicate {
+			return nil, nil, fmt.Errorf("task program stages[%d] duplicates stage id %q", i, stage.ID)
+		}
+		dependsOn, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program stages[%d] depends_on", i), false)
+		if err != nil {
+			return nil, nil, err
+		}
+		if i > 0 && len(dependsOn) == 0 {
+			return nil, nil, fmt.Errorf("task program stages[%d] requires depends_on identifying an earlier barrier", i)
+		}
+		if stage.DependencyEvidence == "" {
+			return nil, nil, fmt.Errorf("task program stages[%d] requires dependency_evidence", i)
+		}
+		for _, dependency := range dependsOn {
+			dependencyIndex, exists := stageIndexes[dependency]
+			if !exists || dependencyIndex >= i {
+				return nil, nil, fmt.Errorf("task program stages[%d] dependency %q must identify an earlier stage", i, dependency)
+			}
+		}
+		stage.DependsOn = dependsOn
+		stageIndexes[stage.ID] = i
+		program.Stages = append(program.Stages, stage)
+	}
+
+	rawJobs, ok := raw["jobs"].([]any)
+	if !ok || len(rawJobs) == 0 {
+		return nil, nil, errors.New("task program jobs must be a non-empty array")
+	}
+	if len(rawJobs) > permission.MaxSubagentWaveSize {
+		return nil, nil, fmt.Errorf("task program jobs cannot exceed backend safety bound of %d", permission.MaxSubagentWaveSize)
+	}
+	jobIndexes := make(map[string]int, len(rawJobs))
+	jobStages := make(map[string]int, len(rawJobs))
+	stageJobCounts := make(map[string]int, len(program.Stages))
+	assignmentOwners := make(map[string]string, len(rawJobs))
+	launches := make([]taskLaunchSpec, 0, len(rawJobs))
+	for i, value := range rawJobs {
+		row, ok := value.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("task program jobs[%d] must be an object", i)
+		}
+		for key := range row {
+			switch key {
+			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "acceptance_criteria", "dependency_evidence":
+			default:
+				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
+			}
+		}
+		agentType := strings.TrimSpace(mapString(row, "agent_type"))
+		subagentType := strings.TrimSpace(mapString(row, "subagent_type"))
+		if agentType != "" && subagentType != "" && !strings.EqualFold(agentType, subagentType) {
+			return nil, nil, fmt.Errorf("task program jobs[%d] agent_type conflicts with subagent_type", i)
+		}
+		job := taskProgramJob{
+			ID: strings.TrimSpace(mapString(row, "id")), StageID: strings.TrimSpace(mapString(row, "stage_id")),
+			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(agentType, subagentType)),
+			MetaPrompt:            strings.TrimSpace(mapString(row, "meta_prompt")), AssignmentLabel: strings.TrimSpace(mapString(row, "title")),
+			Deliverable: strings.TrimSpace(mapString(row, "deliverable")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence")),
+		}
+		if !taskProgramIDPattern.MatchString(job.ID) {
+			return nil, nil, fmt.Errorf("task program jobs[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)
+		}
+		if _, duplicate := jobIndexes[job.ID]; duplicate {
+			return nil, nil, fmt.Errorf("task program jobs[%d] duplicates job id %q", i, job.ID)
+		}
+		stageIndex, exists := stageIndexes[job.StageID]
+		if !exists {
+			return nil, nil, fmt.Errorf("task program jobs[%d] references unknown stage %q", i, job.StageID)
+		}
+		switch {
+		case agentruntime.IsCoderAgentName(job.RequestedSubagentType):
+			job.RequestedSubagentType = "coder"
+		case agentruntime.IsFinderAgentName(job.RequestedSubagentType):
+			job.RequestedSubagentType = "finder"
+		case agentruntime.IsDesignerAgentName(job.RequestedSubagentType):
+			job.RequestedSubagentType = "designer"
+		default:
+			return nil, nil, fmt.Errorf("task program jobs[%d] agent_type must be coder, finder, or designer", i)
+		}
+		if job.MetaPrompt == "" || job.AssignmentLabel == "" || job.Deliverable == "" || job.DependencyEvidence == "" {
+			return nil, nil, fmt.Errorf("task program jobs[%d] requires meta_prompt, title, deliverable, and dependency_evidence", i)
+		}
+		assignmentKey := strings.ToLower(job.AssignmentLabel + "\x00" + job.MetaPrompt + "\x00" + job.Deliverable)
+		if owner, duplicate := assignmentOwners[assignmentKey]; duplicate {
+			return nil, nil, fmt.Errorf("task program jobs[%d] copies the reviewable assignment of job %q", i, owner)
+		}
+		assignmentOwners[assignmentKey] = job.ID
+		ownedScope, err := parseTaskOwnedScope(row, fmt.Sprintf("task program jobs[%d]", i))
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(ownedScope) == 0 {
+			return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
+		}
+		job.OwnedScope = ownedScope
+		criteria, err := taskProgramStringArray(row, "acceptance_criteria", fmt.Sprintf("task program jobs[%d] acceptance_criteria", i), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		job.AcceptanceCriteria = criteria
+		dependencies, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program jobs[%d] depends_on", i), false)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, dependency := range dependencies {
+			dependencyIndex, exists := jobIndexes[dependency]
+			if !exists {
+				return nil, nil, fmt.Errorf("task program jobs[%d] dependency %q must identify an earlier job", i, dependency)
+			}
+			if jobStages[dependency] >= stageIndex || dependencyIndex >= i {
+				return nil, nil, fmt.Errorf("task program jobs[%d] dependency %q must belong to an earlier stage", i, dependency)
+			}
+		}
+		job.DependsOn = dependencies
+		jobIndexes[job.ID] = i
+		jobStages[job.ID] = stageIndex
+		stageJobCounts[job.StageID]++
+		program.Jobs = append(program.Jobs, job)
+		launches = append(launches, taskLaunchSpec{
+			RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
+			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), DependencyEvidence: job.DependencyEvidence,
+			SourceArguments: map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)},
+		})
+	}
+	for i, stage := range program.Stages {
+		if stageJobCounts[stage.ID] == 0 {
+			return nil, nil, fmt.Errorf("task program stages[%d] %q has no jobs", i, stage.ID)
+		}
+	}
+	for i := range program.Jobs {
+		for j := i + 1; j < len(program.Jobs); j++ {
+			left, right := program.Jobs[i], program.Jobs[j]
+			if left.StageID == right.StageID && left.RequestedSubagentType == "coder" && right.RequestedSubagentType == "coder" && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
+				return nil, nil, fmt.Errorf("task program concurrent Coder owned scopes overlap between jobs %q and %q", left.ID, right.ID)
+			}
+		}
+	}
+	if program.MaxConcurrency != nil && *program.MaxConcurrency > len(program.Jobs) {
+		return nil, nil, errors.New("task program max_concurrency cannot exceed total job count")
+	}
+	if err := validateTaskDesignerScopes(launches); err != nil {
+		return nil, nil, err
+	}
+	_ = prompt // The parent prompt remains a manifest field; each job assignment is authoritative for child execution.
+	return program, launches, nil
+}
+
+func taskProgramStringArray(raw map[string]any, key, label string, required bool) ([]string, error) {
+	value, exists := raw[key]
+	if !exists {
+		if required {
+			return nil, fmt.Errorf("%s must be a non-empty array", label)
+		}
+		return nil, nil
+	}
+	rows, ok := value.([]any)
+	if !ok || (required && len(rows) == 0) {
+		return nil, fmt.Errorf("%s must be a non-empty array", label)
+	}
+	out := make([]string, 0, len(rows))
+	seen := map[string]struct{}{}
+	for i, value := range rows {
+		text, ok := value.(string)
+		text = strings.TrimSpace(text)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("%s[%d] must be a non-empty string", label, i)
+		}
+		if _, duplicate := seen[text]; duplicate {
+			return nil, fmt.Errorf("%s[%d] duplicates %q", label, i, text)
+		}
+		seen[text] = struct{}{}
+		out = append(out, text)
+	}
+	return out, nil
+}
+
+func taskRequiredPositiveIntValue(value any, label string) (int, error) {
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < 1 || number > math.MaxInt {
+		return 0, fmt.Errorf("%s must be a positive integer", label)
+	}
+	return int(number), nil
+}
+
+func taskOptionalNonNegativeInt(args map[string]any, key string) (int, error) {
+	value, exists := args[key]
+	if !exists {
+		return 0, nil
+	}
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < 0 || number > math.MaxInt {
+		return 0, fmt.Errorf("task %s must be a non-negative integer", key)
+	}
+	return int(number), nil
+}
+
+func taskProgramEffectiveCapacity(totalJobs, readyJobs, activeAccountCapacity int, explicitLowerCap *int) taskProgramCapacity {
+	capacity := readyJobs
+	if activeAccountCapacity < capacity {
+		capacity = activeAccountCapacity
+	}
+	if explicitLowerCap != nil && *explicitLowerCap < capacity {
+		capacity = *explicitLowerCap
+	}
+	if capacity < 0 {
+		capacity = 0
+	}
+	return taskProgramCapacity{TotalJobs: totalJobs, ReadyJobs: readyJobs, ActiveAccountCapacity: activeAccountCapacity, ExplicitLowerCap: explicitLowerCap, EffectiveCapacity: capacity}
 }
 
 func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*taskSwarmSpec, []taskLaunchSpec, error) {
@@ -2083,11 +2440,30 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 	if err != nil || digest != strings.TrimSpace(envelope.ManifestHash) || digest != strings.TrimSpace(envelope.Manifest.ManifestHash) {
 		return taskLaunchManifest{}, errors.New("approved task manifest snapshot hash mismatch")
 	}
-	if len(envelope.Manifest.Launches) != len(launchSpecs) {
+	approvedLaunches := envelope.Manifest.Launches
+	if envelope.Manifest.Program != nil && len(approvedLaunches) != len(launchSpecs) {
+		byJobID := make(map[string]taskLaunchManifestRow, len(approvedLaunches))
+		for _, row := range approvedLaunches {
+			if jobID, _ := row.SourceArguments["program_job_id"].(string); strings.TrimSpace(jobID) != "" {
+				byJobID[strings.TrimSpace(jobID)] = row
+			}
+		}
+		approvedLaunches = approvedLaunches[:0]
+		for _, spec := range launchSpecs {
+			jobID, _ := spec.SourceArguments["program_job_id"].(string)
+			row, ok := byJobID[strings.TrimSpace(jobID)]
+			if !ok {
+				return taskLaunchManifest{}, fmt.Errorf("approved task manifest is missing program job %q", jobID)
+			}
+			approvedLaunches = append(approvedLaunches, row)
+		}
+	}
+	if len(approvedLaunches) != len(launchSpecs) {
 		return taskLaunchManifest{}, errors.New("approved task manifest launch count mismatch")
 	}
+	envelope.Manifest.Launches = approvedLaunches
 	for i := range launchSpecs {
-		row := envelope.Manifest.Launches[i]
+		row := approvedLaunches[i]
 		if !strings.EqualFold(strings.TrimSpace(row.RequestedSubagentType), strings.TrimSpace(launchSpecs[i].RequestedSubagentType)) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d target mismatch", i)
 		}
@@ -2111,6 +2487,22 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	}
 	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
 		return taskLaunchManifest{}, err
+	}
+	if parsed.Action == taskProgramActionStatus || parsed.Action == taskProgramActionResume {
+		manifest := taskLaunchManifest{
+			PathID: taskLaunchPermissionPathID, Goal: "task program " + parsed.Action, Description: parsed.Description,
+			Action: parsed.Action, ParentMode: sessionruntime.NormalizeMode(sessionMode), TaskMode: parsed.Mode,
+			ProgramID: parsed.ProgramID, ExpectedRevision: parsed.ExpectedRevision, ExpectedGeneration: parsed.ExpectedGeneration,
+			SourceArguments: parsed.SourceArguments,
+		}
+		digest, digestErr := taskLaunchManifestDigest(manifest)
+		if digestErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("hash task program lifecycle manifest: %w", digestErr)
+		}
+		manifest.ManifestHash = digest
+		approvedManifest := manifest
+		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
+		return manifest, nil
 	}
 
 	parentSession, ok, sessionErr := s.sessions.GetSession(sessionID)
@@ -2246,6 +2638,14 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		SourceArguments:    parsed.SourceArguments,
 		Launches:           launches,
 		TaskMode:           parsed.Mode,
+		Program:            parsed.Program,
+	}
+	if parsed.Program != nil {
+		for _, job := range parsed.Program.Jobs {
+			if len(job.DependsOn) == 0 && len(parsed.Program.Stages) > 0 && job.StageID == parsed.Program.Stages[0].ID {
+				manifest.ProgramReadyCount++
+			}
+		}
 	}
 	if parsed.Swarm != nil {
 		manifest.SwarmAgentType = parsed.Swarm.AgentType
@@ -2256,6 +2656,20 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 
 	parent, ok := s.lookupTaskLaunchParentSession(sessionID, parentMode)
 	if ok {
+		if parsed.Program != nil {
+			hasCoder := false
+			for _, job := range parsed.Program.Jobs {
+				hasCoder = hasCoder || agentruntime.IsCoderAgentName(job.RequestedSubagentType)
+			}
+			if hasCoder {
+				if s.worktrees == nil {
+					return taskLaunchManifest{}, errors.New("task program Coder jobs require separate worktree isolation")
+				}
+				if _, baseErr := s.worktrees.ResolveTaskBase(parent.WorkspacePath); baseErr != nil {
+					return taskLaunchManifest{}, fmt.Errorf("validate task program parent Git state: %w", baseErr)
+				}
+			}
+		}
 		manifest.Parent = parent
 		manifest.TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
 		manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)

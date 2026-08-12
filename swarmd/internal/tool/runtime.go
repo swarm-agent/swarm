@@ -1257,16 +1257,20 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, or set mode=swarm for an Iteration Swarm: fast parallel alternatives or independent trials generated from one parent brief. The internal explore strategy remains implicit for backward compatibility and is the only launch-enabled Coder/Designer swarm behavior. Coder/Designer prompts are hydrated by Router, while every Idea Swarm receives the same question directly without Router. Both modes use the same subagent policy, reservation, permission, streaming, and child-session runtime; there is no extra permission path. Regular mode uses Finder for distinct research, Coder for dependency-ready implementation, and Designer only for explicitly requested multiple UI/design iterations or variants; Designer is prohibited for ordinary UI work and single-design requests. Designer children share the parent checkout, use read/search/find/list and write/edit with no Bash or Git, and produce ordinary reusable artifacts in distinct non-overlapping workspace-relative targets. Put regular-mode child definitions in the structured launches array. Do not embed launch JSON in prompt; each launch keeps its full instructive assignment in meta_prompt, not text embedded in prompt, plus a concise title ideally three words.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one fully declared staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives or independent trials generated from one parent brief. The internal explore strategy remains implicit for backward compatibility and is the only launch-enabled Coder/Designer swarm behavior. Coder/Designer prompts are hydrated by Router, while every Idea Swarm receives the same question directly without Router. Both modes use the same subagent policy, reservation, permission, streaming, and child-session runtime; there is no extra permission path. Regular mode uses Finder for distinct research, Coder for dependency-ready implementation, and Designer only for explicitly requested multiple UI/design iterations or variants; Designer is prohibited for ordinary UI work and single-design requests. Designer children share the parent checkout, use read/search/find/list and write/edit with no Bash or Git, and produce ordinary reusable artifacts in distinct non-overlapping workspace-relative targets. Put regular-mode child definitions in the structured launches array. Do not embed launch JSON in prompt; each launch keeps its full instructive assignment in meta_prompt, not text embedded in prompt, plus a concise title ideally three words.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action": map[string]any{
 						"type":        "string",
-						"description": "Optional action. Supported: spawn (default).",
+						"description": "Optional action. Supported: spawn (default); Task Programs use start, status, or revision-guarded resume.",
 					},
-					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches for heavy work. swarm generates a rapid wave from agent_type and count."},
-					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
+					"mode":                map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count."},
+					"program_id":          map[string]any{"type": "string", "description": "Stable program ID for status or resume. Start carries the same ID inside program.id."},
+					"expected_revision":   map[string]any{"type": "integer", "minimum": 1, "description": "Required stored program revision guard for resume."},
+					"expected_generation": map[string]any{"type": "integer", "minimum": 1, "description": "Required stored blocker/resume generation guard for resume."},
+					"program":             taskProgramToolSchema(),
+					"swarm_mode":          map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
 					"agent_type":           map[string]any{"type": "string", "enum": []string{"coder", "designer", "idea"}, "description": "Required for mode=swarm. Idea is tool-free and available only in swarm mode."},
 					"count":                map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
@@ -1334,10 +1338,47 @@ func (r *Runtime) Definitions() []Definition {
 						},
 					},
 				},
-				"required":             []string{"prompt"},
 				"additionalProperties": false,
 			},
 		},
+	}
+}
+
+func taskProgramToolSchema() map[string]any {
+	id := map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}
+	return map[string]any{
+		"type":        "object",
+		"description": "Optional complete staged Task Program. The backend validates every job and stage before any reservation or child launch. One accepted program counts as one parent task invocation; internal capacity cohorts do not require another model-authored task call.",
+		"properties": map[string]any{
+			"id":              id,
+			"max_concurrency": map[string]any{"type": "integer", "minimum": 1, "description": "Optional explicit lower concurrency cap. Omit to use the number of ready jobs bounded by current account capacity and backend safety limits."},
+			"stages": map[string]any{
+				"type": "array", "minItems": 1,
+				"items": map[string]any{"type": "object", "properties": map[string]any{
+					"id":                  id,
+					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier stage IDs that must reach their integration barrier first."},
+					"dependency_evidence": map[string]any{"type": "string", "minLength": 1, "description": "Why this stage is ready initially or what prior integrated state unlocks it."},
+				}, "required": []string{"id", "dependency_evidence"}, "additionalProperties": false},
+			},
+			"jobs": map[string]any{
+				"type": "array", "minItems": 1,
+				"items": map[string]any{"type": "object", "properties": map[string]any{
+					"id":                  id,
+					"stage_id":            id,
+					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier-stage job IDs whose accepted/integrated handoffs are required."},
+					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}},
+					"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
+					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
+					"title":               map[string]any{"type": "string", "minLength": 1},
+					"deliverable":         map[string]any{"type": "string", "minLength": 1},
+					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
+					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
+					"dependency_evidence": map[string]any{"type": "string", "minLength": 1},
+				}, "required": []string{"id", "stage_id", "meta_prompt", "title", "deliverable", "owned_scope", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": false},
+			},
+		},
+		"required":             []string{"id", "stages", "jobs"},
+		"additionalProperties": false,
 	}
 }
 

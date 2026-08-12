@@ -1055,6 +1055,14 @@ func SubagentWaveReservationRunPrefix(sessionID, runID string) string {
 	return fmt.Sprintf("subagent_reservation/%s/%s/", keyPart(sessionID), keyPart(runID))
 }
 
+func KeyTaskProgram(parentSessionID, programID string) string {
+	return fmt.Sprintf("task_program/%s/%s", keyPart(parentSessionID), keyPart(programID))
+}
+
+func TaskProgramSessionPrefix(parentSessionID string) string {
+	return fmt.Sprintf("task_program/%s/", keyPart(parentSessionID))
+}
+
 func KeySessionDeployReservation(sessionID, runID, callID string) string {
 	return fmt.Sprintf("session_deploy_reservation/%s/%s/%s", keyPart(sessionID), keyPart(runID), keyPart(callID))
 }

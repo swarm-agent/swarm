@@ -792,28 +792,37 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = "task manifest is invalid"
 				continue
 			}
-			callID := strings.TrimSpace(toolCalls[i].CallID)
-			if callID == "" {
-				decisions[i].Err = errors.New("task call ID is required for durable reservation")
-				decisions[i].Result.Error = decisions[i].Err.Error()
-				continue
-			}
-			delegated := false
-			if s.sessions != nil {
-				if session, ok, _ := s.sessions.GetSession(sessionID); ok {
-					delegated = strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "delegated_subagent")
+			if manifest.Action != taskProgramActionStatus && manifest.Action != taskProgramActionResume {
+				// Program status/resume operates on the existing durable record and must
+				// not consume another parent invocation reservation.
+				callID := strings.TrimSpace(toolCalls[i].CallID)
+				if callID == "" {
+					decisions[i].Err = errors.New("task call ID is required for durable reservation")
+					decisions[i].Result.Error = decisions[i].Err.Error()
+					continue
 				}
+				delegated := false
+				if s.sessions != nil {
+					if session, ok, _ := s.sessions.GetSession(sessionID); ok {
+						delegated = strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "delegated_subagent")
+					}
+				}
+				programCap := 0
+				if manifest.Program != nil && manifest.Program.MaxConcurrency != nil {
+					programCap = *manifest.Program.MaxConcurrency
+				}
+				reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+					SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
+					ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, SwarmMode: manifest.TaskMode == taskModeSwarm,
+					Program: manifest.Program != nil, ReadyCount: manifest.ProgramReadyCount, MaxConcurrency: programCap, Delegated: delegated,
+				})
+				if reserveErr != nil {
+					decisions[i].Err = reserveErr
+					decisions[i].Result.Error = fmt.Sprintf("subagent wave reservation failed: %v", reserveErr)
+					continue
+				}
+				subagentReservation = &reserved
 			}
-			reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
-				SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
-				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, SwarmMode: manifest.TaskMode == taskModeSwarm, Delegated: delegated,
-			})
-			if reserveErr != nil {
-				decisions[i].Err = reserveErr
-				decisions[i].Result.Error = fmt.Sprintf("subagent wave reservation failed: %v", reserveErr)
-				continue
-			}
-			subagentReservation = &reserved
 		}
 		if canonicalToolName(toolCalls[i].Name) == "manage_sessions" && permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy" {
 			var manifest manageSessionsDeployManifest
@@ -3301,6 +3310,42 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if strings.TrimSpace(action) == "" {
 		action = "spawn"
 	}
+	if action == taskProgramActionStatus || action == taskProgramActionResume {
+		record, ok, lifecycleErr := s.sessions.GetTaskProgram(sessionID, parsed.ProgramID)
+		if lifecycleErr != nil {
+			return "", lifecycleErr
+		}
+		if !ok {
+			return "", fmt.Errorf("task program %q not found for calling parent session", parsed.ProgramID)
+		}
+		if action == taskProgramActionStatus {
+			return marshalTaskProgramStatus(record, false)
+		}
+		parentSession, parentOK, parentErr := s.sessions.GetSession(sessionID)
+		if parentErr != nil {
+			return "", parentErr
+		}
+		if !parentOK {
+			return "", fmt.Errorf("session %q not found", sessionID)
+		}
+		resumed, readyCount, resumeErr := s.prepareTaskProgramResume(parentSession, record, parsed)
+		if resumeErr != nil {
+			return "", resumeErr
+		}
+		if readyCount == 0 {
+			return marshalTaskProgramStatus(resumed, false)
+		}
+		spec := taskProgramSpecFromRecord(resumed)
+		resumeParsed := taskCallArguments{Action: taskProgramActionStart, Description: "resume task program " + resumed.ProgramID, Prompt: "Continue the stored task program from its guarded barrier.", Mode: taskModeRegular, Program: spec, ProgramID: resumed.ProgramID, Launches: taskProgramLaunchesFromSpec(spec)}
+		resumeCall := call
+		resumeCall.CallID = resumed.ReservationCallID
+		resumeReq := req
+		resumeReq.Parsed, resumeReq.ParsedProvided = resumeParsed, true
+		resumeReq.ParentSession = &parentSession
+		resumeReq.RunID = resumed.ReservationRunID
+		resumeReq.ApprovedArguments = ""
+		return s.executeTaskProgram(ctx, sessionMode, step, resumeCall, emit, resumeReq, parentSession, resumeParsed, resumed, resumeParsed.Description, resumeParsed.Prompt)
+	}
 	description := parsed.Description
 	if strings.TrimSpace(req.DescriptionOverride) != "" {
 		description = strings.TrimSpace(req.DescriptionOverride)
@@ -3345,6 +3390,24 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+	}
+	var programRecord pebblestore.TaskProgramRecord
+	if parsed.Program != nil {
+		initial, initialErr := taskProgramInitialRecord(parentSession.ID, req.RunID, taskCallID, parsed.Program)
+		if initialErr != nil {
+			return "", initialErr
+		}
+		var created bool
+		programRecord, created, err = s.sessions.CreateTaskProgram(initial)
+		if err != nil {
+			return "", err
+		}
+		if !created {
+			return marshalTaskProgramStatus(programRecord, false)
+		}
+	}
+	if parsed.Program != nil {
+		return s.executeTaskProgram(ctx, sessionMode, step, call, emit, req, parentSession, parsed, programRecord, description, prompt)
 	}
 	reservationFinished := false
 	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
@@ -3635,6 +3698,17 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		emitTaskProgress("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
 	}
 	lineageUpdate("spawned", spawned, nil)
+	if parsed.Program != nil {
+		nextAction := "await_running_jobs"
+		state := pebblestore.TaskProgramStateRunning
+		programRecord, _, err = s.sessions.TransitionTaskProgram(parentSession.ID, parsed.Program.ID, pebblestore.TaskProgramTransition{
+			ExpectedRevision: programRecord.Revision, MutationID: "launch:" + taskCallID, State: &state, NextAction: &nextAction,
+			Jobs: taskProgramRunningTransitions(parsed.Program, prepared, programRecord.ResumeGeneration),
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 
 	outcomes, runErrs := executeTaskLaunchesInParallel(ctx, len(prepared), func(runCtx context.Context, idx int) (taskLaunchOutcome, error) {
 		launch := prepared[idx]
@@ -3962,6 +4036,22 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if failedCount > 0 || cancelledCount > 0 {
 		overallStatus = "error"
 	}
+	if parsed.Program != nil {
+		programState := pebblestore.TaskProgramStateRunning
+		nextAction := "integrate_handoff_ready_jobs"
+		if failedCount > 0 {
+			programState, nextAction = pebblestore.TaskProgramStateFailed, "repair_failed_job_then_resume"
+		} else if cancelledCount > 0 {
+			programState, nextAction = pebblestore.TaskProgramStateCancelled, "resume_cancelled_program"
+		}
+		programRecord, _, err = s.sessions.TransitionTaskProgram(parentSession.ID, parsed.Program.ID, pebblestore.TaskProgramTransition{
+			ExpectedRevision: programRecord.Revision, MutationID: "outcomes:" + taskCallID, State: &programState, NextAction: &nextAction,
+			Jobs: taskProgramOutcomeTransitions(parsed.Program, outcomes, runErrs),
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
 		reservationStatus := "completed"
 		if failedCount > 0 || cancelledCount > 0 {
@@ -4038,6 +4128,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		"details_truncated":        false,
 		"report_truncated":         reportTruncatedAny,
 		"report_inline_chars":      inlineReportChars,
+	}
+	if parsed.Program != nil {
+		payload["program_id"] = programRecord.ProgramID
+		payload["program_revision"] = programRecord.Revision
+		payload["program_state"] = programRecord.State
+		payload["active_stage_id"] = programRecord.ActiveStageID
+		payload["next_action"] = programRecord.NextAction
+		payload["program_status"] = taskProgramStatusPayload(programRecord, true)
 	}
 	if aggregateReportBudgetExceeded {
 		payload["report_context_warning"] = "aggregate subagent reports exceeded inline context budget; summaries/excerpts are returned inline and full reports remain in child session transcripts via report_ref"
