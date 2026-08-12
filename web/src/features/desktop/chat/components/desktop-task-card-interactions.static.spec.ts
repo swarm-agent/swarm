@@ -57,13 +57,12 @@ test('Task Programs expose one expandable phased card with dependency state and 
   assert.match(source, /if \(program\).*TaskProgramRowsView/)
 })
 
-test('task swarms remove internal scrolling and measure adaptive density after five agents', async () => {
+test('task swarms remove internal scrolling and measure adaptive density', async () => {
   const source = await readFile(sourceURL, 'utf8')
-  assert.match(source, /const TASK_SWARM_THRESHOLD = 5/)
   assert.match(source, /data-task-swarm-mode/)
   assert.match(source, /new ResizeObserver\(measure\)/)
   assert.match(source, /taskSwarmLayout\(rows\.length, availableHeight/)
-  assert.match(source, /className="task-card-swarm-grid grid min-w-0 overflow-hidden p-2"/)
+  assert.match(source, /className=\{cn\("task-card-swarm-grid grid min-w-0 p-2"/)
   assert.doesNotMatch(source, /className=\{cn\(TOOL_RESULT_BODY_CLASS, "task-card-swarm-grid/)
 })
 

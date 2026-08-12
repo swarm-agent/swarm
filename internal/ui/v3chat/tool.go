@@ -491,6 +491,7 @@ func anyStringSlice(value any) []string {
 			if text := anyString(value); text != "" {
 				out = append(out, text)
 			}
+		}
 		return out
 	default:
 		return nil

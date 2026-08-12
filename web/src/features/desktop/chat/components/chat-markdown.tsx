@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+void React;
 import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
@@ -1202,7 +1203,7 @@ function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actio
       </button>
       {expanded ? (
         <div id={`task-program-${program.id}`} className="min-w-0" data-task-program-expanded>
-          {program.nextAction ? <div className="border-b border-[var(--app-border)] px-3 py-1.5 font-mono text-[10px] text-[var(--app-text-muted)]">Next: {program.nextAction.replaceAll("_", " ")}</div> : null}
+          {program.nextAction ? <div className="border-b border-[var(--app-border)] px-3 py-1.5 font-mono text-[10px] text-[var(--app-text-muted)]">Next: {program.nextAction.replace(/_/g, " ")}</div> : null}
           {program.stages.map((stage, stageIndex) => {
             const counts = taskRowsCounts(stage.rows);
             const dependencyLabel = stage.dependsOn.length > 0 ? `after ${stage.dependsOn.join(", ")}` : "ready";
