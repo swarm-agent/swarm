@@ -179,6 +179,19 @@ func (p *taskProgramScheduler) emitProgramProgress(event, summary string) {
 	emitTaskStreamPayload(p.emit, p.step, "task", fmt.Sprint(payload["task_call_id"]), payload)
 }
 
+func taskProgramLaunchPatch(launch map[string]any, jobID, stageID, phase string) map[string]any {
+	patch := cloneGenericMap(launch)
+	if patch == nil {
+		patch = map[string]any{}
+	}
+	patch["job_id"] = jobID
+	patch["program_job_id"] = jobID
+	patch["stage_id"] = stageID
+	patch["program_stage_id"] = stageID
+	patch["state"] = taskProgramPresentationJobState(phase)
+	return patch
+}
+
 func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	running := make([]pebblestore.TaskProgramJobTransition, 0, len(indexes))
 	for _, index := range indexes {
@@ -242,18 +255,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		}
 		presentation := taskProgramPresentationPayload(p.record)
 		program, status := taskProgramStreamMetadata(p.record)
-		patch := map[string]any{
-			"job_id":               jobID,
-			"program_job_id":       jobID,
-			"stage_id":             p.record.ActiveStageID,
-			"program_stage_id":     p.record.ActiveStageID,
-			"state":                taskProgramPresentationJobState(mapString(payload, "phase")),
-			"child_session_id":     mapString(launch, "child_session_id"),
-			"current_tool":         mapString(launch, "current_tool"),
-			"current_tool_display": mapString(launch, "current_tool_display"),
-			"elapsed_ms":           launch["elapsed_ms"],
-			"terminal":             launch["terminal"],
-		}
+		patch := taskProgramLaunchPatch(launch, jobID, p.record.ActiveStageID, mapString(payload, "phase"))
 		launchKey := "program-job:" + jobID
 		patch["launch_key"] = launchKey
 		programPayload := map[string]any{

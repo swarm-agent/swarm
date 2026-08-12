@@ -431,6 +431,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"tool_started":               launch.ToolStarted,
 		"tool_completed":             launch.ToolCompleted,
 		"tool_failed":                launch.ToolFailed,
+		"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
 		"reason":                     strings.TrimSpace(launch.Reason),

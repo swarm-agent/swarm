@@ -338,6 +338,26 @@ func TestTaskProgramStreamMetadataIsClientCompatibleAndPrivacyBounded(t *testing
 	}
 }
 
+func TestTaskProgramLaunchPatchPreservesGranularAgentModelAndToolMetadata(t *testing.T) {
+	launch := map[string]any{
+		"agent_type":           "coder",
+		"subagent_provider":    "codex",
+		"subagent_model":       "gpt-5.6-codex",
+		"child_session_id":     "child-api",
+		"current_tool":         "edit",
+		"current_tool_display": "edit x2",
+		"tool_order":           []string{"search", "read", "edit", "edit"},
+	}
+	patch := taskProgramLaunchPatch(launch, "api", "build", "tool.started")
+	if patch["agent_type"] != "coder" || patch["subagent_model"] != "gpt-5.6-codex" || patch["program_job_id"] != "api" || patch["program_stage_id"] != "build" {
+		t.Fatalf("program launch patch lost identity/model metadata: %#v", patch)
+	}
+	order, ok := patch["tool_order"].([]string)
+	if !ok || strings.Join(order, ",") != "search,read,edit,edit" {
+		t.Fatalf("program launch patch lost granular tools: %#v", patch["tool_order"])
+	}
+}
+
 func TestTaskProgramCohortProgressUsesDeclaredJobIdentity(t *testing.T) {
 	scheduler := taskProgramScheduler{record: pebblestore.TaskProgramRecord{Jobs: []pebblestore.TaskProgramJobRecord{
 		{JobID: "api", StageID: "build"}, {JobID: "web", StageID: "build"}, {JobID: "fixer", StageID: "fix"},

@@ -259,6 +259,36 @@ func TestTaskLaunchProgressionPersistsAcrossCompletionUntilNextStart(t *testing.
 	}
 }
 
+func TestBuildTaskStreamPatchPayloadRetainsGranularToolHistoryAndAgentModel(t *testing.T) {
+	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 1, taskLaunchOutcome{
+		LaunchIndex:         1,
+		RequestedSubagent:   "coder",
+		ResolvedSubagent:    "coder",
+		SubagentProvider:    "codex",
+		SubagentModel:       "gpt-5.6-codex",
+		ChildSessionID:      "child-coder",
+		CurrentTool:         "edit",
+		CurrentToolDisplay:  "edit x2",
+		CurrentToolRunCount: 2,
+		ToolOrder:           []string{"search", "read", "edit", "edit"},
+	}, "tool.started", "")
+
+	launch, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("launch = %#v, want object", payload["launch"])
+	}
+	if got := launch["agent_type"]; got != "coder" {
+		t.Fatalf("agent_type = %#v, want coder", got)
+	}
+	if got := launch["subagent_model"]; got != "gpt-5.6-codex" {
+		t.Fatalf("subagent_model = %#v, want gpt-5.6-codex", got)
+	}
+	order, ok := launch["tool_order"].([]string)
+	if !ok || strings.Join(order, ",") != "search,read,edit,edit" {
+		t.Fatalf("tool_order = %#v, want granular ordered tools", launch["tool_order"])
+	}
+}
+
 func TestBuildTaskStreamPatchPayloadAcknowledgesCancelledChild(t *testing.T) {
 	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 2, taskLaunchOutcome{
 		LaunchIndex:      2,

@@ -990,7 +990,11 @@ function buildTaskToolRow(
   );
   const assemblyPart = taskAssemblyPart(payload);
   const assignmentLabel = firstNonEmpty(assemblyPart?.name ?? "", jsonStr(payload, "assignment_label"));
-  const modelLabel = [jsonStr(payload, "subagent_provider"), jsonStr(payload, "subagent_model")].filter(Boolean).join(" / ");
+  const providerLabel = jsonStr(payload, "subagent_provider");
+  const model = jsonStr(payload, "subagent_model");
+  const modelLabel = providerLabel && model && model.toLowerCase().startsWith(`${providerLabel.toLowerCase()}/`)
+    ? model
+    : [providerLabel, model].filter(Boolean).join(" / ");
   const rawPreviewKind = jsonStr(payload, "current_preview_kind");
   const error = jsonStr(payload, "error");
   let tool = firstNonEmpty(jsonStr(payload, "current_tool_display"), jsonStr(payload, "current_tool"));
@@ -1001,6 +1005,14 @@ function buildTaskToolRow(
   const currentToolMs = jsonNum(payload, "current_tool_ms");
   const elapsedMs = jsonNum(payload, "elapsed_ms");
   const time = terminal ? formatDurationCompact(elapsedMs || currentToolMs) : "";
+  const toolOrder = jsonStrArray(payload, "tool_order").filter((entry) => entry.trim() && entry.trim() !== "-");
+  const liveToolCalls = toolOrder.length > 0
+    ? toolOrder.slice(-12).map((entry, index, recent) => {
+      if (index !== recent.length - 1) return entry;
+      const activeTool = firstNonEmpty(jsonStr(payload, "current_tool_display"), jsonStr(payload, "current_tool"), entry);
+      return terminal ? activeTool : `${activeTool} · ${status.trim().toLowerCase() || "running"}`;
+    }).join("\n")
+    : "";
   const previewText = error || taskPreviewText(payload);
   const normalized = normalizeTaskToolDisplay(tool, error ? "error" : rawPreviewKind, previewText);
   const launchStartedAtMs = jsonNum(payload, "launch_started_at_ms");
@@ -1020,6 +1032,8 @@ function buildTaskToolRow(
     assignmentLabel,
     modelLabel,
     tool: normalized.tool || "-",
+    toolActivitySummary: normalized.tool && normalized.tool !== "-" ? normalized.tool : undefined,
+    liveToolCalls: liveToolCalls || undefined,
     time,
     previewKind: normalized.previewKind,
     previewText: normalized.previewText,

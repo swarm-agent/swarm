@@ -55,10 +55,16 @@ export function sessionParentSessionID(session: DesktopSessionRecord): string {
 }
 
 function sessionLineageLabel(metadata: Record<string, unknown> | null): string {
+  const durableLineageLabel = metadataString(metadata, 'lineage_label')
+  if (durableLineageLabel && durableLineageLabel.toLowerCase() !== '@subagent') {
+    return normalizeLineageLabel(durableLineageLabel)
+  }
   return normalizeLineageLabel(firstNonEmpty(
-    metadataString(metadata, 'lineage_label'),
+    metadataString(metadata, 'resolved_agent_name'),
+    metadataString(metadata, 'agent_name'),
     metadataString(metadata, 'subagent'),
     metadataString(metadata, 'requested_subagent'),
+    durableLineageLabel,
     metadataString(metadata, 'background_agent'),
     metadataString(metadata, 'requested_background_agent'),
   ))
