@@ -255,7 +255,7 @@ func boundedArtifactListLimit(limit, maximum int) int {
 
 func isV3ArtifactMutationKind(kind string) bool {
 	switch kind {
-	case V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationSelectArtifact:
+	case V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact, V3SessionMutationSelectArtifact:
 		return true
 	default:
 		return false
@@ -330,7 +330,7 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 	switch input.Kind {
 	case V3SessionMutationCreateArtifact:
 		if collection.Name == "" && input.Artifact.Variant == nil { return errors.New("artifact collection name is required") }
-	case V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact:
+	case V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact:
 		if input.Artifact.Variant == nil { return errors.New("artifact variant is required") }
 	case V3SessionMutationSelectArtifact:
 		if input.Artifact.Selection == nil || input.Artifact.Selection.CollectionID != collection.ID || input.Artifact.Selection.VariantID == "" {
@@ -409,7 +409,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		if variantOK { copy := current; prepared.PreviousVariant = &copy }
 		if variantOK && input.Kind == V3SessionMutationCreateArtifact { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q already exists", incoming.Variant.ID) }
 		next := *incoming.Variant
-		if variantOK && (input.Kind == V3SessionMutationFinalizeArtifact || input.Kind == V3SessionMutationFailArtifact) {
+		if variantOK && (input.Kind == V3SessionMutationFinalizeArtifact || input.Kind == V3SessionMutationFailArtifact || input.Kind == V3SessionMutationUnavailableArtifact) {
 			next = mergeTerminalArtifactVariant(current, next)
 		}
 		next.Version = SessionArtifactVersion
@@ -432,14 +432,19 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			next.Status = SessionArtifactStatusReady
 			next.FailureCode = ""
 			collection.Status = SessionArtifactStatusReady
-		case V3SessionMutationFailArtifact:
+		case V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact:
 			if !variantOK { return preparedV3ArtifactMutation{}, errors.New("artifact variant must be staged before failure") }
 			if current.Status == SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable") }
 			if next.FailureCode == "" { return preparedV3ArtifactMutation{}, errors.New("failed artifact variant requires a failure code") }
-			next.Status = SessionArtifactStatusFailed
+			if input.Kind == V3SessionMutationUnavailableArtifact {
+				next.Status = SessionArtifactStatusUnavailable
+				collection.Status = SessionArtifactStatusUnavailable
+			} else {
+				next.Status = SessionArtifactStatusFailed
+				collection.Status = SessionArtifactStatusFailed
+			}
 			next.DigestSHA256 = ""
 			next.Size = 0
-			collection.Status = SessionArtifactStatusFailed
 		}
 		next.UpdatedAt = now
 		next.EventSeq = seq

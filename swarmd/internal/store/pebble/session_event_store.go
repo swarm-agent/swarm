@@ -35,6 +35,7 @@ const (
 	V3SessionMutationUpdateArtifact           = "artifact.update"
 	V3SessionMutationFinalizeArtifact         = "artifact.finalize"
 	V3SessionMutationFailArtifact             = "artifact.fail"
+	V3SessionMutationUnavailableArtifact      = "artifact.unavailable"
 	V3SessionMutationSelectArtifact           = "artifact.select"
 
 	V3SessionMutationResponseVersion = "v3.session_mutation.result.v1"
@@ -2970,6 +2971,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.artifact.finalized"
 	case V3SessionMutationFailArtifact:
 		return "session.artifact.failed"
+	case V3SessionMutationUnavailableArtifact:
+		return "session.artifact.unavailable"
 	case V3SessionMutationSelectArtifact:
 		return "session.artifact.selected"
 	default:

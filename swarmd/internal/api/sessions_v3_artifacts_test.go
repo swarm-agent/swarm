@@ -1,6 +1,8 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -220,6 +222,50 @@ func TestCollectSessionV3ArtifactBundleIncludesHTMLPackageTree(t *testing.T) {
 	want := []string{"assets/app.js", "assets/styles/site.css", "index.html", "variant/index.html"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("bundle files = %v, want %v", got, want)
+	}
+}
+
+func TestLegacyManagedArtifactIDsAreStableAndOpaque(t *testing.T) {
+	collectionA, variantA := sessionsV3LegacyManagedArtifactIDs("session", "plan", "checkpoint", "art_legacy")
+	collectionB, variantB := sessionsV3LegacyManagedArtifactIDs("session", "plan", "checkpoint", "art_legacy")
+	if collectionA != collectionB || variantA != variantB {
+		t.Fatalf("legacy managed IDs are not stable: %q/%q vs %q/%q", collectionA, variantA, collectionB, variantB)
+	}
+	for _, id := range []string{collectionA, variantA} {
+		if strings.Contains(id, "session") || strings.Contains(id, "plan") || strings.ContainsAny(id, `/\\`) {
+			t.Fatalf("managed ID exposes source identity or path syntax: %q", id)
+		}
+	}
+	_, other := sessionsV3LegacyManagedArtifactIDs("other-session", "plan", "checkpoint", "art_legacy")
+	if other == variantA {
+		t.Fatal("managed variant ID was reused across sessions")
+	}
+}
+
+func TestBuildSessionV3LegacyArtifactPackageRejectsSymlinkAndPreservesFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "gallery", "assets"), 0o755); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(root, "gallery", "index.html"), []byte("<link href=\"assets/site.css\">"), 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(root, "gallery", "assets", "site.css"), []byte("body{}"), 0o600); err != nil { t.Fatal(err) }
+	payload, err := buildSessionV3LegacyArtifactPackage(root, "gallery/index.html")
+	if err != nil { t.Fatalf("build package: %v", err) }
+	repeated, err := buildSessionV3LegacyArtifactPackage(root, "gallery/index.html")
+	if err != nil || !bytes.Equal(payload, repeated) { t.Fatalf("package is not deterministic: err=%v", err) }
+	archive, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
+	if err != nil { t.Fatalf("open package: %v", err) }
+	got := make([]string, 0, len(archive.File))
+	for _, entry := range archive.File { got = append(got, entry.Name) }
+	if strings.Join(got, "|") != "assets/site.css|index.html" {
+		t.Fatalf("package entries = %v", got)
+	}
+	if archive.File[0].Mode().Perm() != 0o600 || archive.File[1].Mode().Perm() != 0o600 {
+		t.Fatalf("package modes = %v, %v", archive.File[0].Mode(), archive.File[1].Mode())
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil { t.Fatal(err) }
+	if err := os.Symlink(outside, filepath.Join(root, "gallery", "linked.txt")); err != nil { t.Fatal(err) }
+	if _, err := buildSessionV3LegacyArtifactPackage(root, "gallery/index.html"); err == nil {
+		t.Fatal("legacy package import accepted a symlink")
 	}
 }
 

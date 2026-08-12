@@ -134,6 +134,7 @@ type Server struct {
 	longSessionDiagnostics      *longsessiondiag.Recorder
 	mediaStaging                *mediastaging.Service
 	artifacts                   *artifact.Registry
+	artifactImportMu            sync.Mutex
 
 	longSessionDesktopSampleLogOnce sync.Once
 

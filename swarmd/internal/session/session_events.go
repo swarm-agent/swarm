@@ -47,6 +47,7 @@ const (
 	SessionMutationUpdateArtifact           = pebblestore.V3SessionMutationUpdateArtifact
 	SessionMutationFinalizeArtifact         = pebblestore.V3SessionMutationFinalizeArtifact
 	SessionMutationFailArtifact             = pebblestore.V3SessionMutationFailArtifact
+	SessionMutationUnavailableArtifact      = pebblestore.V3SessionMutationUnavailableArtifact
 	SessionMutationSelectArtifact           = pebblestore.V3SessionMutationSelectArtifact
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
@@ -66,6 +67,13 @@ func (s *Service) ApplySessionMutation(input SessionMutationInput) (SessionMutat
 		return SessionMutationResult{}, errors.New("session store is not configured")
 	}
 	return s.store.ApplyV3SessionMutation(input)
+}
+
+func (s *Service) GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (ArtifactVariant, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactVariant{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID)
 }
 
 func (s *Service) ListSessionEvents(sessionID string, afterSeq uint64, limit int) ([]SessionEvent, error) {

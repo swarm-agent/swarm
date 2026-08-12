@@ -2,6 +2,8 @@ package api
 
 import (
 	"archive/zip"
+	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -9,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -19,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -74,6 +78,7 @@ var sessionsV3ArtifactPackageMediaTypes = map[string]string{
 type sessionsV3ResolvedArtifact struct {
 	Reference  pebblestore.SessionPlanArtifactReference
 	Descriptor pebblestore.PlanFinalHandoffArtifact
+	Managed    *pebblestore.SessionArtifactVariant
 }
 
 type sessionsV3ArtifactCatalogItem struct {
@@ -183,8 +188,9 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					if updatedAt == 0 {
 						updatedAt = plan.UpdatedAt
 					}
-					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+descriptor.ID, sessionsV3ArtifactCatalogItem{
-						ArtifactID: descriptor.ID, SessionID: session.ID, SessionTitle: session.Title,
+					_, managedArtifactID := sessionsV3LegacyManagedArtifactIDs(session.ID, plan.ID, checkpoint.ID, descriptor.ID)
+					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+managedArtifactID, sessionsV3ArtifactCatalogItem{
+						ArtifactID: managedArtifactID, SessionID: session.ID, SessionTitle: session.Title,
 						WorkspacePath: workspacePath, WorkspaceName: workspaceName,
 						PlanID: plan.ID, PlanTitle: planTitle, CheckpointID: checkpoint.ID, CheckpointTitle: checkpoint.Title,
 						Label: descriptor.Label, Description: descriptor.Description, Filename: descriptor.Filename,
@@ -259,12 +265,12 @@ func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *
 		return
 	}
 	artifactID := strings.TrimSpace(req.ArtifactID)
-	artifact, found, err := s.resolveSessionV3Artifact(sessionID, artifactID)
+	artifact, found, err := s.resolveSessionV3Artifact(r.Context(), principal, sessionID, artifactID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !found || artifact.Descriptor.Kind != "html" {
+	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady {
 		writeError(w, http.StatusNotFound, errors.New("artifact package not found"))
 		return
 	}
@@ -382,7 +388,7 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 		writeSessionNotFound(w)
 		return
 	}
-	artifact, found, err := s.resolveSessionV3Artifact(sessionID, artifactID)
+	artifact, found, err := s.resolveSessionV3Artifact(r.Context(), principal, sessionID, artifactID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -392,8 +398,14 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	workspaceRoot := sessionV3ArtifactWorkspaceRoot(session)
-	file, info, err := openSessionV3ArtifactFile(workspaceRoot, artifact.Reference.Path)
+	var file sessionsV3ReadSeekCloser
+	var info os.FileInfo
+	mediaType := artifact.Descriptor.MediaType
+	if artifact.Descriptor.Kind == "html" {
+		file, info, mediaType, err = s.openManagedSessionV3ArtifactPackageFile(r.Context(), session, artifact, sessionsV3ArtifactPackageEntryPath)
+	} else {
+		file, info, err = s.openManagedSessionV3Artifact(r.Context(), session, artifact)
+	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, errors.New("artifact file is unavailable"))
 		return
@@ -408,7 +420,7 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 	if disposition == "" {
 		disposition = "inline"
 	}
-	w.Header().Set("Content-Type", artifact.Descriptor.MediaType)
+	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
@@ -431,7 +443,7 @@ func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Re
 		writeSessionNotFound(w)
 		return
 	}
-	artifact, found, err := s.resolveSessionV3Artifact(sessionID, artifactID)
+	artifact, found, err := s.resolveSessionV3Artifact(r.Context(), principal, sessionID, artifactID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -441,11 +453,12 @@ func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	packageRoot, files, err := collectSessionV3ArtifactBundle(sessionV3ArtifactWorkspaceRoot(session), artifact.Reference.Path, artifact.Descriptor.Kind == "html")
+	file, info, err := s.openManagedSessionV3Artifact(r.Context(), session, artifact)
 	if err != nil {
 		writeError(w, http.StatusNotFound, errors.New("artifact bundle is unavailable"))
 		return
 	}
+	defer file.Close()
 	bundleName := sessionV3ArtifactBundleFilename(artifact.Descriptor.Filename)
 	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": bundleName})
 	if disposition == "" {
@@ -459,38 +472,34 @@ func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Re
 	if r.Method == http.MethodHead {
 		return
 	}
-
+	if artifact.Managed != nil && artifact.Managed.MediaType == "application/zip" {
+		_, _ = io.Copy(w, file)
+		return
+	}
 	archive := zip.NewWriter(w)
-	for _, bundled := range files {
-		header, err := zip.FileInfoHeader(bundled.Info)
-		if err != nil {
-			archive.Close()
-			return
-		}
-		header.Name = path.Join(packageRoot, bundled.RelativePath)
-		header.Method = zip.Deflate
-		header.SetMode(bundled.Info.Mode() & 0o777)
-		entry, err := archive.CreateHeader(header)
-		if err != nil {
-			archive.Close()
-			return
-		}
-		file, _, err := openSessionV3ArtifactFile(sessionV3ArtifactWorkspaceRoot(session), bundled.WorkspacePath)
-		if err != nil {
-			archive.Close()
-			return
-		}
-		_, copyErr := io.Copy(entry, file)
-		closeErr := file.Close()
-		if copyErr != nil || closeErr != nil {
-			archive.Close()
-			return
-		}
+	header, err := zip.FileInfoHeader(info)
+	if err != nil {
+		_ = archive.Close()
+		return
+	}
+	header.Name = path.Join(sessionV3ArtifactBundleRootName(artifact.Descriptor.Filename), artifact.Descriptor.Filename)
+	header.Method = zip.Deflate
+	header.Modified = time.Time{}
+	header.SetMode(0o600)
+	entry, err := archive.CreateHeader(header)
+	if err != nil {
+		_ = archive.Close()
+		return
+	}
+	if _, err := io.Copy(entry, file); err != nil {
+		_ = archive.Close()
+		return
 	}
 	_ = archive.Close()
 }
 
 type sessionsV3ArtifactBundleFile struct {
+	WorkspaceRoot string
 	WorkspacePath string
 	RelativePath  string
 	Info          os.FileInfo
@@ -513,6 +522,7 @@ func collectSessionV3ArtifactBundle(workspaceRoot, artifactPath string, includeP
 		}
 		file.Close()
 		return sessionV3ArtifactBundleRootName(filepath.Base(cleanArtifact)), []sessionsV3ArtifactBundleFile{{
+			WorkspaceRoot: workspaceRoot,
 			WorkspacePath: filepath.ToSlash(cleanArtifact),
 			RelativePath:  filepath.Base(cleanArtifact),
 			Info:          info,
@@ -569,6 +579,7 @@ func collectSessionV3ArtifactBundle(workspaceRoot, artifactPath string, includeP
 		}
 		workspacePath := filepath.Join(packageRelativeRoot, relative)
 		files = append(files, sessionsV3ArtifactBundleFile{
+			WorkspaceRoot: workspaceRoot,
 			WorkspacePath: filepath.ToSlash(workspacePath),
 			RelativePath:  filepath.ToSlash(relative),
 			Info:          info,
@@ -579,6 +590,53 @@ func collectSessionV3ArtifactBundle(workspaceRoot, artifactPath string, includeP
 		return "", nil, errors.New("artifact package is empty or unavailable")
 	}
 	return sessionV3ArtifactBundleRootName(filepath.Base(packageRelativeRoot)), files, nil
+}
+
+func buildSessionV3LegacyArtifactPackage(workspaceRoot, artifactPath string) ([]byte, error) {
+	_, files, err := collectSessionV3ArtifactBundle(workspaceRoot, artifactPath, true)
+	if err != nil {
+		return nil, err
+	}
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	for _, bundled := range files {
+		header, err := zip.FileInfoHeader(bundled.Info)
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		header.Name = bundled.RelativePath
+		header.Method = zip.Deflate
+		header.Modified = time.Time{}
+		header.SetMode(0o600)
+		entry, err := archive.CreateHeader(header)
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		file, _, err := openSessionV3ArtifactFile(bundled.WorkspaceRoot, bundled.WorkspacePath)
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		_, copyErr := io.Copy(entry, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			_ = archive.Close()
+			return nil, copyErr
+		}
+		if closeErr != nil {
+			_ = archive.Close()
+			return nil, closeErr
+		}
+	}
+	if err := archive.Close(); err != nil {
+		return nil, err
+	}
+	if int64(buffer.Len()) > sessionsV3ArtifactBundleMaxBytes {
+		return nil, artifact.ErrQuotaExceeded
+	}
+	return buffer.Bytes(), nil
 }
 
 func sessionV3ArtifactBundleRootName(value string) string {
@@ -623,17 +681,17 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 		}
 		contentPath = scopedPath
 	}
-	artifact, found, err := s.resolveSessionV3Artifact(sessionID, artifactID)
+	artifact, found, err := s.resolveSessionV3Artifact(r.Context(), principal, sessionID, artifactID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !found || artifact.Descriptor.Kind != "html" {
+	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady {
 		writeError(w, http.StatusNotFound, errors.New("artifact package not found"))
 		return
 	}
 
-	file, info, mediaType, err := openSessionV3ArtifactPackageFile(sessionV3ArtifactWorkspaceRoot(session), artifact.Reference.Path, contentPath)
+	file, info, mediaType, err := s.openManagedSessionV3ArtifactPackageFile(r.Context(), session, artifact, contentPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, errors.New("artifact package file is unavailable"))
 		return
@@ -659,9 +717,16 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 	http.ServeContent(w, r, filepath.Base(contentPath), info.ModTime(), file)
 }
 
-func (s *Server) resolveSessionV3Artifact(sessionID, artifactID string) (sessionsV3ResolvedArtifact, bool, error) {
+func (s *Server) resolveSessionV3Artifact(ctx context.Context, principal identity.Principal, sessionID, artifactID string) (sessionsV3ResolvedArtifact, bool, error) {
 	artifactID = strings.TrimSpace(artifactID)
-	if artifactID == "" || strings.Contains(artifactID, "/") {
+	if artifactID == "" || strings.Contains(artifactID, "/") || !principal.Valid() {
+		return sessionsV3ResolvedArtifact{}, false, nil
+	}
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return sessionsV3ResolvedArtifact{}, false, err
+	}
+	if !found || session.UserID != principal.UserID || session.AccountScopeID != principal.AccountScopeID {
 		return sessionsV3ResolvedArtifact{}, false, nil
 	}
 	plans := make([]pebblestore.SessionPlanSnapshot, 0, sessionsV3PlansPageMaxLimit+1)
@@ -680,8 +745,11 @@ func (s *Server) resolveSessionV3Artifact(sessionID, artifactID string) (session
 		}
 	}
 	for _, plan := range plans {
-		if plan.Document == nil {
+		if plan.Document == nil || (plan.SessionID != "" && plan.SessionID != sessionID) {
 			continue
+		}
+		if plan.SessionID == "" {
+			plan.SessionID = sessionID
 		}
 		for _, checkpoint := range plan.Document.Checkpoints {
 			if checkpoint.Handoff == nil || strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusCompleted {
@@ -691,13 +759,293 @@ func (s *Server) resolveSessionV3Artifact(sessionID, artifactID string) (session
 			artifacts = append(artifacts, checkpoint.Artifacts...)
 			for _, reference := range artifacts {
 				descriptors := sessionruntime.ProjectPlanFinalHandoffArtifacts(plan.ID, checkpoint.ID, []pebblestore.SessionPlanArtifactReference{reference})
-				if len(descriptors) == 1 && descriptors[0].ID == artifactID {
-					return sessionsV3ResolvedArtifact{Reference: reference, Descriptor: descriptors[0]}, true, nil
+				if len(descriptors) != 1 {
+					continue
 				}
+				descriptor := descriptors[0]
+				collectionID, variantID := sessionsV3LegacyManagedArtifactIDs(sessionID, plan.ID, checkpoint.ID, descriptor.ID)
+				if artifactID != descriptor.ID && artifactID != variantID {
+					continue
+				}
+				if (plan.UserID != "" && plan.UserID != principal.UserID) || (plan.AccountScopeID != "" && plan.AccountScopeID != principal.AccountScopeID) {
+					continue
+				}
+				resolved := sessionsV3ResolvedArtifact{Reference: reference, Descriptor: descriptor}
+				managed, err := s.importLegacySessionV3Artifact(ctx, principal, plan, checkpoint, reference, descriptor, collectionID, variantID)
+				if err != nil {
+					return sessionsV3ResolvedArtifact{}, false, err
+				}
+				if managed.ID == "" {
+					return sessionsV3ResolvedArtifact{}, false, errors.New("managed artifact metadata is unavailable")
+				}
+				resolved.Managed = &managed
+				resolved.Descriptor.ID = managed.ID
+				if managed.Filename != "" {
+					resolved.Descriptor.Filename = managed.Filename
+				}
+				if descriptor.Kind != "html" && managed.Status == pebblestore.SessionArtifactStatusReady {
+					resolved.Descriptor.MediaType = managed.MediaType
+					resolved.Descriptor.Kind = managed.Presentation.Kind
+					resolved.Descriptor.Previewable = managed.Presentation.Previewable
+				}
+				return resolved, true, nil
 			}
 		}
 	}
 	return sessionsV3ResolvedArtifact{}, false, nil
+}
+
+func sessionsV3LegacyManagedArtifactIDs(sessionID, planID, checkpointID, legacyArtifactID string) (string, string) {
+	canonical := strings.Join([]string{"swarm-legacy-artifact-import-v1", strings.TrimSpace(sessionID), strings.TrimSpace(planID), strings.TrimSpace(checkpointID), strings.TrimSpace(legacyArtifactID)}, "\x00")
+	digest := sha256.Sum256([]byte(canonical))
+	opaque := fmt.Sprintf("%x", digest[:18])
+	return "legacy_col_" + opaque, "legacy_var_" + opaque
+}
+
+func (s *Server) importLegacySessionV3Artifact(ctx context.Context, principal identity.Principal, plan pebblestore.SessionPlanSnapshot, checkpoint pebblestore.SessionPlanCheckpoint, reference pebblestore.SessionPlanArtifactReference, descriptor pebblestore.PlanFinalHandoffArtifact, collectionID, variantID string) (pebblestore.SessionArtifactVariant, error) {
+	if s == nil || s.sessions == nil || s.artifacts == nil {
+		return pebblestore.SessionArtifactVariant{}, errors.New("managed artifact storage is unavailable")
+	}
+	s.artifactImportMu.Lock()
+	defer s.artifactImportMu.Unlock()
+
+	if existing, ok, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	} else if ok && (existing.Status == pebblestore.SessionArtifactStatusReady || existing.Status == pebblestore.SessionArtifactStatusUnavailable || existing.Status == pebblestore.SessionArtifactStatusFailed) {
+		return existing, nil
+	}
+
+	session, found, err := s.sessions.GetSession(plan.SessionID)
+	if err != nil || !found {
+		if err == nil { err = errors.New("legacy artifact session was not found") }
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	if session.UserID != principal.UserID || session.AccountScopeID != principal.AccountScopeID {
+		return pebblestore.SessionArtifactVariant{}, errors.New("legacy artifact session ownership does not match")
+	}
+
+	presentation := pebblestore.SessionArtifactPresentation{Kind: descriptor.Kind, Label: descriptor.Label, Description: descriptor.Description, Previewable: descriptor.Previewable}
+	if descriptor.Kind == "html" {
+		presentation.Kind = "package"
+		presentation.Previewable = false
+	}
+	variant := pebblestore.SessionArtifactVariant{ID: variantID, CollectionID: collectionID, AccountScopeID: principal.AccountScopeID, SessionID: plan.SessionID, Filename: descriptor.Filename, MediaType: descriptor.MediaType, Presentation: presentation, Lineage: pebblestore.SessionArtifactLineage{SourceSessionID: plan.SessionID, SourceVariantID: descriptor.ID, PlanID: plan.ID, CheckpointID: checkpoint.ID, RunID: checkpoint.RunID, AttemptID: checkpoint.AttemptID}}
+	collection := pebblestore.SessionArtifactCollection{ID: collectionID, Name: descriptor.Label, Description: descriptor.Description, Presentation: presentation}
+	if strings.TrimSpace(collection.Name) == "" {
+		collection.Name = descriptor.Filename
+	}
+	if _, ok, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	} else if !ok {
+		if _, err := s.applyLegacyArtifactMutation(principal, plan.SessionID, "create", sessionruntime.SessionMutationCreateArtifact, collection, variant); err != nil {
+			if existing, found, getErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID); getErr != nil || !found {
+				return pebblestore.SessionArtifactVariant{}, err
+			}
+		}
+	}
+
+	workspaceRoot := sessionV3ArtifactWorkspaceRoot(session)
+	service, err := s.artifacts.ServiceForSession(plan.SessionID)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	var staged artifact.Staged
+	sourceUnavailable := false
+	if descriptor.Kind == "html" {
+		packageBytes, sourceErr := buildSessionV3LegacyArtifactPackage(workspaceRoot, reference.Path)
+		if sourceErr == nil {
+			variant.MediaType = "application/zip"
+			variant.Presentation.Kind = "package"
+			variant.Presentation.Previewable = false
+			staged, err = service.Stage(ctx, variant, bytes.NewReader(packageBytes))
+		} else {
+			err = sourceErr
+			sourceUnavailable = !errors.Is(sourceErr, artifact.ErrQuotaExceeded)
+		}
+	} else {
+		file, _, sourceErr := openSessionV3ArtifactFile(workspaceRoot, reference.Path)
+		if sourceErr == nil {
+			staged, err = service.Stage(ctx, variant, file)
+			if closeErr := file.Close(); err == nil {
+				err = closeErr
+			}
+		} else {
+			err = sourceErr
+			sourceUnavailable = true
+		}
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return pebblestore.SessionArtifactVariant{}, err
+		}
+		failureCode := "legacy_import_failed"
+		kind := sessionruntime.SessionMutationFailArtifact
+		if sourceUnavailable {
+			failureCode = "legacy_source_unavailable"
+			kind = sessionruntime.SessionMutationUnavailableArtifact
+		} else if errors.Is(err, artifact.ErrQuotaExceeded) {
+			failureCode = "legacy_import_quota_exceeded"
+		}
+		variant.FailureCode = failureCode
+		if _, mutationErr := s.applyLegacyArtifactMutation(principal, plan.SessionID, "terminal-"+failureCode, kind, collection, variant); mutationErr != nil {
+			return pebblestore.SessionArtifactVariant{}, mutationErr
+		}
+		stored, found, getErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID)
+		if getErr != nil || !found {
+			if getErr == nil { getErr = errors.New("managed artifact terminal metadata was not recorded") }
+			return pebblestore.SessionArtifactVariant{}, getErr
+		}
+		return stored, nil
+	}
+	blob, err := service.Finalize(ctx, staged, staged.DigestSHA256, staged.Size)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return pebblestore.SessionArtifactVariant{}, err
+		}
+		variant.FailureCode = "legacy_finalize_failed"
+		if _, mutationErr := s.applyLegacyArtifactMutation(principal, plan.SessionID, "terminal-legacy_finalize_failed", sessionruntime.SessionMutationFailArtifact, collection, variant); mutationErr != nil {
+			return pebblestore.SessionArtifactVariant{}, mutationErr
+		}
+		stored, found, getErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID)
+		if getErr != nil || !found {
+			if getErr == nil { getErr = errors.New("managed artifact finalize failure was not recorded") }
+			return pebblestore.SessionArtifactVariant{}, getErr
+		}
+		return stored, nil
+	}
+	variant.Filename = blob.Filename
+	variant.MediaType = blob.MediaType
+	variant.DigestSHA256 = blob.DigestSHA256
+	variant.Size = blob.Size
+	variant.Presentation = blob.Presentation
+	if _, err := s.applyLegacyArtifactMutation(principal, plan.SessionID, "finalize-"+blob.DigestSHA256, sessionruntime.SessionMutationFinalizeArtifact, collection, variant); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	stored, found, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID)
+	if err != nil || !found {
+		if err == nil { err = errors.New("managed artifact metadata was not finalized") }
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	return stored, nil
+}
+
+func (s *Server) applyLegacyArtifactMutation(principal identity.Principal, sessionID, phase, kind string, collection pebblestore.SessionArtifactCollection, variant pebblestore.SessionArtifactVariant) (sessionruntime.SessionMutationResult, error) {
+	keySource := strings.Join([]string{"legacy-artifact-import", sessionID, collection.ID, variant.ID, phase}, "\x00")
+	sum := sha256.Sum256([]byte(keySource))
+	key := "legacy-artifact-" + base64.RawURLEncoding.EncodeToString(sum[:18])
+	payload, err := json.Marshal(struct {
+		Kind       string                                   `json:"kind"`
+		Collection pebblestore.SessionArtifactCollection    `json:"collection"`
+		Variant    pebblestore.SessionArtifactVariant       `json:"variant"`
+	}{Kind: kind, Collection: collection, Variant: variant})
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, err
+	}
+	payloadSum := sha256.Sum256(payload)
+	requestHash := fmt.Sprintf("%x", payloadSum[:])
+	return s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: requestHash, RequestHash: requestHash, Kind: kind, Artifact: &pebblestore.V3ArtifactMutation{Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli()})
+}
+
+func (s *Server) openManagedSessionV3Artifact(ctx context.Context, session pebblestore.SessionSnapshot, resolved sessionsV3ResolvedArtifact) (*os.File, os.FileInfo, error) {
+	if resolved.Managed == nil || resolved.Managed.Status != pebblestore.SessionArtifactStatusReady || s.artifacts == nil {
+		return nil, nil, artifact.ErrNotReady
+	}
+	if resolved.Managed.SessionID != session.ID || resolved.Managed.AccountScopeID != session.AccountScopeID {
+		return nil, nil, errors.New("managed artifact ownership does not match session")
+	}
+	service, err := s.artifacts.ServiceForSession(session.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	file, _, err := service.Open(ctx, *resolved.Managed)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	return file, info, nil
+}
+
+func (s *Server) openManagedSessionV3ArtifactPackageFile(ctx context.Context, session pebblestore.SessionSnapshot, resolved sessionsV3ResolvedArtifact, contentPath string) (sessionsV3ReadSeekCloser, os.FileInfo, string, error) {
+	file, _, err := s.openManagedSessionV3Artifact(ctx, session, resolved)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	defer file.Close()
+	archive, err := zip.NewReader(file, resolved.Managed.Size)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	contentPath = strings.TrimSpace(contentPath)
+	entryName := filepath.ToSlash(filepath.Clean(filepath.FromSlash(contentPath)))
+	if filepath.IsAbs(filepath.FromSlash(contentPath)) || strings.HasPrefix(entryName, "/") {
+		return nil, nil, "", errors.New("artifact package path must be relative")
+	}
+	if contentPath == sessionsV3ArtifactPackageEntryPath {
+		entryName = filepath.ToSlash(filepath.Base(filepath.FromSlash(resolved.Reference.Path)))
+	} else {
+		legacyRoot := filepath.ToSlash(filepath.Clean(filepath.Dir(filepath.FromSlash(resolved.Reference.Path))))
+		if legacyRoot != "." && legacyRoot != "" && strings.HasPrefix(entryName, legacyRoot+"/") {
+			entryName = strings.TrimPrefix(entryName, legacyRoot+"/")
+		}
+	}
+	if entryName == "." || entryName == ".." || strings.HasPrefix(entryName, "../") || strings.Contains(contentPath, "\\") {
+		return nil, nil, "", errors.New("artifact package path escapes its directory")
+	}
+	mediaType, ok := sessionsV3ArtifactPackageMediaTypes[strings.ToLower(filepath.Ext(entryName))]
+	if !ok {
+		return nil, nil, "", errors.New("artifact package file type is not previewable")
+	}
+	for _, entry := range archive.File {
+		cleanEntry := filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Name)))
+		if cleanEntry != entryName || cleanEntry == ".." || strings.HasPrefix(cleanEntry, "../") || strings.Contains(entry.Name, "\\") || !entry.Mode().IsRegular() {
+			continue
+		}
+		if entry.UncompressedSize64 > uint64(sessionsV3ArtifactMaxBytes) {
+			return nil, nil, "", errors.New("artifact package file exceeds the preview size limit")
+		}
+		reader, err := entry.Open()
+		if err != nil {
+			return nil, nil, "", err
+		}
+		data, err := io.ReadAll(io.LimitReader(reader, sessionsV3ArtifactMaxBytes+1))
+		_ = reader.Close()
+		if err != nil || int64(len(data)) > sessionsV3ArtifactMaxBytes {
+			return nil, nil, "", errors.New("artifact package file is unavailable")
+		}
+		info := sessionsV3MemoryFileInfo{name: filepath.Base(entryName), size: int64(len(data)), modTime: entry.ModTime()}
+		return sessionsV3NewMemoryFile(data), info, mediaType, nil
+	}
+	return nil, nil, "", errors.New("artifact package file is unavailable")
+}
+
+type sessionsV3MemoryFileInfo struct {
+	name string
+	size int64
+	modTime time.Time
+}
+
+func (i sessionsV3MemoryFileInfo) Name() string       { return i.name }
+func (i sessionsV3MemoryFileInfo) Size() int64        { return i.size }
+func (i sessionsV3MemoryFileInfo) Mode() os.FileMode  { return 0o600 }
+func (i sessionsV3MemoryFileInfo) ModTime() time.Time { return i.modTime }
+func (i sessionsV3MemoryFileInfo) IsDir() bool        { return false }
+func (i sessionsV3MemoryFileInfo) Sys() any           { return nil }
+
+type sessionsV3ReadSeekCloser interface {
+	io.ReadSeeker
+	io.Closer
+}
+
+type sessionsV3MemoryFile struct{ *bytes.Reader }
+
+func (sessionsV3MemoryFile) Close() error { return nil }
+
+func sessionsV3NewMemoryFile(data []byte) sessionsV3ReadSeekCloser {
+	return sessionsV3MemoryFile{Reader: bytes.NewReader(data)}
 }
 
 func sessionV3ArtifactWorkspaceRoot(session pebblestore.SessionSnapshot) string {

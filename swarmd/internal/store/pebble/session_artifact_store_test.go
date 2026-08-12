@@ -101,6 +101,31 @@ func TestArchiveSessionPreservesArtifactMetadata(t *testing.T) {
 	}
 }
 
+func TestArtifactUnavailableMutationRecordsHonestTerminalState(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-unavailable")
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-unavailable", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-unavailable-create", PayloadHash: "artifact-unavailable-create", Kind: V3SessionMutationCreateArtifact,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "legacy-collection", Name: "Legacy"}, Variant: &SessionArtifactVariant{ID: "legacy-variant", Filename: "missing.html", MediaType: "text/html"}},
+	}); err != nil { t.Fatalf("create artifact: %v", err) }
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-unavailable", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-unavailable-terminal", PayloadHash: "artifact-unavailable-terminal", Kind: V3SessionMutationUnavailableArtifact,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "legacy-collection"}, Variant: &SessionArtifactVariant{ID: "legacy-variant", FailureCode: "legacy_source_unavailable"}},
+	}); err != nil { t.Fatalf("mark unavailable: %v", err) }
+	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-unavailable", "legacy-collection", "legacy-variant")
+	if err != nil || !ok { t.Fatalf("get unavailable artifact: ok=%v err=%v", ok, err) }
+	if variant.Status != SessionArtifactStatusUnavailable || variant.FailureCode != "legacy_source_unavailable" || variant.DigestSHA256 != "" || variant.Size != 0 {
+		t.Fatalf("unavailable variant = %+v", variant)
+	}
+	collections, err := sessions.ListSessionArtifactCollections("account-1", "artifact-unavailable", SessionArtifactStatusUnavailable, 10)
+	if err != nil || len(collections) != 1 || collections[0].ID != "legacy-collection" {
+		t.Fatalf("unavailable collection index = %+v err=%v", collections, err)
+	}
+}
+
 func TestApplyV3ArtifactLifecycleRejectsUnsafeOrInvalidMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
