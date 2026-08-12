@@ -412,6 +412,7 @@ func DefaultSessionStorageNamespaces() []SessionStorageNamespace {
 		{Name: "v3_search_postings", Prefix: keyV3SessionSearchPostingPrefix},
 		{Name: "legacy_v3_search_account_postings", Prefix: keyV3SessionSearchAccountPrefix},
 		{Name: "v3_tombstones", Prefix: KeyV3SessionTombstonePrefix},
+		{Name: "v3_artifact_cleanup_pending", Prefix: KeyV3SessionArtifactCleanupPendingPrefix},
 	}
 }
 

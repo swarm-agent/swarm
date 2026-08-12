@@ -24,6 +24,7 @@ import (
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -132,6 +133,7 @@ type Server struct {
 	bypassPermissions           bool
 	longSessionDiagnostics      *longsessiondiag.Recorder
 	mediaStaging                *mediastaging.Service
+	artifacts                   *artifact.Registry
 
 	longSessionDesktopSampleLogOnce sync.Once
 
@@ -326,6 +328,19 @@ func (s *Server) SetMediaStagingService(service *mediastaging.Service) {
 	if s != nil {
 		s.mediaStaging = service
 	}
+}
+
+func (s *Server) SetArtifactRegistry(registry *artifact.Registry) {
+	if s != nil {
+		s.artifacts = registry
+	}
+}
+
+func (s *Server) ArtifactRegistry() *artifact.Registry {
+	if s == nil {
+		return nil
+	}
+	return s.artifacts
 }
 
 func (s *Server) LongSessionSnapshot() map[string]any {

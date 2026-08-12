@@ -65,6 +65,42 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 	if err != nil || len(ready) != 1 || ready[0].SelectedVariantID != "variant-1" { t.Fatalf("ready collections = %+v err=%v", ready, err) }
 }
 
+func TestDeleteSessionPurgesArtifactMetadataAndIndexes(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-delete")
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-delete", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-delete-create", PayloadHash: "artifact-delete-create", Kind: V3SessionMutationCreateArtifact,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Artifact"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain"}},
+	}); err != nil { t.Fatal(err) }
+	if err := sessions.DeleteSession("artifact-delete"); err != nil { t.Fatal(err) }
+	for name, prefix := range map[string]string{
+		"collection": SessionArtifactCollectionPrefix("account-1", "artifact-delete"),
+		"collection status": SessionArtifactCollectionStatusSessionPrefix("account-1", "artifact-delete"),
+		"variant": SessionArtifactVariantSessionPrefix("account-1", "artifact-delete"),
+		"variant status": SessionArtifactVariantStatusSessionPrefix("account-1", "artifact-delete"),
+		"variant digest": SessionArtifactVariantDigestSessionPrefix("account-1", "artifact-delete"),
+	} {
+		if err := store.IteratePrefix(prefix, 10, func(string, []byte) error { t.Fatalf("%s metadata remains", name); return nil }); err != nil { t.Fatal(err) }
+	}
+}
+
+func TestArchiveSessionPreservesArtifactMetadata(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-archive")
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-archive", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-archive-create", PayloadHash: "artifact-archive-create", Kind: V3SessionMutationCreateArtifact,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Artifact"}},
+	}); err != nil { t.Fatal(err) }
+	if err := sessions.ArchiveSessions([]string{"artifact-archive"}); err != nil { t.Fatal(err) }
+	if _, ok, err := sessions.GetSessionArtifactCollection("account-1", "artifact-archive", "collection-1"); err != nil || !ok {
+		t.Fatalf("archived artifact metadata missing: ok=%t err=%v", ok, err)
+	}
+}
+
 func TestApplyV3ArtifactLifecycleRejectsUnsafeOrInvalidMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

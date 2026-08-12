@@ -110,6 +110,7 @@ const (
 	KeyIntegrationWorkspaceSessionUpdatedPrefix    = "integration/workspace_session_updated/"
 	KeyV3SessionTombstonePrefix                    = "v3/session_tombstone/"
 	KeyV3SessionTombstoneByAccountPrefix           = "v3/session_tombstone_by_account/"
+	KeyV3SessionArtifactCleanupPendingPrefix       = "v3/session_artifact_cleanup_pending/"
 	keySessionRecentIndexMeta                      = "session_recent_index/meta"
 	KeySessionRecentGlobalPrefix                   = "session_recent/global/"
 	KeySessionRecentAccountPrefix                  = "session_recent/account/"
@@ -354,6 +355,14 @@ func SessionByAccountPrefix(accountScopeID string) string {
 
 func KeyV3SessionTombstone(sessionID string) string {
 	return KeyV3SessionTombstonePrefix + keyPart(sessionID)
+}
+
+func KeyV3SessionArtifactCleanupPending(sessionID string) string {
+	return KeyV3SessionArtifactCleanupPendingPrefix + keyPart(sessionID)
+}
+
+func V3SessionArtifactCleanupPendingPrefix() string {
+	return KeyV3SessionArtifactCleanupPendingPrefix
 }
 
 func V3SessionTombstonePrefix() string {

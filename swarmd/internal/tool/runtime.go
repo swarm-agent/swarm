@@ -28,6 +28,7 @@ import (
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
@@ -159,6 +160,7 @@ type Runtime struct {
 	actions              manageActionService
 	uiSettings           manageThemeUISettingsService
 	themeWorkspace       manageThemeWorkspaceService
+	artifacts            *artifact.Registry
 	searchCoordinator    *SearchCoordinator
 }
 
@@ -426,6 +428,19 @@ func (r *Runtime) LongSessionSnapshot() map[string]any {
 		"search_worker_restarts":   snapshot.WorkerRestarts,
 		"search_queue_wait_ms":     snapshot.QueueWait.Milliseconds(),
 	}
+}
+
+func (r *Runtime) SetArtifactRegistry(registry *artifact.Registry) {
+	if r != nil {
+		r.artifacts = registry
+	}
+}
+
+func (r *Runtime) ArtifactRegistry() *artifact.Registry {
+	if r == nil {
+		return nil
+	}
+	return r.artifacts
 }
 
 func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntimeConfig, error)) {

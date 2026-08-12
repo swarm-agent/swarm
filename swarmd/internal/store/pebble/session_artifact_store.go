@@ -129,12 +129,20 @@ func SessionArtifactCollectionStatusPrefix(accountScopeID, sessionID, status str
 	return fmt.Sprintf("v3/session_artifact/collections_by_status/%s/%s/%s/", keyPart(accountScopeID), keyPart(sessionID), keyPart(status))
 }
 
+func SessionArtifactCollectionStatusSessionPrefix(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("v3/session_artifact/collections_by_status/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
+}
+
 func KeySessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) string {
 	return fmt.Sprintf("v3/session_artifact/variants/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(sessionID), keyPart(collectionID), keyPart(variantID))
 }
 
 func SessionArtifactVariantPrefix(accountScopeID, sessionID, collectionID string) string {
 	return fmt.Sprintf("v3/session_artifact/variants/%s/%s/%s/", keyPart(accountScopeID), keyPart(sessionID), keyPart(collectionID))
+}
+
+func SessionArtifactVariantSessionPrefix(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("v3/session_artifact/variants/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
 }
 
 func KeySessionArtifactVariantStatus(accountScopeID, sessionID, status, collectionID, variantID string) string {
@@ -145,12 +153,20 @@ func SessionArtifactVariantStatusPrefix(accountScopeID, sessionID, status string
 	return fmt.Sprintf("v3/session_artifact/variants_by_status/%s/%s/%s/", keyPart(accountScopeID), keyPart(sessionID), keyPart(status))
 }
 
+func SessionArtifactVariantStatusSessionPrefix(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("v3/session_artifact/variants_by_status/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
+}
+
 func KeySessionArtifactVariantDigest(accountScopeID, sessionID, digest, collectionID, variantID string) string {
 	return fmt.Sprintf("v3/session_artifact/variants_by_digest/%s/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(sessionID), keyPart(digest), keyPart(collectionID), keyPart(variantID))
 }
 
 func SessionArtifactVariantDigestPrefix(accountScopeID, sessionID, digest string) string {
 	return fmt.Sprintf("v3/session_artifact/variants_by_digest/%s/%s/%s/", keyPart(accountScopeID), keyPart(sessionID), keyPart(digest))
+}
+
+func SessionArtifactVariantDigestSessionPrefix(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("v3/session_artifact/variants_by_digest/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
 }
 
 func (s *SessionStore) GetSessionArtifactCollection(accountScopeID, sessionID, collectionID string) (SessionArtifactCollection, bool, error) {

@@ -107,8 +107,9 @@ type V3SessionTombstone struct {
 	Hidden         bool            `json:"hidden,omitempty"`
 	EndpointSeq    uint64          `json:"endpoint_seq"`
 	EventSeq       uint64          `json:"event_seq"`
-	UpdatedAt      int64           `json:"updated_at"`
-	Session        SessionSnapshot `json:"session,omitempty"`
+	UpdatedAt              int64           `json:"updated_at"`
+	ArtifactCleanupPending bool            `json:"artifact_cleanup_pending,omitempty"`
+	Session                SessionSnapshot `json:"session,omitempty"`
 }
 
 type MessageSnapshot struct {
@@ -736,10 +737,11 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				Archived:       kind == "archived",
 				EndpointSeq:    endpointSeq,
 				EventSeq:       seq,
-				UpdatedAt:      now,
+				UpdatedAt:              now,
+				ArtifactCleanupPending: kind == "deleted",
 			}
 			// Archived sessions remain restorable. Deleted sessions retain only
-			// routing and ordering fields needed for scoped replay and membership.
+			// routing/ordering fields plus the bounded artifact-cleanup retry bit.
 			if kind == "archived" {
 				tombstone.Session = existing
 			}
@@ -880,6 +882,8 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		ExecutionEpochPrefix(session.ID), ExecutionEpochOrdinalPrefix(session.ID), ExecutionEpochBoundaryPrefix(session.ID), ExecutionProviderLifecycleStatePrefix(session.ID),
 		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
 		SessionMediaAssetPrefix(session.AccountScopeID, session.ID), SessionMediaBlobPrefix(session.AccountScopeID, session.ID),
+		SessionArtifactCollectionPrefix(session.AccountScopeID, session.ID), SessionArtifactCollectionStatusSessionPrefix(session.AccountScopeID, session.ID),
+		SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantStatusSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantDigestSessionPrefix(session.AccountScopeID, session.ID),
 	} {
 		if err := deletePrefixInBatch(batch, prefix); err != nil {
 			return err
@@ -941,6 +945,13 @@ func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombst
 	if err := batch.Set([]byte(KeyV3SessionTombstone(tombstone.SessionID)), payload, nil); err != nil {
 		return err
 	}
+	if tombstone.ArtifactCleanupPending {
+		if err := batch.Set([]byte(KeyV3SessionArtifactCleanupPending(tombstone.SessionID)), payload, nil); err != nil {
+			return err
+		}
+	} else if err := batch.Delete([]byte(KeyV3SessionArtifactCleanupPending(tombstone.SessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
 	if tombstone.AccountScopeID != "" {
 		if err := batch.Set([]byte(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)), payload, nil); err != nil {
 			return err
@@ -980,6 +991,9 @@ func removeV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTom
 	if err := deleteKey(KeyV3SessionTombstone(tombstone.SessionID)); err != nil {
 		return err
 	}
+	if err := deleteKey(KeyV3SessionArtifactCleanupPending(tombstone.SessionID)); err != nil {
+		return err
+	}
 	if tombstone.AccountScopeID != "" {
 		if err := deleteKey(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)); err != nil {
 			return err
@@ -1006,6 +1020,41 @@ func (s *SessionStore) GetV3SessionTombstone(sessionID string) (V3SessionTombsto
 	return getV3SessionTombstoneFromReader(s.store.db, sessionID)
 }
 
+func (s *SessionStore) MarkV3SessionArtifactCleanupComplete(sessionID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	unlock := s.store.sessionMutations.lockSessions(sessionID)
+	defer unlock()
+	tombstone, ok, err := getV3SessionTombstoneFromReader(s.store.db, sessionID)
+	if err != nil || !ok {
+		return err
+	}
+	if !tombstone.Deleted || tombstone.Archived {
+		return errors.New("artifact cleanup can only complete for a deleted session")
+	}
+	if !tombstone.ArtifactCleanupPending {
+		return nil
+	}
+	previous := tombstone
+	tombstone.ArtifactCleanupPending = false
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	// Replace all tombstone indexes in one batch so the pending cleanup index
+	// cannot diverge from the durable replay tombstone.
+	if err := removeV3SessionTombstoneInBatch(batch, previous); err != nil {
+		return err
+	}
+	if err := setV3SessionTombstoneInBatch(batch, tombstone); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
 func getV3SessionTombstoneFromReader(reader pebble.Reader, sessionID string) (V3SessionTombstone, bool, error) {
 	var tombstone V3SessionTombstone
 	ok, err := getJSONFromReader(reader, KeyV3SessionTombstone(strings.TrimSpace(sessionID)), &tombstone)
@@ -1013,6 +1062,28 @@ func getV3SessionTombstoneFromReader(reader pebble.Reader, sessionID string) (V3
 		return V3SessionTombstone{}, ok, err
 	}
 	return normalizeV3SessionTombstone(tombstone), true, nil
+}
+
+func (s *SessionStore) ListPendingV3SessionArtifactCleanups(limit int) ([]V3SessionTombstone, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	out := make([]V3SessionTombstone, 0, limit)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: V3SessionArtifactCleanupPendingPrefix(), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var tombstone V3SessionTombstone
+		if err := json.Unmarshal(value, &tombstone); err != nil {
+			return false, err
+		}
+		tombstone = normalizeV3SessionTombstone(tombstone)
+		if tombstone.Deleted && !tombstone.Archived && tombstone.ArtifactCleanupPending {
+			out = append(out, tombstone)
+		}
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) ListV3SessionTombstonesForAccount(accountScopeID string, limit int) ([]V3SessionTombstone, error) {

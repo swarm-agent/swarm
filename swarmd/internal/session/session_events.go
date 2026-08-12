@@ -131,6 +131,13 @@ func (s *Service) GetSessionTombstone(sessionID string) (pebblestore.V3SessionTo
 	return s.store.GetV3SessionTombstone(sessionID)
 }
 
+func (s *Service) MarkSessionArtifactCleanupComplete(sessionID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	return s.store.MarkV3SessionArtifactCleanupComplete(sessionID)
+}
+
 func (s *Service) SearchSessions(options pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.V3SessionSearchResult{}, errors.New("session store is not configured")
@@ -184,6 +191,13 @@ func (s *Service) ListSessionTombstonesForAccount(accountScopeID string, limit i
 		return nil, errors.New("session store is not configured")
 	}
 	return s.store.ListV3SessionTombstonesForAccount(accountScopeID, limit)
+}
+
+func (s *Service) ListPendingSessionArtifactCleanups(limit int) ([]SessionTombstone, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListPendingV3SessionArtifactCleanups(limit)
 }
 
 func (s *Service) ListRealtimeOutboxForSessionsAfterEndpoint(sessionIDs []string, afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {

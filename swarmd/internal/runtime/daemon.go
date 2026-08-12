@@ -21,6 +21,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
@@ -211,6 +212,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	artifactRegistry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
+	sessionSvc.SetArtifactSessionCleaner(artifactRegistry)
+	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
 	if err := sessionSvc.EnsureSessionRunStateIndex(); err != nil {
 		_ = secretStore.Close()
@@ -435,9 +439,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 	startV3SessionRetention(bgCtx, sessionSvc)
 	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
+	startArtifactMaintenance(bgCtx, artifactRegistry)
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
+	apiServer.SetArtifactRegistry(artifactRegistry)
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)
