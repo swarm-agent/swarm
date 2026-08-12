@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -577,6 +578,69 @@ func TestPrepareTaskProgramResumeReconcilesCompletedChildWithoutReplay(t *testin
 	}
 	if readyCount != 1 || resumed.State != pebblestore.TaskProgramStateRunning || resumed.Jobs[0].State != pebblestore.TaskProgramJobCompleted || resumed.ResumeGeneration != record.ResumeGeneration+1 {
 		t.Fatalf("completed child reconciliation = ready:%d record:%#v", readyCount, resumed)
+	}
+}
+
+func TestGateTaskProgramResumeReusesReservationWithoutApproval(t *testing.T) {
+	svc, parentID, permissions, cleanup := newTaskLaunchPermissionServiceWithPermissions(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentID)
+	if err != nil || !ok {
+		t.Fatalf("get parent: ok=%t err=%v", ok, err)
+	}
+	definition := pebblestore.TaskProgramDefinition{
+		Stages: []pebblestore.TaskProgramStageSpec{{ID: "inspect"}},
+		Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "finder", StageID: "inspect", AgentType: "finder", Title: "Find", MetaPrompt: "inspect", Deliverable: "report", AcceptanceCriteria: []string{"done"}}},
+	}
+	record, _, err := svc.sessions.CreateTaskProgram(pebblestore.TaskProgramRecord{
+		ParentSessionID: parent.ID, ProgramID: "resume_no_approval", DefinitionHash: "hash", Definition: definition,
+		ReservationRunID: "parent-run", ReservationCallID: "original-task-call", State: pebblestore.TaskProgramStateBlocked, ActiveStageID: "inspect", NextAction: "repair_failed_child_then_resume",
+		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "finder", StageID: "inspect", State: pebblestore.TaskProgramJobBlocked, AttemptNumber: 1}},
+	})
+	if err != nil {
+		t.Fatalf("create task program: %v", err)
+	}
+	reserved, err := permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+		SessionID: parent.ID, AccountScopeID: parent.AccountScopeID, RunID: record.ReservationRunID, CallID: record.ReservationCallID,
+		ManifestHash: "manifest", LaunchCount: 1, Program: true, ReadyCount: 1,
+	})
+	if err != nil || reserved.Decision != permission.SubagentReservationApprove {
+		t.Fatalf("reserve program: decision=%s err=%v", reserved.Decision, err)
+	}
+	call := tool.Call{CallID: "resume-lifecycle-call", Name: "task", Arguments: mustJSON(t, map[string]any{
+		"action": "resume", "program_id": record.ProgramID, "expected_revision": record.Revision, "expected_generation": record.ResumeGeneration,
+	})}
+	permissionEvents := 0
+	results, approved, _, mask, _, err := svc.gateToolCalls(context.Background(), parent.ID, "resume-parent-run", 1, sessionruntime.ModeAuto, []tool.Call{call}, func(event StreamEvent) {
+		if event.Type == StreamEventPermissionReq {
+			permissionEvents++
+		}
+	}, nil)
+	if err != nil {
+		t.Fatalf("gate resume: %v", err)
+	}
+	if len(results) != 1 || len(approved) != 1 || len(mask) != 1 || !mask[0] || permissionEvents != 0 {
+		t.Fatalf("guarded resume was not approved inline: results=%#v approved=%d mask=%v permission_events=%d", results, len(approved), mask, permissionEvents)
+	}
+	pending, err := permissions.ListPending(parent.ID, 10)
+	if err != nil {
+		t.Fatalf("list pending permissions: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("guarded resume created redundant approval records: %#v", pending)
+	}
+
+	state, next := pebblestore.TaskProgramStateRunning, "resume_program_scheduler"
+	resumed, _, err := svc.sessions.TransitionTaskProgram(parent.ID, record.ProgramID, pebblestore.TaskProgramTransition{
+		ExpectedRevision: record.Revision, MutationID: "resume-test", State: &state, NextAction: &next,
+		IncrementResumeGeneration: true, ResumeFromRevision: record.Revision, ResumeFromGeneration: record.ResumeGeneration,
+	})
+	if err != nil {
+		t.Fatalf("persist resumed generation: %v", err)
+	}
+	results, approved, _, mask, _, err = svc.gateToolCalls(context.Background(), parent.ID, "resume-parent-run", 2, sessionruntime.ModeAuto, []tool.Call{call}, nil, nil)
+	if err != nil || len(results) != 1 || len(approved) != 1 || len(mask) != 1 || !mask[0] {
+		t.Fatalf("idempotent guarded resume was not approved inline after generation advanced to %d: results=%#v approved=%d mask=%v err=%v", resumed.ResumeGeneration, results, len(approved), mask, err)
 	}
 }
 

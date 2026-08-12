@@ -849,9 +849,21 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = "task manifest is invalid"
 				continue
 			}
-			if manifest.Action != taskProgramActionStatus && manifest.Action != taskProgramActionResume {
-				// Program status/resume operates on the existing durable record and must
-				// not consume another parent invocation reservation.
+			if manifest.Action == taskProgramActionResume {
+				// Resume is a guarded continuation of an already-reserved durable program,
+				// not a new delegation wave. Reuse that reservation so generic task policy
+				// cannot create a redundant approval; execution still rechecks current
+				// policy/capacity before advancing the program generation.
+				resumedReservation, resumeErr := s.taskProgramResumeAuthorization(sessionID, manifest)
+				if resumeErr != nil {
+					decisions[i].Err = resumeErr
+					decisions[i].Result.Error = resumeErr.Error()
+					continue
+				}
+				subagentReservation = &resumedReservation
+			} else if manifest.Action != taskProgramActionStatus {
+				// Program status operates on the existing durable record and must not
+				// consume another parent invocation reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
 				if callID == "" {
 					decisions[i].Err = errors.New("task call ID is required for durable reservation")
@@ -3345,6 +3357,32 @@ func executeTaskLaunchesInParallel[T any](ctx context.Context, launchCount int, 
 func (s *Service) executeTaskTool(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler) (string, error) {
 	principal, _ := identity.PrincipalFromContext(ctx)
 	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal})
+}
+
+func (s *Service) taskProgramResumeAuthorization(sessionID string, manifest taskLaunchManifest) (permission.SubagentReservationResult, error) {
+	if s.sessions == nil || s.permissions == nil {
+		return permission.SubagentReservationResult{}, errors.New("task program resume authorization is not configured")
+	}
+	record, ok, err := s.sessions.GetTaskProgram(strings.TrimSpace(sessionID), strings.TrimSpace(manifest.ProgramID))
+	if err != nil {
+		return permission.SubagentReservationResult{}, err
+	}
+	if !ok {
+		return permission.SubagentReservationResult{}, fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
+	}
+	guardMatches := record.Revision == manifest.ExpectedRevision && record.ResumeGeneration == manifest.ExpectedGeneration
+	idempotentResume := record.LastResumeRevision == manifest.ExpectedRevision && record.LastResumeGeneration == manifest.ExpectedGeneration && record.State == pebblestore.TaskProgramStateRunning && record.NextAction == "resume_program_scheduler"
+	if !guardMatches && !idempotentResume {
+		return permission.SubagentReservationResult{}, fmt.Errorf("task program resume guard mismatch: current revision=%d generation=%d", record.Revision, record.ResumeGeneration)
+	}
+	reservation, ok, err := s.permissions.GetSubagentReservation(record.ParentSessionID, record.ReservationRunID, record.ReservationCallID)
+	if err != nil {
+		return permission.SubagentReservationResult{}, err
+	}
+	if !ok || !reservation.Program {
+		return permission.SubagentReservationResult{}, errors.New("subagent program reservation not found")
+	}
+	return permission.SubagentReservationResult{Decision: permission.SubagentReservationApprove, Reason: "guarded task program resume reuses its existing reservation", Reservation: reservation}, nil
 }
 
 func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (string, error) {
