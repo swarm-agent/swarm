@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func taskProgramFixture(maxConcurrency any) map[string]any {
@@ -209,6 +210,114 @@ func TestTaskProgramStatusProjectionIsBoundedAndComplete(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "report") || strings.Contains(string(raw), "transcript") {
 		t.Fatalf("projection leaked unbounded content: %s", raw)
+	}
+}
+
+func TestTaskProgramPresentationGroupsOrderedStagesAndJobsWithoutPrivateFields(t *testing.T) {
+	record := pebblestore.TaskProgramRecord{
+		ParentSessionID: "parent", ProgramID: "release", ReservationCallID: "call-release",
+		Revision: 6, ResumeGeneration: 2, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
+		Definition: pebblestore.TaskProgramDefinition{
+			Stages: []pebblestore.TaskProgramStageSpec{
+				{ID: "build", DependencyEvidence: "Independent work is ready."},
+				{ID: "fix", DependsOn: []string{"build"}, DependencyEvidence: "Requires integrated build outputs."},
+			},
+			Jobs: []pebblestore.TaskProgramJobSpec{
+				{ID: "api", StageID: "build", AgentType: "coder", Title: "API Work", MetaPrompt: "private prompt", OwnedScope: []string{"private/**"}, DependencyEvidence: "Ready."},
+				{ID: "fixer", StageID: "fix", DependsOn: []string{"api"}, AgentType: "finder", Title: "Verify Integration", MetaPrompt: "private verification prompt", DependencyEvidence: "Waits for API."},
+			},
+		},
+		Jobs: []pebblestore.TaskProgramJobRecord{
+			{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobRunning, AttemptNumber: 1, ChildSessionID: "child-api"},
+			{JobID: "fixer", StageID: "fix", State: pebblestore.TaskProgramJobDeclared},
+		},
+	}
+
+	presentation := taskProgramPresentationPayload(record)
+	if presentation["kind"] != "task_program" || presentation["program_id"] != "release" || presentation["task_call_id"] != "call-release" || presentation["active_stage_id"] != "build" {
+		t.Fatalf("presentation identity = %#v", presentation)
+	}
+	stages := presentation["stages"].([]map[string]any)
+	if len(stages) != 2 || stages[0]["stage_id"] != "build" || stages[0]["order"] != 1 || stages[0]["state"] != "running" || stages[1]["stage_id"] != "fix" || stages[1]["state"] != "waiting" {
+		t.Fatalf("stages = %#v", stages)
+	}
+	buildJobs := stages[0]["jobs"].([]map[string]any)
+	fixJobs := stages[1]["jobs"].([]map[string]any)
+	if len(buildJobs) != 1 || buildJobs[0]["job_id"] != "api" || buildJobs[0]["title"] != "API Work" || buildJobs[0]["agent_type"] != "coder" || buildJobs[0]["child_session_id"] != "child-api" {
+		t.Fatalf("build jobs = %#v", buildJobs)
+	}
+	if len(fixJobs) != 1 || fixJobs[0]["job_id"] != "fixer" || fixJobs[0]["dependency_state"] != "waiting" {
+		t.Fatalf("fix jobs = %#v", fixJobs)
+	}
+	raw, err := json.Marshal(presentation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private prompt", "private verification prompt", "private/**", "meta_prompt", "owned_scope", "workspace_path", "report"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("presentation leaked %q: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestTaskProgramStatusCarriesStableGroupingIdentityAndPresentation(t *testing.T) {
+	record := pebblestore.TaskProgramRecord{
+		ParentSessionID: "parent", ProgramID: "release", ReservationCallID: "call-release",
+		Revision: 3, ResumeGeneration: 1, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
+		Definition: pebblestore.TaskProgramDefinition{
+			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
+			Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", DependencyEvidence: "ready"}},
+		},
+		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobRunning}},
+	}
+	payload := taskProgramStatusPayload(record, false)
+	presentation, ok := payload["program_presentation"].(map[string]any)
+	if !ok || payload["task_call_id"] != "call-release" || presentation["task_call_id"] != "call-release" || presentation["program_id"] != "release" {
+		t.Fatalf("status grouping contract = %#v", payload)
+	}
+}
+
+func TestTaskProgramProgressStreamCarriesCanonicalSnapshotAndStableCallID(t *testing.T) {
+	var event StreamEvent
+	record := pebblestore.TaskProgramRecord{
+		ParentSessionID: "parent", ProgramID: "release", ReservationCallID: "call-release",
+		Revision: 2, ResumeGeneration: 1, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
+		Definition: pebblestore.TaskProgramDefinition{
+			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
+			Jobs: []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "private", DependencyEvidence: "ready"}},
+		},
+		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobRunning}},
+	}
+	scheduler := taskProgramScheduler{
+		step: 4, call: tool.Call{CallID: "unstable-cohort"}, emit: func(got StreamEvent) { event = got },
+		parentSession: pebblestore.SessionSnapshot{ID: "parent"}, parsed: taskCallArguments{Action: taskProgramActionStart}, record: record, description: "release work",
+	}
+	scheduler.emitProgramProgress("stage.running", "Build is running")
+	if event.Type != StreamEventToolDelta || event.CallID != "call-release" {
+		t.Fatalf("stream identity = %#v", event)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(event.Output), &payload); err != nil {
+		t.Fatal(err)
+	}
+	presentation, ok := payload["program_presentation"].(map[string]any)
+	if !ok || payload["path_id"] != "tool.task_program.stream.v1" || payload["program_id"] != "release" || payload["task_call_id"] != "call-release" || presentation["active_stage_id"] != "build" {
+		t.Fatalf("stream contract = %#v", payload)
+	}
+	if strings.Contains(event.Output, "private") {
+		t.Fatalf("stream leaked private definition fields: %s", event.Output)
+	}
+}
+
+func TestTaskProgramCohortProgressUsesDeclaredJobIdentity(t *testing.T) {
+	scheduler := taskProgramScheduler{record: pebblestore.TaskProgramRecord{Jobs: []pebblestore.TaskProgramJobRecord{
+		{JobID: "api", StageID: "build"}, {JobID: "web", StageID: "build"}, {JobID: "fixer", StageID: "fix"},
+	}}}
+	if got := scheduler.taskProgramCohortJobID([]int{0, 2}, map[string]any{"launch_index": float64(2)}); got != "fixer" {
+		t.Fatalf("cohort job identity = %q, want fixer", got)
+	}
+	if got := taskProgramPresentationJobState("tool.started"); got != pebblestore.TaskProgramJobRunning {
+		t.Fatalf("tool phase state = %q", got)
 	}
 }
 

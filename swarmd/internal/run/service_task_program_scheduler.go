@@ -49,6 +49,7 @@ func (s *Service) executeTaskProgram(ctx context.Context, sessionMode string, st
 		return "", errors.New("task program scheduler reservation is missing active capacity")
 	}
 	scheduler := taskProgramScheduler{service: s, ctx: ctx, sessionMode: sessionMode, step: step, call: call, emit: emit, req: req, parentSession: parentSession, description: description, prompt: prompt, parsed: parsed, record: record, reservationCap: reservation.ActiveCount}
+	scheduler.emitProgramProgress("program.started", "Task Program started")
 	return scheduler.run()
 }
 
@@ -148,6 +149,32 @@ func taskProgramStageHasRunningOrDeclared(record pebblestore.TaskProgramRecord, 
 	return false
 }
 
+func (p *taskProgramScheduler) emitProgramProgress(event, summary string) {
+	payload := map[string]any{
+		"tool":                 "task",
+		"action":               p.parsed.Action,
+		"status":               p.record.State,
+		"phase":                strings.TrimSpace(event),
+		"description":          p.description,
+		"goal":                 p.description,
+		"parent_session_id":    p.parentSession.ID,
+		"task_call_id":         p.record.ReservationCallID,
+		"program_id":           p.record.ProgramID,
+		"program_state":        p.record.State,
+		"active_stage_id":      p.record.ActiveStageID,
+		"event":                "program.snapshot",
+		"path_id":              "tool.task_program.stream.v1",
+		"stream_version":       1,
+		"summary":              strings.TrimSpace(summary),
+		"program_presentation": taskProgramPresentationPayload(p.record),
+		"details_truncated":    false,
+	}
+	if payload["task_call_id"] == "" {
+		payload["task_call_id"] = strings.TrimSpace(p.call.CallID)
+	}
+	emitTaskStreamPayload(p.emit, p.step, "task", fmt.Sprint(payload["task_call_id"]), payload)
+}
+
 func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	running := make([]pebblestore.TaskProgramJobTransition, 0, len(indexes))
 	for _, index := range indexes {
@@ -160,6 +187,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	if err != nil {
 		return err
 	}
+	p.emitProgramProgress("cohort.running", fmt.Sprintf("Stage %s is running", p.record.ActiveStageID))
 	cohort := p.parsed
 	cohort.Program = nil
 	cohort.Launches = make([]taskLaunchSpec, 0, len(indexes))
@@ -177,8 +205,10 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		}
 	}
 	cohortCall := p.call
-	cohortCall.CallID = fmt.Sprintf("%s-cohort-%d", strings.TrimSpace(p.call.CallID), p.record.Revision)
-	if strings.TrimSpace(approved) == "" {
+	// Cohorts are an internal capacity detail. Every child update retains the
+	// durable parent task call identity so clients never render separate cards.
+	cohortCall.CallID = strings.TrimSpace(p.record.ReservationCallID)
+	if cohortCall.CallID == "" {
 		cohortCall.CallID = strings.TrimSpace(p.call.CallID)
 	}
 	cohortCall.Arguments = "{}"
@@ -187,7 +217,49 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	cohortReq.ParentSession = &p.parentSession
 	cohortReq.ApprovedArguments = approved
 	cohortReq.RunID = ""
-	output, runErr := p.service.executeTaskToolWithParsed(p.ctx, p.parentSession.ID, p.sessionMode, p.step, cohortCall, p.emit, cohortReq)
+	cohortEmit := func(event StreamEvent) {
+		if event.Type != StreamEventToolDelta || strings.TrimSpace(event.Output) == "" {
+			if p.emit != nil {
+				p.emit(event)
+			}
+			return
+		}
+		var payload map[string]any
+		if json.Unmarshal([]byte(event.Output), &payload) != nil || payload["path_id"] != taskStreamPathIDV2 {
+			if p.emit != nil {
+				p.emit(event)
+			}
+			return
+		}
+		launch, _ := payload["launch"].(map[string]any)
+		jobID := p.taskProgramCohortJobID(indexes, launch)
+		if jobID == "" {
+			return
+		}
+		presentation := taskProgramPresentationPayload(p.record)
+		patch := map[string]any{
+			"job_id":          jobID,
+			"stage_id":        p.record.ActiveStageID,
+			"state":           taskProgramPresentationJobState(mapString(payload, "phase")),
+			"child_session_id": mapString(launch, "child_session_id"),
+			"current_tool":     mapString(launch, "current_tool"),
+			"current_tool_display": mapString(launch, "current_tool_display"),
+			"elapsed_ms":       launch["elapsed_ms"],
+			"terminal":         launch["terminal"],
+		}
+		programPayload := map[string]any{
+			"tool": "task", "action": p.parsed.Action, "status": p.record.State,
+			"phase": mapString(payload, "phase"), "description": p.description, "goal": p.description,
+			"parent_session_id": p.parentSession.ID, "task_call_id": cohortCall.CallID,
+			"program_id": p.record.ProgramID, "program_state": p.record.State,
+			"active_stage_id": p.record.ActiveStageID, "event": "job.patch",
+			"path_id": "tool.task_program.stream.v1", "stream_version": 1,
+			"job_id": jobID, "job": patch, "program_presentation": presentation,
+			"summary": mapString(payload, "summary"), "details_truncated": false,
+		}
+		emitTaskStreamPayload(p.emit, p.step, "task", cohortCall.CallID, programPayload)
+	}
+	output, runErr := p.service.executeTaskToolWithParsed(p.ctx, p.parentSession.ID, p.sessionMode, p.step, cohortCall, cohortEmit, cohortReq)
 	var payload map[string]any
 	if json.Unmarshal([]byte(output), &payload) == nil {
 		p.allOutcomes = append(p.allOutcomes, taskProgramLaunchRows(payload)...)
@@ -232,7 +304,41 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	if err != nil {
 		return err
 	}
+	p.emitProgramProgress("cohort.completed", fmt.Sprintf("Stage %s cohort completed", p.record.ActiveStageID))
 	return runErr
+}
+
+func (p *taskProgramScheduler) taskProgramCohortJobID(indexes []int, launch map[string]any) string {
+	launchIndex := 0
+	switch value := launch["launch_index"].(type) {
+	case int:
+		launchIndex = value
+	case float64:
+		launchIndex = int(value)
+	}
+	if launchIndex < 1 || launchIndex > len(indexes) {
+		return ""
+	}
+	index := indexes[launchIndex-1]
+	if index < 0 || index >= len(p.record.Jobs) {
+		return ""
+	}
+	return p.record.Jobs[index].JobID
+}
+
+func taskProgramPresentationJobState(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "completed":
+		return pebblestore.TaskProgramJobCompleted
+	case "failed", "tool.failed":
+		return pebblestore.TaskProgramJobFailed
+	case "cancelled":
+		return pebblestore.TaskProgramJobCancelled
+	case "spawned", "running", "tool.started", "tool.completed":
+		return pebblestore.TaskProgramJobRunning
+	default:
+		return ""
+	}
 }
 
 func taskProgramApprovedCohort(approved string, specs []taskLaunchSpec) (string, error) {
@@ -361,6 +467,9 @@ func (p *taskProgramScheduler) advanceStage(stageIndex int) error {
 	stageID, next := p.record.Definition.Stages[stageIndex].ID, "launch_ready_jobs"
 	var err error
 	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("stage:%d:%s", p.record.Revision, stageID), ActiveStageID: &stageID, NextAction: &next})
+	if err == nil {
+		p.emitProgramProgress("stage.advanced", fmt.Sprintf("Advanced to stage %s", stageID))
+	}
 	return err
 }
 
@@ -371,6 +480,7 @@ func (p *taskProgramScheduler) finishCompleted() (string, error) {
 		return "", err
 	}
 	p.record = record
+	p.emitProgramProgress("program.completed", "Task Program completed")
 	if err := p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "completed"); err != nil {
 		return "", err
 	}
@@ -383,12 +493,14 @@ func (p *taskProgramScheduler) finishCompleted() (string, error) {
 }
 
 func (p *taskProgramScheduler) finishFailed(runErr error) (string, error) {
+	p.emitProgramProgress("program.failed", "Task Program failed")
 	_ = p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "failed")
 	status, _ := marshalTaskProgramStatus(p.record, false)
 	return status, runErr
 }
 
 func (p *taskProgramScheduler) finishProgramError(runErr error) (string, error) {
+	p.emitProgramProgress("program.blocked", "Task Program blocked")
 	_ = p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "blocked")
 	status, _ := marshalTaskProgramStatus(p.record, false)
 	return status, runErr

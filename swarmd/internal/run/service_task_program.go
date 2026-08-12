@@ -59,6 +59,125 @@ func taskProgramInitialRecord(parentSessionID, reservationRunID, reservationCall
 	return record, nil
 }
 
+const taskProgramPresentationVersion = 1
+
+// taskProgramPresentationPayload is the privacy-bounded client contract for one
+// durable Task Program. It intentionally omits prompts, reports, owned paths,
+// Git details, and other execution-only fields.
+func taskProgramPresentationPayload(record pebblestore.TaskProgramRecord) map[string]any {
+	jobDefinitions := make(map[string]pebblestore.TaskProgramJobSpec, len(record.Definition.Jobs))
+	jobOrder := make(map[string]int, len(record.Definition.Jobs))
+	for i, definition := range record.Definition.Jobs {
+		jobDefinitions[definition.ID] = definition
+		jobOrder[definition.ID] = i + 1
+	}
+
+	jobsByStage := make(map[string][]map[string]any, len(record.Definition.Stages))
+	counts := map[string]int{
+		"declared": 0, "running": 0, "handoff_ready": 0, "integrated": 0,
+		"blocked": 0, "failed": 0, "cancelled": 0, "completed": 0,
+	}
+	jobStates := make(map[string]string, len(record.Jobs))
+	for _, job := range record.Jobs {
+		jobStates[job.JobID] = strings.TrimSpace(job.State)
+		if _, ok := counts[job.State]; ok {
+			counts[job.State]++
+		}
+	}
+	for _, job := range record.Jobs {
+		definition := jobDefinitions[job.JobID]
+		dependencyState := "satisfied"
+		for _, dependency := range definition.DependsOn {
+			state := jobStates[dependency]
+			if state != pebblestore.TaskProgramJobIntegrated && state != pebblestore.TaskProgramJobCompleted {
+				dependencyState = "waiting"
+				break
+			}
+		}
+		row := map[string]any{
+			"job_id":              job.JobID,
+			"stage_id":            job.StageID,
+			"order":               jobOrder[job.JobID],
+			"title":               boundedTaskProgramPresentationText(definition.Title),
+			"agent_type":          strings.TrimSpace(definition.AgentType),
+			"depends_on":          append([]string(nil), definition.DependsOn...),
+			"dependency_state":    dependencyState,
+			"dependency_evidence": boundedTaskProgramPresentationText(definition.DependencyEvidence),
+			"state":               strings.TrimSpace(job.State),
+			"attempt_number":      job.AttemptNumber,
+		}
+		if job.ChildSessionID != "" {
+			row["child_session_id"] = strings.TrimSpace(job.ChildSessionID)
+		}
+		jobsByStage[job.StageID] = append(jobsByStage[job.StageID], row)
+	}
+
+	stages := make([]map[string]any, 0, len(record.Definition.Stages))
+	for i, stage := range record.Definition.Stages {
+		jobs := jobsByStage[stage.ID]
+		stageState := taskProgramPresentationStageState(record, stage.ID, jobs)
+		stages = append(stages, map[string]any{
+			"stage_id":            stage.ID,
+			"order":               i + 1,
+			"depends_on":          append([]string(nil), stage.DependsOn...),
+			"dependency_evidence": boundedTaskProgramPresentationText(stage.DependencyEvidence),
+			"state":               stageState,
+			"jobs":                jobs,
+		})
+	}
+
+	return map[string]any{
+		"kind":              "task_program",
+		"version":           taskProgramPresentationVersion,
+		"program_id":        record.ProgramID,
+		"task_call_id":      record.ReservationCallID,
+		"state":             record.State,
+		"active_stage_id":   record.ActiveStageID,
+		"revision":          record.Revision,
+		"resume_generation": record.ResumeGeneration,
+		"stages":            stages,
+		"counts":            counts,
+		"details_truncated": false,
+	}
+}
+
+func taskProgramPresentationStageState(record pebblestore.TaskProgramRecord, stageID string, jobs []map[string]any) string {
+	if stageID == record.ActiveStageID {
+		switch record.State {
+		case pebblestore.TaskProgramStateBlocked, pebblestore.TaskProgramStateFailed, pebblestore.TaskProgramStateCancelled:
+			return record.State
+		}
+	}
+	allComplete := len(jobs) > 0
+	hasRunning := false
+	for _, job := range jobs {
+		state, _ := job["state"].(string)
+		switch state {
+		case pebblestore.TaskProgramJobFailed, pebblestore.TaskProgramJobBlocked, pebblestore.TaskProgramJobCancelled:
+			return state
+		case pebblestore.TaskProgramJobRunning, pebblestore.TaskProgramJobHandoffReady:
+			hasRunning = true
+		}
+		if state != pebblestore.TaskProgramJobIntegrated && state != pebblestore.TaskProgramJobCompleted {
+			allComplete = false
+		}
+	}
+	if allComplete {
+		return "completed"
+	}
+	if hasRunning {
+		return "running"
+	}
+	if stageID == record.ActiveStageID {
+		return "ready"
+	}
+	return "waiting"
+}
+
+func boundedTaskProgramPresentationText(value string) string {
+	return truncateRunes(strings.TrimSpace(value), 512)
+}
+
 func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool) map[string]any {
 	jobs := make([]map[string]any, 0, len(record.Jobs))
 	counts := map[string]int{
@@ -98,10 +217,11 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 	}
 	payload := map[string]any{
 		"tool": "task", "action": "status", "status": "ok", "program_id": record.ProgramID,
-		"parent_session_id": record.ParentSessionID, "created": created, "revision": record.Revision,
+		"task_call_id": record.ReservationCallID, "parent_session_id": record.ParentSessionID, "created": created, "revision": record.Revision,
 		"reservation_run_id": record.ReservationRunID, "reservation_call_id": record.ReservationCallID,
 		"resume_generation": record.ResumeGeneration, "program_state": record.State, "active_stage_id": record.ActiveStageID,
-		"parent_head": record.ParentHead, "next_action": record.NextAction, "jobs": jobs, "counts": counts, "details_truncated": false, "path_id": "tool.task_program.status.v1",
+		"parent_head": record.ParentHead, "next_action": record.NextAction, "jobs": jobs, "counts": counts,
+		"program_presentation": taskProgramPresentationPayload(record), "details_truncated": false, "path_id": "tool.task_program.status.v1",
 	}
 	if record.Blocker != nil {
 		payload["blocker"] = record.Blocker
