@@ -150,6 +150,7 @@ func taskProgramStageHasRunningOrDeclared(record pebblestore.TaskProgramRecord, 
 }
 
 func (p *taskProgramScheduler) emitProgramProgress(event, summary string) {
+	program, status := taskProgramStreamMetadata(p.record)
 	payload := map[string]any{
 		"tool":                 "task",
 		"action":               p.parsed.Action,
@@ -162,10 +163,13 @@ func (p *taskProgramScheduler) emitProgramProgress(event, summary string) {
 		"program_id":           p.record.ProgramID,
 		"program_state":        p.record.State,
 		"active_stage_id":      p.record.ActiveStageID,
+		"next_action":          p.record.NextAction,
 		"event":                "program.snapshot",
-		"path_id":              "tool.task_program.stream.v1",
-		"stream_version":       1,
+		"path_id":              taskStreamPathIDV2,
+		"stream_version":       2,
 		"summary":              strings.TrimSpace(summary),
+		"program":              program,
+		"program_status":       status,
 		"program_presentation": taskProgramPresentationPayload(p.record),
 		"details_truncated":    false,
 	}
@@ -237,25 +241,31 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 			return
 		}
 		presentation := taskProgramPresentationPayload(p.record)
+		program, status := taskProgramStreamMetadata(p.record)
 		patch := map[string]any{
-			"job_id":          jobID,
-			"stage_id":        p.record.ActiveStageID,
-			"state":           taskProgramPresentationJobState(mapString(payload, "phase")),
-			"child_session_id": mapString(launch, "child_session_id"),
-			"current_tool":     mapString(launch, "current_tool"),
+			"job_id":               jobID,
+			"program_job_id":       jobID,
+			"stage_id":             p.record.ActiveStageID,
+			"program_stage_id":     p.record.ActiveStageID,
+			"state":                taskProgramPresentationJobState(mapString(payload, "phase")),
+			"child_session_id":     mapString(launch, "child_session_id"),
+			"current_tool":         mapString(launch, "current_tool"),
 			"current_tool_display": mapString(launch, "current_tool_display"),
-			"elapsed_ms":       launch["elapsed_ms"],
-			"terminal":         launch["terminal"],
+			"elapsed_ms":           launch["elapsed_ms"],
+			"terminal":             launch["terminal"],
 		}
+		launchKey := "program-job:" + jobID
+		patch["launch_key"] = launchKey
 		programPayload := map[string]any{
 			"tool": "task", "action": p.parsed.Action, "status": p.record.State,
 			"phase": mapString(payload, "phase"), "description": p.description, "goal": p.description,
 			"parent_session_id": p.parentSession.ID, "task_call_id": cohortCall.CallID,
 			"program_id": p.record.ProgramID, "program_state": p.record.State,
-			"active_stage_id": p.record.ActiveStageID, "event": "job.patch",
-			"path_id": "tool.task_program.stream.v1", "stream_version": 1,
-			"job_id": jobID, "job": patch, "program_presentation": presentation,
-			"summary": mapString(payload, "summary"), "details_truncated": false,
+			"active_stage_id": p.record.ActiveStageID, "next_action": p.record.NextAction, "event": "launch.patch",
+			"path_id": taskStreamPathIDV2, "stream_version": 2,
+			"launch_key": launchKey, "launch": patch, "program": program, "program_status": status,
+			"program_presentation": presentation,
+			"summary":              mapString(payload, "summary"), "details_truncated": false,
 		}
 		emitTaskStreamPayload(p.emit, p.step, "task", cohortCall.CallID, programPayload)
 	}

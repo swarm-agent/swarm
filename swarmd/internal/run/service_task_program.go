@@ -178,6 +178,58 @@ func boundedTaskProgramPresentationText(value string) string {
 	return truncateRunes(strings.TrimSpace(value), 512)
 }
 
+// taskProgramStreamMetadata adapts the privacy-bounded presentation contract to
+// the existing task stream v2 client shape. Keeping one stream protocol lets
+// Desktop and TUI merge stage snapshots with child launch patches as they arrive.
+func taskProgramStreamMetadata(record pebblestore.TaskProgramRecord) (map[string]any, map[string]any) {
+	stages := make([]map[string]any, 0, len(record.Definition.Stages))
+	for _, stage := range record.Definition.Stages {
+		stages = append(stages, map[string]any{
+			"id":                  stage.ID,
+			"depends_on":          append([]string(nil), stage.DependsOn...),
+			"dependency_evidence": boundedTaskProgramPresentationText(stage.DependencyEvidence),
+		})
+	}
+	jobs := make([]map[string]any, 0, len(record.Definition.Jobs))
+	for _, job := range record.Definition.Jobs {
+		jobs = append(jobs, map[string]any{
+			"id":                  job.ID,
+			"stage_id":            job.StageID,
+			"title":               boundedTaskProgramPresentationText(job.Title),
+			"agent_type":          strings.TrimSpace(job.AgentType),
+			"depends_on":          append([]string(nil), job.DependsOn...),
+			"dependency_evidence": boundedTaskProgramPresentationText(job.DependencyEvidence),
+		})
+	}
+	statusJobs := make([]map[string]any, 0, len(record.Jobs))
+	for _, job := range record.Jobs {
+		row := map[string]any{
+			"job_id":         job.JobID,
+			"stage_id":       job.StageID,
+			"state":          strings.TrimSpace(job.State),
+			"attempt_number": job.AttemptNumber,
+		}
+		if job.ChildSessionID != "" {
+			row["child_session_id"] = strings.TrimSpace(job.ChildSessionID)
+		}
+		statusJobs = append(statusJobs, row)
+	}
+	program := map[string]any{
+		"id":     record.ProgramID,
+		"stages": stages,
+		"jobs":   jobs,
+	}
+	status := map[string]any{
+		"program_id":      record.ProgramID,
+		"program_state":   record.State,
+		"active_stage_id": record.ActiveStageID,
+		"revision":        record.Revision,
+		"next_action":     record.NextAction,
+		"jobs":            statusJobs,
+	}
+	return program, status
+}
+
 func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool) map[string]any {
 	jobs := make([]map[string]any, 0, len(record.Jobs))
 	counts := map[string]int{

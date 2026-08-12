@@ -3017,6 +3017,65 @@ test('realtime task stream v2 retains Task Program definition and status metadat
   assert.deepEqual(stream?.programStatus, programStatus)
 })
 
+test('task program snapshot without a launch patch updates phased stream metadata', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {},
+    },
+  }
+  const program = {
+    id: 'release_program',
+    stages: [{ id: 'research' }, { id: 'build', depends_on: ['research'] }],
+    jobs: [{ id: 'scan', stage_id: 'research' }, { id: 'code', stage_id: 'build', depends_on: ['scan'] }],
+  }
+  const programStatus = {
+    program_id: 'release_program',
+    program_state: 'running',
+    active_stage_id: 'build',
+    jobs: [{ job_id: 'scan', stage_id: 'research', state: 'completed' }, { job_id: 'code', stage_id: 'build', state: 'running' }],
+  }
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-program-snapshot',
+      step_id: 'step-program-snapshot',
+      tool_instance_id: 'tool-instance-program-snapshot',
+      tool_name: 'task',
+      arguments: JSON.stringify({ action: 'start', program }),
+    }, 22, 'cursor-program-snapshot-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-program-snapshot',
+      tool_name: 'task',
+      output: JSON.stringify({
+        path_id: 'tool.task.stream.v2',
+        stream_version: 2,
+        tool: 'task',
+        event: 'program.snapshot',
+        status: 'running',
+        program_id: 'release_program',
+        program_state: 'running',
+        active_stage_id: 'build',
+        next_action: 'await_running_jobs',
+        program,
+        program_status: programStatus,
+      }),
+    }, 23, 'cursor-program-snapshot-delta'),
+  })
+
+  const stream = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-program-snapshot'].taskStream
+  assert.equal(stream?.activeStageId, 'build')
+  assert.equal(stream?.nextAction, 'await_running_jobs')
+  assert.deepEqual(stream?.program, program)
+  assert.deepEqual(stream?.programStatus, programStatus)
+  assert.deepEqual(stream?.launchOrder, [])
+})
+
 test('restored assistant delta with old seq is ignored', () => {
   const state = bootstrappedState()
   state.liveRunsBySession[sessionA.id] = {

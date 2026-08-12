@@ -4281,14 +4281,19 @@ function applyTaskStreamPatch(
   if (!parsed) return false
   if (stringValue(parsed.path_id) !== 'tool.task.stream.v2' || stringValue(parsed.tool) !== 'task') return false
   const launchPatch = recordValue(parsed.launch)
-  if (!launchPatch) return false
+  const hasProgramMetadata = Boolean(
+    stringValue(parsed.program_id)
+    || recordValue(parsed.program)
+    || recordValue(parsed.program_status),
+  )
+  if (!launchPatch && !hasProgramMetadata) return false
   const launchKey = stringValue(parsed.launch_key)
-    || stringValue(launchPatch.launch_key)
+    || stringValue(launchPatch?.launch_key)
     || stringValue(parsed.child_session_id)
-    || stringValue(launchPatch.child_session_id)
+    || stringValue(launchPatch?.child_session_id)
     || (numberValue(parsed.launch_index) > 0 ? `launch:${numberValue(parsed.launch_index)}` : '')
-    || (numberValue(launchPatch.launch_index) > 0 ? `launch:${numberValue(launchPatch.launch_index)}` : '')
-  if (!launchKey) return false
+    || (numberValue(launchPatch?.launch_index) > 0 ? `launch:${numberValue(launchPatch?.launch_index)}` : '')
+  if (!launchKey && launchPatch) return false
 
   const stream = tool.taskStream ?? {
     pathId: 'tool.task.stream.v2',
@@ -4297,7 +4302,7 @@ function applyTaskStreamPatch(
     launchesByKey: {},
     launchOrder: [],
   }
-  const existing = stream.launchesByKey[launchKey] ?? {}
+  const existing = launchKey ? stream.launchesByKey[launchKey] ?? {} : {}
   stream.pathId = 'tool.task.stream.v2'
   stream.streamVersion = 2
   stream.status = stringValue(parsed.status) || stream.status
@@ -4319,9 +4324,11 @@ function applyTaskStreamPatch(
   stream.integrationContract = stringValue(parsed.integration_contract) || stream.integrationContract
   if (typeof parsed.integration_required === 'boolean') stream.integrationRequired = parsed.integration_required
   stream.updatedAt = updatedAt
-  stream.launchesByKey[launchKey] = mergeTaskStreamLaunchPatch(existing, launchPatch, launchKey)
-  if (!stream.launchOrder.includes(launchKey)) {
-    stream.launchOrder = [...stream.launchOrder, launchKey]
+  if (launchKey && launchPatch) {
+    stream.launchesByKey[launchKey] = mergeTaskStreamLaunchPatch(existing, launchPatch, launchKey)
+    if (!stream.launchOrder.includes(launchKey)) {
+      stream.launchOrder = [...stream.launchOrder, launchKey]
+    }
   }
   stream.launchOrder = [...stream.launchOrder].sort((left, right) => {
     const leftIndex = numberValue(stream.launchesByKey[left]?.launch_index)

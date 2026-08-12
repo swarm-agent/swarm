@@ -284,7 +284,7 @@ func TestTaskProgramProgressStreamCarriesCanonicalSnapshotAndStableCallID(t *tes
 		Revision: 2, ResumeGeneration: 1, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
 		Definition: pebblestore.TaskProgramDefinition{
 			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
-			Jobs: []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "private", DependencyEvidence: "ready"}},
+			Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "private", DependencyEvidence: "ready"}},
 		},
 		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobRunning}},
 	}
@@ -301,11 +301,40 @@ func TestTaskProgramProgressStreamCarriesCanonicalSnapshotAndStableCallID(t *tes
 		t.Fatal(err)
 	}
 	presentation, ok := payload["program_presentation"].(map[string]any)
-	if !ok || payload["path_id"] != "tool.task_program.stream.v1" || payload["program_id"] != "release" || payload["task_call_id"] != "call-release" || presentation["active_stage_id"] != "build" {
+	if !ok || payload["path_id"] != taskStreamPathIDV2 || payload["stream_version"] != float64(2) || payload["program_id"] != "release" || payload["task_call_id"] != "call-release" || presentation["active_stage_id"] != "build" {
 		t.Fatalf("stream contract = %#v", payload)
+	}
+	program, programOK := payload["program"].(map[string]any)
+	status, statusOK := payload["program_status"].(map[string]any)
+	if !programOK || !statusOK || program["id"] != "release" || status["active_stage_id"] != "build" {
+		t.Fatalf("task stream v2 program metadata = %#v", payload)
 	}
 	if strings.Contains(event.Output, "private") {
 		t.Fatalf("stream leaked private definition fields: %s", event.Output)
+	}
+}
+
+func TestTaskProgramStreamMetadataIsClientCompatibleAndPrivacyBounded(t *testing.T) {
+	record := pebblestore.TaskProgramRecord{
+		ProgramID: "release", State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build", NextAction: "await_running_jobs", Revision: 4,
+		Definition: pebblestore.TaskProgramDefinition{
+			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
+			Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "private prompt", OwnedScope: []string{"private/**"}, DependencyEvidence: "ready"}},
+		},
+		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobRunning, ChildSessionID: "child-api", WorkspacePath: "/private/worktree"}},
+	}
+	program, status := taskProgramStreamMetadata(record)
+	if program["id"] != "release" || status["program_state"] != pebblestore.TaskProgramStateRunning || status["next_action"] != "await_running_jobs" {
+		t.Fatalf("stream metadata = program:%#v status:%#v", program, status)
+	}
+	raw, err := json.Marshal(map[string]any{"program": program, "program_status": status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private prompt", "private/**", "/private/worktree", "meta_prompt", "owned_scope", "workspace_path"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("stream metadata leaked %q: %s", forbidden, raw)
+		}
 	}
 }
 
