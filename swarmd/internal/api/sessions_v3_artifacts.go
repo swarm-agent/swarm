@@ -838,7 +838,7 @@ func (s *Server) importLegacySessionV3Artifact(ctx context.Context, principal id
 		return pebblestore.SessionArtifactVariant{}, err
 	} else if !ok {
 		if _, err := s.applyLegacyArtifactMutation(principal, plan.SessionID, "create", sessionruntime.SessionMutationCreateArtifact, collection, variant); err != nil {
-			if existing, found, getErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID); getErr != nil || !found {
+			if _, found, getErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID); getErr != nil || !found {
 				return pebblestore.SessionArtifactVariant{}, err
 			}
 		}
