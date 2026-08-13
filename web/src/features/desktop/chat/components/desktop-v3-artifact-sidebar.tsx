@@ -90,7 +90,7 @@ function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactC
     return <img src={previewURL} alt="" className="size-full object-cover" />
   }
   if (artifact.mediaType === 'text/html' && previewHTML) {
-    return <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-[400%] origin-top-left scale-25 border-0 bg-white" />
+    return <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
   }
   if (artifact.mediaType === 'application/pdf' && previewURL) {
     return <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />

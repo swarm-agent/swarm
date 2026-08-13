@@ -28,6 +28,7 @@ test('artifact sidebar renders authorized thumbnail previews and opens full gall
   assert.match(sidebar, /fetchDesktopV3ArtifactPreviewToken/)
   assert.match(sidebar, /sandbox="allow-scripts"/)
   assert.match(sidebar, /referrerPolicy="no-referrer"/)
+  assert.match(sidebar, /absolute left-0 top-0 size-\[400%\] origin-top-left scale-25/)
   assert.match(sidebar, /onOpenArtifact\(artifact\.artifactId\)/)
   assert.match(pane, /initialArtifactId=\{artifactGalleryInitialId\}/)
   assert.match(gallery, /artifacts\.find\(\(artifact\) => artifact\.artifactId === initialArtifactId\)/)
