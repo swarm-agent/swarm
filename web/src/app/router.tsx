@@ -87,6 +87,19 @@ function validateSettingsSearch(search: Record<string, unknown>): { tab?: string
   }
 }
 
+function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string } {
+  const settingsSearch = validateSettingsSearch(search)
+  const artifactSession = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
+  const artifact = typeof search.artifact === 'string' ? search.artifact.trim() : ''
+  const collection = typeof search.collection === 'string' ? search.collection.trim() : ''
+  return {
+    ...settingsSearch,
+    ...(artifactSession ? { artifactSession } : {}),
+    ...(artifact ? { artifact } : {}),
+    ...(collection ? { collection } : {}),
+  }
+}
+
 const rootRoute = createRootRoute({
   component: DesktopRootShell,
 })
@@ -192,7 +205,7 @@ const workspaceSessionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/$sessionId',
   parseParams: validateWorkspaceSessionParams,
-  validateSearch: validateSettingsSearch,
+  validateSearch: validateWorkspaceSessionSearch,
   loader: ({ params }) => {
     const sessionId = params.sessionId.trim()
     if (!sessionId) {

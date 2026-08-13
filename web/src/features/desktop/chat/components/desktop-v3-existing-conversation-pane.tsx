@@ -12,7 +12,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import { useMatchRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
@@ -164,7 +164,7 @@ import {
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
-import { appendDesktopV3ArtifactMessageSelections, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   effectiveDesktopSidebarDisplayMode,
@@ -1534,6 +1534,7 @@ export function DesktopV3ExistingConversationPane({
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
   const matchRoute = useMatchRoute();
+  const artifactRouteSearch = useSearch({ strict: false }) as { artifactSession?: unknown; artifact?: unknown; collection?: unknown };
   const queryClient = useQueryClient();
   const mountedRef = useRef(true);
   const operationRef = useRef<DesktopV3ExistingMessageOperation | null>(
@@ -2045,10 +2046,45 @@ export function DesktopV3ExistingConversationPane({
     priorSessionArtifactCountRef.current = sessionArtifacts.length;
   }, [normalizedSessionId, sessionArtifacts.length, showPlanSidebar, sidebarView]);
   const activeSidebarView = hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts") ? "artifacts" : "plan";
-  const openArtifactFullView = useCallback((artifactKey: string) => {
+  const artifactViewerLocation = desktopV3ArtifactViewerLocation(normalizedSessionId, artifactRouteSearch);
+  const artifactViewerEntry = artifactViewerLocation
+    ? desktopV3ArtifactCatalogEntryForViewerLocation(sessionArtifacts, artifactViewerLocation)
+    : undefined;
+  const artifactViewerHref = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (!routeWorkspaceSlug) return '#';
+    return desktopV3ArtifactViewerHref(routeWorkspaceSlug, artifact);
+  }, [routeWorkspaceSlug]);
+  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     setArtifactGalleryInitialKey(artifactKey);
     setArtifactGalleryOpen(true);
-  }, []);
+    if (!routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
+      search: (previous) => ({ ...previous, ...desktopV3ArtifactViewerSearch(artifact) }),
+    });
+  }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
+  const setArtifactGalleryOpenFromViewer = useCallback((nextOpen: boolean) => {
+    setArtifactGalleryOpen(nextOpen);
+    if (nextOpen || !routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
+      search: (previous) => ({
+        ...previous,
+        artifactSession: undefined,
+        artifact: undefined,
+        collection: undefined,
+      }),
+      replace: true,
+    });
+  }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
+  useEffect(() => {
+    if (!artifactViewerEntry) return;
+    setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifactViewerEntry));
+    setArtifactGalleryOpen(true);
+  }, [artifactViewerEntry]);
   const {
     scrollContainerRef,
     contentRef,
@@ -3077,7 +3113,7 @@ export function DesktopV3ExistingConversationPane({
             ) : null}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               {activeSidebarView === "artifacts" ? (
-                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} onOpenArtifact={openArtifactFullView} />
+                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} />
               ) : pendingPlanDocument && pendingPlanPermission ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
@@ -3112,7 +3148,7 @@ export function DesktopV3ExistingConversationPane({
       <DesktopV3ArtifactGallery
         artifacts={sessionArtifacts}
         open={artifactGalleryOpen}
-        onOpenChange={setArtifactGalleryOpen}
+        onOpenChange={setArtifactGalleryOpenFromViewer}
         showTrigger={false}
         loading={sessionArtifactsLoading}
         error={sessionArtifactsError}

@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type MouseEvent } from 'react'
 import { FileText, GalleryHorizontal, Loader2, Maximize2, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
 import {
   buildDesktopV3ArtifactSandboxDocument,
-  desktopV3ArtifactCatalogEntryKey,
   fetchDesktopV3Artifact,
   fetchDesktopV3ArtifactPreviewToken,
   type DesktopV3ArtifactCatalogEntry,
@@ -41,7 +40,8 @@ export interface DesktopV3ArtifactSidebarProps {
   loading?: boolean
   error?: string
   embedded?: boolean
-  onOpenArtifact: (artifactKey: string) => void
+  artifactHref: (artifact: DesktopV3ArtifactCatalogEntry) => string
+  onOpenArtifact: (artifact: DesktopV3ArtifactCatalogEntry) => void
 }
 
 function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactCatalogEntry }) {
@@ -105,6 +105,7 @@ export function DesktopV3ArtifactSidebar({
   loading = false,
   error = '',
   embedded = false,
+  artifactHref,
   onOpenArtifact,
 }: DesktopV3ArtifactSidebarProps) {
   const thin = displayMode === 'thin'
@@ -144,14 +145,18 @@ export function DesktopV3ArtifactSidebar({
           data-artifact-thumbnail-rail
         >
           {artifacts.map((artifact) => (
-            <button
+            <a
               key={`${artifact.sessionId}:${artifact.artifactId}`}
-              type="button"
+              href={artifactHref(artifact)}
               className={cn(
                 'group min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-left transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]',
                 thin ? 'size-10 rounded-lg' : embedded ? 'w-44 shrink-0' : 'w-full',
               )}
-              onClick={() => onOpenArtifact(desktopV3ArtifactCatalogEntryKey(artifact))}
+              onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                event.preventDefault()
+                onOpenArtifact(artifact)
+              }}
               aria-label={`Open ${artifact.label} in full artifact view`}
             >
               <span className={cn('relative grid overflow-hidden bg-[var(--app-bg)]', thin ? 'size-full place-items-center' : 'h-28 place-items-center')}>
@@ -159,7 +164,7 @@ export function DesktopV3ArtifactSidebar({
                 {!thin ? <span className="absolute right-2 top-2 grid size-7 place-items-center rounded-md bg-black/60 text-white opacity-0 transition group-hover:opacity-100"><Maximize2 size={13} aria-hidden="true" /></span> : null}
               </span>
               {!thin ? <span className="block min-w-0 px-3 py-2"><span className="block truncate text-xs font-semibold">{artifact.label}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{artifact.status === 'staging' ? 'Generating' : artifact.kind || artifact.mediaType}</span></span> : null}
-            </button>
+            </a>
           ))}
         </div>
       ) : null}

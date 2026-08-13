@@ -228,6 +228,66 @@ export function desktopV3ArtifactCatalogEntryForKey(
   return artifacts.find((artifact) => desktopV3ArtifactCatalogEntryKey(artifact) === key)
 }
 
+export interface DesktopV3ArtifactViewerLocation {
+  sessionId: string
+  collectionId?: string
+  artifactId: string
+}
+
+export function desktopV3ArtifactViewerSearch(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'sessionId' | 'collectionId' | 'artifactId'>,
+): { artifactSession: string; artifact: string; collection?: string } {
+  const sessionId = artifact.sessionId.trim()
+  const artifactId = artifact.artifactId.trim()
+  const collectionId = artifact.collectionId?.trim() ?? ''
+  if (!sessionId || !artifactId) throw new Error('Artifact viewer URL requires a session and artifact ID')
+  return {
+    artifactSession: sessionId,
+    artifact: artifactId,
+    ...(collectionId ? { collection: collectionId } : {}),
+  }
+}
+
+export function desktopV3ArtifactViewerHref(
+  workspaceSlug: string,
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'sessionId' | 'collectionId' | 'artifactId'>,
+): string {
+  const normalizedWorkspaceSlug = workspaceSlug.trim()
+  const normalizedSessionId = artifact.sessionId.trim()
+  if (!normalizedWorkspaceSlug || !normalizedSessionId) {
+    throw new Error('Artifact viewer URL requires a workspace and session ID')
+  }
+  const viewerSearch = desktopV3ArtifactViewerSearch(artifact)
+  const search = new URLSearchParams({ artifactSession: viewerSearch.artifactSession, artifact: viewerSearch.artifact })
+  if (viewerSearch.collection) search.set('collection', viewerSearch.collection)
+  return `/${encodeURIComponent(normalizedWorkspaceSlug)}/${encodeURIComponent(normalizedSessionId)}?${search.toString()}`
+}
+
+export function desktopV3ArtifactViewerLocation(
+  sessionId: string,
+  search: { artifactSession?: unknown; artifact?: unknown; collection?: unknown },
+): DesktopV3ArtifactViewerLocation | null {
+  const normalizedSessionId = sessionId.trim()
+  const artifactSessionId = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
+  const artifactId = typeof search.artifact === 'string' ? search.artifact.trim() : ''
+  const collectionId = typeof search.collection === 'string' ? search.collection.trim() : ''
+  if (!normalizedSessionId || artifactSessionId !== normalizedSessionId || !artifactId) return null
+  return {
+    sessionId: normalizedSessionId,
+    artifactId,
+    ...(collectionId ? { collectionId } : {}),
+  }
+}
+
+export function desktopV3ArtifactCatalogEntryForViewerLocation(
+  artifacts: readonly DesktopV3ArtifactCatalogEntry[],
+  location: DesktopV3ArtifactViewerLocation,
+): DesktopV3ArtifactCatalogEntry | undefined {
+  return artifacts.find((artifact) => artifact.sessionId === location.sessionId
+    && artifact.artifactId === location.artifactId
+    && (!location.collectionId || artifact.collectionId === location.collectionId))
+}
+
 export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): DesktopV3ArtifactMessageSelection | null {
   const selection = normalizeDesktopV3ArtifactSelection(value)
   const record = artifactCatalogRecord(value)

@@ -6,7 +6,11 @@ import {
   appendDesktopV3ArtifactMessageSelections,
   DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
   desktopV3ArtifactCatalogEntryForKey,
+  desktopV3ArtifactCatalogEntryForViewerLocation,
   desktopV3ArtifactCatalogEntryKey,
+  desktopV3ArtifactViewerHref,
+  desktopV3ArtifactViewerLocation,
+  desktopV3ArtifactViewerSearch,
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactSelection,
   removeDesktopV3ArtifactMessageSelection,
@@ -136,6 +140,27 @@ test('artifact viewer keys resolve the exact iteration when variant ids repeat a
   assert.notEqual(firstKey, secondKey)
   assert.equal(desktopV3ArtifactCatalogEntryForKey(artifacts, firstKey), first)
   assert.equal(desktopV3ArtifactCatalogEntryForKey(artifacts, secondKey), second)
+})
+
+test('artifact viewer URLs encode exact session, collection, and variant identity', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  assert.ok(entry)
+
+  assert.deepEqual(desktopV3ArtifactViewerSearch(entry), { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' })
+  assert.equal(
+    desktopV3ArtifactViewerHref('my workspace', entry),
+    '/my%20workspace/session-1?artifactSession=session-1&artifact=variant-1&collection=collection-1',
+  )
+  const location = desktopV3ArtifactViewerLocation('session-1', { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' })
+  assert.deepEqual(location, { sessionId: 'session-1', collectionId: 'collection-1', artifactId: 'variant-1' })
+  assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([entry], location), entry)
+})
+
+test('artifact viewer location rejects incomplete URLs and prevents cross-session resolution', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  assert.ok(entry)
+  assert.equal(desktopV3ArtifactViewerLocation('session-1', {}), null)
+  assert.equal(desktopV3ArtifactViewerLocation('session-2', { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' }), null)
 })
 
 test('artifact selection helper emits only opaque authority fields', () => {
