@@ -2428,6 +2428,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			Principal:   options.Principal,
 			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
 		})
+		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
+			sessionID:          sessionID,
+			runID:              runID,
+			artifactRunContext: cloneArtifactRunContext(options.ArtifactRunContext),
+		}))
 		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
 			stage := strings.ToLower(strings.TrimSpace(progress.Stage))
 			if stage != "output" && stage != "image" {
