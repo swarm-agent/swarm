@@ -2296,6 +2296,8 @@ export function buildStructuredToolMessage(
   const retainOutputJson = [
     "manage-sessions",
     "manage_sessions",
+    "manage-worktree",
+    "manage_worktree",
     "plan-manage",
     "plan_manage",
     "exit-plan-mode",

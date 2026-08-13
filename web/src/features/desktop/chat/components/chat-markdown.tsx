@@ -1569,6 +1569,118 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
   );
 }
 
+function worktreeStateTone(state: string): string {
+  switch (state.trim().toLowerCase()) {
+    case "integrated":
+      return "bg-[color-mix(in_srgb,var(--app-success)_13%,transparent)] text-[var(--app-success)]";
+    case "committed":
+      return "bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]";
+    case "blocked":
+    case "conflicting":
+    case "dirty-recoverable":
+    case "stale":
+      return "bg-[color-mix(in_srgb,var(--app-warning)_14%,transparent)] text-[var(--app-warning)]";
+    default:
+      return "bg-[var(--app-surface-hover)] text-[var(--app-text-muted)]";
+  }
+}
+
+function worktreeLabel(value: string): string {
+  const normalized = value.trim().replace(/[-_]+/g, " ");
+  return normalized ? normalized.replace(/^\w/, (letter) => letter.toUpperCase()) : "";
+}
+
+function ManageWorktreeCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
+  const action = toolJsonString(output, "action") || toolJsonString(args, "action") || "inspect";
+  const children = toolJsonRecords(output, "children");
+  const stateCounts = toolJsonRecord(output?.state_counts);
+  const childStates = toolJsonRecord(output?.child_states);
+  const taskCallId = toolJsonString(output, "task_call_id") || toolJsonString(args, "task_call_id");
+  const total = output ? manageSessionNumber(output, "total") : null;
+  const returned = output ? manageSessionNumber(output, "returned") : null;
+  const selected = output ? manageSessionNumber(output, "selected_count") : null;
+  const parentHead = toolJsonString(output, "resulting_parent_head") || toolJsonString(output, "parent_head");
+  const selection = worktreeLabel(toolJsonString(output, "selection"));
+  const isRecall = action === "recall";
+  const isIntegrate = action === "integrate";
+  const stateBadges = stateCounts ? Object.entries(stateCounts).flatMap(([state, count]) => (
+    typeof count === "number" && count > 0 ? [{ state, count }] : []
+  )) : [];
+  const integratedCount = childStates
+    ? Object.values(childStates).filter((state) => state === "integrated").length
+    : selected ?? 0;
+  const title = isRecall ? "Worktree children" : isIntegrate ? "Worktrees integrated" : "Worktree details";
+  const summary = isRecall
+    ? `${total ?? children.length} ${(total ?? children.length) === 1 ? "child" : "children"}${returned !== null && total !== null && returned < total ? ` · ${returned} shown` : ""}`
+    : isIntegrate
+      ? `${integratedCount} ${integratedCount === 1 ? "child" : "children"} integrated`
+      : worktreeLabel(action);
+
+  return (
+    <div className="mb-2 min-w-0 py-1.5">
+      <section className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface)),var(--app-surface)_45%)] shadow-[0_12px_35px_rgba(0,0,0,0.08)]" data-manage-worktree-card>
+        <header className="flex min-w-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-primary)_15%,transparent)] text-[var(--app-primary)]"><GitBranch size={15} /></span>
+            <div className="min-w-0">
+              <h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</h4>
+              <p className="truncate text-[11px] text-[var(--app-text-subtle)]" title={summary}>{summary}</p>
+            </div>
+          </div>
+          <span className="shrink-0 rounded-full border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_82%,transparent)] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-muted)]">{worktreeLabel(action)}</span>
+        </header>
+
+        {isRecall ? (
+          <div className={TOOL_RESULT_BODY_CLASS}>
+            {(taskCallId || stateBadges.length > 0) ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_82%,transparent)] px-3 py-2">
+                {taskCallId ? <span className="mr-auto min-w-0 truncate font-mono text-[10px] text-[var(--app-text-muted)]" title={taskCallId}>Task call · {taskCallId}</span> : null}
+                {stateBadges.map(({ state, count }) => <span key={state} className={cn("shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold", worktreeStateTone(state))}>{count} {worktreeLabel(state).toLowerCase()}</span>)}
+              </div>
+            ) : null}
+            {children.length > 0 ? (
+              <div className="grid min-w-0 gap-2 p-2.5">
+                {children.map((child, index) => {
+                  const sessionId = toolJsonString(child, "child_session_id");
+                  const childTitle = toolJsonString(child, "title") || toolJsonString(child, "assignment_label") || sessionId || `Child ${index + 1}`;
+                  const state = toolJsonString(child, "child_state");
+                  const branch = toolJsonString(child, "child_branch") || toolJsonString(child, "worktree_branch");
+                  const head = toolJsonString(child, "head_commit");
+                  return (
+                    <article key={sessionId || `${childTitle}:${index}`} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3">
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-[12px] font-semibold text-[var(--app-text)]" title={childTitle}>{childTitle}</div>
+                          {sessionId && childTitle !== sessionId ? <div className="mt-0.5 truncate font-mono text-[9px] text-[var(--app-text-subtle)]" title={sessionId}>{sessionId}</div> : null}
+                        </div>
+                        {state ? <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold", worktreeStateTone(state))}>{worktreeLabel(state)}</span> : null}
+                      </div>
+                      {(branch || head) ? <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--app-border)] pt-2 text-[10px] text-[var(--app-text-muted)]">{branch ? <span className="inline-flex min-w-0 items-center gap-1"><GitBranch size={10} className="shrink-0" /><span className="truncate font-mono" title={branch}>{branch}</span></span> : null}{head ? <span className="truncate font-mono" title={head}>{head}</span> : null}</div> : null}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : <div className="px-4 py-3 text-xs text-[var(--app-text-muted)]">No child worktrees found.</div>}
+          </div>
+        ) : null}
+
+        {isIntegrate ? (
+          <div className="grid min-w-0 gap-2 p-2.5 sm:grid-cols-2">
+            {taskCallId ? <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3"><div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task call</div><div className="mt-1 truncate font-mono text-[10px] text-[var(--app-text)]" title={taskCallId}>{taskCallId}</div></div> : null}
+            {selection ? <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3"><div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Selection</div><div className="mt-1 text-[11px] font-medium text-[var(--app-text)]">{selection}</div></div> : null}
+            {parentHead ? <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3 sm:col-span-2"><div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Parent head</div><div className="mt-1 truncate font-mono text-[10px] text-[var(--app-text)]" title={parentHead}>{parentHead}</div></div> : null}
+          </div>
+        ) : null}
+
+        {!isRecall && !isIntegrate && toolMessage.previewLines.length > 0 ? <div className="p-3"><PreviewLinesView lines={toolMessage.previewLines} commandText={toolMessage.commandText} compact plain /></div> : null}
+        {toolMessage.error ? <div className="border-t border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{toolMessage.error}</div> : null}
+      </section>
+    </div>
+  );
+}
+
 function shouldRenderPreviewAsPlain(toolName: string): boolean {
   switch (toolName.trim().toLowerCase()) {
     case "manage_worktree":
@@ -2192,6 +2304,7 @@ export function ToolMessageView({
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
+  const isManageWorktree = ["manage-worktree", "manage_worktree"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
   const isExitPlanMode = ["exit-plan-mode", "exit_plan_mode"].includes(normalizedTool);
   const isSearch = normalizedTool === "search";
@@ -2204,6 +2317,7 @@ export function ToolMessageView({
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
+  if (isManageWorktree) return <ManageWorktreeCard toolMessage={toolMessage} />;
   const hasBody = Boolean(
     toolMessage.error
     || toolMessage.editDiff

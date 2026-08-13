@@ -71,6 +71,47 @@ test('manage-worktree start shows the requested action and selection metadata', 
   assert.match(integrate, /integrate · 2 sessions/)
 })
 
+test('completed manage-worktree recall and integrate results render as structured cards', () => {
+  const recall = markup({
+    tool: 'manage_worktree',
+    state: 'done',
+    outputText: JSON.stringify({
+      action: 'recall',
+      task_call_id: 'task-call-1',
+      total: 2,
+      state_counts: { committed: 1, integrated: 1 },
+      children: [
+        { child_session_id: 'child-a', title: 'API work', child_state: 'committed', child_branch: 'agent/api' },
+        { child_session_id: 'child-b', title: 'UI work', child_state: 'integrated', child_branch: 'agent/ui' },
+      ],
+    }),
+  })
+  assert.match(recall, /data-manage-worktree-card/)
+  assert.match(recall, /Worktree children/)
+  assert.match(recall, /API work/)
+  assert.match(recall, /Committed/)
+  assert.match(recall, /agent\/api/)
+  assert.doesNotMatch(recall, /Action:/)
+
+  const integrate = markup({
+    tool: 'manage-worktree',
+    state: 'done',
+    outputText: JSON.stringify({
+      action: 'integrate',
+      task_call_id: 'task-call-1',
+      selected_count: 2,
+      selection: 'complete_task_call',
+      child_states: { 'child-a': 'integrated', 'child-b': 'integrated' },
+      resulting_parent_head: 'deadbeef',
+    }),
+  })
+  assert.match(integrate, /data-manage-worktree-card/)
+  assert.match(integrate, /Worktrees integrated/)
+  assert.match(integrate, /2 children integrated/)
+  assert.match(integrate, /Complete task call/)
+  assert.match(integrate, /deadbeef/)
+})
+
 test('task stream result content supersedes the start shell in place', () => {
   const task = message({ tool: 'task', state: 'running' })
   task.taskRows = [{
