@@ -144,7 +144,7 @@ export function DesktopV3ArtifactSidebar({
           aria-label="Session artifact thumbnails"
           data-artifact-thumbnail-rail
         >
-          {artifacts.map((artifact) => (
+          {artifacts.map((artifact, index) => (
             <a
               key={`${artifact.sessionId}:${artifact.artifactId}`}
               href={artifactHref(artifact)}
@@ -163,7 +163,7 @@ export function DesktopV3ArtifactSidebar({
                 <DesktopV3ArtifactThumbnail artifact={artifact} />
                 {!thin ? <span className="absolute right-2 top-2 grid size-7 place-items-center rounded-md bg-black/60 text-white opacity-0 transition group-hover:opacity-100"><Maximize2 size={13} aria-hidden="true" /></span> : null}
               </span>
-              {!thin ? <span className="block min-w-0 px-3 py-2"><span className="block truncate text-xs font-semibold">{artifact.label}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{artifact.status === 'staging' ? 'Generating' : artifact.kind || artifact.mediaType}</span></span> : null}
+              {!thin ? <span className="block min-w-0 px-3 py-2"><span className="block truncate text-xs font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{artifact.lineage?.iterationGroup || artifact.collectionName || (artifact.status === 'staging' ? 'Generating' : artifact.kind || artifact.mediaType)}{artifact.lineage?.iterationIndex ? ` · ${artifact.lineage.iterationIndex}/${artifacts.filter((entry) => entry.collectionId === artifact.collectionId).length || index + 1}` : ''}</span></span> : null}
             </a>
           ))}
         </div>

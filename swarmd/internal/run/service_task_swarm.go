@@ -407,6 +407,7 @@ func (s *Service) hydrateTaskSwarm(ctx context.Context, parent pebblestore.Sessi
 			launchSpecs[i].SourceArguments = map[string]any{}
 		}
 		launchSpecs[i].SourceArguments["swarm_theme"] = strings.TrimSpace(result.Deltas[i].Theme)
+		launchSpecs[i].SourceArguments["swarm_group"] = strings.TrimSpace(request.Items[i].Group)
 		emitTaskStreamDelta(parent.ID, emit, step, "task", callID, parsed.Action, parsed.Description, len(launchSpecs), taskLaunchOutcome{
 			LaunchIndex: i + 1, RequestedSubagent: launchSpecs[i].RequestedSubagentType, ResolvedSubagent: launchSpecs[i].RequestedSubagentType,
 			AssignmentLabel: launchSpecs[i].AssignmentLabel, OwnedScope: launchSpecs[i].OwnedScope, StreamKey: launchSpecs[i].StreamKey, SwarmMode: true,

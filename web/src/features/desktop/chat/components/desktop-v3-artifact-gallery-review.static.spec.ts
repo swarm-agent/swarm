@@ -16,6 +16,10 @@ test('artifact gallery is a live collection review surface distinct from plan ex
   assert.match(gallery, /Search collections, variants, sessions, or types/)
   assert.match(gallery, /aria-label="Previous artifact"/)
   assert.match(gallery, /aria-label="Next artifact"/)
+  assert.match(gallery, /iterationGroupId/)
+  assert.match(gallery, /iterationDisplayLabel/)
+  assert.match(gallery, /Open iteration URL/)
+  assert.match(gallery, /onArtifactNavigate/)
   assert.doesNotMatch(gallery, /DesktopPlanExecutionSidebar/)
 })
 

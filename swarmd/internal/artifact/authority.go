@@ -39,9 +39,13 @@ type Principal struct {
 	TaskCallID     string
 	ProgramID      string
 	ProgramJobID   string
-	ChildSessionID string
-	IterationID    string
-	IterationIndex int
+	ChildSessionID   string
+	IterationGroupID string
+	IterationGroup   string
+	IterationID      string
+	IterationIndex   int
+	IterationLabel   string
+	IterationTheme   string
 }
 
 type CreateInput struct {
@@ -108,7 +112,8 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	lineage := a.lineage(principal, input)
 	collectionLineage := lineage
 	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID = "", "", ""
-	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID, collectionLineage.IterationID, collectionLineage.IterationIndex = "", "", "", 0
+	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID = "", ""
+	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
 	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
 	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, Lineage: lineage}
 	existingStaging := false
@@ -476,7 +481,8 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
 		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID),
 		TaskCallID: strings.TrimSpace(principal.TaskCallID), ProgramID: strings.TrimSpace(principal.ProgramID), ProgramJobID: strings.TrimSpace(principal.ProgramJobID),
-		ChildSessionID: childSessionID, IterationID: strings.TrimSpace(principal.IterationID), IterationIndex: principal.IterationIndex,
+		ChildSessionID: childSessionID, IterationGroupID: strings.TrimSpace(principal.IterationGroupID), IterationGroup: strings.TrimSpace(principal.IterationGroup),
+		IterationID: strings.TrimSpace(principal.IterationID), IterationIndex: principal.IterationIndex, IterationLabel: strings.TrimSpace(principal.IterationLabel), IterationTheme: strings.TrimSpace(principal.IterationTheme),
 		RunID: strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID),
 	}
 }

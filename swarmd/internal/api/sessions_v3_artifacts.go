@@ -94,6 +94,8 @@ type sessionsV3ArtifactCatalogItem struct {
 	CheckpointTitle string                                `json:"checkpoint_title,omitempty"`
 	Label           string                                `json:"label"`
 	Description     string                                `json:"description"`
+	CollectionName  string                                `json:"collection_name,omitempty"`
+	CollectionDescription string                          `json:"collection_description,omitempty"`
 	Filename        string                                `json:"filename"`
 	MediaType       string                                `json:"media_type"`
 	Kind            string                                `json:"kind"`
@@ -205,7 +207,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						PlanID: lineage.PlanID, CheckpointID: lineage.CheckpointID,
 						WorkspacePath: workspacePath, WorkspaceName: workspaceName,
 						Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename), Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
-						Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
+						CollectionName: collection.Name, CollectionDescription: collection.Description, Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
 						Previewable: previewable, Selected: collection.SelectedVariantID == variant.ID,
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage,
 					})

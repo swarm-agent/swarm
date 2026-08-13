@@ -310,7 +310,11 @@ func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerCo
 		run.ProgramID = strings.TrimSpace(run.ProgramID)
 		run.ProgramJobID = strings.TrimSpace(run.ProgramJobID)
 		run.ChildSessionID = strings.TrimSpace(run.ChildSessionID)
+		run.IterationGroupID = strings.TrimSpace(run.IterationGroupID)
+		run.IterationGroup = strings.TrimSpace(run.IterationGroup)
 		run.IterationID = strings.TrimSpace(run.IterationID)
+		run.IterationLabel = strings.TrimSpace(run.IterationLabel)
+		run.IterationTheme = strings.TrimSpace(run.IterationTheme)
 		run.CollectionID = strings.TrimSpace(run.CollectionID)
 		run.VariantID = strings.TrimSpace(run.VariantID)
 		if run.SessionID == "" || run.ChildSessionID == "" || run.ChildSessionID != strings.TrimSpace(config.sessionID) || run.TaskCallID == "" || run.CollectionID == "" || run.VariantID == "" {

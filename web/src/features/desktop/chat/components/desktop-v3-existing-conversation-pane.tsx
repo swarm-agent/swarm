@@ -2065,6 +2065,15 @@ export function DesktopV3ExistingConversationPane({
       search: (previous) => ({ ...previous, ...desktopV3ArtifactViewerSearch(artifact) }),
     });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
+  const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (!routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
+      search: (previous) => ({ ...previous, ...desktopV3ArtifactViewerSearch(artifact) }),
+      replace: true,
+    });
+  }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
   const setArtifactGalleryOpenFromViewer = useCallback((nextOpen: boolean) => {
     setArtifactGalleryOpen(nextOpen);
     if (nextOpen || !routeWorkspaceSlug) return;
@@ -3154,6 +3163,8 @@ export function DesktopV3ExistingConversationPane({
         error={sessionArtifactsError}
         title="Session artifacts"
         initialArtifactKey={artifactGalleryInitialKey}
+        artifactHref={artifactViewerHref}
+        onArtifactNavigate={navigateArtifactViewer}
         onAddToChat={(artifacts) => {
           queueGalleryArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" })));
           setArtifactGalleryOpen(false);

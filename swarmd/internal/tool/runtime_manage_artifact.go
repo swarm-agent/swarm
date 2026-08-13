@@ -60,10 +60,14 @@ type ArtifactRunContext struct {
 	TaskCallID     string
 	ProgramID      string
 	ProgramJobID   string
-	ChildSessionID string
-	IterationID    string
-	IterationIndex int
-	CollectionID   string
+	ChildSessionID   string
+	IterationGroupID string
+	IterationGroup   string
+	IterationID      string
+	IterationIndex   int
+	IterationLabel   string
+	IterationTheme   string
+	CollectionID     string
 	VariantID      string
 }
 
@@ -412,7 +416,8 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 		SessionID: sessionID, AccountScopeID: accountScopeID, UserID: userID,
 		RunID: strings.TrimSpace(run.RunID), PlanID: strings.TrimSpace(run.PlanID), CheckpointID: strings.TrimSpace(run.CheckpointID), AttemptID: strings.TrimSpace(run.AttemptID),
 		TaskCallID: strings.TrimSpace(run.TaskCallID), ProgramID: strings.TrimSpace(run.ProgramID), ProgramJobID: strings.TrimSpace(run.ProgramJobID),
-		ChildSessionID: strings.TrimSpace(run.ChildSessionID), IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex,
+		ChildSessionID: strings.TrimSpace(run.ChildSessionID), IterationGroupID: strings.TrimSpace(run.IterationGroupID), IterationGroup: strings.TrimSpace(run.IterationGroup),
+		IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex, IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 	}, nil
 }
 

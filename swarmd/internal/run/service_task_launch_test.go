@@ -242,8 +242,8 @@ func TestParseTaskCallArgumentsDefaultsDesignerToManagedOutput(t *testing.T) {
 
 func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) {
 	parent := pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}
-	first := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SourceArguments: map[string]any{"swarm_index": 1, "program_id": "program-1", "program_job_id": "job-1"}, SwarmMode: true}
-	second := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SourceArguments: map[string]any{"swarm_index": 2, "program_id": "program-1", "program_job_id": "job-2"}, SwarmMode: true}
+	first := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Navigation Remix", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact", "program_id": "program-1", "program_job_id": "job-1"}, SwarmMode: true}
+	second := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Layout Remix", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious", "program_id": "program-1", "program_job_id": "job-2"}, SwarmMode: true}
 	left := managedDesignerArtifactContext(parent, "call-1", first, 1)
 	right := managedDesignerArtifactContext(parent, "call-1", second, 2)
 	if left == nil || right == nil {
@@ -254,6 +254,9 @@ func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) 
 	}
 	if left.VariantID == right.VariantID || left.IterationID == right.IterationID || left.IterationIndex != 1 || right.IterationIndex != 2 {
 		t.Fatalf("variant identity mismatch: left=%#v right=%#v", left, right)
+	}
+	if left.IterationGroupID == "" || left.IterationGroupID != right.IterationGroupID || left.IterationGroup != "navigation" || left.IterationLabel != "Navigation Remix" || left.IterationTheme != "compact" {
+		t.Fatalf("iteration grouping metadata mismatch: left=%#v right=%#v", left, right)
 	}
 	if left.ProgramID != "program-1" || left.ProgramJobID != "job-1" || left.TaskCallID != "call-1" || right.ProgramJobID != "job-2" {
 		t.Fatalf("managed lineage missing: %#v", left)

@@ -121,13 +121,14 @@ func TestAuthorityMetadataFailureNeverPublishesReady(t *testing.T) {
 func TestAuthorityRecordsManagedDesignerLineage(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	principal.TaskCallID, principal.ProgramID, principal.ProgramJobID = "call-1", "program-1", "job-1"
-	principal.ChildSessionID, principal.IterationID, principal.IterationIndex = "child-1", "iteration-1", 3
+	principal.ChildSessionID, principal.IterationGroupID, principal.IterationGroup = "child-1", "group-1", "navigation"
+	principal.IterationID, principal.IterationIndex, principal.IterationLabel, principal.IterationTheme = "iteration-1", 3, "Navigation Remix", "compact"
 	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "designer-1", CollectionID: "collection-1", CollectionName: "Alternatives", VariantID: "variant-1", Filename: "design.txt", MediaType: "text/plain", Body: []byte("managed")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	lineage := created.Lineage
-	if lineage.ParentSessionID != "session-1" || lineage.SourceSessionID != "child-1" || lineage.TaskCallID != "call-1" || lineage.ProgramID != "program-1" || lineage.ProgramJobID != "job-1" || lineage.ChildSessionID != "child-1" || lineage.IterationID != "iteration-1" || lineage.IterationIndex != 3 {
+	if lineage.ParentSessionID != "session-1" || lineage.SourceSessionID != "child-1" || lineage.TaskCallID != "call-1" || lineage.ProgramID != "program-1" || lineage.ProgramJobID != "job-1" || lineage.ChildSessionID != "child-1" || lineage.IterationGroupID != "group-1" || lineage.IterationGroup != "navigation" || lineage.IterationID != "iteration-1" || lineage.IterationIndex != 3 || lineage.IterationLabel != "Navigation Remix" || lineage.IterationTheme != "compact" {
 		t.Fatalf("designer lineage = %+v", lineage)
 	}
 	if metadata.collection.Lineage.ParentSessionID != lineage.ParentSessionID || metadata.collection.Lineage.TaskCallID != lineage.TaskCallID || metadata.collection.Lineage.ProgramID != lineage.ProgramID || metadata.collection.Lineage.ChildSessionID != "" || metadata.collection.Lineage.ProgramJobID != "" {

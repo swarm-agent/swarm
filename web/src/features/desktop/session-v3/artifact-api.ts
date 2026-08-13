@@ -20,8 +20,12 @@ export interface DesktopV3ArtifactLineage {
   programId: string
   programJobId: string
   childSessionId: string
+  iterationGroupId: string
+  iterationGroup: string
   iterationId: string
   iterationIndex: number
+  iterationLabel: string
+  iterationTheme: string
   runId: string
   planId: string
   checkpointId: string
@@ -58,6 +62,8 @@ export interface DesktopV3ArtifactCatalogEntry {
   checkpointTitle: string
   label: string
   description: string
+  collectionName: string
+  collectionDescription: string
   filename: string
   mediaType: string
   kind: string
@@ -118,8 +124,12 @@ function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | nu
     programId: artifactCatalogString(record.program_id),
     programJobId: artifactCatalogString(record.program_job_id),
     childSessionId: artifactCatalogString(record.child_session_id),
+    iterationGroupId: artifactCatalogString(record.iteration_group_id),
+    iterationGroup: artifactCatalogString(record.iteration_group),
     iterationId: artifactCatalogString(record.iteration_id),
     iterationIndex: artifactCatalogCount(record.iteration_index),
+    iterationLabel: artifactCatalogString(record.iteration_label),
+    iterationTheme: artifactCatalogString(record.iteration_theme),
     runId: artifactCatalogString(record.run_id),
     planId: artifactCatalogString(record.plan_id),
     checkpointId: artifactCatalogString(record.checkpoint_id),
@@ -158,6 +168,8 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     checkpointTitle: artifactCatalogString(record.checkpoint_title),
     label: artifactCatalogString(record.label) || artifactCatalogString(record.filename) || 'Artifact',
     description: artifactCatalogString(record.description),
+    collectionName: artifactCatalogString(record.collection_name),
+    collectionDescription: artifactCatalogString(record.collection_description),
     filename: artifactCatalogString(record.filename),
     mediaType: artifactCatalogString(record.media_type) || 'application/octet-stream',
     kind: artifactCatalogString(record.kind),

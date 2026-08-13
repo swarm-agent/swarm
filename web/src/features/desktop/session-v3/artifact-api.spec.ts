@@ -146,6 +146,14 @@ test('artifact viewer URLs encode exact session, collection, and variant identit
   const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
   assert.ok(entry)
 
+  const second = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, artifact_id: 'variant-2', lineage: { iteration_group_id: 'group-1', iteration_group: 'navigation remix', iteration_id: 'iteration-2', iteration_index: 2, iteration_label: 'Navigation Remix', iteration_theme: 'navigation' } })
+  assert.ok(second)
+  assert.notEqual(desktopV3ArtifactViewerHref('my workspace', entry), desktopV3ArtifactViewerHref('my workspace', second))
+  assert.equal(second.lineage?.iterationGroupId, 'group-1')
+  assert.equal(second.lineage?.iterationGroup, 'navigation remix')
+  assert.equal(second.lineage?.iterationIndex, 2)
+  assert.equal(second.lineage?.iterationLabel, 'Navigation Remix')
+
   assert.deepEqual(desktopV3ArtifactViewerSearch(entry), { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' })
   assert.equal(
     desktopV3ArtifactViewerHref('my workspace', entry),

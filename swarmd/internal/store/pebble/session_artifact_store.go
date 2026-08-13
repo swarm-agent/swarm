@@ -40,8 +40,12 @@ type SessionArtifactLineage struct {
 	ProgramID          string `json:"program_id,omitempty"`
 	ProgramJobID       string `json:"program_job_id,omitempty"`
 	ChildSessionID     string `json:"child_session_id,omitempty"`
+	IterationGroupID   string `json:"iteration_group_id,omitempty"`
+	IterationGroup     string `json:"iteration_group,omitempty"`
 	IterationID        string `json:"iteration_id,omitempty"`
 	IterationIndex     int    `json:"iteration_index,omitempty"`
+	IterationLabel     string `json:"iteration_label,omitempty"`
+	IterationTheme     string `json:"iteration_theme,omitempty"`
 	RunID              string `json:"run_id,omitempty"`
 	PlanID             string `json:"plan_id,omitempty"`
 	CheckpointID       string `json:"checkpoint_id,omitempty"`
