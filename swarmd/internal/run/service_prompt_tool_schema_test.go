@@ -70,6 +70,21 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if _, ok := launchProperties["output_mode"]; !ok {
 		t.Fatal("task launch schema omits output_mode")
 	}
+	program := properties["program"].(map[string]any)
+	programProperties := program["properties"].(map[string]any)
+	jobs := programProperties["jobs"].(map[string]any)
+	jobItems := jobs["items"].(map[string]any)
+	jobProperties := jobItems["properties"].(map[string]any)
+	programOutputMode, ok := jobProperties["output_mode"].(map[string]any)
+	if !ok || !reflect.DeepEqual(programOutputMode["enum"], []string{"managed", "workspace"}) {
+		t.Fatalf("task program job output_mode = %#v", programOutputMode)
+	}
+	required := jobItems["required"].([]string)
+	for _, name := range required {
+		if name == "owned_scope" {
+			t.Fatalf("task program job schema requires owned_scope, preventing managed Designer jobs: %#v", required)
+		}
+	}
 }
 
 func TestNormalizeProviderToolParametersPreservesNestedEmptySchemaArrays(t *testing.T) {

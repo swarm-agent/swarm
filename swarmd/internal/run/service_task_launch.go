@@ -76,7 +76,8 @@ type taskProgramJob struct {
 	MetaPrompt            string   `json:"meta_prompt"`
 	AssignmentLabel       string   `json:"title"`
 	Deliverable           string   `json:"deliverable"`
-	OwnedScope            []string `json:"owned_scope"`
+	OwnedScope            []string `json:"owned_scope,omitempty"`
+	OutputMode            string   `json:"output_mode,omitempty"`
 	AcceptanceCriteria    []string `json:"acceptance_criteria"`
 	DependencyEvidence    string   `json:"dependency_evidence"`
 }
@@ -590,7 +591,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "acceptance_criteria", "dependency_evidence":
+			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "output_mode", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
 			}
@@ -638,10 +639,16 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if err != nil {
 			return nil, nil, err
 		}
-		if len(ownedScope) == 0 {
+		job.OwnedScope = ownedScope
+		launch := taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, OwnedScope: append([]string(nil), ownedScope...)}
+		if err := applyTaskDesignerOutputMode(&launch, mapString(row, "output_mode"), fmt.Sprintf("task program jobs[%d]", i)); err != nil {
+			return nil, nil, err
+		}
+		if job.RequestedSubagentType == "designer" {
+			job.OutputMode = launch.OutputMode
+		} else if len(ownedScope) == 0 {
 			return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
 		}
-		job.OwnedScope = ownedScope
 		criteria, err := taskProgramStringArray(row, "acceptance_criteria", fmt.Sprintf("task program jobs[%d] acceptance_criteria", i), true)
 		if err != nil {
 			return nil, nil, err
@@ -665,15 +672,9 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		jobStages[job.ID] = stageIndex
 		stageJobCounts[job.StageID]++
 		program.Jobs = append(program.Jobs, job)
-		outputMode := ""
-		if job.RequestedSubagentType == "designer" {
-			// Task Programs predate managed alternatives and declare durable workspace
-			// ownership. Preserve that contract until program persistence records mode.
-			outputMode = taskOutputModeWorkspace
-		}
 		launches = append(launches, taskLaunchSpec{
 			RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
-			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: outputMode, DependencyEvidence: job.DependencyEvidence,
+			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, DependencyEvidence: job.DependencyEvidence,
 			SourceArguments: map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)},
 		})
 	}
@@ -685,8 +686,14 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 	for i := range program.Jobs {
 		for j := i + 1; j < len(program.Jobs); j++ {
 			left, right := program.Jobs[i], program.Jobs[j]
-			if left.StageID == right.StageID && left.RequestedSubagentType == "coder" && right.RequestedSubagentType == "coder" && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
+			if left.StageID != right.StageID {
+				continue
+			}
+			if left.RequestedSubagentType == "coder" && right.RequestedSubagentType == "coder" && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
 				return nil, nil, fmt.Errorf("task program concurrent Coder owned scopes overlap between jobs %q and %q", left.ID, right.ID)
+			}
+			if left.RequestedSubagentType == "designer" && right.RequestedSubagentType == "designer" && left.OutputMode == taskOutputModeWorkspace && right.OutputMode == taskOutputModeWorkspace && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
+				return nil, nil, fmt.Errorf("task program concurrent workspace Designer owned scopes overlap between jobs %q and %q", left.ID, right.ID)
 			}
 		}
 	}
@@ -1138,6 +1145,9 @@ func applyTaskDesignerOutputMode(launch *taskLaunchSpec, rawMode, label string) 
 	}
 	if mode == taskOutputModeManaged && len(launch.OwnedScope) != 0 {
 		return fmt.Errorf("%s managed Designer must omit owned_scope", label)
+	}
+	if mode == taskOutputModeWorkspace && len(launch.OwnedScope) == 0 {
+		return fmt.Errorf("%s workspace Designer requires a concrete workspace-relative owned_scope", label)
 	}
 	launch.OutputMode = mode
 	return nil
@@ -2570,13 +2580,33 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if strings.TrimSpace(row.OutputMode) != strings.TrimSpace(launchSpecs[i].OutputMode) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output mode mismatch", i)
 		}
-		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) && strings.TrimSpace(launchSpecs[i].OutputMode) == taskOutputModeManaged {
-			if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
-				return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d is missing manage_artifact", i)
-			}
-			for _, name := range []string{"write", "edit"} {
-				if !taskToolNameInSlice(row.DisabledTools, name) || row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) || taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
-					return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d retains checkout mutation tool %q", i, name)
+		if !reflect.DeepEqual(row.OwnedScope, launchSpecs[i].OwnedScope) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
+		}
+		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) {
+			switch strings.TrimSpace(launchSpecs[i].OutputMode) {
+			case taskOutputModeManaged:
+				if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
+					return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d is missing manage_artifact", i)
+				}
+				for _, name := range []string{"write", "edit"} {
+					if !taskToolNameInSlice(row.DisabledTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) || taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
+						return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d retains checkout mutation tool %q", i, name)
+					}
+				}
+			case taskOutputModeWorkspace:
+				if row.ResolvedTools == nil {
+					return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d is missing resolved tools", i)
+				}
+				for _, name := range []string{"read", "search", "find", "list", "write", "edit"} {
+					if !taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
+						return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d is missing tool %q", i, name)
+					}
+				}
+				for _, name := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+					if taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) {
+						return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d retains forbidden tool %q", i, name)
+					}
 				}
 			}
 		}

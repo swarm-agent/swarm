@@ -284,8 +284,10 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("workspace Designer locked tool %q unavailable: %+v", allowed, workspaceDesigner.ToolContract)
 		}
 	}
-	if cfg := workspaceDesigner.ToolContract.Tools["manage_artifact"]; cfg.Enabled == nil || *cfg.Enabled {
-		t.Fatalf("workspace Designer must not authorize manage_artifact: %+v", workspaceDesigner.ToolContract)
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if cfg := workspaceDesigner.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
+		}
 	}
 	for _, want := range []string{"backend-supplied immutable output contract", "Managed output", "manage_artifact", "exactly one durable ready variant", "Never use write or edit", "Workspace output", "Never use manage_artifact", "orchestrate other agents"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {

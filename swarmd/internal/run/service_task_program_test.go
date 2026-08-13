@@ -75,6 +75,60 @@ func TestParseTaskProgramValidatesCompleteStagedContract(t *testing.T) {
 	}
 }
 
+func TestParseTaskProgramDesignerOutputModesAreExplicitAndDurable(t *testing.T) {
+	args := taskProgramFixture(nil)
+	program := args["program"].(map[string]any)
+	program["stages"] = []any{map[string]any{"id": "build", "dependency_evidence": "Both Designer assignments are ready."}}
+	program["jobs"] = []any{
+		map[string]any{"id": "managed", "stage_id": "build", "agent_type": "designer", "title": "Managed Variant", "meta_prompt": "Create one managed variant.", "deliverable": "Ready managed variant", "acceptance_criteria": []any{"Variant is ready"}, "dependency_evidence": "Brief is complete."},
+		map[string]any{"id": "workspace", "stage_id": "build", "agent_type": "designer", "title": "Workspace Variant", "meta_prompt": "Create one workspace variant.", "deliverable": "Reusable source artifact", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/program.tsx"}, "acceptance_criteria": []any{"Source artifact exists"}, "dependency_evidence": "Target is distinct."},
+	}
+	parsed, err := parseTaskCallArguments(mustJSON(t, args))
+	if err != nil {
+		t.Fatalf("parse Designer program: %v", err)
+	}
+	if parsed.Program.Jobs[0].OutputMode != taskOutputModeManaged || len(parsed.Program.Jobs[0].OwnedScope) != 0 || parsed.Program.Jobs[1].OutputMode != taskOutputModeWorkspace || len(parsed.Program.Jobs[1].OwnedScope) != 1 {
+		t.Fatalf("Designer program modes = %#v", parsed.Program.Jobs)
+	}
+	record, _, err := taskProgramDefinitionFromSpec(parsed.Program)
+	if err != nil {
+		t.Fatalf("persist Designer program definition: %v", err)
+	}
+	if record.Jobs[0].OutputMode != taskOutputModeManaged || record.Jobs[1].OutputMode != taskOutputModeWorkspace {
+		t.Fatalf("durable Designer output modes = %#v", record.Jobs)
+	}
+	reconstructed := taskProgramSpecFromRecord(pebblestore.TaskProgramRecord{ProgramID: parsed.Program.ID, Definition: record})
+	reconstructedLaunches := taskProgramLaunchesFromSpec(reconstructed)
+	if len(reconstructedLaunches) != 2 || reconstructedLaunches[0].OutputMode != taskOutputModeManaged || reconstructedLaunches[1].OutputMode != taskOutputModeWorkspace || len(reconstructedLaunches[1].OwnedScope) != 1 {
+		t.Fatalf("restart reconstructed Designer launches = %#v", reconstructedLaunches)
+	}
+	for _, mutate := range []func(map[string]any){
+		func(job map[string]any) { job["owned_scope"] = []any{"web/src/managed.tsx"} },
+		func(job map[string]any) { job["output_mode"] = "workspace" },
+		func(job map[string]any) { job["output_mode"] = "managed"; job["owned_scope"] = []any{"web/src/managed.tsx"} },
+	} {
+		invalid := taskProgramFixture(nil)
+		invalidProgram := invalid["program"].(map[string]any)
+		invalidProgram["stages"] = []any{map[string]any{"id": "build", "dependency_evidence": "Ready."}}
+		job := map[string]any{"id": "invalid", "stage_id": "build", "agent_type": "designer", "title": "Invalid Variant", "meta_prompt": "Create one variant.", "deliverable": "Variant", "acceptance_criteria": []any{"Done"}, "dependency_evidence": "Ready."}
+		mutate(job)
+		invalidProgram["jobs"] = []any{job}
+		if _, err := parseTaskCallArguments(mustJSON(t, invalid)); err == nil {
+			t.Fatalf("invalid Designer program accepted: %#v", job)
+		}
+	}
+	overlap := taskProgramFixture(nil)
+	overlapProgram := overlap["program"].(map[string]any)
+	overlapProgram["stages"] = []any{map[string]any{"id": "build", "dependency_evidence": "Ready."}}
+	overlapProgram["jobs"] = []any{
+		map[string]any{"id": "first", "stage_id": "build", "agent_type": "designer", "title": "First Variant", "meta_prompt": "Create first.", "deliverable": "First", "output_mode": "workspace", "owned_scope": []any{"web/src/variants"}, "acceptance_criteria": []any{"Done"}, "dependency_evidence": "Ready."},
+		map[string]any{"id": "second", "stage_id": "build", "agent_type": "designer", "title": "Second Variant", "meta_prompt": "Create second.", "deliverable": "Second", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/second.tsx"}, "acceptance_criteria": []any{"Done"}, "dependency_evidence": "Ready."},
+	}
+	if _, err := parseTaskCallArguments(mustJSON(t, overlap)); err == nil || !strings.Contains(err.Error(), "workspace Designer owned scopes overlap") {
+		t.Fatalf("overlapping workspace Designer program error = %v", err)
+	}
+}
+
 func TestParseTaskProgramLeavesConcurrencyUncappedByDefault(t *testing.T) {
 	parsed, err := parseTaskCallArguments(mustJSON(t, taskProgramFixture(nil)))
 	if err != nil {
@@ -671,12 +725,13 @@ func TestTaskProgramErrorCodesAreActionable(t *testing.T) {
 
 func TestTaskProgramReconstructedDesignerLaunchesPreserveManagedAndWorkspaceModes(t *testing.T) {
 	spec := &taskProgramSpec{ID: "design_program", Jobs: []taskProgramJob{
-		{ID: "managed", StageID: "variants", RequestedSubagentType: "designer"},
-		{ID: "workspace", StageID: "variants", RequestedSubagentType: "designer", OwnedScope: []string{"web/src/variant.tsx"}},
+		{ID: "managed", StageID: "variants", RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged},
+		{ID: "workspace", StageID: "variants", RequestedSubagentType: "designer", OwnedScope: []string{"web/src/variant.tsx"}, OutputMode: taskOutputModeWorkspace},
+		{ID: "legacy_workspace", StageID: "variants", RequestedSubagentType: "designer", OwnedScope: []string{"web/src/legacy.tsx"}},
 		{ID: "finder", StageID: "variants", RequestedSubagentType: "finder"},
 	}}
 	launches := taskProgramLaunchesFromSpec(spec)
-	if len(launches) != 3 || launches[0].OutputMode != taskOutputModeManaged || launches[1].OutputMode != taskOutputModeWorkspace || launches[2].OutputMode != "" {
+	if len(launches) != 4 || launches[0].OutputMode != taskOutputModeManaged || launches[1].OutputMode != taskOutputModeWorkspace || launches[2].OutputMode != taskOutputModeWorkspace || launches[3].OutputMode != "" {
 		t.Fatalf("reconstructed output modes = %#v", launches)
 	}
 }

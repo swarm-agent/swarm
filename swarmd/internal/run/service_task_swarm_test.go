@@ -54,6 +54,14 @@ func TestParseTaskSwarmDesignerBuildsWorkspaceGroupsAndDistinctTargets(t *testin
 			t.Fatalf("launch %d scope = %v, want %s", i, launch.OwnedScope, want)
 		}
 	}
+	request, err := buildTaskSwarmHydrationRequest(parsed, parsed.Launches)
+	if err != nil {
+		t.Fatalf("build workspace Designer hydration: %v", err)
+	}
+	prompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Workspace", Theme: "rocks", Role: "Create the source artifact.", Deliverable: "Reusable source"})
+	if err != nil || !strings.Contains(prompt, "output mode: workspace") || !strings.Contains(prompt, "web/src/objects/item-1.tsx") || !strings.Contains(prompt, "do not use Bash or Git") {
+		t.Fatalf("workspace child prompt = %q err=%v", prompt, err)
+	}
 }
 
 func TestParseTaskSwarmDesignerDefaultsToManagedWithoutWorkspaceTarget(t *testing.T) {

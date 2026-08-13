@@ -80,7 +80,8 @@ type TaskProgramJobSpec struct {
 	Title              string   `json:"title"`
 	MetaPrompt         string   `json:"meta_prompt"`
 	Deliverable        string   `json:"deliverable"`
-	OwnedScope         []string `json:"owned_scope"`
+	OwnedScope         []string `json:"owned_scope,omitempty"`
+	OutputMode         string   `json:"output_mode,omitempty"`
 	AcceptanceCriteria []string `json:"acceptance_criteria"`
 	DependencyEvidence string   `json:"dependency_evidence"`
 }
@@ -376,6 +377,20 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 	for _, job := range record.Definition.Jobs {
 		if len(job.OwnedScope) > maxTaskProgramScopeRows || len(job.AcceptanceCriteria) > maxTaskProgramScopeRows || len([]rune(job.MetaPrompt)) > maxTaskProgramTextRunes || len([]rune(job.Deliverable)) > maxTaskProgramTextRunes {
 			return fmt.Errorf("task program job %q exceeds bounded definition limits", job.ID)
+		}
+		mode := strings.TrimSpace(job.OutputMode)
+		if mode != "" && mode != "managed" && mode != "workspace" {
+			return fmt.Errorf("task program job %q has invalid output mode", job.ID)
+		}
+		if strings.EqualFold(strings.TrimSpace(job.AgentType), "designer") {
+			if mode == "managed" && len(job.OwnedScope) != 0 {
+				return fmt.Errorf("task program managed Designer job %q must omit owned scope", job.ID)
+			}
+			if mode == "workspace" && len(job.OwnedScope) == 0 {
+				return fmt.Errorf("task program workspace Designer job %q requires owned scope", job.ID)
+			}
+		} else if mode != "" {
+			return fmt.Errorf("task program non-Designer job %q cannot set output mode", job.ID)
 		}
 	}
 	return nil

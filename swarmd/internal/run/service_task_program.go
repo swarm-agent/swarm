@@ -29,7 +29,7 @@ func taskProgramDefinitionFromSpec(spec *taskProgramSpec) (pebblestore.TaskProgr
 		definition.Jobs = append(definition.Jobs, pebblestore.TaskProgramJobSpec{
 			ID: job.ID, StageID: job.StageID, DependsOn: append([]string(nil), job.DependsOn...), AgentType: job.RequestedSubagentType,
 			Title: job.AssignmentLabel, MetaPrompt: job.MetaPrompt, Deliverable: job.Deliverable,
-			OwnedScope: append([]string(nil), job.OwnedScope...), AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence,
+			OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence,
 		})
 	}
 	raw, err := json.Marshal(definition)
@@ -325,7 +325,7 @@ func taskProgramSpecFromRecord(record pebblestore.TaskProgramRecord) *taskProgra
 		spec.Stages = append(spec.Stages, taskProgramStage{ID: stage.ID, DependsOn: append([]string(nil), stage.DependsOn...), DependencyEvidence: stage.DependencyEvidence})
 	}
 	for _, job := range record.Definition.Jobs {
-		spec.Jobs = append(spec.Jobs, taskProgramJob{ID: job.ID, StageID: job.StageID, DependsOn: append([]string(nil), job.DependsOn...), RequestedSubagentType: job.AgentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.Title, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence})
+		spec.Jobs = append(spec.Jobs, taskProgramJob{ID: job.ID, StageID: job.StageID, DependsOn: append([]string(nil), job.DependsOn...), RequestedSubagentType: job.AgentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.Title, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence})
 	}
 	return spec
 }
@@ -333,8 +333,10 @@ func taskProgramSpecFromRecord(record pebblestore.TaskProgramRecord) *taskProgra
 func taskProgramLaunchesFromSpec(spec *taskProgramSpec) []taskLaunchSpec {
 	launches := make([]taskLaunchSpec, 0, len(spec.Jobs))
 	for _, job := range spec.Jobs {
-		outputMode := ""
-		if agentruntime.IsDesignerAgentName(job.RequestedSubagentType) {
+		outputMode := strings.ToLower(strings.TrimSpace(job.OutputMode))
+		if agentruntime.IsDesignerAgentName(job.RequestedSubagentType) && outputMode == "" {
+			// Legacy durable program definitions predate explicit output mode. Preserve
+			// their historical inference while new definitions persist the mode.
 			outputMode = taskOutputModeManaged
 			if len(job.OwnedScope) > 0 {
 				outputMode = taskOutputModeWorkspace
@@ -575,11 +577,19 @@ func taskProgramRunningTransitions(spec *taskProgramSpec, prepared []taskLaunchP
 }
 
 func taskProgramDefinitionUsesManagedDesigner(definition pebblestore.TaskProgramJobSpec) bool {
-	return agentruntime.IsDesignerAgentName(definition.AgentType) && len(definition.OwnedScope) == 0
+	if !agentruntime.IsDesignerAgentName(definition.AgentType) {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(definition.OutputMode))
+	return mode == taskOutputModeManaged || (mode == "" && len(definition.OwnedScope) == 0)
 }
 
 func taskProgramSpecUsesManagedDesigner(job taskProgramJob) bool {
-	return agentruntime.IsDesignerAgentName(job.RequestedSubagentType) && len(job.OwnedScope) == 0
+	if !agentruntime.IsDesignerAgentName(job.RequestedSubagentType) {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(job.OutputMode))
+	return mode == taskOutputModeManaged || (mode == "" && len(job.OwnedScope) == 0)
 }
 
 func taskProgramExpectedArtifactReference(record pebblestore.TaskProgramRecord, jobID string) *taskArtifactReference {

@@ -1366,7 +1366,7 @@ func taskProgramToolSchema() map[string]any {
 	id := map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}
 	return map[string]any{
 		"type":        "object",
-		"description": "Optional complete staged Task Program. The backend validates every job and stage before any reservation or child launch. One accepted program counts as one parent task invocation; internal capacity cohorts do not require another model-authored task call.",
+		"description": "Optional complete staged Task Program. The backend validates every job and stage before any reservation or child launch. Designer jobs default to managed output and omit owned_scope; explicit workspace Designer jobs set output_mode=workspace and require concrete non-overlapping workspace-relative owned_scope targets. One accepted program counts as one parent task invocation; internal capacity cohorts do not require another model-authored task call.",
 		"properties": map[string]any{
 			"id":              id,
 			"max_concurrency": map[string]any{"type": "integer", "minimum": 1, "description": "Optional explicit lower concurrency cap. Omit to use the number of ready jobs bounded by current account capacity and backend safety limits."},
@@ -1389,10 +1389,11 @@ func taskProgramToolSchema() map[string]any {
 					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
 					"title":               map[string]any{"type": "string", "minLength": 1},
 					"deliverable":         map[string]any{"type": "string", "minLength": 1},
-					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
+					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
+					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs."},
 					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
 					"dependency_evidence": map[string]any{"type": "string", "minLength": 1},
-				}, "required": []string{"id", "stage_id", "meta_prompt", "title", "deliverable", "owned_scope", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": false},
+				}, "required": []string{"id", "stage_id", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": false},
 			},
 		},
 		"required":             []string{"id", "stages", "jobs"},

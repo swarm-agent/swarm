@@ -37,8 +37,10 @@ func TestDesignerOutputContractsUseExistingToolsWithoutCreateFile(t *testing.T) 
 			t.Fatalf("workspace Designer existing tool %q is not enabled", name)
 		}
 	}
-	if config := workspace.Tools["manage_artifact"]; config.Enabled == nil || *config.Enabled {
-		t.Fatal("workspace Designer unexpectedly enables manage_artifact")
+	for _, name := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if config := workspace.Tools[name]; config.Enabled == nil || *config.Enabled {
+			t.Fatalf("workspace Designer unexpectedly enables %q", name)
+		}
 	}
 	if _, exists := managed.Tools["create_file"]; exists {
 		t.Fatal("Designer tool contract unexpectedly references create_file")

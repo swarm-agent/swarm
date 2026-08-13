@@ -921,6 +921,9 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 	if child.WorkspacePath != parent.WorkspacePath || child.WorktreeRootPath != parent.WorktreeRootPath || child.WorktreeBranch != parent.WorktreeBranch || !child.WorktreeEnabled {
 		t.Fatalf("Designer checkout facts = %#v, want inherited from %#v", child, parent)
 	}
+	if child.WorkspacePath == stub.allocation.WorkspacePath {
+		t.Fatalf("workspace Designer was silently redirected to an allocated worktree: %#v", child)
+	}
 	if got := mapString(child.Metadata, "shared_parent_checkout"); got != "" {
 		// Boolean metadata is asserted below without converting its type.
 		t.Fatalf("unexpected string shared checkout metadata %q", got)
@@ -935,24 +938,34 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Designer child missing durable agent profile: %v", err)
 	}
-	if storedProfile.Name != agentruntime.DesignerAgentID || !AgentProfileAuthorizesMedia(storedProfile) {
-		t.Fatalf("Designer child durable profile = %#v, want media-authorized Designer", storedProfile)
+	if storedProfile.Name != agentruntime.DesignerAgentID {
+		t.Fatalf("Designer child durable profile = %#v, want compiled workspace Designer", storedProfile)
+	}
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if cfg := storedProfile.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("workspace Designer profile missing %q: %#v", allowed, storedProfile.ToolContract)
+		}
+	}
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if cfg := storedProfile.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("workspace Designer profile authorized %q: %#v", denied, storedProfile.ToolContract)
+		}
 	}
 	if _, parentCopy := child.Metadata["parent_copy"]; parentCopy {
 		t.Fatalf("Designer shared-checkout child incorrectly marked parent_copy: %#v", child.Metadata)
 	}
 }
 
-type taskDesignerMediaRecordingRunner struct {
+type taskDesignerRecordingRunner struct {
 	requests         []provideriface.Request
 	inspectImagePath string
 	invocationResult provideriface.ToolExecutionResult
 	invocationErr    error
 }
 
-func (r *taskDesignerMediaRecordingRunner) ID() string { return "codex" }
+func (r *taskDesignerRecordingRunner) ID() string { return "codex" }
 
-func (r *taskDesignerMediaRecordingRunner) MediaCapabilityDeclaration(context.Context) (provideriface.MediaAdapterDeclaration, error) {
+func (r *taskDesignerRecordingRunner) MediaCapabilityDeclaration(context.Context) (provideriface.MediaAdapterDeclaration, error) {
 	return provideriface.MediaAdapterDeclaration{
 		AdapterID:             provideriface.MediaAdapterIDCodexChatGPTV1,
 		ProviderID:            "codex",
@@ -966,11 +979,11 @@ func (r *taskDesignerMediaRecordingRunner) MediaCapabilityDeclaration(context.Co
 	}, nil
 }
 
-func (r *taskDesignerMediaRecordingRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
+func (r *taskDesignerRecordingRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.CreateResponseStreaming(ctx, req, nil)
 }
 
-func (r *taskDesignerMediaRecordingRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+func (r *taskDesignerRecordingRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.requests = append(r.requests, req)
 	if strings.TrimSpace(r.inspectImagePath) != "" && len(r.requests) == 1 {
 		if req.ToolInvoker == nil {
@@ -996,11 +1009,11 @@ func mustJSONForRunner(value any) string {
 	return string(encoded)
 }
 
-func TestTaskLaunchedDesignerRunTurnStreamingProjectsMediaInspect(t *testing.T) {
+func TestTaskLaunchedWorkspaceDesignerUsesLockedToolProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
-	runner := &taskDesignerMediaRecordingRunner{}
+	runner := &taskDesignerRecordingRunner{}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	svc.providers = providers
@@ -1034,19 +1047,28 @@ func TestTaskLaunchedDesignerRunTurnStreamingProjectsMediaInspect(t *testing.T) 
 	if got := taskResult["task_call_id"]; got != "call-designer-media" {
 		t.Fatalf("task_call_id = %#v, want durable lineage identifier", got)
 	}
-	if len(runner.requests) != 1 {
-		t.Fatalf("Designer provider requests = %d, want 1", len(runner.requests))
+	childID, _ := taskResult["session_id"].(string)
+	child, ok, err := svc.sessions.GetSession(childID)
+	if err != nil || !ok {
+		t.Fatalf("load workspace Designer child %q: ok=%v err=%v", childID, ok, err)
 	}
-	request := runner.requests[0]
-	if !providerRequestHasTool(request.Tools, mediaInspectToolName) {
-		t.Fatalf("Designer RunTurnStreaming tools = %#v, want media_inspect; contract=%+v", providerToolNames(request.Tools), request.MediaContract)
+	storedProfile, err := sessionV3AgentProfileFromMetadataMap(child.Metadata)
+	if err != nil {
+		t.Fatalf("decode workspace Designer profile: %v", err)
 	}
-	if !SessionMediaContractAllows(request.MediaContract, "image", "image/png", "png") {
-		t.Fatalf("Designer RunTurnStreaming media contract does not allow PNG: %+v", request.MediaContract)
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if cfg := storedProfile.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("workspace Designer locked profile missing %q: %#v", allowed, storedProfile.ToolContract)
+		}
+	}
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if cfg := storedProfile.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("workspace Designer locked profile authorized %q: %#v", denied, storedProfile.ToolContract)
+		}
 	}
 }
 
-func TestTaskLaunchedDesignerRunTurnStreamingExecutesMediaInspect(t *testing.T) {
+func TestTaskLaunchedWorkspaceDesignerRunTurnStreamingDeniesMediaInspect(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 
@@ -1058,7 +1080,7 @@ func TestTaskLaunchedDesignerRunTurnStreamingExecutesMediaInspect(t *testing.T) 
 	if err := os.WriteFile(imagePath, []byte("\x89PNG\r\n\x1a\nmedia-test"), 0o600); err != nil {
 		t.Fatalf("write Designer media fixture: %v", err)
 	}
-	runner := &taskDesignerMediaRecordingRunner{inspectImagePath: imagePath}
+	runner := &taskDesignerRecordingRunner{inspectImagePath: imagePath}
 	providers := registry.New()
 	providers.RegisterRunner(runner)
 	svc.providers = providers
@@ -1081,31 +1103,24 @@ func TestTaskLaunchedDesignerRunTurnStreamingExecutesMediaInspect(t *testing.T) 
 		t.Fatalf("execute Designer media task: %v", err)
 	}
 	if runner.invocationErr != nil {
-		t.Fatalf("Designer media_inspect invocation: %v", runner.invocationErr)
+		t.Fatalf("workspace Designer media_inspect invocation: %v", runner.invocationErr)
 	}
-	if runner.invocationResult.Error != "" || runner.invocationResult.Media == nil {
-		t.Fatalf("Designer media_inspect result = %+v, want admitted image payload", runner.invocationResult)
-	}
-	if runner.invocationResult.Media.MIMEType != "image/png" || len(runner.invocationResult.Media.Bytes) == 0 {
-		t.Fatalf("Designer media payload = %+v", runner.invocationResult.Media)
+	if runner.invocationResult.Error == "" || runner.invocationResult.Media != nil {
+		t.Fatalf("workspace Designer media_inspect result = %+v, want locked-tool denial", runner.invocationResult)
 	}
 	if len(runner.requests) < 2 {
-		t.Fatalf("Designer provider requests = %d, want continuation after media inspection", len(runner.requests))
+		t.Fatalf("workspace Designer provider requests = %d, want continuation after locked-tool denial", len(runner.requests))
 	}
-	foundMedia := false
 	for _, item := range runner.requests[1].Input {
 		content, _ := item["content"].([]map[string]any)
 		for _, part := range content {
 			if part["type"] == "session_media" {
-				foundMedia = true
+				t.Fatalf("workspace Designer continuation leaked denied media: %#v", runner.requests[1].Input)
 			}
 		}
 	}
-	if !foundMedia {
-		t.Fatalf("Designer continuation input omitted inspected media: %#v", runner.requests[1].Input)
-	}
 	if strings.TrimSpace(runner.requests[1].ProviderConfigurationHash) == "" {
-		t.Fatal("Designer media continuation omitted provider configuration identity")
+		t.Fatal("workspace Designer denial continuation omitted provider configuration identity")
 	}
 }
 
