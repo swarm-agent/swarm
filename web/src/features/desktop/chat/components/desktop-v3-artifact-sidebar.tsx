@@ -88,7 +88,7 @@ function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactC
   if (artifact.status === 'staging') return <Loader2 className="size-5 animate-spin text-[var(--app-primary)]" aria-label="Generating artifact" />
   if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) return <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
   if (artifact.mediaType.startsWith('image/') && previewURL) {
-    return <img src={previewURL} alt="" className="size-full object-cover" />
+    return <img src={previewURL} alt="" className="size-full object-contain" />
   }
   if (artifact.mediaType === 'text/html' && previewHTML) {
     return <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
@@ -154,7 +154,7 @@ export function DesktopV3ArtifactSidebar({
               onClick={() => onOpenArtifact(desktopV3ArtifactCatalogEntryKey(artifact))}
               aria-label={`Open ${artifact.label} in full artifact view`}
             >
-              <span className={cn('relative grid overflow-hidden bg-[var(--app-bg)]', thin ? 'size-full place-items-center' : 'aspect-[16/9] place-items-center')}>
+              <span className={cn('relative grid overflow-hidden bg-[var(--app-bg)]', thin ? 'size-full place-items-center' : 'h-28 place-items-center')}>
                 <DesktopV3ArtifactThumbnail artifact={artifact} />
                 {!thin ? <span className="absolute right-2 top-2 grid size-7 place-items-center rounded-md bg-black/60 text-white opacity-0 transition group-hover:opacity-100"><Maximize2 size={13} aria-hidden="true" /></span> : null}
               </span>

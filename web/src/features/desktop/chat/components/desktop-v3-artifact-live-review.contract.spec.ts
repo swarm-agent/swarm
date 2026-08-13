@@ -38,6 +38,19 @@ test('live artifact review presents multi-variant progress and refreshes from du
   assert.match(refresh, /if \(this\.pendingDrain\) return this\.pendingDrain/)
 })
 
+test('artifact previews fit the available viewport and offer explicit fullscreen viewing', async () => {
+  const gallery = await readFile(galleryURL, 'utf8')
+
+  assert.match(gallery, /data-artifact-preview-surface/)
+  assert.match(gallery, /selected\.mediaType\.startsWith\('image\/'\).*\? 'overflow-hidden' : 'overflow-auto'/s)
+  assert.match(gallery, /className="grid size-full min-h-0 place-items-center"/)
+  assert.match(gallery, /className="size-full rounded-lg border.*object-contain shadow-sm"/)
+  assert.match(gallery, /previewSurface\.requestFullscreen\(\)/)
+  assert.match(gallery, /document\.exitFullscreen\(\)/)
+  assert.match(gallery, /aria-label="View artifact fullscreen"/)
+  assert.match(gallery, /aria-label="Exit fullscreen artifact preview"/)
+})
+
 test('review navigation and durable selection stay collection-scoped', async () => {
   const gallery = await readFile(galleryURL, 'utf8')
 
