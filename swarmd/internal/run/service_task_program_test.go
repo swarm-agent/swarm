@@ -669,6 +669,106 @@ func TestTaskProgramErrorCodesAreActionable(t *testing.T) {
 	}
 }
 
+func TestTaskProgramReconstructedDesignerLaunchesPreserveManagedAndWorkspaceModes(t *testing.T) {
+	spec := &taskProgramSpec{ID: "design_program", Jobs: []taskProgramJob{
+		{ID: "managed", StageID: "variants", RequestedSubagentType: "designer"},
+		{ID: "workspace", StageID: "variants", RequestedSubagentType: "designer", OwnedScope: []string{"web/src/variant.tsx"}},
+		{ID: "finder", StageID: "variants", RequestedSubagentType: "finder"},
+	}}
+	launches := taskProgramLaunchesFromSpec(spec)
+	if len(launches) != 3 || launches[0].OutputMode != taskOutputModeManaged || launches[1].OutputMode != taskOutputModeWorkspace || launches[2].OutputMode != "" {
+		t.Fatalf("reconstructed output modes = %#v", launches)
+	}
+}
+
+func TestTaskProgramManagedDesignerOutcomeRequiresReadyArtifact(t *testing.T) {
+	job := taskProgramJob{ID: "design", StageID: "variants", RequestedSubagentType: "designer"}
+	ready := &taskArtifactReference{SessionID: "parent", CollectionID: "collection", VariantID: "variant", Status: pebblestore.SessionArtifactStatusReady}
+	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{job}}, []taskLaunchOutcome{{ChildSessionID: "child", ArtifactReference: ready}}, []error{nil})
+	if len(updates) != 1 || updates[0].State != pebblestore.TaskProgramJobCompleted || updates[0].IntegrationState != "artifact_ready" || updates[0].Blocker != nil {
+		t.Fatalf("ready managed Designer transition = %#v", updates)
+	}
+	for _, tc := range []struct {
+		name      string
+		reference *taskArtifactReference
+	}{
+		{name: "missing"},
+		{name: "failed", reference: &taskArtifactReference{Status: pebblestore.SessionArtifactStatusFailed, FailureCode: "render_failed"}},
+		{name: "staging", reference: &taskArtifactReference{Status: pebblestore.SessionArtifactStatusStaging}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{job}}, []taskLaunchOutcome{{ArtifactReference: tc.reference}}, []error{nil})
+			if len(updates) != 1 || updates[0].State != pebblestore.TaskProgramJobFailed || updates[0].IntegrationState != "artifact_invalid" || updates[0].Blocker == nil || updates[0].Blocker.Code != "managed_artifact_invalid" {
+				t.Fatalf("invalid managed Designer transition = %#v", updates)
+			}
+		})
+	}
+}
+
+func TestTaskProgramOutcomesParseArtifactReference(t *testing.T) {
+	payload := map[string]any{"launches": []any{map[string]any{
+		"child_session_id": "child-design", "artifact_status": pebblestore.SessionArtifactStatusReady,
+		"artifact_reference": map[string]any{"session_id": "parent", "collection_id": "collection", "variant_id": "variant", "status": pebblestore.SessionArtifactStatusReady},
+	}}}
+	outcomes := taskProgramOutcomesFromPayload(payload, 1)
+	if len(outcomes) != 1 || outcomes[0].ArtifactReference == nil || outcomes[0].ArtifactReference.SessionID != "parent" || outcomes[0].ArtifactReference.CollectionID != "collection" || outcomes[0].ArtifactReference.VariantID != "variant" || outcomes[0].ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
+		t.Fatalf("parsed artifact outcome = %#v", outcomes)
+	}
+}
+
+func TestTaskProgramManagedArtifactValidationRejectsLineageMismatch(t *testing.T) {
+	svc, parentID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	programID, jobID, callID, childID := "managed_program", "design", "call-managed-program", "child-design"
+	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SourceArguments: map[string]any{"program_id": programID, "program_job_id": jobID}}
+	if _, err := svc.ensureManagedDesignerArtifactCollection(parent, callID, []taskLaunchSpec{spec}, nil); err != nil {
+		t.Fatalf("allocate managed collection: %v", err)
+	}
+	run := managedDesignerArtifactContext(parent, callID, spec, 1)
+	run.ChildSessionID = childID
+	svc.markManagedDesignerArtifactFailed(parent, run, childID, "managed_output_missing")
+	reference := &taskArtifactReference{SessionID: parent.ID, CollectionID: run.CollectionID, VariantID: run.VariantID, Status: pebblestore.SessionArtifactStatusReady}
+	scheduler := taskProgramScheduler{service: svc, parentSession: parent, record: pebblestore.TaskProgramRecord{ParentSessionID: parent.ID, ProgramID: programID, ReservationCallID: callID}}
+	failedReference := *reference
+	failedReference.Status = pebblestore.SessionArtifactStatusFailed
+	if err := scheduler.validateManagedDesignerArtifact(jobID, childID, &failedReference); err == nil || !strings.Contains(err.Error(), "malformed or mismatched") {
+		t.Fatalf("non-ready artifact rejection = %v", err)
+	}
+	if err := scheduler.validateManagedDesignerArtifact(jobID, "different-child", reference); err == nil || !strings.Contains(err.Error(), "lineage") {
+		t.Fatalf("lineage mismatch rejection = %v", err)
+	}
+}
+
+func TestTaskProgramStatusExposesBoundedReadyArtifactReferences(t *testing.T) {
+	record := pebblestore.TaskProgramRecord{
+		ParentSessionID: "parent", ProgramID: "managed_program", ReservationCallID: "call-managed", State: pebblestore.TaskProgramStateCompleted,
+		Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{{ID: "design", StageID: "variants", AgentType: "designer"}}},
+		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "design", StageID: "variants", State: pebblestore.TaskProgramJobCompleted, IntegrationState: "artifact_ready", ChildSessionID: "child"}},
+	}
+	payload := taskProgramStatusPayload(record, false)
+	references, ok := payload["artifact_references"].([]*taskArtifactReference)
+	if !ok || len(references) != 1 || payload["artifact_count"] != 1 || references[0].SessionID != "parent" || references[0].Status != pebblestore.SessionArtifactStatusReady {
+		t.Fatalf("status artifact handoff = %#v", payload)
+	}
+	jobs := payload["jobs"].([]map[string]any)
+	if len(jobs) != 1 || jobs[0]["artifact_status"] != pebblestore.SessionArtifactStatusReady {
+		t.Fatalf("job artifact handoff = %#v", jobs)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"workspace_path", "digest_sha256", "filename", "media_type"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("artifact status leaked %q: %s", forbidden, raw)
+		}
+	}
+}
+
 func TestParseTaskProgramLifecycleGuards(t *testing.T) {
 	status, err := parseTaskCallArguments(`{"action":"status","program_id":"release_program"}`)
 	if err != nil || status.ProgramID != "release_program" || len(status.Launches) != 0 {

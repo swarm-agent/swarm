@@ -85,7 +85,7 @@ func taskProgramPresentationPayload(record pebblestore.TaskProgramRecord) map[st
 		}
 	}
 	for _, job := range record.Jobs {
-		definition := jobDefinitions[job.JobID]
+		definition, definitionFound := jobDefinitions[job.JobID]
 		dependencyState := "satisfied"
 		for _, dependency := range definition.DependsOn {
 			state := jobStates[dependency]
@@ -108,6 +108,12 @@ func taskProgramPresentationPayload(record pebblestore.TaskProgramRecord) map[st
 		}
 		if job.ChildSessionID != "" {
 			row["child_session_id"] = strings.TrimSpace(job.ChildSessionID)
+		}
+		if definitionFound {
+			if reference := taskProgramReadyArtifactReference(record, definition, job); reference != nil {
+				row["artifact_reference"] = reference
+				row["artifact_status"] = reference.Status
+			}
 		}
 		jobsByStage[job.StageID] = append(jobsByStage[job.StageID], row)
 	}
@@ -202,6 +208,7 @@ func taskProgramStreamMetadata(record pebblestore.TaskProgramRecord) (map[string
 		})
 	}
 	statusJobs := make([]map[string]any, 0, len(record.Jobs))
+	artifactReferences := make([]*taskArtifactReference, 0)
 	for _, job := range record.Jobs {
 		row := map[string]any{
 			"job_id":         job.JobID,
@@ -211,6 +218,13 @@ func taskProgramStreamMetadata(record pebblestore.TaskProgramRecord) (map[string
 		}
 		if job.ChildSessionID != "" {
 			row["child_session_id"] = strings.TrimSpace(job.ChildSessionID)
+		}
+		if definitionIndex := taskProgramDefinitionJobIndex(record, job.JobID); definitionIndex >= 0 {
+			if reference := taskProgramReadyArtifactReference(record, record.Definition.Jobs[definitionIndex], job); reference != nil {
+				row["artifact_reference"] = reference
+				row["artifact_status"] = reference.Status
+				artifactReferences = append(artifactReferences, reference)
+			}
 		}
 		statusJobs = append(statusJobs, row)
 	}
@@ -226,12 +240,17 @@ func taskProgramStreamMetadata(record pebblestore.TaskProgramRecord) (map[string
 		"revision":        record.Revision,
 		"next_action":     record.NextAction,
 		"jobs":            statusJobs,
+		"artifact_count":  len(artifactReferences),
+	}
+	if len(artifactReferences) > 0 {
+		status["artifact_references"] = artifactReferences
 	}
 	return program, status
 }
 
 func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool) map[string]any {
 	jobs := make([]map[string]any, 0, len(record.Jobs))
+	artifactReferences := make([]*taskArtifactReference, 0)
 	counts := map[string]int{
 		"declared": 0, "running": 0, "handoff_ready": 0, "integrated": 0, "blocked": 0, "failed": 0, "cancelled": 0, "completed": 0,
 	}
@@ -265,6 +284,13 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 		if job.Blocker != nil {
 			row["blocker"] = job.Blocker
 		}
+		if definitionIndex := taskProgramDefinitionJobIndex(record, job.JobID); definitionIndex >= 0 {
+			if reference := taskProgramReadyArtifactReference(record, record.Definition.Jobs[definitionIndex], job); reference != nil {
+				row["artifact_reference"] = reference
+				row["artifact_status"] = reference.Status
+				artifactReferences = append(artifactReferences, reference)
+			}
+		}
 		jobs = append(jobs, row)
 	}
 	payload := map[string]any{
@@ -273,7 +299,10 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 		"reservation_run_id": record.ReservationRunID, "reservation_call_id": record.ReservationCallID,
 		"resume_generation": record.ResumeGeneration, "program_state": record.State, "active_stage_id": record.ActiveStageID,
 		"parent_head": record.ParentHead, "next_action": record.NextAction, "jobs": jobs, "counts": counts,
-		"program_presentation": taskProgramPresentationPayload(record), "details_truncated": false, "path_id": "tool.task_program.status.v1",
+		"artifact_count": len(artifactReferences), "program_presentation": taskProgramPresentationPayload(record), "details_truncated": false, "path_id": "tool.task_program.status.v1",
+	}
+	if len(artifactReferences) > 0 {
+		payload["artifact_references"] = artifactReferences
 	}
 	if record.Blocker != nil {
 		payload["blocker"] = record.Blocker
@@ -306,7 +335,10 @@ func taskProgramLaunchesFromSpec(spec *taskProgramSpec) []taskLaunchSpec {
 	for _, job := range spec.Jobs {
 		outputMode := ""
 		if agentruntime.IsDesignerAgentName(job.RequestedSubagentType) {
-			outputMode = taskOutputModeWorkspace
+			outputMode = taskOutputModeManaged
+			if len(job.OwnedScope) > 0 {
+				outputMode = taskOutputModeWorkspace
+			}
 		}
 		launches = append(launches, taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: outputMode, DependencyEvidence: job.DependencyEvidence, SourceArguments: map[string]any{"program_id": spec.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}})
 	}
@@ -402,7 +434,7 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 	}
 	updates := make([]pebblestore.TaskProgramJobTransition, 0)
 	readyCount := 0
-	for i, job := range record.Jobs {
+	for _, job := range record.Jobs {
 		if repairedJobs[job.JobID] {
 			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobIntegrated, ClearBlocker: true, IntegrationState: "integrated"})
 			continue
@@ -414,7 +446,11 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 		if job.State != pebblestore.TaskProgramJobRunning && job.State != pebblestore.TaskProgramJobFailed && job.State != pebblestore.TaskProgramJobBlocked && job.State != pebblestore.TaskProgramJobCancelled {
 			continue
 		}
-		definition := record.Definition.Jobs[i]
+		definitionIndex := taskProgramDefinitionJobIndex(record, job.JobID)
+		if definitionIndex < 0 {
+			return record, 0, fmt.Errorf("task program job %q is missing its durable definition", job.JobID)
+		}
+		definition := record.Definition.Jobs[definitionIndex]
 		childCompleted := false
 		if strings.TrimSpace(job.ChildSessionID) != "" {
 			lifecycle, ok, lifecycleErr := s.GetSessionLifecycle(job.ChildSessionID)
@@ -431,7 +467,24 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 		if !agentruntime.IsCoderAgentName(definition.AgentType) || job.ChildSessionID == "" || job.WorkspacePath == "" {
 			nextState, integration := pebblestore.TaskProgramJobDeclared, "resume_existing_child"
 			if childCompleted {
-				nextState, integration = pebblestore.TaskProgramJobCompleted, "not_required"
+				if taskProgramDefinitionUsesManagedDesigner(definition) {
+					if job.IntegrationState == "artifact_ready" {
+						updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobCompleted, ClearBlocker: true, IntegrationState: "artifact_ready"})
+						continue
+					}
+					expected := taskProgramExpectedArtifactReference(record, job.JobID)
+					variant, ok, artifactErr := s.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, expected.CollectionID, expected.VariantID)
+					if artifactErr != nil {
+						return record, 0, fmt.Errorf("inspect completed managed Designer job %q artifact: %w", job.JobID, artifactErr)
+					}
+					lineage := variant.Lineage
+					if !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.SessionID != parent.ID || variant.AccountScopeID != parent.AccountScopeID || lineage.ParentSessionID != parent.ID || lineage.SourceSessionID != job.ChildSessionID || lineage.ChildSessionID != job.ChildSessionID || lineage.TaskCallID != record.ReservationCallID || lineage.ProgramID != record.ProgramID || lineage.ProgramJobID != job.JobID {
+						return record, 0, fmt.Errorf("task program job %q completed without a valid ready managed artifact; resume the existing child to repair the handoff", job.JobID)
+					}
+					nextState, integration = pebblestore.TaskProgramJobCompleted, "artifact_ready"
+				} else {
+					nextState, integration = pebblestore.TaskProgramJobCompleted, "not_required"
+				}
 			}
 			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: nextState, ClearBlocker: true, IntegrationState: integration})
 			if nextState == pebblestore.TaskProgramJobDeclared {
@@ -520,6 +573,31 @@ func taskProgramRunningTransitions(spec *taskProgramSpec, prepared []taskLaunchP
 	return updates
 }
 
+func taskProgramDefinitionUsesManagedDesigner(definition pebblestore.TaskProgramJobSpec) bool {
+	return agentruntime.IsDesignerAgentName(definition.AgentType) && len(definition.OwnedScope) == 0
+}
+
+func taskProgramSpecUsesManagedDesigner(job taskProgramJob) bool {
+	return agentruntime.IsDesignerAgentName(job.RequestedSubagentType) && len(job.OwnedScope) == 0
+}
+
+func taskProgramExpectedArtifactReference(record pebblestore.TaskProgramRecord, jobID string) *taskArtifactReference {
+	routingID := taskManagedArtifactRoutingID(record.ReservationCallID, record.ProgramID)
+	return &taskArtifactReference{
+		SessionID:    strings.TrimSpace(record.ParentSessionID),
+		CollectionID: taskManagedArtifactID("collection", record.ParentSessionID, routingID, 0),
+		VariantID:    taskManagedArtifactID("variant", record.ParentSessionID, routingID+"\x00job:"+strings.TrimSpace(jobID), 0),
+		Status:       pebblestore.SessionArtifactStatusReady,
+	}
+}
+
+func taskProgramReadyArtifactReference(record pebblestore.TaskProgramRecord, definition pebblestore.TaskProgramJobSpec, job pebblestore.TaskProgramJobRecord) *taskArtifactReference {
+	if !taskProgramDefinitionUsesManagedDesigner(definition) || job.State != pebblestore.TaskProgramJobCompleted || job.IntegrationState != "artifact_ready" {
+		return nil
+	}
+	return taskProgramExpectedArtifactReference(record, job.JobID)
+}
+
 func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchOutcome, runErrs []error) []pebblestore.TaskProgramJobTransition {
 	updates := make([]pebblestore.TaskProgramJobTransition, 0, len(outcomes))
 	for i, outcome := range outcomes {
@@ -534,9 +612,20 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 				state = pebblestore.TaskProgramJobCancelled
 			}
 			integration = "blocked"
-			blocker = &pebblestore.TaskProgramBlocker{Code: "child_handoff_failed", Message: firstNonEmptyString(outcome.Reason, outcome.Error, runErrs[i].Error()), NextAction: "repair_or_resume_program"}
+			code := "child_handoff_failed"
+			if taskProgramSpecUsesManagedDesigner(spec.Jobs[i]) && !strings.EqualFold(strings.TrimSpace(outcome.Phase), "cancelled") {
+				code, integration = "managed_artifact_invalid", "artifact_invalid"
+			}
+			blocker = &pebblestore.TaskProgramBlocker{Code: code, Message: firstNonEmptyString(outcome.Reason, outcome.Error, runErrs[i].Error()), NextAction: "repair_or_resume_program"}
 		} else if agentruntime.IsCoderAgentName(spec.Jobs[i].RequestedSubagentType) {
 			state, integration = pebblestore.TaskProgramJobHandoffReady, "pending"
+		} else if taskProgramSpecUsesManagedDesigner(spec.Jobs[i]) {
+			if outcome.ArtifactReference == nil || outcome.ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
+				state, integration = pebblestore.TaskProgramJobFailed, "artifact_invalid"
+				blocker = &pebblestore.TaskProgramBlocker{Code: "managed_artifact_invalid", Message: "managed Designer completed without a validated ready artifact", NextAction: "repair_or_resume_program"}
+			} else {
+				integration = "artifact_ready"
+			}
 		}
 		updates = append(updates, pebblestore.TaskProgramJobTransition{
 			JobID: spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobRunning, State: state,

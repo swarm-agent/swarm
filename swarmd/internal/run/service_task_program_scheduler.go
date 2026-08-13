@@ -104,6 +104,15 @@ func taskProgramStageIndex(record pebblestore.TaskProgramRecord) int {
 	return -1
 }
 
+func taskProgramDefinitionJobIndex(record pebblestore.TaskProgramRecord, jobID string) int {
+	for i := range record.Definition.Jobs {
+		if record.Definition.Jobs[i].ID == jobID {
+			return i
+		}
+	}
+	return -1
+}
+
 func taskProgramJobIndex(record pebblestore.TaskProgramRecord, jobID string) int {
 	for i := range record.Jobs {
 		if record.Jobs[i].JobID == jobID {
@@ -282,6 +291,9 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	}
 	outcomes := taskProgramOutcomesFromPayload(payload, len(indexes))
 	runErrs := taskProgramErrorsFromPayload(payload, runErr, len(indexes))
+	if validationErr := p.validateManagedDesignerOutcomes(jobs, outcomes, runErrs); validationErr != nil && runErr == nil {
+		runErr = validationErr
+	}
 	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: jobs}, outcomes, runErrs)
 	state, next = pebblestore.TaskProgramStateRunning, "launch_ready_jobs"
 	var blocker *pebblestore.TaskProgramBlocker
@@ -382,10 +394,80 @@ func taskProgramOutcomesFromPayload(payload map[string]any, count int) []taskLau
 			WorktreeBranch: mapString(row, "worktree_branch"), ParentBranch: mapString(row, "parent_branch"),
 			BaseCommit: mapString(row, "base_commit"), HeadCommit: mapString(row, "head_commit"),
 			Phase: mapString(row, "phase"), Error: mapString(row, "error"), Reason: mapString(row, "reason"),
-			WorktreeClean: mapBool(row, "worktree_clean"),
+			WorktreeClean: mapBool(row, "worktree_clean"), ArtifactReference: taskProgramArtifactReferenceFromRow(row),
 		}
 	}
 	return out
+}
+
+func taskProgramArtifactReferenceFromRow(row map[string]any) *taskArtifactReference {
+	value, exists := row["artifact_reference"]
+	if !exists || value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var reference taskArtifactReference
+	if json.Unmarshal(raw, &reference) != nil {
+		return nil
+	}
+	reference.SessionID = strings.TrimSpace(reference.SessionID)
+	reference.CollectionID = strings.TrimSpace(reference.CollectionID)
+	reference.VariantID = strings.TrimSpace(reference.VariantID)
+	reference.Status = strings.TrimSpace(firstNonEmptyString(reference.Status, mapString(row, "artifact_status")))
+	reference.FailureCode = strings.TrimSpace(reference.FailureCode)
+	return &reference
+}
+
+func (p *taskProgramScheduler) validateManagedDesignerOutcomes(jobs []taskProgramJob, outcomes []taskLaunchOutcome, runErrs []error) error {
+	var firstErr error
+	for i, job := range jobs {
+		if !taskProgramSpecUsesManagedDesigner(job) || (i < len(runErrs) && runErrs[i] != nil) {
+			continue
+		}
+		var outcome taskLaunchOutcome
+		if i < len(outcomes) {
+			outcome = outcomes[i]
+		}
+		if err := p.validateManagedDesignerArtifact(job.ID, outcome.ChildSessionID, outcome.ArtifactReference); err != nil {
+			if i < len(runErrs) {
+				runErrs[i] = err
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+func (p *taskProgramScheduler) validateManagedDesignerArtifact(jobID, childSessionID string, reference *taskArtifactReference) error {
+	jobID, childSessionID = strings.TrimSpace(jobID), strings.TrimSpace(childSessionID)
+	if reference == nil {
+		return fmt.Errorf("managed Designer job %q completed without an artifact reference", jobID)
+	}
+	expected := taskProgramExpectedArtifactReference(p.record, jobID)
+	if reference.SessionID != expected.SessionID || reference.CollectionID != expected.CollectionID || reference.VariantID != expected.VariantID || reference.Status != expected.Status || reference.FailureCode != "" {
+		return fmt.Errorf("managed Designer job %q returned a malformed or mismatched ready artifact reference", jobID)
+	}
+	if p.service == nil || p.service.sessions == nil {
+		return errors.New("managed Designer artifact validation requires the session artifact authority")
+	}
+	variant, ok, err := p.service.sessions.GetSessionArtifactVariant(p.parentSession.AccountScopeID, p.parentSession.ID, expected.CollectionID, expected.VariantID)
+	if err != nil {
+		return fmt.Errorf("validate managed Designer job %q artifact: %w", jobID, err)
+	}
+	if !ok {
+		return fmt.Errorf("managed Designer job %q artifact is missing", jobID)
+	}
+	lineage := variant.Lineage
+	if variant.SessionID != p.parentSession.ID || variant.AccountScopeID != p.parentSession.AccountScopeID || variant.CollectionID != expected.CollectionID || variant.Status != pebblestore.SessionArtifactStatusReady ||
+		lineage.ParentSessionID != p.parentSession.ID || lineage.SourceSessionID != childSessionID || lineage.TaskCallID != p.record.ReservationCallID || lineage.ProgramID != p.record.ProgramID || lineage.ProgramJobID != jobID || lineage.ChildSessionID != childSessionID {
+		return fmt.Errorf("managed Designer job %q artifact lineage does not match its trusted program handoff", jobID)
+	}
+	return nil
 }
 
 func taskProgramLaunchRows(payload map[string]any) []map[string]any {
@@ -429,11 +511,16 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 			expectedHead = strings.TrimSpace(base.BaseCommit)
 		}
 	}
-	for i, job := range p.record.Jobs {
+	for _, job := range p.record.Jobs {
 		if job.StageID != stageID {
 			continue
 		}
-		definition := p.record.Definition.Jobs[i]
+		definitionIndex := taskProgramDefinitionJobIndex(p.record, job.JobID)
+		if definitionIndex < 0 {
+			p.barrierJobID = job.JobID
+			return fmt.Errorf("job %q is missing its durable definition", job.JobID)
+		}
+		definition := p.record.Definition.Jobs[definitionIndex]
 		if agentruntime.IsCoderAgentName(definition.AgentType) {
 			if job.State != pebblestore.TaskProgramJobHandoffReady || job.ImmutableStageBase == "" || job.ChildHead == "" {
 				p.barrierJobID = job.JobID
@@ -468,8 +555,15 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 		}
 		parentHead = result.ResultingParentHead
 	}
-	for i, job := range p.record.Jobs {
-		if job.StageID == stageID && !agentruntime.IsCoderAgentName(p.record.Definition.Jobs[i].AgentType) && job.State != pebblestore.TaskProgramJobCompleted {
+	for _, job := range p.record.Jobs {
+		if job.StageID != stageID {
+			continue
+		}
+		definitionIndex := taskProgramDefinitionJobIndex(p.record, job.JobID)
+		if definitionIndex < 0 {
+			return fmt.Errorf("job %q is missing its durable definition", job.JobID)
+		}
+		if !agentruntime.IsCoderAgentName(p.record.Definition.Jobs[definitionIndex].AgentType) && job.State != pebblestore.TaskProgramJobCompleted {
 			return fmt.Errorf("job %q did not complete", job.JobID)
 		}
 	}
@@ -544,6 +638,8 @@ func taskProgramErrorCode(err error) string {
 		return "permission_denied"
 	case strings.Contains(message, "conflict"), strings.Contains(message, "cherry-pick"):
 		return "integration_conflict"
+	case strings.Contains(message, "artifact"):
+		return "managed_artifact_invalid"
 	case strings.Contains(message, "handoff"), strings.Contains(message, "ancestry"), strings.Contains(message, "descend"), strings.Contains(message, "missing child head"):
 		return "invalid_handoff"
 	case strings.Contains(message, "worktree"), strings.Contains(message, "allocate"):
