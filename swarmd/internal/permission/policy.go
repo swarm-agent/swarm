@@ -1202,7 +1202,11 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// complete batch and applies it atomically, so this canonical operation is
 		// safe to flow without a separate permission round trip.
 		return PolicyDecisionAllow
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "manage_artifact":
+		// Managed artifact operations remain inside the authenticated session
+		// authority and private app-owned storage. The only action that can write
+		// into a workspace is materialize/promote, which independently requires an
+		// exact ready reference and a trusted workspace root.
 		return PolicyDecisionAllow
 	case "action_change":
 		if bypass {

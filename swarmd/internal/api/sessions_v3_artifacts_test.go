@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -271,6 +272,32 @@ func TestManagedArtifactCatalogShowsPrivateReadyArtifactWithoutRepositoryOutput(
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), variant.ID) || !strings.Contains(rec.Body.String(), "Private preview") { t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String()) }
+}
+
+func TestManagedArtifactCatalogSuppressesUnavailableLegacyDuplicateForNativeHandoff(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "unused.html", "unused")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, RunID: "run-native", PlanID: "plan-native", CheckpointID: "cp-native", AttemptID: "attempt-native"}, artifact.CreateInput{
+		RequestID: "native-handoff-create", CollectionID: "native-handoff-collection", CollectionName: "Native handoff", VariantID: "native-handoff-variant", Filename: "managed.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Label: "Managed handoff", Previewable: true}, Body: []byte("<!doctype html><title>managed</title>"),
+	})
+	if err != nil { t.Fatal(err) }
+	doc := &pebblestore.SessionPlanDocument{ID: "plan-native", Title: "Native plan", Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-native", Status: sessionruntime.PlanCheckpointStatusCompleted, RunID: "run-native", AttemptID: "attempt-native", CompletedAt: time.Now().UnixMilli(), Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "managed.html", Role: "deliverable", Description: "Managed handoff", MediaType: "text/html"}}, Handoff: &pebblestore.SessionPlanCheckpointHandoff{Overview: "done"}}}}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(variant.SessionID, doc.ID, doc.Title, "", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil { t.Fatal(err) }
+
+	req := httptest.NewRequest(http.MethodGet, "/v3/artifacts?limit=2000", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK { t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String()) }
+	var payload struct { Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"` }
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil { t.Fatal(err) }
+	matching := make([]sessionsV3ArtifactCatalogItem, 0, 2)
+	for _, item := range payload.Artifacts { if item.SessionID == variant.SessionID && item.Filename == variant.Filename { matching = append(matching, item) } }
+	if len(matching) != 1 || matching[0].ArtifactID != variant.ID || matching[0].Status != pebblestore.SessionArtifactStatusReady { t.Fatalf("managed handoff catalog entries = %+v", matching) }
+	previewReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID, nil)
+	previewRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewRec, withTestPrincipal(previewReq))
+	if previewRec.Code != http.StatusOK || !strings.Contains(previewRec.Body.String(), "<title>managed</title>") { t.Fatalf("managed handoff preview status=%d body=%s", previewRec.Code, previewRec.Body.String()) }
 }
 
 func TestManagedSessionV3ArtifactPackageEntryPrefersRootIndexAndFallsBackToHTML(t *testing.T) {

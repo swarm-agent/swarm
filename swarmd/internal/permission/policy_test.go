@@ -2,6 +2,7 @@ package permission
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,6 +11,16 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestManageArtifactDefaultsToAutomaticPrivateAuthority(t *testing.T) {
+	for _, action := range []string{"create", "create_package", "list", "get", "read", "select", "delete", "materialize", "promote"} {
+		arguments := fmt.Sprintf(`{"action":%q}`, action)
+		got := ExplainPolicy("auto", "manage_artifact", arguments, Policy{})
+		if got.Decision != PolicyDecisionAllow {
+			t.Fatalf("manage_artifact %s decision = %q source=%q reason=%q", action, got.Decision, got.Source, got.Reason)
+		}
+	}
+}
 
 func bashArguments(t *testing.T, command string) string {
 	t.Helper()

@@ -2,6 +2,15 @@ package run
 
 import "testing"
 
+func TestManageArtifactPermissionRequirementIsAutomatic(t *testing.T) {
+	for _, action := range []string{"create", "create_package", "list", "get", "read", "select", "delete", "materialize", "promote"} {
+		requirement, needsApproval := permissionRequirement("auto", "manage_artifact", `{"action":"`+action+`"}`)
+		if needsApproval || requirement != "manage_artifact" {
+			t.Fatalf("manage_artifact %s requirement = %q/%v, want manage_artifact/false", action, requirement, needsApproval)
+		}
+	}
+}
+
 func TestPlanManagePermissionRequirementIsTypedForLifecycleActions(t *testing.T) {
 	cases := []struct {
 		name            string

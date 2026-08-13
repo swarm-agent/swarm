@@ -152,6 +152,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 			continue
 		}
 		workspacePath, workspaceName := sessionsV3ArtifactCatalogWorkspace(session)
+		nativeHandoffs := make(map[string]struct{})
 		if s.artifacts != nil {
 			// Repair redundant progress indexes before projection so interrupted historical metadata cannot hide valid artifacts.
 			if _, err := s.sessions.RepairSessionArtifactCollections(session.ID); err != nil {
@@ -189,6 +190,11 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					}
 					lineage := variant.Lineage
 					kind, previewable := variant.Presentation.Kind, variant.Presentation.Previewable
+					if variant.Status == pebblestore.SessionArtifactStatusReady {
+						handoffKind, handoffMediaType := kind, variant.MediaType
+						if handoffKind == "package" && handoffMediaType == "application/zip" { handoffKind, handoffMediaType = "html", "text/html" }
+						nativeHandoffs[sessionsV3NativeHandoffKey(lineage.PlanID, lineage.CheckpointID, lineage.RunID, lineage.AttemptID, variant.Filename, handoffMediaType, handoffKind)] = struct{}{}
+					}
 					if kind == "package" && variant.Status == pebblestore.SessionArtifactStatusReady && variant.MediaType == "application/zip" {
 						kind, previewable = "html", true
 					}
@@ -247,6 +253,10 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 				references := append([]pebblestore.SessionPlanArtifactReference(nil), plan.Document.Artifacts...)
 				references = append(references, checkpoint.Artifacts...)
 				for _, descriptor := range sessionruntime.ProjectPlanFinalHandoffArtifacts(plan.ID, checkpoint.ID, references) {
+					if _, ok := nativeHandoffs[sessionsV3NativeHandoffKey(plan.ID, checkpoint.ID, checkpoint.RunID, checkpoint.AttemptID, descriptor.Filename, descriptor.MediaType, descriptor.Kind)]; ok {
+						// Native managed bytes are already cataloged; do not project a second unavailable workspace-backed compatibility item.
+						continue
+					}
 					category := "document"
 					if descriptor.Kind == "html" || descriptor.Kind == "image" || descriptor.Kind == "pdf" {
 						category = "visual"
@@ -281,6 +291,10 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 		artifacts = artifacts[:limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artifacts": artifacts})
+}
+
+func sessionsV3NativeHandoffKey(planID, checkpointID, runID, attemptID, filename, mediaType, kind string) string {
+	return strings.Join([]string{strings.TrimSpace(planID), strings.TrimSpace(checkpointID), strings.TrimSpace(runID), strings.TrimSpace(attemptID), strings.TrimSpace(filename), strings.ToLower(strings.TrimSpace(mediaType)), strings.ToLower(strings.TrimSpace(kind))}, "\x00")
 }
 
 func sessionsV3ManagedArtifactCategory(variant pebblestore.SessionArtifactVariant) string {

@@ -5250,7 +5250,7 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	}
 
 	switch toolName {
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "edit_pending_plan":
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "manage_artifact", "edit_pending_plan":
 		return toolName, false
 	case "manage_sessions":
 		if permission.ShouldApproveManageSessionsDeploy(arguments) {
