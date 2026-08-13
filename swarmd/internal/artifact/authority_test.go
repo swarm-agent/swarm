@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -158,6 +159,39 @@ func TestAuthorityReferenceRequiresOwnedReadyExactEvent(t *testing.T) {
 	principal.AccountScopeID = "other-account"
 	if _, err := authority.GetReference(principal, ref); err == nil {
 		t.Fatal("expected source account ownership rejection")
+	}
+}
+
+func TestAuthorityMaterializeReferenceRequiresOwnedReadyExactEvent(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	variant := testVariant("source-variant", "source.txt", "text/plain", "text")
+	variant.SessionID, variant.CollectionID, variant.Status, variant.EventSeq = "source-session", "source-collection", pebblestore.SessionArtifactStatusStaging, 41
+	service, _, err := authority.registry.ServiceForOwnedSession("source-session", "account-1", "user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := service.Stage(context.Background(), variant, strings.NewReader("selected"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	metadata.sourceVariant = variant
+	workspace := t.TempDir()
+	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
+	if _, err := authority.MaterializeReference(context.Background(), principal, ref, workspace, "selected.txt", false); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspace, "selected.txt")); err != nil || string(data) != "selected" {
+		t.Fatalf("materialized reference = %q err=%v", data, err)
+	}
+	ref.EventSeq = 40
+	if _, err := authority.MaterializeReference(context.Background(), principal, ref, workspace, "stale.txt", false); err == nil || err.Error() != "artifact source reference is stale" {
+		t.Fatalf("stale materialize reference error = %v", err)
 	}
 }
 

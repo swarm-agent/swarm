@@ -287,6 +287,111 @@ func TestStagePackageRejectsEntryAndAggregateQuotasAndUnsafeNames(t *testing.T) 
 	}
 }
 
+func TestMaterializeReadyFileUsesWorkspaceRelativeDestinationAndExplicitOverwrite(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("materialize-file", "note.txt", "text/plain", "text")
+	staged, err := service.Stage(context.Background(), variant, strings.NewReader("managed file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	workspace := t.TempDir()
+	got, err := service.Materialize(context.Background(), variant, workspace, "designs/note.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Destination != "designs/note.txt" || got.Package || got.Files != 1 || got.Bytes != int64(len("managed file")) {
+		t.Fatalf("materialized = %+v", got)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspace, "designs", "note.txt")); err != nil || string(data) != "managed file" {
+		t.Fatalf("materialized bytes = %q err=%v", data, err)
+	}
+	if _, err := service.Materialize(context.Background(), variant, workspace, "designs/note.txt", false); !errors.Is(err, ErrDestinationConflict) {
+		t.Fatalf("conflict error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "designs", "note.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Materialize(context.Background(), variant, workspace, "designs/note.txt", true); err != nil {
+		t.Fatalf("explicit overwrite: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspace, "designs", "note.txt")); err != nil || string(data) != "managed file" {
+		t.Fatalf("overwritten bytes = %q err=%v", data, err)
+	}
+	for _, unsafe := range []string{"/absolute.txt", "../escape.txt", "designs/../escape.txt", `designs\\escape.txt`} {
+		if _, err := service.Materialize(context.Background(), variant, workspace, unsafe, false); err == nil {
+			t.Fatalf("accepted unsafe destination %q", unsafe)
+		}
+	}
+}
+
+func TestMaterializePackageRejectsSymlinkAndAmbiguousEntries(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("materialize-package", "bundle.zip", "application/zip", "package")
+	staged, err := service.StagePackage(context.Background(), variant, []PackageEntry{{Name: "index.html", Data: []byte("<h1>safe</h1>")}, {Name: "assets/site.css", Data: []byte("body{}")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	workspace := t.TempDir()
+	got, err := service.Materialize(context.Background(), variant, workspace, "variants/selected", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Package || got.Files != 2 || got.Bytes != int64(len("<h1>safe</h1>body{}")) {
+		t.Fatalf("materialized package = %+v", got)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspace, "variants", "selected", "assets", "site.css")); err != nil || string(data) != "body{}" {
+		t.Fatalf("package entry = %q err=%v", data, err)
+	}
+	if _, err := service.Materialize(context.Background(), variant, workspace, "variants/selected", false); !errors.Is(err, ErrDestinationConflict) {
+		t.Fatalf("package conflict error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "variants", "selected", "stale.txt"), []byte("remove"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Materialize(context.Background(), variant, workspace, "variants/selected", true); err != nil {
+		t.Fatalf("overwrite package: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "variants", "selected", "stale.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("overwrite retained stale package entry: %v", err)
+	}
+
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "linked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "linked", "escape")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := service.Materialize(context.Background(), variant, workspace, "linked/escape/package", false); err == nil {
+		t.Fatal("materialize package followed workspace symlink")
+	}
+
+	ambiguous := zipBytesMany(t, []struct{ name string; data []byte }{{"a", []byte("file")}, {"a/b", []byte("child")}})
+	unsafe := testVariant("ambiguous-package", "ambiguous.zip", "application/zip", "package")
+	staged, err = service.Stage(context.Background(), unsafe, bytes.NewReader(ambiguous))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err = service.Finalize(context.Background(), staged, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsafe.Status, unsafe.DigestSHA256, unsafe.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	if _, err := service.Materialize(context.Background(), unsafe, workspace, "ambiguous", false); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous package error = %v", err)
+	}
+}
+
 func TestFinalizedPrivateBytesSurviveServiceRestart(t *testing.T) {
 	service := newTestService(t, Limits{})
 	variant := testVariant("variant-restart", "restart.txt", "text/plain", "text")
@@ -573,6 +678,28 @@ func zipBytes(t *testing.T, name string, data []byte) []byte {
 	}
 	if _, err := io.Copy(entry, bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func zipBytesMany(t *testing.T, entries []struct {
+	name string
+	data []byte
+}) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	archive := zip.NewWriter(&out)
+	for _, item := range entries {
+		entry, err := archive.Create(item.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(item.data); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := archive.Close(); err != nil {
 		t.Fatal(err)

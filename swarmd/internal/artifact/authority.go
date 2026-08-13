@@ -263,6 +263,20 @@ func (a *Authority) ReadReference(ctx context.Context, principal Principal, ref 
 	return data, variant, err
 }
 
+// MaterializeReference verifies an exact authenticated ready reference before
+// copying its managed bytes into the trusted current workspace root.
+func (a *Authority) MaterializeReference(ctx context.Context, principal Principal, ref pebblestore.SessionArtifactSelectionReference, workspaceRoot, destination string, overwrite bool) (Materialized, error) {
+	variant, err := a.GetReference(principal, ref)
+	if err != nil {
+		return Materialized{}, err
+	}
+	service, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID)
+	if err != nil {
+		return Materialized{}, err
+	}
+	return service.Materialize(ctx, variant, workspaceRoot, destination, overwrite)
+}
+
 func (a *Authority) Select(principal Principal, requestID, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
 	_, principal, err := a.owned(principal)
 	if err != nil { return pebblestore.SessionArtifactSelectionReference{}, err }

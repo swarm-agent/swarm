@@ -3,6 +3,8 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,6 +22,10 @@ type fakeArtifactAuthority struct {
 	reference       pebblestore.SessionArtifactSelectionReference
 	referenceRead   bool
 	deleted         string
+	materializedRef pebblestore.SessionArtifactSelectionReference
+	workspaceRoot   string
+	destination     string
+	overwrite       bool
 }
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
@@ -58,6 +64,10 @@ func (f *fakeArtifactAuthority) Read(_ context.Context, principal artifact.Princ
 func (f *fakeArtifactAuthority) ReadReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, _ int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.reference, f.referenceRead = principal, ref, true
 	return append([]byte(nil), f.readBody...), f.variant, nil
+}
+func (f *fakeArtifactAuthority) MaterializeReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, workspaceRoot, destination string, overwrite bool) (artifact.Materialized, error) {
+	f.principal, f.materializedRef, f.workspaceRoot, f.destination, f.overwrite = principal, ref, workspaceRoot, destination, overwrite
+	return artifact.Materialized{Destination: destination, Files: 1, Bytes: 7}, nil
 }
 func (f *fakeArtifactAuthority) Select(principal artifact.Principal, _, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
 	f.principal = principal
@@ -235,6 +245,36 @@ func TestManageArtifactReadsExplicitAttachedReference(t *testing.T) {
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-read-incomplete", Name: "manage_artifact", Arguments: `{"action":"read","session_id":"source-session","variant_id":"variant-source"}`})
 	if err == nil || !strings.Contains(err.Error(), "requires session_id, collection_id, variant_id, and event_seq") {
 		t.Fatalf("incomplete source reference error = %v", err)
+	}
+}
+
+func TestManageArtifactMaterializesExactReferenceIntoTrustedWorkspace(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(scope.PrimaryPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-materialize", Name: "manage_artifact", Arguments: `{"action":"materialize","session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":42,"destination":"designs/selected.txt","overwrite":true}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.workspaceRoot != scope.PrimaryPath || authority.destination != "designs/selected.txt" || !authority.overwrite || authority.materializedRef.EventSeq != 42 {
+		t.Fatalf("materialize input: root=%q destination=%q overwrite=%t ref=%+v", authority.workspaceRoot, authority.destination, authority.overwrite, authority.materializedRef)
+	}
+	if strings.Contains(output, scope.PrimaryPath) || !strings.Contains(output, `"destination":"designs/selected.txt"`) {
+		t.Fatalf("materialize output = %s", output)
+	}
+	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-materialize-current", Name: "manage_artifact", Arguments: `{"action":"materialize","variant_id":"source-variant","destination":"selected.txt"}`})
+	if err == nil || !strings.Contains(err.Error(), "requires session_id, collection_id, variant_id, and event_seq") {
+		t.Fatalf("materialize without exact reference error = %v", err)
+	}
+	managedCtx := WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-call", CollectionID: "managed-collection", VariantID: "managed-variant"})
+	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(managedCtx, scope, Call{CallID: "call-managed-materialize", Name: "manage_artifact", Arguments: `{"action":"materialize","session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":42,"destination":"selected.txt"}`})
+	if err == nil || !strings.Contains(err.Error(), "managed Designer runs cannot materialize") {
+		t.Fatalf("managed child materialize error = %v", err)
 	}
 }
 

@@ -37,6 +37,7 @@ type ArtifactAuthority interface {
 	GetReference(artifact.Principal, pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error)
 	Read(context.Context, artifact.Principal, string, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
 	ReadReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
+	MaterializeReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, string, string, bool) (artifact.Materialized, error)
 	Select(artifact.Principal, string, string, string) (pebblestore.SessionArtifactSelectionReference, error)
 	DeleteVariant(artifact.Principal, string, string, string) error
 	DeleteCollection(artifact.Principal, string, string) error
@@ -99,12 +100,12 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create and manage durable artifacts owned by the current session, and inspect explicitly attached source references from authenticated same-owner sessions. Uses opaque collection and variant references; ownership and target session always come from trusted run context. Reads return only bounded UTF-8 text and never expose private storage paths.",
+		Description: "Create and manage durable artifacts owned by the current session, inspect explicitly attached source references, and explicitly materialize an exact ready reference into the trusted current workspace. Uses opaque collection and variant references; ownership, source bytes, and workspace root always come from trusted run context. Never exposes private storage paths.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":                 map[string]any{"type": "string", "enum": []string{"create", "create_package", "list", "get", "read", "select", "delete"}},
-				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session from an attached artifact reference; valid only for get/read"},
+				"action":                 map[string]any{"type": "string", "enum": []string{"create", "create_package", "list", "get", "read", "materialize", "promote", "select", "delete"}},
+				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session from an attached artifact reference; valid only for get/read/materialize/promote"},
 				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference; optional on create and required for collection-scoped actions"},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
 				"collection_description": map[string]any{"type": "string", "maxLength": 2048},
@@ -118,10 +119,12 @@ func manageArtifactDefinition() Definition {
 				"source_collection_id":   map[string]any{"type": "string", "description": "Optional opaque source collection lineage"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "Optional opaque source variant lineage"},
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence of the source artifact lineage"},
-				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence required with session_id for get/read"},
+				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence required with session_id for get/read/materialize/promote"},
 				"status":                 map[string]any{"type": "string", "description": "Optional list filter: staging|ready|failed|unavailable"},
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit},
 				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxReadBytes, "description": "Maximum UTF-8 bytes returned by read"},
+				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace-relative file or directory destination required for materialize/promote"},
+				"overwrite":              map[string]any{"type": "boolean", "description": "Explicitly permit bounded replacement of destination files; defaults to false"},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": false,
@@ -255,6 +258,32 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 		response["content"], response["bytes"] = string(body), len(body)
+	case "materialize", "promote":
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+			return "", errors.New("manage_artifact managed Designer runs cannot materialize into the workspace; promotion requires an explicit parent workspace action")
+		}
+		variantID := strings.TrimSpace(asString(args["variant_id"]))
+		ref, explicit, err := parseArtifactReadReference(args, variantID)
+		if err != nil {
+			return "", err
+		}
+		if !explicit {
+			return "", errors.New("manage_artifact materialize requires session_id, collection_id, variant_id, and event_seq")
+		}
+		destination, err := requireArtifactArgument(args, "destination")
+		if err != nil {
+			return "", err
+		}
+		workspaceRoot := strings.TrimSpace(scope.PrimaryPath)
+		if workspaceRoot == "" {
+			return "", errors.New("manage_artifact materialize requires a trusted workspace root")
+		}
+		materialized, err := r.artifactAuthority.MaterializeReference(ctx, principal, ref, workspaceRoot, destination, asBool(args["overwrite"]))
+		if err != nil {
+			return "", err
+		}
+		response["reference"] = managedArtifactReferenceWithSession(ref.SessionID, ref.CollectionID, ref.VariantID, ref.EventSeq)
+		response["materialized"] = map[string]any{"destination": materialized.Destination, "package": materialized.Package, "files": materialized.Files, "bytes": materialized.Bytes, "overwrite": asBool(args["overwrite"])}
 	case "select":
 		collectionID, err := requireArtifactArgument(args, "collection_id")
 		if err != nil {
