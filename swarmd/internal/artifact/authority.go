@@ -297,6 +297,19 @@ func (a *Authority) ReadReference(ctx context.Context, principal Principal, ref 
 	return data, variant, err
 }
 
+func (a *Authority) ReadPackageReference(ctx context.Context, principal Principal, ref pebblestore.SessionArtifactSelectionReference, entryName string, maxBytes int64) ([]PackageManifestEntry, []byte, pebblestore.SessionArtifactVariant, error) {
+	variant, err := a.GetReference(principal, ref)
+	if err != nil {
+		return nil, nil, pebblestore.SessionArtifactVariant{}, err
+	}
+	service, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID)
+	if err != nil {
+		return nil, nil, pebblestore.SessionArtifactVariant{}, err
+	}
+	manifest, data, _, err := service.ReadPackage(ctx, variant, entryName, maxBytes)
+	return manifest, data, variant, err
+}
+
 // MaterializeReference verifies an exact authenticated ready reference before
 // copying its managed bytes into the trusted current workspace root.
 func (a *Authority) MaterializeReference(ctx context.Context, principal Principal, ref pebblestore.SessionArtifactSelectionReference, workspaceRoot, destination string, overwrite bool) (Materialized, error) {

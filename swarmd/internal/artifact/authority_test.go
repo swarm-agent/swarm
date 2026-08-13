@@ -217,6 +217,34 @@ func TestAuthorityMaterializeReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 	}
 }
 
+func TestAuthorityReadPackageReferenceRequiresOwnedReadyExactEvent(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	service, _, err := authority.registry.ServiceForOwnedSession("source-session", "account-1", "user-1")
+	if err != nil { t.Fatal(err) }
+	variant := testVariant("source-variant", "design.zip", "application/zip", "package")
+	variant.SessionID, variant.CollectionID, variant.Status, variant.EventSeq = "source-session", "source-collection", pebblestore.SessionArtifactStatusStaging, 41
+	staged, err := service.StagePackage(context.Background(), variant, []PackageEntry{{Name: "index.html", Data: []byte("<main>selected</main>")}})
+	if err != nil { t.Fatal(err) }
+	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	if err != nil { t.Fatal(err) }
+	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	metadata.sourceVariant = variant
+	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
+	if manifest, body, _, err := authority.ReadPackageReference(context.Background(), principal, ref, "index.html", 64); err != nil || manifest != nil || string(body) != "<main>selected</main>" {
+		t.Fatalf("package reference manifest=%#v body=%q err=%v", manifest, body, err)
+	}
+	ref.EventSeq = 40
+	if _, _, _, err := authority.ReadPackageReference(context.Background(), principal, ref, "index.html", 64); err == nil || err.Error() != "artifact source reference is stale" {
+		t.Fatalf("stale package reference error = %v", err)
+	}
+	principal.AccountScopeID = "other-account"
+	ref.EventSeq = 41
+	if _, _, _, err := authority.ReadPackageReference(context.Background(), principal, ref, "index.html", 64); err == nil {
+		t.Fatal("foreign package reference was accepted")
+	}
+}
+
 func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}

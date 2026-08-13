@@ -80,6 +80,13 @@ type PackageEntry struct {
 	Data []byte
 }
 
+// PackageManifestEntry is bounded public metadata for one regular package file.
+// It contains no storage path and is returned in canonical archive-name order.
+type PackageManifestEntry struct {
+	Name string
+	Size int64
+}
+
 // Blob describes finalized bytes without exposing their private location.
 type Blob struct {
 	SessionID    string
@@ -627,6 +634,76 @@ func (s *Service) Read(ctx context.Context, variant pebblestore.SessionArtifactV
 		return nil, Blob{}, errors.New("artifact bytes changed while reading")
 	}
 	return data, blob, nil
+}
+
+// ReadPackage inspects a verified ready ZIP without extracting it. An empty
+// entry name returns a bounded manifest; a non-empty name returns exactly one
+// regular entry after validating the entire archive.
+func (s *Service) ReadPackage(ctx context.Context, variant pebblestore.SessionArtifactVariant, entryName string, maxBytes int64) ([]PackageManifestEntry, []byte, Blob, error) {
+	if s == nil {
+		return nil, nil, Blob{}, errors.New("artifact service is not configured")
+	}
+	if strings.ToLower(strings.TrimSpace(strings.SplitN(variant.MediaType, ";", 2)[0])) != "application/zip" {
+		return nil, nil, Blob{}, errors.New("artifact is not an application/zip package")
+	}
+	trimmedEntryName := strings.TrimSpace(entryName)
+	if entryName != trimmedEntryName {
+		return nil, nil, Blob{}, errors.New("artifact package entry name is unsafe")
+	}
+	entryName = trimmedEntryName
+	if entryName != "" && (len(entryName) > 1024 || strings.Contains(entryName, "\\") || !safePackageEntryName(entryName)) {
+		return nil, nil, Blob{}, errors.New("artifact package entry name is unsafe")
+	}
+	if maxBytes <= 0 {
+		return nil, nil, Blob{}, errors.New("artifact package read limit is required")
+	}
+	if maxBytes > s.limits.MaxPackageEntryBytes {
+		maxBytes = s.limits.MaxPackageEntryBytes
+	}
+	file, blob, err := s.Open(ctx, variant)
+	if err != nil {
+		return nil, nil, Blob{}, err
+	}
+	defer file.Close()
+	archive, err := zip.NewReader(file, blob.Size)
+	if err != nil {
+		return nil, nil, Blob{}, errors.New("artifact package is not a valid zip archive")
+	}
+	entries, _, err := s.materializePackageEntries(archive.File)
+	if err != nil {
+		return nil, nil, Blob{}, err
+	}
+	manifest := make([]PackageManifestEntry, 0, len(entries))
+	var selected *zip.File
+	for _, entry := range entries {
+		size := int64(entry.UncompressedSize64)
+		manifest = append(manifest, PackageManifestEntry{Name: entry.Name, Size: size})
+		if entry.Name == entryName {
+			selected = entry
+		}
+	}
+	if entryName == "" {
+		return manifest, nil, blob, nil
+	}
+	if selected == nil {
+		return nil, nil, Blob{}, fmt.Errorf("artifact package entry %q was not found", entryName)
+	}
+	if int64(selected.UncompressedSize64) > maxBytes {
+		return nil, nil, Blob{}, ErrQuotaExceeded
+	}
+	reader, err := selected.Open()
+	if err != nil {
+		return nil, nil, Blob{}, err
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, nil, Blob{}, err
+	}
+	if int64(len(data)) != int64(selected.UncompressedSize64) || int64(len(data)) > maxBytes {
+		return nil, nil, Blob{}, ErrQuotaExceeded
+	}
+	return nil, data, blob, nil
 }
 
 // Reconcile removes all incomplete staging files for a session. It never claims

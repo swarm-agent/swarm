@@ -777,6 +777,7 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		return ""
 	}
 	lines := []string{"Attached managed artifacts (opaque references only; no bytes or paths are embedded):"}
+	visibleLines := make([]string, 0, len(selections))
 	for _, selection := range selections {
 		selection.SessionID = strings.TrimSpace(selection.SessionID)
 		selection.CollectionID = strings.TrimSpace(selection.CollectionID)
@@ -813,9 +814,10 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		if len(visible) > 0 {
 			line += " (" + strings.Join(visible, "; ") + ")"
 		}
-		lines = append(lines, line)
+		visibleLines = append(visibleLines, line)
 	}
-	lines = append(lines, "Use manage_artifact get/read with the complete reference to inspect one. Reads are authenticated, exact-event, bounded UTF-8 only. To derive a variant, pass the same reference as source_session_id, source_collection_id, source_variant_id, and source_event_seq to create/create_package; the target remains trusted run context.")
+	lines = append(lines, "Use manage_artifact get/read with the complete reference to inspect one. Reads are authenticated and exact-event. Text reads are bounded UTF-8; application/zip reads return a bounded regular-file manifest when entry is omitted or one bounded UTF-8 regular entry when entry is supplied. To derive a variant, pass the same reference as source_session_id, source_collection_id, source_variant_id, and source_event_seq to create/create_package; the target remains trusted run context.")
+	lines = append(lines, visibleLines...)
 	return strings.Join(lines, "\n")
 }
 

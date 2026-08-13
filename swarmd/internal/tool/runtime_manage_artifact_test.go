@@ -18,6 +18,7 @@ type fakeArtifactAuthority struct {
 	created         artifact.CreateInput
 	packaged        artifact.CreatePackageInput
 	readBody        []byte
+	packageManifest []artifact.PackageManifestEntry
 	variant         pebblestore.SessionArtifactVariant
 	reference       pebblestore.SessionArtifactSelectionReference
 	referenceRead   bool
@@ -64,6 +65,10 @@ func (f *fakeArtifactAuthority) Read(_ context.Context, principal artifact.Princ
 func (f *fakeArtifactAuthority) ReadReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, _ int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.reference, f.referenceRead = principal, ref, true
 	return append([]byte(nil), f.readBody...), f.variant, nil
+}
+func (f *fakeArtifactAuthority) ReadPackageReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, _ string, _ int64) ([]artifact.PackageManifestEntry, []byte, pebblestore.SessionArtifactVariant, error) {
+	f.principal, f.reference, f.referenceRead = principal, ref, true
+	return append([]artifact.PackageManifestEntry(nil), f.packageManifest...), append([]byte(nil), f.readBody...), f.variant, nil
 }
 func (f *fakeArtifactAuthority) MaterializeReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, workspaceRoot, destination string, overwrite bool) (artifact.Materialized, error) {
 	f.principal, f.materializedRef, f.workspaceRoot, f.destination, f.overwrite = principal, ref, workspaceRoot, destination, overwrite
@@ -244,6 +249,31 @@ func TestManageArtifactPackageAndBoundedTextRead(t *testing.T) {
 	}
 	if err.Error() != "manage_artifact read returns only UTF-8 text artifacts" {
 		t.Fatalf("unexpected binary read error: %v", err)
+	}
+}
+
+func TestManageArtifactReadsPackageManifestAndUTF8Entry(t *testing.T) {
+	authority := &fakeArtifactAuthority{
+		readBody: []byte("<main>selected</main>"),
+		packageManifest: []artifact.PackageManifestEntry{{Name: "assets/site.css", Size: 6}, {Name: "index.html", Size: 21}},
+		variant: pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", SessionID: "session-1", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "application/zip"},
+	}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+
+	refArgs := `"session_id":"session-1","collection_id":"collection-1","variant_id":"variant-1","event_seq":7`
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-manifest", Name: "manage_artifact", Arguments: `{"action":"read",` + refArgs + `}`})
+	if err != nil || !strings.Contains(output, `"manifest":[{"name":"assets/site.css","size":6},{"name":"index.html","size":21}]`) || strings.Contains(output, `"content"`) {
+		t.Fatalf("manifest output=%q err=%v", output, err)
+	}
+	output, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-entry", Name: "manage_artifact", Arguments: `{"action":"read",` + refArgs + `,"entry":"index.html"}`})
+	if err != nil || !strings.Contains(output, `"entry":"index.html"`) || !strings.Contains(output, `"content":"<main>selected</main>"`) {
+		t.Fatalf("entry output=%q err=%v", output, err)
+	}
+	authority.readBody = []byte{0xff}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-entry-binary", Name: "manage_artifact", Arguments: `{"action":"read",` + refArgs + `,"entry":"index.html"}`}); err == nil || !strings.Contains(err.Error(), "UTF-8 regular entries") {
+		t.Fatalf("non-UTF-8 package entry error = %v", err)
 	}
 }
 

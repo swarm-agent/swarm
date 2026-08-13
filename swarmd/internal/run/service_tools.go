@@ -5007,14 +5007,11 @@ func buildTaskParentTranscriptContext(messages []pebblestore.MessageSnapshot) st
 func formatTaskDelegationTranscriptMessage(message pebblestore.MessageSnapshot) string {
 	role := strings.ToLower(strings.TrimSpace(message.Role))
 	content := strings.TrimSpace(message.Content)
-	if content == "" {
-		return ""
-	}
 	switch role {
 	case "reasoning":
 		return ""
 	case "system":
-		if isToolDBDebugMessage(content) {
+		if content == "" || isToolDBDebugMessage(content) {
 			return ""
 		}
 		content = "[system] " + content
@@ -5025,6 +5022,17 @@ func formatTaskDelegationTranscriptMessage(message pebblestore.MessageSnapshot) 
 		}
 	default:
 		if shouldDropSensitiveConversationMessage(message) {
+			return ""
+		}
+		if len(message.ArtifactSelections) > 0 {
+			artifactContext := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": message.ArtifactSelections})
+			if artifactContext != "" {
+				// Keep authenticated opaque references ahead of user prose so the
+				// bounded transcript formatter cannot preferentially truncate them.
+				content = strings.TrimSpace(artifactContext + "\n\n" + content)
+			}
+		}
+		if content == "" {
 			return ""
 		}
 	}

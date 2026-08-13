@@ -37,6 +37,7 @@ type ArtifactAuthority interface {
 	GetReference(artifact.Principal, pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error)
 	Read(context.Context, artifact.Principal, string, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
 	ReadReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
+	ReadPackageReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, string, int64) ([]artifact.PackageManifestEntry, []byte, pebblestore.SessionArtifactVariant, error)
 	MaterializeReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, string, string, bool) (artifact.Materialized, error)
 	Select(artifact.Principal, string, string, string) (pebblestore.SessionArtifactSelectionReference, error)
 	DeleteVariant(artifact.Principal, string, string, string) error
@@ -100,7 +101,7 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create and manage durable artifacts owned by the current session, inspect explicitly attached source references, and explicitly materialize an exact ready reference into the trusted current workspace. Uses opaque collection and variant references; ownership, source bytes, and workspace root always come from trusted run context. Never exposes private storage paths.",
+		Description: "Create and manage durable artifacts owned by the current session, inspect explicitly attached exact ready references (including bounded application/zip manifests or one UTF-8 entry), and explicitly materialize an exact ready reference into the trusted current workspace. Uses opaque collection and variant references; ownership, source bytes, and workspace root always come from trusted run context. Never exposes private storage paths.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -122,7 +123,8 @@ func manageArtifactDefinition() Definition {
 				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence required with session_id for get/read/materialize/promote"},
 				"status":                 map[string]any{"type": "string", "description": "Optional list filter: staging|ready|failed|unavailable"},
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit},
-				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxReadBytes, "description": "Maximum UTF-8 bytes returned by read"},
+				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxReadBytes, "description": "Maximum UTF-8 bytes returned by read or one package entry"},
+				"entry":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Optional normalized slash-delimited regular-file entry for application/zip read; omit to return the bounded package manifest"},
 				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace-relative file or directory destination required for materialize/promote"},
 				"overwrite":              map[string]any{"type": "boolean", "description": "Explicitly permit bounded replacement of destination files; defaults to false"},
 			},
@@ -242,8 +244,57 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if err != nil {
 			return "", err
 		}
+		entryName, entrySupplied := args["entry"].(string)
+		if _, exists := args["entry"]; exists && !entrySupplied {
+			return "", errors.New("manage_artifact read entry must be a string")
+		}
+		if strings.TrimSpace(entryName) != entryName {
+			return "", errors.New("manage_artifact read entry must be a normalized package name")
+		}
 		var body []byte
 		var variant pebblestore.SessionArtifactVariant
+		if explicitSource {
+			variant, err = r.artifactAuthority.GetReference(principal, ref)
+		} else {
+			variant, err = r.artifactAuthority.Get(principal, variantID)
+		}
+		if err != nil {
+			return "", err
+		}
+		if managedArtifactPackageMediaType(variant.MediaType) {
+			if variant.Status != pebblestore.SessionArtifactStatusReady {
+				return "", errors.New("manage_artifact package read requires a ready artifact")
+			}
+			if !explicitSource {
+				return "", errors.New("manage_artifact package read requires session_id, collection_id, variant_id, and event_seq")
+			}
+			var manifest []artifact.PackageManifestEntry
+			manifest, body, variant, err = r.artifactAuthority.ReadPackageReference(ctx, principal, ref, entryName, int64(maxBytes))
+			if err != nil {
+				return "", err
+			}
+			if len(manifest) > manageArtifactMaxPackageFiles {
+				return "", errors.New("manage_artifact package manifest exceeds bounded file limit")
+			}
+			response["artifact"] = managedArtifactVariant(variant)
+			response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+			if entryName == "" {
+				items := make([]map[string]any, 0, len(manifest))
+				for _, item := range manifest {
+					items = append(items, map[string]any{"name": item.Name, "size": item.Size})
+				}
+				response["manifest"], response["count"] = items, len(items)
+				break
+			}
+			if !utf8.Valid(body) {
+				return "", errors.New("manage_artifact package read returns only UTF-8 regular entries")
+			}
+			response["entry"], response["content"], response["bytes"] = entryName, string(body), len(body)
+			break
+		}
+		if _, exists := args["entry"]; exists {
+			return "", errors.New("manage_artifact read entry is valid only for application/zip artifacts")
+		}
 		if explicitSource {
 			body, variant, err = r.artifactAuthority.ReadReference(ctx, principal, ref, int64(maxBytes))
 		} else {
@@ -532,4 +583,8 @@ func managedArtifactCollection(c pebblestore.SessionArtifactCollection) map[stri
 func managedArtifactTextMediaType(mediaType string) bool {
 	mediaType = strings.ToLower(strings.TrimSpace(strings.SplitN(mediaType, ";", 2)[0]))
 	return strings.HasPrefix(mediaType, "text/") || mediaType == "application/json" || mediaType == "application/xml" || strings.HasSuffix(mediaType, "+json") || strings.HasSuffix(mediaType, "+xml")
+}
+
+func managedArtifactPackageMediaType(mediaType string) bool {
+	return strings.ToLower(strings.TrimSpace(strings.SplitN(mediaType, ";", 2)[0])) == "application/zip"
 }
