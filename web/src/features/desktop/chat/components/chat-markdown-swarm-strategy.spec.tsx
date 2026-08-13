@@ -40,7 +40,7 @@ test("legacy explore payload renders as Iteration Swarm", () => {
   assert.doesNotMatch(markup, /SWARM MODE/);
 });
 
-test("active Task Program renders its complete phased roadmap expanded", () => {
+test("active Task Program keeps live tool state in its row without a stacked stream section", () => {
   const program = {
     id: "release_program",
     stages: [
@@ -91,13 +91,16 @@ test("active Task Program renders its complete phased roadmap expanded", () => {
   assert.match(markup, /data-stage-state="active"/);
   assert.match(markup, /data-stage-state="waiting"/);
   assert.match(markup, /waiting on dependencies/);
-  assert.match(markup, /search x2 · running/);
+  assert.match(markup, /search x2/);
+  assert.match(markup, />RUNNING</);
+  assert.doesNotMatch(markup, /data-task-live-stream=/);
+  assert.doesNotMatch(markup, /data-task-live-tools/);
+  assert.doesNotMatch(markup, /data-task-live-assistant/);
   assert.doesNotMatch(markup, /tools:/i);
-  assert.equal((markup.match(/data-task-live-stream=/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /ITERATION SWARM/);
 });
 
-test("Task Program source exposes ordered phase, dependency, and interactive row expansion markup", async () => {
+test("Task Program source exposes ordered phases and interactive rows without a stacked stream section", async () => {
   const source = await readFile(new URL("./chat-markdown.tsx", import.meta.url), "utf8");
   assert.match(source, /data-task-program-expanded/);
   assert.match(source, /program\.nextAction/);
@@ -106,10 +109,11 @@ test("Task Program source exposes ordered phase, dependency, and interactive row
   assert.match(source, /waiting on dependencies/);
   assert.match(source, /Dependencies: \{dependencyLabel\}/);
   assert.match(source, /MemoizedTaskAgentListRow/);
-  assert.match(source, /data-task-live-stream/);
-  assert.match(source, /data-task-live-tools/);
-  assert.doesNotMatch(source, />tools:<\/span>/i);
-  assert.match(source, /data-task-live-assistant/);
+  assert.match(source, /const toolLabel = taskActivityLabel\(row\)/);
+  assert.match(source, /\{toolLabel\}/);
+  assert.doesNotMatch(source, /data-task-live-stream/);
+  assert.doesNotMatch(source, /data-task-live-tools/);
+  assert.doesNotMatch(source, /data-task-live-assistant/);
 });
 
 test("ordinary task rows do not render a Task Program card", () => {
@@ -117,9 +121,22 @@ test("ordinary task rows do not render a Task Program card", () => {
     tool: "task",
     path_id: "tool.task.v1",
     status: "running",
-    launches: [{ launch_index: 1, child_session_id: "ordinary", subagent: "finder", assignment_label: "Phase-like title", status: "running" }],
+    launches: [{
+      launch_index: 1,
+      child_session_id: "ordinary",
+      subagent: "finder",
+      assignment_label: "Phase-like title",
+      status: "running",
+      current_tool: "read",
+      current_tool_display: "read x3",
+      tool_order: ["search", "read", "read", "read"],
+    }],
   });
   assert.match(markup, /Subagent stream/);
+  assert.match(markup, /read x3/);
+  assert.match(markup, />RUNNING</);
+  assert.doesNotMatch(markup, /search\s+read\s+read/);
+  assert.doesNotMatch(markup, /data-task-live-stream=/);
   assert.doesNotMatch(markup, /data-task-program-card=/);
 });
 

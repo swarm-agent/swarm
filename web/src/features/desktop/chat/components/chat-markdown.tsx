@@ -884,7 +884,7 @@ function TaskChildInteractiveRow({
   );
 }
 
-function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false, showLiveStream = true, activeToolOnly = false }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions; forceLiveDemand?: boolean; showLiveStream?: boolean; activeToolOnly?: boolean }) {
+function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions; forceLiveDemand?: boolean }) {
   return (
     <TaskChildInteractiveRow
       row={row}
@@ -892,7 +892,7 @@ function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false,
       className="group min-w-0 border-t border-[var(--app-border)] transition-colors hover:bg-[color-mix(in_srgb,var(--app-text-muted)_5%,transparent)]"
       forceLiveDemand={forceLiveDemand}
     >
-      {(effectiveRow) => <TaskAgentListRowContent row={effectiveRow} index={index} dense={dense} showLiveStream={showLiveStream} activeToolOnly={activeToolOnly} />}
+      {(effectiveRow) => <TaskAgentListRowContent row={effectiveRow} index={index} dense={dense} />}
     </TaskChildInteractiveRow>
   );
 }
@@ -918,7 +918,7 @@ function TaskNarrowRowContent({ row, index }: { row: TaskToolRow; index: number 
   );
 }
 
-function TaskAgentListRowContent({ row, index, dense, showLiveStream = true, activeToolOnly = false }: { row: TaskToolRow; index: number; dense: boolean; showLiveStream?: boolean; activeToolOnly?: boolean }) {
+function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; index: number; dense: boolean }) {
   const kind = taskStatusKind(row);
   const statusLabel = taskStatusLabel(row);
   const primaryLabel = row.assignmentLabel || row.agent || 'subagent';
@@ -926,12 +926,6 @@ function TaskAgentListRowContent({ row, index, dense, showLiveStream = true, act
   const agentLabel = displayAgent && row.assignmentLabel ? `@${displayAgent}` : displayAgent;
   const secondaryLabel = [agentLabel, row.modelLabel].filter(Boolean).join(' · ');
   const toolLabel = taskActivityLabel(row);
-  const errorText = row.status.trim().toLowerCase() === 'failed' || row.status.trim().toLowerCase() === 'error' ? row.previewText.trim() : '';
-  const previewText = errorText ? '' : row.previewText.trim();
-  const liveAssistantText = row.liveAssistantText?.trim() || '';
-  const liveToolCalls = activeToolOnly && row.tool && row.tool !== '-'
-    ? `${row.tool} · running`
-    : row.liveToolCalls?.trim() || '';
   const rowNumber = row.launchIndex || index + 1;
 
   return (
@@ -966,17 +960,6 @@ function TaskAgentListRowContent({ row, index, dense, showLiveStream = true, act
           <TaskElapsedTime row={row} />
         </div>
       </div>
-      {showLiveStream && (liveAssistantText || liveToolCalls || previewText || errorText) && !dense ? (
-        <div className="task-card-wide-only grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3" data-task-live-stream>
-          <div />
-          <div className="hidden sm:block" />
-          <div className={cn("col-start-2 min-w-0 space-y-1 border-l pl-2 text-[11px] leading-4 [overflow-wrap:anywhere] sm:col-start-3", errorText ? "border-[var(--app-danger)] text-[var(--app-danger)]" : "border-[var(--app-primary)] text-[var(--app-text-subtle)]")}>
-            {liveToolCalls ? <div data-task-live-tools><span className="whitespace-pre-wrap">{liveToolCalls}</span></div> : null}
-            {liveAssistantText ? <div data-task-live-assistant><span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">stream:</span><span className="whitespace-pre-wrap">{liveAssistantText}</span></div> : null}
-            {previewText || errorText ? <div><span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">{errorText ? 'error' : taskPreviewLabel(row)}:</span>{errorText || previewText}</div> : null}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1085,8 +1068,6 @@ const MemoizedTaskAgentListRow = memo(TaskAgentListRow, (previous, next) => (
   && previous.dense === next.dense
   && previous.actions === next.actions
   && previous.forceLiveDemand === next.forceLiveDemand
-  && previous.showLiveStream === next.showLiveStream
-  && previous.activeToolOnly === next.activeToolOnly
   && taskRowsEqual(previous.row, next.row)
 ));
 
@@ -1236,7 +1217,7 @@ function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actio
                 <div className="min-w-0 overflow-hidden">
                   {stage.rows.map((row, rowIndex) => {
                     const rowIsActive = stage.state === "active" && taskStatusKind(row) === "running" && !row.terminal;
-                    return <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && rowIsActive} showLiveStream={rowIsActive} activeToolOnly={rowIsActive} />;
+                    return <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && rowIsActive} />;
                   })}
                 </div>
               </section>
