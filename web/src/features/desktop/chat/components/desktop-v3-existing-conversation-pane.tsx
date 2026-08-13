@@ -24,6 +24,8 @@ import {
   Loader2,
   Github,
   ExternalLink,
+  GalleryHorizontal,
+  ListChecks,
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
@@ -161,7 +163,9 @@ import {
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
-import type { DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
+import { fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
@@ -1829,6 +1833,14 @@ export function DesktopV3ExistingConversationPane({
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
   const [planSidebarAvailableWidth, setPlanSidebarAvailableWidth] = useState(0);
   const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
+  const [sessionArtifacts, setSessionArtifacts] = useState<DesktopV3ArtifactCatalogEntry[]>([]);
+  const [sessionArtifactsLoading, setSessionArtifactsLoading] = useState(false);
+  const [sessionArtifactsError, setSessionArtifactsError] = useState("");
+  const [sidebarView, setSidebarView] = useState<DesktopV3SessionSidebarView>("plan");
+  const [artifactGalleryOpen, setArtifactGalleryOpen] = useState(false);
+  const [artifactGalleryInitialId, setArtifactGalleryInitialId] = useState("");
+  const artifactSidebarSessionRef = useRef("");
+  const priorSessionArtifactCountRef = useRef(0);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
   const planSidebarDisplayMode: DesktopSidebarDisplayMode =
     effectiveDesktopSidebarDisplayMode(
@@ -1844,6 +1856,29 @@ export function DesktopV3ExistingConversationPane({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  const refreshSessionArtifacts = useCallback(async () => {
+    if (!normalizedSessionId) return;
+    setSessionArtifactsLoading(true);
+    setSessionArtifactsError("");
+    try {
+      const catalog = await fetchDesktopV3ArtifactCatalog();
+      if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
+      setSessionArtifacts(desktopV3ArtifactsForSession(catalog, normalizedSessionId));
+    } catch (error) {
+      setSessionArtifactsError(error instanceof Error ? error.message : "Session artifacts failed to load");
+    } finally {
+      setSessionArtifactsLoading(false);
+    }
+  }, [normalizedSessionId]);
+  useDesktopV3OpenArtifactCatalogRefresh(Boolean(normalizedSessionId), refreshSessionArtifacts);
+  useEffect(() => {
+    artifactSidebarSessionRef.current = normalizedSessionId;
+    priorSessionArtifactCountRef.current = 0;
+    setSessionArtifacts([]);
+    setSidebarView("plan");
+    void refreshSessionArtifacts();
+  }, [normalizedSessionId, refreshSessionArtifacts]);
+
   const taskChildActions = useMemo<TaskChildCardActions>(() => ({
     workspaceSlug: routeWorkspaceSlug,
     parentSessionId: normalizedSessionId,
@@ -1989,6 +2024,24 @@ export function DesktopV3ExistingConversationPane({
     !hasStoredOperation;
   const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
   const showPlanSidebar = showPlanExecutionSidebar || Boolean(pendingPlanDocument);
+  const hasSessionArtifacts = sessionArtifacts.length > 0;
+  const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
+  useEffect(() => {
+    if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
+    const previousCount = priorSessionArtifactCountRef.current;
+    setSidebarView((current) => desktopV3NextSessionSidebarView({
+      current,
+      previousArtifactCount: previousCount,
+      artifactCount: sessionArtifacts.length,
+      hasPlan: showPlanSidebar,
+    }));
+    priorSessionArtifactCountRef.current = sessionArtifacts.length;
+  }, [normalizedSessionId, sessionArtifacts.length, showPlanSidebar, sidebarView]);
+  const activeSidebarView = hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts") ? "artifacts" : "plan";
+  const openArtifactFullView = useCallback((artifactId: string) => {
+    setArtifactGalleryInitialId(artifactId);
+    setArtifactGalleryOpen(true);
+  }, []);
   const {
     scrollContainerRef,
     contentRef,
@@ -2703,17 +2756,18 @@ export function DesktopV3ExistingConversationPane({
         ref={planSidebarGridRef}
         className={cn(
           "grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden",
-          showPlanSidebar && planSidebarDisplayMode === "full"
+          showConversationSidebar && planSidebarDisplayMode === "full"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]"
             : "",
-          showPlanSidebar && planSidebarDisplayMode === "compact"
+          showConversationSidebar && planSidebarDisplayMode === "compact"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_280px]"
             : "",
-          showPlanSidebar && planSidebarDisplayMode === "thin"
+          showConversationSidebar && planSidebarDisplayMode === "thin"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_56px]"
             : "",
         )}
         data-plan-sidebar-mode={planSidebarDisplayMode}
+        data-session-sidebar-view={activeSidebarView}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -2957,39 +3011,62 @@ export function DesktopV3ExistingConversationPane({
           />
         </div>
 
-        {pendingPlanDocument && pendingPlanPermission ? (
-          <DesktopPlanAgentSidecar
-            parentSessionId={normalizedSessionId}
-            permission={pendingPlanPermission}
-            document={pendingPlanDocument}
-            embedded
-            mobileOpen={planAgentMobileOpen}
-            modelLabel={displayedPreference.model}
-            displayMode={planSidebarDisplayMode}
-            onClose={() => setPlanAgentMobileOpen(false)}
-
-          />
-        ) : showPlanExecutionSidebar && planExecutionView ? (
+        {showConversationSidebar ? (
           <div
             className="hidden min-h-0 min-w-0 overflow-hidden min-[1300px]:flex min-[1300px]:flex-col"
-            data-plan-sidebar-column
+            data-session-sidebar-column
+            data-plan-sidebar-column={showPlanSidebar ? true : undefined}
           >
-            <DesktopPlanExecutionSidebar
-              view={planExecutionView}
-              busyAction={planExecutionBusyAction}
-              canStop={Boolean(currentRun)}
-              onAction={stablePlanExecutionAction}
-              onStop={stableStop}
-              onEditPlan={stableOpenPlan}
-              belowActions={planSidebarBelowActions}
-              displayMode={planSidebarDisplayMode}
-              taskChildren={taskChildren}
-              taskChildActions={taskChildActions}
-              canonicalRecommendation={canonicalFinalHandoffRecommendation}
-            />
+            {showPlanSidebar && hasSessionArtifacts ? (
+              <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan sidebar" title="Plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? "Plan" : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifacts.length}` : null}</button>
+              </div>
+            ) : null}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {activeSidebarView === "artifacts" ? (
+                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} onOpenArtifact={openArtifactFullView} />
+              ) : pendingPlanDocument && pendingPlanPermission ? (
+                <DesktopPlanAgentSidecar
+                  parentSessionId={normalizedSessionId}
+                  permission={pendingPlanPermission}
+                  document={pendingPlanDocument}
+                  embedded
+                  mobileOpen={planAgentMobileOpen}
+                  modelLabel={displayedPreference.model}
+                  displayMode={planSidebarDisplayMode}
+                  onClose={() => setPlanAgentMobileOpen(false)}
+                />
+              ) : showPlanExecutionSidebar && planExecutionView ? (
+                <DesktopPlanExecutionSidebar
+                  view={planExecutionView}
+                  busyAction={planExecutionBusyAction}
+                  canStop={Boolean(currentRun)}
+                  onAction={stablePlanExecutionAction}
+                  onStop={stableStop}
+                  onEditPlan={stableOpenPlan}
+                  belowActions={planSidebarBelowActions}
+                  displayMode={planSidebarDisplayMode}
+                  taskChildren={taskChildren}
+                  taskChildActions={taskChildActions}
+                  canonicalRecommendation={canonicalFinalHandoffRecommendation}
+                />
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>
+
+      <DesktopV3ArtifactGallery
+        artifacts={sessionArtifacts}
+        open={artifactGalleryOpen}
+        onOpenChange={setArtifactGalleryOpen}
+        showTrigger={false}
+        loading={sessionArtifactsLoading}
+        error={sessionArtifactsError}
+        title="Session artifacts"
+        initialArtifactId={artifactGalleryInitialId}
+      />
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}

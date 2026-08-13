@@ -51,6 +51,7 @@ export interface DesktopV3ArtifactGalleryProps {
   loading?: boolean
   error?: string
   title?: string
+  initialArtifactId?: string
 }
 
 type ArtifactCollectionGroup = {
@@ -140,6 +141,7 @@ export function DesktopV3ArtifactGallery({
   loading: catalogLoading = false,
   error: catalogError = '',
   title = 'Artifact review',
+  initialArtifactId = '',
 }: DesktopV3ArtifactGalleryProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(artifacts[0] ? artifactSelectionKey(artifacts[0]) : '')
@@ -195,6 +197,12 @@ export function DesktopV3ArtifactGallery({
     const persisted = artifacts.find((artifact) => artifact.selected)
     if (persisted) setDurableSelectedId(artifactSelectionKey(persisted))
   }, [artifacts])
+
+  useEffect(() => {
+    if (!open || !initialArtifactId) return
+    const requested = artifacts.find((artifact) => artifact.artifactId === initialArtifactId)
+    if (requested) setSelectedId(artifactSelectionKey(requested))
+  }, [artifacts, initialArtifactId, open])
 
   useEffect(() => {
     if (!open) return undefined
