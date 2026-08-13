@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	DefaultMaxArtifactBytes = int64(64 << 20)
-	DefaultMaxSessionBytes  = int64(512 << 20)
-	DefaultMaxPackageFiles  = 512
-	DefaultMaxPackageBytes  = int64(128 << 20)
+	DefaultMaxArtifactBytes     = int64(64 << 20)
+	DefaultMaxSessionBytes      = int64(512 << 20)
+	DefaultMaxPackageFiles      = 512
+	DefaultMaxPackageEntryBytes = int64(16 << 20)
+	DefaultMaxPackageBytes      = int64(128 << 20)
 )
 
 var (
@@ -39,10 +40,11 @@ var (
 
 // Limits bounds both stored bytes and expanded package input.
 type Limits struct {
-	MaxArtifactBytes int64
-	MaxSessionBytes  int64
-	MaxPackageFiles  int
-	MaxPackageBytes  int64
+	MaxArtifactBytes     int64
+	MaxSessionBytes      int64
+	MaxPackageFiles      int
+	MaxPackageEntryBytes int64
+	MaxPackageBytes      int64
 }
 
 // Service is scoped to one workspace. Its root is app-owned storage, never the
@@ -68,6 +70,13 @@ type Staged struct {
 
 	token    string
 	existing bool
+}
+
+// PackageEntry is one in-memory file in a managed package. Name is always a
+// relative slash-delimited archive path; Data is copied before staging starts.
+type PackageEntry struct {
+	Name string
+	Data []byte
 }
 
 // Blob describes finalized bytes without exposing their private location.
@@ -115,6 +124,9 @@ func normalizeLimits(l Limits) Limits {
 	}
 	if l.MaxPackageFiles <= 0 {
 		l.MaxPackageFiles = DefaultMaxPackageFiles
+	}
+	if l.MaxPackageEntryBytes <= 0 {
+		l.MaxPackageEntryBytes = DefaultMaxPackageEntryBytes
 	}
 	if l.MaxPackageBytes <= 0 {
 		l.MaxPackageBytes = DefaultMaxPackageBytes
@@ -167,6 +179,25 @@ func (s *Service) ImportFile(ctx context.Context, variant pebblestore.SessionArt
 	return s.Stage(ctx, variant, file)
 }
 
+// StagePackage creates a bounded ZIP package directly from structured in-memory
+// entries. It never materializes caller data in a workspace or scratch directory.
+func (s *Service) StagePackage(ctx context.Context, variant pebblestore.SessionArtifactVariant, entries []PackageEntry) (Staged, error) {
+	if err := ctx.Err(); err != nil {
+		return Staged{}, err
+	}
+	staged, err := s.validateVariant(variant, true)
+	if err != nil {
+		return Staged{}, err
+	}
+	prepared, err := s.preparePackageEntries(entries)
+	if err != nil {
+		return Staged{}, err
+	}
+	return s.stage(ctx, staged, func(dst io.Writer) ([]byte, error) {
+		return s.writePackage(ctx, dst, prepared)
+	})
+}
+
 // ImportPackage creates a bounded ZIP package from a directory. Every input
 // path is checked for traversal, symlinks, special files, entry count, and
 // expanded byte quota before any package is finalized.
@@ -211,6 +242,12 @@ func (s *Service) ImportPackage(ctx context.Context, variant pebblestore.Session
 				_ = archive.Close()
 				return nil, err
 			}
+			openedInfo, statErr := file.Stat()
+			if statErr != nil || openedInfo == nil || !openedInfo.Mode().IsRegular() || !os.SameFile(currentInfo, openedInfo) || !os.SameFile(item.info, openedInfo) {
+				_ = file.Close()
+				_ = archive.Close()
+				return nil, errors.New("artifact package file changed or became unsafe")
+			}
 			_, copyErr := io.Copy(entry, file)
 			closeErr := file.Close()
 			if copyErr != nil {
@@ -227,6 +264,68 @@ func (s *Service) ImportPackage(ctx context.Context, variant pebblestore.Session
 		}
 		return hash.Sum(nil), nil
 	})
+}
+
+type preparedPackageEntry struct {
+	name string
+	data []byte
+}
+
+func (s *Service) preparePackageEntries(entries []PackageEntry) ([]preparedPackageEntry, error) {
+	if len(entries) == 0 {
+		return nil, errors.New("artifact package is empty")
+	}
+	if len(entries) > s.limits.MaxPackageFiles {
+		return nil, ErrQuotaExceeded
+	}
+	prepared := make([]preparedPackageEntry, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	var total int64
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" || len(name) > 1024 || name != entry.Name || strings.Contains(name, "\\") || !safePackageEntryName(name) {
+			return nil, errors.New("artifact package contains an unsafe entry")
+		}
+		if _, ok := seen[name]; ok {
+			return nil, errors.New("artifact package contains duplicate entries")
+		}
+		seen[name] = struct{}{}
+		size := int64(len(entry.Data))
+		if size > s.limits.MaxPackageEntryBytes || size > s.limits.MaxPackageBytes-total {
+			return nil, ErrQuotaExceeded
+		}
+		total += size
+		prepared = append(prepared, preparedPackageEntry{name: name, data: append([]byte(nil), entry.Data...)})
+	}
+	sort.Slice(prepared, func(i, j int) bool { return prepared[i].name < prepared[j].name })
+	return prepared, nil
+}
+
+func (s *Service) writePackage(ctx context.Context, dst io.Writer, entries []preparedPackageEntry) ([]byte, error) {
+	hash := sha256.New()
+	counting := &boundedWriter{writer: io.MultiWriter(dst, hash), limit: s.limits.MaxArtifactBytes}
+	archive := zip.NewWriter(counting)
+	for _, item := range entries {
+		if err := ctx.Err(); err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		header := &zip.FileHeader{Name: item.name, Method: zip.Deflate}
+		header.SetMode(0o600)
+		entry, err := archive.CreateHeader(header)
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		if _, err := entry.Write(item.data); err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+	}
+	if err := archive.Close(); err != nil {
+		return nil, err
+	}
+	return hash.Sum(nil), nil
 }
 
 type packageFile struct {
@@ -275,12 +374,24 @@ func (s *Service) packageFiles(sourceDir string) ([]packageFile, error) {
 		if !itemInfo.Mode().IsRegular() {
 			return errors.New("artifact package contains a non-regular file")
 		}
+		if itemInfo.Size() > s.limits.MaxPackageEntryBytes {
+			return ErrQuotaExceeded
+		}
+		current, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		currentInfo, statErr := current.Stat()
+		closeErr := current.Close()
+		if statErr != nil || closeErr != nil || currentInfo == nil || !os.SameFile(itemInfo, currentInfo) || !currentInfo.Mode().IsRegular() {
+			return errors.New("artifact package file changed or became unsafe")
+		}
 		relative, err := filepath.Rel(sourceDir, path)
 		if err != nil || !safeRelativePath(relative) {
 			return errors.New("artifact package entry escapes its directory")
 		}
 		total += itemInfo.Size()
-		if len(files)+1 > s.limits.MaxPackageFiles || total > s.limits.MaxPackageBytes {
+		if itemInfo.Size() > s.limits.MaxPackageEntryBytes || len(files)+1 > s.limits.MaxPackageFiles || total > s.limits.MaxPackageBytes {
 			return ErrQuotaExceeded
 		}
 		files = append(files, packageFile{path: path, relative: relative, info: itemInfo})
@@ -559,6 +670,46 @@ func (s *Service) Reconcile(sessionID string) (ReconcileReport, error) {
 	return report, err
 }
 
+// DeleteVariant removes only one verified private variant directory. Missing
+// variants are idempotent; unsafe directory chains fail closed.
+func (s *Service) DeleteVariant(sessionID, collectionID, variantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateID("session", sessionID); err != nil {
+		return err
+	}
+	if err := validateID("collection", collectionID); err != nil {
+		return err
+	}
+	if err := validateID("variant", variantID); err != nil {
+		return err
+	}
+	path := filepath.Join(s.collectionDir(sessionID, collectionID), opaqueKey("variant", variantID))
+	return s.deleteOwnedDirectory(path)
+}
+
+// DeleteCollection removes every private variant in one verified collection.
+// Missing collections are idempotent; other collections remain untouched.
+func (s *Service) DeleteCollection(sessionID, collectionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateID("session", sessionID); err != nil {
+		return err
+	}
+	if err := validateID("collection", collectionID); err != nil {
+		return err
+	}
+	return s.deleteOwnedDirectory(s.collectionDir(sessionID, collectionID))
+}
+
+func (s *Service) deleteOwnedDirectory(path string) error {
+	exists, err := requireDirectoryChainIfPresent(s.root, path)
+	if err != nil || !exists {
+		return err
+	}
+	return removeDirectoryTree(path)
+}
+
 // DeleteSession removes every byte owned by one session.
 func (s *Service) DeleteSession(sessionID string) error {
 	s.mu.Lock()
@@ -720,11 +871,16 @@ func (s *Service) validateZip(path string) error {
 	defer archive.Close()
 	var files int
 	var total uint64
+	seen := make(map[string]struct{}, len(archive.File))
 	for _, entry := range archive.File {
 		name := filepath.FromSlash(entry.Name)
-		if strings.Contains(entry.Name, "\\") || !safeRelativePath(name) || entry.Mode()&os.ModeSymlink != 0 {
+		if len(entry.Name) > 1024 || strings.Contains(entry.Name, "\\") || (!entry.FileInfo().IsDir() && !safePackageEntryName(entry.Name)) || !safeRelativePath(name) || entry.Mode()&os.ModeSymlink != 0 {
 			return errors.New("artifact package contains an unsafe entry")
 		}
+		if _, ok := seen[entry.Name]; ok {
+			return errors.New("artifact package contains duplicate entries")
+		}
+		seen[entry.Name] = struct{}{}
 		if entry.FileInfo().IsDir() {
 			continue
 		}
@@ -732,6 +888,10 @@ func (s *Service) validateZip(path string) error {
 			return errors.New("artifact package contains a non-regular entry")
 		}
 		files++
+		maxEntryBytes := uint64(s.limits.MaxPackageEntryBytes)
+		if entry.UncompressedSize64 > maxEntryBytes {
+			return ErrQuotaExceeded
+		}
 		maxBytes := uint64(s.limits.MaxPackageBytes)
 		if entry.UncompressedSize64 > maxBytes-total {
 			return ErrQuotaExceeded
@@ -751,9 +911,14 @@ func (s *Service) variantDir(sessionID, collectionID, variantID string, create b
 	if err := validateID("session", sessionID); err != nil {
 		return "", err
 	}
-	collectionKey := opaqueKey("collection", collectionID)
+	if err := validateID("collection", collectionID); err != nil {
+		return "", err
+	}
+	if err := validateID("variant", variantID); err != nil {
+		return "", err
+	}
 	variantKey := opaqueKey("variant", variantID)
-	path := filepath.Join(s.sessionDir(sessionID), "variants", collectionKey, variantKey)
+	path := filepath.Join(s.collectionDir(sessionID, collectionID), variantKey)
 	if create {
 		if err := mkdirPrivateUnder(s.root, path); err != nil {
 			return "", err
@@ -762,6 +927,11 @@ func (s *Service) variantDir(sessionID, collectionID, variantID string, create b
 		return "", ErrNotReady
 	}
 	return path, nil
+}
+
+func (s *Service) collectionDir(sessionID, collectionID string) string {
+	// Callers validate both IDs before using this path for storage operations.
+	return filepath.Join(s.sessionDir(sessionID), "variants", opaqueKey("collection", collectionID))
 }
 
 func (s *Service) sessionDir(sessionID string) string {
@@ -793,6 +963,18 @@ func validDigest(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func safePackageEntryName(value string) bool {
+	if !safeRelativePath(filepath.FromSlash(value)) || strings.HasSuffix(value, "/") {
+		return false
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(value))) == value
 }
 
 func safeRelativePath(value string) bool {
@@ -862,6 +1044,36 @@ func requireDirectoryChain(root, target string) error {
 		}
 	}
 	return nil
+}
+
+func requireDirectoryChainIfPresent(root, target string) (bool, error) {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	relative, err := filepath.Rel(root, target)
+	if err != nil || (!safeRelativePath(relative) && relative != ".") {
+		return false, errors.New("artifact storage path escapes its private root")
+	}
+	current := root
+	if err := requireRealDirectory(current); err != nil {
+		return false, err
+	}
+	if relative == "." {
+		return true, nil
+	}
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return false, errors.New("artifact storage path contains a symlink or non-directory")
+		}
+	}
+	return true, nil
 }
 
 func requireRegularFile(path string) error {

@@ -211,6 +211,106 @@ func TestImportPackageCopiesOrdinaryDirectoryWithPrivateEntries(t *testing.T) {
 	}
 }
 
+func TestStagePackageCreatesSortedPrivateArchiveFromMemory(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("package-memory", "bundle.zip", "application/zip", "package")
+	entries := []PackageEntry{
+		{Name: "index.html", Data: []byte("<h1>managed</h1>")},
+		{Name: "assets/site.css", Data: []byte("body{}")},
+	}
+
+	staged, err := service.StagePackage(context.Background(), variant, entries)
+	if err != nil {
+		t.Fatalf("StagePackage: %v", err)
+	}
+	entries[0].Data[0] = 'X'
+	blob, err := service.Finalize(context.Background(), staged, staged.DigestSHA256, staged.Size)
+	if err != nil {
+		t.Fatalf("Finalize package: %v", err)
+	}
+	variant.Status = pebblestore.SessionArtifactStatusReady
+	variant.DigestSHA256 = blob.DigestSHA256
+	variant.Size = blob.Size
+	data, _, err := service.Read(context.Background(), variant, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.File) != 2 || archive.File[0].Name != "assets/site.css" || archive.File[1].Name != "index.html" {
+		t.Fatalf("package entries = %+v", archive.File)
+	}
+	content, err := archive.File[1].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, readErr := io.ReadAll(content)
+	closeErr := content.Close()
+	if readErr != nil || closeErr != nil || string(got) != "<h1>managed</h1>" {
+		t.Fatalf("package content = %q, read=%v close=%v", got, readErr, closeErr)
+	}
+}
+
+func TestStagePackageRejectsEntryAndAggregateQuotasAndUnsafeNames(t *testing.T) {
+	service := newTestService(t, Limits{
+		MaxArtifactBytes:     1 << 20,
+		MaxSessionBytes:      2 << 20,
+		MaxPackageFiles:      2,
+		MaxPackageEntryBytes: 3,
+		MaxPackageBytes:      5,
+	})
+	variant := testVariant("package-limits", "bundle.zip", "application/zip", "package")
+	cases := []struct {
+		name    string
+		entries []PackageEntry
+		quota   bool
+	}{
+		{name: "entry quota", entries: []PackageEntry{{Name: "one", Data: []byte("1234")}}, quota: true},
+		{name: "aggregate quota", entries: []PackageEntry{{Name: "one", Data: []byte("123")}, {Name: "two", Data: []byte("123")}}, quota: true},
+		{name: "count quota", entries: []PackageEntry{{Name: "one", Data: []byte("1")}, {Name: "two", Data: []byte("2")}, {Name: "three", Data: []byte("3")}}, quota: true},
+		{name: "traversal", entries: []PackageEntry{{Name: "../escape", Data: []byte("1")}}},
+		{name: "noncanonical", entries: []PackageEntry{{Name: "a//b", Data: []byte("1")}}},
+		{name: "duplicate", entries: []PackageEntry{{Name: "same", Data: []byte("1")}, {Name: "same", Data: []byte("2")}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := service.StagePackage(context.Background(), variant, tc.entries)
+			if tc.quota && !errors.Is(err, ErrQuotaExceeded) {
+				t.Fatalf("error = %v, want ErrQuotaExceeded", err)
+			}
+			if !tc.quota && err == nil {
+				t.Fatal("unsafe package accepted")
+			}
+		})
+	}
+}
+
+func TestFinalizedPrivateBytesSurviveServiceRestart(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("variant-restart", "restart.txt", "text/plain", "text")
+	staged, err := service.Stage(context.Background(), variant, strings.NewReader("durable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(service.workspacePath, service.limits)
+	if err != nil {
+		t.Fatalf("New after restart: %v", err)
+	}
+	variant.Status = pebblestore.SessionArtifactStatusReady
+	variant.DigestSHA256 = blob.DigestSHA256
+	variant.Size = blob.Size
+	data, _, err := restarted.Read(context.Background(), variant, 1024)
+	if err != nil || string(data) != "durable" {
+		t.Fatalf("restart read = %q, err=%v", data, err)
+	}
+}
+
 func TestReconcileRemovesStagingWithoutPromoting(t *testing.T) {
 	service := newTestService(t, Limits{})
 	variant := testVariant("variant-1", "note.txt", "text/plain", "text")
@@ -332,6 +432,65 @@ func TestPackageExpandedByteQuotaRejectsCompressedBomb(t *testing.T) {
 	}
 	if _, err := service.Stage(context.Background(), variant, bytes.NewReader(compressed)); !errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("expanded package quota error = %v, want ErrQuotaExceeded", err)
+	}
+}
+
+func TestDeleteVariantAndCollectionRemoveOnlyVerifiedOwnedBytes(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variants := []pebblestore.SessionArtifactVariant{
+		testVariant("variant-1", "one.txt", "text/plain", "text"),
+		testVariant("variant-2", "two.txt", "text/plain", "text"),
+		testVariant("variant-other", "other.txt", "text/plain", "text"),
+	}
+	variants[2].CollectionID = "collection-2"
+	for _, variant := range variants {
+		staged, err := service.Stage(context.Background(), variant, strings.NewReader(variant.ID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Finalize(context.Background(), staged, "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.DeleteVariant("session-1", "collection-1", "variant-1"); err != nil {
+		t.Fatalf("DeleteVariant: %v", err)
+	}
+	if err := service.DeleteVariant("session-1", "collection-1", "variant-1"); err != nil {
+		t.Fatalf("idempotent DeleteVariant: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(service.collectionDir("session-1", "collection-1"), opaqueKey("variant", "variant-2"))); err != nil {
+		t.Fatalf("sibling variant removed: %v", err)
+	}
+	if err := service.DeleteCollection("session-1", "collection-1"); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+	if err := service.DeleteCollection("session-1", "collection-1"); err != nil {
+		t.Fatalf("idempotent DeleteCollection: %v", err)
+	}
+	if _, err := os.Stat(service.collectionDir("session-1", "collection-2")); err != nil {
+		t.Fatalf("other collection removed: %v", err)
+	}
+}
+
+func TestDeleteVariantRejectsSymlinkWithoutTouchingTarget(t *testing.T) {
+	service := newTestService(t, Limits{})
+	outside := t.TempDir()
+	protected := filepath.Join(outside, "protected.txt")
+	if err := os.WriteFile(protected, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collection := service.collectionDir("session-1", "collection-1")
+	if err := os.MkdirAll(collection, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(collection, opaqueKey("variant", "variant-link"))); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := service.DeleteVariant("session-1", "collection-1", "variant-link"); err == nil {
+		t.Fatal("DeleteVariant accepted symlink variant root")
+	}
+	if data, err := os.ReadFile(protected); err != nil || string(data) != "keep" {
+		t.Fatalf("symlink target changed: data=%q err=%v", data, err)
 	}
 }
 
