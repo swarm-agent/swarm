@@ -4290,6 +4290,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			switch eventType {
 			case StreamEventUsageUpdated:
 				launch.ContextWatcher.Observe(event.UsageSummary)
+			case StreamEventTaskContextRotated:
+				if successorID := strings.TrimSpace(event.SessionID); successorID != "" {
+					outcome.ChildSessionID = successorID
+				}
+				outcome.Phase = StreamEventTaskContextRotated
+				outcome.Summary = strings.TrimSpace(event.Summary)
+				emitTaskProgress(StreamEventTaskContextRotated, outcome.Summary, outcome)
 			case StreamEventStepStarted:
 				if strings.TrimSpace(outcome.Phase) == "" || strings.EqualFold(strings.TrimSpace(outcome.Phase), "spawned") {
 					emitTaskProgress("running", "", outcome)

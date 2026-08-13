@@ -324,6 +324,18 @@ func (s *Service) runDelegatedLogicalLaunch(ctx context.Context, launch taskLaun
 		if handoffErr != nil {
 			return launch, RunResult{}, handoffErr
 		}
+		if onEvent != nil {
+			onEvent(StreamEvent{
+				Type:      StreamEventTaskContextRotated,
+				SessionID: launch.ChildSession.ID,
+				Summary:   "delegated Task context continued in successor session",
+				Metadata: map[string]any{
+					"logical_task_id":        strings.TrimSpace(launch.LogicalTaskID),
+					"context_generation":     intFromMetadata(launch.ChildSession.Metadata, "context_generation", 1),
+					"predecessor_session_id": strings.TrimSpace(mapString(launch.ChildSession.Metadata, "predecessor_session_id")),
+				},
+			})
+		}
 		generation, ok, generationErr := s.sessions.GetDelegatedChildGeneration(launch.ChildSession.AccountScopeID, launch.LogicalTaskID, intFromMetadata(launch.ChildSession.Metadata, "context_generation", 1))
 		if generationErr != nil || !ok {
 			return launch, RunResult{}, fmt.Errorf("load delegated successor generation: found=%t: %w", ok, generationErr)

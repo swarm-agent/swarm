@@ -53,12 +53,20 @@ func TestDelegatedLogicalLaunchRotatesToValidatedSuccessor(t *testing.T) {
 		return RunContinuationBoundaryDecision{}, nil
 	}
 	original := "Implement the immutable delegated assignment"
-	resultLaunch, result, err := svc.runDelegatedLogicalLaunch(context.Background(), launch, original, launch.ChildSession.ID, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, nil, func(StreamEvent) {})
+	var rotatedEvent StreamEvent
+	resultLaunch, result, err := svc.runDelegatedLogicalLaunch(context.Background(), launch, original, launch.ChildSession.ID, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, nil, func(event StreamEvent) {
+		if event.Type == StreamEventTaskContextRotated {
+			rotatedEvent = event
+		}
+	})
 	if err != nil {
 		t.Fatalf("run logical launch: %v", err)
 	}
 	if result.AssistantMessage.Content != "logical job complete" || runner.calls != 3 || resultLaunch.ChildSession.ID == launch.ChildSession.ID {
 		t.Fatalf("logical result calls=%d launch=%s result=%+v", runner.calls, resultLaunch.ChildSession.ID, result)
+	}
+	if rotatedEvent.SessionID != resultLaunch.ChildSession.ID || intFromMetadata(rotatedEvent.Metadata, "context_generation", 0) != 2 || strings.TrimSpace(mapString(rotatedEvent.Metadata, "predecessor_session_id")) != launch.ChildSession.ID {
+		t.Fatalf("rotation event = %+v, want successor %s generation 2 predecessor %s", rotatedEvent, resultLaunch.ChildSession.ID, launch.ChildSession.ID)
 	}
 	stored, ok, err := svc.sessions.GetDelegatedChildHandoff("account-1", launch.LogicalTaskID, 1)
 	if err != nil || !ok || stored.Objective != "finish the delegated job" || stored.SuccessorSessionID != resultLaunch.ChildSession.ID {

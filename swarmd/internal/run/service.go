@@ -337,6 +337,10 @@ const (
 	StreamEventReasoningCompleted  = "reasoning.completed"
 	StreamEventReasoningSummary    = "reasoning.summary"
 	StreamEventUsageUpdated        = "usage.updated"
+	// StreamEventTaskContextRotated is an internal Task-orchestration signal. It
+	// updates the parent launch card to the current successor session and is not a
+	// second durability authority; delegated-child lineage remains canonical.
+	StreamEventTaskContextRotated = "task.context.rotated"
 	// Provider tool-call construction events are emitted while the model/provider
 	// is assembling a tool call. They must remain distinct from the runtime tool
 	// execution events below.
