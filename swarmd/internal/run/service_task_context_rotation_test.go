@@ -17,31 +17,11 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-func TestParseDelegatedChildTargetedHandoffRequiresObjectiveAndActions(t *testing.T) {
-	handoff, err := parseDelegatedChildTargetedHandoff(`{"objective":"finish rotation","completed":["watcher added"],"decisions":["use canonical usage"],"next_actions":["run focused tests"],"constraints":["no transcript replay"],"relevant_files":["swarmd/internal/run/service.go"],"validation":["watcher tests passed"]}`)
-	if err != nil {
-		t.Fatalf("parse handoff: %v", err)
-	}
-	if handoff.Objective != "finish rotation" || len(handoff.NextActions) != 1 || handoff.NextActions[0] != "run focused tests" {
-		t.Fatalf("handoff = %+v", handoff)
-	}
-	for _, raw := range []string{
-		`{"objective":"","next_actions":["continue"]}`,
-		`{"objective":"continue","next_actions":[]}`,
-		`{"objective":"continue","next_actions":["act"],"transcript":"forbidden"}`,
-		"```json\n{\"objective\":\"continue\",\"next_actions\":[\"act\"]}\n```",
-	} {
-		if _, err := parseDelegatedChildTargetedHandoff(raw); err == nil {
-			t.Fatalf("invalid handoff accepted: %s", raw)
-		}
-	}
-}
-
-func TestDelegatedLogicalLaunchRotatesToValidatedSuccessor(t *testing.T) {
+func TestDelegatedLogicalLaunchCompactsAndContinuesSameSession(t *testing.T) {
 	svc, launch, runner := newTaskRotationHarness(t)
 	runner.responses = []provideriface.Response{
 		{Text: "", FunctionCalls: []provideriface.FunctionCall{{CallID: "call-1", Name: "bash", Arguments: `{"command":"printf tool-ok"}`}}},
-		{Text: `{"objective":"finish the delegated job","completed":["persisted tool work"],"decisions":["keep the current workspace"],"next_actions":["finish the implementation"],"constraints":["do not replay transcript"],"relevant_files":["swarmd/internal/run/service.go"],"validation":["tool persisted"]}`},
+		{Text: "Original/active goal: implement the immutable delegated assignment.\n\nWhat changed since any prior compact checkpoint: persisted tool work.\n\nImmediate next action: finish the implementation."},
 		{Text: "logical job complete"},
 	}
 	first := true
@@ -53,32 +33,40 @@ func TestDelegatedLogicalLaunchRotatesToValidatedSuccessor(t *testing.T) {
 		return RunContinuationBoundaryDecision{}, nil
 	}
 	original := "Implement the immutable delegated assignment"
-	var rotatedEvent StreamEvent
-	resultLaunch, result, err := svc.runDelegatedLogicalLaunch(context.Background(), launch, original, launch.ChildSession.ID, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, nil, func(event StreamEvent) {
-		if event.Type == StreamEventTaskContextRotated {
-			rotatedEvent = event
-		}
-	})
+	resultLaunch, result, err := svc.runDelegatedLogicalLaunch(context.Background(), launch, original, launch.ChildSession.ID, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, nil, func(StreamEvent) {})
 	if err != nil {
 		t.Fatalf("run logical launch: %v", err)
 	}
-	if result.AssistantMessage.Content != "logical job complete" || runner.calls != 3 || resultLaunch.ChildSession.ID == launch.ChildSession.ID {
-		t.Fatalf("logical result calls=%d launch=%s result=%+v", runner.calls, resultLaunch.ChildSession.ID, result)
+	if result.AssistantMessage.Content != "logical job complete" || runner.calls != 3 || resultLaunch.ChildSession.ID != launch.ChildSession.ID {
+		t.Fatalf("same-session result calls=%d launch=%s result=%+v", runner.calls, resultLaunch.ChildSession.ID, result)
 	}
-	if rotatedEvent.SessionID != resultLaunch.ChildSession.ID || intFromMetadata(rotatedEvent.Metadata, "context_generation", 0) != 2 || strings.TrimSpace(mapString(rotatedEvent.Metadata, "predecessor_session_id")) != launch.ChildSession.ID {
-		t.Fatalf("rotation event = %+v, want successor %s generation 2 predecessor %s", rotatedEvent, resultLaunch.ChildSession.ID, launch.ChildSession.ID)
+	lineage, ok, err := svc.sessions.GetDelegatedChildLineage("account-1", launch.LogicalTaskID)
+	if err != nil || !ok || lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != launch.ChildSession.ID {
+		t.Fatalf("same-session lineage: ok=%t err=%v %+v", ok, err, lineage)
 	}
-	stored, ok, err := svc.sessions.GetDelegatedChildHandoff("account-1", launch.LogicalTaskID, 1)
-	if err != nil || !ok || stored.Objective != "finish the delegated job" || stored.SuccessorSessionID != resultLaunch.ChildSession.ID {
-		t.Fatalf("durable handoff: ok=%t err=%v %+v", ok, err, stored)
+	messages, err := svc.sessions.ListMessages(launch.ChildSession.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list compacted child messages: %v", err)
+	}
+	foundCheckpoint := false
+	for _, message := range messages {
+		if strings.EqualFold(message.Role, "system") && strings.Contains(message.Content, "origin=task") {
+			foundCheckpoint = true
+		}
+	}
+	if !foundCheckpoint {
+		t.Fatalf("Task compact checkpoint missing from child transcript: %+v", messages)
+	}
+	if _, ok, err := svc.sessions.GetDelegatedChildGeneration("account-1", launch.LogicalTaskID, 2); err != nil || ok {
+		t.Fatalf("successor generation created by Task compact: ok=%t err=%v", ok, err)
 	}
 }
 
-func TestDelegatedLogicalLaunchHandoffFailureCreatesNoSuccessor(t *testing.T) {
+func TestDelegatedLogicalLaunchCompactFailureCreatesNoSuccessor(t *testing.T) {
 	svc, launch, runner := newTaskRotationHarness(t)
 	runner.responses = []provideriface.Response{
 		{Text: "", FunctionCalls: []provideriface.FunctionCall{{CallID: "call-1", Name: "bash", Arguments: `{"command":"printf tool-ok"}`}}},
-		{Text: `{"objective":"","next_actions":[]}`},
+		{Text: ""},
 	}
 	first := true
 	launch.ContinuationBoundary = func(RunContinuationBoundaryInput) (RunContinuationBoundaryDecision, error) {
@@ -89,50 +77,15 @@ func TestDelegatedLogicalLaunchHandoffFailureCreatesNoSuccessor(t *testing.T) {
 		return RunContinuationBoundaryDecision{}, nil
 	}
 	_, _, err := svc.runDelegatedLogicalLaunch(context.Background(), launch, "immutable assignment", launch.ChildSession.ID, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, nil, func(StreamEvent) {})
-	if !IsRecoverableTaskHandoffError(err) {
-		t.Fatalf("handoff failure = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Task same-session compact failed") {
+		t.Fatalf("compact failure = %v", err)
 	}
 	lineage, ok, getErr := svc.sessions.GetDelegatedChildLineage("account-1", launch.LogicalTaskID)
 	if getErr != nil || !ok || lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != launch.ChildSession.ID {
-		t.Fatalf("lineage changed after handoff failure: ok=%t err=%v %+v", ok, getErr, lineage)
+		t.Fatalf("lineage changed after compact failure: ok=%t err=%v %+v", ok, getErr, lineage)
 	}
 	if _, ok, getErr := svc.sessions.GetDelegatedChildGeneration("account-1", launch.LogicalTaskID, 2); getErr != nil || ok {
-		t.Fatalf("successor exists after handoff failure: ok=%t err=%v", ok, getErr)
-	}
-}
-
-func TestRotateDelegatedChildPersistsValidatedHandoffAndFencesPredecessor(t *testing.T) {
-	svc, launch, _ := newTaskRotationHarness(t)
-	handoff := pebblestore.DelegatedChildTargetedHandoff{Objective: "finish the job", NextActions: []string{"continue in successor"}, Completed: []string{"watcher complete"}}
-	rotatedLaunch, err := svc.rotateDelegatedChild(launch, "immutable assignment", handoff, nil)
-	if err != nil {
-		t.Fatalf("rotate child: %v", err)
-	}
-	if rotatedLaunch.ChildSession.ID == launch.ChildSession.ID {
-		t.Fatal("rotation retained predecessor session")
-	}
-	lineage, ok, err := svc.sessions.GetDelegatedChildLineage("account-1", launch.LogicalTaskID)
-	if err != nil || !ok || lineage.CurrentGeneration != 2 || lineage.CurrentSessionID != rotatedLaunch.ChildSession.ID {
-		t.Fatalf("lineage after rotation: ok=%t err=%v %+v", ok, err, lineage)
-	}
-	predecessor, ok, err := svc.sessions.GetDelegatedChildGeneration("account-1", launch.LogicalTaskID, 1)
-	if err != nil || !ok || predecessor.State != pebblestore.DelegatedChildGenerationRetired || predecessor.SuccessorSessionID != rotatedLaunch.ChildSession.ID {
-		t.Fatalf("predecessor after rotation: ok=%t err=%v %+v", ok, err, predecessor)
-	}
-	stored, ok, err := svc.sessions.GetDelegatedChildHandoff("account-1", launch.LogicalTaskID, 1)
-	if err != nil || !ok || stored.Objective != handoff.Objective || len(stored.NextActions) != 1 {
-		t.Fatalf("stored handoff: ok=%t err=%v %+v", ok, err, stored)
-	}
-	if _, _, err := svc.runDelegatedLogicalLaunch(context.Background(), launch, "stale write", launch.ChildSession.ID, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, nil, func(StreamEvent) {}); err == nil || !strings.Contains(err.Error(), "stale delegated child") {
-		t.Fatalf("stale predecessor outcome = %v", err)
-	}
-}
-
-func TestRecoverableTaskHandoffErrorIsTyped(t *testing.T) {
-	cause := errors.New("invalid JSON")
-	err := &RecoverableTaskHandoffError{Err: cause}
-	if !IsRecoverableTaskHandoffError(err) || !errors.Is(err, cause) || !strings.Contains(err.Error(), "no successor started") {
-		t.Fatalf("typed error = %v", err)
+		t.Fatalf("successor exists after compact failure: ok=%t err=%v", ok, getErr)
 	}
 }
 

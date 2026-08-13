@@ -289,33 +289,6 @@ func TestBuildTaskStreamPatchPayloadRetainsGranularToolHistoryAndAgentModel(t *t
 	}
 }
 
-func TestBuildTaskStreamPatchPayloadPublishesRotatedSuccessor(t *testing.T) {
-	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 1, taskLaunchOutcome{
-		LaunchIndex:      1,
-		ResolvedSubagent: "coder",
-		ChildSessionID:   "successor-child",
-		Phase:            StreamEventTaskContextRotated,
-		Summary:          "delegated Task context continued in successor session",
-	}, StreamEventTaskContextRotated, "")
-
-	if got := payload["status"]; got != "running" {
-		t.Fatalf("status = %#v, want running", got)
-	}
-	if got := payload["phase"]; got != StreamEventTaskContextRotated {
-		t.Fatalf("phase = %#v, want %q", got, StreamEventTaskContextRotated)
-	}
-	launch, ok := payload["launch"].(map[string]any)
-	if !ok {
-		t.Fatalf("launch = %#v, want object", payload["launch"])
-	}
-	if got := launch["child_session_id"]; got != "successor-child" {
-		t.Fatalf("child_session_id = %#v, want successor-child", got)
-	}
-	if got := launch["terminal"]; got != false {
-		t.Fatalf("terminal = %#v, want false", got)
-	}
-}
-
 func TestBuildTaskStreamPatchPayloadAcknowledgesCancelledChild(t *testing.T) {
 	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 2, taskLaunchOutcome{
 		LaunchIndex:      2,

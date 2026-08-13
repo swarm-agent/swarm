@@ -13,6 +13,8 @@ export const DEFAULT_PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 1
 export const PLAN_CONTEXT_GUARD_USED_PERCENT_MIN = 50
 export const PLAN_CONTEXT_GUARD_USED_PERCENT_MAX = 95
 export const PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 3
+export const DEFAULT_TASK_CONTEXT_MAX_COMPACTIONS = 5
+export const TASK_CONTEXT_MAX_COMPACTIONS = 10
 
 export interface UISwarmingSettingsWire {
   title?: string
@@ -45,6 +47,7 @@ export interface UIChatSettingsWire {
   plan_context_guard_enabled?: boolean
   plan_context_guard_used_percent?: number
   plan_context_guard_max_compactions?: number
+  task_context_max_compactions?: number
   review_auto_archive_minutes?: number
   sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
@@ -71,6 +74,10 @@ export interface UISettingsWire {
 export interface PlanContextGuardSettings {
   enabled: boolean
   usedPercent: number
+  maxCompactions: number
+}
+
+export interface TaskContextSettings {
   maxCompactions: number
 }
 
@@ -116,6 +123,15 @@ export function normalizePlanContextGuardSettings(payload?: UISettingsWire | nul
     usedPercent: normalizePlanContextGuardUsedPercent(payload?.chat?.plan_context_guard_used_percent),
     maxCompactions: normalizePlanContextGuardMaxCompactions(payload?.chat?.plan_context_guard_max_compactions),
   }
+}
+
+export function normalizeTaskContextMaxCompactions(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_TASK_CONTEXT_MAX_COMPACTIONS
+  return Math.min(TASK_CONTEXT_MAX_COMPACTIONS, Math.max(1, Math.round(value)))
+}
+
+export function normalizeTaskContextSettings(payload?: UISettingsWire | null): TaskContextSettings {
+  return { maxCompactions: normalizeTaskContextMaxCompactions(payload?.chat?.task_context_max_compactions) }
 }
 
 export function normalizeReviewAutoArchiveMinutes(value: unknown): number {
@@ -243,6 +259,16 @@ export function withPlanContextGuardSettings(current: UISettingsWire, settings: 
       plan_context_guard_enabled: normalizePlanContextGuardEnabled(settings.enabled),
       plan_context_guard_used_percent: normalizePlanContextGuardUsedPercent(settings.usedPercent),
       plan_context_guard_max_compactions: normalizePlanContextGuardMaxCompactions(settings.maxCompactions),
+    },
+  }
+}
+
+export function withTaskContextSettings(current: UISettingsWire, settings: TaskContextSettings): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      task_context_max_compactions: normalizeTaskContextMaxCompactions(settings.maxCompactions),
     },
   }
 }

@@ -53,16 +53,16 @@ func taskContextWatcherFixture(tokens int64) (*taskContextWatcher, *fakeTaskCont
 	return watcher, authority
 }
 
-func TestTaskContextWatcherUsesExactTenPercentBoundary(t *testing.T) {
-	watcher, authority := taskContextWatcherFixture(99)
+func TestTaskContextWatcherUsesExactEightyPercentBoundary(t *testing.T) {
+	watcher, authority := taskContextWatcherFixture(799)
 	decision, err := watcher.Boundary(RunContinuationBoundaryInput{SessionID: "child-1", RunID: "run-1", Provider: "codex", Model: "gpt-test"})
 	if err != nil || decision.Kind != "" {
-		t.Fatalf("99/1000 decision=%+v err=%v, want wait", decision, err)
+		t.Fatalf("799/1000 decision=%+v err=%v, want wait", decision, err)
 	}
-	authority.summary.TotalTokens, authority.turn.TotalTokens = 100, 100
+	authority.summary.TotalTokens, authority.turn.TotalTokens = 800, 800
 	decision, err = watcher.Boundary(RunContinuationBoundaryInput{SessionID: "child-1", RunID: "run-1", Provider: "codex", Model: "gpt-test"})
 	if err != nil || decision.Kind != RunContinuationBoundaryTaskRotation {
-		t.Fatalf("100/1000 decision=%+v err=%v, want rotation", decision, err)
+		t.Fatalf("800/1000 decision=%+v err=%v, want compaction", decision, err)
 	}
 }
 
@@ -112,15 +112,15 @@ func TestTaskContextWatcherRejectsBoundaryRuntimeMismatch(t *testing.T) {
 }
 
 func TestTaskContextWatcherIgnoresNonUsageInputs(t *testing.T) {
-	summary := pebblestore.SessionUsageSummary{ContextWindow: 1000, TotalTokens: 99, Source: "codex_api_usage"}
+	summary := pebblestore.SessionUsageSummary{ContextWindow: 1000, TotalTokens: 799, Source: "codex_api_usage"}
 	if taskUsageReachesRotationThreshold(summary) {
-		t.Fatal("99 tokens unexpectedly reached threshold")
+		t.Fatal("799 tokens unexpectedly reached threshold")
 	}
 	// Request bytes, MaxOutputTokens, and Compact state are intentionally absent
 	// from both the summary and threshold function and cannot affect the result.
-	summary.TotalTokens = 100
+	summary.TotalTokens = 800
 	if !taskUsageReachesRotationThreshold(summary) {
-		t.Fatal("100 tokens did not reach threshold")
+		t.Fatal("800 tokens did not reach threshold")
 	}
 }
 

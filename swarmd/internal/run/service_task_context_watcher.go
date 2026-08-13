@@ -8,7 +8,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const taskContextRotationThreshold = 0.10
+const taskContextRotationThreshold = 0.80
 
 type taskContextUsageAuthority interface {
 	GetUsageSummary(sessionID string) (pebblestore.SessionUsageSummary, bool, error)
@@ -101,6 +101,12 @@ func (w *taskContextWatcher) Boundary(input RunContinuationBoundaryInput) (RunCo
 		w.armed = true
 	}
 	armed := w.armed
+	if armed {
+		// Task orchestration consumes one safe-boundary decision at a time. The
+		// same-session compaction path resets durable usage before the next
+		// boundary, so clear the local latch now to avoid duplicate decisions.
+		w.armed = false
+	}
 	w.mu.Unlock()
 	if !armed {
 		return RunContinuationBoundaryDecision{}, nil

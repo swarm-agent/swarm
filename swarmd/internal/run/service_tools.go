@@ -82,6 +82,23 @@ func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionI
 	} else if launch.ContextWatcher != nil {
 		meta.ContinuationBoundary = launch.ContextWatcher.Boundary
 	}
+	if meta.ContinuationBoundary != nil {
+		meta.TaskCompaction = &TaskContextCompaction{
+			OriginalAssignment: strings.TrimSpace(firstNonEmptyString(mapString(launch.ChildSession.Metadata, "original_assignment"), launch.MetaPrompt, launch.AssignmentLabel)),
+			LogicalTaskID:      strings.TrimSpace(launch.LogicalTaskID),
+			TaskCallID:         strings.TrimSpace(launch.TaskCallID),
+			ProgramID:          strings.TrimSpace(launch.ProgramID),
+			ProgramJobID:       strings.TrimSpace(launch.ProgramJobID),
+			WorkspacePath:      strings.TrimSpace(launch.ChildWorkspacePath),
+			WorktreeBranch:     strings.TrimSpace(launch.ChildWorktreeBranch),
+			ImmutableBaseCommit: strings.TrimSpace(firstNonEmptyString(launch.ChildWorktreeBase, func() string {
+				if launch.TaskBase != nil {
+					return launch.TaskBase.BaseCommit
+				}
+				return ""
+			}())),
+		}
+	}
 	return meta
 }
 
@@ -4290,13 +4307,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			switch eventType {
 			case StreamEventUsageUpdated:
 				launch.ContextWatcher.Observe(event.UsageSummary)
-			case StreamEventTaskContextRotated:
-				if successorID := strings.TrimSpace(event.SessionID); successorID != "" {
-					outcome.ChildSessionID = successorID
-				}
-				outcome.Phase = StreamEventTaskContextRotated
-				outcome.Summary = strings.TrimSpace(event.Summary)
-				emitTaskProgress(StreamEventTaskContextRotated, outcome.Summary, outcome)
 			case StreamEventStepStarted:
 				if strings.TrimSpace(outcome.Phase) == "" || strings.EqualFold(strings.TrimSpace(outcome.Phase), "spawned") {
 					emitTaskProgress("running", "", outcome)
@@ -4369,18 +4379,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		outcome.WorktreeRootPath = launch.ChildSession.WorktreeRootPath
 		outcome.WorktreeBranch = launch.ChildSession.WorktreeBranch
 		if runErr != nil {
-			if IsRecoverableTaskHandoffError(runErr) {
-				nowMS := time.Now().UnixMilli()
-				if outcome.LaunchStartedAtMS <= 0 {
-					outcome.LaunchStartedAtMS = nowMS
-				}
-				outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
-				outcome.Error = boundedTaskLaunchReason(runErr.Error())
-				outcome.Reason = "recoverable_context_handoff_failure"
-				outcome.Summary = fmt.Sprintf("launch %d context handoff failed recoverably; predecessor remains current (session %s): %s", outcome.LaunchIndex, outcome.ChildSessionID, outcome.Error)
-				emitTaskProgress("blocked", outcome.Summary, outcome)
-				return outcome, runErr
-			}
 			if outcome.ArtifactReference != nil && outcome.ArtifactReference.Status == "pending" {
 				outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
 				outcome.ArtifactReference.FailureCode = "child_run_failed"

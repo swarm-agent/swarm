@@ -71,6 +71,7 @@ type UIChatSettingsRecord struct {
 	PlanContextGuardEnabled         *bool                          `json:"plan_context_guard_enabled,omitempty"`
 	PlanContextGuardUsedPercent     int                            `json:"plan_context_guard_used_percent,omitempty"`
 	PlanContextGuardMaxCompactions  *int                           `json:"plan_context_guard_max_compactions,omitempty"`
+	TaskContextMaxCompactions       *int                           `json:"task_context_max_compactions,omitempty"`
 	ReviewAutoArchiveMinutes        int                            `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
@@ -212,6 +213,7 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			PlanContextGuardEnabled:         boolPointer(true),
 			PlanContextGuardUsedPercent:     80,
 			PlanContextGuardMaxCompactions:  intPointer(1),
+			TaskContextMaxCompactions:       intPointer(5),
 			SidebarHideInactiveHours:        intPointer(12),
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
@@ -266,6 +268,12 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		normalized := normalizePlanContextGuardMaxCompactions(*record.Chat.PlanContextGuardMaxCompactions)
 		record.Chat.PlanContextGuardMaxCompactions = intPointer(normalized)
 	}
+	if record.Chat.TaskContextMaxCompactions == nil {
+		record.Chat.TaskContextMaxCompactions = intPointer(5)
+	} else {
+		normalized := normalizeTaskContextMaxCompactions(*record.Chat.TaskContextMaxCompactions)
+		record.Chat.TaskContextMaxCompactions = intPointer(normalized)
+	}
 	record.Chat.ReviewAutoArchiveMinutes = normalizeReviewAutoArchiveMinutes(record.Chat.ReviewAutoArchiveMinutes)
 	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours < 0 {
 		record.Chat.SidebarHideInactiveHours = intPointer(12)
@@ -316,6 +324,16 @@ func normalizePlanContextGuardMaxCompactions(value int) int {
 	}
 	if value > 3 {
 		return 3
+	}
+	return value
+}
+
+func normalizeTaskContextMaxCompactions(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 10 {
+		return 10
 	}
 	return value
 }

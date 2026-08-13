@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { SlidersHorizontal } from 'lucide-react'
 import { Card } from '../../../../../components/ui/card'
 import { PlanContextGuardSettingsSection } from './plan-context-guard-settings'
+import { TaskContextSettingsSection } from './task-context-settings'
 import { savePlanContextGuardSettings } from '../../swarm/mutations/save-plan-context-guard-settings'
+import { saveTaskContextSettings } from '../../swarm/mutations/save-task-context-settings'
 import { getUISettings } from '../../swarm/queries/get-ui-settings'
-import { normalizePlanContextGuardSettings, type UISettingsWire } from '../../swarm/types/swarm-settings'
+import { normalizePlanContextGuardSettings, normalizeTaskContextSettings, type UISettingsWire } from '../../swarm/types/swarm-settings'
 
 const uiSettingsQueryKey = ['ui-settings'] as const
 
@@ -17,6 +19,10 @@ export function BehaviorSettingsPage() {
   const settingsQuery = useQuery({ queryKey: uiSettingsQueryKey, queryFn: getUISettings, staleTime: 30_000 })
   const guardMutation = useMutation({
     mutationFn: (value: Parameters<typeof savePlanContextGuardSettings>[1]) => savePlanContextGuardSettings(settingsQuery.data ?? {}, value),
+    onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
+  })
+  const taskContextMutation = useMutation({
+    mutationFn: (value: Parameters<typeof saveTaskContextSettings>[1]) => saveTaskContextSettings(settingsQuery.data ?? {}, value),
     onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
   })
   const error = guardMutation.error
@@ -36,6 +42,21 @@ export function BehaviorSettingsPage() {
           <p className="text-sm text-[var(--app-text-muted)]">Control how Swarm behaves while working.</p>
         </div>
       </header>
+
+      <Card className="p-5">
+        {settingsQuery.data ? (
+          <TaskContextSettingsSection
+            value={normalizeTaskContextSettings(settingsQuery.data)}
+            saving={taskContextMutation.isPending}
+            error={taskContextMutation.error ? errorMessage(taskContextMutation.error, 'The Task context request failed.') : null}
+            onSave={(value) => taskContextMutation.mutate(value)}
+          />
+        ) : error ? (
+          <div role="alert" className="text-sm text-[var(--app-danger)]">{error}</div>
+        ) : (
+          <p className="text-sm text-[var(--app-text-muted)]">Loading behavior settings…</p>
+        )}
+      </Card>
 
       <Card className="p-5">
         {settingsQuery.data ? (

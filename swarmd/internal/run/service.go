@@ -71,6 +71,7 @@ const (
 	contextCompactionOriginManual           = "manual"
 	contextCompactionOriginThreshold        = "threshold"
 	contextCompactionOriginPlanGuard        = "plan_guard"
+	contextCompactionOriginTask             = "task"
 	contextCompactionOriginOverflow         = "overflow"
 	ContextCompactionOriginPlanFreshContext = "plan_fresh_context"
 
@@ -208,6 +209,20 @@ type RunContinuationBoundaryCallback func(RunContinuationBoundaryInput) (RunCont
 
 const RunContinuationBoundaryTaskRotation = "task_context_rotation"
 
+// TaskContextCompaction describes trusted Task-specific state supplied by Task
+// orchestration. It is deliberately absent from RunRequest so clients and
+// models cannot opt into Task compaction or alter logical-job identity.
+type TaskContextCompaction struct {
+	OriginalAssignment  string
+	LogicalTaskID       string
+	TaskCallID          string
+	ProgramID           string
+	ProgramJobID        string
+	WorkspacePath       string
+	WorktreeBranch      string
+	ImmutableBaseCommit string
+}
+
 // TaskRotationBoundaryError is a typed, non-failure handoff to Task
 // orchestration. It is returned only after the triggering response's tool calls
 // and durable tool messages have completed.
@@ -239,6 +254,7 @@ type RunOptions struct {
 	AllowSubagent        bool
 	DisabledTools        map[string]bool
 	ContinuationBoundary RunContinuationBoundaryCallback
+	TaskCompaction       *TaskContextCompaction
 	// TrustedAgentProfile is populated only by trusted internal orchestration.
 	TrustedAgentProfile   *pebblestore.AgentProfile
 	PermissionSessionID   string
@@ -337,10 +353,6 @@ const (
 	StreamEventReasoningCompleted  = "reasoning.completed"
 	StreamEventReasoningSummary    = "reasoning.summary"
 	StreamEventUsageUpdated        = "usage.updated"
-	// StreamEventTaskContextRotated is an internal Task-orchestration signal. It
-	// updates the parent launch card to the current successor session and is not a
-	// second durability authority; delegated-child lineage remains canonical.
-	StreamEventTaskContextRotated = "task.context.rotated"
 	// Provider tool-call construction events are emitted while the model/provider
 	// is assembling a tool call. They must remain distinct from the runtime tool
 	// execution events below.
@@ -1483,6 +1495,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	emptyStepRetries := 0
 	contextCompactionAttempts := 0
 	planContextGuard := newPlanContextGuardState(sessionSnapshot.Metadata)
+	taskContextMaxCompactions := 5
 	if s.uiSettings != nil {
 		accountScopeID := firstNonEmptyString(options.Principal.AccountScopeID, sessionSnapshot.AccountScopeID)
 		settings, settingsErr := s.uiSettings.GetForAccount(accountScopeID)
@@ -1494,6 +1507,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			float64(settings.Chat.PlanContextGuardUsedPercent),
 			settings.Chat.PlanContextGuardMaxCompactions,
 		)
+		taskContextMaxCompactions = settings.Chat.TaskContextMaxCompactions
 	}
 	planGuardFreshContext := false
 	accumulatedUsage := provideriface.TokenUsage{}
@@ -1737,7 +1751,19 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		case "":
 			return nil
 		case RunContinuationBoundaryTaskRotation:
-			return &TaskRotationBoundaryError{Decision: decision}
+			if options.TaskCompaction == nil {
+				return &TaskRotationBoundaryError{Decision: decision}
+			}
+			compactedInput, compactErr := s.applyTaskContextCompaction(ctx, sessionID, runID, providerID, resolvedPreference.Preference, resolvedPreference.ContextWindow, resolvedPreference.MaxOutputTokens, step, taskContextMaxCompactions, options.TaskCompaction, emit, runAppendMessageInput{RunID: runID, Step: step, Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
+			if compactErr != nil {
+				return compactErr
+			}
+			input = compactedInput
+			turnUsageRecord = nil
+			usageSummaryState = nil
+			accumulatedUsage = provideriface.TokenUsage{}
+			emptyStepRetries = 0
+			return nil
 		default:
 			return fmt.Errorf("unsupported run continuation boundary decision %q", decision.Kind)
 		}
@@ -3554,6 +3580,9 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	compactIndex := nextMemoryCompactionIndex(messages)
 	toolStream.SetCompactIndex(compactIndex)
 	transcript := buildMemoryCompactionTranscript(messages)
+	if normalizeContextCompactionOrigin(origin) == contextCompactionOriginTask {
+		transcript = buildTaskCompactionTranscript(messages)
+	}
 	if strings.TrimSpace(transcript) == "" {
 		err := errors.New("memory compaction transcript is empty")
 		finishFailure(err)
@@ -3750,6 +3779,66 @@ func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot) str
 	return strings.TrimSpace(strings.Join(entries, "\n\n"))
 }
 
+func buildTaskCompactionTranscript(messages []pebblestore.MessageSnapshot) string {
+	entries := make([]string, 0, len(messages))
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" || isManualCompactionAcknowledgement(message) {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+		case "user":
+			if shouldDropSensitiveConversationMessage(message) {
+				continue
+			}
+			entries = append(entries, "user:\n"+content)
+		case "assistant":
+			entries = append(entries, "assistant:\n"+content)
+		case "system":
+			if isCompactionCheckpointMessage(content) {
+				entries = append(entries, "assistant prior compact checkpoint:\n"+content)
+			}
+		case "tool":
+			if outcome := taskCompactionToolOutcome(content); outcome != "" {
+				entries = append(entries, outcome)
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(entries, "\n\n"))
+}
+
+func taskCompactionToolOutcome(content string) string {
+	type record struct {
+		PathID          string `json:"path_id"`
+		Tool            string `json:"tool"`
+		ToolName        string `json:"tool_name"`
+		CompletedOutput string `json:"completed_output"`
+		Output          string `json:"output"`
+		Error           string `json:"error"`
+	}
+	var item record
+	if json.Unmarshal([]byte(strings.TrimSpace(content)), &item) != nil || (item.PathID != toolHistoryPathID && item.PathID != v3ProviderManagedToolResultPathID) {
+		return ""
+	}
+	name := canonicalToolName(firstNonEmptyString(item.ToolName, item.Tool))
+	outcome := strings.TrimSpace(firstNonEmptyString(item.CompletedOutput, item.Error, item.Output))
+	// Task compaction intentionally excludes read/search/list and truncated raw
+	// tool dumps. Those are discovery traces, not reliable completion evidence.
+	if outcome == "" || strings.Contains(strings.ToLower(outcome), "truncated") {
+		return ""
+	}
+	switch name {
+	case "edit", "write", "bash", "plan_manage", "manage_artifact", "manage_worktree":
+	default:
+		return ""
+	}
+	status := "completed"
+	if strings.TrimSpace(item.Error) != "" {
+		status = "failed"
+	}
+	return fmt.Sprintf("verified tool outcome:\n- name: %s\n- status: %s\n- outcome: %s", name, status, truncateRunes(outcome, memoryCompactionToolOutputMaxRunes))
+}
+
 func buildMemoryCompactionToolTranscriptEntry(content string) string {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -3865,6 +3954,13 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 			"Emphasize current goal, constraints, known facts, relevant files, completed work, and the highest-value next action.",
 			"Call out completed/open plan or todo checkpoints when the transcript makes them clear, and say if the resumed agent should update plan/todos.",
 		)
+	case contextCompactionOriginTask:
+		lines = append(lines,
+			"Compaction mode: Task-orchestrated same-session compact at a verified provider-usage boundary.",
+			"This replaces successor-session handoff. Preserve the immutable delegated assignment and logical Task identity exactly.",
+			"Do not infer progress from absent or truncated tool output. Use the trusted workspace/Git snapshot and explicit conversation outcomes; mark all other work as uncertain.",
+			"If this is a later Task compact, retain the same section structure and distinguish prior checkpoint state from changes since the last compact.",
+		)
 	case contextCompactionOriginOverflow:
 		lines = append(lines,
 			"Compaction mode: reactive automatic compact after provider context overflow.",
@@ -3949,6 +4045,8 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 		lines = append(lines, "Formulate the continuation as a clear problem statement for the next main-agent step, with the compacted-away evidence embedded in the recap.")
 	case contextCompactionOriginPlanGuard:
 		lines = append(lines, "The main plan agent supplied this explicit research handoff. Preserve it verbatim in substance, carry the durable active plan state, and continue in fresh provider context without rerunning completed discovery.")
+	case contextCompactionOriginTask:
+		lines = append(lines, "Task orchestration supplied the immutable assignment, logical identity, compact index, and trusted workspace/Git snapshot. Produce a stable same-session continuation checkpoint; do not reinterpret this as a new launch or successor session.")
 	case contextCompactionOriginOverflow:
 		lines = append(lines, "The provider overflow means the previous agent may have stopped mid-thought or mid-action. Preserve in-progress intent and tell the resumed agent exactly what to do next.")
 	}
@@ -3981,6 +4079,8 @@ func normalizeContextCompactionOrigin(origin string) string {
 		return contextCompactionOriginThreshold
 	case contextCompactionOriginPlanGuard:
 		return contextCompactionOriginPlanGuard
+	case contextCompactionOriginTask:
+		return contextCompactionOriginTask
 	case contextCompactionOriginOverflow:
 		return contextCompactionOriginOverflow
 	case ContextCompactionOriginPlanFreshContext:
@@ -3998,6 +4098,8 @@ func memoryCompactionContextLine(origin string) string {
 		return "Compaction context: remaining context hit the configured proactive auto-compact threshold before provider overflow."
 	case contextCompactionOriginPlanGuard:
 		return "Compaction context: the plan-mode context guard accepted an explicit research handoff and started fresh provider context."
+	case contextCompactionOriginTask:
+		return "Compaction context: Task orchestration reached its verified provider-usage boundary and is compacting the same durable child session without creating a successor."
 	case ContextCompactionOriginPlanFreshContext:
 		return "Compaction context: an automatic checkpoint fresh-context run superseded earlier transcript history; preserve completed checkpoint evidence, plan state, and the user's next action context."
 	default:
