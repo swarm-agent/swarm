@@ -15,17 +15,19 @@ type SwarmTransportRecord struct {
 }
 
 type SwarmLocalNodeRecord struct {
-	SwarmID       string                 `json:"swarm_id"`
-	Name          string                 `json:"name"`
-	Role          string                 `json:"role"`
-	PublicKey     string                 `json:"public_key,omitempty"`
-	PrivateKey    string                 `json:"private_key,omitempty"`
-	Fingerprint   string                 `json:"fingerprint,omitempty"`
-	AdvertiseMode string                 `json:"advertise_mode,omitempty"`
-	AdvertiseAddr string                 `json:"advertise_addr,omitempty"`
-	Transports    []SwarmTransportRecord `json:"transports,omitempty"`
-	CreatedAt     int64                  `json:"created_at"`
-	UpdatedAt     int64                  `json:"updated_at"`
+	SwarmID               string                 `json:"swarm_id"`
+	Name                  string                 `json:"name"`
+	Role                  string                 `json:"role"`
+	PublicKey             string                 `json:"public_key,omitempty"`
+	PrivateKey            string                 `json:"private_key,omitempty"`
+	Fingerprint           string                 `json:"fingerprint,omitempty"`
+	AdvertiseMode         string                 `json:"advertise_mode,omitempty"`
+	AdvertiseAddr         string                 `json:"advertise_addr,omitempty"`
+	Transports            []SwarmTransportRecord `json:"transports,omitempty"`
+	MintReportState       string                 `json:"mint_report_state,omitempty"`
+	MintReportCompletedAt int64                  `json:"mint_report_completed_at,omitempty"`
+	CreatedAt             int64                  `json:"created_at"`
+	UpdatedAt             int64                  `json:"updated_at"`
 }
 
 // Retired pairing record types carry no persistence behavior; they remain
@@ -532,6 +534,7 @@ func normalizeSwarmLocalNodeRecord(record SwarmLocalNodeRecord) SwarmLocalNodeRe
 	record.AdvertiseMode = strings.ToLower(strings.TrimSpace(record.AdvertiseMode))
 	record.AdvertiseAddr = strings.TrimSpace(record.AdvertiseAddr)
 	record.Transports = normalizeSwarmTransports(record.Transports)
+	record.MintReportState = strings.ToLower(strings.TrimSpace(record.MintReportState))
 	return record
 }
 

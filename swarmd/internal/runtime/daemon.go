@@ -600,6 +600,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		diagnostics.RegisterSnapshotProvider("tools", toolRuntime.LongSessionSnapshot)
 		log.Printf("long-session diagnostics enabled directory=%q", diagnostics.Directory())
 	}
+	// Start the best-effort remote report only after local daemon construction
+	// has succeeded, so later initialization failures never race a closed store.
+	startMintReport(bgCtx, swarmSvc)
 	return d, nil
 }
 

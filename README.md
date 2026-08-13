@@ -176,6 +176,10 @@ You can point the terminal UI at a specific daemon with:
 SWARMD_URL=http://127.0.0.1:7782 SWARMD_TOKEN=<token> swarm dev
 ```
 
+## Privacy and anonymous mint reporting
+
+When a new local swarm identity is generated for the first time, `swarmd` makes one best-effort HTTPS request to `https://swarmagent.dev/api/mint`. The request contains only payload version `1` and a one-way anonymous identifier derived locally from the random swarm ID. It does not send the raw swarm ID or user, machine, network, key, account, workspace, provider, or session data. Delivery state is stored locally so transient failures can retry on a later start without delaying or preventing daemon startup; existing and explicitly restored identities are not reported as new mints.
+
 ## Data and configuration locations
 
 Swarm uses system locations for Swarm-owned daemon state. By default it does not write daemon databases, secrets, runtime files, logs, caches, generated artifacts, downloads, reports, or worktrees under a user home directory, XDG user directory, repository checkout, or current working directory.
