@@ -223,8 +223,8 @@ interface GitIntegrateModalState {
 
 export function buildGitSidebarIntegrationHelpPrompt(input: GitIntegrateModalState, integrationError: string): string {
   return [
-    'Help me understand and recover from this worktree integration error.',
-    'Inspect the existing session and worktree context, explain the failure, and recommend the safe next action. Do not integrate or archive anything unless I explicitly ask in a later message.',
+    'Fix this worktree integration error and integrate the worktree.',
+    'Inspect the existing session and worktree context, diagnose and resolve the failure, and integrate the source worktree into the target branch. Take the safe recovery steps needed to complete integration rather than only explaining the error or returning a blocked message. Do not archive the session unless I explicitly ask in a later message.',
     '',
     `Session ID: ${input.sessionId}`,
     `Source branch: ${input.worktreeBranch || 'unknown'}`,

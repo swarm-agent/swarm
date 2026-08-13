@@ -126,7 +126,7 @@ test('Git sidebar missing-Git action launches a fresh Swarm session', async () =
   assert.match(panelSource, /onClick=\{\(\) => \{ void handleAskSwarmToInstallGit\(\) \}\}/)
 })
 
-test('Git sidebar integration help prompt carries the actual error without authorizing integration or archive', () => {
+test('Git sidebar integration help prompt directs Swarm to recover and integrate without authorizing archive', () => {
   const prompt = buildGitSidebarIntegrationHelpPrompt({
     sessionId: 'review-session',
     workspacePath: '/workspace',
@@ -140,7 +140,11 @@ test('Git sidebar integration help prompt carries the actual error without autho
   assert.match(prompt, /Target branch: dev/)
   assert.match(prompt, /Target workspace: \/workspace/)
   assert.match(prompt, /Integration error:\nCONFLICT in web\/src\/app\.tsx/)
-  assert.match(prompt, /Do not integrate or archive anything unless I explicitly ask/)
+  assert.match(prompt, /Fix this worktree integration error and integrate the worktree/)
+  assert.match(prompt, /diagnose and resolve the failure, and integrate the source worktree into the target branch/)
+  assert.match(prompt, /rather than only explaining the error or returning a blocked message/)
+  assert.match(prompt, /Do not archive the session unless I explicitly ask/)
+  assert.doesNotMatch(prompt, /Do not integrate/)
 })
 
 test('plan Git sidebar renders session commits and an anchored integration confirmation popout', async () => {
