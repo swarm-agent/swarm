@@ -92,7 +92,7 @@ test("active Task Program renders its complete phased roadmap expanded", () => {
   assert.match(markup, /data-stage-state="waiting"/);
   assert.match(markup, /waiting on dependencies/);
   assert.match(markup, /search x2 · running/);
-  assert.doesNotMatch(markup, /tools:<\/span><span class="whitespace-pre-wrap">read/);
+  assert.doesNotMatch(markup, /tools:/);
   assert.equal((markup.match(/data-task-live-stream=/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /ITERATION SWARM/);
 });
