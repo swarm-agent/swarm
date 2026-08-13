@@ -111,6 +111,9 @@ type preparedV3ArtifactMutation struct {
 	Projection         V3ArtifactProjection
 	PreviousCollection *SessionArtifactCollection
 	PreviousVariant    *SessionArtifactVariant
+	DeletedVariants    []SessionArtifactVariant
+	DeleteVariant      bool
+	DeleteCollection   bool
 }
 
 func KeySessionArtifactCollection(accountScopeID, sessionID, collectionID string) string {
@@ -202,6 +205,29 @@ func (s *SessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, coll
 	return variant, true, nil
 }
 
+// GetSessionArtifactVariantByID resolves an opaque session-scoped variant id
+// without exposing or requiring any storage location.
+func (s *SessionStore) GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID string) (SessionArtifactVariant, bool, error) {
+	if s == nil || s.store == nil { return SessionArtifactVariant{}, false, errors.New("session store is not configured") }
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	sessionID = strings.TrimSpace(sessionID)
+	variantID = strings.TrimSpace(variantID)
+	var found SessionArtifactVariant
+	matches := 0
+	err := s.store.IteratePrefix(SessionArtifactVariantSessionPrefix(accountScopeID, sessionID), SessionArtifactMaxCollections*SessionArtifactMaxVariantsPerCollection, func(_ string, value []byte) error {
+		var variant SessionArtifactVariant
+		if err := json.Unmarshal(value, &variant); err != nil { return err }
+		if variant.AccountScopeID != accountScopeID || variant.SessionID != sessionID { return errors.New("artifact variant ownership metadata is inconsistent") }
+		if variant.ID == variantID { found = variant; matches++ }
+		return nil
+	})
+	if err != nil { return SessionArtifactVariant{}, false, err }
+	if matches > 1 { return SessionArtifactVariant{}, false, errors.New("artifact variant id is ambiguous in session") }
+	return found, matches == 1, nil
+}
+
+// ListSessionArtifactCollections returns bounded metadata from one trusted
+// account/session scope. An optional status uses the repaired status index.
 func (s *SessionStore) ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]SessionArtifactCollection, error) {
 	if s == nil || s.store == nil { return nil, errors.New("session store is not configured") }
 	accountScopeID = strings.TrimSpace(accountScopeID)
@@ -228,19 +254,26 @@ func (s *SessionStore) ListSessionArtifactCollections(accountScopeID, sessionID,
 		} else if err := json.Unmarshal(value, &collection); err != nil {
 			return err
 		}
+		if collection.AccountScopeID != accountScopeID || collection.SessionID != sessionID { return errors.New("artifact collection ownership metadata is inconsistent") }
+		if status != "" && collection.Status != status { return errors.New("artifact collection status index is inconsistent") }
 		out = append(out, collection)
 		return nil
 	})
 	return out, err
 }
 
+// ListSessionArtifactVariants returns bounded metadata for one collection.
 func (s *SessionStore) ListSessionArtifactVariants(accountScopeID, sessionID, collectionID string, limit int) ([]SessionArtifactVariant, error) {
 	if s == nil || s.store == nil { return nil, errors.New("session store is not configured") }
 	limit = boundedArtifactListLimit(limit, SessionArtifactMaxVariantsPerCollection)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	sessionID = strings.TrimSpace(sessionID)
+	collectionID = strings.TrimSpace(collectionID)
 	out := make([]SessionArtifactVariant, 0, limit)
-	err := s.store.IteratePrefix(SessionArtifactVariantPrefix(strings.TrimSpace(accountScopeID), strings.TrimSpace(sessionID), strings.TrimSpace(collectionID)), limit, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(SessionArtifactVariantPrefix(accountScopeID, sessionID, collectionID), limit, func(_ string, value []byte) error {
 		var variant SessionArtifactVariant
 		if err := json.Unmarshal(value, &variant); err != nil { return err }
+		if variant.AccountScopeID != accountScopeID || variant.SessionID != sessionID || variant.CollectionID != collectionID { return errors.New("artifact variant ownership metadata is inconsistent") }
 		out = append(out, variant)
 		return nil
 	})
@@ -255,7 +288,7 @@ func boundedArtifactListLimit(limit, maximum int) int {
 
 func isV3ArtifactMutationKind(kind string) bool {
 	switch kind {
-	case V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact, V3SessionMutationSelectArtifact:
+	case V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact, V3SessionMutationSelectArtifact, V3SessionMutationDeleteArtifactVariant, V3SessionMutationDeleteArtifactCollection:
 		return true
 	default:
 		return false
@@ -330,13 +363,15 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 	switch input.Kind {
 	case V3SessionMutationCreateArtifact:
 		if collection.Name == "" && input.Artifact.Variant == nil { return errors.New("artifact collection name is required") }
-	case V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact:
+	case V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact, V3SessionMutationDeleteArtifactVariant:
 		if input.Artifact.Variant == nil { return errors.New("artifact variant is required") }
 	case V3SessionMutationSelectArtifact:
 		if input.Artifact.Selection == nil || input.Artifact.Selection.CollectionID != collection.ID || input.Artifact.Selection.VariantID == "" {
 			return errors.New("artifact selection must identify the collection and variant")
 		}
 		if input.Artifact.Selection.SessionID != "" && input.Artifact.Selection.SessionID != input.SessionID { return errors.New("artifact selection session does not match mutation session") }
+	case V3SessionMutationDeleteArtifactCollection:
+		if input.Artifact.Variant != nil || input.Artifact.Selection != nil { return errors.New("artifact collection deletion accepts only a collection id") }
 	}
 	return nil
 }
@@ -379,11 +414,29 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 	if input.Kind == V3SessionMutationUpdateArtifact && !collectionOK {
 		return preparedV3ArtifactMutation{}, fmt.Errorf("artifact collection %q was not found", incoming.Collection.ID)
 	}
+	if input.Kind == V3SessionMutationDeleteArtifactCollection {
+		if !collectionOK { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact collection %q was not found", incoming.Collection.ID) }
+		variants, err := s.ListSessionArtifactVariants(input.AccountScopeID, input.SessionID, collection.ID, SessionArtifactMaxVariantsPerCollection)
+		if err != nil { return preparedV3ArtifactMutation{}, err }
+		deletedCollection := collection
+		deletedCollection.UpdatedAt = now
+		deletedCollection.EventSeq = seq
+		prepared.Projection = V3ArtifactProjection{Collection: deletedCollection}
+		prepared.DeletedVariants = variants
+		prepared.DeleteCollection = true
+		return prepared, nil
+	}
 	if input.Kind == V3SessionMutationCreateArtifact {
 		if collectionOK && incoming.Variant == nil { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact collection %q already exists", incoming.Collection.ID) }
 		if collectionOK && incoming.Collection.Name != "" && incoming.Collection.Name != collection.Name { return preparedV3ArtifactMutation{}, errors.New("existing artifact collection metadata cannot be replaced by variant creation") }
+		if collectionOK && incoming.Variant != nil {
+			if existing, duplicate, err := s.GetSessionArtifactVariantByID(input.AccountScopeID, input.SessionID, incoming.Variant.ID); err != nil { return preparedV3ArtifactMutation{}, err } else if duplicate && existing.CollectionID != collection.ID { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q already exists in session", incoming.Variant.ID) }
+		}
 		if !collectionOK {
 			if incoming.Collection.Name == "" { return preparedV3ArtifactMutation{}, errors.New("artifact collection name is required") }
+			if incoming.Variant != nil {
+				if _, duplicate, err := s.GetSessionArtifactVariantByID(input.AccountScopeID, input.SessionID, incoming.Variant.ID); err != nil { return preparedV3ArtifactMutation{}, err } else if duplicate { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q already exists in session", incoming.Variant.ID) }
+			}
 			collections, err := s.ListSessionArtifactCollections(input.AccountScopeID, input.SessionID, "", SessionArtifactMaxCollections+1)
 			if err != nil { return preparedV3ArtifactMutation{}, err }
 			if len(collections) >= SessionArtifactMaxCollections { return preparedV3ArtifactMutation{}, errors.New("session artifact collection limit exceeded") }
@@ -407,7 +460,29 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		current, variantOK, err := s.GetSessionArtifactVariant(input.AccountScopeID, input.SessionID, collection.ID, incoming.Variant.ID)
 		if err != nil { return preparedV3ArtifactMutation{}, err }
 		if variantOK { copy := current; prepared.PreviousVariant = &copy }
+		if input.Kind == V3SessionMutationDeleteArtifactVariant {
+			if !variantOK { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q was not found", incoming.Variant.ID) }
+			if collection.VariantCount <= 0 { return preparedV3ArtifactMutation{}, errors.New("artifact collection variant count is inconsistent") }
+			if collection.SelectedVariantID != "" && collection.SelectedVariantID != current.ID {
+				selected, ok, err := s.GetSessionArtifactVariant(input.AccountScopeID, input.SessionID, collection.ID, collection.SelectedVariantID)
+				if err != nil { return preparedV3ArtifactMutation{}, err }
+				if !ok || selected.Status != SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("artifact collection selection metadata is inconsistent") }
+			}
+			collection.VariantCount--
+			if collection.SelectedVariantID == current.ID { collection.SelectedVariantID = "" }
+			remaining, err := s.ListSessionArtifactVariants(input.AccountScopeID, input.SessionID, collection.ID, SessionArtifactMaxVariantsPerCollection)
+			if err != nil { return preparedV3ArtifactMutation{}, err }
+			collection.Status = artifactCollectionStatusWithoutVariant(remaining, current.ID)
+			collection.UpdatedAt = now
+			collection.EventSeq = seq
+			deleted := current
+			prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: &deleted}
+			prepared.DeletedVariants = []SessionArtifactVariant{current}
+			prepared.DeleteVariant = true
+			return prepared, nil
+		}
 		if variantOK && input.Kind == V3SessionMutationCreateArtifact { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q already exists", incoming.Variant.ID) }
+		if !variantOK && input.Kind != V3SessionMutationCreateArtifact { return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q was not found", incoming.Variant.ID) }
 		next := *incoming.Variant
 		if variantOK && (input.Kind == V3SessionMutationFinalizeArtifact || input.Kind == V3SessionMutationFailArtifact || input.Kind == V3SessionMutationUnavailableArtifact) {
 			next = mergeTerminalArtifactVariant(current, next)
@@ -426,14 +501,12 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			next.Size = 0
 			next.FailureCode = ""
 		case V3SessionMutationFinalizeArtifact:
-			if !variantOK { return preparedV3ArtifactMutation{}, errors.New("artifact variant must be staged before finalization") }
 			if current.Status == SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable") }
 			if !validArtifactDigest(next.DigestSHA256) || next.Size <= 0 || next.MediaType == "" || next.Filename == "" { return preparedV3ArtifactMutation{}, errors.New("finalized artifact requires filename, media type, digest, and positive size") }
 			next.Status = SessionArtifactStatusReady
 			next.FailureCode = ""
 			collection.Status = SessionArtifactStatusReady
 		case V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact:
-			if !variantOK { return preparedV3ArtifactMutation{}, errors.New("artifact variant must be staged before failure") }
 			if current.Status == SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable") }
 			if next.FailureCode == "" { return preparedV3ArtifactMutation{}, errors.New("failed artifact variant requires a failure code") }
 			if input.Kind == V3SessionMutationUnavailableArtifact {
@@ -465,6 +538,22 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 	return prepared, nil
 }
 
+func artifactCollectionStatusWithoutVariant(variants []SessionArtifactVariant, deletedID string) string {
+	status := SessionArtifactStatusStaging
+	for _, variant := range variants {
+		if variant.ID == deletedID { continue }
+		switch variant.Status {
+		case SessionArtifactStatusReady:
+			return SessionArtifactStatusReady
+		case SessionArtifactStatusUnavailable:
+			status = SessionArtifactStatusUnavailable
+		case SessionArtifactStatusFailed:
+			if status == SessionArtifactStatusStaging { status = SessionArtifactStatusFailed }
+		}
+	}
+	return status
+}
+
 func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) SessionArtifactVariant {
 	next := current
 	if incoming.Filename != "" { next.Filename = incoming.Filename }
@@ -486,6 +575,30 @@ func validArtifactDigest(value string) bool {
 func setV3ArtifactMutationInBatch(batch *pebble.Batch, prepared preparedV3ArtifactMutation) error {
 	collection := prepared.Projection.Collection
 	if collection.ID == "" { return nil }
+	if prepared.DeleteCollection || len(prepared.DeletedVariants) != 0 {
+		for _, variant := range prepared.DeletedVariants {
+			for _, key := range []string{
+				KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID),
+				KeySessionArtifactVariantStatus(variant.AccountScopeID, variant.SessionID, variant.Status, variant.CollectionID, variant.ID),
+			} {
+				if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) { return err }
+			}
+			if variant.DigestSHA256 != "" {
+				if err := batch.Delete([]byte(KeySessionArtifactVariantDigest(variant.AccountScopeID, variant.SessionID, variant.DigestSHA256, variant.CollectionID, variant.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) { return err }
+			}
+		}
+		if prepared.DeleteCollection {
+			if prepared.PreviousCollection == nil { return errors.New("artifact collection deletion is missing previous metadata") }
+			if prepared.PreviousCollection.VariantCount != len(prepared.DeletedVariants) { return errors.New("artifact collection variant count is inconsistent") }
+			for _, key := range []string{
+				KeySessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID),
+				KeySessionArtifactCollectionStatus(collection.AccountScopeID, collection.SessionID, prepared.PreviousCollection.Status, collection.ID),
+			} {
+				if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) { return err }
+			}
+			return nil
+		}
+	}
 	if prepared.PreviousCollection != nil && prepared.PreviousCollection.Status != collection.Status {
 		if err := batch.Delete([]byte(KeySessionArtifactCollectionStatus(collection.AccountScopeID, collection.SessionID, prepared.PreviousCollection.Status, collection.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) { return err }
 	}
@@ -493,7 +606,7 @@ func setV3ArtifactMutationInBatch(batch *pebble.Batch, prepared preparedV3Artifa
 	if err != nil { return fmt.Errorf("marshal artifact collection: %w", err) }
 	if err := batch.Set([]byte(KeySessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID)), collectionPayload, nil); err != nil { return err }
 	if err := batch.Set([]byte(KeySessionArtifactCollectionStatus(collection.AccountScopeID, collection.SessionID, collection.Status, collection.ID)), []byte(collection.ID), nil); err != nil { return err }
-	if variant := prepared.Projection.Variant; variant != nil {
+	if variant := prepared.Projection.Variant; variant != nil && !prepared.DeleteVariant {
 		if previous := prepared.PreviousVariant; previous != nil {
 			if previous.Status != variant.Status {
 				if err := batch.Delete([]byte(KeySessionArtifactVariantStatus(variant.AccountScopeID, variant.SessionID, previous.Status, variant.CollectionID, variant.ID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) { return err }

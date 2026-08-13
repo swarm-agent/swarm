@@ -49,6 +49,8 @@ const (
 	SessionMutationFailArtifact             = pebblestore.V3SessionMutationFailArtifact
 	SessionMutationUnavailableArtifact      = pebblestore.V3SessionMutationUnavailableArtifact
 	SessionMutationSelectArtifact           = pebblestore.V3SessionMutationSelectArtifact
+	SessionMutationDeleteArtifactVariant    = pebblestore.V3SessionMutationDeleteArtifactVariant
+	SessionMutationDeleteArtifactCollection = pebblestore.V3SessionMutationDeleteArtifactCollection
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
 	RunIntentRunning         = pebblestore.V3RunIntentRunning
@@ -69,11 +71,39 @@ func (s *Service) ApplySessionMutation(input SessionMutationInput) (SessionMutat
 	return s.store.ApplyV3SessionMutation(input)
 }
 
+func (s *Service) GetSessionArtifactCollection(accountScopeID, sessionID, collectionID string) (ArtifactCollection, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactCollection{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactCollection(accountScopeID, sessionID, collectionID)
+}
+
 func (s *Service) GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (ArtifactVariant, bool, error) {
 	if s == nil || s.store == nil {
 		return ArtifactVariant{}, false, errors.New("session store is not configured")
 	}
 	return s.store.GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID)
+}
+
+func (s *Service) GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID string) (ArtifactVariant, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactVariant{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID)
+}
+
+func (s *Service) ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]ArtifactCollection, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListSessionArtifactCollections(accountScopeID, sessionID, status, limit)
+}
+
+func (s *Service) ListSessionArtifactVariants(accountScopeID, sessionID, collectionID string, limit int) ([]ArtifactVariant, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListSessionArtifactVariants(accountScopeID, sessionID, collectionID, limit)
 }
 
 func (s *Service) ListSessionEvents(sessionID string, afterSeq uint64, limit int) ([]SessionEvent, error) {

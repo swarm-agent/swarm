@@ -282,6 +282,51 @@ func TestArtifactUnavailableMutationRecordsHonestTerminalState(t *testing.T) {
 	}
 }
 
+func TestArtifactVariantLookupAndDeleteMutationsRepairIndexesAndSelection(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-metadata-delete")
+	apply := func(request, kind string, artifact V3ArtifactMutation, now int64) V3SessionMutationResult {
+		t.Helper()
+		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-metadata-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &artifact, NowUnixMs: now})
+		if err != nil { t.Fatalf("%s: %v", request, err) }
+		return result
+	}
+	apply("create-delete", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Delete"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "one.txt", MediaType: "text/plain"}}, 2000)
+	apply("finalize-delete", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "one.txt", MediaType: "text/plain", DigestSHA256: strings.Repeat("b", 64), Size: 3}}, 3000)
+	apply("select-delete", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}, Selection: &SessionArtifactSelectionReference{CollectionID: "collection-1", VariantID: "variant-1"}}, 4000)
+	variant, ok, err := sessions.GetSessionArtifactVariantByID("account-1", "artifact-metadata-delete", "variant-1")
+	if err != nil || !ok || variant.CollectionID != "collection-1" { t.Fatalf("opaque lookup = %+v ok=%t err=%v", variant, ok, err) }
+	deleted := apply("delete-variant", V3SessionMutationDeleteArtifactVariant, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}, Variant: &SessionArtifactVariant{ID: "variant-1"}}, 5000)
+	if deleted.Event.EventType != "session.artifact.variant.deleted" || deleted.Artifact == nil || deleted.Artifact.Collection.SelectedVariantID != "" || deleted.Artifact.Collection.VariantCount != 0 { t.Fatalf("delete result = %+v", deleted) }
+	if _, ok, err := sessions.GetSessionArtifactVariantByID("account-1", "artifact-metadata-delete", "variant-1"); err != nil || ok { t.Fatalf("deleted opaque lookup ok=%t err=%v", ok, err) }
+	for _, key := range []string{KeySessionArtifactVariantStatus("account-1", "artifact-metadata-delete", SessionArtifactStatusReady, "collection-1", "variant-1"), KeySessionArtifactVariantDigest("account-1", "artifact-metadata-delete", strings.Repeat("b", 64), "collection-1", "variant-1")} {
+		if _, ok, err := store.GetBytes(key); err != nil || ok { t.Fatalf("index %q remains ok=%t err=%v", key, ok, err) }
+	}
+	collectionDeleted := apply("delete-collection", V3SessionMutationDeleteArtifactCollection, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}}, 6000)
+	if collectionDeleted.Event.EventType != "session.artifact.collection.deleted" { t.Fatalf("collection delete event = %q", collectionDeleted.Event.EventType) }
+	if _, ok, err := sessions.GetSessionArtifactCollection("account-1", "artifact-metadata-delete", "collection-1"); err != nil || ok { t.Fatalf("deleted collection ok=%t err=%v", ok, err) }
+	if collectionDeleted.RealtimeOutbox == nil || collectionDeleted.RealtimeOutbox.Event.EventType != "session.artifact.collection.deleted" { t.Fatalf("collection delete lacks realtime outbox: %+v", collectionDeleted.RealtimeOutbox) }
+}
+
+func TestDeleteArtifactCollectionRemovesEveryVariantIndex(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-collection-delete")
+	for index, id := range []string{"variant-1", "variant-2"} {
+		request := fmt.Sprintf("create-%d", index)
+		name := ""
+		if index == 0 { name = "Delete all" }
+		_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-collection-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: name}, Variant: &SessionArtifactVariant{ID: id}}})
+		if err != nil { t.Fatal(err) }
+	}
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-collection-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "delete-all", PayloadHash: "delete-all", Kind: V3SessionMutationDeleteArtifactCollection, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}}})
+	if err != nil { t.Fatal(err) }
+	variants, err := sessions.ListSessionArtifactVariants("account-1", "artifact-collection-delete", "collection-1", 10)
+	if err != nil || len(variants) != 0 { t.Fatalf("variants = %+v err=%v", variants, err) }
+	if err := store.IteratePrefix(SessionArtifactVariantStatusSessionPrefix("account-1", "artifact-collection-delete"), 10, func(string, []byte) error { t.Error("variant status index remains"); return nil }); err != nil { t.Fatal(err) }
+}
+
 func TestApplyV3ArtifactLifecycleRejectsUnsafeOrInvalidMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
