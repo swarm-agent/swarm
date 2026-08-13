@@ -1845,7 +1845,7 @@ export function DesktopV3ExistingConversationPane({
   const [sessionArtifactsError, setSessionArtifactsError] = useState("");
   const [sidebarView, setSidebarView] = useState<DesktopV3SessionSidebarView>("plan");
   const [artifactGalleryOpen, setArtifactGalleryOpen] = useState(false);
-  const [artifactGalleryInitialId, setArtifactGalleryInitialId] = useState("");
+  const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
   const artifactSidebarSessionRef = useRef("");
   const priorSessionArtifactCountRef = useRef(0);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
@@ -2045,8 +2045,8 @@ export function DesktopV3ExistingConversationPane({
     priorSessionArtifactCountRef.current = sessionArtifacts.length;
   }, [normalizedSessionId, sessionArtifacts.length, showPlanSidebar, sidebarView]);
   const activeSidebarView = hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts") ? "artifacts" : "plan";
-  const openArtifactFullView = useCallback((artifactId: string) => {
-    setArtifactGalleryInitialId(artifactId);
+  const openArtifactFullView = useCallback((artifactKey: string) => {
+    setArtifactGalleryInitialKey(artifactKey);
     setArtifactGalleryOpen(true);
   }, []);
   const {
@@ -3117,7 +3117,7 @@ export function DesktopV3ExistingConversationPane({
         loading={sessionArtifactsLoading}
         error={sessionArtifactsError}
         title="Session artifacts"
-        initialArtifactId={artifactGalleryInitialId}
+        initialArtifactKey={artifactGalleryInitialKey}
         onAddToChat={(artifacts) => {
           queueGalleryArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" })));
           setArtifactGalleryOpen(false);

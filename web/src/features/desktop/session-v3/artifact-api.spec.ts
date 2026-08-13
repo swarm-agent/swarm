@@ -5,6 +5,8 @@ import {
   appendDesktopV3ArtifactMessageSelection,
   appendDesktopV3ArtifactMessageSelections,
   DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
+  desktopV3ArtifactCatalogEntryForKey,
+  desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactSelection,
   removeDesktopV3ArtifactMessageSelection,
@@ -114,6 +116,26 @@ test('artifact chips enforce bounded batches and keep use intent singular per co
     () => appendDesktopV3ArtifactMessageSelections([], [{ ...other, label: '' }]),
     /complete opaque selection/,
   )
+})
+
+test('artifact viewer keys resolve the exact iteration when variant ids repeat across collections', () => {
+  const first = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  const second = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    session_id: 'session-2',
+    collection_id: 'collection-2',
+    label: 'Homepage iteration 2',
+  })
+  assert.ok(first)
+  assert.ok(second)
+
+  const artifacts = [first, second]
+  const firstKey = desktopV3ArtifactCatalogEntryKey(first)
+  const secondKey = desktopV3ArtifactCatalogEntryKey(second)
+
+  assert.notEqual(firstKey, secondKey)
+  assert.equal(desktopV3ArtifactCatalogEntryForKey(artifacts, firstKey), first)
+  assert.equal(desktopV3ArtifactCatalogEntryForKey(artifacts, secondKey), second)
 })
 
 test('artifact selection helper emits only opaque authority fields', () => {

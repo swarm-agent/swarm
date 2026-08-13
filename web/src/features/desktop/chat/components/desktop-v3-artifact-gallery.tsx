@@ -21,6 +21,8 @@ import { ChatMarkdown } from './chat-markdown'
 import {
   buildDesktopV3ArtifactSandboxDocument,
   DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
+  desktopV3ArtifactCatalogEntryForKey,
+  desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactSelection,
   fetchDesktopV3Artifact,
   fetchDesktopV3ArtifactBundle,
@@ -52,7 +54,7 @@ export interface DesktopV3ArtifactGalleryProps {
   loading?: boolean
   error?: string
   title?: string
-  initialArtifactId?: string
+  initialArtifactKey?: string
 }
 
 type ArtifactCollectionGroup = {
@@ -70,7 +72,7 @@ function artifactBundleDownloadName(artifact: DesktopV3ArtifactGalleryEntry): st
 }
 
 function artifactSelectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
-  return `${artifact.sessionId}:${artifact.artifactId}`
+  return desktopV3ArtifactCatalogEntryKey(artifact)
 }
 
 function artifactCollectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
@@ -142,7 +144,7 @@ export function DesktopV3ArtifactGallery({
   loading: catalogLoading = false,
   error: catalogError = '',
   title = 'Artifact review',
-  initialArtifactId = '',
+  initialArtifactKey = '',
 }: DesktopV3ArtifactGalleryProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(artifacts[0] ? artifactSelectionKey(artifacts[0]) : '')
@@ -216,10 +218,10 @@ export function DesktopV3ArtifactGallery({
   }, [open])
 
   useEffect(() => {
-    if (!open || !initialArtifactId) return
-    const requested = artifacts.find((artifact) => artifact.artifactId === initialArtifactId)
+    if (!open || !initialArtifactKey) return
+    const requested = desktopV3ArtifactCatalogEntryForKey(artifacts, initialArtifactKey)
     if (requested) setSelectedId(artifactSelectionKey(requested))
-  }, [artifacts, initialArtifactId, open])
+  }, [artifacts, initialArtifactKey, open])
 
   useEffect(() => {
     if (!open) return undefined

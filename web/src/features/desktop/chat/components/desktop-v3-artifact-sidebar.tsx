@@ -4,6 +4,7 @@ import { FileText, GalleryHorizontal, Loader2, Maximize2, TriangleAlert } from '
 import { cn } from '../../../../lib/cn'
 import {
   buildDesktopV3ArtifactSandboxDocument,
+  desktopV3ArtifactCatalogEntryKey,
   fetchDesktopV3Artifact,
   fetchDesktopV3ArtifactPreviewToken,
   type DesktopV3ArtifactCatalogEntry,
@@ -40,7 +41,7 @@ export interface DesktopV3ArtifactSidebarProps {
   loading?: boolean
   error?: string
   embedded?: boolean
-  onOpenArtifact: (artifactId: string) => void
+  onOpenArtifact: (artifactKey: string) => void
 }
 
 function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactCatalogEntry }) {
@@ -150,7 +151,7 @@ export function DesktopV3ArtifactSidebar({
                 'group min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-left transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]',
                 thin ? 'size-10 rounded-lg' : embedded ? 'w-44 shrink-0' : 'w-full',
               )}
-              onClick={() => onOpenArtifact(artifact.artifactId)}
+              onClick={() => onOpenArtifact(desktopV3ArtifactCatalogEntryKey(artifact))}
               aria-label={`Open ${artifact.label} in full artifact view`}
             >
               <span className={cn('relative grid overflow-hidden bg-[var(--app-bg)]', thin ? 'size-full place-items-center' : 'aspect-[16/9] place-items-center')}>

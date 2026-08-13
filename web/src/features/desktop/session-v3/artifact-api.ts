@@ -213,6 +213,21 @@ export function desktopV3ArtifactMessageSelectionKey(
   return `${selection.session_id.trim()}\u0000${selection.collection_id.trim()}\u0000${selection.variant_id.trim()}`
 }
 
+export function desktopV3ArtifactCatalogEntryKey(entry: Pick<DesktopV3ArtifactCatalogEntry, 'sessionId' | 'collectionId' | 'artifactId'>): string {
+  return desktopV3ArtifactMessageSelectionKey({
+    session_id: entry.sessionId,
+    collection_id: entry.collectionId ?? '',
+    variant_id: entry.artifactId,
+  })
+}
+
+export function desktopV3ArtifactCatalogEntryForKey(
+  artifacts: readonly DesktopV3ArtifactCatalogEntry[],
+  key: string,
+): DesktopV3ArtifactCatalogEntry | undefined {
+  return artifacts.find((artifact) => desktopV3ArtifactCatalogEntryKey(artifact) === key)
+}
+
 export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): DesktopV3ArtifactMessageSelection | null {
   const selection = normalizeDesktopV3ArtifactSelection(value)
   const record = artifactCatalogRecord(value)
