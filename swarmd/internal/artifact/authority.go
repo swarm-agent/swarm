@@ -1,0 +1,262 @@
+package artifact
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+// MetadataStore is the canonical V3 metadata boundary used by Authority.
+// Implementations must commit event, projection, idempotency, and realtime
+// outbox state atomically, as SessionStore.ApplyV3SessionMutation does.
+type MetadataStore interface {
+	GetSessionArtifactCollection(accountScopeID, sessionID, collectionID string) (pebblestore.SessionArtifactCollection, bool, error)
+	GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
+	GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
+	ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]pebblestore.SessionArtifactCollection, error)
+	ListSessionArtifactVariants(accountScopeID, sessionID, collectionID string, limit int) ([]pebblestore.SessionArtifactVariant, error)
+	ApplySessionMutation(pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
+}
+
+// Principal is trusted run/session context. None of these ownership or lineage
+// fields are accepted from artifact content or model-authored metadata.
+type Principal struct {
+	SessionID      string
+	AccountScopeID string
+	UserID         string
+	RunID          string
+	PlanID         string
+	CheckpointID   string
+	AttemptID      string
+}
+
+type CreateInput struct {
+	RequestID             string
+	CollectionID          string
+	CollectionName        string
+	CollectionDescription string
+	VariantID             string
+	Filename              string
+	MediaType             string
+	Presentation          pebblestore.SessionArtifactPresentation
+	SourceCollectionID    string
+	SourceVariantID       string
+	Body                   []byte
+}
+
+type CreatePackageInput struct {
+	CreateInput
+	Entries []PackageEntry
+}
+
+type Authority struct {
+	registry *Registry
+	metadata MetadataStore
+	now      func() time.Time
+}
+
+func NewAuthority(registry *Registry, metadata MetadataStore) *Authority {
+	return &Authority{registry: registry, metadata: metadata, now: time.Now}
+}
+
+func (a *Authority) Create(ctx context.Context, principal Principal, input CreateInput) (pebblestore.SessionArtifactVariant, error) {
+	return a.create(ctx, principal, input, nil)
+}
+
+func (a *Authority) CreatePackage(ctx context.Context, principal Principal, input CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
+	entries := make([]PackageEntry, len(input.Entries))
+	copy(entries, input.Entries)
+	return a.create(ctx, principal, input.CreateInput, entries)
+}
+
+func (a *Authority) create(ctx context.Context, principal Principal, input CreateInput, packageEntries []PackageEntry) (pebblestore.SessionArtifactVariant, error) {
+	service, principal, err := a.owned(principal)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" { return pebblestore.SessionArtifactVariant{}, errors.New("artifact request id is required") }
+	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Presentation: input.Presentation}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, Lineage: a.lineage(principal, input)}
+	existingStaging := false
+	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
+		return pebblestore.SessionArtifactVariant{}, getErr
+	} else if ok {
+		if existing.Status == pebblestore.SessionArtifactStatusReady {
+			return existing, nil
+		}
+		if existing.Status != pebblestore.SessionArtifactStatusStaging || existing.Filename != variant.Filename || existing.MediaType != variant.MediaType {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status or metadata", variant.ID)
+		}
+		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)
+		if collectionErr != nil { return pebblestore.SessionArtifactVariant{}, collectionErr }
+		if !collectionOK { return pebblestore.SessionArtifactVariant{}, errors.New("artifact staging collection metadata is missing") }
+		collection, variant, existingStaging = storedCollection, existing, true
+	}
+	if !existingStaging {
+		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil {
+			if replayed, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr == nil && ok && replayed.Status == pebblestore.SessionArtifactStatusReady { return replayed, nil }
+			return pebblestore.SessionArtifactVariant{}, err
+		}
+	}
+	// Staging metadata is durable before any byte promotion.
+	var staged Staged
+	if packageEntries != nil {
+		entries := make([]PackageEntry, 0, len(packageEntries))
+		for _, entry := range packageEntries { entries = append(entries, PackageEntry{Name: entry.Name, Data: append([]byte(nil), entry.Data...)}) }
+		staged, err = service.StagePackage(ctx, variant, entries)
+	} else {
+		staged, err = service.Stage(ctx, variant, bytes.NewReader(input.Body))
+	}
+	if err != nil {
+		failed, mutationErr := a.recordFailure(principal, input.RequestID, collection, variant, "stage_failed")
+		if mutationErr != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("%v; persist artifact failure: %w", err, mutationErr) }
+		return failed, fmt.Errorf("stage artifact bytes: %w", err)
+	}
+	blob, err := service.Finalize(ctx, staged, staged.DigestSHA256, staged.Size)
+	if err != nil {
+		failed, mutationErr := a.recordFailure(principal, input.RequestID, collection, variant, "finalize_failed")
+		if mutationErr != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("%v; persist artifact failure: %w", err, mutationErr) }
+		return failed, fmt.Errorf("finalize artifact bytes: %w", err)
+	}
+	variant.Filename, variant.MediaType, variant.DigestSHA256, variant.Size, variant.Presentation = blob.Filename, blob.MediaType, blob.DigestSHA256, blob.Size, blob.Presentation
+	if _, err := a.mutate(principal, input.RequestID+":ready:"+blob.DigestSHA256, pebblestore.V3SessionMutationFinalizeArtifact, collection, &variant, nil); err != nil {
+		// Finalized bytes may outlive a failed metadata write, but ready metadata is
+		// never published. A retry with the same request and bytes safely converges.
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("persist finalized artifact metadata: %w", err)
+	}
+	stored, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if !ok || stored.Status != pebblestore.SessionArtifactStatusReady { return pebblestore.SessionArtifactVariant{}, errors.New("artifact ready metadata was not persisted") }
+	return stored, nil
+}
+
+func (a *Authority) List(principal Principal, status string, limit int) ([]pebblestore.SessionArtifactCollection, error) {
+	_, principal, err := a.owned(principal)
+	if err != nil { return nil, err }
+	return a.metadata.ListSessionArtifactCollections(principal.AccountScopeID, principal.SessionID, status, limit)
+}
+
+func (a *Authority) ListVariants(principal Principal, collectionID string, limit int) ([]pebblestore.SessionArtifactVariant, error) {
+	_, principal, err := a.owned(principal)
+	if err != nil { return nil, err }
+	return a.metadata.ListSessionArtifactVariants(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(collectionID), limit)
+}
+
+func (a *Authority) Get(principal Principal, variantID string) (pebblestore.SessionArtifactVariant, error) {
+	_, principal, err := a.owned(principal)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	variant, ok, err := a.metadata.GetSessionArtifactVariantByID(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(variantID))
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if !ok { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q was not found", variantID) }
+	return variant, nil
+}
+
+func (a *Authority) Read(ctx context.Context, principal Principal, variantID string, maxBytes int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
+	service, principal, err := a.owned(principal)
+	if err != nil { return nil, pebblestore.SessionArtifactVariant{}, err }
+	variant, err := a.Get(principal, variantID)
+	if err != nil { return nil, pebblestore.SessionArtifactVariant{}, err }
+	data, _, err := service.Read(ctx, variant, maxBytes)
+	return data, variant, err
+}
+
+func (a *Authority) Select(principal Principal, requestID, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
+	_, principal, err := a.owned(principal)
+	if err != nil { return pebblestore.SessionArtifactSelectionReference{}, err }
+	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(collectionID))
+	if err != nil { return pebblestore.SessionArtifactSelectionReference{}, err }
+	if !ok { return pebblestore.SessionArtifactSelectionReference{}, fmt.Errorf("artifact collection %q was not found", collectionID) }
+	selection := &pebblestore.SessionArtifactSelectionReference{SessionID: principal.SessionID, CollectionID: collection.ID, VariantID: strings.TrimSpace(variantID)}
+	result, err := a.mutate(principal, requestID, pebblestore.V3SessionMutationSelectArtifact, collection, nil, selection)
+	if err != nil { return pebblestore.SessionArtifactSelectionReference{}, err }
+	if result.Artifact == nil || result.Artifact.Selection == nil { return pebblestore.SessionArtifactSelectionReference{}, errors.New("artifact selection was not persisted") }
+	return *result.Artifact.Selection, nil
+}
+
+func (a *Authority) MarkFailed(principal Principal, requestID, collectionID, variantID, failureCode string) (pebblestore.SessionArtifactVariant, error) {
+	service, principal, err := a.owned(principal)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(collectionID))
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if !ok { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact collection %q was not found", collectionID) }
+	variant, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, strings.TrimSpace(variantID))
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if !ok { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q was not found", variantID) }
+	if variant.Status == pebblestore.SessionArtifactStatusReady { return pebblestore.SessionArtifactVariant{}, errors.New("ready artifact variant is immutable") }
+	if err := service.DeleteVariant(principal.SessionID, collection.ID, variant.ID); err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	variant.FailureCode = strings.TrimSpace(failureCode)
+	if variant.FailureCode == "" { return pebblestore.SessionArtifactVariant{}, errors.New("artifact failure code is required") }
+	if _, err := a.mutate(principal, requestID, pebblestore.V3SessionMutationFailArtifact, collection, &variant, nil); err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	stored, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if !ok { return pebblestore.SessionArtifactVariant{}, errors.New("artifact failure metadata was not persisted") }
+	return stored, nil
+}
+
+func (a *Authority) DeleteVariant(principal Principal, requestID, collectionID, variantID string) error {
+	service, principal, err := a.owned(principal)
+	if err != nil { return err }
+	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(collectionID))
+	if err != nil { return err }
+	if !ok { return nil }
+	variant, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, strings.TrimSpace(variantID))
+	if err != nil { return err }
+	if !ok { return nil }
+	if _, err = a.mutate(principal, requestID, pebblestore.V3SessionMutationDeleteArtifactVariant, collection, &variant, nil); err != nil { return err }
+	return service.DeleteVariant(principal.SessionID, collection.ID, variant.ID)
+}
+
+func (a *Authority) DeleteCollection(principal Principal, requestID, collectionID string) error {
+	service, principal, err := a.owned(principal)
+	if err != nil { return err }
+	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(collectionID))
+	if err != nil { return err }
+	if !ok { return nil }
+	if _, err = a.mutate(principal, requestID, pebblestore.V3SessionMutationDeleteArtifactCollection, collection, nil, nil); err != nil { return err }
+	return service.DeleteCollection(principal.SessionID, collection.ID)
+}
+
+func (a *Authority) recordFailure(principal Principal, requestID string, collection pebblestore.SessionArtifactCollection, variant pebblestore.SessionArtifactVariant, code string) (pebblestore.SessionArtifactVariant, error) {
+	variant.FailureCode = code
+	if _, err := a.mutate(principal, requestID+":failed:"+code, pebblestore.V3SessionMutationFailArtifact, collection, &variant, nil); err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	stored, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if !ok { return pebblestore.SessionArtifactVariant{}, errors.New("artifact failure metadata was not persisted") }
+	return stored, nil
+}
+
+func (a *Authority) owned(principal Principal) (*Service, Principal, error) {
+	if a == nil || a.registry == nil || a.metadata == nil { return nil, Principal{}, errors.New("artifact authority is not configured") }
+	principal.SessionID, principal.AccountScopeID, principal.UserID = strings.TrimSpace(principal.SessionID), strings.TrimSpace(principal.AccountScopeID), strings.TrimSpace(principal.UserID)
+	if principal.SessionID == "" || principal.AccountScopeID == "" || principal.UserID == "" { return nil, Principal{}, errors.New("trusted artifact session ownership is required") }
+	service, session, err := a.registry.ServiceForOwnedSession(principal.SessionID, principal.AccountScopeID, principal.UserID)
+	if err != nil { return nil, Principal{}, err }
+	principal.AccountScopeID, principal.UserID = session.AccountScopeID, session.UserID
+	return service, principal, nil
+}
+
+func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.SessionArtifactLineage {
+	return pebblestore.SessionArtifactLineage{SourceSessionID: principal.SessionID, SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID), RunID: strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID)}
+}
+
+func (a *Authority) mutate(principal Principal, requestID, kind string, collection pebblestore.SessionArtifactCollection, variant *pebblestore.SessionArtifactVariant, selection *pebblestore.SessionArtifactSelectionReference) (pebblestore.V3SessionMutationResult, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" { return pebblestore.V3SessionMutationResult{}, errors.New("artifact request id is required") }
+	payload := struct { Kind string `json:"kind"`; Collection pebblestore.SessionArtifactCollection `json:"collection"`; Variant *pebblestore.SessionArtifactVariant `json:"variant,omitempty"`; Selection *pebblestore.SessionArtifactSelectionReference `json:"selection,omitempty"` }{kind, collection, variant, selection}
+	encoded, err := json.Marshal(payload)
+	if err != nil { return pebblestore.V3SessionMutationResult{}, err }
+	hash := sha256.Sum256(encoded)
+	payloadHash := hex.EncodeToString(hash[:])
+	keyHash := sha256.Sum256([]byte(strings.Join([]string{"managed-artifact", principal.SessionID, requestID, kind}, "\x00")))
+	key := "managed-artifact-" + hex.EncodeToString(keyHash[:18])
+	now := time.Now()
+	if a.now != nil { now = a.now() }
+	return a.metadata.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: principal.SessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: kind, Artifact: &pebblestore.V3ArtifactMutation{Collection: collection, Variant: variant, Selection: selection}, NowUnixMs: now.UnixMilli()})
+}

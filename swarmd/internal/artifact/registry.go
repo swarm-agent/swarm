@@ -91,6 +91,47 @@ func (r *Registry) ServiceForSession(sessionID string) (*Service, error) {
 	return r.ServiceForWorkspace(tombstone.WorkspacePath)
 }
 
+// ServiceForOwnedSession resolves bytes from the durable session workspace and,
+// when supplied, verifies the trusted account/user envelope before returning a
+// service. Artifact metadata can never redirect storage to a model-chosen path.
+func (r *Registry) ServiceForOwnedSession(sessionID, accountScopeID, userID string) (*Service, pebblestore.SessionSnapshot, error) {
+	if r == nil || r.resolver == nil {
+		return nil, pebblestore.SessionSnapshot{}, errors.New("artifact registry session resolver is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, pebblestore.SessionSnapshot{}, errors.New("session id is required")
+	}
+	session, ok, err := r.resolver.GetSession(sessionID)
+	if err != nil {
+		return nil, pebblestore.SessionSnapshot{}, err
+	}
+	if ok {
+		if accountScopeID != "" && session.AccountScopeID != strings.TrimSpace(accountScopeID) {
+			return nil, pebblestore.SessionSnapshot{}, errors.New("artifact account scope does not own session")
+		}
+		if userID != "" && session.UserID != strings.TrimSpace(userID) {
+			return nil, pebblestore.SessionSnapshot{}, errors.New("artifact user does not own session")
+		}
+		service, err := r.ServiceForWorkspace(session.WorkspacePath)
+		return service, session, err
+	}
+	// Tombstones are intentionally available only to maintenance callers. A
+	// lifecycle authority must never create or read artifacts for a deleted session.
+	if accountScopeID != "" || userID != "" {
+		return nil, pebblestore.SessionSnapshot{}, fmt.Errorf("session %q was not found", sessionID)
+	}
+	tombstone, ok, err := r.resolver.GetSessionTombstone(sessionID)
+	if err != nil {
+		return nil, pebblestore.SessionSnapshot{}, err
+	}
+	if !ok || strings.TrimSpace(tombstone.WorkspacePath) == "" {
+		return nil, pebblestore.SessionSnapshot{}, fmt.Errorf("session %q was not found", sessionID)
+	}
+	service, err := r.ServiceForWorkspace(tombstone.WorkspacePath)
+	return service, tombstone.Session, err
+}
+
 func (r *Registry) DeleteSession(sessionID, workspacePath string) error {
 	service, err := r.ServiceForWorkspace(workspacePath)
 	if err != nil {

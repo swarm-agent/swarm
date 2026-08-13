@@ -1,0 +1,95 @@
+package artifact
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+type authorityMetadata struct {
+	collection pebblestore.SessionArtifactCollection
+	variant    pebblestore.SessionArtifactVariant
+	readyCalls int
+	failReady  bool
+}
+
+func (m *authorityMetadata) GetSessionArtifactCollection(_, _, id string) (pebblestore.SessionArtifactCollection, bool, error) {
+	return m.collection, m.collection.ID == id, nil
+}
+func (m *authorityMetadata) GetSessionArtifactVariant(_, _, collectionID, id string) (pebblestore.SessionArtifactVariant, bool, error) {
+	return m.variant, m.variant.CollectionID == collectionID && m.variant.ID == id, nil
+}
+func (m *authorityMetadata) GetSessionArtifactVariantByID(_, _, id string) (pebblestore.SessionArtifactVariant, bool, error) {
+	return m.variant, m.variant.ID == id, nil
+}
+func (m *authorityMetadata) ListSessionArtifactCollections(_, _, _ string, _ int) ([]pebblestore.SessionArtifactCollection, error) {
+	if m.collection.ID == "" { return nil, nil }
+	return []pebblestore.SessionArtifactCollection{m.collection}, nil
+}
+func (m *authorityMetadata) ListSessionArtifactVariants(_, _, collectionID string, _ int) ([]pebblestore.SessionArtifactVariant, error) {
+	if m.variant.CollectionID != collectionID { return nil, nil }
+	return []pebblestore.SessionArtifactVariant{m.variant}, nil
+}
+func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
+	projection := pebblestore.V3ArtifactProjection{Collection: input.Artifact.Collection, Variant: input.Artifact.Variant, Selection: input.Artifact.Selection}
+	switch input.Kind {
+	case pebblestore.V3SessionMutationCreateArtifact:
+		m.collection = input.Artifact.Collection
+		m.collection.AccountScopeID, m.collection.SessionID, m.collection.Status = input.AccountScopeID, input.SessionID, pebblestore.SessionArtifactStatusStaging
+		m.collection.VariantCount = 1
+		m.variant = *input.Artifact.Variant
+		m.variant.AccountScopeID, m.variant.SessionID, m.variant.CollectionID, m.variant.Status = input.AccountScopeID, input.SessionID, m.collection.ID, pebblestore.SessionArtifactStatusStaging
+	case pebblestore.V3SessionMutationFinalizeArtifact:
+		m.readyCalls++
+		if m.failReady { return pebblestore.V3SessionMutationResult{}, errors.New("metadata unavailable") }
+		m.variant = *input.Artifact.Variant
+		m.variant.Status = pebblestore.SessionArtifactStatusReady
+		m.collection.Status = pebblestore.SessionArtifactStatusReady
+		projection.Collection, projection.Variant = m.collection, &m.variant
+	case pebblestore.V3SessionMutationFailArtifact:
+		m.variant.Status, m.variant.FailureCode = pebblestore.SessionArtifactStatusFailed, input.Artifact.Variant.FailureCode
+	case pebblestore.V3SessionMutationDeleteArtifactVariant:
+		m.variant = pebblestore.SessionArtifactVariant{}
+	case pebblestore.V3SessionMutationDeleteArtifactCollection:
+		m.variant, m.collection = pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactCollection{}
+	}
+	return pebblestore.V3SessionMutationResult{Artifact: &projection}, nil
+}
+
+func authorityFixture(t *testing.T) (*Authority, *authorityMetadata, Principal) {
+	t.Helper()
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil { t.Fatal(err) }
+	resolver := &registryResolver{sessions: []pebblestore.SessionSnapshot{{ID: "session-1", AccountScopeID: "account-1", UserID: "user-1", WorkspacePath: workspace}}}
+	metadata := &authorityMetadata{}
+	return NewAuthority(NewRegistry(resolver, Limits{}), metadata), metadata, Principal{SessionID: "session-1", AccountScopeID: "account-1", UserID: "user-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "attempt-1"}
+}
+
+func TestAuthorityCreateFinalizesBytesBeforeReadyMetadata(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "create-1", CollectionID: "collection-1", CollectionName: "Drafts", VariantID: "variant-1", Filename: "note.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Previewable: true}, Body: []byte("managed")})
+	if err != nil { t.Fatal(err) }
+	if created.Status != pebblestore.SessionArtifactStatusReady || metadata.readyCalls != 1 || created.Lineage.RunID != "run-1" { t.Fatalf("created = %+v calls=%d", created, metadata.readyCalls) }
+	body, stored, err := authority.Read(context.Background(), principal, "variant-1", 1024)
+	if err != nil || string(body) != "managed" || stored.ID != "variant-1" { t.Fatalf("read body=%q stored=%+v err=%v", body, stored, err) }
+}
+
+func TestAuthorityMetadataFailureNeverPublishesReady(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	metadata.failReady = true
+	_, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "create-fail", CollectionID: "collection-1", CollectionName: "Drafts", VariantID: "variant-1", Filename: "note.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text"}, Body: []byte("managed")})
+	if err == nil { t.Fatal("expected metadata failure") }
+	if metadata.variant.Status == pebblestore.SessionArtifactStatusReady { t.Fatalf("ready metadata published: %+v", metadata.variant) }
+}
+
+func TestAuthorityRejectsMismatchedTrustedOwnership(t *testing.T) {
+	authority, _, principal := authorityFixture(t)
+	principal.AccountScopeID = "other-account"
+	_, err := authority.List(principal, "", 10)
+	if err == nil { t.Fatal("expected ownership error") }
+}
