@@ -68,7 +68,6 @@ func TestManageThemeCreateBatchRejectsDuplicateIDs(t *testing.T) {
 	settings := &manageThemeSettingsStub{settings: uisettings.UISettings{Theme: uisettings.ThemeSettings{ActiveID: "crimson"}}}
 	runtime := NewRuntime(1)
 	runtime.SetManageThemeServices(settings, nil)
-	scope := WorkspaceScope{Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}}
 	arguments := map[string]any{
 		"action": "create_batch",
 		"themes": []any{

@@ -334,7 +334,10 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(scope.SessionID)
 	}
-	principalSessionID := strings.TrimSpace(scope.Principal.SessionID)
+	// scope.Principal.SessionID identifies the authenticated local product login,
+	// not the durable V3 conversation. Artifact ownership is bound to the trusted
+	// run/scope V3 session plus the authenticated account and user below, so the
+	// auth-session identifier must not be compared with a V3 session ID.
 	scopeSessionID := strings.TrimSpace(scope.SessionID)
 	producerSessionID := strings.TrimSpace(run.ChildSessionID)
 	managedDestination := strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != ""
@@ -344,7 +347,7 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 		}
 		producerSessionID = sessionID
 	}
-	if sessionID == "" || scopeSessionID == "" || scopeSessionID != producerSessionID || (principalSessionID != "" && principalSessionID != sessionID && principalSessionID != producerSessionID) {
+	if sessionID == "" || scopeSessionID == "" || scopeSessionID != producerSessionID {
 		return artifact.Principal{}, errors.New("manage_artifact trusted session context is missing or inconsistent")
 	}
 	if managedDestination && (strings.TrimSpace(run.TaskCallID) == "" || strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "") {

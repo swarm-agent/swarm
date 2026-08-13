@@ -14,9 +14,9 @@ import (
 )
 
 type fakeArtifactAuthority struct {
-	principal artifact.Principal
-	created   artifact.CreateInput
-	packaged  artifact.CreatePackageInput
+	principal       artifact.Principal
+	created         artifact.CreateInput
+	packaged        artifact.CreatePackageInput
 	readBody        []byte
 	variant         pebblestore.SessionArtifactVariant
 	reference       pebblestore.SessionArtifactSelectionReference
@@ -166,6 +166,26 @@ func TestManageArtifactRejectsMissingOrMismatchedTrustedSession(t *testing.T) {
 	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-2", Name: "manage_artifact", Arguments: `{"action":"list"}`})
 	if err == nil {
 		t.Fatal("expected trusted session mismatch")
+	}
+}
+
+func TestManageArtifactAcceptsDistinctAuthenticatedAndV3SessionIDs(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	scope := WorkspaceScope{
+		PrimaryPath: ".",
+		SessionID:   "v3-session-1",
+		Principal: identity.Principal{
+			Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1", SessionID: "local-product-session-1",
+		},
+	}
+	ctx := WithArtifactRunContext(WithWorkspaceScope(context.Background(), scope), ArtifactRunContext{SessionID: "v3-session-1", RunID: "run-1"})
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-auth-session", Name: "manage_artifact", Arguments: `{"action":"list"}`}); err != nil {
+		t.Fatalf("distinct authenticated and V3 session ids: %v", err)
+	}
+	if authority.principal.SessionID != "v3-session-1" || authority.principal.AccountScopeID != "account-1" || authority.principal.UserID != "user-1" {
+		t.Fatalf("artifact principal = %#v", authority.principal)
 	}
 }
 
