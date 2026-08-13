@@ -30,6 +30,8 @@ const (
 	taskModeSwarm                  = "swarm"
 	taskSwarmStrategyExplore       = "explore"
 	taskSwarmStrategyAssembly      = "assembly"
+	taskOutputModeManaged           = "managed"
+	taskOutputModeWorkspace         = "workspace"
 	taskAssemblySwarmLaunchEnabled = false
 	taskSwarmMaxAgents             = 256
 	taskProgramActionStart         = "start"
@@ -106,6 +108,7 @@ type taskSwarmSpec struct {
 	Themes              []string
 	Groups              []taskSwarmGroup
 	OutputContract      string
+	OutputMode          string
 	OwnedScopeTemplate  string
 	AssemblyParts       []taskSwarmAssemblyPart
 	IntegrationContract string
@@ -118,6 +121,7 @@ type taskLaunchSpec struct {
 	Deliverable           string
 	ConcurrencyReason     string
 	OwnedScope            []string
+	OutputMode            string
 	DependencyEvidence    string
 	StreamKey             string
 	ResumeChildSessionID  string
@@ -245,6 +249,7 @@ type taskLaunchManifestRow struct {
 	Deliverable           string                                   `json:"deliverable,omitempty"`
 	ConcurrencyReason     string                                   `json:"concurrency_reason,omitempty"`
 	OwnedScope            []string                                 `json:"owned_scope,omitempty"`
+	OutputMode            string                                   `json:"output_mode,omitempty"`
 	DependencyEvidence    string                                   `json:"dependency_evidence,omitempty"`
 	SubagentProvider      string                                   `json:"subagent_provider,omitempty"`
 	SubagentModel         string                                   `json:"subagent_model,omitempty"`
@@ -396,6 +401,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
+		}
+		if err := applyTaskDesignerOutputMode(&launch, mapString(raw, "output_mode"), label); err != nil {
+			return taskLaunchSpec{}, err
 		}
 		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
@@ -657,9 +665,15 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		jobStages[job.ID] = stageIndex
 		stageJobCounts[job.StageID]++
 		program.Jobs = append(program.Jobs, job)
+		outputMode := ""
+		if job.RequestedSubagentType == "designer" {
+			// Task Programs predate managed alternatives and declare durable workspace
+			// ownership. Preserve that contract until program persistence records mode.
+			outputMode = taskOutputModeWorkspace
+		}
 		launches = append(launches, taskLaunchSpec{
 			RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
-			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), DependencyEvidence: job.DependencyEvidence,
+			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: outputMode, DependencyEvidence: job.DependencyEvidence,
 			SourceArguments: map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)},
 		})
 	}
@@ -753,7 +767,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	allowed := map[string]bool{
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
-		"themes": true, "groups": true, "output_contract": true, "owned_scope_template": true, "assembly_parts": true,
+		"themes": true, "groups": true, "output_contract": true, "output_mode": true, "owned_scope_template": true, "assembly_parts": true,
 		"integration_contract": true, "launches": true,
 	}
 	for key := range args {
@@ -794,6 +808,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	}
 
 	if strategy == taskSwarmStrategyAssembly {
+		if _, exists := args["output_mode"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept output_mode")
+		}
 		return parseTaskAssemblySwarm(args, agentType, count)
 	}
 	if _, ok := args["assembly_parts"]; ok || strings.TrimSpace(mapString(args, "integration_contract")) != "" {
@@ -814,18 +831,33 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if outputContract == "" {
 		outputContract = strings.TrimSpace(description)
 	}
+	_, outputModeProvided := args["output_mode"]
+	outputMode := strings.ToLower(strings.TrimSpace(mapString(args, "output_mode")))
+	if agentType == "designer" {
+		if outputMode == "" {
+			outputMode = taskOutputModeManaged
+		}
+		if outputMode != taskOutputModeManaged && outputMode != taskOutputModeWorkspace {
+			return nil, nil, errors.New("task Designer swarm output_mode must be managed or workspace")
+		}
+	} else if outputModeProvided {
+		return nil, nil, errors.New("task swarm output_mode is supported only for Designer")
+	}
 	ownedScopeTemplate := strings.TrimSpace(mapString(args, "owned_scope_template"))
-	if agentType == "designer" && ownedScopeTemplate == "" {
-		return nil, nil, errors.New("task Designer swarm requires owned_scope_template with exactly one {index} placeholder")
+	if agentType == "designer" && outputMode == taskOutputModeWorkspace && ownedScopeTemplate == "" {
+		return nil, nil, errors.New("task workspace Designer swarm requires owned_scope_template with exactly one {index} placeholder")
+	}
+	if agentType == "designer" && outputMode == taskOutputModeManaged && ownedScopeTemplate != "" {
+		return nil, nil, errors.New("task managed Designer swarm must omit owned_scope_template")
 	}
 	if ownedScopeTemplate != "" && strings.Count(ownedScopeTemplate, "{index}") != 1 {
 		return nil, nil, errors.New("task swarm owned_scope_template must contain exactly one {index} placeholder")
 	}
-	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || ownedScopeTemplate != "") {
+	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "") {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OwnedScopeTemplate: ownedScopeTemplate}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OwnedScopeTemplate: ownedScopeTemplate}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -847,10 +879,10 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
-			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope,
+			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope, OutputMode: outputMode,
 			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
 			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
-			SourceArguments: map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy},
+			SourceArguments: map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode},
 		}
 		applyCanonicalCoderOwnedScope(&launches[i])
 	}
@@ -868,7 +900,7 @@ func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {
 }
 
 func parseTaskAssemblySwarm(args map[string]any, agentType string, count int) (*taskSwarmSpec, []taskLaunchSpec, error) {
-	for _, key := range []string{"themes", "groups", "output_contract", "owned_scope_template"} {
+	for _, key := range []string{"themes", "groups", "output_contract", "output_mode", "owned_scope_template"} {
 		if _, ok := args[key]; ok {
 			return nil, nil, fmt.Errorf("task Assembly swarm does not accept Explore field %q", key)
 		}
@@ -930,15 +962,23 @@ func parseTaskAssemblySwarm(args map[string]any, agentType string, count int) (*
 			}
 		}
 	}
-	swarm := &taskSwarmSpec{Strategy: taskSwarmStrategyAssembly, AgentType: agentType, Count: count, AssemblyParts: parts, IntegrationContract: integrationContract}
+	outputMode := ""
+	if agentType == "designer" {
+		outputMode = taskOutputModeWorkspace
+	}
+	swarm := &taskSwarmSpec{Strategy: taskSwarmStrategyAssembly, AgentType: agentType, Count: count, OutputMode: outputMode, AssemblyParts: parts, IntegrationContract: integrationContract}
 	launches := make([]taskLaunchSpec, count)
 	for i := range parts {
 		part := parts[i]
 		partCopy := part
+		outputMode := ""
+		if agentType == "designer" {
+			outputMode = taskOutputModeWorkspace
+		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: fmt.Sprintf("Pending Router hydration for Assembly part %q.", part.Name),
 			AssignmentLabel: part.Name, Deliverable: integrationContract, ConcurrencyReason: "Complementary Assembly part with distinct ownership.",
-			OwnedScope: append([]string(nil), part.OwnedScope...), DependencyEvidence: "All Assembly parts and the parent integration contract are complete before launch.",
+			OwnedScope: append([]string(nil), part.OwnedScope...), OutputMode: outputMode, DependencyEvidence: "All Assembly parts and the parent integration contract are complete before launch.",
 			StreamKey: fmt.Sprintf("swarm:%d", i+1), SwarmMode: true, SwarmStrategy: taskSwarmStrategyAssembly,
 			AssemblyPart: &partCopy, IntegrationContract: integrationContract,
 			SourceArguments: map[string]any{"swarm_index": i + 1, "swarm_mode": true, "swarm_strategy": taskSwarmStrategyAssembly, "assembly_part": part, "integration_contract": integrationContract},
@@ -1079,11 +1119,44 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 	return out, nil
 }
 
+func applyTaskDesignerOutputMode(launch *taskLaunchSpec, rawMode, label string) error {
+	if launch == nil {
+		return errors.New("task launch is required")
+	}
+	mode := strings.ToLower(strings.TrimSpace(rawMode))
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) {
+		if mode != "" {
+			return fmt.Errorf("%s output_mode is supported only for Designer", label)
+		}
+		return nil
+	}
+	if mode == "" {
+		mode = taskOutputModeManaged
+	}
+	if mode != taskOutputModeManaged && mode != taskOutputModeWorkspace {
+		return fmt.Errorf("%s Designer output_mode must be managed or workspace", label)
+	}
+	if mode == taskOutputModeManaged && len(launch.OwnedScope) != 0 {
+		return fmt.Errorf("%s managed Designer must omit owned_scope", label)
+	}
+	launch.OutputMode = mode
+	return nil
+}
+
 func validateTaskDesignerScopes(launches []taskLaunchSpec) error {
 	designerIndexes := make([]int, 0, len(launches))
 	for i := range launches {
 		if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) {
 			continue
+		}
+		if launches[i].OutputMode == taskOutputModeManaged {
+			if len(launches[i].OwnedScope) != 0 {
+				return fmt.Errorf("task launches[%d] managed Designer must omit owned_scope", i)
+			}
+			continue
+		}
+		if launches[i].OutputMode != taskOutputModeWorkspace {
+			return fmt.Errorf("task launches[%d] Designer output_mode must be managed or workspace", i)
 		}
 		if len(launches[i].OwnedScope) == 0 {
 			return fmt.Errorf("task launches[%d] Designer requires a concrete workspace-relative owned_scope or output target", i)
@@ -1284,6 +1357,14 @@ func rejectTaskLaunchTrustFields(args map[string]any, label string) error {
 		"denyTools",
 		"disabled_tools",
 		"disabledTools",
+		"target_session_id",
+		"targetSessionID",
+		"collection_id",
+		"collectionID",
+		"variant_id",
+		"variantID",
+		"artifact_target",
+		"artifactTarget",
 		"trust",
 		"trusted",
 	} {
@@ -2476,6 +2557,9 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if row.ProfileSnapshot == nil {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
 		}
+		if strings.TrimSpace(row.OutputMode) != strings.TrimSpace(launchSpecs[i].OutputMode) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output mode mismatch", i)
+		}
 		if strings.TrimSpace(row.StreamKey) != strings.TrimSpace(launchSpecs[i].StreamKey) || row.SwarmMode != launchSpecs[i].SwarmMode || strings.TrimSpace(row.SwarmStrategy) != strings.TrimSpace(launchSpecs[i].SwarmStrategy) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d swarm identity mismatch", i)
 		}
@@ -2588,6 +2672,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			Deliverable:           strings.TrimSpace(launch.Deliverable),
 			ConcurrencyReason:     strings.TrimSpace(launch.ConcurrencyReason),
 			OwnedScope:            append([]string(nil), launch.OwnedScope...),
+			OutputMode:            strings.TrimSpace(launch.OutputMode),
 			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),

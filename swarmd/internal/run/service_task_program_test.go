@@ -43,12 +43,12 @@ func TestParseTaskProgramPreservesLegacyRegularPath(t *testing.T) {
 	}
 }
 
-func TestParseTaskProgramPreservesLegacySplitWave(t *testing.T) {
+func TestParseTaskProgramPreservesRegularWorkspaceSplitWave(t *testing.T) {
 	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"mode": "regular", "description": "split audit", "prompt": "Inspect independent surfaces.",
 		"launches": []any{
 			map[string]any{"subagent_type": "finder", "title": "Backend Map", "meta_prompt": "Map backend files.", "deliverable": "Backend map", "dependency_evidence": "Independent read-only scope."},
-			map[string]any{"subagent_type": "designer", "title": "Visual Variant", "meta_prompt": "Create the requested visual variant.", "deliverable": "Reusable variant", "owned_scope": []any{"web/src/variants/program-compat.tsx"}, "dependency_evidence": "Distinct output target."},
+			map[string]any{"subagent_type": "designer", "title": "Visual Variant", "meta_prompt": "Create the requested visual variant.", "deliverable": "Reusable variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/program-compat.tsx"}, "dependency_evidence": "Distinct output target."},
 		},
 	}))
 	if err != nil {

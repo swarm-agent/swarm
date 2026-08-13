@@ -1272,7 +1272,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one fully declared staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives or independent trials generated from one parent brief. The internal explore strategy remains implicit for backward compatibility and is the only launch-enabled Coder/Designer swarm behavior. Coder/Designer prompts are hydrated by Router, while every Idea Swarm receives the same question directly without Router. Both modes use the same subagent policy, reservation, permission, streaming, and child-session runtime; there is no extra permission path. Regular mode uses Finder for distinct research, Coder for dependency-ready implementation, and Designer only for explicitly requested multiple UI/design iterations or variants; Designer is prohibited for ordinary UI work and single-design requests. Designer children share the parent checkout, use read/search/find/list and write/edit with no Bash or Git, and produce ordinary reusable artifacts in distinct non-overlapping workspace-relative targets. Put regular-mode child definitions in the structured launches array. Do not embed launch JSON in prompt; each launch keeps its full instructive assignment in meta_prompt, not text embedded in prompt, plus a concise title ideally three words.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one fully declared staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives or independent trials generated from one parent brief. The internal explore strategy remains implicit for backward compatibility and is the only launch-enabled Coder/Designer swarm behavior. Coder/Designer prompts are hydrated by Router, while every Idea Swarm receives the same question directly without Router. Both modes use the same subagent policy, reservation, permission, streaming, and child-session runtime; there is no extra permission path. Regular Designer alternatives and Designer Iteration Swarms default to output_mode=managed, where the server injects a trusted parent-owned artifact destination and workspace targets must be omitted. output_mode=workspace preserves shared-checkout write/edit behavior and requires concrete non-overlapping workspace-relative targets. The model may choose only managed versus workspace and cannot name session, collection, or variant destinations. Put regular-mode child definitions in the structured launches array. Do not embed launch JSON in prompt; each launch keeps its full instructive assignment in meta_prompt, not text embedded in prompt, plus a concise title ideally three words.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1292,7 +1292,8 @@ func (r *Runtime) Definitions() []Definition {
 					"themes":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer seed themes; cardinality must equal count."},
 					"groups":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
 					"output_contract":      map[string]any{"type": "string", "description": "Shared Coder/Designer swarm deliverable contract. Omit for Idea swarms."},
-					"owned_scope_template": map[string]any{"type": "string", "description": "Iteration Swarm workspace-relative Coder/Designer target containing exactly one {index}; required for Designer Iteration Swarms. Omit for Idea Swarms."},
+					"output_mode":          map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only. Defaults to managed for Designer Iteration Swarms. managed publishes to a trusted server-injected parent collection and must omit owned_scope_template; workspace writes the parent checkout and requires a concrete non-overlapping owned_scope_template. Never supplies destination IDs."},
+					"owned_scope_template": map[string]any{"type": "string", "description": "Workspace-mode Iteration Swarm target containing exactly one {index}. Required only for output_mode=workspace Designer swarms; forbidden for managed Designer swarms and omitted for Idea swarms."},
 					"description": map[string]any{
 						"type":        "string",
 						"description": "Short overall task label shown in UI.",
@@ -1304,7 +1305,7 @@ func (r *Runtime) Definitions() []Definition {
 					"subagent_type": map[string]any{
 						"type":        "string",
 						"enum":        []string{"coder", "finder", "designer"},
-						"description": "Subagent type for the single-launch shorthand. Supported values: coder, finder, or designer. Designer requires a concrete workspace-relative owned_scope. Requires a top-level meta_prompt or role.",
+						"description": "Subagent type for the single-launch shorthand. Supported values: coder, finder, or designer. Designer defaults to output_mode=managed; workspace mode requires concrete owned_scope. Requires a top-level meta_prompt or role.",
 					},
 					"agent": map[string]any{
 						"type":        "string",
@@ -1330,11 +1331,12 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to delegate now."},
-					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required for Designer as a concrete clean workspace-relative path; an omitted Coder scope safely defaults to its entire isolated worktree."},
+					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only. Defaults to managed. managed forbids owned_scope and uses a trusted server-injected parent collection; workspace requires concrete owned_scope. This field never selects destination IDs."},
+					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree."},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants in the parent checkout. Designer may read/search/find/list/write/edit but has no Bash or Git; its ordinary reusable artifacts are retained unless the user requests or chooses cleanup. Concurrent Designer launches require complete briefs and distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
+						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants. Designer defaults to managed parent-owned artifact output; workspace mode permits read/search/find/list/write/edit with no Bash or Git and requires distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -1346,7 +1348,8 @@ func (r *Runtime) Definitions() []Definition {
 								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
-								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for Designer as a concrete clean workspace-relative path and must not overlap another concurrent Designer launch; an omitted Coder scope defaults to its isolated worktree."},
+								"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree."},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,

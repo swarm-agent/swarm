@@ -304,7 +304,11 @@ func taskProgramSpecFromRecord(record pebblestore.TaskProgramRecord) *taskProgra
 func taskProgramLaunchesFromSpec(spec *taskProgramSpec) []taskLaunchSpec {
 	launches := make([]taskLaunchSpec, 0, len(spec.Jobs))
 	for _, job := range spec.Jobs {
-		launches = append(launches, taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), DependencyEvidence: job.DependencyEvidence, SourceArguments: map[string]any{"program_id": spec.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}})
+		outputMode := ""
+		if agentruntime.IsDesignerAgentName(job.RequestedSubagentType) {
+			outputMode = taskOutputModeWorkspace
+		}
+		launches = append(launches, taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: outputMode, DependencyEvidence: job.DependencyEvidence, SourceArguments: map[string]any{"program_id": spec.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}})
 	}
 	return launches
 }

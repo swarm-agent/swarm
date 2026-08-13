@@ -43,6 +43,35 @@ func TestConvertToolDefinitionsPreservesEmptyRequiredArrayForWebsearch(t *testin
 	}
 }
 
+func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
+	definitions := tool.NewRuntime(1).Definitions()
+	var properties map[string]any
+	for _, definition := range definitions {
+		if definition.Name == "task" {
+			properties, _ = definition.Parameters["properties"].(map[string]any)
+			break
+		}
+	}
+	if properties == nil {
+		t.Fatal("task tool definition not found")
+	}
+	outputMode, ok := properties["output_mode"].(map[string]any)
+	if !ok || !reflect.DeepEqual(outputMode["enum"], []string{"managed", "workspace"}) {
+		t.Fatalf("task output_mode = %#v", outputMode)
+	}
+	for _, forbidden := range []string{"target_session_id", "collection_id", "variant_id", "artifact_target"} {
+		if _, exists := properties[forbidden]; exists {
+			t.Fatalf("task schema exposes trusted destination field %q", forbidden)
+		}
+	}
+	launches := properties["launches"].(map[string]any)
+	items := launches["items"].(map[string]any)
+	launchProperties := items["properties"].(map[string]any)
+	if _, ok := launchProperties["output_mode"]; !ok {
+		t.Fatal("task launch schema omits output_mode")
+	}
+}
+
 func TestNormalizeProviderToolParametersPreservesNestedEmptySchemaArrays(t *testing.T) {
 	parameters := map[string]any{
 		"type":     "object",

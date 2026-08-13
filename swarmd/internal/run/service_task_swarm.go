@@ -36,6 +36,7 @@ type taskSwarmHydrationItem struct {
 	PartName         string   `json:"part_name,omitempty"`
 	PartInstructions string   `json:"part_instructions,omitempty"`
 	OwnedScope       []string `json:"owned_scope,omitempty"`
+	OutputMode       string   `json:"output_mode,omitempty"`
 	WorkerExecution  string   `json:"worker_execution_model"`
 }
 
@@ -44,6 +45,7 @@ type taskSwarmHydrationRequest struct {
 	AgentType           string                   `json:"agent_type"`
 	SwarmStrategy       string                   `json:"swarm_strategy"`
 	OutputContract      string                   `json:"output_contract,omitempty"`
+	OutputMode          string                   `json:"output_mode,omitempty"`
 	IntegrationContract string                   `json:"integration_contract,omitempty"`
 	Items               []taskSwarmHydrationItem `json:"items"`
 }
@@ -242,7 +244,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	groupIndex, groupRemaining := 0, 0
@@ -250,13 +252,21 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 		if launch.RequestedSubagentType != request.AgentType || launch.SwarmStrategy != request.SwarmStrategy {
 			return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration launch %d identity mismatch", i+1)
 		}
-		if agentruntime.IsDesignerAgentName(request.AgentType) && len(launch.OwnedScope) == 0 {
-			return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration Designer launch %d requires an owned scope", i+1)
+		if agentruntime.IsDesignerAgentName(request.AgentType) {
+			if launch.OutputMode != request.OutputMode {
+				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration Designer launch %d output mode mismatch", i+1)
+			}
+			if request.OutputMode == taskOutputModeWorkspace && len(launch.OwnedScope) == 0 {
+				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration workspace Designer launch %d requires an owned scope", i+1)
+			}
+			if request.OutputMode == taskOutputModeManaged && len(launch.OwnedScope) != 0 {
+				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration managed Designer launch %d must omit owned scope", i+1)
+			}
 		}
 		if request.SwarmStrategy == taskSwarmStrategyAssembly && launch.AssemblyPart == nil {
 			return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration Assembly launch %d requires a declared part", i+1)
 		}
-		item := taskSwarmHydrationItem{Index: i + 1, OwnedScope: append([]string(nil), launch.OwnedScope...), WorkerExecution: taskSwarmWorkerExecutionModel(parsed.Swarm.AgentType)}
+		item := taskSwarmHydrationItem{Index: i + 1, OwnedScope: append([]string(nil), launch.OwnedScope...), OutputMode: strings.TrimSpace(launch.OutputMode), WorkerExecution: taskSwarmWorkerExecutionModel(parsed.Swarm.AgentType)}
 		if i < len(parsed.Swarm.Themes) {
 			item.Theme = strings.TrimSpace(parsed.Swarm.Themes[i])
 		}
@@ -282,7 +292,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 
 func taskSwarmWorkerExecutionModel(agentType string) string {
 	if agentruntime.IsDesignerAgentName(agentType) {
-		return "shared_parent_checkout_no_bash_no_git_distinct_owned_scope"
+		return "designer_output_mode_contract"
 	}
 	return "isolated_worktree_advisory_owned_scope_commit_clean_handoff"
 }
@@ -318,15 +328,19 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("- owned scope: ")
-	if len(item.OwnedScope) == 0 {
-		b.WriteString("entire isolated worktree")
-	} else {
+	if len(item.OwnedScope) != 0 {
+		b.WriteString("- owned scope: ")
 		b.WriteString(strings.Join(item.OwnedScope, ", "))
+		b.WriteString("\n")
+	} else if !agentruntime.IsDesignerAgentName(request.AgentType) {
+		b.WriteString("- owned scope: entire isolated worktree\n")
 	}
-	b.WriteString("\n")
 	if agentruntime.IsDesignerAgentName(request.AgentType) {
-		b.WriteString("- immutable execution rules: work in the parent's shared checkout; write only within the distinct declared owned scope; do not use Bash or Git.\n")
+		if request.OutputMode == taskOutputModeManaged {
+			b.WriteString("- output mode: managed; publish through the trusted managed artifact target injected by the server. Do not write the workspace checkout.\n")
+		} else {
+			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")
+		}
 	} else {
 		b.WriteString("- immutable execution rules: work in the allocated isolated worktree; treat owned scope as advisory boundaries; commit the completed scoped change; finish with a clean worktree for parent recall and integration.\n")
 	}

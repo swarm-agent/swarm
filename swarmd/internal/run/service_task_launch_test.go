@@ -135,6 +135,12 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "model-selected managed destination",
+			args: map[string]any{
+				"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create variant", "collection_id": "untrusted",
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -216,25 +222,44 @@ func TestParseTaskCallArgumentsSupportsCompiledTaskAgentsAndAppliesCanonicalCode
 	}
 }
 
-func TestParseTaskCallArgumentsRequiresDistinctConcreteDesignerScopes(t *testing.T) {
+func TestParseTaskCallArgumentsDefaultsDesignerToManagedOutput(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "create two variants",
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant"},
+			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant"},
+		},
+	}))
+	if err != nil || len(parsed.Launches) != 2 {
+		t.Fatalf("managed Designer wave = %#v err=%v", parsed.Launches, err)
+	}
+	for i, launch := range parsed.Launches {
+		if launch.OutputMode != taskOutputModeManaged || len(launch.OwnedScope) != 0 {
+			t.Fatalf("managed launch %d = %#v", i, launch)
+		}
+	}
+}
+
+func TestParseTaskCallArgumentsRequiresDistinctConcreteWorkspaceDesignerScopes(t *testing.T) {
 	valid, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "create two variants",
 		"launches": []any{
-			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"}},
-			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant", "owned_scope": []any{"web/src/variants/spacious.tsx"}},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/compact.tsx"}},
+			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/spacious.tsx"}},
 		},
 	}))
 	if err != nil || len(valid.Launches) != 2 || valid.Launches[0].RequestedSubagentType != "designer" {
 		t.Fatalf("valid Designer wave = %#v err=%v", valid.Launches, err)
 	}
 	for _, args := range []map[string]any{
-		{"prompt": "missing target", "agent": "designer", "role": "create variant"},
-		{"prompt": "absolute target", "agent": "designer", "role": "create variant", "owned_scope": []any{"/outside/variant.tsx"}},
-		{"prompt": "glob target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/**"}},
-		{"prompt": "unclean target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/../variant.tsx"}},
+		{"prompt": "missing target", "agent": "designer", "role": "create variant", "output_mode": "workspace"},
+		{"prompt": "managed target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/managed.tsx"}},
+		{"prompt": "absolute target", "agent": "designer", "role": "create variant", "output_mode": "workspace", "owned_scope": []any{"/outside/variant.tsx"}},
+		{"prompt": "glob target", "agent": "designer", "role": "create variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/**"}},
+		{"prompt": "unclean target", "agent": "designer", "role": "create variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/../variant.tsx"}},
 		{"prompt": "overlap", "launches": []any{
-			map[string]any{"agent": "designer", "role": "first", "owned_scope": []any{"web/src/variants"}},
-			map[string]any{"agent": "designer", "role": "second", "owned_scope": []any{"web/src/variants/second.tsx"}},
+			map[string]any{"agent": "designer", "role": "first", "output_mode": "workspace", "owned_scope": []any{"web/src/variants"}},
+			map[string]any{"agent": "designer", "role": "second", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/second.tsx"}},
 		}},
 	} {
 		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil {
@@ -807,6 +832,7 @@ func TestTaskLaunchedDesignerRunTurnStreamingProjectsMediaInspect(t *testing.T) 
 		"launches": []any{map[string]any{
 			"subagent_type": "designer",
 			"meta_prompt":   "Use the image as visual reference.",
+			"output_mode":   "workspace",
 			"owned_scope":   []any{"web/src/variants/media-aware.tsx"},
 		}},
 	}))
@@ -860,6 +886,7 @@ func TestTaskLaunchedDesignerRunTurnStreamingExecutesMediaInspect(t *testing.T) 
 		"launches": []any{map[string]any{
 			"subagent_type": "designer",
 			"meta_prompt":   "Inspect the workspace image with media_inspect.",
+			"output_mode":   "workspace",
 			"owned_scope":   []any{"docs/designer-media-report.md"},
 		}},
 	}))
@@ -1758,7 +1785,7 @@ func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
-		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"},
+		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/compact.tsx"},
 	})})
 	if err != nil {
 		t.Fatalf("build Designer manifest: %v", err)
@@ -1770,8 +1797,8 @@ func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.
 	if row.ParentCopy || row.ResolvedAgentName != agentruntime.DesignerAgentID || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
 		t.Fatalf("Designer compiled shared-checkout manifest = %#v", row)
 	}
-	if !slices.Equal(row.OwnedScope, []string{"web/src/variants/compact.tsx"}) {
-		t.Fatalf("Designer manifest scope = %#v", row.OwnedScope)
+	if row.OutputMode != taskOutputModeWorkspace || !slices.Equal(row.OwnedScope, []string{"web/src/variants/compact.tsx"}) {
+		t.Fatalf("Designer manifest output contract = mode %q scope %#v", row.OutputMode, row.OwnedScope)
 	}
 	for _, name := range []string{"read", "search", "find", "list", "write", "edit"} {
 		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
@@ -2020,7 +2047,7 @@ func TestApprovedTaskManifestContractAcceptsAllSupportedSubagents(t *testing.T) 
 		"launches": []any{
 			map[string]any{"subagent_type": "finder", "meta_prompt": "Inspect the contract."},
 			map[string]any{"subagent_type": "coder", "meta_prompt": "Implement the contract."},
-			map[string]any{"subagent_type": "designer", "meta_prompt": "Design the contract.", "owned_scope": []any{"web/src/variants/contract.tsx"}},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Design the contract.", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/contract.tsx"}},
 		},
 	})}
 	parsed, err := parseTaskCallArguments(call.Arguments)
