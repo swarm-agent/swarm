@@ -82,24 +82,38 @@ type sessionsV3ResolvedArtifact struct {
 }
 
 type sessionsV3ArtifactCatalogItem struct {
-	ArtifactID      string `json:"artifact_id"`
-	SessionID       string `json:"session_id"`
-	SessionTitle    string `json:"session_title"`
-	WorkspacePath   string `json:"workspace_path"`
-	WorkspaceName   string `json:"workspace_name"`
-	PlanID          string `json:"plan_id"`
-	PlanTitle       string `json:"plan_title"`
-	CheckpointID    string `json:"checkpoint_id"`
-	CheckpointTitle string `json:"checkpoint_title"`
-	Label           string `json:"label"`
-	Description     string `json:"description"`
-	Filename        string `json:"filename"`
-	MediaType       string `json:"media_type"`
-	Kind            string `json:"kind"`
-	Previewable     bool   `json:"previewable"`
-	Category        string `json:"category"`
-	UpdatedAt       int64  `json:"updated_at"`
-	Content         string `json:"content,omitempty"`
+	ArtifactID      string                                `json:"artifact_id"`
+	CollectionID    string                                `json:"collection_id,omitempty"`
+	SessionID       string                                `json:"session_id"`
+	SessionTitle    string                                `json:"session_title"`
+	WorkspacePath   string                                `json:"workspace_path,omitempty"`
+	WorkspaceName   string                                `json:"workspace_name,omitempty"`
+	PlanID          string                                `json:"plan_id,omitempty"`
+	PlanTitle       string                                `json:"plan_title,omitempty"`
+	CheckpointID    string                                `json:"checkpoint_id,omitempty"`
+	CheckpointTitle string                                `json:"checkpoint_title,omitempty"`
+	Label           string                                `json:"label"`
+	Description     string                                `json:"description"`
+	Filename        string                                `json:"filename"`
+	MediaType       string                                `json:"media_type"`
+	Kind            string                                `json:"kind"`
+	Status          string                                `json:"status,omitempty"`
+	FailureCode     string                                `json:"failure_code,omitempty"`
+	Previewable     bool                                  `json:"previewable"`
+	Selected        bool                                  `json:"selected,omitempty"`
+	Category        string                                `json:"category"`
+	UpdatedAt       int64                                 `json:"updated_at"`
+	Progress        *sessionsV3ArtifactCollectionProgress `json:"progress,omitempty"`
+	Lineage         *pebblestore.SessionArtifactLineage  `json:"lineage,omitempty"`
+	Content         string                                `json:"content,omitempty"`
+}
+
+type sessionsV3ArtifactCollectionProgress struct {
+	Total       int `json:"total"`
+	Staging     int `json:"staging"`
+	Ready       int `json:"ready"`
+	Failed      int `json:"failed"`
+	Unavailable int `json:"unavailable"`
 }
 
 func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +150,59 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 		if sessionsV3SystemSidechat(session) {
 			continue
 		}
+		workspacePath, workspaceName := sessionsV3ArtifactCatalogWorkspace(session)
+		if s.artifacts != nil {
+			collections, err := s.sessions.ListSessionArtifactCollections(session.AccountScopeID, session.ID, "", pebblestore.SessionArtifactMaxCollections)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			for _, collection := range collections {
+				variants, err := s.sessions.ListSessionArtifactVariants(session.AccountScopeID, session.ID, collection.ID, pebblestore.SessionArtifactMaxVariantsPerCollection)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				progress := sessionsV3ArtifactCollectionProgress{Total: collection.VariantCount, Staging: collection.StagingCount, Ready: collection.ReadyCount, Failed: collection.FailedCount, Unavailable: collection.UnavailableCount}
+				if progress.Total != progress.Staging+progress.Ready+progress.Failed+progress.Unavailable || progress.Total != len(variants) {
+					writeError(w, http.StatusInternalServerError, errors.New("artifact collection progress is inconsistent"))
+					return
+				}
+				for _, variant := range variants {
+					if variant.Status != pebblestore.SessionArtifactStatusStaging && variant.Status != pebblestore.SessionArtifactStatusReady && variant.Status != pebblestore.SessionArtifactStatusFailed && variant.Status != pebblestore.SessionArtifactStatusUnavailable {
+						writeError(w, http.StatusInternalServerError, errors.New("artifact variant status is inconsistent"))
+						return
+					}
+					if collection.Lineage.TaskCallID != "" && variant.Lineage.TaskCallID != "" && collection.Lineage.TaskCallID != variant.Lineage.TaskCallID {
+						writeError(w, http.StatusInternalServerError, errors.New("artifact variant task lineage is inconsistent"))
+						return
+					}
+					if collection.Lineage.ProgramID != "" && variant.Lineage.ProgramID != "" && collection.Lineage.ProgramID != variant.Lineage.ProgramID {
+						writeError(w, http.StatusInternalServerError, errors.New("artifact variant program lineage is inconsistent"))
+						return
+					}
+					lineage := variant.Lineage
+					kind, previewable := variant.Presentation.Kind, variant.Presentation.Previewable
+					if kind == "package" && variant.Status == pebblestore.SessionArtifactStatusReady && variant.MediaType == "application/zip" {
+						kind, previewable = "html", true
+					}
+					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+variant.ID, sessionsV3ArtifactCatalogItem{
+						ArtifactID: variant.ID, CollectionID: collection.ID, SessionID: session.ID, SessionTitle: session.Title,
+						PlanID: lineage.PlanID, CheckpointID: lineage.CheckpointID,
+						WorkspacePath: workspacePath, WorkspaceName: workspaceName,
+						Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename), Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
+						Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
+						Previewable: previewable, Selected: collection.SelectedVariantID == variant.ID,
+						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, Progress: &progress, Lineage: &lineage,
+					})
+				}
+			}
+		}
 		plans, _, err := s.sessions.ListPlans(session.ID, sessionsV3PlansPageMaxLimit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		workspacePath, workspaceName := sessionsV3ArtifactCatalogWorkspace(session)
 		for _, plan := range plans {
 			if plan.AccountScopeID != "" && strings.TrimSpace(plan.AccountScopeID) != principal.AccountScopeID || plan.UserID != "" && strings.TrimSpace(plan.UserID) != principal.UserID {
 				continue
@@ -216,6 +277,15 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artifacts": artifacts})
 }
 
+func sessionsV3ManagedArtifactCategory(variant pebblestore.SessionArtifactVariant) string {
+	switch strings.ToLower(strings.TrimSpace(variant.Presentation.Kind)) {
+	case "html", "package", "image", "pdf":
+		return "visual"
+	default:
+		return "document"
+	}
+}
+
 func appendCatalogArtifact(artifacts *[]sessionsV3ArtifactCatalogItem, seen map[string]struct{}, key string, artifact sessionsV3ArtifactCatalogItem) {
 	if _, exists := seen[key]; exists {
 		return
@@ -270,7 +340,7 @@ func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady {
+	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady || artifact.Managed.MediaType != "application/zip" {
 		writeError(w, http.StatusNotFound, errors.New("artifact package not found"))
 		return
 	}
@@ -401,7 +471,7 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 	var file sessionsV3ReadSeekCloser
 	var info os.FileInfo
 	mediaType := artifact.Descriptor.MediaType
-	if artifact.Descriptor.Kind == "html" {
+	if artifact.Descriptor.Kind == "html" && artifact.Managed != nil && artifact.Managed.MediaType == "application/zip" {
 		file, info, mediaType, err = s.openManagedSessionV3ArtifactPackageFile(r.Context(), session, artifact, sessionsV3ArtifactPackageEntryPath)
 	} else {
 		file, info, err = s.openManagedSessionV3Artifact(r.Context(), session, artifact)
@@ -686,7 +756,7 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady {
+	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady || artifact.Managed.MediaType != "application/zip" {
 		writeError(w, http.StatusNotFound, errors.New("artifact package not found"))
 		return
 	}
@@ -742,6 +812,31 @@ func (s *Server) resolveSessionV3Artifact(ctx context.Context, principal identit
 	for _, plan := range listed {
 		if len(plans) == 0 || plan.ID != plans[0].ID {
 			plans = append(plans, plan)
+		}
+	}
+	if s.artifacts != nil {
+		if managed, ok, err := s.sessions.GetSessionArtifactVariantByID(principal.AccountScopeID, sessionID, artifactID); err != nil {
+			return sessionsV3ResolvedArtifact{}, false, err
+		} else if ok {
+			if managed.SessionID != sessionID || managed.AccountScopeID != principal.AccountScopeID || (managed.Lineage.ParentSessionID != "" && managed.Lineage.ParentSessionID != sessionID) {
+				return sessionsV3ResolvedArtifact{}, false, nil
+			}
+			if managed.Status != pebblestore.SessionArtifactStatusReady {
+				return sessionsV3ResolvedArtifact{}, false, nil
+			}
+			resolved := sessionsV3ResolvedArtifact{Managed: &managed}
+			// Path is a compatibility-only in-memory filename hint used by the legacy
+			// package adapter. Native managed bytes remain addressed by opaque IDs.
+			resolved.Reference = pebblestore.SessionPlanArtifactReference{Path: managed.Filename, Description: managed.Presentation.Description}
+			kind, previewable := managed.Presentation.Kind, managed.Presentation.Previewable
+			if kind == "package" && managed.MediaType == "application/zip" {
+				kind, previewable = "html", true
+			}
+			resolved.Descriptor = pebblestore.PlanFinalHandoffArtifact{
+				ID: managed.ID, Label: firstNonEmpty(managed.Presentation.Label, managed.Filename), Description: managed.Presentation.Description,
+				Filename: managed.Filename, MediaType: managed.MediaType, Kind: kind, Previewable: previewable,
+			}
+			return resolved, true, nil
 		}
 	}
 	for _, plan := range plans {
@@ -985,8 +1080,12 @@ func (s *Server) openManagedSessionV3ArtifactPackageFile(ctx context.Context, se
 		return nil, nil, "", errors.New("artifact package path must be relative")
 	}
 	if contentPath == sessionsV3ArtifactPackageEntryPath {
-		entryName = filepath.ToSlash(filepath.Base(filepath.FromSlash(resolved.Reference.Path)))
-	} else {
+		if resolved.Managed != nil && resolved.Managed.Presentation.Kind == "package" {
+			entryName = managedSessionV3ArtifactPackageEntry(archive)
+		} else {
+			entryName = filepath.ToSlash(filepath.Base(filepath.FromSlash(resolved.Reference.Path)))
+		}
+	} else if resolved.Managed == nil || resolved.Managed.Presentation.Kind != "package" {
 		legacyRoot := filepath.ToSlash(filepath.Clean(filepath.Dir(filepath.FromSlash(resolved.Reference.Path))))
 		if legacyRoot != "." && legacyRoot != "" && strings.HasPrefix(entryName, legacyRoot+"/") {
 			entryName = strings.TrimPrefix(entryName, legacyRoot+"/")
@@ -1020,6 +1119,26 @@ func (s *Server) openManagedSessionV3ArtifactPackageFile(ctx context.Context, se
 		return sessionsV3NewMemoryFile(data), info, mediaType, nil
 	}
 	return nil, nil, "", errors.New("artifact package file is unavailable")
+}
+
+func managedSessionV3ArtifactPackageEntry(archive *zip.Reader) string {
+	if archive == nil {
+		return "index.html"
+	}
+	for _, candidate := range []string{"index.html", "index.htm"} {
+		for _, entry := range archive.File {
+			if filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Name))) == candidate && entry.Mode().IsRegular() {
+				return candidate
+			}
+		}
+	}
+	for _, entry := range archive.File {
+		name := filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Name)))
+		if entry.Mode().IsRegular() && name != "." && name != ".." && !strings.HasPrefix(name, "/") && !strings.Contains(entry.Name, "\\") && !strings.HasPrefix(name, "../") && (strings.HasSuffix(strings.ToLower(name), ".html") || strings.HasSuffix(strings.ToLower(name), ".htm")) {
+			return name
+		}
+	}
+	return "index.html"
 }
 
 type sessionsV3MemoryFileInfo struct {

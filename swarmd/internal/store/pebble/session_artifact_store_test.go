@@ -29,6 +29,9 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 	if first.Artifact.Collection.AccountScopeID != "account-1" || first.Artifact.Collection.SessionID != "artifact-session" || first.Artifact.Variant.AccountScopeID != "account-1" {
 		t.Fatalf("artifact ownership was not server-derived: %+v", first.Artifact)
 	}
+	if first.Artifact.Collection.VariantCount != 1 || first.Artifact.Collection.StagingCount != 1 {
+		t.Fatalf("artifact progress after create = %+v", first.Artifact.Collection)
+	}
 	if strings.Contains(string(first.Event.Payload), "storage_path") || strings.Contains(string(first.Event.Payload), "/home/") {
 		t.Fatalf("event leaked storage metadata: %s", first.Event.Payload)
 	}
@@ -54,6 +57,7 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 	})
 	if err != nil { t.Fatalf("finalize artifact: %v", err) }
 	if finalized.Artifact == nil || finalized.Artifact.Variant.Status != SessionArtifactStatusReady || finalized.Event.EventType != "session.artifact.finalized" { t.Fatalf("finalized = %+v", finalized) }
+	if finalized.Artifact.Collection.ReadyCount != 1 || finalized.Artifact.Collection.StagingCount != 0 { t.Fatalf("finalized progress = %+v", finalized.Artifact.Collection) }
 
 	selected, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
 		SessionID: "artifact-session", UserID: "user-1", AccountScopeID: "account-1",
@@ -65,6 +69,34 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 
 	ready, err := sessions.ListSessionArtifactCollections("account-1", "artifact-session", SessionArtifactStatusReady, 10)
 	if err != nil || len(ready) != 1 || ready[0].SelectedVariantID != "variant-1" { t.Fatalf("ready collections = %+v err=%v", ready, err) }
+}
+
+func TestArtifactLineageIndexesDesignerRoutingDimensions(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-lineage")
+	lineage := SessionArtifactLineage{ParentSessionID: "artifact-lineage", TaskCallID: "call-mixedcase", ProgramID: "program-1", ProgramJobID: "job-1", ChildSessionID: "child-1", IterationID: "iteration-1", IterationIndex: 2}
+	collectionLineage := lineage
+	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID, collectionLineage.IterationID, collectionLineage.IterationIndex = "", "", "", 0
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-lineage", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "lineage-create", PayloadHash: "lineage-create", Kind: V3SessionMutationCreateArtifact,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Designer alternatives", Lineage: collectionLineage}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "design.html", MediaType: "text/html", Lineage: lineage}},
+	}); err != nil { t.Fatal(err) }
+	for _, filter := range []struct{ dimension, value string }{{"parent_session", "artifact-lineage"}, {"task_call", "call-mixedcase"}, {"program", "program-1"}, {"program_job", "job-1"}, {"child_session", "child-1"}, {"iteration", "iteration-1"}} {
+		variants, err := sessions.ListSessionArtifactVariantsByLineage("account-1", "artifact-lineage", filter.dimension, filter.value, 10)
+		if err != nil || len(variants) != 1 || variants[0].ID != "variant-1" { t.Fatalf("lineage %s=%s: %+v err=%v", filter.dimension, filter.value, variants, err) }
+		if filter.dimension != "task_call" { continue }
+		other, err := sessions.ListSessionArtifactVariantsByLineage("account-1", "artifact-lineage", filter.dimension, "CALL-MIXEDCASE", 10)
+		if err != nil || len(other) != 0 { t.Fatalf("lineage values must remain case-sensitive: %+v err=%v", other, err) }
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-lineage", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "lineage-create-2", PayloadHash: "lineage-create-2", Kind: V3SessionMutationCreateArtifact,
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-2", Name: "Designer alternatives", Lineage: collectionLineage}, Variant: &SessionArtifactVariant{ID: "variant-2", Filename: "design-2.html", MediaType: "text/html", Lineage: lineage}},
+	}); err != nil { t.Fatal(err) }
+	variants, err := sessions.ListSessionArtifactVariantsByLineage("account-1", "artifact-lineage", "task_call", "call-mixedcase", 10)
+	if err != nil || len(variants) != 2 || variants[0].CollectionID == variants[1].CollectionID {
+		t.Fatalf("cross-collection lineage variants = %+v err=%v", variants, err)
+	}
 }
 
 func TestConcurrentArtifactLifecycleMutationsRemainIdempotent(t *testing.T) {
@@ -227,6 +259,7 @@ func TestDeleteSessionPurgesArtifactMetadataAndIndexes(t *testing.T) {
 		"variant": SessionArtifactVariantSessionPrefix("account-1", "artifact-delete"),
 		"variant status": SessionArtifactVariantStatusSessionPrefix("account-1", "artifact-delete"),
 		"variant digest": SessionArtifactVariantDigestSessionPrefix("account-1", "artifact-delete"),
+		"variant lineage": SessionArtifactVariantLineageSessionPrefix("account-1", "artifact-delete"),
 	} {
 		if err := store.IteratePrefix(prefix, 10, func(string, []byte) error { t.Fatalf("%s metadata remains", name); return nil }); err != nil { t.Fatal(err) }
 	}

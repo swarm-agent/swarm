@@ -40,7 +40,7 @@ func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMuta
 	case pebblestore.V3SessionMutationCreateArtifact:
 		m.collection = input.Artifact.Collection
 		m.collection.AccountScopeID, m.collection.SessionID, m.collection.Status = input.AccountScopeID, input.SessionID, pebblestore.SessionArtifactStatusStaging
-		m.collection.VariantCount = 1
+		m.collection.VariantCount, m.collection.StagingCount = 1, 1
 		m.variant = *input.Artifact.Variant
 		m.variant.AccountScopeID, m.variant.SessionID, m.variant.CollectionID, m.variant.Status = input.AccountScopeID, input.SessionID, m.collection.ID, pebblestore.SessionArtifactStatusStaging
 	case pebblestore.V3SessionMutationFinalizeArtifact:
@@ -49,6 +49,7 @@ func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMuta
 		m.variant = *input.Artifact.Variant
 		m.variant.Status = pebblestore.SessionArtifactStatusReady
 		m.collection.Status = pebblestore.SessionArtifactStatusReady
+		m.collection.StagingCount, m.collection.ReadyCount = 0, 1
 		projection.Collection, projection.Variant = m.collection, &m.variant
 	case pebblestore.V3SessionMutationFailArtifact:
 		m.variant.Status, m.variant.FailureCode = pebblestore.SessionArtifactStatusFailed, input.Artifact.Variant.FailureCode
@@ -85,6 +86,26 @@ func TestAuthorityMetadataFailureNeverPublishesReady(t *testing.T) {
 	_, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "create-fail", CollectionID: "collection-1", CollectionName: "Drafts", VariantID: "variant-1", Filename: "note.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text"}, Body: []byte("managed")})
 	if err == nil { t.Fatal("expected metadata failure") }
 	if metadata.variant.Status == pebblestore.SessionArtifactStatusReady { t.Fatalf("ready metadata published: %+v", metadata.variant) }
+}
+
+func TestAuthorityRecordsManagedDesignerLineage(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	principal.TaskCallID, principal.ProgramID, principal.ProgramJobID = "call-1", "program-1", "job-1"
+	principal.ChildSessionID, principal.IterationID, principal.IterationIndex = "child-1", "iteration-1", 3
+	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "designer-1", CollectionID: "collection-1", CollectionName: "Alternatives", VariantID: "variant-1", Filename: "design.txt", MediaType: "text/plain", Body: []byte("managed")})
+	if err != nil { t.Fatal(err) }
+	lineage := created.Lineage
+	if lineage.ParentSessionID != "session-1" || lineage.SourceSessionID != "child-1" || lineage.TaskCallID != "call-1" || lineage.ProgramID != "program-1" || lineage.ProgramJobID != "job-1" || lineage.ChildSessionID != "child-1" || lineage.IterationID != "iteration-1" || lineage.IterationIndex != 3 {
+		t.Fatalf("designer lineage = %+v", lineage)
+	}
+	if metadata.collection.Lineage.ParentSessionID != lineage.ParentSessionID || metadata.collection.Lineage.TaskCallID != lineage.TaskCallID || metadata.collection.Lineage.ProgramID != lineage.ProgramID || metadata.collection.Lineage.ChildSessionID != "" || metadata.collection.Lineage.ProgramJobID != "" {
+		t.Fatalf("collection lineage = %+v", metadata.collection.Lineage)
+	}
+	mismatch := principal
+	mismatch.ChildSessionID = "child-2"
+	if _, err := authority.Create(context.Background(), mismatch, CreateInput{RequestID: "designer-replay", CollectionID: "collection-1", CollectionName: "Alternatives", VariantID: "variant-1", Filename: "design.txt", MediaType: "text/plain", Body: []byte("managed")}); err == nil {
+		t.Fatal("ready artifact replay accepted mismatched trusted lineage")
+	}
 }
 
 func TestAuthorityRejectsMismatchedTrustedOwnership(t *testing.T) {

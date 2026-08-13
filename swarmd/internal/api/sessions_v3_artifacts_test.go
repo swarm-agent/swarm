@@ -230,6 +230,55 @@ func TestCollectSessionV3ArtifactBundleIncludesHTMLPackageTree(t *testing.T) {
 	}
 }
 
+func TestResolveSessionV3NativeManagedArtifactUsesOpaqueMetadata(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "unused.txt", "unused")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	created, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, TaskCallID: "call-1", ChildSessionID: "child-1"}, artifact.CreateInput{
+		RequestID: "native-create", CollectionID: "native-collection", CollectionName: "Designer alternatives", VariantID: "native-variant", Filename: "design.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Design", Previewable: true}, Body: []byte("native managed"),
+	})
+	if err != nil { t.Fatal(err) }
+	resolved, found, err := server.resolveSessionV3Artifact(context.Background(), principal, created.SessionID, created.ID)
+	if err != nil || !found || resolved.Managed == nil || resolved.Descriptor.ID != created.ID || resolved.Reference.Path != "design.txt" {
+		t.Fatalf("resolve native managed = found=%t resolved=%+v err=%v", found, resolved, err)
+	}
+	witched := testPrincipal()
+	witched.AccountScopeID = "account-2"
+	if _, found, err := server.resolveSessionV3Artifact(context.Background(), witched, created.SessionID, created.ID); err != nil || found {
+		t.Fatalf("cross-account native resolve = found=%t err=%v", found, err)
+	}
+	file, _, err := server.openManagedSessionV3Artifact(context.Background(), mustSession(t, server, created.SessionID), resolved)
+	if err != nil { t.Fatal(err) }
+	data, readErr := io.ReadAll(file)
+	file.Close()
+	if readErr != nil || string(data) != "native managed" { t.Fatalf("native managed bytes = %q err=%v", data, readErr) }
+}
+
+func TestManagedSessionV3ArtifactPackageEntryPrefersRootIndexAndFallsBackToHTML(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		entries []string
+		want    string
+	}{
+		{name: "root index", entries: []string{"variant.html", "index.html"}, want: "index.html"},
+		{name: "fallback html", entries: []string{"assets/site.css", "preview/main.html"}, want: "preview/main.html"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var payload bytes.Buffer
+			writer := zip.NewWriter(&payload)
+			for _, name := range tc.entries {
+				entry, err := writer.Create(name)
+				if err != nil { t.Fatal(err) }
+				if _, err := entry.Write([]byte(name)); err != nil { t.Fatal(err) }
+			}
+			if err := writer.Close(); err != nil { t.Fatal(err) }
+			archive, err := zip.NewReader(bytes.NewReader(payload.Bytes()), int64(payload.Len()))
+			if err != nil { t.Fatal(err) }
+			if got := managedSessionV3ArtifactPackageEntry(archive); got != tc.want { t.Fatalf("entry = %q, want %q", got, tc.want) }
+		})
+	}
+}
+
 func TestLegacyManagedArtifactIDsAreStableAndOpaque(t *testing.T) {
 	collectionA, variantA := sessionsV3LegacyManagedArtifactIDs("session", "plan", "checkpoint", "art_legacy")
 	collectionB, variantB := sessionsV3LegacyManagedArtifactIDs("session", "plan", "checkpoint", "art_legacy")

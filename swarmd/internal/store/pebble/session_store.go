@@ -883,7 +883,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
 		SessionMediaAssetPrefix(session.AccountScopeID, session.ID), SessionMediaBlobPrefix(session.AccountScopeID, session.ID),
 		SessionArtifactCollectionPrefix(session.AccountScopeID, session.ID), SessionArtifactCollectionStatusSessionPrefix(session.AccountScopeID, session.ID),
-		SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantStatusSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantDigestSessionPrefix(session.AccountScopeID, session.ID),
+		SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantStatusSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantDigestSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantLineageSessionPrefix(session.AccountScopeID, session.ID),
 	} {
 		if err := deletePrefixInBatch(batch, prefix); err != nil {
 			return err

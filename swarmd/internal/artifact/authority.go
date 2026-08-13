@@ -36,6 +36,12 @@ type Principal struct {
 	PlanID         string
 	CheckpointID   string
 	AttemptID      string
+	TaskCallID     string
+	ProgramID      string
+	ProgramJobID   string
+	ChildSessionID string
+	IterationID    string
+	IterationIndex int
 }
 
 type CreateInput struct {
@@ -82,22 +88,35 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
 	input.RequestID = strings.TrimSpace(input.RequestID)
 	if input.RequestID == "" { return pebblestore.SessionArtifactVariant{}, errors.New("artifact request id is required") }
-	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, Lineage: a.lineage(principal, input)}
+	lineage := a.lineage(principal, input)
+	collectionLineage := lineage
+	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID = "", "", ""
+	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID, collectionLineage.IterationID, collectionLineage.IterationIndex = "", "", "", 0
+	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, Lineage: lineage}
 	existingStaging := false
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
 	} else if ok {
 		if existing.Status == pebblestore.SessionArtifactStatusReady {
+			if existing.Lineage != lineage {
+				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible lineage", variant.ID)
+			}
 			return existing, nil
 		}
-		if existing.Status != pebblestore.SessionArtifactStatusStaging || existing.Filename != variant.Filename || existing.MediaType != variant.MediaType {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status or metadata", variant.ID)
+		if existing.Status != pebblestore.SessionArtifactStatusStaging || existing.Filename != variant.Filename || existing.MediaType != variant.MediaType || (existing.Lineage != (pebblestore.SessionArtifactLineage{}) && existing.Lineage != lineage) {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, or lineage", variant.ID)
 		}
 		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)
 		if collectionErr != nil { return pebblestore.SessionArtifactVariant{}, collectionErr }
 		if !collectionOK { return pebblestore.SessionArtifactVariant{}, errors.New("artifact staging collection metadata is missing") }
 		collection, variant, existingStaging = storedCollection, existing, true
+		if variant.Lineage == (pebblestore.SessionArtifactLineage{}) {
+			variant.Lineage = lineage
+		}
+		if collection.Lineage == (pebblestore.SessionArtifactLineage{}) {
+			collection.Lineage = collectionLineage
+		}
 	}
 	if !existingStaging {
 		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil {
@@ -126,6 +145,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		return failed, fmt.Errorf("finalize artifact bytes: %w", err)
 	}
 	variant.Filename, variant.MediaType, variant.DigestSHA256, variant.Size, variant.Presentation = blob.Filename, blob.MediaType, blob.DigestSHA256, blob.Size, blob.Presentation
+	collection.Lineage = collectionLineage
 	if _, err := a.mutate(principal, input.RequestID+":ready:"+blob.DigestSHA256, pebblestore.V3SessionMutationFinalizeArtifact, collection, &variant, nil); err != nil {
 		// Finalized bytes may outlive a failed metadata write, but ready metadata is
 		// never published. A retry with the same request and bytes safely converges.
@@ -243,7 +263,16 @@ func (a *Authority) owned(principal Principal) (*Service, Principal, error) {
 }
 
 func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.SessionArtifactLineage {
-	return pebblestore.SessionArtifactLineage{SourceSessionID: principal.SessionID, SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID), RunID: strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID)}
+	childSessionID := strings.TrimSpace(principal.ChildSessionID)
+	sourceSessionID := principal.SessionID
+	if childSessionID != "" { sourceSessionID = childSessionID }
+	return pebblestore.SessionArtifactLineage{
+		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
+		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID),
+		TaskCallID: strings.TrimSpace(principal.TaskCallID), ProgramID: strings.TrimSpace(principal.ProgramID), ProgramJobID: strings.TrimSpace(principal.ProgramJobID),
+		ChildSessionID: childSessionID, IterationID: strings.TrimSpace(principal.IterationID), IterationIndex: principal.IterationIndex,
+		RunID: strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID),
+	}
 }
 
 func (a *Authority) mutate(principal Principal, requestID, kind string, collection pebblestore.SessionArtifactCollection, variant *pebblestore.SessionArtifactVariant, selection *pebblestore.SessionArtifactSelectionReference) (pebblestore.V3SessionMutationResult, error) {
