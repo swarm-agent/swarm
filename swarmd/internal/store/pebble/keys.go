@@ -1063,6 +1063,30 @@ func TaskProgramSessionPrefix(parentSessionID string) string {
 	return fmt.Sprintf("task_program/%s/", keyPart(parentSessionID))
 }
 
+func KeyDelegatedChildLineage(accountScopeID, logicalTaskID string) string {
+	return fmt.Sprintf("delegated_child_lineage/%s/%s", keyPart(accountScopeID), keyPart(logicalTaskID))
+}
+
+func KeyDelegatedChildGeneration(accountScopeID, logicalTaskID string, generation int) string {
+	return fmt.Sprintf("delegated_child_generation/%s/%s/%020d", keyPart(accountScopeID), keyPart(logicalTaskID), generation)
+}
+
+func DelegatedChildGenerationPrefix(accountScopeID, logicalTaskID string) string {
+	return fmt.Sprintf("delegated_child_generation/%s/%s/", keyPart(accountScopeID), keyPart(logicalTaskID))
+}
+
+func KeyDelegatedChildSessionIndex(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("delegated_child_by_session/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
+}
+
+func KeyDelegatedChildHandoff(accountScopeID, logicalTaskID string, predecessorGeneration int) string {
+	return fmt.Sprintf("delegated_child_handoff/%s/%s/%020d", keyPart(accountScopeID), keyPart(logicalTaskID), predecessorGeneration)
+}
+
+func KeyManagedWorktreeOwnerLease(accountScopeID, workspacePath string) string {
+	return fmt.Sprintf("managed_worktree_owner/%s/%s", keyPart(accountScopeID), keyPart(workspacePath))
+}
+
 func KeySessionDeployReservation(sessionID, runID, callID string) string {
 	return fmt.Sprintf("session_deploy_reservation/%s/%s/%s", keyPart(sessionID), keyPart(runID), keyPart(callID))
 }

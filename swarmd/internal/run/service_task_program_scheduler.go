@@ -315,6 +315,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 			job := &blockerRecord.Jobs[index]
 			job.State = update.State
 			job.ChildSessionID = firstNonEmptyString(update.ChildSessionID, job.ChildSessionID)
+			job.CurrentSessionID = firstNonEmptyString(update.CurrentSessionID, job.CurrentSessionID, job.ChildSessionID)
 			job.WorkspacePath = firstNonEmptyString(update.WorkspacePath, job.WorkspacePath)
 			job.WorktreeBranch = firstNonEmptyString(update.WorktreeBranch, job.WorktreeBranch)
 			job.ParentBranch = firstNonEmptyString(update.ParentBranch, job.ParentBranch)
@@ -445,6 +446,9 @@ func (p *taskProgramScheduler) validateManagedDesignerOutcomes(jobs []taskProgra
 
 func (p *taskProgramScheduler) validateManagedDesignerArtifact(jobID, childSessionID string, reference *taskArtifactReference) error {
 	jobID, childSessionID = strings.TrimSpace(jobID), strings.TrimSpace(childSessionID)
+	if index := taskProgramJobIndex(p.record, jobID); index >= 0 {
+		childSessionID = strings.TrimSpace(firstNonEmptyString(p.record.Jobs[index].CurrentSessionID, childSessionID, p.record.Jobs[index].ChildSessionID))
+	}
 	if reference == nil {
 		return fmt.Errorf("managed Designer job %q completed without an artifact reference", jobID)
 	}
@@ -535,7 +539,7 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 				p.expectedParentHead = expectedHead
 				return fmt.Errorf("Coder job %q immutable base %s does not match stage base %s", job.JobID, job.ImmutableStageBase, expectedHead)
 			}
-			children = append(children, worktreeruntime.TaskIntegrationChild{SessionID: job.ChildSessionID, BaseCommit: job.ImmutableStageBase, HeadCommit: job.ChildHead})
+			children = append(children, worktreeruntime.TaskIntegrationChild{SessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), BaseCommit: job.ImmutableStageBase, HeadCommit: job.ChildHead})
 			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobHandoffReady, State: pebblestore.TaskProgramJobIntegrated, IntegrationState: "integrated"})
 		}
 	}
@@ -655,10 +659,10 @@ func taskProgramErrorCode(err error) string {
 func (p *taskProgramScheduler) structuredBlocker(code string, cause error, nextAction, jobID string) pebblestore.TaskProgramBlocker {
 	blocker := pebblestore.TaskProgramBlocker{Code: code, Message: cause.Error(), NextAction: nextAction, RepairAction: nextAction, ProgramID: p.record.ProgramID, ProgramRevision: p.record.Revision + 1, ResumeGeneration: p.record.ResumeGeneration, StageID: p.record.ActiveStageID, JobID: jobID, ExpectedParentHead: firstNonEmptyString(p.expectedParentHead, p.record.ParentHead)}
 	for _, job := range p.record.Jobs {
-		if job.ChildSessionID == "" && job.WorkspacePath == "" && job.ChildHead == "" {
+		if firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID) == "" && job.WorkspacePath == "" && job.ChildHead == "" {
 			continue
 		}
-		blocker.PreservedChildren = append(blocker.PreservedChildren, pebblestore.TaskProgramPreservedChild{JobID: job.JobID, State: job.State, AttemptNumber: job.AttemptNumber, ChildSessionID: job.ChildSessionID, WorkspacePath: job.WorkspacePath, WorktreeBranch: job.WorktreeBranch, ParentBranch: job.ParentBranch, ImmutableStageBase: job.ImmutableStageBase, ChildHead: job.ChildHead, IntegrationState: job.IntegrationState})
+		blocker.PreservedChildren = append(blocker.PreservedChildren, pebblestore.TaskProgramPreservedChild{JobID: job.JobID, State: job.State, AttemptNumber: job.AttemptNumber, ChildSessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), WorkspacePath: job.WorkspacePath, WorktreeBranch: job.WorktreeBranch, ParentBranch: job.ParentBranch, ImmutableStageBase: job.ImmutableStageBase, ChildHead: job.ChildHead, IntegrationState: job.IntegrationState})
 	}
 	if index := taskProgramJobIndex(p.record, jobID); index >= 0 {
 		blocker.AttemptNumber = p.record.Jobs[index].AttemptNumber

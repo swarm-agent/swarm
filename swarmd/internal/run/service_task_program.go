@@ -109,6 +109,10 @@ func taskProgramPresentationPayload(record pebblestore.TaskProgramRecord) map[st
 		if job.ChildSessionID != "" {
 			row["child_session_id"] = strings.TrimSpace(job.ChildSessionID)
 		}
+		if job.CurrentSessionID != "" {
+			row["current_session_id"] = strings.TrimSpace(job.CurrentSessionID)
+			row["current_generation"] = job.CurrentGeneration
+		}
 		if definitionFound {
 			if reference := taskProgramReadyArtifactReference(record, definition, job); reference != nil {
 				row["artifact_reference"] = reference
@@ -218,6 +222,10 @@ func taskProgramStreamMetadata(record pebblestore.TaskProgramRecord) (map[string
 		}
 		if job.ChildSessionID != "" {
 			row["child_session_id"] = strings.TrimSpace(job.ChildSessionID)
+		}
+		if job.CurrentSessionID != "" {
+			row["current_session_id"] = strings.TrimSpace(job.CurrentSessionID)
+			row["current_generation"] = job.CurrentGeneration
 		}
 		if definitionIndex := taskProgramDefinitionJobIndex(record, job.JobID); definitionIndex >= 0 {
 			if reference := taskProgramReadyArtifactReference(record, record.Definition.Jobs[definitionIndex], job); reference != nil {
@@ -354,10 +362,11 @@ func taskProgramResumeLaunches(prepared, prior pebblestore.TaskProgramRecord, sp
 			continue
 		}
 		job := prepared.Jobs[i]
-		if strings.TrimSpace(job.ChildSessionID) == "" {
+		currentSessionID := strings.TrimSpace(firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID))
+		if currentSessionID == "" {
 			continue
 		}
-		launches[i].ResumeChildSessionID = strings.TrimSpace(job.ChildSessionID)
+		launches[i].ResumeChildSessionID = currentSessionID
 		launches[i].ResumeWorkspacePath = strings.TrimSpace(job.WorkspacePath)
 		launches[i].ResumeWorktreeBranch = strings.TrimSpace(job.WorktreeBranch)
 		launches[i].ResumeImmutableBase = strings.TrimSpace(job.ImmutableStageBase)
@@ -454,19 +463,20 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 		}
 		definition := record.Definition.Jobs[definitionIndex]
 		childCompleted := false
-		if strings.TrimSpace(job.ChildSessionID) != "" {
-			lifecycle, ok, lifecycleErr := s.GetSessionLifecycle(job.ChildSessionID)
+		currentChildSessionID := strings.TrimSpace(firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID))
+		if currentChildSessionID != "" {
+			lifecycle, ok, lifecycleErr := s.GetSessionLifecycle(currentChildSessionID)
 			if lifecycleErr != nil {
 				return record, 0, fmt.Errorf("inspect task program child %q lifecycle: %w", job.JobID, lifecycleErr)
 			}
 			if ok {
 				if lifecycle.Active || isLifecycleActivePhase(lifecycle.Phase) {
-					return record, 0, fmt.Errorf("task program job %q child session %s is still active; wait for its durable outcome before resuming", job.JobID, job.ChildSessionID)
+					return record, 0, fmt.Errorf("task program job %q child session %s is still active; wait for its durable outcome before resuming", job.JobID, currentChildSessionID)
 				}
 				childCompleted = strings.EqualFold(strings.TrimSpace(lifecycle.Phase), lifecyclePhaseCompleted)
 			}
 		}
-		if !agentruntime.IsCoderAgentName(definition.AgentType) || job.ChildSessionID == "" || job.WorkspacePath == "" {
+		if !agentruntime.IsCoderAgentName(definition.AgentType) || currentChildSessionID == "" || job.WorkspacePath == "" {
 			nextState, integration := pebblestore.TaskProgramJobDeclared, "resume_existing_child"
 			if childCompleted {
 				if taskProgramDefinitionUsesManagedDesigner(definition) {
@@ -480,8 +490,8 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 						return record, 0, fmt.Errorf("inspect completed managed Designer job %q artifact: %w", job.JobID, artifactErr)
 					}
 					lineage := variant.Lineage
-					lineageSourceMatches := lineage.SourceSessionID == job.ChildSessionID || (lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
-					if !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.SessionID != parent.ID || variant.AccountScopeID != parent.AccountScopeID || lineage.ParentSessionID != parent.ID || !lineageSourceMatches || lineage.ChildSessionID != job.ChildSessionID || lineage.TaskCallID != record.ReservationCallID || lineage.ProgramID != record.ProgramID || lineage.ProgramJobID != job.JobID {
+					lineageSourceMatches := lineage.SourceSessionID == currentChildSessionID || (lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
+					if !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.SessionID != parent.ID || variant.AccountScopeID != parent.AccountScopeID || lineage.ParentSessionID != parent.ID || !lineageSourceMatches || lineage.ChildSessionID != currentChildSessionID || lineage.TaskCallID != record.ReservationCallID || lineage.ProgramID != record.ProgramID || lineage.ProgramJobID != job.JobID {
 						return record, 0, fmt.Errorf("task program job %q completed without a valid ready managed artifact; resume the existing child to repair the handoff", job.JobID)
 					}
 					nextState, integration = pebblestore.TaskProgramJobCompleted, "artifact_ready"
@@ -552,7 +562,9 @@ func taskProgramRunningTransitions(spec *taskProgramSpec, prepared []taskLaunchP
 		updates = append(updates, pebblestore.TaskProgramJobTransition{
 			JobID: spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning,
 			AttemptNumber: 1, ResumeGeneration: generation, ChildSessionID: launch.ChildSession.ID,
-			WorkspacePath: launch.ChildSession.WorkspacePath, WorktreeBranch: launch.ChildSession.WorktreeBranch,
+			CurrentSessionID: launch.ChildSession.ID, CurrentGeneration: 1,
+			GenerationHistory: []pebblestore.TaskProgramJobGeneration{{Generation: 1, SessionID: launch.ChildSession.ID, State: pebblestore.DelegatedChildGenerationActive}},
+			WorkspacePath:     launch.ChildSession.WorkspacePath, WorktreeBranch: launch.ChildSession.WorktreeBranch,
 			ImmutableStageBase: func() string {
 				if launch.TaskBase != nil {
 					return launch.TaskBase.BaseCommit
@@ -640,7 +652,7 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 		}
 		updates = append(updates, pebblestore.TaskProgramJobTransition{
 			JobID: spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobRunning, State: state,
-			ChildSessionID: outcome.ChildSessionID, WorkspacePath: outcome.WorkspacePath, WorktreeBranch: outcome.WorktreeBranch,
+			ChildSessionID: outcome.ChildSessionID, CurrentSessionID: outcome.ChildSessionID, WorkspacePath: outcome.WorkspacePath, WorktreeBranch: outcome.WorktreeBranch,
 			ParentBranch: outcome.ParentBranch, ImmutableStageBase: outcome.BaseCommit, ChildHead: outcome.HeadCommit,
 			IntegrationState: integration, Blocker: blocker,
 		})

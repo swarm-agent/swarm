@@ -87,20 +87,34 @@ type TaskProgramJobSpec struct {
 }
 
 type TaskProgramJobRecord struct {
-	JobID              string              `json:"job_id"`
-	StageID            string              `json:"stage_id"`
-	State              string              `json:"state"`
-	AttemptNumber      int                 `json:"attempt_number"`
-	ResumeGeneration   int                 `json:"resume_generation"`
-	ChildSessionID     string              `json:"child_session_id,omitempty"`
-	WorkspacePath      string              `json:"workspace_path,omitempty"`
-	WorktreeBranch     string              `json:"worktree_branch,omitempty"`
-	ParentBranch       string              `json:"parent_branch,omitempty"`
-	ImmutableStageBase string              `json:"immutable_stage_base,omitempty"`
-	ChildHead          string              `json:"child_head,omitempty"`
-	IntegrationState   string              `json:"integration_state,omitempty"`
-	Blocker            *TaskProgramBlocker `json:"blocker,omitempty"`
-	UpdatedAt          int64               `json:"updated_at"`
+	JobID              string                     `json:"job_id"`
+	StageID            string                     `json:"stage_id"`
+	State              string                     `json:"state"`
+	AttemptNumber      int                        `json:"attempt_number"`
+	ResumeGeneration   int                        `json:"resume_generation"`
+	ChildSessionID     string                     `json:"child_session_id,omitempty"`
+	CurrentSessionID   string                     `json:"current_session_id,omitempty"`
+	CurrentGeneration  int                        `json:"current_generation,omitempty"`
+	GenerationHistory  []TaskProgramJobGeneration `json:"generation_history,omitempty"`
+	WorkspacePath      string                     `json:"workspace_path,omitempty"`
+	WorktreeBranch     string                     `json:"worktree_branch,omitempty"`
+	ParentBranch       string                     `json:"parent_branch,omitempty"`
+	ImmutableStageBase string                     `json:"immutable_stage_base,omitempty"`
+	ChildHead          string                     `json:"child_head,omitempty"`
+	IntegrationState   string                     `json:"integration_state,omitempty"`
+	Blocker            *TaskProgramBlocker        `json:"blocker,omitempty"`
+	UpdatedAt          int64                      `json:"updated_at"`
+}
+
+type TaskProgramJobGeneration struct {
+	Generation           int    `json:"generation"`
+	SessionID            string `json:"session_id"`
+	RunID                string `json:"run_id,omitempty"`
+	State                string `json:"state"`
+	PredecessorSessionID string `json:"predecessor_session_id,omitempty"`
+	SuccessorSessionID   string `json:"successor_session_id,omitempty"`
+	StartedAt            int64  `json:"started_at"`
+	FinishedAt           int64  `json:"finished_at,omitempty"`
 }
 
 type TaskProgramBlocker struct {
@@ -153,6 +167,9 @@ type TaskProgramJobTransition struct {
 	AttemptNumber      int
 	ResumeGeneration   int
 	ChildSessionID     string
+	CurrentSessionID   string
+	CurrentGeneration  int
+	GenerationHistory  []TaskProgramJobGeneration
 	WorkspacePath      string
 	WorktreeBranch     string
 	ParentBranch       string
@@ -332,6 +349,15 @@ func applyTaskProgramJobTransition(job *TaskProgramJobRecord, update TaskProgram
 	if value := strings.TrimSpace(update.ChildSessionID); value != "" {
 		job.ChildSessionID = value
 	}
+	if value := strings.TrimSpace(update.CurrentSessionID); value != "" {
+		job.CurrentSessionID = value
+	}
+	if update.CurrentGeneration > 0 {
+		job.CurrentGeneration = update.CurrentGeneration
+	}
+	if update.GenerationHistory != nil {
+		job.GenerationHistory = append([]TaskProgramJobGeneration(nil), update.GenerationHistory...)
+	}
 	if value := strings.TrimSpace(update.WorkspacePath); value != "" {
 		job.WorkspacePath = value
 	}
@@ -373,6 +399,18 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 	}
 	if len([]rune(record.NextAction)) > maxTaskProgramTextRunes {
 		return errors.New("task program next action exceeds bounded storage limit")
+	}
+	for i := range record.Jobs {
+		job := &record.Jobs[i]
+		if job.CurrentSessionID == "" {
+			job.CurrentSessionID = job.ChildSessionID
+		}
+		if job.CurrentGeneration == 0 && job.CurrentSessionID != "" {
+			job.CurrentGeneration = 1
+		}
+		if len(job.GenerationHistory) > maxDelegatedChildGenerationHistory {
+			return fmt.Errorf("task program job %q exceeds bounded generation history", job.JobID)
+		}
 	}
 	for _, job := range record.Definition.Jobs {
 		if len(job.OwnedScope) > maxTaskProgramScopeRows || len(job.AcceptanceCriteria) > maxTaskProgramScopeRows || len([]rune(job.MetaPrompt)) > maxTaskProgramTextRunes || len([]rune(job.Deliverable)) > maxTaskProgramTextRunes {

@@ -188,14 +188,57 @@ type worktreeService interface {
 	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 }
 
+type RunContinuationBoundaryDecision struct {
+	Kind         string
+	Reason       string
+	UsageSummary *pebblestore.SessionUsageSummary
+}
+
+type RunContinuationBoundaryInput struct {
+	SessionID    string
+	RunID        string
+	Provider     string
+	Model        string
+	Step         int
+	ToolCalls    int
+	UsageSummary *pebblestore.SessionUsageSummary
+}
+
+type RunContinuationBoundaryCallback func(RunContinuationBoundaryInput) (RunContinuationBoundaryDecision, error)
+
+const RunContinuationBoundaryTaskRotation = "task_context_rotation"
+
+// TaskRotationBoundaryError is a typed, non-failure handoff to Task
+// orchestration. It is returned only after the triggering response's tool calls
+// and durable tool messages have completed.
+type TaskRotationBoundaryError struct {
+	Decision RunContinuationBoundaryDecision
+}
+
+func (e *TaskRotationBoundaryError) Error() string {
+	if e == nil {
+		return "task context rotation requested"
+	}
+	if reason := strings.TrimSpace(e.Decision.Reason); reason != "" {
+		return "task context rotation requested: " + reason
+	}
+	return "task context rotation requested"
+}
+
+func IsTaskRotationBoundary(err error) bool {
+	var typed *TaskRotationBoundaryError
+	return errors.As(err, &typed)
+}
+
 type RunOptions struct {
-	Prompt        string
-	AgentName     string
-	Instructions  string
-	Compact       bool
-	CompactOrigin string
-	AllowSubagent bool
-	DisabledTools map[string]bool
+	Prompt               string
+	AgentName            string
+	Instructions         string
+	Compact              bool
+	CompactOrigin        string
+	AllowSubagent        bool
+	DisabledTools        map[string]bool
+	ContinuationBoundary RunContinuationBoundaryCallback
 	// TrustedAgentProfile is populated only by trusted internal orchestration.
 	TrustedAgentProfile   *pebblestore.AgentProfile
 	PermissionSessionID   string
@@ -883,7 +926,10 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		TargetKind: RunTargetKindSubagent,
 		TargetName: launch.SubagentProfile.Name,
 		AgentName:  launch.SubagentProfile.Name,
-	}, delegatedSubagentRunStartMeta(launch, parentSession.ID, options.Principal, options.ApplySessionMutation), func(event StreamEvent) {
+	}, func() RunStartMeta {
+		launch.ContextWatcher = newTaskContextWatcher(s.sessions, launch)
+		return delegatedSubagentRunStartMeta(launch, parentSession.ID, options.Principal, options.ApplySessionMutation)
+	}(), func(event StreamEvent) {
 		switch strings.TrimSpace(event.Type) {
 		case StreamEventStepStarted:
 			taskStep = maxInt(taskStep, maxInt(1, event.Step))
@@ -1077,7 +1123,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			return
 		}
 		terminalErrText := ""
-		if snapshot, changed, err := s.finishSessionLifecycle(sessionID, runID, runErr); err == nil && changed {
+		lifecycleErr := runErr
+		if IsTaskRotationBoundary(runErr) {
+			lifecycleErr = nil
+		}
+		if snapshot, changed, err := s.finishSessionLifecycle(sessionID, runID, lifecycleErr); err == nil && changed {
 			emitLifecycleSnapshot(emit, snapshot)
 			if strings.TrimSpace(snapshot.Error) != "" {
 				terminalErrText = strings.TrimSpace(snapshot.Error)
@@ -1085,7 +1135,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				terminalErrText = strings.TrimSpace(snapshot.StopReason)
 			}
 		}
-		if runErr == nil || errors.Is(runErr, context.Canceled) {
+		if runErr == nil || errors.Is(runErr, context.Canceled) || IsTaskRotationBoundary(runErr) {
 			return
 		}
 		if terminalErrText == "" {
@@ -1662,6 +1712,33 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return true, nil
 	}
 
+	checkContinuationBoundary := func(step, toolCalls int) error {
+		if options.ContinuationBoundary == nil {
+			return nil
+		}
+		var summaryCopy *pebblestore.SessionUsageSummary
+		if usageSummaryState != nil {
+			copy := *usageSummaryState
+			summaryCopy = &copy
+		}
+		decision, boundaryErr := options.ContinuationBoundary(RunContinuationBoundaryInput{
+			SessionID: sessionID, RunID: runID, Provider: providerID,
+			Model: resolvedPreference.Preference.Model, Step: step, ToolCalls: toolCalls,
+			UsageSummary: summaryCopy,
+		})
+		if boundaryErr != nil {
+			return boundaryErr
+		}
+		switch strings.TrimSpace(decision.Kind) {
+		case "":
+			return nil
+		case RunContinuationBoundaryTaskRotation:
+			return &TaskRotationBoundaryError{Decision: decision}
+		default:
+			return fmt.Errorf("unsupported run continuation boundary decision %q", decision.Kind)
+		}
+	}
+
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
@@ -2114,6 +2191,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 
 		if response.RestartTurn {
+			if boundaryErr := checkContinuationBoundary(step, len(response.FunctionCalls)); boundaryErr != nil {
+				return RunResult{}, boundaryErr
+			}
 			if checkpointRunContext {
 				input = append([]map[string]any(nil), checkpointRunInput...)
 			} else {
@@ -2143,6 +2223,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				if refusalErr := planContextGuard.recordRefusal(); refusalErr != nil {
 					return RunResult{}, refusalErr
 				}
+				if boundaryErr := checkContinuationBoundary(step, 0); boundaryErr != nil {
+					return RunResult{}, boundaryErr
+				}
 				continue
 			}
 			// Let the model decide loop length:
@@ -2161,11 +2244,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			if responseText == "" && stepReasoningSummary != "" {
 				emptyStepRetries = 0
+				if boundaryErr := checkContinuationBoundary(step, 0); boundaryErr != nil {
+					return RunResult{}, boundaryErr
+				}
 				continue
 			}
 			if responseText == "" {
 				emptyStepRetries++
 				if emptyStepRetries <= emptyStepRetryLimit {
+					if boundaryErr := checkContinuationBoundary(step, 0); boundaryErr != nil {
+						return RunResult{}, boundaryErr
+					}
 					retryDelay := emptyStepRetryDelay(emptyStepRetries)
 					if err := waitForRetryDelay(ctx, retryDelay); err != nil {
 						return RunResult{}, err
@@ -2635,6 +2724,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 
 		input = append(input, nextInput...)
+		if boundaryErr := checkContinuationBoundary(step, len(toolCalls)); boundaryErr != nil {
+			return RunResult{}, boundaryErr
+		}
 	}
 
 	assistantMessage, flushedFinalAssistant, err := flushAssistantFragments(stepsCompleted)

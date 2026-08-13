@@ -56,11 +56,20 @@ type taskLaunchPrepared struct {
 	IntegrationContract  string
 	IntegrationRequired  bool
 	ArtifactRunContext   *tool.ArtifactRunContext
+	ContextWatcher       *taskContextWatcher
+	ContinuationBoundary RunContinuationBoundaryCallback
+	LogicalTaskID        string
+	TaskCallID           string
+	ParentRunID          string
+	PermissionSessionID  string
+	ReservationSessionID string
+	ProgramID            string
+	ProgramJobID         string
 }
 
 func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
 	profile := launch.SubagentProfile
-	return RunStartMeta{
+	meta := RunStartMeta{
 		AllowSubagent:        true,
 		TrustedAgentProfile:  &profile,
 		PermissionSessionID:  strings.TrimSpace(permissionSessionID),
@@ -68,6 +77,12 @@ func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionI
 		ApplySessionMutation: applySessionMutation,
 		ArtifactRunContext:   cloneArtifactRunContext(launch.ArtifactRunContext),
 	}
+	if launch.ContinuationBoundary != nil {
+		meta.ContinuationBoundary = launch.ContinuationBoundary
+	} else if launch.ContextWatcher != nil {
+		meta.ContinuationBoundary = launch.ContextWatcher.Boundary
+	}
+	return meta
 }
 
 type taskLaunchOutcome struct {
@@ -831,23 +846,38 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
+	if logicalTaskID := strings.TrimSpace(launch.LogicalTaskID); logicalTaskID != "" && strings.TrimSpace(parentSession.AccountScopeID) != "" {
+		childSessionID = deterministicDelegatedChildSessionID(parentSession.AccountScopeID, logicalTaskID, 1)
+	}
 	isDesignerTarget := agentruntime.IsDesignerAgentName(requestedSubagent)
 	childMetadata := map[string]any{
-		"workspace_id":       worktreeruntime.WorkspaceIdentityForSession(childSessionID),
-		"runtime_state":      "standby",
-		"title_pending":      false,
-		"title_locked":       true,
-		"assignment_label":   assignmentLabel,
-		"subagent_provider":  strings.TrimSpace(preference.Provider),
-		"subagent_model":     strings.TrimSpace(preference.Model),
-		"parent_session_id":  strings.TrimSpace(parentSession.ID),
-		"parent_title":       strings.TrimSpace(parentSession.Title),
-		"lineage_kind":       "delegated_subagent",
-		"lineage_label":      "@" + strings.TrimSpace(subagentProfile.Name),
-		"launch_source":      "task",
-		"launch_index":       launch.LaunchIndex,
-		"requested_subagent": requestedSubagent,
-		"subagent":           strings.TrimSpace(subagentProfile.Name),
+		"workspace_id":             worktreeruntime.WorkspaceIdentityForSession(childSessionID),
+		"runtime_state":            "standby",
+		"title_pending":            false,
+		"title_locked":             true,
+		"assignment_label":         assignmentLabel,
+		"subagent_provider":        strings.TrimSpace(preference.Provider),
+		"subagent_model":           strings.TrimSpace(preference.Model),
+		"parent_session_id":        strings.TrimSpace(parentSession.ID),
+		"parent_title":             strings.TrimSpace(parentSession.Title),
+		"lineage_kind":             "delegated_subagent",
+		"lineage_label":            "@" + strings.TrimSpace(subagentProfile.Name),
+		"launch_source":            "task",
+		"launch_index":             launch.LaunchIndex,
+		"requested_subagent":       requestedSubagent,
+		"subagent":                 strings.TrimSpace(subagentProfile.Name),
+		"context_generation":       1,
+		"context_generation_state": pebblestore.DelegatedChildGenerationActive,
+		"logical_task_id":          strings.TrimSpace(launch.LogicalTaskID),
+		"parent_task_call_id":      strings.TrimSpace(launch.TaskCallID),
+		"parent_run_id":            strings.TrimSpace(launch.ParentRunID),
+		"permission_session_id":    strings.TrimSpace(launch.PermissionSessionID),
+		"reservation_session_id":   strings.TrimSpace(launch.ReservationSessionID),
+		"reservation_run_id":       strings.TrimSpace(launch.ParentRunID),
+		"reservation_call_id":      strings.TrimSpace(launch.TaskCallID),
+		"task_program_id":          strings.TrimSpace(launch.ProgramID),
+		"task_program_job_id":      strings.TrimSpace(launch.ProgramJobID),
+		"original_assignment":      strings.TrimSpace(firstNonEmptyString(launch.MetaPrompt, description)),
 	}
 	if len(launch.OwnedScope) > 0 {
 		childMetadata["owned_scope"] = append([]string(nil), launch.OwnedScope...)
@@ -1016,6 +1046,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 	if created.Session != nil {
 		childSession = *created.Session
+	}
+	generationRecord := delegatedGenerationRecordFromCurrentLaunch(launch, childSession)
+	lineage, _, lineageErr := s.sessions.CreateDelegatedChildLineage(pebblestore.DelegatedChildLineageRecord{
+		AccountScopeID: childSession.AccountScopeID, LogicalTaskID: launch.LogicalTaskID,
+		ProgramID: launch.ProgramID, JobID: launch.ProgramJobID,
+	}, generationRecord, "delegated-child-create:"+strings.TrimSpace(launch.LogicalTaskID))
+	if lineageErr != nil {
+		return taskLaunchPrepared{}, fmt.Errorf("establish delegated child generation authority: %w", lineageErr)
+	}
+	if lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != childSession.ID {
+		return taskLaunchPrepared{}, errors.New("delegated child creation did not acquire generation-one ownership")
 	}
 
 	launch.RequestedSubagent = requestedSubagent
@@ -4017,21 +4058,31 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		launchInput := taskLaunchPrepared{
-			LaunchIndex:         i + 1,
-			VirtualTarget:       trustedVirtualTargets[i],
-			TaskBase:            launchTaskBase,
-			RequestedSubagent:   requestedSubagent,
-			MetaPrompt:          metaPrompt,
-			AssignmentLabel:     spec.AssignmentLabel,
-			OwnedScope:          append([]string(nil), spec.OwnedScope...),
-			OutputMode:          strings.TrimSpace(spec.OutputMode),
-			StreamKey:           strings.TrimSpace(spec.StreamKey),
-			SwarmMode:           spec.SwarmMode,
-			SwarmStrategy:       strings.TrimSpace(spec.SwarmStrategy),
-			AssemblyPart:        spec.AssemblyPart,
-			IntegrationContract: strings.TrimSpace(spec.IntegrationContract),
-			IntegrationRequired: strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
-			ArtifactRunContext:  managedArtifactContext,
+			LaunchIndex:          i + 1,
+			VirtualTarget:        trustedVirtualTargets[i],
+			TaskBase:             launchTaskBase,
+			RequestedSubagent:    requestedSubagent,
+			MetaPrompt:           metaPrompt,
+			AssignmentLabel:      spec.AssignmentLabel,
+			OwnedScope:           append([]string(nil), spec.OwnedScope...),
+			OutputMode:           strings.TrimSpace(spec.OutputMode),
+			StreamKey:            strings.TrimSpace(spec.StreamKey),
+			SwarmMode:            spec.SwarmMode,
+			SwarmStrategy:        strings.TrimSpace(spec.SwarmStrategy),
+			AssemblyPart:         spec.AssemblyPart,
+			IntegrationContract:  strings.TrimSpace(spec.IntegrationContract),
+			IntegrationRequired:  strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
+			ArtifactRunContext:   managedArtifactContext,
+			LogicalTaskID:        taskCallID + ":" + fmt.Sprint(i+1),
+			TaskCallID:           taskCallID,
+			ParentRunID:          req.RunID,
+			PermissionSessionID:  firstNonEmptyString(req.PermissionSessionID, parentSession.ID),
+			ReservationSessionID: parentSession.ID,
+		}
+		if programID := strings.TrimSpace(mapString(spec.SourceArguments, "program_id")); programID != "" {
+			launchInput.ProgramID = programID
+			launchInput.ProgramJobID = strings.TrimSpace(mapString(spec.SourceArguments, "program_job_id"))
+			launchInput.LogicalTaskID = parentSession.ID + ":" + programID + ":" + launchInput.ProgramJobID
 		}
 		var launch taskLaunchPrepared
 		var prepareErr error
@@ -4043,6 +4094,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if prepareErr != nil {
 			return "", prepareErr
 		}
+		launch.ContextWatcher = newTaskContextWatcher(s.sessions, launch)
 		prepared = append(prepared, launch)
 	}
 
@@ -4231,22 +4283,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				ArtifactRunContext:   launch.ArtifactRunContext,
 			})
 		}
-		subResult, runErr := s.RunTurnStreaming(runCtx, launch.ChildSession.ID, RunRequest{
-			Prompt:     delegatedPrompt,
-			TargetKind: RunTargetKindSubagent,
-			TargetName: launch.SubagentProfile.Name,
-			AgentName:  launch.SubagentProfile.Name,
-		}, func() RunStartMeta {
-			meta := delegatedSubagentRunStartMeta(launch, sessionID, req.Principal, req.ApplySessionMutation)
-			meta.DisabledTools = taskDisabledTools(agentruntime.IsCoderAgentName(launch.RequestedSubagent))
-			if launch.ArtifactRunContext != nil {
-				meta.DisabledTools["write"] = true
-				meta.DisabledTools["edit"] = true
-			}
-			return meta
-		}(), func(event StreamEvent) {
+		var subResult RunResult
+		var runErr error
+		launch, subResult, runErr = s.runDelegatedLogicalLaunch(runCtx, launch, delegatedPrompt, sessionID, req.Principal, req.ApplySessionMutation, func(event StreamEvent) {
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {
+			case StreamEventUsageUpdated:
+				launch.ContextWatcher.Observe(event.UsageSummary)
 			case StreamEventStepStarted:
 				if strings.TrimSpace(outcome.Phase) == "" || strings.EqualFold(strings.TrimSpace(outcome.Phase), "spawned") {
 					emitTaskProgress("running", "", outcome)
@@ -4314,7 +4357,23 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				}
 			}
 		})
+		outcome.ChildSessionID = launch.ChildSession.ID
+		outcome.WorkspacePath = launch.ChildSession.WorkspacePath
+		outcome.WorktreeRootPath = launch.ChildSession.WorktreeRootPath
+		outcome.WorktreeBranch = launch.ChildSession.WorktreeBranch
 		if runErr != nil {
+			if IsRecoverableTaskHandoffError(runErr) {
+				nowMS := time.Now().UnixMilli()
+				if outcome.LaunchStartedAtMS <= 0 {
+					outcome.LaunchStartedAtMS = nowMS
+				}
+				outcome.ElapsedMS = maxInt64(0, nowMS-outcome.LaunchStartedAtMS)
+				outcome.Error = boundedTaskLaunchReason(runErr.Error())
+				outcome.Reason = "recoverable_context_handoff_failure"
+				outcome.Summary = fmt.Sprintf("launch %d context handoff failed recoverably; predecessor remains current (session %s): %s", outcome.LaunchIndex, outcome.ChildSessionID, outcome.Error)
+				emitTaskProgress("blocked", outcome.Summary, outcome)
+				return outcome, runErr
+			}
 			if outcome.ArtifactReference != nil && outcome.ArtifactReference.Status == "pending" {
 				outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
 				outcome.ArtifactReference.FailureCode = "child_run_failed"
@@ -4411,7 +4470,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			lineageMatches := variant.AccountScopeID == parentSession.AccountScopeID && variant.SessionID == parentSession.ID &&
 				lineage.ParentSessionID == parentSession.ID &&
 				lineageSourceMatches &&
-				lineage.ChildSessionID == launch.ChildSession.ID &&
+				(lineage.ChildSessionID == launch.ChildSession.ID || lineage.ChildSessionID == strings.TrimSpace(mapString(launch.ChildSession.Metadata, "predecessor_session_id"))) &&
 				lineage.TaskCallID == launch.ArtifactRunContext.TaskCallID &&
 				lineage.ProgramID == launch.ArtifactRunContext.ProgramID &&
 				lineage.ProgramJobID == launch.ArtifactRunContext.ProgramJobID &&
