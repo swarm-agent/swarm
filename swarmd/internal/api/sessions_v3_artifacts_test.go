@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
@@ -451,6 +453,68 @@ func mustSession(t *testing.T, server *Server, sessionID string) pebblestore.Ses
 		t.Fatalf("get session: ok=%t err=%v", ok, err)
 	}
 	return session
+}
+
+func TestSessionsV3ArtifactMessageSelectionContract(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "legacy file")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+		RequestID: "message-ref-create", CollectionID: "message-ref-collection", CollectionName: "Review variants", VariantID: "message-ref-variant", Filename: "review.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Review choice", Description: "Chosen design"}, Body: []byte("private artifact bytes"),
+	})
+	if err != nil { t.Fatal(err) }
+	selection := pebblestore.SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Action: "use"}
+	accepted, job, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-accepted", Role: "user", Content: "Use this design", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{selection}})
+	if err != nil || job != nil || accepted.Message == nil || len(accepted.Message.ArtifactSelections) != 1 { t.Fatalf("accept artifact message: result=%+v job=%+v err=%v", accepted, job, err) }
+	stored := accepted.Message.ArtifactSelections[0]
+	if stored.Label != "Review choice" || stored.Description != "Chosen design" || stored.EventSeq != variant.EventSeq { t.Fatalf("stored normalized selection = %+v", stored) }
+	encoded, err := json.Marshal(accepted.Message)
+	if err != nil { t.Fatal(err) }
+	if bytes.Contains(encoded, []byte("private artifact bytes")) || bytes.Contains(encoded, []byte("private-data")) { t.Fatalf("message leaked artifact bytes or private path: %s", encoded) }
+
+	replayed, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-accepted", Role: "user", Content: "Use this design", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{selection}})
+	if err != nil || !replayed.Replayed { t.Fatalf("idempotent replay = replayed=%t err=%v", replayed.Replayed, err) }
+	changed := selection; changed.Action = "select"
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-accepted", Role: "user", Content: "Use this design", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{changed}}); err == nil || !errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) { t.Fatalf("changed selection idempotency error = %v", err) }
+	stale := selection
+	stale.EventSeq++
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-stale", Role: "user", Content: "Use stale", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{stale}}); err == nil || !strings.Contains(err.Error(), "stale") { t.Fatalf("stale selection error = %v", err) }
+	other, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: "other-owned-session", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: "Other", WorkspacePath: t.TempDir()})
+	if err != nil { t.Fatal(err) }
+	crossSession := selection; crossSession.SessionID = other.ID
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-cross-session", Role: "user", Content: "Use mismatched session", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{crossSession}}); err == nil { t.Fatal("cross-session artifact selection was accepted") }
+	wrong := principal
+	wrong.AccountScopeID = "account-2"
+	if _, _, err := server.acceptSessionsV3Message(wrong, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-cross-account", Role: "user", Content: "Use foreign", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{selection}}); err == nil { t.Fatal("cross-account artifact selection was accepted") }
+	tooMany := make([]pebblestore.SessionArtifactSelectionReference, pebblestore.SessionArtifactMaxMessageSelections+1)
+	for i := range tooMany { tooMany[i] = selection }
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-bounds", Role: "user", Content: "Too many", ArtifactSelections: tooMany}); err == nil || !strings.Contains(err.Error(), "count limit") { t.Fatalf("selection bounds error = %v", err) }
+}
+
+func TestSessionV3ArtifactSelectionActionPersistsThroughMutation(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "legacy file")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{RequestID: "action-create", CollectionID: "action-collection", CollectionName: "Actions", VariantID: "action-variant", Filename: "action.txt", MediaType: "text/plain", Body: []byte("ready")})
+	if err != nil { t.Fatal(err) }
+	body := bytes.NewBufferString(fmt.Sprintf(`{"client_request_id":"select-action","event_seq":%d,"action":"use"}`, variant.EventSeq))
+	req := httptest.NewRequest("POST", "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/selection", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != 200 { t.Fatalf("selection status=%d body=%s", rec.Code, rec.Body.String()) }
+	var response struct { Selection pebblestore.SessionArtifactSelectionReference `json:"selection"` }
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil { t.Fatal(err) }
+	if response.Selection.VariantID != variant.ID || response.Selection.EventSeq <= variant.EventSeq || response.Selection.Action != "use" { t.Fatalf("selection response = %+v", response.Selection) }
+	if !strings.Contains(response.Selection.Label, "Actions") && !strings.Contains(response.Selection.Label, "action.txt") { t.Fatalf("selection label = %q", response.Selection.Label) }
+	collection, ok, err := sessionSvc.GetSessionArtifactCollection(principal.AccountScopeID, variant.SessionID, variant.CollectionID)
+	if err != nil || !ok || collection.SelectedVariantID != variant.ID || collection.EventSeq != response.Selection.EventSeq { t.Fatalf("selected collection = %+v ok=%t err=%v", collection, ok, err) }
+	body = bytes.NewBufferString(`{"client_request_id":"select-action-stale","event_seq":0,"action":"select"}`)
+	req = httptest.NewRequest("POST", "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/selection", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "event sequence") { t.Fatalf("stale selection status=%d body=%s", rec.Code, rec.Body.String()) }
 }
 
 func TestBuildSessionV3LegacyArtifactPackageRejectsSymlinkAndPreservesFiles(t *testing.T) {

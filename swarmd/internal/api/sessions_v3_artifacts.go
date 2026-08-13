@@ -103,6 +103,7 @@ type sessionsV3ArtifactCatalogItem struct {
 	Selected        bool                                  `json:"selected,omitempty"`
 	Category        string                                `json:"category"`
 	UpdatedAt       int64                                 `json:"updated_at"`
+	EventSeq        uint64                                `json:"event_seq,omitempty"`
 	Progress        *sessionsV3ArtifactCollectionProgress `json:"progress,omitempty"`
 	Lineage         *pebblestore.SessionArtifactLineage  `json:"lineage,omitempty"`
 	Content         string                                `json:"content,omitempty"`
@@ -193,7 +194,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename), Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
 						Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
 						Previewable: previewable, Selected: collection.SelectedVariantID == variant.ID,
-						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, Progress: &progress, Lineage: &lineage,
+						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage,
 					})
 				}
 			}
@@ -442,6 +443,109 @@ func (s *Server) validateSessionV3ArtifactPreviewRequest(r *http.Request) (ident
 		TokenExpires:       time.Unix(claims.ExpiresAt, 0),
 	}
 	return principal, principal.Valid()
+}
+
+func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, artifactID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if s == nil || s.sessions == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("sessions v3 service is not configured"))
+		return
+	}
+	if _, found, err := s.requireSessionV3Access(principal, sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	} else if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	var req struct {
+		ClientRequestID string `json:"client_request_id"`
+		EventSeq        uint64 `json:"event_seq"`
+		Action          string `json:"action,omitempty"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.ClientRequestID = strings.TrimSpace(req.ClientRequestID)
+	if req.ClientRequestID == "" || len(req.ClientRequestID) > 256 {
+		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required and must be 256 characters or fewer"))
+		return
+	}
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	if action == "" { action = "select" }
+	if action != "select" && action != "use" {
+		writeError(w, http.StatusBadRequest, errors.New("artifact selection action must be select or use"))
+		return
+	}
+	variant, found, err := s.sessions.GetSessionArtifactVariantByID(principal.AccountScopeID, sessionID, artifactID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found || variant.Status != pebblestore.SessionArtifactStatusReady {
+		writeError(w, http.StatusBadRequest, errors.New("only a ready artifact variant can be selected"))
+		return
+	}
+	if req.EventSeq == 0 || req.EventSeq != variant.EventSeq {
+		writeError(w, http.StatusBadRequest, errors.New("artifact selection event sequence is required and must match the ready variant"))
+		return
+	}
+	collection, found, err := s.sessions.GetSessionArtifactCollection(principal.AccountScopeID, sessionID, variant.CollectionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusBadRequest, errors.New("artifact collection was not found"))
+		return
+	}
+	selection := &pebblestore.SessionArtifactSelectionReference{
+		SessionID: sessionID, CollectionID: collection.ID, VariantID: variant.ID, EventSeq: req.EventSeq, Action: action,
+		Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename),
+		Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
+	}
+	payloadHash, err := sessionsV3ArtifactSelectionPayloadHash(sessionID, action, *selection)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		ClientRequestID: req.ClientRequestID, IdempotencyKey: req.ClientRequestID,
+		PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationSelectArtifact,
+		Artifact: &pebblestore.V3ArtifactMutation{Collection: collection, Selection: selection}, NowUnixMs: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "idempotency_conflict", "error": err.Error()})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if result.Artifact == nil || result.Artifact.Selection == nil || result.Artifact.Collection.SelectedVariantID != variant.ID {
+		writeError(w, http.StatusInternalServerError, errors.New("artifact selection was not persisted"))
+		return
+	}
+	response := map[string]any{"ok": true, "session_id": sessionID, "action": action, "selection": result.Artifact.Selection, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func sessionsV3ArtifactSelectionPayloadHash(sessionID, action string, selection pebblestore.SessionArtifactSelectionReference) (string, error) {
+	canonical := struct {
+		Operation string                                        `json:"operation"`
+		SessionID string                                        `json:"session_id"`
+		Action    string                                        `json:"action"`
+		Selection pebblestore.SessionArtifactSelectionReference `json:"selection"`
+	}{sessionruntime.SessionMutationSelectArtifact, strings.TrimSpace(sessionID), strings.TrimSpace(action), selection}
+	raw, err := json.Marshal(canonical)
+	if err != nil { return "", err }
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, artifactID string) {

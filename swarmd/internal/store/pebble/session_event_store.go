@@ -806,6 +806,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if messageProvided {
+		message.ArtifactSelections, err = s.ValidateSessionArtifactMessageSelections(input.AccountScopeID, input.UserID, message.ArtifactSelections)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	var mediaStagingRecords []MediaStagingRecord
 	if len(input.MediaStagingBindings) > 0 {
 		var replayed bool
@@ -2623,8 +2629,11 @@ func (s *SessionStore) prepareV3MessageForMutation(input V3SessionMutationInput,
 	if strings.TrimSpace(message.Role) == "" {
 		return MessageSnapshot{}, false, errors.New("message role is required")
 	}
-	if strings.TrimSpace(message.Content) == "" && len(message.Media) == 0 {
-		return MessageSnapshot{}, false, errors.New("message content or media is required")
+	if strings.TrimSpace(message.Content) == "" && len(message.Media) == 0 && len(message.ArtifactSelections) == 0 {
+		return MessageSnapshot{}, false, errors.New("message content, media, or artifact selection is required")
+	}
+	if len(message.ArtifactSelections) > 0 && !strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+		return MessageSnapshot{}, false, errors.New("artifact selections are allowed only on user messages")
 	}
 	message.GlobalSeq = seq
 	if strings.TrimSpace(message.ID) == "" {

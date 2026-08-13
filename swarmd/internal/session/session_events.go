@@ -92,6 +92,13 @@ func (s *Service) GetSessionArtifactVariantByID(accountScopeID, sessionID, varia
 	return s.store.GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID)
 }
 
+func (s *Service) ValidateSessionArtifactMessageSelections(accountScopeID, userID string, selections []ArtifactSelectionReference) ([]ArtifactSelectionReference, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ValidateSessionArtifactMessageSelections(accountScopeID, userID, selections)
+}
+
 func (s *Service) ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]ArtifactCollection, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")

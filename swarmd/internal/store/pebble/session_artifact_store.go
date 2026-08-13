@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/pebble"
+
+	"swarm/packages/swarmd/internal/privacy"
 )
 
 const (
@@ -15,6 +17,7 @@ const (
 	SessionArtifactMaxCollections          = 64
 	SessionArtifactMaxVariantsPerCollection = 128
 	SessionArtifactMaxList                 = 256
+	SessionArtifactMaxMessageSelections    = 16
 
 	SessionArtifactStatusStaging     = "staging"
 	SessionArtifactStatusReady       = "ready"
@@ -97,12 +100,79 @@ type SessionArtifactCollection struct {
 }
 
 // SessionArtifactSelectionReference is the portable, opaque reference placed in
-// messages and handoffs. It intentionally contains no bytes or storage path.
+// messages and handoffs. Label and description are bounded display metadata; the
+// reference intentionally contains no bytes, digest, or storage path.
 type SessionArtifactSelectionReference struct {
-	SessionID   string `json:"session_id"`
+	SessionID    string `json:"session_id"`
 	CollectionID string `json:"collection_id"`
 	VariantID    string `json:"variant_id"`
 	EventSeq     uint64 `json:"event_seq,omitempty"`
+	Label        string `json:"label,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Action       string `json:"action,omitempty"`
+}
+
+// ValidateSessionArtifactMessageSelections resolves portable message references
+// against authoritative artifact metadata. The returned values are normalized,
+// bounded display metadata only; managed bytes and private storage paths never
+// enter the message envelope.
+func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, userID string, selections []SessionArtifactSelectionReference) ([]SessionArtifactSelectionReference, error) {
+	if len(selections) == 0 {
+		return nil, nil
+	}
+	if len(selections) > SessionArtifactMaxMessageSelections {
+		return nil, errors.New("message artifact selection count limit exceeded")
+	}
+	accountScopeID, userID = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID)
+	if accountScopeID == "" || userID == "" {
+		return nil, errors.New("artifact selection ownership is required")
+	}
+	out := make([]SessionArtifactSelectionReference, 0, len(selections))
+	seen := make(map[string]struct{}, len(selections))
+	for index, incoming := range selections {
+		ref := SessionArtifactSelectionReference{
+			SessionID: strings.TrimSpace(incoming.SessionID), CollectionID: strings.TrimSpace(incoming.CollectionID),
+			VariantID: strings.TrimSpace(incoming.VariantID), EventSeq: incoming.EventSeq,
+			Label: strings.TrimSpace(incoming.Label), Description: strings.TrimSpace(incoming.Description),
+			Action: strings.ToLower(strings.TrimSpace(incoming.Action)),
+		}
+		if len(ref.SessionID) > 256 || ref.SessionID == "" || ref.SessionID == "." || ref.SessionID == ".." || strings.ContainsAny(ref.SessionID, `/\\`) { return nil, fmt.Errorf("artifact selection %d session id is invalid", index) }
+		if err := validateArtifactID("selection collection", ref.CollectionID); err != nil { return nil, fmt.Errorf("artifact selection %d: %w", index, err) }
+		if err := validateArtifactID("selection variant", ref.VariantID); err != nil { return nil, fmt.Errorf("artifact selection %d: %w", index, err) }
+		if ref.EventSeq == 0 { return nil, fmt.Errorf("artifact selection %d event sequence is required", index) }
+		if len(ref.Label) > 256 || len(ref.Description) > 2048 { return nil, fmt.Errorf("artifact selection %d display metadata exceeds bounds", index) }
+		ref.Label = strings.TrimSpace(privacy.SanitizeText(ref.Label))
+		ref.Description = strings.TrimSpace(privacy.SanitizeText(ref.Description))
+		if ref.Action == "" { ref.Action = "use" }
+		if ref.Action != "select" && ref.Action != "use" { return nil, fmt.Errorf("artifact selection %d action must be select or use", index) }
+		key := strings.Join([]string{ref.SessionID, ref.CollectionID, ref.VariantID}, "\x00")
+		if _, duplicate := seen[key]; duplicate { return nil, fmt.Errorf("artifact selection %d is duplicated", index) }
+		seen[key] = struct{}{}
+		session, ok, err := s.GetSession(ref.SessionID)
+		if err != nil { return nil, err }
+		if !ok || session.AccountScopeID != accountScopeID || session.UserID != userID { return nil, fmt.Errorf("artifact selection %d source session is not owned by the principal", index) }
+		collection, ok, err := s.GetSessionArtifactCollection(accountScopeID, ref.SessionID, ref.CollectionID)
+		if err != nil { return nil, err }
+		if !ok { return nil, fmt.Errorf("artifact selection %d collection was not found", index) }
+		variant, ok, err := s.GetSessionArtifactVariant(accountScopeID, ref.SessionID, ref.CollectionID, ref.VariantID)
+		if err != nil { return nil, err }
+		if !ok { return nil, fmt.Errorf("artifact selection %d variant was not found", index) }
+		if variant.Status != SessionArtifactStatusReady { return nil, fmt.Errorf("artifact selection %d variant is not ready", index) }
+		readySequence := variant.EventSeq == ref.EventSeq
+		selectedSequence := collection.SelectedVariantID == variant.ID && collection.EventSeq == ref.EventSeq
+		if !readySequence && !selectedSequence { return nil, fmt.Errorf("artifact selection %d event sequence is stale", index) }
+		if ref.Label == "" { ref.Label = firstNonEmptyArtifactString(variant.Presentation.Label, collection.Name, variant.Filename) }
+		if ref.Description == "" { ref.Description = firstNonEmptyArtifactString(variant.Presentation.Description, collection.Description) }
+		ref.Label = strings.TrimSpace(privacy.SanitizeText(ref.Label))
+		ref.Description = strings.TrimSpace(privacy.SanitizeText(ref.Description))
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
+func firstNonEmptyArtifactString(values ...string) string {
+	for _, value := range values { if value = strings.TrimSpace(value); value != "" { return value } }
+	return ""
 }
 
 // V3ArtifactMutation is the metadata payload accepted only by artifact V3
@@ -406,6 +476,9 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 		input.Artifact.Selection.SessionID = strings.TrimSpace(input.Artifact.Selection.SessionID)
 		input.Artifact.Selection.CollectionID = strings.TrimSpace(input.Artifact.Selection.CollectionID)
 		input.Artifact.Selection.VariantID = strings.TrimSpace(input.Artifact.Selection.VariantID)
+		input.Artifact.Selection.Label = strings.TrimSpace(input.Artifact.Selection.Label)
+		input.Artifact.Selection.Description = strings.TrimSpace(input.Artifact.Selection.Description)
+		input.Artifact.Selection.Action = strings.ToLower(strings.TrimSpace(input.Artifact.Selection.Action))
 	}
 }
 
@@ -465,6 +538,8 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 			return errors.New("artifact selection must identify the collection and variant")
 		}
 		if input.Artifact.Selection.SessionID != "" && input.Artifact.Selection.SessionID != input.SessionID { return errors.New("artifact selection session does not match mutation session") }
+		if input.Artifact.Selection.Action != "" && input.Artifact.Selection.Action != "select" && input.Artifact.Selection.Action != "use" { return errors.New("artifact selection action must be select or use") }
+		if len(input.Artifact.Selection.Label) > 256 || len(input.Artifact.Selection.Description) > 2048 { return errors.New("artifact selection display metadata exceeds bounds") }
 	case V3SessionMutationDeleteArtifactCollection:
 		if input.Artifact.Variant != nil || input.Artifact.Selection != nil { return errors.New("artifact collection deletion accepts only a collection id") }
 	}
@@ -654,11 +729,14 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		selected, ok, err := s.GetSessionArtifactVariant(input.AccountScopeID, input.SessionID, collection.ID, incoming.Selection.VariantID)
 		if err != nil { return preparedV3ArtifactMutation{}, err }
 		if !ok || selected.Status != SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("only a ready artifact variant can be selected") }
+		if incoming.Selection.EventSeq != 0 && incoming.Selection.EventSeq != selected.EventSeq { return preparedV3ArtifactMutation{}, errors.New("artifact selection event sequence is stale") }
 		collection.SelectedVariantID = selected.ID
 		collection.Status = artifactCollectionStatusFromCounts(collection)
 		collection.UpdatedAt = now
 		collection.EventSeq = seq
-		ref := SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: selected.ID, EventSeq: seq}
+		action := incoming.Selection.Action
+		if action == "" { action = "select" }
+		ref := SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: selected.ID, EventSeq: seq, Label: incoming.Selection.Label, Description: incoming.Selection.Description, Action: action}
 		selection = &ref
 	}
 	if err := validateArtifactCollectionProgress(collection); err != nil { return preparedV3ArtifactMutation{}, err }

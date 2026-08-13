@@ -360,6 +360,30 @@ func TestDeleteArtifactCollectionRemovesEveryVariantIndex(t *testing.T) {
 	if err := store.IteratePrefix(SessionArtifactVariantStatusSessionPrefix("account-1", "artifact-collection-delete"), 10, func(string, []byte) error { t.Error("variant status index remains"); return nil }); err != nil { t.Fatal(err) }
 }
 
+func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-selection-source")
+	apply := func(request, kind string, artifact V3ArtifactMutation) {
+		t.Helper()
+		if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-selection-source", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &artifact}); err != nil { t.Fatal(err) }
+	}
+	apply("selection-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection", Name: "Selections"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain"}})
+	staging, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
+	if err != nil || !ok { t.Fatalf("get staging variant: ok=%t err=%v", ok, err) }
+	stagingRef := SessionArtifactSelectionReference{SessionID: staging.SessionID, CollectionID: staging.CollectionID, VariantID: staging.ID, EventSeq: staging.EventSeq}
+	if _, err := sessions.ValidateSessionArtifactMessageSelections("account-1", "user-1", []SessionArtifactSelectionReference{stagingRef}); err == nil || !strings.Contains(err.Error(), "not ready") { t.Fatalf("staging selection error = %v", err) }
+	apply("selection-finalize", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain", DigestSHA256: strings.Repeat("a", 64), Size: 6}})
+	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
+	if err != nil || !ok { t.Fatalf("get ready variant: ok=%t err=%v", ok, err) }
+	ref := SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Action: "use"}
+	got, err := sessions.ValidateSessionArtifactMessageSelections("account-1", "user-1", []SessionArtifactSelectionReference{ref})
+	if err != nil || len(got) != 1 || got[0].VariantID != variant.ID { t.Fatalf("validate ready selection = %+v err=%v", got, err) }
+	stale := ref; stale.EventSeq++
+	if _, err := sessions.ValidateSessionArtifactMessageSelections("account-1", "user-1", []SessionArtifactSelectionReference{stale}); err == nil || !strings.Contains(err.Error(), "stale") { t.Fatalf("stale selection error = %v", err) }
+	if _, err := sessions.ValidateSessionArtifactMessageSelections("account-2", "user-2", []SessionArtifactSelectionReference{ref}); err == nil || !strings.Contains(err.Error(), "not owned") { t.Fatalf("cross-account selection error = %v", err) }
+}
+
 func TestApplyV3ArtifactLifecycleRejectsUnsafeOrInvalidMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

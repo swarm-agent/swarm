@@ -89,8 +89,9 @@ type sessionsV3MessageRequest struct {
 	Role              string                              `json:"role"`
 	Content           string                              `json:"content"`
 	Metadata          map[string]any                      `json:"metadata,omitempty"`
-	Media             []pebblestore.SessionMediaReference `json:"media,omitempty"`
-	DispatchAuthority map[string]any                      `json:"dispatch_authority,omitempty"`
+	Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+	ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
 }
 
 type sessionsV3StopRequest struct {
@@ -333,6 +334,15 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	default:
 		if strings.HasPrefix(subpath, "artifacts/") {
 			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
+			if artifactID, hasSelection := strings.CutSuffix(artifactPath, "/selection"); hasSelection {
+				artifactID = strings.TrimSpace(artifactID)
+				if artifactID == "" || strings.Contains(artifactID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+					return
+				}
+				s.handleSessionV3ArtifactSelection(w, r, principal, sessionID, artifactID)
+				return
+			}
 			if artifactID, hasBundle := strings.CutSuffix(artifactPath, "/bundle"); hasBundle {
 				artifactID = strings.TrimSpace(artifactID)
 				if artifactID == "" || strings.Contains(artifactID, "/") {
@@ -1324,12 +1334,23 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
-	message := pebblestore.MessageSnapshot{ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content, Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...)}
+	message := pebblestore.MessageSnapshot{
+		ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content,
+		Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...),
+		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), req.ArtifactSelections...),
+	}
 	if message.Role == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("message role is required")
 	}
-	if message.Content == "" && len(message.Media) == 0 {
-		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content or media is required")
+	if len(message.ArtifactSelections) > 0 && !strings.EqualFold(message.Role, "user") {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("artifact selections are allowed only on user messages")
+	}
+	if message.Content == "" && len(message.Media) == 0 && len(message.ArtifactSelections) == 0 {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content, media, or artifact selection is required")
+	}
+	message.ArtifactSelections, err = s.sessions.ValidateSessionArtifactMessageSelections(principal.AccountScopeID, principal.UserID, message.ArtifactSelections)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	if err := s.validateSessionsV3MessageMedia(principal, session, message.Media); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
@@ -3486,8 +3507,9 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 		Role              string                              `json:"role"`
 		Content           string                              `json:"content"`
 		Metadata          map[string]any                      `json:"metadata,omitempty"`
-		Media             []pebblestore.SessionMediaReference `json:"media,omitempty"`
-		RunStatus         string                              `json:"run_status"`
+		Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+		ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+		RunStatus          string                                           `json:"run_status"`
 		BlockedReason     string                              `json:"blocked_reason"`
 		AuthorityStatus   string                              `json:"authority_status"`
 		DispatchAuthority map[string]any                      `json:"dispatch_authority,omitempty"`
@@ -3499,8 +3521,9 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 		Role:              strings.TrimSpace(message.Role),
 		Content:           message.Content,
 		Metadata:          cloneSessionsV3Metadata(message.Metadata),
-		Media:             append([]pebblestore.SessionMediaReference(nil), message.Media...),
-		RunStatus:         runStatus,
+		Media:              append([]pebblestore.SessionMediaReference(nil), message.Media...),
+		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), message.ArtifactSelections...),
+		RunStatus:          runStatus,
 		BlockedReason:     blockedReason,
 		AuthorityStatus:   sessionsV3PrimaryAuthorityStatus(req),
 		DispatchAuthority: cloneSessionsV3Metadata(req.DispatchAuthority),

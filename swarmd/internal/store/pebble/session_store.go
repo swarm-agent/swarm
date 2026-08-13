@@ -120,9 +120,10 @@ type MessageSnapshot struct {
 	GlobalSeq      uint64                  `json:"global_seq"`
 	Role           string                  `json:"role"`
 	Content        string                  `json:"content"`
-	Metadata       map[string]any          `json:"metadata,omitempty"`
-	Media          []SessionMediaReference `json:"media,omitempty"`
-	CreatedAt      int64                   `json:"created_at"`
+	Metadata           map[string]any                       `json:"metadata,omitempty"`
+	Media              []SessionMediaReference              `json:"media,omitempty"`
+	ArtifactSelections []SessionArtifactSelectionReference  `json:"artifact_selections,omitempty"`
+	CreatedAt          int64                                `json:"created_at"`
 }
 
 type SessionCodexConfig struct {
@@ -2040,9 +2041,25 @@ func sanitizeMessageSnapshot(message MessageSnapshot) MessageSnapshot {
 	message.Content = privacy.SanitizeText(message.Content)
 	message.Metadata = sanitizeMessageMetadata(message.Metadata)
 	message.Media = normalizeSessionMediaReferences(message.Media)
+	message.ArtifactSelections = normalizeSessionArtifactSelectionReferences(message.ArtifactSelections)
 	return message
 }
 
 func sanitizeMessageMetadata(input map[string]any) map[string]any {
 	return privacy.SanitizeMap(input)
+}
+
+func normalizeSessionArtifactSelectionReferences(input []SessionArtifactSelectionReference) []SessionArtifactSelectionReference {
+	if len(input) == 0 { return nil }
+	out := make([]SessionArtifactSelectionReference, 0, len(input))
+	for _, ref := range input {
+		ref.SessionID = strings.TrimSpace(ref.SessionID)
+		ref.CollectionID = strings.TrimSpace(ref.CollectionID)
+		ref.VariantID = strings.TrimSpace(ref.VariantID)
+		ref.Label = strings.TrimSpace(ref.Label)
+		ref.Description = strings.TrimSpace(ref.Description)
+		ref.Action = strings.ToLower(strings.TrimSpace(ref.Action))
+		out = append(out, ref)
+	}
+	return out
 }
