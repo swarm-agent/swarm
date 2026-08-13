@@ -576,6 +576,10 @@ function summarizeToolOutput(
       if (resultSummary) return `theme · ${resultSummary}`;
       return action ? `theme ${action}` : "theme";
     }
+    case "manage_worktree":
+    case "manage-worktree": {
+      return summarizeManageWorktreeToolOutput(effective);
+    }
     case "manage_todos":
     case "manage-todos": {
       const todoData = extractTodoToolData(effective);
@@ -1590,6 +1594,10 @@ function extractPreviewLines(
       if (out.length === 0) pushPreviewLine(out, jsonStr(effective, "summary"), 8);
       return out;
     }
+    case "manage_worktree":
+    case "manage-worktree": {
+      return buildManageWorktreePreviewLines(effective, 8);
+    }
     case "manage_todos": {
       return buildManageTodosPreviewLines(effective, 6);
     }
@@ -1603,6 +1611,124 @@ function extractPreviewLines(
     default:
       return [];
   }
+}
+
+function manageWorktreeAction(payload: Record<string, unknown>): string {
+  return jsonStr(payload, "action").toLowerCase() || "inspect";
+}
+
+function manageWorktreeStateCounts(payload: Record<string, unknown>): string[] {
+  const counts = jsonRecord(payload.state_counts);
+  if (!counts) return [];
+  return Object.entries(counts)
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number" && entry[1] > 0)
+    .map(([state, count]) => `${count} ${state.replace(/_/g, " ")}`);
+}
+
+function summarizeManageWorktreeToolOutput(payload: Record<string, unknown>): string {
+  const action = manageWorktreeAction(payload);
+  switch (action) {
+    case "inspect":
+    case "list": {
+      const workspace = jsonRecord(payload.workspace);
+      const workspaceName = jsonStr(workspace, "name");
+      const branch = jsonStr(payload, "branch_name");
+      const returned = jsonNum(payload, "returned");
+      const total = jsonNum(payload, "total");
+      const target = workspaceName && branch ? `${workspaceName}/${branch}*` : workspaceName || branch;
+      const count = hasJsonKey(payload, "returned") || hasJsonKey(payload, "total")
+        ? `${returned} of ${total} commits`
+        : "commits";
+      return `worktree inspect${target ? ` · ${target}` : ""} · ${count}`;
+    }
+    case "recall": {
+      const total = jsonNum(payload, "total");
+      const states = manageWorktreeStateCounts(payload);
+      const notes = total > 0 ? [`${total} ${total === 1 ? "child" : "children"}`, ...states] : states;
+      return notes.length > 0 ? `worktree recall · ${notes.join(" · ")}` : "worktree recall";
+    }
+    case "integrate": {
+      const selected = jsonNum(payload, "selected_count");
+      const status = jsonStr(payload, "status").toLowerCase();
+      const notes: string[] = [];
+      if (selected > 0) notes.push(`${selected} ${selected === 1 ? "child" : "children"}`);
+      if (status && status !== "ok") notes.push(status.replace(/_/g, " "));
+      return notes.length > 0 ? `worktree integrate · ${notes.join(" · ")}` : "worktree integrate";
+    }
+    default:
+      return `worktree ${action.replace(/_/g, " ")}`;
+  }
+}
+
+function buildManageWorktreePreviewLines(
+  payload: Record<string, unknown> | null,
+  maxLines: number,
+): string[] {
+  if (!payload) return [];
+  const out: string[] = [];
+  const action = manageWorktreeAction(payload);
+  pushPreviewLine(out, `Action: ${action.replace(/_/g, " ")}`, maxLines);
+
+  if (action === "inspect" || action === "list") {
+    const workspace = jsonRecord(payload.workspace);
+    const workspaceName = jsonStr(workspace, "name");
+    const workspacePath = jsonStr(workspace, "path");
+    const branch = jsonStr(payload, "branch_name");
+    const currentBranch = jsonStr(payload, "current_branch");
+    if (workspaceName || workspacePath) pushPreviewLine(out, `Workspace: ${workspaceName || workspacePath}`, maxLines);
+    if (branch) pushPreviewLine(out, `Branch family: ${branch}/*`, maxLines);
+    if (currentBranch) pushPreviewLine(out, `Current branch: ${currentBranch}`, maxLines);
+    const returned = jsonNum(payload, "returned");
+    const total = jsonNum(payload, "total");
+    if (hasJsonKey(payload, "returned") || hasJsonKey(payload, "total")) {
+      pushPreviewLine(out, `Commits: ${returned} returned · ${total} total`, maxLines);
+    }
+    const items = jsonObjectSlice(payload, "items");
+    for (const item of items) {
+      const commit = firstNonEmpty(jsonStr(item, "commit_short"), jsonStr(item, "commit"));
+      const subject = jsonStr(item, "subject");
+      const integrated = jsonBool(item, "merged_into_current_branch") ? " · already integrated" : "";
+      pushPreviewLine(out, `${commit}${commit && subject ? " · " : ""}${subject}${integrated}`, maxLines);
+    }
+    return out;
+  }
+
+  const taskCallId = jsonStr(payload, "task_call_id");
+  if (taskCallId) pushPreviewLine(out, `Task call: ${taskCallId}`, maxLines);
+  if (action === "recall") {
+    const total = jsonNum(payload, "total");
+    if (hasJsonKey(payload, "total")) pushPreviewLine(out, `Children: ${total}`, maxLines);
+    const states = manageWorktreeStateCounts(payload);
+    if (states.length > 0) pushPreviewLine(out, `States: ${states.join(" · ")}`, maxLines);
+    for (const child of jsonObjectSlice(payload, "children")) {
+      const title = firstNonEmpty(
+        jsonStr(child, "title"),
+        jsonStr(child, "assignment_label"),
+        jsonStr(child, "child_session_id"),
+      );
+      const state = jsonStr(child, "child_state").replace(/_/g, " ");
+      const branch = firstNonEmpty(jsonStr(child, "child_branch"), jsonStr(child, "worktree_branch"));
+      const metadata = [state, branch].filter(Boolean).join(" · ");
+      pushPreviewLine(out, `${title}${title && metadata ? " · " : ""}${metadata}`, maxLines);
+    }
+    return out;
+  }
+
+  if (action === "integrate") {
+    const selected = jsonNum(payload, "selected_count");
+    if (selected > 0) pushPreviewLine(out, `Integrated: ${selected} ${selected === 1 ? "child" : "children"}`, maxLines);
+    const selection = jsonStr(payload, "selection").replace(/_/g, " ");
+    if (selection) pushPreviewLine(out, `Selection: ${selection}`, maxLines);
+    const parentHead = firstNonEmpty(jsonStr(payload, "resulting_parent_head"), jsonStr(payload, "parent_head"));
+    if (parentHead) pushPreviewLine(out, `Parent head: ${parentHead}`, maxLines);
+    const conflictingChild = jsonStr(payload, "conflicting_child_session_id");
+    if (conflictingChild) pushPreviewLine(out, `Conflict: ${conflictingChild}`, maxLines);
+    const detail = jsonStr(payload, "detail");
+    if (detail) pushPreviewLine(out, detail, maxLines);
+    return out;
+  }
+
+  return out;
 }
 
 function buildManageTodosPreviewLines(

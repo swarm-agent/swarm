@@ -94,6 +94,69 @@ function testExitPlanDefaultApprovalFeedbackIsHidden(): void {
   );
 }
 
+function testManageWorktreeInspectShowsMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-worktree",
+    callId: "call_worktree_inspect",
+    argumentsText: JSON.stringify({ action: "inspect", branch_name: "agent" }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "inspect",
+      workspace: { name: "swarm", path: "/workspace/swarm" },
+      branch_name: "agent",
+      current_branch: "dev",
+      returned: 1,
+      total: 2,
+      items: [{ commit_short: "abc1234", subject: "Expose metadata", merged_into_current_branch: false }],
+    }),
+  });
+  assert(Boolean(message), "expected structured manage-worktree inspect message");
+  assert(message?.summary === "worktree inspect · swarm/agent* · 1 of 2 commits", `unexpected worktree inspect summary: ${message?.summary}`);
+  assert(message?.previewLines.includes("Action: inspect") === true, `missing inspect action: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("Workspace: swarm") === true, `missing workspace metadata: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("Branch family: agent/*") === true, `missing branch metadata: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("Current branch: dev") === true, `missing current branch metadata: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.some((line) => line.includes("abc1234 · Expose metadata")) === true, `missing commit outcome: ${message?.previewLines.join(" | ")}`);
+}
+
+function testManageWorktreeRecallAndIntegrateShowOutcomes(): void {
+  const recall = buildStructuredToolMessage({
+    tool: "manage_worktree",
+    callId: "call_worktree_recall",
+    argumentsText: JSON.stringify({ action: "recall", task_call_id: "task-call-1" }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "recall",
+      task_call_id: "task-call-1",
+      total: 2,
+      state_counts: { committed: 1, integrated: 1 },
+      children: [
+        { child_session_id: "child-a", child_state: "committed", child_branch: "agent/child-a" },
+        { child_session_id: "child-b", child_state: "integrated", child_branch: "agent/child-b" },
+      ],
+    }),
+  });
+  assert(recall?.summary === "worktree recall · 2 children · 1 committed · 1 integrated", `unexpected recall summary: ${recall?.summary}`);
+  assert(recall?.previewLines.includes("Task call: task-call-1") === true, `missing recalled task call: ${recall?.previewLines.join(" | ")}`);
+  assert(recall?.previewLines.some((line) => line.includes("child-a · committed · agent/child-a")) === true, `missing recalled child metadata: ${recall?.previewLines.join(" | ")}`);
+
+  const integrate = buildStructuredToolMessage({
+    tool: "manage-worktree",
+    callId: "call_worktree_integrate",
+    argumentsText: JSON.stringify({ action: "integrate", session_ids: ["child-a", "child-b"] }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "integrate",
+      selected_count: 2,
+      selection: "explicit_session_ids",
+      resulting_parent_head: "deadbeef",
+    }),
+  });
+  assert(integrate?.summary === "worktree integrate · 2 children", `unexpected integrate summary: ${integrate?.summary}`);
+  assert(integrate?.previewLines.includes("Integrated: 2 children") === true, `missing integration count: ${integrate?.previewLines.join(" | ")}`);
+  assert(integrate?.previewLines.includes("Parent head: deadbeef") === true, `missing parent head: ${integrate?.previewLines.join(" | ")}`);
+}
+
 function testManageTodosListShowsItems(): void {
   const message = buildStructuredToolMessage({
     tool: "manage_todos",
@@ -1303,6 +1366,8 @@ function main(): void {
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
   testExitPlanDefaultApprovalFeedbackIsHidden();
+  testManageWorktreeInspectShowsMetadata();
+  testManageWorktreeRecallAndIntegrateShowOutcomes();
   testManageTodosListShowsItems();
   testManageTodosSummaryShowsCounts();
   testManageTodosBatchShowsOnlyChangedItems();

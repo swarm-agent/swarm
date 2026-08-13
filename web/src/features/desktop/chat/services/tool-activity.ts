@@ -79,6 +79,16 @@ export function toolActivityStartSummary(message: StructuredToolMessage): string
       const launchCount = jsonNumber(args, 'launch_count')
       return description || (launchCount > 0 ? `${launchCount} ${launchCount === 1 ? 'subagent' : 'subagents'}` : '')
     }
+    case 'manage_worktree': {
+      const action = jsonString(args, 'action') || 'inspect'
+      const taskCallId = jsonString(args, 'task_call_id')
+      const sessionIds = Array.isArray(args?.session_ids)
+        ? args.session_ids.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+        : []
+      if (taskCallId) return `${action.replace(/_/g, ' ')} · ${taskCallId}`
+      if (sessionIds.length > 0) return `${action.replace(/_/g, ' ')} · ${sessionIds.length} ${sessionIds.length === 1 ? 'session' : 'sessions'}`
+      return action.replace(/_/g, ' ')
+    }
     default:
       return message.target || message.commandText
   }

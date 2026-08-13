@@ -63,6 +63,14 @@ test('plan and task starts use specialized concise labels', () => {
   assert.doesNotMatch(task, /launch_count/)
 })
 
+test('manage-worktree start shows the requested action and selection metadata', () => {
+  const recall = markup({ tool: 'manage_worktree', state: 'running', argumentsText: '{"action":"recall","task_call_id":"task-call-1"}' })
+  const integrate = markup({ tool: 'manage-worktree', state: 'running', argumentsText: '{"action":"integrate","session_ids":["child-a","child-b"]}' })
+  assert.match(recall, /Running Manage Worktree…/)
+  assert.match(recall, /recall · task-call-1/)
+  assert.match(integrate, /integrate · 2 sessions/)
+})
+
 test('task stream result content supersedes the start shell in place', () => {
   const task = message({ tool: 'task', state: 'running' })
   task.taskRows = [{

@@ -1571,6 +1571,8 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
 
 function shouldRenderPreviewAsPlain(toolName: string): boolean {
   switch (toolName.trim().toLowerCase()) {
+    case "manage_worktree":
+    case "manage-worktree":
     case "manage_todos":
     case "manage-todos":
     case "manage_theme":
