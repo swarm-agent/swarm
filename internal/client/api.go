@@ -1049,15 +1049,16 @@ type SessionPlanCheckpointRecommendation struct {
 // message metadata. Suggested prompts are inert text and must be sent through
 // the ordinary user-message API.
 type PlanFinalHandoff struct {
-	SchemaVersion    int                                  `json:"schema_version"`
-	Title            string                               `json:"title"`
-	Overview         string                               `json:"overview"`
-	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
-	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
-	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
-	Artifacts        []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
-	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
-	Details          PlanFinalHandoffDetails              `json:"details"`
+	SchemaVersion      int                                  `json:"schema_version"`
+	Title              string                               `json:"title"`
+	Overview           string                               `json:"overview"`
+	ImpactBullets      []string                             `json:"impact_bullets,omitempty"`
+	CopyableCodeBlocks []PlanFinalHandoffCopyableCodeBlock  `json:"copyable_code_blocks,omitempty"`
+	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	SuggestedPrompts   []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	Artifacts          []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
+	PullRequestURL     string                               `json:"pull_request_url,omitempty"`
+	Details            PlanFinalHandoffDetails              `json:"details"`
 }
 
 // PlanFinalHandoffArtifact is a safe client projection of a concrete
@@ -1074,6 +1075,12 @@ type PlanFinalHandoffArtifact struct {
 	WorkspaceRelativePath string `json:"workspace_relative_path,omitempty"`
 	Previewable           bool   `json:"previewable,omitempty"`
 	PreviewURL            string `json:"preview_url,omitempty"`
+}
+
+type PlanFinalHandoffCopyableCodeBlock struct {
+	Label    string `json:"label,omitempty"`
+	Language string `json:"language,omitempty"`
+	Code     string `json:"code"`
 }
 
 type PlanFinalHandoffSuggestedPrompt struct {

@@ -17,9 +17,11 @@ import {
   ArrowDown,
   ArrowRight,
   CheckCircle2,
+  Check,
   ChevronDown,
   CircleAlert,
   CircleDot,
+  Copy,
   LoaderCircle,
   Loader2,
   Github,
@@ -3621,6 +3623,51 @@ function DesktopV3PlanFinalHandoff({
   );
 }
 
+async function copyDesktopV3HandoffCode(code: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(code);
+    return;
+  }
+  if (typeof document === "undefined") return;
+  const textarea = document.createElement("textarea");
+  textarea.value = code;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function DesktopV3HandoffCopyableCodeBlocks({ handoff, tone = "primary" }: { handoff: DesktopPlanFinalHandoff; tone?: "primary" | "warning" }) {
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  if (handoff.copyableCodeBlocks.length === 0) return null;
+  return (
+    <div className="mt-3 grid gap-2" data-handoff-copyable-code-blocks>
+      {handoff.copyableCodeBlocks.map((block, index) => (
+        <section key={`copyable-code:${index}`} className="overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-code-bg)]">
+          <header className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-1.5">
+            <span className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{block.label || (block.language ? block.language : "Copy this")}</span>
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[10px] font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              aria-label={`Copy ${block.label || "code"}`}
+              onClick={() => { void copyDesktopV3HandoffCode(block.code).then(() => { setCopiedIndex(index); window.setTimeout(() => setCopiedIndex((current) => current === index ? null : current), 1600); }); }}
+              data-handoff-copy-code
+              data-handoff-code-tone={tone}
+            >
+              {copiedIndex === index ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+              {copiedIndex === index ? "Copied" : "Copy"}
+            </button>
+          </header>
+          <pre className="max-h-64 overflow-auto whitespace-pre p-3 font-mono text-xs leading-5 text-[var(--app-text)]"><code className={block.language ? `language-${block.language}` : undefined}>{block.code}</code></pre>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export function selectDesktopV3SuggestedPrompt(
   prompt: string,
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>,
@@ -3695,6 +3742,8 @@ function DesktopV3StructuredFinalHandoff({
             ))}
           </ul>
         ) : null}
+
+        <DesktopV3HandoffCopyableCodeBlocks handoff={handoff} />
 
         {recommendation ? (
           <div className="mt-3 border-l-2 border-[var(--app-primary)] pl-3" data-final-handoff-recommendation>
@@ -3828,6 +3877,7 @@ function DesktopV3PlanBlockedHandoff({
                     ))}
                   </ul>
                 ) : null}
+                <DesktopV3HandoffCopyableCodeBlocks handoff={handoff} tone="warning" />
                 {handoff.suggestedPrompts.length > 0 ? (
                   <div className="mt-3" data-blocked-handoff-suggestions>
                     <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next steps</div>

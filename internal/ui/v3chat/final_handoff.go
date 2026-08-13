@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	finalHandoffSource = "plan_execution_final_handoff"
-	finalHandoffKind   = "plan_final_checkpoint_handoff"
+	finalHandoffSource   = "plan_execution_final_handoff"
+	finalHandoffKind     = "plan_final_checkpoint_handoff"
+	blockedHandoffSource = "plan_execution_blocked_handoff"
+	blockedHandoffKind   = "plan_blocked_checkpoint_handoff"
 )
 
 func isStructuredFinalHandoffMessage(message Message) bool {
@@ -22,7 +24,9 @@ func isStructuredFinalHandoffMessage(message Message) bool {
 		return false
 	}
 	return strings.EqualFold(metadataString(message.Metadata, "source"), finalHandoffSource) ||
-		strings.EqualFold(metadataString(message.Metadata, "kind"), finalHandoffKind)
+		strings.EqualFold(metadataString(message.Metadata, "kind"), finalHandoffKind) ||
+		strings.EqualFold(metadataString(message.Metadata, "source"), blockedHandoffSource) ||
+		strings.EqualFold(metadataString(message.Metadata, "kind"), blockedHandoffKind)
 }
 
 func sanitizeLegacyHandoffMarkers(content string) string {
@@ -216,6 +220,7 @@ func cloneFinalHandoff(value *client.PlanFinalHandoff) client.PlanFinalHandoff {
 	}
 	out := *value
 	out.ImpactBullets = append([]string(nil), value.ImpactBullets...)
+	out.CopyableCodeBlocks = append([]client.PlanFinalHandoffCopyableCodeBlock(nil), value.CopyableCodeBlocks...)
 	out.SuggestedPrompts = append([]client.PlanFinalHandoffSuggestedPrompt(nil), value.SuggestedPrompts...)
 	out.Artifacts = append([]client.PlanFinalHandoffArtifact(nil), value.Artifacts...)
 	out.Details.ChangedFiles = append([]string(nil), value.Details.ChangedFiles...)
@@ -364,6 +369,18 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 		appendBody(handoff.Overview, styles.Muted, "", false)
 		for _, impact := range handoff.ImpactBullets {
 			appendBody("• "+impact, styles.Muted, "", false)
+		}
+	}
+	if len(handoff.CopyableCodeBlocks) > 0 {
+		appendSectionGap()
+		appendBody("COPYABLE CODE", styles.Secondary.Bold(true), "", false)
+		for _, block := range handoff.CopyableCodeBlocks {
+			label := strings.TrimSpace(block.Label)
+			if label == "" {
+				label = "Copy this"
+			}
+			appendBody(label, styles.Text.Bold(true), "", false)
+			appendBody(block.Code, styles.Text, "", false)
 		}
 	}
 	if recommendation := handoff.Recommendation; recommendation != nil {

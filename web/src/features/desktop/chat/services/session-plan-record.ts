@@ -288,6 +288,18 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
     })
     .filter((entry: { label: string; prompt: string }) => entry.label && entry.prompt)
     .slice(0, 3)
+  const copyableCodeBlockValue = record.copyableCodeBlocks ?? record.copyable_code_blocks
+  const copyableCodeBlocks = (Array.isArray(copyableCodeBlockValue) ? copyableCodeBlockValue : [])
+    .map((entry: unknown) => {
+      const block = objectValue(entry) ?? {}
+      return {
+        label: stringValue(block, 'label'),
+        language: stringValue(block, 'language'),
+        code: rawStringValue(block, 'code'),
+      }
+    })
+    .filter((block) => block.code.trim())
+    .slice(0, 3)
   const artifacts = (Array.isArray(record.artifacts) ? record.artifacts : [])
     .map((entry: unknown) => {
       const artifact = objectValue(entry) ?? {}
@@ -307,6 +319,7 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
     title: stringValue(record, 'title'),
     overview: stringValue(record, 'overview'),
     impactBullets: stringArrayValue(record, 'impactBullets', 'impact_bullets').slice(0, 3),
+    copyableCodeBlocks,
     recommendation,
     suggestedPrompts,
     pullRequestUrl: normalizeGitHubPullRequestUrl(record.pullRequestUrl ?? record.pull_request_url),

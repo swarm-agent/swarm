@@ -991,6 +991,9 @@ func messageFromClient(value client.SessionMessage) Message {
 func finalHandoffFromMetadata(metadata map[string]any) *client.PlanFinalHandoff {
 	value, ok := metadata["final_handoff"]
 	if !ok || value == nil {
+		value, ok = metadata["blocked_handoff"]
+	}
+	if !ok || value == nil {
 		return nil
 	}
 	raw, err := json.Marshal(value)
@@ -1004,6 +1007,7 @@ func finalHandoffFromMetadata(metadata map[string]any) *client.PlanFinalHandoff 
 	handoff.Title = strings.TrimSpace(handoff.Title)
 	handoff.Overview = strings.TrimSpace(handoff.Overview)
 	handoff.ImpactBullets = cleanStrings(handoff.ImpactBullets, 3)
+	handoff.CopyableCodeBlocks = cleanHandoffCodeBlocks(handoff.CopyableCodeBlocks, 3)
 	handoff.SuggestedPrompts = cleanHandoffPrompts(handoff.SuggestedPrompts, 3)
 	handoff.Artifacts = cleanHandoffArtifacts(handoff.Artifacts, 20)
 	handoff.Details.ChangedFiles = cleanStrings(handoff.Details.ChangedFiles, 0)
@@ -1015,6 +1019,21 @@ func cleanStrings(values []string, limit int) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+			if limit > 0 && len(out) == limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func cleanHandoffCodeBlocks(values []client.PlanFinalHandoffCopyableCodeBlock, limit int) []client.PlanFinalHandoffCopyableCodeBlock {
+	out := make([]client.PlanFinalHandoffCopyableCodeBlock, 0, len(values))
+	for _, value := range values {
+		value.Label = strings.TrimSpace(value.Label)
+		value.Language = strings.TrimSpace(value.Language)
+		if strings.TrimSpace(value.Code) != "" {
 			out = append(out, value)
 			if limit > 0 && len(out) == limit {
 				break
@@ -1098,6 +1117,7 @@ func cloneState(value State) State {
 		if value.Messages[index].FinalHandoff != nil {
 			handoff := *value.Messages[index].FinalHandoff
 			handoff.ImpactBullets = append([]string(nil), handoff.ImpactBullets...)
+			handoff.CopyableCodeBlocks = append([]client.PlanFinalHandoffCopyableCodeBlock(nil), handoff.CopyableCodeBlocks...)
 			handoff.SuggestedPrompts = append([]client.PlanFinalHandoffSuggestedPrompt(nil), handoff.SuggestedPrompts...)
 			handoff.Artifacts = append([]client.PlanFinalHandoffArtifact(nil), handoff.Artifacts...)
 			handoff.Details.ChangedFiles = append([]string(nil), handoff.Details.ChangedFiles...)

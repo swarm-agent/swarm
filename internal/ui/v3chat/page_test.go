@@ -142,8 +142,9 @@ func TestFinalHandoffSectionsUseContentAwareSpacing(t *testing.T) {
 				Decision: "ship",
 				Action:   "review",
 			},
-			SuggestedPrompts: []client.PlanFinalHandoffSuggestedPrompt{{Label: "Review", Prompt: "Review it."}},
-			Details:          client.PlanFinalHandoffDetails{Report: "Durable report"},
+			CopyableCodeBlocks: []client.PlanFinalHandoffCopyableCodeBlock{{Label: "Run this command", Language: "bash", Code: "swarm status"}},
+			SuggestedPrompts:   []client.PlanFinalHandoffSuggestedPrompt{{Label: "Review", Prompt: "Review it."}},
+			Details:            client.PlanFinalHandoffDetails{Report: "Durable report"},
 		},
 	}
 	rows := (&Page{}).renderFinalHandoffRows(message, 80, styles)
@@ -152,7 +153,7 @@ func TestFinalHandoffSectionsUseContentAwareSpacing(t *testing.T) {
 		text = append(text, strings.TrimSpace(strings.Trim(row.text, "│")))
 	}
 	for _, pair := range [][2]string{
-		{"FINAL HANDOFF  ·  ship", "Ready to review"},
+		{"FINAL HANDOFF  ·  ship", "Ready to review", "COPYABLE CODE", "Run this command", "swarm status"},
 		{"• Compact card", "RECOMMENDATION"},
 		{"ship — review", "NEXT STEPS"},
 		{"1. Review", "EVIDENCE"},

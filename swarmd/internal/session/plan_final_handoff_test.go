@@ -13,6 +13,9 @@ func TestNormalizePlanCheckpointHandoffBoundsAndRejectsDirectives(t *testing.T) 
 		Title:         "  Ready to review  ",
 		Overview:      "  The durable contract is ready.  ",
 		ImpactBullets: []string{"  Clients share one projection.  "},
+		CopyableCodeBlocks: []pebblestore.PlanFinalHandoffCopyableCodeBlock{{
+			Label: " Run this command ", Language: "bash", Code: "printf 'ready\\n'\n",
+		}},
 		SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{
 			Label: " Review ", Prompt: " Review the final handoff and call out any gaps. ",
 		}},
@@ -22,7 +25,7 @@ func TestNormalizePlanCheckpointHandoffBoundsAndRejectsDirectives(t *testing.T) 
 	if err != nil {
 		t.Fatalf("normalize valid handoff: %v", err)
 	}
-	if normalized.Title != "Ready to review" || normalized.Overview != "The durable contract is ready." || normalized.ImpactBullets[0] != "Clients share one projection." || normalized.SuggestedPrompts[0].Label != "Review" || normalized.PullRequestURL != "https://github.com/swarm/repository/pull/42" {
+	if normalized.Title != "Ready to review" || normalized.Overview != "The durable contract is ready." || normalized.ImpactBullets[0] != "Clients share one projection." || normalized.CopyableCodeBlocks[0].Label != "Run this command" || normalized.CopyableCodeBlocks[0].Code != "printf 'ready\\n'\n" || normalized.SuggestedPrompts[0].Label != "Review" || normalized.PullRequestURL != "https://github.com/swarm/repository/pull/42" {
 		t.Fatalf("normalized handoff = %#v", normalized)
 	}
 
@@ -38,6 +41,10 @@ func TestNormalizePlanCheckpointHandoffBoundsAndRejectsDirectives(t *testing.T) 
 		{name: "oversized impact", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", ImpactBullets: []string{strings.Repeat("x", PlanFinalHandoffMaxImpactBulletRunes+1)}}, want: "impact_bullets[0] exceeds"},
 		{name: "oversized overview", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: strings.Repeat("x", PlanFinalHandoffMaxOverviewRunes+1)}, want: "overview exceeds"},
 		{name: "invalid UTF-8", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: string([]byte{0xff})}, want: "valid UTF-8"},
+		{name: "too many code blocks", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", CopyableCodeBlocks: []pebblestore.PlanFinalHandoffCopyableCodeBlock{{Code: "1"}, {Code: "2"}, {Code: "3"}, {Code: "4"}}}, want: "at most 3"},
+		{name: "empty code", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", CopyableCodeBlocks: []pebblestore.PlanFinalHandoffCopyableCodeBlock{{Code: " "}}}, want: "copyable_code_blocks[0].code is required"},
+		{name: "oversized code", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", CopyableCodeBlocks: []pebblestore.PlanFinalHandoffCopyableCodeBlock{{Code: strings.Repeat("x", PlanFinalHandoffMaxCodeBlockRunes+1)}}}, want: "copyable_code_blocks[0].code exceeds"},
+		{name: "invalid code language", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", CopyableCodeBlocks: []pebblestore.PlanFinalHandoffCopyableCodeBlock{{Language: "bash script", Code: "echo ok"}}}, want: "unsupported character"},
 		{name: "too many prompts", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: "1", Prompt: "one"}, {Label: "2", Prompt: "two"}, {Label: "3", Prompt: "three"}, {Label: "4", Prompt: "four"}}}, want: "at most 3"},
 		{name: "empty prompt label", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: " ", Prompt: "Review it."}}}, want: "suggested_prompts[0].label is required"},
 		{name: "oversized prompt label", handoff: pebblestore.SessionPlanCheckpointHandoff{Overview: "done", SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: strings.Repeat("x", PlanFinalHandoffMaxPromptLabelRunes+1), Prompt: "Review it."}}}, want: "suggested_prompts[0].label exceeds"},
@@ -69,6 +76,9 @@ func TestApplyPlanCheckpointOutcomePersistsHandoffAndProjectsLosslessEvidence(t 
 	handoff := &pebblestore.SessionPlanCheckpointHandoff{
 		Overview:      "Clients can render one compact contract.",
 		ImpactBullets: []string{"Evidence stays collapsed by default."},
+		CopyableCodeBlocks: []pebblestore.PlanFinalHandoffCopyableCodeBlock{{
+			Label: "Run focused check", Language: "bash", Code: "go test ./internal/session -run TestApplyPlanCheckpointOutcome",
+		}},
 		SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{
 			Label: "Review contract", Prompt: "Review the final-handoff contract for gaps.",
 		}},
@@ -90,7 +100,7 @@ func TestApplyPlanCheckpointOutcomePersistsHandoffAndProjectsLosslessEvidence(t 
 	if err != nil {
 		t.Fatalf("build projection: %v", err)
 	}
-	if projection.SchemaVersion != PlanFinalHandoffSchemaVersion || projection.Title != "Contract" || projection.Recommendation == nil || projection.Recommendation.Decision != "ship" || projection.PullRequestURL != handoff.PullRequestURL {
+	if projection.SchemaVersion != PlanFinalHandoffSchemaVersion || projection.Title != "Contract" || len(projection.CopyableCodeBlocks) != 1 || projection.CopyableCodeBlocks[0].Language != "bash" || projection.Recommendation == nil || projection.Recommendation.Decision != "ship" || projection.PullRequestURL != handoff.PullRequestURL {
 		t.Fatalf("projection identity = %#v", projection)
 	}
 	if projection.Details.Report != "complete report" || projection.Details.Result != "done" || len(projection.Details.ChangedFiles) != 1 || len(projection.Details.Validation) != 1 {

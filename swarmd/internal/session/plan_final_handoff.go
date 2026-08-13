@@ -18,13 +18,17 @@ import (
 const (
 	PlanFinalHandoffSchemaVersion = 1
 
-	PlanFinalHandoffMaxTitleRunes           = 120
-	PlanFinalHandoffMaxOverviewRunes        = 600
-	PlanFinalHandoffMaxImpactBullets        = 3
-	PlanFinalHandoffMaxImpactBulletRunes    = 240
-	PlanFinalHandoffMaxSuggestedPrompts     = 3
-	PlanFinalHandoffMaxPromptLabelRunes     = 80
-	PlanFinalHandoffMaxSuggestedPromptRunes = 800
+	PlanFinalHandoffMaxTitleRunes             = 120
+	PlanFinalHandoffMaxOverviewRunes          = 600
+	PlanFinalHandoffMaxImpactBullets          = 3
+	PlanFinalHandoffMaxImpactBulletRunes      = 240
+	PlanFinalHandoffMaxCopyableCodeBlocks     = 3
+	PlanFinalHandoffMaxCodeBlockLabelRunes    = 80
+	PlanFinalHandoffMaxCodeBlockLanguageRunes = 32
+	PlanFinalHandoffMaxCodeBlockRunes         = 8 * 1024
+	PlanFinalHandoffMaxSuggestedPrompts       = 3
+	PlanFinalHandoffMaxPromptLabelRunes       = 80
+	PlanFinalHandoffMaxSuggestedPromptRunes   = 800
 )
 
 var planFinalHandoffViewableMediaTypes = map[string]string{
@@ -83,6 +87,24 @@ func NormalizePlanCheckpointHandoff(value pebblestore.SessionPlanCheckpointHando
 			return pebblestore.SessionPlanCheckpointHandoff{}, err
 		}
 	}
+	if len(value.CopyableCodeBlocks) > PlanFinalHandoffMaxCopyableCodeBlocks {
+		return pebblestore.SessionPlanCheckpointHandoff{}, fmt.Errorf("final handoff copyable_code_blocks supports at most %d items", PlanFinalHandoffMaxCopyableCodeBlocks)
+	}
+	value.CopyableCodeBlocks = append([]pebblestore.PlanFinalHandoffCopyableCodeBlock(nil), value.CopyableCodeBlocks...)
+	for i := range value.CopyableCodeBlocks {
+		block := &value.CopyableCodeBlocks[i]
+		block.Label = strings.TrimSpace(block.Label)
+		block.Language = strings.TrimSpace(block.Language)
+		if err := validateFinalHandoffText(fmt.Sprintf("copyable_code_blocks[%d].label", i), block.Label, PlanFinalHandoffMaxCodeBlockLabelRunes, false); err != nil {
+			return pebblestore.SessionPlanCheckpointHandoff{}, err
+		}
+		if err := validateFinalHandoffCodeLanguage(fmt.Sprintf("copyable_code_blocks[%d].language", i), block.Language); err != nil {
+			return pebblestore.SessionPlanCheckpointHandoff{}, err
+		}
+		if err := validateFinalHandoffCode(fmt.Sprintf("copyable_code_blocks[%d].code", i), block.Code); err != nil {
+			return pebblestore.SessionPlanCheckpointHandoff{}, err
+		}
+	}
 	if len(value.SuggestedPrompts) > PlanFinalHandoffMaxSuggestedPrompts {
 		return pebblestore.SessionPlanCheckpointHandoff{}, fmt.Errorf("final handoff suggested_prompts supports at most %d items", PlanFinalHandoffMaxSuggestedPrompts)
 	}
@@ -123,6 +145,32 @@ func validateFinalHandoffText(field, value string, maxRunes int, required bool) 
 	}
 	if looksLikeExecutableFinalHandoffDirective(value) {
 		return fmt.Errorf("final handoff %s must be display text or an ordinary chat prompt, not an executable directive", field)
+	}
+	return nil
+}
+
+func validateFinalHandoffCodeLanguage(field, value string) error {
+	if err := validateFinalHandoffText(field, value, PlanFinalHandoffMaxCodeBlockLanguageRunes, false); err != nil {
+		return err
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '+' || r == '.' {
+			continue
+		}
+		return fmt.Errorf("final handoff %s contains an unsupported character", field)
+	}
+	return nil
+}
+
+func validateFinalHandoffCode(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("final handoff %s is required", field)
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("final handoff %s must be valid UTF-8", field)
+	}
+	if utf8.RuneCountInString(value) > PlanFinalHandoffMaxCodeBlockRunes {
+		return fmt.Errorf("final handoff %s exceeds %d characters", field, PlanFinalHandoffMaxCodeBlockRunes)
 	}
 	return nil
 }
@@ -261,12 +309,13 @@ func BuildPlanFinalHandoff(checkpoint pebblestore.SessionPlanCheckpoint) (*pebbl
 		title = "Plan complete"
 	}
 	result := &pebblestore.PlanFinalHandoff{
-		SchemaVersion:    PlanFinalHandoffSchemaVersion,
-		Title:            title,
-		Overview:         source.Overview,
-		ImpactBullets:    append([]string(nil), source.ImpactBullets...),
-		SuggestedPrompts: append([]pebblestore.PlanFinalHandoffSuggestedPrompt(nil), source.SuggestedPrompts...),
-		PullRequestURL:   source.PullRequestURL,
+		SchemaVersion:      PlanFinalHandoffSchemaVersion,
+		Title:              title,
+		Overview:           source.Overview,
+		ImpactBullets:      append([]string(nil), source.ImpactBullets...),
+		CopyableCodeBlocks: append([]pebblestore.PlanFinalHandoffCopyableCodeBlock(nil), source.CopyableCodeBlocks...),
+		SuggestedPrompts:   append([]pebblestore.PlanFinalHandoffSuggestedPrompt(nil), source.SuggestedPrompts...),
+		PullRequestURL:     source.PullRequestURL,
 		Details: pebblestore.PlanFinalHandoffDetails{
 			Report:       checkpoint.Report,
 			Result:       checkpoint.Result,

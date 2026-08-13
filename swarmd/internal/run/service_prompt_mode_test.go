@@ -272,6 +272,7 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"mark_failed only for a nonrecoverable execution error",
 		"plan_manage final checkpoint example",
 		"handoff_overview",
+		"copyable_code_blocks",
 		"Do not emit a separate assistant completion report before or after this call",
 		"On a blocked plan, call request_followup_checkpoint directly",
 		"Session mode=auto is not evidence that a plan exists", "when active_plan_present=false, never call request_followup_checkpoint",

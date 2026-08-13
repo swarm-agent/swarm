@@ -73,6 +73,7 @@ test('live and durable plan transitions use full-width minimal cards', () => {
   assert.match(blockedSource, /border-\[color-mix\(in_srgb,var\(--app-warning\)_45%,var\(--app-border\)\)\]/)
   assert.match(blockedSource, /bg-\[var\(--app-warning-bg\)\]/)
   assert.match(blockedSource, /data-blocked-handoff-overview/)
+  assert.match(blockedSource, /<DesktopV3HandoffCopyableCodeBlocks handoff=\{handoff\} tone="warning" \/>/)
   assert.match(blockedSource, /data-blocked-handoff-suggestions/)
   assert.match(blockedSource, /data-blocked-handoff-evidence/)
   assert.match(blockedSource, /<summary[^>]*>Details<\/summary>/)
@@ -83,6 +84,9 @@ test('live and durable plan transitions use full-width minimal cards', () => {
   const finalSource = paneSource.slice(structuredFinalStart, blockedAfterFinal)
   assert.match(finalSource, /aria-label="Final handoff"/)
   assert.match(finalSource, /data-testid="desktop-v3-structured-final-handoff"/)
+  assert.match(finalSource, /<DesktopV3HandoffCopyableCodeBlocks handoff=\{handoff\} \/>/)
+  assert.match(paneSource, /data-handoff-copyable-code-blocks/)
+  assert.match(paneSource, /data-handoff-copy-code/)
   assert.doesNotMatch(finalSource, /data-checkpoint-status="blocked"/)
 
   assert.match(paneSource, /function DesktopV3PlanHandoff/)

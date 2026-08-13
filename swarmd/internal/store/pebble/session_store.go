@@ -307,11 +307,20 @@ type SessionPlanCheckpointRecommendation struct {
 // Full terminal evidence remains canonical on SessionPlanCheckpoint and is
 // joined into PlanFinalHandoff only when a lifecycle message is projected.
 type SessionPlanCheckpointHandoff struct {
-	Title            string                            `json:"title,omitempty"`
-	Overview         string                            `json:"overview"`
-	ImpactBullets    []string                          `json:"impact_bullets,omitempty"`
-	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt `json:"suggested_prompts,omitempty"`
-	PullRequestURL   string                            `json:"pull_request_url,omitempty"`
+	Title              string                              `json:"title,omitempty"`
+	Overview           string                              `json:"overview"`
+	ImpactBullets      []string                            `json:"impact_bullets,omitempty"`
+	CopyableCodeBlocks []PlanFinalHandoffCopyableCodeBlock `json:"copyable_code_blocks,omitempty"`
+	SuggestedPrompts   []PlanFinalHandoffSuggestedPrompt   `json:"suggested_prompts,omitempty"`
+	PullRequestURL     string                              `json:"pull_request_url,omitempty"`
+}
+
+// PlanFinalHandoffCopyableCodeBlock is display-only text that clients render in
+// a code block with an explicit copy affordance. It is never executed directly.
+type PlanFinalHandoffCopyableCodeBlock struct {
+	Label    string `json:"label,omitempty"`
+	Language string `json:"language,omitempty"`
+	Code     string `json:"code"`
 }
 
 // PlanFinalHandoffSuggestedPrompt is inert chat input. Clients may send Prompt
@@ -324,15 +333,16 @@ type PlanFinalHandoffSuggestedPrompt struct {
 // PlanFinalHandoff is the versioned client projection persisted in lifecycle
 // message metadata. Details is a lossless copy of the checkpoint evidence.
 type PlanFinalHandoff struct {
-	SchemaVersion    int                                  `json:"schema_version"`
-	Title            string                               `json:"title"`
-	Overview         string                               `json:"overview"`
-	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
-	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
-	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
-	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
-	Artifacts        []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
-	Details          PlanFinalHandoffDetails              `json:"details"`
+	SchemaVersion      int                                  `json:"schema_version"`
+	Title              string                               `json:"title"`
+	Overview           string                               `json:"overview"`
+	ImpactBullets      []string                             `json:"impact_bullets,omitempty"`
+	CopyableCodeBlocks []PlanFinalHandoffCopyableCodeBlock  `json:"copyable_code_blocks,omitempty"`
+	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	SuggestedPrompts   []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	PullRequestURL     string                               `json:"pull_request_url,omitempty"`
+	Artifacts          []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
+	Details            PlanFinalHandoffDetails              `json:"details"`
 }
 
 // PlanFinalHandoffArtifact is a safe client-facing descriptor for one declared

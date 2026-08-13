@@ -551,6 +551,12 @@ export interface DesktopSessionPlanCheckpointRecommendation {
   actionState: string;
 }
 
+export interface DesktopPlanFinalHandoffCopyableCodeBlock {
+  label: string;
+  language: string;
+  code: string;
+}
+
 export interface DesktopPlanFinalHandoffSuggestedPrompt {
   label: string;
   prompt: string;
@@ -576,6 +582,7 @@ export interface DesktopPlanFinalHandoff {
   title: string;
   overview: string;
   impactBullets: string[];
+  copyableCodeBlocks: DesktopPlanFinalHandoffCopyableCodeBlock[];
   recommendation: DesktopSessionPlanCheckpointRecommendation | null;
   suggestedPrompts: DesktopPlanFinalHandoffSuggestedPrompt[];
   pullRequestUrl: string;

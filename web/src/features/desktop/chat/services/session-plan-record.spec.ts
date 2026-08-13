@@ -88,6 +88,7 @@ test('normalizeDesktopSessionPlan decodes the versioned final handoff projection
           title: 'Ready to ship',
           overview: 'The requested Desktop behavior is complete.',
           impact_bullets: ['Compact by default', 'Evidence remains available'],
+          copyable_code_blocks: [{ label: 'Run this command', language: 'bash', code: 'npm run test:focused\n' }],
           recommendation: { decision: 'ship', action: 'review', reason: 'All criteria met', action_state: 'ready' },
           suggested_prompts: [{ label: 'Review changes', prompt: 'Review the completed changes.' }],
           pull_request_url: 'https://github.com/swarm/repository/pull/42',
@@ -112,6 +113,7 @@ test('normalizeDesktopSessionPlan decodes the versioned final handoff projection
   assert.equal(handoff?.schemaVersion, 1)
   assert.equal(handoff?.overview, 'The requested Desktop behavior is complete.')
   assert.deepEqual(handoff?.impactBullets, ['Compact by default', 'Evidence remains available'])
+  assert.deepEqual(handoff?.copyableCodeBlocks, [{ label: 'Run this command', language: 'bash', code: 'npm run test:focused\n' }])
   assert.equal(handoff?.recommendation?.actionState, 'ready')
   assert.deepEqual(handoff?.suggestedPrompts, [{ label: 'Review changes', prompt: 'Review the completed changes.' }])
   assert.equal(handoff?.pullRequestUrl, 'https://github.com/swarm/repository/pull/42')
