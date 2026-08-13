@@ -57,10 +57,15 @@ func TestMasterHarnessPromptDefinesDesignerIterationLifecycle(t *testing.T) {
 		"complete design brief",
 		"preview/selector",
 		"explicit selection",
-		"ordinary reusable source artifacts, not disposable proposals",
+		"Designer output defaults to managed artifacts",
+		"server inject one trusted parent-session collection",
+		"Managed Designers must use manage_artifact",
+		"must not write/edit the checkout",
+		"Workspace Designers may write/edit only their declared scope",
+		"must not use managed output",
+		"parent-owned reusable artifacts, not disposable proposals",
 		"retain several, revise one, or promote one",
 		"never mandate automatic deletion",
-		"may read/search/list/write/edit but has no Bash or Git",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("Designer lifecycle guidance missing %q", want)

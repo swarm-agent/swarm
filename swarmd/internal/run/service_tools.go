@@ -35,6 +35,7 @@ type taskLaunchPrepared struct {
 	MetaPrompt           string
 	AssignmentLabel      string
 	OwnedScope           []string
+	OutputMode           string
 	SubagentProvider     string
 	SubagentModel        string
 	SubagentProfile      pebblestore.AgentProfile
@@ -788,6 +789,12 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if strings.TrimSpace(subagentProfile.Name) == "" {
 		return taskLaunchPrepared{}, errors.New("task resolved empty subagent")
 	}
+	if agentruntime.IsDesignerAgentName(requestedSubagent) && strings.EqualFold(strings.TrimSpace(launch.OutputMode), taskOutputModeWorkspace) {
+		workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(subagentProfile)
+		workspaceProfile.Provider, workspaceProfile.Model, workspaceProfile.Thinking = subagentProfile.Provider, subagentProfile.Model, subagentProfile.Thinking
+		workspaceProfile.AutoServiceTier = subagentProfile.AutoServiceTier
+		subagentProfile = workspaceProfile
+	}
 
 	childMode := effectiveTaskChildMode(sessionMode)
 	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
@@ -850,12 +857,16 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		}
 	}
 	if isDesignerTarget {
-		if launch.ArtifactRunContext != nil {
-			launch.OutputMode = taskOutputModeManaged
+		outputMode := strings.ToLower(strings.TrimSpace(launch.OutputMode))
+		if outputMode != taskOutputModeManaged && outputMode != taskOutputModeWorkspace {
+			return taskLaunchPrepared{}, fmt.Errorf("task Designer launch has invalid output mode %q", launch.OutputMode)
+		}
+		childMetadata["designer_output_mode"] = outputMode
+		if outputMode == taskOutputModeManaged {
 			launch.ArtifactRunContext = cloneArtifactRunContext(launch.ArtifactRunContext)
 			launch.ArtifactRunContext.ChildSessionID = childSessionID
 			launch.ArtifactRunContext.RunID, launch.ArtifactRunContext.PlanID, launch.ArtifactRunContext.CheckpointID, launch.ArtifactRunContext.AttemptID = "", "", "", ""
-			childMetadata["designer_output_mode"] = taskOutputModeManaged
+			childMetadata["managed_artifact_output"] = true
 			childMetadata["managed_artifact_parent_session_id"] = launch.ArtifactRunContext.SessionID
 			childMetadata["managed_artifact_collection_id"] = launch.ArtifactRunContext.CollectionID
 			childMetadata["managed_artifact_variant_id"] = launch.ArtifactRunContext.VariantID
@@ -869,7 +880,6 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 				childMetadata["managed_artifact_program_job_id"] = launch.ArtifactRunContext.ProgramJobID
 			}
 		} else {
-			childMetadata["designer_output_mode"] = taskOutputModeWorkspace
 			childMetadata["shared_parent_checkout"] = true
 			childMetadata["reusable_workspace_artifacts"] = true
 		}
@@ -1068,6 +1078,13 @@ func (s *Service) prepareResumedTaskProgramLaunch(parentSession pebblestore.Sess
 		}
 	}
 	launch.RequestedSubagent = requested
+	if agentruntime.IsDesignerAgentName(requested) {
+		storedOutputMode := strings.ToLower(strings.TrimSpace(mapString(child.Metadata, "designer_output_mode")))
+		if storedOutputMode != strings.ToLower(strings.TrimSpace(spec.OutputMode)) {
+			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q Designer output mode changed", childID)
+		}
+		launch.OutputMode = storedOutputMode
+	}
 	launch.MetaPrompt = taskProgramRecoveryPrompt(spec)
 	launch.AssignmentLabel = taskAssignmentLabel(spec.AssignmentLabel, spec.MetaPrompt, "resume task program", strings.TrimSpace(profile.Name))
 	launch.SubagentProvider = strings.TrimSpace(child.Preference.Provider)
@@ -3898,6 +3915,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if err != nil {
 					return "", fmt.Errorf("reconcile compiled Designer launch snapshot: %w", err)
 				}
+				if strings.EqualFold(strings.TrimSpace(launchSpecs[i].OutputMode), taskOutputModeWorkspace) {
+					workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(profile)
+					workspaceProfile.Provider, workspaceProfile.Model, workspaceProfile.Thinking = profile.Provider, profile.Model, profile.Thinking
+					workspaceProfile.AutoServiceTier = profile.AutoServiceTier
+					profile = workspaceProfile
+				}
 				trustedVirtualTargets[i] = false
 			} else if agentruntime.IsIdeaAgentName(launchSpecs[i].RequestedSubagentType) {
 				if row.ParentCopy || !agentruntime.IsIdeaAgentName(row.ResolvedAgentName) || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
@@ -3976,6 +3999,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			MetaPrompt:          metaPrompt,
 			AssignmentLabel:     spec.AssignmentLabel,
 			OwnedScope:          append([]string(nil), spec.OwnedScope...),
+			OutputMode:          strings.TrimSpace(spec.OutputMode),
 			StreamKey:           strings.TrimSpace(spec.StreamKey),
 			SwarmMode:           spec.SwarmMode,
 			SwarmStrategy:       strings.TrimSpace(spec.SwarmStrategy),
@@ -4179,7 +4203,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				TargetedSubagentName: req.TargetedSubagentName,
 				RequestedSubagent:    launch.RequestedSubagent,
 				OwnedScope:           append([]string(nil), launch.OwnedScope...),
-				OutputMode:           launch.OutputMode,
+				OutputMode:           strings.TrimSpace(launch.OutputMode),
 				ArtifactRunContext:   launch.ArtifactRunContext,
 			})
 		}
@@ -4768,20 +4792,28 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		b.WriteString("\n")
 	}
 	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
-		if strings.TrimSpace(config.OutputMode) == taskOutputModeManaged && config.ArtifactRunContext != nil {
+		switch strings.ToLower(strings.TrimSpace(config.OutputMode)) {
+		case taskOutputModeManaged:
 			b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; do not write or edit the workspace checkout\n")
+			if config.ArtifactRunContext == nil {
+				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")
+				break
+			}
 			b.WriteString("- trusted artifact destination (backend supplied; not model-selectable): parent session ")
 			b.WriteString(config.ArtifactRunContext.SessionID)
 			b.WriteString(", collection ")
 			b.WriteString(config.ArtifactRunContext.CollectionID)
 			b.WriteString(", variant ")
 			b.WriteString(config.ArtifactRunContext.VariantID)
-			b.WriteString("\n- artifact contract: call manage_artifact create or create_package and omit collection_id/variant_id; trusted orchestration injects them. Completion without a ready artifact is a failed handoff\n")
-		} else {
+			b.WriteString("\n- artifact contract: call manage_artifact create or create_package and omit collection_id/variant_id; trusted orchestration injects them. Completion without a ready artifact is a failed handoff; do not choose or override destination lineage\n")
+		case taskOutputModeWorkspace:
+			b.WriteString("- output mode: workspace\n")
 			b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
 			b.WriteString("- owned scope/output target: ")
 			b.WriteString(strings.Join(config.OwnedScope, ", "))
-			b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; artifacts remain available after this child finishes\n")
+			b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; do not use manage_artifact; artifacts remain available after this child finishes\n")
+		default:
+			b.WriteString("- output contract: invalid or missing; fail without mutating the checkout or managed artifacts\n")
 		}
 	}
 	if parentBlock := buildTaskParentSessionContext(config.ParentSession, config.PermissionSessionID); parentBlock != "" {
@@ -4814,10 +4846,10 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	if agentruntime.IsCoderAgentName(config.RequestedSubagent) {
 		b.WriteString("9. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
 	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
-		if strings.TrimSpace(config.OutputMode) == taskOutputModeManaged {
-			b.WriteString("9. For managed Designer work, finish only after manage_artifact returns the trusted ready variant reference. Do not use workspace write/edit or Git.\n")
+		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
+			b.WriteString("9. For managed Designer work, use manage_artifact to create, update, and finalize the assigned opaque variant, and finish only after it returns the trusted ready reference; do not use write/edit or mutate the checkout.\n")
 		} else {
-			b.WriteString("9. For workspace Designer work, do not use Git. Inspect nearby code as needed and create or revise the assigned reusable variant artifact within the declared owned scope.\n")
+			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
 		}
 	}
 	return strings.TrimSpace(b.String())

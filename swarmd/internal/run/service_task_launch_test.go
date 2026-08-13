@@ -909,7 +909,7 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 		t.Fatalf("resolve Designer profile: virtual=%t source=%q err=%v", virtual, source, err)
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create variant", VirtualTarget: virtual, OwnedScope: []string{"web/src/variants/compact.tsx"},
+		LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create variant", VirtualTarget: virtual, OwnedScope: []string{"web/src/variants/compact.tsx"}, OutputMode: taskOutputModeWorkspace,
 	}, "design", "", &profile, source, nil)
 	if err != nil {
 		t.Fatalf("prepare approved Designer: %v", err)
@@ -925,8 +925,8 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 		// Boolean metadata is asserted below without converting its type.
 		t.Fatalf("unexpected string shared checkout metadata %q", got)
 	}
-	if shared, _ := child.Metadata["shared_parent_checkout"].(bool); !shared {
-		t.Fatalf("Designer child metadata missing shared checkout: %#v", child.Metadata)
+	if shared, _ := child.Metadata["shared_parent_checkout"].(bool); !shared || child.Metadata["designer_output_mode"] != taskOutputModeWorkspace {
+		t.Fatalf("Designer child metadata missing workspace output contract: %#v", child.Metadata)
 	}
 	if scope, _ := child.Metadata["owned_scope"].([]string); !slices.Equal(scope, []string{"web/src/variants/compact.tsx"}) {
 		t.Fatalf("Designer child owned scope = %#v", child.Metadata["owned_scope"])
@@ -1965,6 +1965,34 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
+func TestDesignerPermissionManifestUsesCompiledManagedProfileByDefault(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant",
+	})})
+	if err != nil {
+		t.Fatalf("build managed Designer manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("managed Designer manifest launches = %#v", manifest.Launches)
+	}
+	row := manifest.Launches[0]
+	if row.OutputMode != taskOutputModeManaged || len(row.OwnedScope) != 0 || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+		t.Fatalf("managed Designer output contract = mode %q scope %#v profile %#v", row.OutputMode, row.OwnedScope, row.ProfileSnapshot)
+	}
+	for _, name := range []string{"read", "search", "find", "list", "manage_artifact"} {
+		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
+			t.Fatalf("managed Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
+		}
+	}
+	for _, name := range []string{"write", "edit", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
+			t.Fatalf("managed Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
+		}
+	}
+}
+
 func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -1989,7 +2017,7 @@ func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.
 			t.Fatalf("Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
 		}
 	}
-	for _, name := range []string{"bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+	for _, name := range []string{"bash", "git_status", "git_commit", "task", "manage_artifact", "manage_worktree", "plan_manage"} {
 		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
 			t.Fatalf("Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
 		}

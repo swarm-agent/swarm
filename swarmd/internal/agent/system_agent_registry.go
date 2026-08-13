@@ -447,8 +447,14 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 
 func DesignerAgentPrompt() string {
 	return strings.TrimSpace(`You are Designer, Swarm's compiled UI and design implementation subagent.
-Follow the backend-supplied output contract for this launch. In managed mode, publish exactly one durable ready variant with manage_artifact and never write or edit the checkout. In workspace mode, create coherent reusable source artifacts only within the distinct owned output target.
-Use only the locked discovery and output tools provided for the launch. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
+Inspect nearby product and code context as needed, then produce only the reusable design output assigned by the parent.
+
+Follow the backend-supplied immutable output contract for this launch:
+- Managed output: use manage_artifact to create, update, and finalize exactly one durable ready variant at the assigned opaque target. Never use write or edit, never mutate the checkout, and never choose or override the destination session, collection, or variant identity.
+- Workspace output: use write and edit only within the concrete declared owned scope. Never use manage_artifact or silently publish a managed artifact.
+If the output contract or target is missing, ambiguous, or conflicts with the available tools, fail honestly without mutating either destination.
+
+Use only the locked tools supplied for the selected output contract. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
 }
 
 func IdeaAgentPrompt() string {
@@ -465,10 +471,24 @@ func IdeaAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
+// DesignerAgentToolContract is the fail-closed managed-output contract used by
+// the compiled Designer profile. Task launch code may explicitly select the
+// workspace contract only after validating a concrete owned scope.
 func DesignerAgentToolContract() *pebblestore.AgentToolContract {
+	return designerAgentToolContract(true)
+}
+
+// DesignerWorkspaceAgentToolContract permits checkout mutation only for an
+// explicitly selected workspace-output launch. It disables manage_artifact so
+// workspace Designers cannot silently publish to the managed authority.
+func DesignerWorkspaceAgentToolContract() *pebblestore.AgentToolContract {
+	return designerAgentToolContract(false)
+}
+
+func designerAgentToolContract(managed bool) *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
-		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+		"write": {Enabled: pebblestore.BoolPtr(!managed)}, "edit": {Enabled: pebblestore.BoolPtr(!managed)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(managed)},
 		"bash": {Enabled: pebblestore.BoolPtr(false)}, "git_status": {Enabled: pebblestore.BoolPtr(false)}, "git_diff": {Enabled: pebblestore.BoolPtr(false)}, "git_add": {Enabled: pebblestore.BoolPtr(false)}, "git_commit": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)}, "manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
@@ -690,12 +710,24 @@ func IdeaAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.Agen
 	return profile
 }
 
+// DesignerAgentProfileForParent returns the fail-closed managed-output profile.
+// Managed output is the default for regular Designer launches and Iteration
+// Swarms; callers must opt into DesignerWorkspaceAgentProfileForParent only
+// after validating the workspace output contract and its owned scope.
 func DesignerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return designerAgentProfileForParent(parent, DesignerAgentToolContract(), "Compiled managed-artifact UI and design implementation subagent")
+}
+
+func DesignerWorkspaceAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return designerAgentProfileForParent(parent, DesignerWorkspaceAgentToolContract(), "Compiled workspace-scoped UI and design implementation subagent")
+}
+
+func designerAgentProfileForParent(parent pebblestore.AgentProfile, contract *pebblestore.AgentToolContract, description string) pebblestore.AgentProfile {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
-		Name: DesignerAgentID, Mode: ModeSubagent, Description: "Compiled reusable UI and design implementation subagent",
+		Name: DesignerAgentID, Mode: ModeSubagent, Description: description,
 		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: DesignerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: DesignerAgentToolContract(), Enabled: true,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: contract, Enabled: true,
 	})
 	// AgentProfile normalization only preserves the legacy persisted memory agent's
 	// protection bit. Designer is compiled rather than persisted, so restore its

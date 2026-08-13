@@ -30,8 +30,8 @@ const (
 	taskModeSwarm                  = "swarm"
 	taskSwarmStrategyExplore       = "explore"
 	taskSwarmStrategyAssembly      = "assembly"
-	taskOutputModeManaged           = "managed"
-	taskOutputModeWorkspace         = "workspace"
+	taskOutputModeManaged          = "managed"
+	taskOutputModeWorkspace        = "workspace"
 	taskAssemblySwarmLaunchEnabled = false
 	taskSwarmMaxAgents             = 256
 	taskProgramActionStart         = "start"
@@ -2647,6 +2647,14 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfileForMode(parentSession, requested, childMode)
 		if err != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: %w", i, requested, err)
+		}
+		if agentruntime.IsDesignerAgentName(requested) && strings.EqualFold(strings.TrimSpace(launch.OutputMode), taskOutputModeWorkspace) {
+			// Designer resolution is fail-closed to managed output. Only the
+			// validated workspace output mode may replace that immutable contract.
+			workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(subagentProfile)
+			workspaceProfile.Provider, workspaceProfile.Model, workspaceProfile.Thinking = subagentProfile.Provider, subagentProfile.Model, subagentProfile.Thinking
+			workspaceProfile.AutoServiceTier = subagentProfile.AutoServiceTier
+			subagentProfile = workspaceProfile
 		}
 		resolvedName := strings.TrimSpace(subagentProfile.Name)
 		if resolvedName == "" {

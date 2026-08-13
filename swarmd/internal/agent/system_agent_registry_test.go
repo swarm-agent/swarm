@@ -265,12 +265,12 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if designer.Name != DesignerAgentID || designer.Mode != ModeSubagent || designer.Prompt != DesignerAgentPrompt() || designer.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || designer.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !designer.Enabled || !designer.Protected || designer.ExitPlanModeEnabled == nil || *designer.ExitPlanModeEnabled {
 		t.Fatalf("Designer immutable contract was not restored: %+v", designer)
 	}
-	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+	for _, allowed := range []string{"read", "search", "find", "list", "manage_artifact"} {
 		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
+			t.Fatalf("managed Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
 	}
-	for _, denied := range []string{"bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := designer.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Designer mandatory denial %q was not restored: %+v", denied, designer.ToolContract)
 		}
@@ -278,9 +278,18 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
 		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
 	}
-	for _, want := range []string{"backend-supplied output contract", "publish exactly one durable ready variant with manage_artifact", "never write or edit the checkout", "workspace mode"} {
+	workspaceDesigner := DesignerWorkspaceAgentProfileForParent(designer)
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if cfg := workspaceDesigner.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("workspace Designer locked tool %q unavailable: %+v", allowed, workspaceDesigner.ToolContract)
+		}
+	}
+	if cfg := workspaceDesigner.ToolContract.Tools["manage_artifact"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("workspace Designer must not authorize manage_artifact: %+v", workspaceDesigner.ToolContract)
+	}
+	for _, want := range []string{"backend-supplied immutable output contract", "Managed output", "manage_artifact", "exactly one durable ready variant", "Never use write or edit", "Workspace output", "Never use manage_artifact", "orchestrate other agents"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
-			t.Fatalf("Designer prompt missing output-mode contract %q", want)
+			t.Fatalf("Designer prompt missing immutable output contract %q", want)
 		}
 	}
 

@@ -823,9 +823,14 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 	}
 
 	description := fmt.Sprintf("@%s %s", targetName, truncateRunes(prompt, targetedSubagentSummaryRunes))
+	outputMode := ""
+	if agentruntime.IsDesignerAgentName(targetName) {
+		outputMode = taskOutputModeManaged
+	}
 	launch, err := s.prepareDelegatedSubagentLaunch(parentSession, sessionruntime.NormalizeMode(parentSession.Mode), taskLaunchPrepared{
 		LaunchIndex:       1,
 		RequestedSubagent: targetName,
+		OutputMode:        outputMode,
 	}, description, targetName, options.ApplySessionMutation)
 	if err != nil {
 		return RunResult{}, err
@@ -870,6 +875,8 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		ParentActivePlan:     delegationContext.ActivePlan,
 		PermissionSessionID:  firstNonEmptyString(strings.TrimSpace(options.PermissionSessionID), strings.TrimSpace(parentSession.ID)),
 		TargetedSubagentName: targetName,
+		RequestedSubagent:    targetName,
+		OutputMode:           launch.OutputMode,
 	})
 	childResult, err := s.RunTurnStreaming(ctx, launch.ChildSession.ID, RunRequest{
 		Prompt:     delegatedPrompt,
