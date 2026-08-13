@@ -996,7 +996,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 }
 
 func artifactCollectionLineageCompatible(existing, incoming SessionArtifactLineage) bool {
-	return existing.ParentSessionID == incoming.ParentSessionID && existing.TaskCallID == incoming.TaskCallID && existing.ProgramID == incoming.ProgramID && existing.RunID == incoming.RunID && existing.PlanID == incoming.PlanID && existing.CheckpointID == incoming.CheckpointID && existing.AttemptID == incoming.AttemptID
+	return existing.ParentSessionID == incoming.ParentSessionID && existing.TaskCallID == incoming.TaskCallID && existing.ProgramID == incoming.ProgramID
 }
 
 func artifactCollectionProgressTotal(collection SessionArtifactCollection) int {
