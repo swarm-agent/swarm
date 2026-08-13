@@ -3582,6 +3582,8 @@ function DesktopV3StructuredFinalHandoff({
     planTitle: "",
     checkpointId: "",
     checkpointTitle: "",
+    collectionName: "",
+    collectionDescription: "",
     filename: artifact.label,
     kind: artifact.mediaType,
     category: artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") ? "visual" : "document",
