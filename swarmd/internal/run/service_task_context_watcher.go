@@ -8,7 +8,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const taskContextRotationThreshold = 0.10
+const taskContextRotationThreshold = 0.80
 
 type taskContextUsageAuthority interface {
 	GetUsageSummary(sessionID string) (pebblestore.SessionUsageSummary, bool, error)
