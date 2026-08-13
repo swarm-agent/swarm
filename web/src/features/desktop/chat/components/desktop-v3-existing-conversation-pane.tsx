@@ -40,6 +40,7 @@ import {
   type RenderedSessionMessages,
 } from "../../state/desktop-v3-cache-selectors";
 import type {
+  DesktopV3ArtifactSelectionReference,
   DesktopV3CacheState,
   DesktopV3MediaReference,
   LiveRunOverlay,
@@ -164,7 +165,7 @@ import {
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
-import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   effectiveDesktopSidebarDisplayMode,
@@ -1667,6 +1668,7 @@ export function DesktopV3ExistingConversationPane({
   const externalArtifactSelectionRequestHandledRef = useRef(onArtifactSelectionRequestHandled);
   externalArtifactSelectionRequestHandledRef.current = onArtifactSelectionRequestHandled;
   const galleryArtifactSelectionInFlightRef = useRef(false);
+  const queuedGalleryArtifactSelectionsRef = useRef<DesktopV3ArtifactMessageSelection[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
@@ -2136,6 +2138,7 @@ export function DesktopV3ExistingConversationPane({
     operationRef.current = operation;
     composerControllerRef.current?.setDraft(operation?.request.content ?? "");
     galleryArtifactSelectionInFlightRef.current = false;
+    queuedGalleryArtifactSelectionsRef.current = [];
     pendingExternalArtifactSelectionRequestRef.current = "";
     setGalleryArtifactSelectionRequest(null);
     setSendError(null);
@@ -2778,7 +2781,8 @@ export function DesktopV3ExistingConversationPane({
     try {
       const requestSelections = appendDesktopV3ArtifactMessageSelections([], selections);
       if (galleryArtifactSelectionInFlightRef.current) {
-        setSendError("Finish adding the current artifact selection before adding another.");
+        queuedGalleryArtifactSelectionsRef.current = appendDesktopV3ArtifactMessageSelections(queuedGalleryArtifactSelectionsRef.current, requestSelections);
+        setSendError(null);
         return;
       }
       galleryArtifactSelectionInFlightRef.current = true;
@@ -2793,10 +2797,16 @@ export function DesktopV3ExistingConversationPane({
   const handleGalleryArtifactSelectionRequest = useCallback(() => {
     galleryArtifactSelectionInFlightRef.current = false;
     setGalleryArtifactSelectionRequest(null);
+    const queuedSelections = queuedGalleryArtifactSelectionsRef.current;
+    queuedGalleryArtifactSelectionsRef.current = [];
     const externalRequest = externalArtifactSelectionRequestRef.current;
-    if (!externalRequest) return;
+    if (queuedSelections.length === 0 && !externalRequest) return;
     queueMicrotask(() => {
-      if (!externalArtifactSelectionRequestRef.current) return;
+      if (queuedSelections.length > 0) {
+        queueGalleryArtifactSelections(queuedSelections);
+        return;
+      }
+      if (!externalArtifactSelectionRequestRef.current || !externalRequest) return;
       queueGalleryArtifactSelections([externalRequest]);
       externalArtifactSelectionRequestHandledRef.current?.();
     });
@@ -3122,7 +3132,7 @@ export function DesktopV3ExistingConversationPane({
             ) : null}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               {activeSidebarView === "artifacts" ? (
-                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} />
+                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
               ) : pendingPlanDocument && pendingPlanPermission ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
@@ -3167,7 +3177,6 @@ export function DesktopV3ExistingConversationPane({
         onArtifactNavigate={navigateArtifactViewer}
         onAddToChat={(artifacts) => {
           queueGalleryArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" })));
-          setArtifactGalleryOpen(false);
         }}
         onUseThisDesign={({ label, selection }) => {
           queueGalleryArtifactSelections([{ ...selection, label, action: "use" }]);
@@ -3895,7 +3904,7 @@ function DesktopV3CommittedMessage({
     );
   }
   if (role === "user") {
-    return <DesktopV3UserMessage content={message.content} media={message.media} />;
+    return <DesktopV3UserMessage content={message.content} media={message.media} artifactSelections={message.artifact_selections} />;
   }
   if (role === "reasoning") {
     return (
@@ -3932,10 +3941,12 @@ function DesktopV3CommittedMessage({
 function DesktopV3UserMessage({
   content,
   media,
+  artifactSelections,
   pendingLabel,
 }: {
   content: string;
   media?: DesktopV3MediaReference[];
+  artifactSelections?: DesktopV3ArtifactSelectionReference[];
   pendingLabel?: string;
 }) {
   return (
@@ -3943,6 +3954,7 @@ function DesktopV3UserMessage({
       <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
         {content ? <div className="whitespace-pre-wrap break-words">{content}</div> : null}
         {media?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{media.map((item, index) => <span key={`${item.asset_id}:${index}`} className="rounded-md border border-white/25 px-2 py-1 text-xs">{item.file_type?.toUpperCase() || item.mime_type} · {Math.ceil(item.size / 1024)} KB</span>)}</div> : null}
+        {artifactSelections?.length ? <div className="mt-2 flex flex-wrap gap-1.5" data-testid="desktop-user-message-artifact-selections">{artifactSelections.map((selection) => <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}`} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-white/30 bg-white/10 px-2 py-1 text-xs"><GalleryHorizontal size={12} className="shrink-0" aria-hidden="true" /><span className="max-w-52 truncate" title={selection.description || selection.label}>{selection.label || 'Designer iteration'}</span>{selection.action === 'use' ? <span className="text-[9px] font-semibold uppercase tracking-wide opacity-75">Use design</span> : null}</span>)}</div> : null}
         {pendingLabel ? (
           <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] opacity-70">
             {pendingLabel}
@@ -3962,6 +3974,7 @@ function DesktopV3PendingUserMessage({
     <DesktopV3UserMessage
       content={message.content}
       media={message.media}
+      artifactSelections={message.artifactSelections}
       pendingLabel={
         message.status === "failed" ? message.error || "failed" : undefined
       }

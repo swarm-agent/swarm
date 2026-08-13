@@ -396,6 +396,8 @@ export async function appendFirstDesktopV3Message(input: {
       sessionId: operation.sessionId,
       content: firstMessageRequest.content,
       metadata: firstMessageRequest.metadata,
+      media: firstMessageRequest.media,
+      artifactSelections: firstMessageRequest.artifact_selections,
       runId: firstMessageRequest.run_id,
       createdAt: operation.createdAt,
     },

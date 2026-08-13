@@ -17,6 +17,8 @@ test('gallery exposes accessible bounded multi-select without persisting Add to 
   assert.match(gallery, /pendingChatArtifacts\.map/)
   assert.match(gallery, /Add \{pendingChatArtifacts\.length > 1/)
   assert.match(gallery, /This does not change the durable selected design/)
+  assert.match(gallery, /Select this iteration/)
+  assert.match(gallery, /selectedIsQueuedForChat/)
   const addAction = gallery.slice(gallery.indexOf('const emitAddToChat'), gallery.indexOf('const persistAndUseDesign'))
   assert.doesNotMatch(addAction, /useDesktopV3Artifact/)
   assert.match(api, /appendDesktopV3ArtifactMessageSelections/)
@@ -35,10 +37,25 @@ test('session sidebar and final handoff galleries feed the active existing compo
   assert.match(pane, /onSelectionPersisted=\{refreshSessionArtifacts\}/)
   assert.match(pane, /artifactCatalog=\{sessionArtifacts\}/)
   assert.match(pane, /entry\.artifactId === artifact\.artifactId/)
+  assert.match(pane, /onAddToChat=\{\(artifacts\) => queueGalleryArtifactSelections/)
   assert.match(composer, /appendDesktopV3ArtifactMessageSelections/)
   assert.match(composer, /Array\.isArray\(artifactSelectionRequest\)/)
   assert.match(composer, /handledArtifactSelectionRequestRef/)
   assert.match(composer, /data-testid="desktop-composer-artifact-chip"/)
+})
+
+test('sent and pending user messages render their Designer iteration selections', async () => {
+  const [pane, flow, state] = await Promise.all([
+    readFile(paneURL, 'utf8'),
+    readFile(new URL('../../session-v3/existing-session-flow.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../../state/desktop-v3-cache-types.ts', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(pane, /artifactSelections=\{message\.artifact_selections\}/)
+  assert.match(pane, /artifactSelections=\{message\.artifactSelections\}/)
+  assert.match(pane, /data-testid="desktop-user-message-artifact-selections"/)
+  assert.match(flow, /artifactSelections: operation\.request\.artifact_selections/)
+  assert.match(state, /artifactSelections\?: DesktopV3ArtifactSelectionReference\[\]/)
 })
 
 test('Use this design remains a singular canonical action while message refs preserve intent', async () => {

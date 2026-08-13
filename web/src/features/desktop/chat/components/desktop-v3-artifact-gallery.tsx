@@ -212,6 +212,7 @@ export function DesktopV3ArtifactGallery({
   const canonicalSelectedId = durableSelectedId || (persistedSelectedArtifact ? artifactSelectionKey(persistedSelectedArtifact) : '')
   const selectedIsCanonical = Boolean(selected && artifactSelectionKey(selected) === canonicalSelectedId)
   const selectedCanAttach = selected?.status === 'ready' && Boolean(selected.collectionId) && (selected.eventSeq ?? 0) > 0
+  const selectedIsQueuedForChat = Boolean(selected && chatSelectedIds.includes(artifactSelectionKey(selected)))
   const attachableSelectedArtifacts = artifacts.filter((artifact) => chatSelectedIds.includes(artifactSelectionKey(artifact))
     && artifact.status === 'ready'
     && Boolean(artifact.collectionId)
@@ -393,7 +394,7 @@ export function DesktopV3ArtifactGallery({
   }
 
   const emitAddToChat = async () => {
-    if (pendingChatArtifacts.length === 0 || !onAddToChat) return
+    if (pendingChatArtifacts.length === 0 || !onAddToChat) return false
     try {
       setActionPending('add')
       setActionError('')
@@ -402,8 +403,10 @@ export function DesktopV3ArtifactGallery({
         selection: desktopV3ArtifactSelection(artifact),
       })))
       setChatSelectedIds([])
+      return true
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not add the artifacts to chat')
+      return false
     } finally {
       setActionPending('')
     }
@@ -556,7 +559,7 @@ export function DesktopV3ArtifactGallery({
                 </div>
                 <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 sm:px-4" aria-live="polite">
                   <div className="min-w-0 flex-1 text-xs">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : chatSelectedIds.length > 0 ? <span className="text-[var(--app-text-subtle)]">{chatSelectedIds.length} ready variant{chatSelectedIds.length === 1 ? '' : 's'} selected for chat. This does not change the durable selected design.</span> : selectedIsCanonical ? <span className="inline-flex items-center gap-1.5 text-[var(--app-success)]"><Check className="size-3.5" />This is the durable selected design for the collection.</span> : <span className="text-[var(--app-text-subtle)]">Add a reference without changing the selected design, or select and use it.</span>}</div>
-                  <div className="flex shrink-0 items-center gap-2"><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" disabled={pendingChatArtifacts.length === 0 || !onAddToChat || Boolean(actionPending)} title={pendingChatArtifacts.length === 0 ? 'Only ready managed variants can be attached' : undefined} onClick={() => void emitAddToChat()}>{actionPending === 'add' ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-4" />}Add {pendingChatArtifacts.length > 1 ? `${pendingChatArtifacts.length} ` : ''}to chat</button><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50" disabled={!selectedCanAttach || !onUseThisDesign || Boolean(actionPending)} title={!selectedCanAttach ? 'Only ready managed variants can be used' : undefined} onClick={() => void persistAndUseDesign()}>{actionPending === 'use' ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}Use this design</button></div>
+                  <div className="flex shrink-0 items-center gap-2"><button type="button" className={cn('inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50', selectedIsQueuedForChat ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]')} disabled={!selectedCanAttach || Boolean(actionPending)} aria-pressed={selectedIsQueuedForChat} onClick={() => selected && toggleChatSelection(selected)}>{selectedIsQueuedForChat ? <Check className="size-4" /> : <MessageSquarePlus className="size-4" />}{selectedIsQueuedForChat ? 'Queued for chat' : 'Select this iteration'}</button><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" disabled={pendingChatArtifacts.length === 0 || !onAddToChat || Boolean(actionPending)} title={pendingChatArtifacts.length === 0 ? 'Only ready managed variants can be attached' : undefined} onClick={() => void emitAddToChat()}>{actionPending === 'add' ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-4" />}Add {pendingChatArtifacts.length > 1 ? `${pendingChatArtifacts.length} ` : ''}to chat</button><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50" disabled={!selectedCanAttach || !onUseThisDesign || Boolean(actionPending)} title={!selectedCanAttach ? 'Only ready managed variants can be used' : undefined} onClick={() => void persistAndUseDesign()}>{actionPending === 'use' ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}Use this design</button></div>
                 </footer>
               </> : null}
             </main>

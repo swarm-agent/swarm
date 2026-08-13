@@ -762,6 +762,7 @@ export interface PendingUserMessage {
   content: string
   metadata?: Record<string, unknown>
   media?: DesktopV3MediaReference[]
+  artifactSelections?: DesktopV3ArtifactSelectionReference[]
   runId?: string
   createdAt: number
   timelineSeq?: number

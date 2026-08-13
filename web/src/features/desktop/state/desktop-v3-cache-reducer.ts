@@ -1043,6 +1043,8 @@ export function upsertPendingUserMessage(
     messageId: string
     content: string
     metadata?: Record<string, unknown>
+    media?: PendingUserMessage['media']
+    artifactSelections?: PendingUserMessage['artifactSelections']
     runId?: string
     createdAt: number
   },
@@ -1081,6 +1083,8 @@ export function upsertPendingUserMessage(
     role: 'user',
     content: input.content,
     metadata: input.metadata,
+    media: input.media,
+    artifactSelections: input.artifactSelections,
     runId: input.runId?.trim() || undefined,
     createdAt: input.createdAt,
     timelineSeq: Math.max(

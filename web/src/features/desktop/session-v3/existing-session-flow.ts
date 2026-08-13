@@ -183,6 +183,7 @@ export async function continueDesktopV3Conversation(
       content: operation.request.content,
       metadata: operation.request.metadata,
       media: operation.request.media,
+      artifactSelections: operation.request.artifact_selections,
       runId: operation.request.run_id,
       createdAt: operation.createdAt,
     },

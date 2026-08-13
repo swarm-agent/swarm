@@ -1,5 +1,5 @@
 import { useEffect, useState, type MouseEvent } from 'react'
-import { FileText, GalleryHorizontal, Loader2, Maximize2, TriangleAlert } from 'lucide-react'
+import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
 import {
@@ -42,6 +42,7 @@ export interface DesktopV3ArtifactSidebarProps {
   embedded?: boolean
   artifactHref: (artifact: DesktopV3ArtifactCatalogEntry) => string
   onOpenArtifact: (artifact: DesktopV3ArtifactCatalogEntry) => void
+  onAddToChat?: (artifacts: DesktopV3ArtifactCatalogEntry[]) => void
 }
 
 function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactCatalogEntry }) {
@@ -107,6 +108,7 @@ export function DesktopV3ArtifactSidebar({
   embedded = false,
   artifactHref,
   onOpenArtifact,
+  onAddToChat,
 }: DesktopV3ArtifactSidebarProps) {
   const thin = displayMode === 'thin'
   const compact = displayMode === 'compact'
@@ -145,26 +147,31 @@ export function DesktopV3ArtifactSidebar({
           data-artifact-thumbnail-rail
         >
           {artifacts.map((artifact, index) => (
-            <a
+            <div
               key={`${artifact.sessionId}:${artifact.artifactId}`}
-              href={artifactHref(artifact)}
               className={cn(
-                'group min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-left transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]',
+                'group relative min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-left transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-within:ring-2 focus-within:ring-[var(--app-primary)]',
                 thin ? 'size-10 rounded-lg' : embedded ? 'w-44 shrink-0' : 'w-full',
               )}
-              onClick={(event: MouseEvent<HTMLAnchorElement>) => {
-                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
-                event.preventDefault()
-                onOpenArtifact(artifact)
-              }}
-              aria-label={`Open ${artifact.label} in full artifact view`}
             >
-              <span className={cn('relative grid overflow-hidden bg-[var(--app-bg)]', thin ? 'size-full place-items-center' : 'h-28 place-items-center')}>
-                <DesktopV3ArtifactThumbnail artifact={artifact} />
-                {!thin ? <span className="absolute right-2 top-2 grid size-7 place-items-center rounded-md bg-black/60 text-white opacity-0 transition group-hover:opacity-100"><Maximize2 size={13} aria-hidden="true" /></span> : null}
-              </span>
-              {!thin ? <span className="block min-w-0 px-3 py-2"><span className="block truncate text-xs font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{artifact.lineage?.iterationGroup || artifact.collectionName || (artifact.status === 'staging' ? 'Generating' : artifact.kind || artifact.mediaType)}{artifact.lineage?.iterationIndex ? ` · ${artifact.lineage.iterationIndex}/${artifacts.filter((entry) => entry.collectionId === artifact.collectionId).length || index + 1}` : ''}</span></span> : null}
-            </a>
+              <a
+                href={artifactHref(artifact)}
+                className="block min-w-0 focus-visible:outline-none"
+                onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                  event.preventDefault()
+                  onOpenArtifact(artifact)
+                }}
+                aria-label={`Open ${artifact.label} in full artifact view`}
+              >
+                <span className={cn('relative grid overflow-hidden bg-[var(--app-bg)]', thin ? 'size-full place-items-center' : 'h-28 place-items-center')}>
+                  <DesktopV3ArtifactThumbnail artifact={artifact} />
+                  {!thin ? <span className="absolute right-2 top-2 grid size-8 place-items-center rounded-md bg-black/60 text-white opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100"><Maximize2 size={13} aria-hidden="true" /></span> : null}
+                </span>
+                {!thin ? <span className="block min-w-0 px-3 py-2"><span className="block truncate text-xs font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{artifact.lineage?.iterationGroup || artifact.collectionName || (artifact.status === 'staging' ? 'Generating' : artifact.kind || artifact.mediaType)}{artifact.lineage?.iterationIndex ? ` · ${artifact.lineage.iterationIndex}/${artifacts.filter((entry) => entry.collectionId === artifact.collectionId).length || index + 1}` : ''}</span></span> : null}
+              </a>
+              {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className={cn('absolute z-10 grid place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white', thin ? 'inset-1' : 'right-11 top-2 size-8')} aria-label={`Add ${artifact.label} to chat`} title="Add to chat" onClick={() => onAddToChat([artifact])}><MessageSquarePlus size={14} aria-hidden="true" /></button> : null}
+            </div>
           ))}
         </div>
       ) : null}
