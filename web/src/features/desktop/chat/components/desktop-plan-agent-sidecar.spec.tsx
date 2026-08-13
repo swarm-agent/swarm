@@ -46,13 +46,31 @@ const markup = renderToStaticMarkup(
   />,
 );
 
+const mobileInlineMarkup = renderToStaticMarkup(
+  <DesktopPlanAgentSidecar
+    parentSessionId="parent-1"
+    permission={permission}
+    document={document}
+    embedded
+    mobileInline
+    mobileOpen
+    modelLabel="model-a"
+    onClose={() => undefined}
+  />,
+);
+
 assert.match(markup, /data-embedded="true"/, "expected integrated plan sidebar");
+assert.match(mobileInlineMarkup, /data-mobile-inline="true"/, "expected an inline mobile Plan chat variant");
+assert.match(mobileInlineMarkup, />Ask Swarm Plan</, "inline mobile Plan chat should use the requested waiting-state title");
+assert.doesNotMatch(mobileInlineMarkup, /fixed inset-0/, "inline mobile Plan chat should not open as a full-screen sheet");
+assert.match(mobileInlineMarkup, /h-\[min\(62dvh,36rem\)\]/, "expanded mobile Plan chat should stay above the main composer with a bounded height");
 assert.match(markup, /Ask about the plan or request changes conversationally/, "expected plan-agent guidance");
 assert.match(markup, />Plan</, "expected Plan-only sidebar heading");
 assert.doesNotMatch(markup, /Plan &amp; AI/, "AI tabs must be absent from the MVP sidebar");
 assert.doesNotMatch(markup, /Ask AI/, "AI sidechat controls must be absent");
 assert.match(markup, /data-testid="desktop-plan-agent-scroller"/, "Plan conversation should use the shared sticky-bottom scroller");
 assert.match(source, /h-\[88dvh\][\s\S]*max-h-\[88dvh\][\s\S]*min-\[1300px\]:h-auto/, "mobile Plan popout should have a bounded dynamic-viewport height while desktop keeps its flexible sidebar height");
+assert.match(source, /min-\[1300px\]:min-h-0 min-\[1300px\]:flex-1[\s\S]*min-\[1300px\]:h-auto min-\[1300px\]:max-h-none min-\[1300px\]:flex-1/, "embedded desktop Plan should fill the sidebar column instead of shrinking its composer toward the top");
 assert.match(source, /touch-pan-y[\s\S]*overflow-y-auto[\s\S]*overscroll-contain[\s\S]*-webkit-overflow-scrolling:touch/, "mobile Plan conversation should explicitly support touch scrolling");
 assert.match(markup, /data-testid="desktop-plan-agent-tail-anchor"/, "Plan conversation should expose the shared CSS tail anchor");
 assert.doesNotMatch(markup, /Jump to latest Plan message/, "jump control remains hidden while initially pinned");

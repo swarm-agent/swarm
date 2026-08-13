@@ -26,6 +26,7 @@ import {
   ExternalLink,
   GalleryHorizontal,
   ListChecks,
+  MessageCircle,
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
@@ -172,6 +173,23 @@ import {
   loadDesktopSidebarDisplayMode,
   type DesktopSidebarDisplayMode,
 } from "./desktop-sidebar-display";
+
+const PLAN_SIDEBAR_MEDIA_QUERY = "(min-width: 1300px)";
+
+function usePlanSidebarViewport(): boolean {
+  const [matches, setMatches] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(PLAN_SIDEBAR_MEDIA_QUERY).matches);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(PLAN_SIDEBAR_MEDIA_QUERY);
+    const update = () => setMatches(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return matches;
+}
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -1620,8 +1638,9 @@ export function DesktopV3ExistingConversationPane({
     [pendingPlanPermission],
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
+  const planSidebarViewport = usePlanSidebarViewport();
   useEffect(() => {
-    setPlanAgentMobileOpen(Boolean(pendingPlanPermission?.id));
+    setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
   const currentRun =
     renderedMessages.liveRuns.find(
@@ -2967,7 +2986,6 @@ export function DesktopV3ExistingConversationPane({
                     pendingPosition={index + 1}
                     pendingCount={pendingPlanPermissions.length}
                     onResolve={resolvePermission}
-                    onAskForChanges={index === 0 ? () => setPlanAgentMobileOpen(true) : undefined}
                   />
                 ))}
                 <div
@@ -2989,6 +3007,44 @@ export function DesktopV3ExistingConversationPane({
               </button>
             ) : null}
           </div>
+
+          {pendingPlanDocument && pendingPlanPermission && !planSidebarViewport ? (
+            <div
+              className="shrink-0 bg-[var(--app-surface)] min-[1300px]:hidden"
+              id="desktop-plan-agent-composer-region"
+              data-testid="desktop-plan-agent-composer-region"
+            >
+              {planAgentMobileOpen ? (
+                <DesktopPlanAgentSidecar
+                  parentSessionId={normalizedSessionId}
+                  permission={pendingPlanPermission}
+                  document={pendingPlanDocument}
+                  embedded
+                  mobileInline
+                  mobileOpen
+                  modelLabel={displayedPreference.model}
+                  onClose={() => setPlanAgentMobileOpen(false)}
+                />
+              ) : (
+                <div className="mx-auto w-full max-w-[70rem] px-4 py-2 sm:px-6">
+                  <button
+                    type="button"
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-4 py-2.5 text-left transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                    aria-expanded="false"
+                    aria-controls="mobile-plan-agent-panel"
+                    onClick={() => setPlanAgentMobileOpen(true)}
+                  >
+                    <MessageCircle className="size-4 shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-[var(--app-text)]">Ask Swarm Plan</span>
+                      <span className="block truncate text-xs text-[var(--app-text-muted)]">Waiting for your review · Talk through changes before approval</span>
+                    </span>
+                    <ChevronDown className="size-4 shrink-0 -rotate-90 text-[var(--app-text-muted)]" aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
 
           {!pendingPlanDocument && showPlanExecutionSidebar && planExecutionView ? (
             <div
@@ -3146,16 +3202,14 @@ export function DesktopV3ExistingConversationPane({
               : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
                 <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
-              ) : pendingPlanDocument && pendingPlanPermission ? (
+              ) : pendingPlanDocument && pendingPlanPermission && planSidebarViewport ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
                   permission={pendingPlanPermission}
                   document={pendingPlanDocument}
                   embedded
-                  mobileOpen={planAgentMobileOpen}
                   modelLabel={displayedPreference.model}
                   displayMode={planSidebarDisplayMode}
-                  onClose={() => setPlanAgentMobileOpen(false)}
                 />
               ) : showPlanExecutionSidebar && planExecutionView ? (
                 <DesktopPlanExecutionSidebar

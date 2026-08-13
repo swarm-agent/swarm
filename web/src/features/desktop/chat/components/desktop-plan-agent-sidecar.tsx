@@ -29,6 +29,7 @@ interface DesktopPlanAgentSidecarProps {
   embedded?: boolean;
   modelLabel?: string;
   mobileOpen?: boolean;
+  mobileInline?: boolean;
   displayMode?: "full" | "compact" | "thin";
 }
 
@@ -92,6 +93,7 @@ export function DesktopPlanAgentSidecar({
   embedded = false,
   modelLabel = "",
   mobileOpen = true,
+  mobileInline = false,
   displayMode = "full",
 }: DesktopPlanAgentSidecarProps) {
   const [sidechat, setSidechat] = useState<SidechatState>(EMPTY_SIDECHAT);
@@ -287,18 +289,26 @@ export function DesktopPlanAgentSidecar({
   return (
     <div
       className={embedded
-        ? mobileOpen
-          ? `fixed inset-0 z-50 flex bg-black/30 min-[1300px]:static min-[1300px]:z-auto min-[1300px]:min-h-0 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
-          : `hidden min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
+        ? mobileInline
+          ? mobileOpen
+            ? "flex min-h-0 min-w-0 flex-col overflow-hidden border-t border-[var(--app-border)] bg-[var(--app-surface)]"
+            : "hidden"
+          : mobileOpen
+            ? `fixed inset-0 z-50 flex bg-black/30 min-[1300px]:static min-[1300px]:z-auto min-[1300px]:min-h-0 min-[1300px]:flex-1 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
+            : `hidden min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:flex-1 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
         : "fixed inset-0 z-50 bg-black/30 md:left-auto md:w-[28rem]"}
+      id={mobileInline ? "mobile-plan-agent-panel" : undefined}
       data-testid="desktop-plan-agent-sidecar"
       data-embedded={embedded ? "true" : "false"}
+      data-mobile-inline={mobileInline ? "true" : undefined}
     >
       <aside className={embedded
-        ? "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
+        ? mobileInline
+          ? "flex h-[min(62dvh,36rem)] max-h-[62dvh] min-h-[18rem] min-w-0 flex-col overflow-hidden bg-[var(--app-surface)]"
+          : "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
         : "absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl md:inset-y-0 md:right-0 md:max-h-none md:w-[28rem] md:rounded-none md:rounded-l-2xl"}>
         <header className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-3">
-          <div className="font-semibold">Plan</div>
+          <div className="font-semibold">{mobileInline ? "Ask Swarm Plan" : "Plan"}</div>
           {onClose ? <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button> : null}
         </header>
         <div className="relative min-h-0 flex-1 overflow-hidden">
