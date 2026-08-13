@@ -274,6 +274,37 @@ func TestManagedArtifactCatalogShowsPrivateReadyArtifactWithoutRepositoryOutput(
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), variant.ID) || !strings.Contains(rec.Body.String(), "Private preview") { t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String()) }
 }
 
+func TestManagedSVGArtifactCatalogAndEndpointExposeInlinePreview(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "unused.svg", "unused")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+		RequestID: "svg-preview-create", CollectionID: "svg-preview-collection", CollectionName: "SVG preview", VariantID: "svg-preview-variant", Filename: "preview.svg", MediaType: "image/svg+xml", Presentation: pebblestore.SessionArtifactPresentation{Kind: "image", Label: "SVG preview", Previewable: true}, Body: []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`),
+	})
+	if err != nil { t.Fatal(err) }
+
+	catalogReq := httptest.NewRequest(http.MethodGet, "/v3/artifacts?limit=2000", nil)
+	catalogRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(catalogRec, withTestPrincipal(catalogReq))
+	if catalogRec.Code != http.StatusOK { t.Fatalf("catalog status=%d body=%s", catalogRec.Code, catalogRec.Body.String()) }
+	var payload struct { Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"` }
+	if err := json.Unmarshal(catalogRec.Body.Bytes(), &payload); err != nil { t.Fatal(err) }
+	var cataloged *sessionsV3ArtifactCatalogItem
+	for i := range payload.Artifacts {
+		if payload.Artifacts[i].ArtifactID == variant.ID { cataloged = &payload.Artifacts[i]; break }
+	}
+	if cataloged == nil || cataloged.MediaType != "image/svg+xml" || cataloged.Kind != "image" || !cataloged.Previewable || cataloged.Category != "visual" {
+		t.Fatalf("SVG catalog entry = %+v", cataloged)
+	}
+
+	previewReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID, nil)
+	previewRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewRec, withTestPrincipal(previewReq))
+	if previewRec.Code != http.StatusOK || previewRec.Header().Get("Content-Type") != "image/svg+xml" || !strings.HasPrefix(previewRec.Header().Get("Content-Disposition"), "inline") || !strings.Contains(previewRec.Body.String(), "<svg") {
+		t.Fatalf("SVG preview status=%d type=%q disposition=%q body=%s", previewRec.Code, previewRec.Header().Get("Content-Type"), previewRec.Header().Get("Content-Disposition"), previewRec.Body.String())
+	}
+}
+
 func TestManagedArtifactCatalogSuppressesUnavailableLegacyDuplicateForNativeHandoff(t *testing.T) {
 	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "unused.html", "unused")
 	principal := testPrincipal()

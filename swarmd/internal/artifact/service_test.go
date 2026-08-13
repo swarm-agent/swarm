@@ -105,6 +105,24 @@ func TestStageRejectsQuotaTraversalAndUnsafePresentation(t *testing.T) {
 	}
 }
 
+func TestStageAcceptsPreviewableSVGAndRejectsNonSVGXML(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("svg-preview", "preview.svg", "image/svg+xml", "image")
+	payload := `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`
+	staged, err := service.Stage(context.Background(), variant, strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("Stage previewable SVG: %v", err)
+	}
+	if staged.MediaType != "image/svg+xml" || staged.Presentation.Kind != "image" || !staged.Presentation.Previewable {
+		t.Fatalf("staged SVG presentation = %+v", staged)
+	}
+
+	invalid := testVariant("svg-invalid", "invalid.svg", "image/svg+xml", "image")
+	if _, err := service.Stage(context.Background(), invalid, strings.NewReader(`<?xml version="1.0"?><html/>`)); err == nil {
+		t.Fatal("Stage accepted non-SVG XML as image/svg+xml")
+	}
+}
+
 func TestStorageSymlinkAndImportSymlinkRejected(t *testing.T) {
 	service := newTestService(t, Limits{})
 	variant := testVariant("variant-1", "note.txt", "text/plain", "text")
@@ -376,7 +394,10 @@ func TestMaterializePackageRejectsSymlinkAndAmbiguousEntries(t *testing.T) {
 		t.Fatal("materialize package followed workspace symlink")
 	}
 
-	ambiguous := zipBytesMany(t, []struct{ name string; data []byte }{{"a", []byte("file")}, {"a/b", []byte("child")}})
+	ambiguous := zipBytesMany(t, []struct {
+		name string
+		data []byte
+	}{{"a", []byte("file")}, {"a/b", []byte("child")}})
 	unsafe := testVariant("ambiguous-package", "ambiguous.zip", "application/zip", "package")
 	staged, err = service.Stage(context.Background(), unsafe, bytes.NewReader(ambiguous))
 	if err != nil {

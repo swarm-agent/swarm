@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -805,14 +806,14 @@ func validatePresentation(mediaType string, p pebblestore.SessionArtifactPresent
 		return errors.New("artifact presentation kind is unsupported")
 	}
 	compatible := p.Kind == "" || p.Kind == "download" ||
-		(p.Kind == "image" && strings.HasPrefix(mediaType, "image/") && mediaType != "image/svg+xml") ||
+		(p.Kind == "image" && strings.HasPrefix(mediaType, "image/")) ||
 		((p.Kind == "text" || p.Kind == "code") && (strings.HasPrefix(mediaType, "text/") || mediaType == "application/json")) ||
 		(p.Kind == "html" && mediaType == "text/html") ||
 		(p.Kind == "package" && mediaType == "application/zip")
 	if !compatible {
 		return errors.New("artifact presentation is incompatible with its media type")
 	}
-	if p.Previewable && (p.Kind == "download" || mediaType == "application/octet-stream" || mediaType == "image/svg+xml" || mediaType == "application/zip") {
+	if p.Previewable && (p.Kind == "download" || mediaType == "application/octet-stream" || mediaType == "application/zip") {
 		return errors.New("artifact media type is not safely previewable")
 	}
 	return nil
@@ -839,7 +840,11 @@ func validateContentType(path, declared string, presentation pebblestore.Session
 		presentation.Previewable = false
 		return declared, presentation, nil
 	}
-	if strings.HasPrefix(declared, "image/") && detected != declared {
+	if declared == "image/svg+xml" {
+		if err := validateSVGDocument(path); err != nil {
+			return "", presentation, err
+		}
+	} else if strings.HasPrefix(declared, "image/") && detected != declared {
 		return "", presentation, errors.New("artifact image bytes do not match declared media type")
 	}
 	if declared == "text/html" && detected != "text/html" && detected != "text/plain" {
@@ -856,10 +861,33 @@ func previewSafeMediaType(mediaType string) bool {
 		return true
 	}
 	switch mediaType {
-	case "application/json", "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp":
+	case "application/json", "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml":
 		return true
 	default:
 		return false
+	}
+}
+
+func validateSVGDocument(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	decoder := xml.NewDecoder(file)
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return errors.New("artifact SVG is not valid XML")
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if start.Name.Local != "svg" || (start.Name.Space != "" && start.Name.Space != "http://www.w3.org/2000/svg") {
+			return errors.New("artifact SVG must have an svg root element")
+		}
+		return nil
 	}
 }
 

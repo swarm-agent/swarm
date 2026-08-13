@@ -42,5 +42,8 @@ test('open catalog consumes realtime refresh demand and keeps previews sandboxed
   assert.match(gallery, /sandbox="allow-scripts"/)
   assert.match(gallery, /sandbox=""/)
   assert.match(gallery, /referrerPolicy="no-referrer"/)
+  assert.match(gallery, /selected\.mediaType\.startsWith\('image\/'\).*previewURL/)
+  assert.match(gallery, /<img src=\{previewURL\}/)
+  assert.doesNotMatch(gallery, /selected\.mediaType === 'image\/svg\+xml'.*no inline preview/)
   assert.doesNotMatch(gallery, /allow-same-origin/)
 })

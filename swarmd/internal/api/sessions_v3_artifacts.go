@@ -189,7 +189,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						return
 					}
 					lineage := variant.Lineage
-					kind, previewable := variant.Presentation.Kind, variant.Presentation.Previewable
+					kind, previewable := sessionsV3ArtifactPresentation(variant)
 					if variant.Status == pebblestore.SessionArtifactStatusReady {
 						handoffKind, handoffMediaType := kind, variant.MediaType
 						if handoffKind == "package" && handoffMediaType == "application/zip" { handoffKind, handoffMediaType = "html", "text/html" }
@@ -297,8 +297,23 @@ func sessionsV3NativeHandoffKey(planID, checkpointID, runID, attemptID, filename
 	return strings.Join([]string{strings.TrimSpace(planID), strings.TrimSpace(checkpointID), strings.TrimSpace(runID), strings.TrimSpace(attemptID), strings.TrimSpace(filename), strings.ToLower(strings.TrimSpace(mediaType)), strings.ToLower(strings.TrimSpace(kind))}, "\x00")
 }
 
+func sessionsV3ArtifactPresentation(variant pebblestore.SessionArtifactVariant) (string, bool) {
+	kind, previewable := variant.Presentation.Kind, variant.Presentation.Previewable
+	if variant.Status != pebblestore.SessionArtifactStatusReady {
+		return kind, previewable
+	}
+	if strings.EqualFold(strings.TrimSpace(variant.MediaType), "image/svg+xml") {
+		return "image", true
+	}
+	if kind == "package" && variant.MediaType == "application/zip" {
+		return "html", true
+	}
+	return kind, previewable
+}
+
 func sessionsV3ManagedArtifactCategory(variant pebblestore.SessionArtifactVariant) string {
-	switch strings.ToLower(strings.TrimSpace(variant.Presentation.Kind)) {
+	kind, _ := sessionsV3ArtifactPresentation(variant)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "html", "package", "image", "pdf":
 		return "visual"
 	default:
@@ -955,10 +970,7 @@ func (s *Server) resolveSessionV3Artifact(ctx context.Context, principal identit
 			// Path is a compatibility-only in-memory filename hint used by the legacy
 			// package adapter. Native managed bytes remain addressed by opaque IDs.
 			resolved.Reference = pebblestore.SessionPlanArtifactReference{Path: managed.Filename, Description: managed.Presentation.Description}
-			kind, previewable := managed.Presentation.Kind, managed.Presentation.Previewable
-			if kind == "package" && managed.MediaType == "application/zip" {
-				kind, previewable = "html", true
-			}
+			kind, previewable := sessionsV3ArtifactPresentation(managed)
 			resolved.Descriptor = pebblestore.PlanFinalHandoffArtifact{
 				ID: managed.ID, Label: firstNonEmpty(managed.Presentation.Label, managed.Filename), Description: managed.Presentation.Description,
 				Filename: managed.Filename, MediaType: managed.MediaType, Kind: kind, Previewable: previewable,
