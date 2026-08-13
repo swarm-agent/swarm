@@ -1621,7 +1621,7 @@ export function DesktopV3ExistingConversationPane({
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
   useEffect(() => {
-    setPlanAgentMobileOpen(false);
+    setPlanAgentMobileOpen(Boolean(pendingPlanPermission?.id));
   }, [pendingPlanPermission?.id]);
   const currentRun =
     renderedMessages.liveRuns.find(
@@ -1851,6 +1851,7 @@ export function DesktopV3ExistingConversationPane({
   const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
   const artifactSidebarSessionRef = useRef("");
   const priorSessionArtifactCountRef = useRef(0);
+  const priorSessionHasPlanRef = useRef(false);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
   const planSidebarDisplayMode: DesktopSidebarDisplayMode =
     effectiveDesktopSidebarDisplayMode(
@@ -1884,6 +1885,7 @@ export function DesktopV3ExistingConversationPane({
   useEffect(() => {
     artifactSidebarSessionRef.current = normalizedSessionId;
     priorSessionArtifactCountRef.current = 0;
+    priorSessionHasPlanRef.current = false;
     setSessionArtifacts([]);
     setSidebarView("plan");
     void refreshSessionArtifacts();
@@ -2039,15 +2041,22 @@ export function DesktopV3ExistingConversationPane({
   useEffect(() => {
     if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
     const previousCount = priorSessionArtifactCountRef.current;
+    const previousHasPlan = priorSessionHasPlanRef.current;
     setSidebarView((current) => desktopV3NextSessionSidebarView({
       current,
       previousArtifactCount: previousCount,
       artifactCount: sessionArtifacts.length,
       hasPlan: showPlanSidebar,
+      prioritizePlan: Boolean(pendingPlanDocument) || (showPlanSidebar && !previousHasPlan),
     }));
     priorSessionArtifactCountRef.current = sessionArtifacts.length;
-  }, [normalizedSessionId, sessionArtifacts.length, showPlanSidebar, sidebarView]);
-  const activeSidebarView = hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts") ? "artifacts" : "plan";
+    priorSessionHasPlanRef.current = showPlanSidebar;
+  }, [normalizedSessionId, pendingPlanDocument, sessionArtifacts.length, showPlanSidebar]);
+  const activeSidebarView = pendingPlanDocument
+    ? "plan"
+    : hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts")
+      ? "artifacts"
+      : "plan";
   const artifactViewerLocation = desktopV3ArtifactViewerLocation(normalizedSessionId, artifactRouteSearch);
   const artifactViewerEntry = artifactViewerLocation
     ? desktopV3ArtifactCatalogEntryForViewerLocation(sessionArtifacts, artifactViewerLocation)
@@ -3120,17 +3129,21 @@ export function DesktopV3ExistingConversationPane({
 
         {showConversationSidebar ? (
           <div
-            className="hidden min-h-0 min-w-0 overflow-hidden min-[1300px]:flex min-[1300px]:flex-col"
+            className={pendingPlanDocument
+              ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
+              : "hidden min-h-0 min-w-0 overflow-hidden min-[1300px]:flex min-[1300px]:flex-col"}
             data-session-sidebar-column
             data-plan-sidebar-column={showPlanSidebar ? true : undefined}
           >
-            {showPlanSidebar && hasSessionArtifacts ? (
+            {showPlanSidebar && hasSessionArtifacts && !pendingPlanDocument ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan sidebar" title="Plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? "Plan" : null}</button>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div className={pendingPlanDocument
+              ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
+              : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
                 <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
               ) : pendingPlanDocument && pendingPlanPermission ? (

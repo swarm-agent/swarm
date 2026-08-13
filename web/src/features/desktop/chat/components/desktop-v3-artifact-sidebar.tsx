@@ -28,8 +28,9 @@ export function desktopV3NextSessionSidebarView(input: {
   previousArtifactCount: number
   artifactCount: number
   hasPlan: boolean
+  prioritizePlan?: boolean
 }): DesktopV3SessionSidebarView {
-  if (input.artifactCount === 0) return 'plan'
+  if (input.prioritizePlan || input.artifactCount === 0) return 'plan'
   if (input.previousArtifactCount === 0 && !input.hasPlan) return 'artifacts'
   return input.current
 }

@@ -9,12 +9,22 @@ const galleryURL = new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url)
 test('conversation sidebar toggles plan and session artifacts only when artifacts exist', async () => {
   const pane = await readFile(paneURL, 'utf8')
 
-  assert.match(pane, /showPlanSidebar && hasSessionArtifacts/)
+  assert.match(pane, /showPlanSidebar && hasSessionArtifacts && !pendingPlanDocument/)
   assert.match(pane, /data-session-sidebar-toggle/)
   assert.match(pane, /aria-label="Show plan sidebar"/)
   assert.match(pane, /aria-label=\{`Show \$\{sessionArtifacts\.length\} session artifacts`\}/)
   assert.match(pane, /activeSidebarView === "artifacts"/)
   assert.match(pane, /desktopV3NextSessionSidebarView/)
+  assert.match(pane, /prioritizePlan: Boolean\(pendingPlanDocument\) \|\| \(showPlanSidebar && !previousHasPlan\)/)
+  assert.match(pane, /activeSidebarView = pendingPlanDocument[\s\S]*\? "plan"/)
+})
+
+test('pending plan sidechat takes over the sidebar and opens as a mobile sheet', async () => {
+  const pane = await readFile(paneURL, 'utf8')
+
+  assert.match(pane, /setPlanAgentMobileOpen\(Boolean\(pendingPlanPermission\?\.id\)\)/)
+  assert.match(pane, /pendingPlanDocument[\s\S]*\? "contents min-\[1300px\]:flex/)
+  assert.match(pane, /pendingPlanDocument && pendingPlanPermission[\s\S]*<DesktopPlanAgentSidecar/)
 })
 
 test('artifact sidebar renders authorized thumbnail previews and opens full gallery selection', async () => {
