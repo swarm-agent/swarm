@@ -153,6 +153,11 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 		}
 		workspacePath, workspaceName := sessionsV3ArtifactCatalogWorkspace(session)
 		if s.artifacts != nil {
+			// Repair redundant progress indexes before projection so interrupted historical metadata cannot hide valid artifacts.
+			if _, err := s.sessions.RepairSessionArtifactCollections(session.ID); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 			collections, err := s.sessions.ListSessionArtifactCollections(session.AccountScopeID, session.ID, "", pebblestore.SessionArtifactMaxCollections)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)

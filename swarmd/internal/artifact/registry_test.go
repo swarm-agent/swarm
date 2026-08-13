@@ -14,6 +14,7 @@ import (
 type registryResolver struct {
 	sessions   []pebblestore.SessionSnapshot
 	tombstones []pebblestore.V3SessionTombstone
+	repaired   map[string]int
 }
 
 func (r *registryResolver) GetSession(id string) (pebblestore.SessionSnapshot, bool, error) {
@@ -52,6 +53,12 @@ func (r *registryResolver) ListPendingSessionArtifactCleanups(limit int) ([]pebb
 		}
 	}
 	return out, nil
+}
+
+func (r *registryResolver) RepairSessionArtifactCollections(id string) (pebblestore.SessionArtifactRepairReport, error) {
+	if r.repaired == nil { r.repaired = make(map[string]int) }
+	r.repaired[id]++
+	return pebblestore.SessionArtifactRepairReport{}, nil
 }
 
 func (r *registryResolver) MarkSessionArtifactCleanupComplete(id string) error {

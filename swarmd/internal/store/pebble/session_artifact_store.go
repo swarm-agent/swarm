@@ -660,7 +660,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				if !ok || selected.Status != SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("artifact collection selection metadata is inconsistent") }
 			}
 			collection.VariantCount--
-			adjustArtifactCollectionStatusCount(&collection, current.Status, -1)
+			if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil { return preparedV3ArtifactMutation{}, err }
 			if collection.SelectedVariantID == current.ID { collection.SelectedVariantID = "" }
 			collection.Status = artifactCollectionStatusFromCounts(collection)
 			collection.UpdatedAt = now
@@ -694,6 +694,11 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		case V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact:
 			if variantOK && current.Status == SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable") }
 			next.Status = SessionArtifactStatusStaging
+			if variantOK && current.Status != next.Status {
+				if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil { return preparedV3ArtifactMutation{}, err }
+				if err := adjustArtifactCollectionStatusCount(&collection, next.Status, 1); err != nil { return preparedV3ArtifactMutation{}, err }
+				collection.Status = artifactCollectionStatusFromCounts(collection)
+			}
 			next.DigestSHA256 = ""
 			next.Size = 0
 			next.FailureCode = ""
@@ -702,8 +707,8 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			if !validArtifactDigest(next.DigestSHA256) || next.Size <= 0 || next.MediaType == "" || next.Filename == "" { return preparedV3ArtifactMutation{}, errors.New("finalized artifact requires filename, media type, digest, and positive size") }
 			next.Status = SessionArtifactStatusReady
 			next.FailureCode = ""
-			adjustArtifactCollectionStatusCount(&collection, current.Status, -1)
-			adjustArtifactCollectionStatusCount(&collection, next.Status, 1)
+			if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil { return preparedV3ArtifactMutation{}, err }
+			if err := adjustArtifactCollectionStatusCount(&collection, next.Status, 1); err != nil { return preparedV3ArtifactMutation{}, err }
 			collection.Status = artifactCollectionStatusFromCounts(collection)
 		case V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact:
 			if current.Status == SessionArtifactStatusReady { return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable") }
@@ -713,8 +718,8 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			} else {
 				next.Status = SessionArtifactStatusFailed
 			}
-			adjustArtifactCollectionStatusCount(&collection, current.Status, -1)
-			adjustArtifactCollectionStatusCount(&collection, next.Status, 1)
+			if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil { return preparedV3ArtifactMutation{}, err }
+			if err := adjustArtifactCollectionStatusCount(&collection, next.Status, 1); err != nil { return preparedV3ArtifactMutation{}, err }
 			collection.Status = artifactCollectionStatusFromCounts(collection)
 			next.DigestSHA256 = ""
 			next.Size = 0
@@ -759,8 +764,9 @@ func validateArtifactCollectionProgress(collection SessionArtifactCollection) er
 	return nil
 }
 
-func adjustArtifactCollectionStatusCount(collection *SessionArtifactCollection, status string, delta int) {
-	if collection == nil || delta == 0 { return }
+func adjustArtifactCollectionStatusCount(collection *SessionArtifactCollection, status string, delta int) error {
+	if collection == nil { return errors.New("artifact collection is required") }
+	if delta == 0 { return nil }
 	counter := (*int)(nil)
 	switch status {
 	case SessionArtifactStatusStaging:
@@ -772,9 +778,10 @@ func adjustArtifactCollectionStatusCount(collection *SessionArtifactCollection, 
 	case SessionArtifactStatusUnavailable:
 		counter = &collection.UnavailableCount
 	}
-	if counter == nil { return }
+	if counter == nil { return fmt.Errorf("artifact variant status %q is invalid", status) }
+	if delta < 0 && *counter < -delta { return errors.New("artifact collection status count would underflow") }
 	*counter += delta
-	if *counter < 0 { *counter = 0 }
+	return nil
 }
 
 func artifactCollectionStatusFromCounts(collection SessionArtifactCollection) string {

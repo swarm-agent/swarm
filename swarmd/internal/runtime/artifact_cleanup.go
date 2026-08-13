@@ -28,8 +28,8 @@ func startArtifactMaintenance(ctx context.Context, artifacts *artifact.Registry)
 			}
 			return
 		}
-		if report.DeletedSessions > 0 || report.RemovedStaging > 0 {
-			log.Printf("artifact maintenance pass: visited=%d deleted_sessions=%d removed_staging=%d removed_bytes=%d", report.SessionsVisited, report.DeletedSessions, report.RemovedStaging, report.RemovedBytes)
+		if report.DeletedSessions > 0 || report.RemovedStaging > 0 || report.CollectionsRepaired > 0 {
+			log.Printf("artifact maintenance pass: visited=%d deleted_sessions=%d removed_staging=%d removed_bytes=%d repaired_collections=%d", report.SessionsVisited, report.DeletedSessions, report.RemovedStaging, report.RemovedBytes, report.CollectionsRepaired)
 		}
 	}
 

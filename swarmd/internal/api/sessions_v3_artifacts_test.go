@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -254,6 +255,22 @@ func TestResolveSessionV3NativeManagedArtifactUsesOpaqueMetadata(t *testing.T) {
 	data, readErr := io.ReadAll(file)
 	file.Close()
 	if readErr != nil || string(data) != "native managed" { t.Fatalf("native managed bytes = %q err=%v", data, readErr) }
+}
+
+func TestManagedArtifactCatalogShowsPrivateReadyArtifactWithoutRepositoryOutput(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "existing.txt", "existing workspace file")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+		RequestID: "catalog-private-create", CollectionID: "catalog-private-collection", CollectionName: "Private catalog", VariantID: "catalog-private-variant", Filename: "preview.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Private preview", Previewable: true}, Body: []byte("managed bytes"),
+	})
+	if err != nil { t.Fatal(err) }
+	workspace := mustSession(t, server, variant.SessionID).WorkspacePath
+	if _, err := os.Stat(filepath.Join(workspace, "artifacts")); !errors.Is(err, os.ErrNotExist) { t.Fatalf("managed create wrote repository artifacts/: %v", err) }
+	req := httptest.NewRequest("GET", "/v3/artifacts?limit=2000", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), variant.ID) || !strings.Contains(rec.Body.String(), "Private preview") { t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String()) }
 }
 
 func TestManagedSessionV3ArtifactPackageEntryPrefersRootIndexAndFallsBackToHTML(t *testing.T) {

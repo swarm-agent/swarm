@@ -252,6 +252,11 @@ func (s *Service) ListPendingSessionArtifactCleanups(limit int) ([]SessionTombst
 	return s.store.ListPendingV3SessionArtifactCleanups(limit)
 }
 
+func (s *Service) RepairSessionArtifactCollections(sessionID string) (pebblestore.SessionArtifactRepairReport, error) {
+	if s == nil || s.store == nil { return pebblestore.SessionArtifactRepairReport{}, errors.New("session store is not configured") }
+	return s.store.RepairSessionArtifactCollections(sessionID)
+}
+
 func (s *Service) ListRealtimeOutboxForSessionsAfterEndpoint(sessionIDs []string, afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")

@@ -21,6 +21,7 @@ type SessionResolver interface {
 	ListSessions(limit int) ([]pebblestore.SessionSnapshot, error)
 	ListPendingSessionArtifactCleanups(limit int) ([]pebblestore.V3SessionTombstone, error)
 	MarkSessionArtifactCleanupComplete(sessionID string) error
+	RepairSessionArtifactCollections(sessionID string) (pebblestore.SessionArtifactRepairReport, error)
 }
 
 // Registry resolves one private byte service per trusted workspace path and
@@ -37,6 +38,7 @@ type MaintenanceReport struct {
 	DeletedSessions int
 	RemovedStaging  int
 	RemovedBytes    int64
+	CollectionsRepaired int
 }
 
 func NewRegistry(resolver SessionResolver, limits Limits) *Registry {
@@ -182,6 +184,9 @@ func (r *Registry) RunMaintenance(limit int) (MaintenanceReport, error) {
 		if report.SessionsVisited >= limit {
 			break
 		}
+		repaired, err := r.resolver.RepairSessionArtifactCollections(session.ID)
+		if err != nil { return report, fmt.Errorf("repair artifact metadata for session %q: %w", session.ID, err) }
+		report.CollectionsRepaired += repaired.CollectionsRepaired
 		service, err := r.ServiceForWorkspace(session.WorkspacePath)
 		if err != nil {
 			return report, fmt.Errorf("resolve artifact service for session %q: %w", session.ID, err)
