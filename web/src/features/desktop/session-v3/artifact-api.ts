@@ -1,9 +1,44 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
 
 export type DesktopV3ArtifactCategory = 'plan' | 'visual' | 'document'
+export type DesktopV3ArtifactStatus = '' | 'staging' | 'ready' | 'failed' | 'unavailable'
+
+export interface DesktopV3ArtifactCollectionProgress {
+  total: number
+  staging: number
+  ready: number
+  failed: number
+  unavailable: number
+}
+
+export interface DesktopV3ArtifactLineage {
+  parentSessionId: string
+  sourceSessionId: string
+  sourceCollectionId: string
+  sourceVariantId: string
+  taskCallId: string
+  programId: string
+  programJobId: string
+  childSessionId: string
+  iterationId: string
+  iterationIndex: number
+  runId: string
+  planId: string
+  checkpointId: string
+  attemptId: string
+}
+
+/** Opaque, portable managed-artifact reference. It never contains bytes or storage paths. */
+export interface DesktopV3ArtifactSelection {
+  session_id: string
+  collection_id: string
+  variant_id: string
+  event_seq: number
+}
 
 export interface DesktopV3ArtifactCatalogEntry {
   artifactId: string
+  collectionId?: string
   sessionId: string
   sessionTitle: string
   workspacePath: string
@@ -17,9 +52,15 @@ export interface DesktopV3ArtifactCatalogEntry {
   filename: string
   mediaType: string
   kind: string
+  status?: DesktopV3ArtifactStatus
+  failureCode?: string
   previewable: boolean
+  selected?: boolean
   category: DesktopV3ArtifactCategory
   updatedAt: number
+  eventSeq?: number
+  progress?: DesktopV3ArtifactCollectionProgress | null
+  lineage?: DesktopV3ArtifactLineage | null
   content?: string
 }
 
@@ -28,18 +69,67 @@ type DesktopV3ArtifactCatalogResponse = {
   artifacts?: unknown
 }
 
+function artifactCatalogRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
 function artifactCatalogString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV3ArtifactCatalogEntry | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const record = value as Record<string, unknown>
+function artifactCatalogCount(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
+}
+
+function artifactCatalogEventSeq(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0
+}
+
+function normalizeArtifactProgress(value: unknown): DesktopV3ArtifactCollectionProgress | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  return {
+    total: artifactCatalogCount(record.total),
+    staging: artifactCatalogCount(record.staging),
+    ready: artifactCatalogCount(record.ready),
+    failed: artifactCatalogCount(record.failed),
+    unavailable: artifactCatalogCount(record.unavailable),
+  }
+}
+
+function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  return {
+    parentSessionId: artifactCatalogString(record.parent_session_id),
+    sourceSessionId: artifactCatalogString(record.source_session_id),
+    sourceCollectionId: artifactCatalogString(record.source_collection_id),
+    sourceVariantId: artifactCatalogString(record.source_variant_id),
+    taskCallId: artifactCatalogString(record.task_call_id),
+    programId: artifactCatalogString(record.program_id),
+    programJobId: artifactCatalogString(record.program_job_id),
+    childSessionId: artifactCatalogString(record.child_session_id),
+    iterationId: artifactCatalogString(record.iteration_id),
+    iterationIndex: artifactCatalogCount(record.iteration_index),
+    runId: artifactCatalogString(record.run_id),
+    planId: artifactCatalogString(record.plan_id),
+    checkpointId: artifactCatalogString(record.checkpoint_id),
+    attemptId: artifactCatalogString(record.attempt_id),
+  }
+}
+
+export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV3ArtifactCatalogEntry | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
   const artifactId = artifactCatalogString(record.artifact_id)
   const sessionId = artifactCatalogString(record.session_id)
   if (!artifactId || !sessionId) return null
   const rawCategory = artifactCatalogString(record.category)
   const category: DesktopV3ArtifactCategory = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : 'document'
+  const rawStatus = artifactCatalogString(record.status)
+  const status: DesktopV3ArtifactStatus = rawStatus === 'staging' || rawStatus === 'ready' || rawStatus === 'failed' || rawStatus === 'unavailable'
+    ? rawStatus
+    : ''
   const rawUpdatedAt = record.updated_at
   const updatedAt = typeof rawUpdatedAt === 'number' && Number.isFinite(rawUpdatedAt)
     ? rawUpdatedAt
@@ -48,6 +138,7 @@ function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV3Artifa
       : 0
   return {
     artifactId,
+    collectionId: artifactCatalogString(record.collection_id),
     sessionId,
     sessionTitle: artifactCatalogString(record.session_title),
     workspacePath: artifactCatalogString(record.workspace_path),
@@ -61,9 +152,15 @@ function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV3Artifa
     filename: artifactCatalogString(record.filename),
     mediaType: artifactCatalogString(record.media_type) || 'application/octet-stream',
     kind: artifactCatalogString(record.kind),
+    status,
+    failureCode: artifactCatalogString(record.failure_code),
     previewable: record.previewable === true,
+    selected: record.selected === true,
     category,
     updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
+    eventSeq: artifactCatalogEventSeq(record.event_seq),
+    progress: normalizeArtifactProgress(record.progress),
+    lineage: normalizeArtifactLineage(record.lineage),
     ...(typeof record.content === 'string' ? { content: record.content } : {}),
   }
 }
@@ -74,6 +171,66 @@ export async function fetchDesktopV3ArtifactCatalog(signal?: AbortSignal): Promi
   const payload = await response.json() as DesktopV3ArtifactCatalogResponse
   if (payload.ok !== true || !Array.isArray(payload.artifacts)) throw new Error('Artifact catalog returned an invalid response')
   return payload.artifacts.map(normalizeDesktopV3ArtifactCatalogEntry).filter((entry): entry is DesktopV3ArtifactCatalogEntry => entry !== null)
+}
+
+export function desktopV3ArtifactSelection(entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactSelection {
+  const selection = normalizeDesktopV3ArtifactSelection({
+    session_id: entry.sessionId,
+    collection_id: entry.collectionId ?? '',
+    variant_id: entry.artifactId,
+    event_seq: entry.eventSeq ?? 0,
+  })
+  if (!selection || entry.status !== 'ready') {
+    throw new Error('Artifact selection requires a ready managed variant with a durable event sequence')
+  }
+  return selection
+}
+
+export function normalizeDesktopV3ArtifactSelection(value: unknown): DesktopV3ArtifactSelection | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const sessionId = artifactCatalogString(record.session_id)
+  const collectionId = artifactCatalogString(record.collection_id)
+  const variantId = artifactCatalogString(record.variant_id)
+  const eventSeq = artifactCatalogEventSeq(record.event_seq)
+  if (!sessionId || !collectionId || !variantId || eventSeq <= 0) return null
+  return { session_id: sessionId, collection_id: collectionId, variant_id: variantId, event_seq: eventSeq }
+}
+
+export function desktopV3ArtifactSelectionEndpoint(sessionId: string, action: 'select' | 'use'): string {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) throw new Error('Artifact action requires a session ID')
+  return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/${action}`
+}
+
+async function postDesktopV3ArtifactSelection(
+  action: 'select' | 'use',
+  selection: DesktopV3ArtifactSelection,
+  signal?: AbortSignal,
+): Promise<DesktopV3ArtifactSelection> {
+  const normalized = normalizeDesktopV3ArtifactSelection(selection)
+  if (!normalized) throw new Error('Artifact action requires a complete opaque selection')
+  const response = await apiFetch(desktopV3ArtifactSelectionEndpoint(normalized.session_id, action), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(normalized),
+    signal,
+  })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const payloadValue = await response.json() as unknown
+  const payload = artifactCatalogRecord(payloadValue)
+  if (!payload || payload.ok !== true) throw new Error(`Artifact ${action} returned an invalid response`)
+  const returned = normalizeDesktopV3ArtifactSelection(payload.selection ?? payload.artifact_selection)
+  if (!returned) throw new Error(`Artifact ${action} did not return a selection`)
+  return returned
+}
+
+export function selectDesktopV3Artifact(selection: DesktopV3ArtifactSelection, signal?: AbortSignal): Promise<DesktopV3ArtifactSelection> {
+  return postDesktopV3ArtifactSelection('select', selection, signal)
+}
+
+export function useDesktopV3Artifact(selection: DesktopV3ArtifactSelection, signal?: AbortSignal): Promise<DesktopV3ArtifactSelection> {
+  return postDesktopV3ArtifactSelection('use', selection, signal)
 }
 
 export function desktopV3ArtifactEndpoint(sessionId: string, artifactId: string): string {

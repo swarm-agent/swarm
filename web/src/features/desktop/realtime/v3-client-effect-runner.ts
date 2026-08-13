@@ -9,8 +9,9 @@ import { resolveWorkspaceBySlug } from '../../workspaces/launcher/services/works
 import { setWorkspaceThemeCatalog } from '../../workspaces/launcher/services/workspace-theme'
 import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/workspace-overview'
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
+import { refreshOpenDesktopV3ArtifactCatalogs } from '../session-v3/artifact-catalog-refresh'
 
-export type DesktopV3ClientEffectType = 'refresh_agents' | 'refresh_themes' | 'refresh_providers'
+export type DesktopV3ClientEffectType = 'refresh_agents' | 'refresh_themes' | 'refresh_providers' | 'refresh_artifacts'
 
 export interface DesktopV3ClientEffect {
   type: DesktopV3ClientEffectType
@@ -25,11 +26,22 @@ export interface DesktopV3ClientEffectRunnerDeps {
   refreshAgents: () => Promise<void>
   refreshThemes: () => Promise<void>
   refreshProviders: () => Promise<void>
+  refreshArtifacts: () => Promise<void>
   reportError: (effect: DesktopV3ClientEffectType, error: unknown) => void
 }
 
 const MAX_SEEN_DURABLE_EFFECT_EVENTS = 256
 const CLIENT_EFFECT_TYPES = new Set<DesktopV3ClientEffectType>(['refresh_agents', 'refresh_themes', 'refresh_providers'])
+const ARTIFACT_MUTATION_EVENT_TYPES = new Set([
+  'session.artifact.created',
+  'session.artifact.updated',
+  'session.artifact.finalized',
+  'session.artifact.failed',
+  'session.artifact.unavailable',
+  'session.artifact.selected',
+  'session.artifact.variant.deleted',
+  'session.artifact.collection.deleted',
+])
 
 export function durableClientEffectsFromRealtimeFrame(frame: RealtimeMessage): DesktopV3DurableClientEffects | null {
   if (frame.kind === 'auth.credentials.updated') {
@@ -45,6 +57,13 @@ export function durableClientEffectsFromRealtimeFrame(frame: RealtimeMessage): D
   const event = recordValue(frame.event)
   if (!event) return null
   const eventType = stringValue(event.event_type) || stringValue(frame.event_type)
+  const eventID = stringValue(event.id)
+  const sessionID = stringValue(event.session_id) || stringValue(frame.session_id)
+  const eventSeq = numberValue(event.seq)
+  const eventIdentity = eventID || (sessionID && eventSeq > 0 ? `${sessionID}:${eventSeq}` : '')
+  if (ARTIFACT_MUTATION_EVENT_TYPES.has(eventType)) {
+    return eventIdentity ? { eventIdentity, effects: [{ type: 'refresh_artifacts' }] } : null
+  }
   if (eventType !== 'session.tool.completed') return null
 
   const payload = recordValue(event.payload)
@@ -61,10 +80,6 @@ export function durableClientEffectsFromRealtimeFrame(frame: RealtimeMessage): D
   }
   if (effects.length === 0) return null
 
-  const eventID = stringValue(event.id)
-  const sessionID = stringValue(event.session_id) || stringValue(frame.session_id)
-  const eventSeq = numberValue(event.seq)
-  const eventIdentity = eventID || (sessionID && eventSeq > 0 ? `${sessionID}:${eventSeq}` : '')
   if (!eventIdentity) return null
   return { eventIdentity, effects }
 }
@@ -122,6 +137,7 @@ export class DesktopV3ClientEffectRunner {
           if (effect === 'refresh_agents') await this.deps.refreshAgents()
           if (effect === 'refresh_themes') await this.deps.refreshThemes()
           if (effect === 'refresh_providers') await this.deps.refreshProviders()
+          if (effect === 'refresh_artifacts') await this.deps.refreshArtifacts()
         } catch (error) {
           this.deps.reportError(effect, error)
         }
@@ -158,6 +174,7 @@ export function createDefaultDesktopV3ClientEffectRunnerDeps(
         queryClient.invalidateQueries({ queryKey: ['auth-credentials'], refetchType: 'active' }),
       ])
     },
+    refreshArtifacts: refreshOpenDesktopV3ArtifactCatalogs,
     reportError: (effect, error) => {
       console.error(`[desktop-v3] client effect ${effect} failed`, error)
     },

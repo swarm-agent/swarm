@@ -47,6 +47,15 @@ test('durableClientEffectsFromRealtimeFrame parses only typed successful tool co
   assert.equal(durableClientEffectsFromRealtimeFrame(toolCompletedFrame({ effects: [] })), null)
 })
 
+test('artifact mutation realtime events produce only a canonical catalog refresh effect', () => {
+  const frame = toolCompletedFrame({ eventType: 'session.artifact.finalized', effects: undefined })
+  assert.deepEqual(durableClientEffectsFromRealtimeFrame(frame), {
+    eventIdentity: 'event-1',
+    effects: [{ type: 'refresh_artifacts' }],
+  })
+  assert.equal(durableClientEffectsFromRealtimeFrame(toolCompletedFrame({ eventType: 'session.plan.saved' })), null)
+})
+
 test('auth realtime frames produce a durable provider refresh effect', () => {
   assert.deepEqual(durableClientEffectsFromRealtimeFrame({
     kind: 'auth.credentials.updated',
@@ -123,6 +132,22 @@ test('default agent effect force-fetches canonical active-agent state and invali
   }
 })
 
+test('client effect runner coalesces replayed artifact mutation events', async () => {
+  let refreshArtifacts = 0
+  const runner = new DesktopV3ClientEffectRunner({
+    refreshAgents: async () => undefined,
+    refreshThemes: async () => undefined,
+    refreshProviders: async () => undefined,
+    refreshArtifacts: async () => { refreshArtifacts += 1 },
+    reportError: () => assert.fail('effect should not fail'),
+  })
+  const frame = toolCompletedFrame({ eventType: 'session.artifact.updated' })
+  runner.accept(frame)
+  runner.accept(frame)
+  await runner.waitForIdle()
+  assert.equal(refreshArtifacts, 1)
+})
+
 test('client effect runner refreshes agent caches once across replayed durable events', async () => {
   let refreshAgents = 0
   let refreshThemes = 0
@@ -130,6 +155,7 @@ test('client effect runner refreshes agent caches once across replayed durable e
     refreshAgents: async () => { refreshAgents += 1 },
     refreshThemes: async () => { refreshThemes += 1 },
     refreshProviders: async () => undefined,
+    refreshArtifacts: async () => undefined,
     reportError: () => assert.fail('effect should not fail'),
   })
   const frame = toolCompletedFrame()
@@ -153,6 +179,7 @@ test('client effect runner serializes and coalesces refreshes while preserving l
     },
     refreshThemes: async () => undefined,
     refreshProviders: async () => undefined,
+    refreshArtifacts: async () => undefined,
     reportError: () => assert.fail('effect should not fail'),
   })
 
@@ -172,6 +199,7 @@ test('client effect failures are reported without retry storms', async () => {
     refreshAgents: async () => { throw new Error('offline') },
     refreshThemes: async () => undefined,
     refreshProviders: async () => undefined,
+    refreshArtifacts: async () => undefined,
     reportError: (effect, error) => {
       failures += 1
       assert.equal(effect, 'refresh_agents')
