@@ -1,13 +1,14 @@
 import { buildDesktopSlashPaletteState, parseDesktopTaskCommand, type DesktopSlashCommand } from './slash-commands'
 
-export type DesktopComposerSubmitResult = 'submitted' | 'stopped' | 'background-router-started' | 'background-router-failed'
+export type DesktopComposerSubmitResult = 'submitted' | 'submit-failed' | 'stopped' | 'background-router-started' | 'background-router-failed'
 
-export interface SubmitDesktopComposerInput<TAttachment = never> {
+export interface SubmitDesktopComposerInput<TAttachment = never, TSelection = never> {
   draft: string
   canStop: boolean
   clear: () => void
   attachments?: TAttachment[]
-  onSubmit: (draft: string, attachments: TAttachment[]) => void | Promise<void>
+  selections?: TSelection[]
+  onSubmit: (draft: string, attachments: TAttachment[], selections: TSelection[]) => void | Promise<void>
   onStop?: () => void | Promise<void>
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
@@ -17,7 +18,7 @@ export function desktopComposerBackgroundRouterCommand(draft: string): DesktopSl
   return exactMatch?.action.kind === 'start-background-router-session' ? exactMatch : null
 }
 
-export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopComposerInput<TAttachment>): Promise<DesktopComposerSubmitResult> {
+export async function submitDesktopComposer<TAttachment, TSelection = never>(input: SubmitDesktopComposerInput<TAttachment, TSelection>): Promise<DesktopComposerSubmitResult> {
   const backgroundRouterCommand = desktopComposerBackgroundRouterCommand(input.draft)
 
   if (backgroundRouterCommand) {
@@ -41,7 +42,11 @@ export async function submitDesktopComposer<TAttachment>(input: SubmitDesktopCom
     return 'stopped'
   }
 
+  try {
+    await input.onSubmit(input.draft, input.attachments ?? [], input.selections ?? [])
+  } catch {
+    return 'submit-failed'
+  }
   input.clear()
-  void input.onSubmit(input.draft, input.attachments ?? [])
   return 'submitted'
 }

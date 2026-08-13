@@ -161,12 +161,12 @@ test('routed draft defaults to current workspace while preserving explicit local
   assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {
     phase: 'draft',
     prompt: 'draft',
-    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: false, planModeRequested: false },
+    snapshot: { prompt: 'draft', attachments: [], artifactSelections: [], selectedAction: null, selectedSkill: null, worktreePrimed: false, planModeRequested: false },
   })
   assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), {
     phase: 'worktree-primed',
     prompt: 'primed',
-    snapshot: { prompt: 'primed', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: true, planModeRequested: false },
+    snapshot: { prompt: 'primed', attachments: [], artifactSelections: [], selectedAction: null, selectedSkill: null, worktreePrimed: true, planModeRequested: false },
   })
   assert.equal('sessionId' in createDesktopV3RoutedDraftState(), false)
   assert.equal('workspace' in createDesktopV3RoutedWorktreePrimedState(), false)
@@ -214,11 +214,28 @@ test('routed operation persists one stable transport identity across reload', ()
   }
 }))
 
+test('routed first message preserves cross-session artifact source refs and stable retry payload', async () => {
+  const artifactSelections = [{
+    session_id: 'source-session', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 13,
+    label: 'Dashboard', action: 'use' as const,
+  }]
+  const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'Use this design.', artifactSelections })
+  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, snapshot })
+  assert.deepEqual(operation.request.artifact_selections, artifactSelections)
+  assert.equal(operation.request.artifact_selections?.[0]?.session_id, 'source-session')
+  const controller = new DesktopV3RoutedNewSessionController(async () => { throw new Error('network ambiguous') }, createDesktopV3RoutedDraftState(snapshot.prompt, snapshot))
+  await withAsyncSessionStorage(async () => {
+    const failed = await controller.submit({ workspace: workspaceAuthority, snapshot })
+    assert.equal(failed.phase, 'failed')
+    if (failed.phase === 'failed') assert.deepEqual(failed.operation.request.artifact_selections, artifactSelections)
+  })
+})
+
 test('routed worktree prime carries explicit request authority without mutating user input or introducing a name field', () => {
   const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'route me', worktreePrimed: true })
   assert.equal(desktopV3RoutedRequestInput(snapshot), 'route me')
   assert.equal(createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, snapshot }).request.managed_worktree_requested, true)
-  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'selectedAction', 'selectedSkill', 'worktreePrimed', 'planModeRequested'])
+  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'artifactSelections', 'selectedAction', 'selectedSkill', 'worktreePrimed', 'planModeRequested'])
 })
 
 test('routed operation captures complete workspace authority', () => {
@@ -226,7 +243,7 @@ test('routed operation captures complete workspace authority', () => {
 
   assert.deepEqual(Object.keys(operation.request).sort(), [
     'client_request_id', 'host_workspace_path', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata', 'plan_mode_requested',
-    'runtime_workspace_path', 'swarm_id', 'target_kind', 'target_relationship', 'workspace_binding_id', 'workspace_path',
+    'runtime_workspace_path', 'swarm_id', 'target_kind', 'target_relationship', 'workspace_binding_id', 'workspace_path', 'artifact_selections',
   ])
 })
 

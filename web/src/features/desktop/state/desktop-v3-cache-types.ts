@@ -113,6 +113,16 @@ export interface DesktopV3MediaCapability {
   capabilities: DesktopV3MediaCapabilityEntry[]
 }
 
+export interface DesktopV3ArtifactSelectionReference {
+  session_id: string
+  collection_id: string
+  variant_id: string
+  event_seq: number
+  label?: string
+  description?: string
+  action?: 'select' | 'use'
+}
+
 export interface MessageSnapshot {
   id: string
   session_id: string
@@ -123,6 +133,7 @@ export interface MessageSnapshot {
   content: string
   metadata?: Record<string, unknown>
   media?: DesktopV3MediaReference[]
+  artifact_selections?: DesktopV3ArtifactSelectionReference[]
   created_at: number
   execution_epoch?: V3ExecutionEpochRef
   /** Canonical cache-boundary normalization; renderers must not reparse content. */

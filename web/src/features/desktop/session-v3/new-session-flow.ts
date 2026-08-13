@@ -1,5 +1,6 @@
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import type { DesktopV3MediaReference } from '../state/desktop-v3-cache-types'
+import type { DesktopV3ArtifactMessageSelection } from './artifact-api'
 import type { ModelProfileChoice } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
@@ -475,6 +476,7 @@ export interface DesktopV3RoutedMediaInput {
 export interface DesktopV3RoutedComposerSnapshot {
   prompt: string
   attachments: DesktopV3RoutedMediaInput[]
+  artifactSelections: DesktopV3ArtifactMessageSelection[]
   selectedAction: unknown | null
   selectedSkill: unknown | null
   worktreePrimed: boolean
@@ -512,6 +514,7 @@ export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAut
   managed_worktree_requested: boolean
   plan_mode_requested: boolean
   media?: DesktopV3RoutedMediaInput[]
+  artifact_selections?: DesktopV3ArtifactMessageSelection[]
 }
 
 export interface DesktopV3RoutedStartOperation {
@@ -630,6 +633,14 @@ export function createDesktopV3RoutedComposerSnapshot(
   return {
     prompt: input.prompt,
     attachments: input.attachments?.map((attachment) => ({ ...attachment })) ?? [],
+    artifactSelections: input.artifactSelections?.map((selection) => ({
+      ...selection,
+      session_id: selection.session_id.trim(),
+      collection_id: selection.collection_id.trim(),
+      variant_id: selection.variant_id.trim(),
+      label: selection.label.trim(),
+      description: selection.description?.trim() || undefined,
+    })) ?? [],
     selectedAction: input.selectedAction === undefined || input.selectedAction === null
       ? null
       : cloneRoutedComposerSelection(input.selectedAction),
@@ -673,8 +684,10 @@ export function createDesktopV3RoutedOperationIdentity(): DesktopV3RoutedOperati
 
 export function desktopV3RoutedRequestInput(snapshot: DesktopV3RoutedComposerSnapshot): string {
   const prompt = snapshot.prompt.trim()
-  if (!prompt) throw new Error('Routed Desktop start requires a prompt')
-  return prompt
+  if (!prompt && snapshot.attachments.length === 0 && snapshot.artifactSelections.length === 0) {
+    throw new Error('Routed Desktop start requires a prompt, media, or artifact selection')
+  }
+  return prompt || 'Please review the selected artifact(s).'
 }
 
 export function createDesktopV3RoutedStartOperation(
@@ -694,6 +707,11 @@ export function createDesktopV3RoutedStartOperation(
     worktreePrimed: input.worktreePrimed,
     planModeRequested: input.planModeRequested,
   })
+  for (const selection of snapshot.artifactSelections) {
+    if (!selection.session_id || !selection.collection_id || !selection.variant_id || selection.event_seq <= 0 || !selection.label || (selection.action !== 'select' && selection.action !== 'use')) {
+      throw new Error('Routed Desktop start contains an invalid artifact selection')
+    }
+  }
   const requestInput = desktopV3RoutedRequestInput(snapshot)
   const identity = input.identity ?? createDesktopV3RoutedOperationIdentity()
   const operationId = identity.operationId.trim()
@@ -717,6 +735,7 @@ export function createDesktopV3RoutedStartOperation(
       managed_worktree_requested: snapshot.worktreePrimed,
       plan_mode_requested: snapshot.planModeRequested,
       media: normalizedRoutedMedia(snapshot.attachments),
+      artifact_selections: snapshot.artifactSelections.map((selection) => ({ ...selection })),
     },
   }
 }
@@ -764,8 +783,15 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   if (typeof request.plan_mode_requested !== 'boolean' || request.plan_mode_requested !== snapshot.planModeRequested) return false
   if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
   if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
-  if (request.input !== desktopV3RoutedRequestInput(snapshot)) return false
+  let expectedInput = ''
+  try {
+    expectedInput = desktopV3RoutedRequestInput(snapshot)
+  } catch {
+    return false
+  }
+  if (request.input !== expectedInput) return false
   if (JSON.stringify(request.media ?? []) !== JSON.stringify(normalizedRoutedMedia(snapshot.attachments) ?? [])) return false
+  if (JSON.stringify(request.artifact_selections ?? []) !== JSON.stringify(snapshot.artifactSelections)) return false
   return true
 }
 
@@ -774,6 +800,7 @@ function isStoredDesktopV3RoutedComposerSnapshot(value: unknown): value is Deskt
   const snapshot = value as Partial<DesktopV3RoutedComposerSnapshot>
   if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean' || typeof snapshot.planModeRequested !== 'boolean') return false
   if (!Array.isArray(snapshot.attachments) || snapshot.attachments.some((item) => !item?.staging_id?.trim())) return false
+  if (!Array.isArray(snapshot.artifactSelections) || snapshot.artifactSelections.some((item) => !item?.session_id?.trim() || !item?.collection_id?.trim() || !item?.variant_id?.trim() || !item?.event_seq || !item?.label?.trim() || (item.action !== 'select' && item.action !== 'use'))) return false
   if (snapshot.selectedAction === undefined || snapshot.selectedSkill === undefined) return false
   return true
 }

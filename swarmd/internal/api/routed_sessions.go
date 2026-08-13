@@ -49,6 +49,7 @@ type routedSessionStartRequest struct {
 	TargetRelationship       string                      `json:"target_relationship"`
 	Media                    []routedSessionMediaRequest `json:"media,omitempty"`
 	StagingIDs               []string                    `json:"staging_ids,omitempty"`
+	ArtifactSelections       []pebblestore.SessionArtifactSelectionReference  `json:"artifact_selections,omitempty"`
 }
 
 type routedSessionStartResult struct {
@@ -410,12 +411,17 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, errors.New("plan_mode_requested is required"))
 		return
 	}
-	if req.Input == "" {
-		writeError(w, http.StatusBadRequest, errors.New("routed session input is required"))
+	if req.Input == "" && len(req.ArtifactSelections) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("routed session input or artifact selection is required"))
 		return
 	}
 	if clientRequestID == "" || len(clientRequestID) > 256 {
 		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required and must be 256 characters or fewer"))
+		return
+	}
+	artifactSelections, err := s.sessions.ValidateSessionArtifactMessageSelections(principal.AccountScopeID, principal.UserID, req.ArtifactSelections)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
@@ -579,7 +585,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		materializedAssetIDs = append(materializedAssetIDs, asset.ID)
 		stagingBindings = append(stagingBindings, pebblestore.MediaStagingBinding{StagingID: binding.StagingID, AuthorityAssetID: asset.ID, DigestSHA256: asset.DigestSHA256})
 	}
-	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input, Media: mediaReferences}
+	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input, Media: mediaReferences, ArtifactSelections: artifactSelections}
 	messageKey := "routed-message:" + clientRequestID
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, candidate, sessionsV3MessageRequest{})
 	runIntent := &pebblestore.V3SessionRunIntent{RunID: stableSessionsV3PrimaryRunID(sessionID, messageKey), Status: runStatus, BlockedReason: blockedReason}
@@ -755,7 +761,8 @@ func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3P
 		PlanModeRequested                                                 *bool
 		Metadata                                                          map[string]any
 		Media                                                             []routedSessionMediaRequest
-	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media})
+		ArtifactSelections                                                []pebblestore.SessionArtifactSelectionReference
+	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.ArtifactSelections})
 	if err != nil {
 		return "", err
 	}

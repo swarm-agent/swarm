@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
+import { AlertTriangle, ArrowUp, FileCode2, FileImage, GalleryHorizontal, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
@@ -37,6 +37,11 @@ import type { WorkspaceSkill } from '../services/workspace-skills'
 import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
 import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
 import { DesktopV3ArtifactCatalogGallery } from './desktop-v3-artifact-gallery'
+import {
+  appendDesktopV3ArtifactMessageSelection,
+  removeDesktopV3ArtifactMessageSelection,
+  type DesktopV3ArtifactMessageSelection,
+} from '../../session-v3/artifact-api'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -142,7 +147,10 @@ export interface DesktopV3AgenticComposerProps {
   canStop?: boolean
   submitLabel?: string
   error?: string | null
-  onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>
+  initialArtifactSelections?: readonly DesktopV3ArtifactMessageSelection[]
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
+  onArtifactSelectionRequestHandled?: () => void
+  onSubmit: (draft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) => void | Promise<void>
   onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState>
   routedStagedAttachments?: readonly DesktopComposerStagedAttachment[]
   onRoutedStageAttachments?: (files: File[], signal: AbortSignal) => Promise<void>
@@ -241,6 +249,9 @@ export function DesktopV3AgenticComposer({
   canStop = false,
   submitLabel: _submitLabel,
   error,
+  initialArtifactSelections = [],
+  artifactSelectionRequest = null,
+  onArtifactSelectionRequestHandled,
   onSubmit,
   onRoutedSubmit,
   routedStagedAttachments = [],
@@ -307,6 +318,7 @@ export function DesktopV3AgenticComposer({
   const uploadAbortRef = useRef<AbortController | null>(null)
   const textAttachmentSequenceRef = useRef(0)
   const routedSubmissionRef = useRef(false)
+  const handledArtifactSelectionRequestRef = useRef<DesktopV3ArtifactMessageSelection | null>(null)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -328,6 +340,7 @@ export function DesktopV3AgenticComposer({
   const modelFavoritesAnchorId = useId()
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
+  const [artifactSelections, setArtifactSelections] = useState<DesktopV3ArtifactMessageSelection[]>(() => [...(routedComposerSnapshot?.artifactSelections ?? initialArtifactSelections)])
   const [textAttachments, setTextAttachments] = useState<DesktopComposerTextAttachment[]>([])
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
@@ -468,6 +481,7 @@ export function DesktopV3AgenticComposer({
     }
     onDraftChange('')
     setAttachments([])
+    setArtifactSelections([])
     setTextAttachments([])
     setSelectedWorkspaceSkill(null)
     setAttachmentError(null)
@@ -575,11 +589,30 @@ export function DesktopV3AgenticComposer({
   }, [error, routedNewSession])
 
   useEffect(() => {
+    if (!artifactSelectionRequest) {
+      handledArtifactSelectionRequestRef.current = null
+      return
+    }
+    if (handledArtifactSelectionRequestRef.current === artifactSelectionRequest) return
+    handledArtifactSelectionRequestRef.current = artifactSelectionRequest
+    try {
+      setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelection(current, artifactSelectionRequest))
+      if (artifactSelectionRequest.action === 'use' && !draft.trim()) onDraftChange('Use this design.')
+      setAttachmentError(null)
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : 'Artifact selection failed.')
+    } finally {
+      onArtifactSelectionRequestHandled?.()
+    }
+  }, [artifactSelectionRequest, draft, onArtifactSelectionRequestHandled, onDraftChange])
+
+  useEffect(() => {
     if (!routedNewSession || !routedComposerSnapshot) return
     routedSubmissionRef.current = false
     setSelectedWorkspaceAction((routedComposerSnapshot.selectedAction as WorkspaceAction | null) ?? null)
     setWorkspaceActionAutoLaunch(false)
     setSelectedWorkspaceSkill((routedComposerSnapshot.selectedSkill as WorkspaceSkill | null) ?? null)
+    setArtifactSelections(routedComposerSnapshot.artifactSelections ?? [])
   }, [routedComposerSnapshot, routedNewSession])
 
   useEffect(() => {
@@ -694,7 +727,9 @@ export function DesktopV3AgenticComposer({
       (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
       commandDraft,
     )
-    const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 || routedStagedAttachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
+    const attachmentDraft = textAttachmentDraft.trim()
+      || (attachments.length > 0 || routedStagedAttachments.length > 0 ? 'Please review the attached file(s).' : '')
+      || (artifactSelections.length > 0 ? 'Please review the selected artifact(s).' : textAttachmentDraft)
     const skillInstruction = selectedWorkspaceSkill
       ? `Use the skill-use tool to load "${selectedWorkspaceSkill.canonicalName}" before executing this request.`
       : ''
@@ -713,6 +748,7 @@ export function DesktopV3AgenticComposer({
         canStop,
         clear: clearComposerForSubmit,
         attachments,
+        selections: artifactSelections,
         onSubmit,
         onStop,
         onSlashCommand,
@@ -724,6 +760,7 @@ export function DesktopV3AgenticComposer({
       const routedSnapshot = {
         prompt: submittedDraft,
         attachments: desktopComposerStagedMediaInput(routedStagedAttachments),
+        artifactSelections,
         selectedAction: selectedWorkspaceAction,
         selectedSkill: selectedWorkspaceSkill,
         worktreePrimed: newSessionCommand?.worktreeRequested ?? routedWorktreeRequested,
@@ -737,10 +774,13 @@ export function DesktopV3AgenticComposer({
         setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
         return
       }
-      clearComposerForSubmit()
-      setSelectedWorkspaceAction(null)
       void routedSubmit.then((state) => {
-        if (state.phase === 'failed') routedSubmissionRef.current = false
+        if (state.phase === 'failed') {
+          routedSubmissionRef.current = false
+          return
+        }
+        clearComposerForSubmit()
+        setSelectedWorkspaceAction(null)
       }).catch((cause) => {
         routedSubmissionRef.current = false
         setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
@@ -752,11 +792,12 @@ export function DesktopV3AgenticComposer({
       canStop,
       clear: clearComposerForSubmit,
       attachments,
+      selections: artifactSelections,
       onSubmit,
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, textAttachments, uploadingAttachment])
+  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, textAttachments, uploadingAttachment])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -873,9 +914,9 @@ export function DesktopV3AgenticComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (canSubmit || attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
+      if (canSubmit || attachments.length > 0 || artifactSelections.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
     }
-  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, onModeSelect, routedNewSession, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
+  }, [artifactSelections.length, attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, onModeSelect, routedNewSession, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
@@ -1227,7 +1268,7 @@ export function DesktopV3AgenticComposer({
               />
             </div>
           </div>
-          {attachments.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
+          {attachments.length > 0 || artifactSelections.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
             <div className="flex flex-wrap gap-2 border-t border-[var(--app-border)] px-4 py-2" data-testid="desktop-media-attachments">
               {selectedWorkspaceSkill ? (
                 <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-selected-skill">
@@ -1237,6 +1278,14 @@ export function DesktopV3AgenticComposer({
                   <button type="button" aria-label={`Remove ${selectedWorkspaceSkill.name} skill`} onClick={() => setSelectedWorkspaceSkill(null)}><X size={13} /></button>
                 </span>
               ) : null}
+              {artifactSelections.map((selection) => (
+                <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-artifact-chip">
+                  <GalleryHorizontal size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={selection.description || selection.label}>{selection.label}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{selection.action === 'use' ? 'Use design' : 'Artifact'}</span>
+                  <button type="button" aria-label={`Remove ${selection.label} artifact`} onClick={() => setArtifactSelections((current) => removeDesktopV3ArtifactMessageSelection(current, selection))}><X size={13} /></button>
+                </span>
+              ))}
               {routedStagedAttachments.map((attachment) => (
                 <span key={attachment.stagingId} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
                   <FileImage size={13} aria-hidden="true" />
@@ -1334,7 +1383,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && artifactSelections.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
@@ -1350,7 +1399,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && artifactSelections.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>

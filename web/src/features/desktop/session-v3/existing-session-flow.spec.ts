@@ -89,6 +89,22 @@ test('Path B operation rejects missing sessionId or prompt before HTTP', () => {
   }), /prompt/)
 })
 
+test('Path B keeps opaque artifact refs and visible labels in the stable retry payload', () => {
+  const artifactSelections = [{
+    session_id: 'source-session', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 9,
+    label: 'Landing page', description: 'Selected variant', action: 'use' as const,
+  }]
+  const operation = createDesktopV3ExistingMessageOperation({
+    sessionId: 'session-1',
+    prompt: 'Use this design.',
+    artifactSelections,
+  })
+  assert.deepEqual(operation.request.artifact_selections, artifactSelections)
+  assert.equal(JSON.stringify(operation.request).includes('storage'), false)
+  const replay = JSON.parse(JSON.stringify(operation)) as DesktopV3ExistingMessageOperation
+  assert.deepEqual(replay.request.artifact_selections, operation.request.artifact_selections)
+})
+
 test('Path B operation persists exact retry payload per session', () => withSessionStorage((storage) => {
   const operation = createDesktopV3ExistingMessageOperation({
     sessionId: 'session-1',

@@ -2,8 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  appendDesktopV3ArtifactMessageSelection,
+  desktopV3ArtifactMessageSelection,
   desktopV3ArtifactSelection,
+  removeDesktopV3ArtifactMessageSelection,
   normalizeDesktopV3ArtifactCatalogEntry,
+  desktopV3ArtifactSelectionEndpoint,
   selectDesktopV3Artifact,
   useDesktopV3Artifact,
 } from './artifact-api'
@@ -68,6 +72,20 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
   })
 })
 
+test('artifact selection actions target the canonical variant selection route', () => {
+  assert.equal(desktopV3ArtifactSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/selection')
+})
+
+test('artifact chips dedupe by opaque identity, update intent, and remove without touching bytes', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  assert.ok(entry)
+  const select = desktopV3ArtifactMessageSelection(entry, 'select')
+  const use = desktopV3ArtifactMessageSelection(entry, 'use')
+  assert.deepEqual(appendDesktopV3ArtifactMessageSelection([select], use), [use])
+  assert.deepEqual(removeDesktopV3ArtifactMessageSelection([use], use), [])
+  assert.equal(JSON.stringify(use).includes('content'), false)
+})
+
 test('artifact selection helper emits only opaque authority fields', () => {
   const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
   assert.ok(entry)
@@ -76,7 +94,7 @@ test('artifact selection helper emits only opaque authority fields', () => {
   })
 })
 
-test('select and use helpers send the fixed selection request payload', async () => {
+test('select and use helpers send canonical variant selection payloads', async () => {
   const originalFetch = globalThis.fetch
   const requests: Array<{ url: string; method: string; body: unknown }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -95,8 +113,8 @@ test('select and use helpers send the fixed selection request payload', async ()
     globalThis.fetch = originalFetch
   }
 
-  assert.deepEqual(requests, [
-    { url: '/v3/sessions/session-1/artifacts/select', method: 'POST', body: selection },
-    { url: '/v3/sessions/session-1/artifacts/use', method: 'POST', body: selection },
+  assert.deepEqual(requests.map((request) => ({ ...request, body: { ...(request.body as Record<string, unknown>), client_request_id: '<operation-id>' } })), [
+    { url: '/v3/sessions/session-1/artifacts/variant-1/selection', method: 'POST', body: { client_request_id: '<operation-id>', event_seq: 42, action: 'select' } },
+    { url: '/v3/sessions/session-1/artifacts/variant-1/selection', method: 'POST', body: { client_request_id: '<operation-id>', event_seq: 42, action: 'use' } },
   ])
 })

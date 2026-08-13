@@ -36,6 +36,15 @@ export interface DesktopV3ArtifactSelection {
   event_seq: number
 }
 
+/** Opaque message reference plus bounded display metadata and review intent. */
+export interface DesktopV3ArtifactMessageSelection extends DesktopV3ArtifactSelection {
+  label: string
+  description?: string
+  action: 'select' | 'use'
+}
+
+export const DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT = 16
+
 export interface DesktopV3ArtifactCatalogEntry {
   artifactId: string
   collectionId?: string
@@ -186,6 +195,64 @@ export function desktopV3ArtifactSelection(entry: DesktopV3ArtifactCatalogEntry)
   return selection
 }
 
+export function desktopV3ArtifactMessageSelection(
+  entry: DesktopV3ArtifactCatalogEntry,
+  action: 'select' | 'use' = 'select',
+): DesktopV3ArtifactMessageSelection {
+  return {
+    ...desktopV3ArtifactSelection(entry),
+    label: entry.label.trim() || entry.filename.trim() || 'Artifact',
+    description: entry.description.trim() || undefined,
+    action,
+  }
+}
+
+export function desktopV3ArtifactMessageSelectionKey(
+  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'>,
+): string {
+  return `${selection.session_id.trim()}\u0000${selection.collection_id.trim()}\u0000${selection.variant_id.trim()}`
+}
+
+export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): DesktopV3ArtifactMessageSelection | null {
+  const selection = normalizeDesktopV3ArtifactSelection(value)
+  const record = artifactCatalogRecord(value)
+  if (!selection || !record) return null
+  const label = artifactCatalogString(record.label)
+  const rawAction = artifactCatalogString(record.action).toLowerCase()
+  if (!label || (rawAction !== 'select' && rawAction !== 'use')) return null
+  return {
+    ...selection,
+    label,
+    description: artifactCatalogString(record.description) || undefined,
+    action: rawAction,
+  }
+}
+
+export function appendDesktopV3ArtifactMessageSelection(
+  selections: readonly DesktopV3ArtifactMessageSelection[],
+  incoming: DesktopV3ArtifactMessageSelection,
+): DesktopV3ArtifactMessageSelection[] {
+  const normalized = normalizeDesktopV3ArtifactMessageSelection(incoming)
+  if (!normalized) throw new Error('Artifact chip requires a complete opaque selection, visible label, and action')
+  const key = desktopV3ArtifactMessageSelectionKey(normalized)
+  const index = selections.findIndex((selection) => desktopV3ArtifactMessageSelectionKey(selection) === key)
+  if (index < 0) {
+    if (selections.length >= DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT) {
+      throw new Error(`A message supports at most ${DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT} artifact selections`)
+    }
+    return [...selections, normalized]
+  }
+  return selections.map((selection, selectionIndex) => selectionIndex === index ? normalized : selection)
+}
+
+export function removeDesktopV3ArtifactMessageSelection(
+  selections: readonly DesktopV3ArtifactMessageSelection[],
+  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'>,
+): DesktopV3ArtifactMessageSelection[] {
+  const key = desktopV3ArtifactMessageSelectionKey(selection)
+  return selections.filter((item) => desktopV3ArtifactMessageSelectionKey(item) !== key)
+}
+
 export function normalizeDesktopV3ArtifactSelection(value: unknown): DesktopV3ArtifactSelection | null {
   const record = artifactCatalogRecord(value)
   if (!record) return null
@@ -197,10 +264,11 @@ export function normalizeDesktopV3ArtifactSelection(value: unknown): DesktopV3Ar
   return { session_id: sessionId, collection_id: collectionId, variant_id: variantId, event_seq: eventSeq }
 }
 
-export function desktopV3ArtifactSelectionEndpoint(sessionId: string, action: 'select' | 'use'): string {
+export function desktopV3ArtifactSelectionEndpoint(sessionId: string, variantId: string): string {
   const normalizedSessionId = sessionId.trim()
-  if (!normalizedSessionId) throw new Error('Artifact action requires a session ID')
-  return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/${action}`
+  const normalizedVariantId = variantId.trim()
+  if (!normalizedSessionId || !normalizedVariantId) throw new Error('Artifact action requires a session and variant ID')
+  return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/${encodeURIComponent(normalizedVariantId)}/selection`
 }
 
 async function postDesktopV3ArtifactSelection(
@@ -210,10 +278,11 @@ async function postDesktopV3ArtifactSelection(
 ): Promise<DesktopV3ArtifactSelection> {
   const normalized = normalizeDesktopV3ArtifactSelection(selection)
   if (!normalized) throw new Error('Artifact action requires a complete opaque selection')
-  const response = await apiFetch(desktopV3ArtifactSelectionEndpoint(normalized.session_id, action), {
+  const clientRequestId = `desktop-v3-artifact-${action}:${crypto.randomUUID()}`
+  const response = await apiFetch(desktopV3ArtifactSelectionEndpoint(normalized.session_id, normalized.variant_id), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(normalized),
+    body: JSON.stringify({ client_request_id: clientRequestId, event_seq: normalized.event_seq, action }),
     signal,
   })
   if (!response.ok) throw new Error(await readErrorMessage(response))

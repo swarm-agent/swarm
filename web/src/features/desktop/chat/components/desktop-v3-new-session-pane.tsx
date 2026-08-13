@@ -27,6 +27,7 @@ import {
   type DesktopComposerStagedAttachment,
 } from '../services/composer-attachments'
 import { DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS } from '../../session-v3/media-staging-api'
+import type { DesktopV3ArtifactMessageSelection } from '../../session-v3/artifact-api'
 import {
   createDesktopRoutedWorktreeIntent,
   encodeDesktopRoutedWorktreeIntentMetadata,
@@ -49,6 +50,8 @@ export interface DesktopV3NewSessionPaneProps {
   initialPlanModeRequested?: boolean
   agentSettingsOpenSignal?: number
   agentSettingsInitialAgent?: string
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
+  onArtifactSelectionRequestHandled?: () => void
 }
 
 /**
@@ -72,6 +75,8 @@ export function DesktopV3NewSessionPane({
   initialPlanModeRequested = false,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = '',
+  artifactSelectionRequest = null,
+  onArtifactSelectionRequestHandled,
 }: DesktopV3NewSessionPaneProps) {
   const queryClient = useQueryClient()
   const agentStateQuery = useQuery(agentStateQueryOptions())
@@ -245,7 +250,9 @@ export function DesktopV3NewSessionPane({
 
   function handleSubmit(snapshot: DesktopV3RoutedComposerSnapshot): Promise<DesktopV3RoutedNewSessionState> {
     try {
-      const prompt = snapshot.prompt.trim() || (snapshot.attachments.length > 0 ? 'Please review the attached file(s).' : '')
+      const prompt = snapshot.prompt.trim()
+        || (snapshot.attachments.length > 0 ? 'Please review the attached file(s).' : '')
+        || (snapshot.artifactSelections.length > 0 ? 'Please review the selected artifact(s).' : '')
       if (!prompt || routedState.phase === 'routing' || routedState.phase === 'resolved') {
         throw new Error('Routed Desktop start is not editable in its current state')
       }
@@ -376,8 +383,10 @@ export function DesktopV3NewSessionPane({
           inputLabel="Start a routed Desktop V3 session"
           disabled={activationPending}
           busy={activationPending}
-          canSubmit={Boolean(draft.trim()) || stagedAttachments.length > 0}
+          canSubmit={Boolean(draft.trim()) || stagedAttachments.length > 0 || Boolean(artifactSelectionRequest)}
           onSubmit={() => undefined}
+          artifactSelectionRequest={artifactSelectionRequest}
+          onArtifactSelectionRequestHandled={onArtifactSelectionRequestHandled}
           onRoutedSubmit={handleSubmit}
           routedStagedAttachments={stagedAttachments}
           onRoutedStageAttachments={routedState.phase === 'failed' || activationPending ? undefined : handleStageAttachments}

@@ -184,6 +184,16 @@ export interface SessionV3MediaReferenceWire {
   contract_hash: string
 }
 
+export interface SessionV3ArtifactSelectionReferenceWire {
+  session_id: string
+  collection_id: string
+  variant_id: string
+  event_seq: number
+  label?: string
+  description?: string
+  action?: 'select' | 'use'
+}
+
 export interface SessionV3MessageWire {
   id?: string
   session_id?: string
@@ -193,6 +203,7 @@ export interface SessionV3MessageWire {
   created_at?: number
   metadata?: SessionV3JsonRecord
   media?: SessionV3MediaReferenceWire[]
+  artifact_selections?: SessionV3ArtifactSelectionReferenceWire[]
 }
 
 export interface SessionV3ProjectionWire {
@@ -472,6 +483,7 @@ export interface SessionV3MessageCommitRequestWire {
   content: string
   metadata?: SessionV3JsonRecord
   media?: SessionV3MediaReferenceWire[]
+  artifact_selections?: SessionV3ArtifactSelectionReferenceWire[]
 }
 
 export interface SessionV3MessageCommitResponseWire extends SessionV3MutationResponseWire {}

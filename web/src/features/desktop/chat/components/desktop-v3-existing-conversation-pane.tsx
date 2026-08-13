@@ -161,6 +161,7 @@ import {
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
+import type { DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import {
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
@@ -1433,6 +1434,8 @@ export interface DesktopV3ExistingConversationPaneProps {
   onOpenPlan?: () => void;
   onOpenActionSettings?: () => void;
   planSidebarBelowActions?: ReactNode;
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null;
+  onArtifactSelectionRequestHandled?: () => void;
 }
 
 export function completeDesktopV3ExistingMessage(input: {
@@ -1463,7 +1466,7 @@ type DesktopV3ExistingConversationComposerProps = Omit<
   hasStoredOperation: boolean;
   canSubmitWithoutDraft: boolean;
   controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
-  onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>;
+  onSubmit: (draft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) => void | Promise<void>;
 };
 
 export function DesktopV3ExistingConversationComposer({
@@ -1521,6 +1524,8 @@ export function DesktopV3ExistingConversationPane({
   onOpenPlan,
   onOpenActionSettings,
   planSidebarBelowActions,
+  artifactSelectionRequest = null,
+  onArtifactSelectionRequestHandled,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
@@ -2377,7 +2382,7 @@ export function DesktopV3ExistingConversationPane({
     oldestLoadedSeq,
   ]);
 
-  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[]) {
+  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) {
     if (!normalizedSessionId || sending || compacting) return;
 
     setSending(true);
@@ -2388,16 +2393,26 @@ export function DesktopV3ExistingConversationPane({
         throw new Error("Select a model and thinking level before sending");
       }
       await persistVisibleSettings();
+      const retainedOperation = operationRef.current;
+      if (retainedOperation) {
+        const sameDraft = retainedOperation.request.content === submittedDraft.trim();
+        const sameMedia = JSON.stringify(retainedOperation.request.media ?? []) === JSON.stringify(attachments);
+        const retainedArtifacts = retainedOperation.request.artifact_selections ?? [];
+        const sameArtifacts = retainedArtifacts.length === 0 || JSON.stringify(retainedArtifacts) === JSON.stringify(artifactSelections);
+        if (!sameDraft || !sameMedia || !sameArtifacts) {
+          throw new Error("Retry the retained message without changing its text or attachments");
+        }
+      }
       const operation =
-        operationRef.current ??
+        retainedOperation ??
         createDesktopV3ExistingMessageOperation({
           sessionId: normalizedSessionId,
           prompt: submittedDraft,
           metadata,
           media: attachments,
+          artifactSelections,
         });
       operationRef.current = operation;
-      composerControllerRef.current?.setDraft("");
       persistDesktopV3ExistingMessageOperation(operation);
 
       await continueDesktopV3Conversation(operation);
@@ -2414,6 +2429,7 @@ export function DesktopV3ExistingConversationPane({
       if (mountedRef.current) {
         setSendError(error instanceof Error ? error.message : String(error));
       }
+      throw error;
     } finally {
       if (mountedRef.current) {
         setSending(false);
@@ -2584,7 +2600,7 @@ export function DesktopV3ExistingConversationPane({
   const submitRef = useRef(handleSubmit);
   submitRef.current = handleSubmit;
   const stableSubmit = useCallback(
-    (submittedDraft: string, attachments: DesktopV3MediaReference[]) => submitRef.current(submittedDraft, attachments),
+    (submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) => submitRef.current(submittedDraft, attachments, artifactSelections),
     [],
   );
 
@@ -2648,7 +2664,7 @@ export function DesktopV3ExistingConversationPane({
     onDownloadConversation: () => { void handleTranscriptExport('download'); },
   } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
 
-  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, []), [stableSubmit]);
+  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, [], []), [stableSubmit]);
 
   const hasOpenPlan = Boolean(onOpenPlan);
   const stableOpenPlan = useMemo(
@@ -2854,6 +2870,7 @@ export function DesktopV3ExistingConversationPane({
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
             initialDraft={storedOperation?.request.content ?? ""}
+            initialArtifactSelections={storedOperation?.request.artifact_selections ?? []}
             focusSignal={composerFocusSignal}
             hasStoredOperation={hasStoredOperation}
             canSubmitWithoutDraft={canSubmitWithoutDraft}
@@ -2864,6 +2881,8 @@ export function DesktopV3ExistingConversationPane({
             busy={sending || compacting}
             canStop={Boolean(currentRun)}
             error={sendError}
+            artifactSelectionRequest={artifactSelectionRequest}
+            onArtifactSelectionRequestHandled={onArtifactSelectionRequestHandled}
             mediaCapability={mediaCapability}
             onUploadAttachment={async (file, signal) => {
               const capability = await getDesktopV3MediaCapability(normalizedSessionId);

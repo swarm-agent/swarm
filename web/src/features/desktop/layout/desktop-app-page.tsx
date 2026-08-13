@@ -1048,7 +1048,7 @@ function BackgroundTaskForm({ presentation, workspaceName, request, busy, error,
             busy={busy}
             canSubmit={Boolean(request.trim()) && !busy}
             error={error}
-            onSubmit={onSubmit}
+            onSubmit={(draft) => onSubmit(draft)}
             mode="auto"
             showModePicker={false}
             executionLabel="background"
