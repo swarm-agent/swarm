@@ -66,8 +66,10 @@ func readyPackageFixture(t *testing.T, entries []packageTestEntry) (*Service, pe
 	t.Helper()
 	root := t.TempDir()
 	service := &Service{root: root, limits: normalizeLimits(Limits{})}
-	if err := os.MkdirAll(root, 0o700); err != nil { t.Fatal(err) }
-	variant := pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, Filename: "design.zip", MediaType: "application/zip"}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	variant := pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, Filename: "design.zip", MediaType: "application/zip"}
 	var archive bytes.Buffer
 	writer := zip.NewWriter(&archive)
 	for _, entry := range entries {
@@ -78,14 +80,24 @@ func readyPackageFixture(t *testing.T, entries []packageTestEntry) (*Service, pe
 			header.SetMode(0o600)
 		}
 		current, err := writer.CreateHeader(header)
-		if err != nil { t.Fatal(err) }
-		if _, err := current.Write(entry.body); err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := current.Write(entry.body); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := writer.Close(); err != nil { t.Fatal(err) }
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	dir, err := service.variantDir(variant.SessionID, variant.CollectionID, variant.ID, true)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	content := archive.Bytes()
-	if err := os.WriteFile(filepath.Join(dir, "content"), content, 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(dir, "content"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	digest := sha256.Sum256(content)
 	variant.DigestSHA256, variant.Size = hex.EncodeToString(digest[:]), int64(len(content))
 	return service, variant

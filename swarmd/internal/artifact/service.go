@@ -974,42 +974,8 @@ func (s *Service) validateZip(path string) error {
 		return errors.New("artifact package is not a valid zip archive")
 	}
 	defer archive.Close()
-	var files int
-	var total uint64
-	seen := make(map[string]struct{}, len(archive.File))
-	for _, entry := range archive.File {
-		name := filepath.FromSlash(entry.Name)
-		if len(entry.Name) > 1024 || strings.Contains(entry.Name, "\\") || (!entry.FileInfo().IsDir() && !safePackageEntryName(entry.Name)) || !safeRelativePath(name) || entry.Mode()&os.ModeSymlink != 0 {
-			return errors.New("artifact package contains an unsafe entry")
-		}
-		if _, ok := seen[entry.Name]; ok {
-			return errors.New("artifact package contains duplicate entries")
-		}
-		seen[entry.Name] = struct{}{}
-		if entry.FileInfo().IsDir() {
-			continue
-		}
-		if !entry.Mode().IsRegular() {
-			return errors.New("artifact package contains a non-regular entry")
-		}
-		files++
-		maxEntryBytes := uint64(s.limits.MaxPackageEntryBytes)
-		if entry.UncompressedSize64 > maxEntryBytes {
-			return ErrQuotaExceeded
-		}
-		maxBytes := uint64(s.limits.MaxPackageBytes)
-		if entry.UncompressedSize64 > maxBytes-total {
-			return ErrQuotaExceeded
-		}
-		total += entry.UncompressedSize64
-		if files > s.limits.MaxPackageFiles || total > maxBytes {
-			return ErrQuotaExceeded
-		}
-	}
-	if files == 0 {
-		return errors.New("artifact package is empty")
-	}
-	return nil
+	_, _, err = s.materializePackageEntries(archive.File)
+	return err
 }
 
 func (s *Service) variantDir(sessionID, collectionID, variantID string, create bool) (string, error) {

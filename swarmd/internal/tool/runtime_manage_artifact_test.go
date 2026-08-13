@@ -238,11 +238,13 @@ func TestManageArtifactPackageAndBoundedTextRead(t *testing.T) {
 	if len(authority.packaged.Entries) != 1 || string(authority.packaged.Entries[0].Data) != "<h1>Hi</h1>" {
 		t.Fatalf("package input = %+v", authority.packaged)
 	}
+	authority.variant.MediaType = "text/plain"
 	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-read", Name: "manage_artifact", Arguments: `{"action":"read","variant_id":"variant-1","max_bytes":100}`})
 	if err != nil || !json.Valid([]byte(output)) {
 		t.Fatalf("read output=%q err=%v", output, err)
 	}
 	authority.variant.MediaType = "application/octet-stream"
+	authority.variant.Presentation.Kind = "download"
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-binary", Name: "manage_artifact", Arguments: `{"action":"read","variant_id":"variant-1"}`})
 	if err == nil {
 		t.Fatal("expected binary read rejection")
@@ -254,9 +256,9 @@ func TestManageArtifactPackageAndBoundedTextRead(t *testing.T) {
 
 func TestManageArtifactReadsPackageManifestAndUTF8Entry(t *testing.T) {
 	authority := &fakeArtifactAuthority{
-		readBody: []byte("<main>selected</main>"),
+		readBody:        []byte("<main>selected</main>"),
 		packageManifest: []artifact.PackageManifestEntry{{Name: "assets/site.css", Size: 6}, {Name: "index.html", Size: 21}},
-		variant: pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", SessionID: "session-1", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "application/zip"},
+		variant:         pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", SessionID: "session-1", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "application/zip"},
 	}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
@@ -268,7 +270,7 @@ func TestManageArtifactReadsPackageManifestAndUTF8Entry(t *testing.T) {
 		t.Fatalf("manifest output=%q err=%v", output, err)
 	}
 	output, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-entry", Name: "manage_artifact", Arguments: `{"action":"read",` + refArgs + `,"entry":"index.html"}`})
-	if err != nil || !strings.Contains(output, `"entry":"index.html"`) || !strings.Contains(output, `"content":"<main>selected</main>"`) {
+	if err != nil || !strings.Contains(output, `"entry":"index.html"`) || !strings.Contains(output, `"content":"\u003cmain\u003eselected\u003c/main\u003e"`) {
 		t.Fatalf("entry output=%q err=%v", output, err)
 	}
 	authority.readBody = []byte{0xff}

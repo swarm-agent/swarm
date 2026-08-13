@@ -261,7 +261,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if err != nil {
 			return "", err
 		}
-		if managedArtifactPackageMediaType(variant.MediaType) {
+		if managedArtifactPackageMediaType(variant.MediaType) && (explicitSource || entrySupplied) {
 			if variant.Status != pebblestore.SessionArtifactStatusReady {
 				return "", errors.New("manage_artifact package read requires a ready artifact")
 			}
