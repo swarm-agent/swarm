@@ -92,7 +92,7 @@ test("active Task Program renders its complete phased roadmap expanded", () => {
   assert.match(markup, /data-stage-state="waiting"/);
   assert.match(markup, /waiting on dependencies/);
   assert.match(markup, /search x2 · running/);
-  assert.doesNotMatch(markup, /tools:/);
+  assert.doesNotMatch(markup, /tools:/i);
   assert.equal((markup.match(/data-task-live-stream=/g) ?? []).length, 1);
   assert.doesNotMatch(markup, /ITERATION SWARM/);
 });
@@ -108,6 +108,7 @@ test("Task Program source exposes ordered phase, dependency, and interactive row
   assert.match(source, /MemoizedTaskAgentListRow/);
   assert.match(source, /data-task-live-stream/);
   assert.match(source, /data-task-live-tools/);
+  assert.doesNotMatch(source, />tools:<\/span>/i);
   assert.match(source, /data-task-live-assistant/);
 });
 
