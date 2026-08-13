@@ -11,17 +11,17 @@ func TestBuildInputProjectsAttachedArtifactSelectionsWithoutBytes(t *testing.T) 
 	messages := []pebblestore.MessageSnapshot{{
 		Role:    "user",
 		Content: "Please inspect this design.",
-		Metadata: map[string]any{"artifact_selections": []any{map[string]any{
-			"session_id": "source-session", "collection_id": "collection-1", "variant_id": "variant-2", "event_seq": float64(41),
-			"label": "Compact navigation", "visible_metadata": map[string]any{"filename": "nav.html", "media_type": "text/html", "description": "Reviewed option"},
-		}}},
+		ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{
+			SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41,
+			Label: "Compact navigation", Description: "Reviewed option", Action: "use",
+		}},
 	}}
 	input := buildInput(messages)
 	if len(input) != 1 {
 		t.Fatalf("input = %#v", input)
 	}
 	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
-	for _, want := range []string{"Compact navigation", "nav.html", "text/html", "Reviewed option", "session_id=source-session", "collection_id=collection-1", "variant_id=variant-2", "event_seq=41", "manage_artifact get/read", "source_event_seq"} {
+	for _, want := range []string{"Compact navigation", "Reviewed option", "session_id=source-session", "collection_id=collection-1", "variant_id=variant-2", "event_seq=41", "manage_artifact get/read", "source_event_seq"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider content missing %q: %s", want, content)
 		}

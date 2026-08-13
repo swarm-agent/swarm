@@ -2398,7 +2398,7 @@ export function DesktopV3ExistingConversationPane({
         const sameDraft = retainedOperation.request.content === submittedDraft.trim();
         const sameMedia = JSON.stringify(retainedOperation.request.media ?? []) === JSON.stringify(attachments);
         const retainedArtifacts = retainedOperation.request.artifact_selections ?? [];
-        const sameArtifacts = retainedArtifacts.length === 0 || JSON.stringify(retainedArtifacts) === JSON.stringify(artifactSelections);
+        const sameArtifacts = JSON.stringify(retainedArtifacts) === JSON.stringify(artifactSelections);
         if (!sameDraft || !sameMedia || !sameArtifacts) {
           throw new Error("Retry the retained message without changing its text or attachments");
         }

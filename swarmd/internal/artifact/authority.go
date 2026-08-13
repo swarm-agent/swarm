@@ -240,7 +240,9 @@ func (a *Authority) GetReference(principal Principal, ref pebblestore.SessionArt
 	if variant.Status != pebblestore.SessionArtifactStatusReady {
 		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference is not ready")
 	}
-	if variant.EventSeq != ref.EventSeq {
+	readySequence := variant.EventSeq == ref.EventSeq
+	selectedSequence := collection.SelectedVariantID == variant.ID && collection.EventSeq == ref.EventSeq
+	if !readySequence && !selectedSequence {
 		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference is stale")
 	}
 	return variant, nil

@@ -1152,7 +1152,19 @@ export function DesktopV3AgenticComposer({
 
   return (
     <div ref={composerRootRef} className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
-      <DesktopV3ArtifactCatalogGallery open={artifactViewerOpen} onOpenChange={setArtifactViewerOpen} />
+      <DesktopV3ArtifactCatalogGallery
+        open={artifactViewerOpen}
+        onOpenChange={setArtifactViewerOpen}
+        onAddToChat={({ label, selection }) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelection(current, { ...selection, label, action: 'select' }))
+          setArtifactViewerOpen(false)
+        }}
+        onUseThisDesign={({ label, selection }) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelection(current, { ...selection, label, action: 'use' }))
+          if (!draft.trim()) onDraftChange('Use this design.')
+          setArtifactViewerOpen(false)
+        }}
+      />
       {fileDropZone && filesDraggingOverChat ? createPortal(
         <div className="pointer-events-none absolute inset-3 z-50 grid place-items-center rounded-2xl border-2 border-dashed border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-bg))] p-6 shadow-xl" data-testid="desktop-chat-file-drop-overlay" role="status" aria-live="polite">
           <div className="flex max-w-md flex-col items-center gap-3 rounded-2xl bg-[var(--app-surface-elevated)] px-8 py-6 text-center shadow-lg">

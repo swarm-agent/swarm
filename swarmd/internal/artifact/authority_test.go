@@ -134,6 +134,13 @@ func TestAuthorityReferenceRequiresOwnedReadyExactEvent(t *testing.T) {
 	if got, err := authority.GetReference(principal, ref); err != nil || got.ID != "source-variant" {
 		t.Fatalf("get reference = %+v err=%v", got, err)
 	}
+	metadata.sourceCollection.SelectedVariantID = "source-variant"
+	metadata.sourceCollection.EventSeq = 42
+	selected := ref
+	selected.EventSeq = 42
+	if got, err := authority.GetReference(principal, selected); err != nil || got.ID != "source-variant" {
+		t.Fatalf("get selected reference = %+v err=%v", got, err)
+	}
 	stale := ref
 	stale.EventSeq = 40
 	if _, err := authority.GetReference(principal, stale); err == nil || err.Error() != "artifact source reference is stale" {

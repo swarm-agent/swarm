@@ -14,6 +14,8 @@ test('artifact composer renders removable labeled chips and submits structured r
   assert.match(composer, /removeDesktopV3ArtifactMessageSelection/)
   assert.match(composer, /selections: artifactSelections/)
   assert.match(composer, /artifactSelections,/)
+  assert.match(composer, /onAddToChat=\{\(\{ label, selection \}\)/)
+  assert.match(composer, /onUseThisDesign=\{\(\{ label, selection \}\)/)
 })
 
 test('existing and routed panes preserve artifact refs across retry boundaries', () => {
@@ -21,6 +23,7 @@ test('existing and routed panes preserve artifact refs across retry boundaries',
   const routed = source('./desktop-v3-new-session-pane.tsx')
   assert.match(existing, /initialArtifactSelections=\{storedOperation\?\.request\.artifact_selections \?\? \[\]\}/)
   assert.match(existing, /artifactSelections,/)
+  assert.match(existing, /JSON\.stringify\(retainedArtifacts\) === JSON\.stringify\(artifactSelections\)/)
   assert.match(existing, /Retry the retained message without changing its text or attachments/)
   assert.match(routed, /snapshot\.artifactSelections/)
   assert.match(routed, /artifactSelectionRequest=\{artifactSelectionRequest\}/)

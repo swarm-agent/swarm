@@ -731,8 +731,10 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 			if shouldDropSensitiveConversationMessage(message) {
 				continue
 			}
-			if artifactContext := attachedArtifactSelectionsForProvider(message.Metadata); artifactContext != "" {
-				content = strings.TrimSpace(content + "\n\n" + artifactContext)
+			if len(message.ArtifactSelections) > 0 {
+				if artifactContext := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": message.ArtifactSelections}); artifactContext != "" {
+					content = strings.TrimSpace(content + "\n\n" + artifactContext)
+				}
 			}
 			input = append(input, map[string]any{
 				"role": "user",
