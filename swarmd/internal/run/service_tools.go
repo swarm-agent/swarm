@@ -55,7 +55,6 @@ type taskLaunchPrepared struct {
 	AssemblyPart         *taskSwarmAssemblyPart
 	IntegrationContract  string
 	IntegrationRequired  bool
-	OutputMode           string
 	ArtifactRunContext   *tool.ArtifactRunContext
 }
 
@@ -4006,7 +4005,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			AssemblyPart:        spec.AssemblyPart,
 			IntegrationContract: strings.TrimSpace(spec.IntegrationContract),
 			IntegrationRequired: strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
-			OutputMode:          strings.TrimSpace(spec.OutputMode),
 			ArtifactRunContext:  managedArtifactContext,
 		}
 		var launch taskLaunchPrepared
