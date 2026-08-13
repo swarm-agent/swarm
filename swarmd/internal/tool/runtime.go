@@ -161,6 +161,7 @@ type Runtime struct {
 	uiSettings           manageThemeUISettingsService
 	themeWorkspace       manageThemeWorkspaceService
 	artifacts            *artifact.Registry
+	artifactAuthority    ArtifactAuthority
 	searchCoordinator    *SearchCoordinator
 }
 
@@ -441,6 +442,19 @@ func (r *Runtime) ArtifactRegistry() *artifact.Registry {
 		return nil
 	}
 	return r.artifacts
+}
+
+func (r *Runtime) SetArtifactAuthority(authority ArtifactAuthority) {
+	if r != nil {
+		r.artifactAuthority = authority
+	}
+}
+
+func (r *Runtime) ArtifactAuthority() ArtifactAuthority {
+	if r == nil {
+		return nil
+	}
+	return r.artifactAuthority
 }
 
 func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntimeConfig, error)) {
@@ -1098,6 +1112,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageArtifactDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage_todos",
@@ -1631,6 +1646,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageWorktree(scope, args)
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "manage-artifact", "manage_artifact":
+		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-todos", "manage_todos":
 		return r.executeManageTodos(scope, args)
 	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":
@@ -8515,6 +8532,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-artifact", "manage_artifact":
+		return "manage_artifact"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
@@ -9096,6 +9115,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_worktree"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-artifact", "manage_artifact":
+		return "manage_artifact"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	case "skill-use", "skill_use":
@@ -9539,6 +9560,8 @@ func toolPathID(name string) string {
 		return "tool.manage-worktree.v1"
 	case "manage-actions", "manage_actions":
 		return "tool.manage-actions.v1"
+	case "manage-artifact", "manage_artifact":
+		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":
 		return "tool.manage-todos.v1"
 	case "skill-use", "skill_use":
