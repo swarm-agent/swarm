@@ -4378,9 +4378,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode}
 			lineage := variant.Lineage
+			lineageSourceMatches := lineage.SourceSessionID == launch.ChildSession.ID ||
+				(lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
 			lineageMatches := variant.AccountScopeID == parentSession.AccountScopeID && variant.SessionID == parentSession.ID &&
 				lineage.ParentSessionID == parentSession.ID &&
-				lineage.SourceSessionID == launch.ChildSession.ID &&
+				lineageSourceMatches &&
 				lineage.ChildSessionID == launch.ChildSession.ID &&
 				lineage.TaskCallID == launch.ArtifactRunContext.TaskCallID &&
 				lineage.ProgramID == launch.ArtifactRunContext.ProgramID &&

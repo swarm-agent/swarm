@@ -1,9 +1,11 @@
 package run
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/discovery"
@@ -729,6 +731,9 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 			if shouldDropSensitiveConversationMessage(message) {
 				continue
 			}
+			if artifactContext := attachedArtifactSelectionsForProvider(message.Metadata); artifactContext != "" {
+				content = strings.TrimSpace(content + "\n\n" + artifactContext)
+			}
 			input = append(input, map[string]any{
 				"role": "user",
 				"content": []map[string]any{
@@ -738,6 +743,89 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 		}
 	}
 	return input
+}
+
+const maxProviderArtifactSelections = 16
+
+// attachedArtifactSelectionsForProvider projects only bounded visible labels and
+// opaque references. Managed bytes and storage paths remain behind
+// manage_artifact's authenticated authority.
+func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
+	raw, ok := metadata["artifact_selections"]
+	if !ok || raw == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil || len(encoded) > 64<<10 {
+		return ""
+	}
+	var selections []struct {
+		SessionID       string         `json:"session_id"`
+		CollectionID    string         `json:"collection_id"`
+		VariantID       string         `json:"variant_id"`
+		EventSeq        uint64         `json:"event_seq"`
+		Label           string         `json:"label"`
+		Filename        string         `json:"filename"`
+		MediaType       string         `json:"media_type"`
+		Description     string         `json:"description"`
+		Metadata        map[string]any `json:"metadata"`
+		VisibleMetadata map[string]any `json:"visible_metadata"`
+	}
+	if err := json.Unmarshal(encoded, &selections); err != nil || len(selections) == 0 || len(selections) > maxProviderArtifactSelections {
+		return ""
+	}
+	lines := []string{"Attached managed artifacts (opaque references only; no bytes or paths are embedded):"}
+	for _, selection := range selections {
+		selection.SessionID = strings.TrimSpace(selection.SessionID)
+		selection.CollectionID = strings.TrimSpace(selection.CollectionID)
+		selection.VariantID = strings.TrimSpace(selection.VariantID)
+		selection.Label = strings.TrimSpace(selection.Label)
+		for key, target := range map[string]*string{"filename": &selection.Filename, "media_type": &selection.MediaType, "description": &selection.Description} {
+			if strings.TrimSpace(*target) != "" {
+				continue
+			}
+			for _, visible := range []map[string]any{selection.Metadata, selection.VisibleMetadata} {
+				if value, ok := visible[key].(string); ok {
+					*target = value
+					break
+				}
+			}
+		}
+		if selection.SessionID == "" || selection.CollectionID == "" || selection.VariantID == "" || selection.EventSeq == 0 ||
+			len(selection.SessionID) > 256 || len(selection.CollectionID) > 128 || len(selection.VariantID) > 128 {
+			return ""
+		}
+		selection.Label = truncateUTF8Bytes(selection.Label, 256)
+		if selection.Label == "" {
+			selection.Label = "Attached artifact"
+		}
+		line := fmt.Sprintf("- %s: session_id=%s collection_id=%s variant_id=%s event_seq=%d", selection.Label, selection.SessionID, selection.CollectionID, selection.VariantID, selection.EventSeq)
+		visible := make([]string, 0, 3)
+		for _, value := range []string{selection.Filename, selection.MediaType, selection.Description} {
+			value = strings.TrimSpace(value)
+			value = truncateUTF8Bytes(value, 512)
+			if value != "" {
+				visible = append(visible, value)
+			}
+		}
+		if len(visible) > 0 {
+			line += " (" + strings.Join(visible, "; ") + ")"
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "Use manage_artifact get/read with the complete reference to inspect one. Reads are authenticated, exact-event, bounded UTF-8 only. To derive a variant, pass the same reference as source_session_id, source_collection_id, source_variant_id, and source_event_seq to create/create_package; the target remains trusted run context.")
+	return strings.Join(lines, "\n")
+}
+
+func truncateUTF8Bytes(value string, maximum int) string {
+	if maximum <= 0 || len(value) <= maximum {
+		return value
+	}
+	value = value[:maximum]
+	for !utf8.ValidString(value) && len(value) > 0 {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func buildAssistantOutputInput(content string) (map[string]any, bool) {

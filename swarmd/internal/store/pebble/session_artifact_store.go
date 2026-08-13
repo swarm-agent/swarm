@@ -328,7 +328,7 @@ func (s *SessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, coll
 	if variant.Lineage.ParentSessionID != "" && variant.Lineage.ParentSessionID != sessionID {
 		return SessionArtifactVariant{}, false, errors.New("artifact variant parent lineage is inconsistent")
 	}
-	if variant.Lineage.ChildSessionID != "" && variant.Lineage.SourceSessionID != variant.Lineage.ChildSessionID {
+	if variant.Lineage.ChildSessionID != "" && variant.Lineage.SourceSessionID != variant.Lineage.ChildSessionID && (variant.Lineage.SourceCollectionID == "" || variant.Lineage.SourceVariantID == "") {
 		return SessionArtifactVariant{}, false, errors.New("artifact variant child lineage is inconsistent")
 	}
 	return variant, true, nil
@@ -430,7 +430,7 @@ func (s *SessionStore) ListSessionArtifactVariants(accountScopeID, sessionID, co
 		if err := json.Unmarshal(value, &variant); err != nil { return err }
 		if variant.AccountScopeID != accountScopeID || variant.SessionID != sessionID || variant.CollectionID != collectionID { return errors.New("artifact variant ownership metadata is inconsistent") }
 		if variant.Lineage.ParentSessionID != "" && variant.Lineage.ParentSessionID != sessionID { return errors.New("artifact variant parent lineage is inconsistent") }
-		if variant.Lineage.ChildSessionID != "" && variant.Lineage.SourceSessionID != variant.Lineage.ChildSessionID { return errors.New("artifact variant child lineage is inconsistent") }
+		if variant.Lineage.ChildSessionID != "" && variant.Lineage.SourceSessionID != variant.Lineage.ChildSessionID && (variant.Lineage.SourceCollectionID == "" || variant.Lineage.SourceVariantID == "") { return errors.New("artifact variant child lineage is inconsistent") }
 		out = append(out, variant)
 		return nil
 	})
@@ -564,8 +564,8 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 	if lineage.IterationIndex < 0 || lineage.IterationIndex > 1_000_000 {
 		return errors.New("artifact iteration index is invalid")
 	}
-	if lineage.ChildSessionID != "" && lineage.SourceSessionID != lineage.ChildSessionID {
-		return errors.New("artifact child lineage requires the child as source session")
+	if lineage.ChildSessionID != "" && lineage.SourceSessionID != lineage.ChildSessionID && (lineage.SourceCollectionID == "" || lineage.SourceVariantID == "") {
+		return errors.New("artifact child lineage requires the child as source session unless authenticated source artifact lineage is present")
 	}
 	return nil
 }

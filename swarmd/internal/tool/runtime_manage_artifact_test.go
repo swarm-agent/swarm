@@ -15,9 +15,11 @@ type fakeArtifactAuthority struct {
 	principal artifact.Principal
 	created   artifact.CreateInput
 	packaged  artifact.CreatePackageInput
-	readBody  []byte
-	variant   pebblestore.SessionArtifactVariant
-	deleted   string
+	readBody        []byte
+	variant         pebblestore.SessionArtifactVariant
+	reference       pebblestore.SessionArtifactSelectionReference
+	referenceRead   bool
+	deleted         string
 }
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
@@ -45,9 +47,17 @@ func (f *fakeArtifactAuthority) Get(principal artifact.Principal, variantID stri
 	}
 	return f.variant, nil
 }
+func (f *fakeArtifactAuthority) GetReference(principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error) {
+	f.principal, f.reference = principal, ref
+	return f.variant, nil
+}
 func (f *fakeArtifactAuthority) Read(_ context.Context, principal artifact.Principal, variantID string, _ int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
 	variant, err := f.Get(principal, variantID)
 	return append([]byte(nil), f.readBody...), variant, err
+}
+func (f *fakeArtifactAuthority) ReadReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, _ int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
+	f.principal, f.reference, f.referenceRead = principal, ref, true
+	return append([]byte(nil), f.readBody...), f.variant, nil
 }
 func (f *fakeArtifactAuthority) Select(principal artifact.Principal, _, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
 	f.principal = principal
@@ -183,7 +193,7 @@ func TestManageArtifactListSelectAndDeleteUseOpaqueReferences(t *testing.T) {
 }
 
 func TestManageArtifactPackageAndBoundedTextRead(t *testing.T) {
-	authority := &fakeArtifactAuthority{readBody: []byte("hello"), variant: pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", MediaType: "text/plain"}}
+	authority := &fakeArtifactAuthority{readBody: []byte("hello"), variant: pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", SessionID: "session-1", EventSeq: 7, MediaType: "text/plain"}}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
@@ -204,5 +214,40 @@ func TestManageArtifactPackageAndBoundedTextRead(t *testing.T) {
 	}
 	if err.Error() != "manage_artifact read returns only UTF-8 text artifacts" {
 		t.Fatalf("unexpected binary read error: %v", err)
+	}
+}
+
+func TestManageArtifactReadsExplicitAttachedReference(t *testing.T) {
+	authority := &fakeArtifactAuthority{readBody: []byte("selected design"), variant: pebblestore.SessionArtifactVariant{ID: "variant-source", CollectionID: "collection-source", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/plain"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-read-source", Name: "manage_artifact", Arguments: `{"action":"read","session_id":"source-session","collection_id":"collection-source","variant_id":"variant-source","event_seq":42,"max_bytes":64}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authority.referenceRead || authority.reference.SessionID != "source-session" || authority.reference.CollectionID != "collection-source" || authority.reference.VariantID != "variant-source" || authority.reference.EventSeq != 42 {
+		t.Fatalf("source reference = %+v read=%t", authority.reference, authority.referenceRead)
+	}
+	if !strings.Contains(output, `"content":"selected design"`) || strings.Contains(output, "workspace") {
+		t.Fatalf("read output = %s", output)
+	}
+	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-read-incomplete", Name: "manage_artifact", Arguments: `{"action":"read","session_id":"source-session","variant_id":"variant-source"}`})
+	if err == nil || !strings.Contains(err.Error(), "requires session_id, collection_id, variant_id, and event_seq") {
+		t.Fatalf("incomplete source reference error = %v", err)
+	}
+}
+
+func TestManageArtifactCreateCarriesAuthenticatedSourceLineage(t *testing.T) {
+	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "variant-source", CollectionID: "collection-source", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/plain"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-derive", Name: "manage_artifact", Arguments: `{"action":"create","collection_name":"Derived","filename":"derived.txt","media_type":"text/plain","content":"revision","source_session_id":"source-session","source_collection_id":"collection-source","source_variant_id":"variant-source","source_event_seq":42}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "collection-source" || authority.created.SourceVariantID != "variant-source" || authority.created.SourceEventSeq != 42 {
+		t.Fatalf("derived input = %+v", authority.created)
 	}
 }

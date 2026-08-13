@@ -11,17 +11,25 @@ import (
 )
 
 type authorityMetadata struct {
-	collection pebblestore.SessionArtifactCollection
-	variant    pebblestore.SessionArtifactVariant
-	readyCalls int
-	failReady  bool
+	collection       pebblestore.SessionArtifactCollection
+	sourceCollection pebblestore.SessionArtifactCollection
+	variant          pebblestore.SessionArtifactVariant
+	sourceVariant    pebblestore.SessionArtifactVariant
+	readyCalls       int
+	failReady        bool
 }
 
-func (m *authorityMetadata) GetSessionArtifactCollection(_, _, id string) (pebblestore.SessionArtifactCollection, bool, error) {
-	return m.collection, m.collection.ID == id, nil
+func (m *authorityMetadata) GetSessionArtifactCollection(_, sessionID, id string) (pebblestore.SessionArtifactCollection, bool, error) {
+	if m.sourceCollection.SessionID == sessionID && m.sourceCollection.ID == id {
+		return m.sourceCollection, true, nil
+	}
+	return m.collection, m.collection.SessionID == sessionID && m.collection.ID == id, nil
 }
-func (m *authorityMetadata) GetSessionArtifactVariant(_, _, collectionID, id string) (pebblestore.SessionArtifactVariant, bool, error) {
-	return m.variant, m.variant.CollectionID == collectionID && m.variant.ID == id, nil
+func (m *authorityMetadata) GetSessionArtifactVariant(_, sessionID, collectionID, id string) (pebblestore.SessionArtifactVariant, bool, error) {
+	if m.sourceVariant.SessionID == sessionID && m.sourceVariant.CollectionID == collectionID && m.sourceVariant.ID == id {
+		return m.sourceVariant, true, nil
+	}
+	return m.variant, m.variant.SessionID == sessionID && m.variant.CollectionID == collectionID && m.variant.ID == id, nil
 }
 func (m *authorityMetadata) GetSessionArtifactVariantByID(_, _, id string) (pebblestore.SessionArtifactVariant, bool, error) {
 	return m.variant, m.variant.ID == id, nil
@@ -66,7 +74,10 @@ func authorityFixture(t *testing.T) (*Authority, *authorityMetadata, Principal) 
 	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "state"))
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil { t.Fatal(err) }
-	resolver := &registryResolver{sessions: []pebblestore.SessionSnapshot{{ID: "session-1", AccountScopeID: "account-1", UserID: "user-1", WorkspacePath: workspace}}}
+	resolver := &registryResolver{sessions: []pebblestore.SessionSnapshot{
+		{ID: "session-1", AccountScopeID: "account-1", UserID: "user-1", WorkspacePath: workspace},
+		{ID: "source-session", AccountScopeID: "account-1", UserID: "user-1", WorkspacePath: workspace},
+	}}
 	metadata := &authorityMetadata{}
 	return NewAuthority(NewRegistry(resolver, Limits{}), metadata), metadata, Principal{SessionID: "session-1", AccountScopeID: "account-1", UserID: "user-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "attempt-1"}
 }
@@ -113,4 +124,45 @@ func TestAuthorityRejectsMismatchedTrustedOwnership(t *testing.T) {
 	principal.AccountScopeID = "other-account"
 	_, err := authority.List(principal, "", 10)
 	if err == nil { t.Fatal("expected ownership error") }
+}
+
+func TestAuthorityReferenceRequiresOwnedReadyExactEvent(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 41, MediaType: "text/plain"}
+	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
+	if got, err := authority.GetReference(principal, ref); err != nil || got.ID != "source-variant" {
+		t.Fatalf("get reference = %+v err=%v", got, err)
+	}
+	stale := ref
+	stale.EventSeq = 40
+	if _, err := authority.GetReference(principal, stale); err == nil || err.Error() != "artifact source reference is stale" {
+		t.Fatalf("stale reference error = %v", err)
+	}
+	metadata.sourceVariant.Status = pebblestore.SessionArtifactStatusStaging
+	if _, err := authority.GetReference(principal, ref); err == nil || err.Error() != "artifact source reference is not ready" {
+		t.Fatalf("not-ready reference error = %v", err)
+	}
+	other := ref
+	other.SessionID = "other-session"
+	if _, err := authority.GetReference(principal, other); err == nil {
+		t.Fatal("expected source session ownership rejection")
+	}
+	principal.AccountScopeID = "other-account"
+	if _, err := authority.GetReference(principal, ref); err == nil {
+		t.Fatal("expected source account ownership rejection")
+	}
+}
+
+func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 41, MediaType: "text/plain"}
+	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "derived-1", CollectionID: "derived-collection", CollectionName: "Derived", VariantID: "derived-variant", Filename: "derived.txt", MediaType: "text/plain", SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41, Body: []byte("revision")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Lineage.SourceSessionID != "source-session" || created.Lineage.SourceCollectionID != "source-collection" || created.Lineage.SourceVariantID != "source-variant" {
+		t.Fatalf("derived lineage = %+v", created.Lineage)
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -33,7 +34,9 @@ type ArtifactAuthority interface {
 	List(artifact.Principal, string, int) ([]pebblestore.SessionArtifactCollection, error)
 	ListVariants(artifact.Principal, string, int) ([]pebblestore.SessionArtifactVariant, error)
 	Get(artifact.Principal, string) (pebblestore.SessionArtifactVariant, error)
+	GetReference(artifact.Principal, pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error)
 	Read(context.Context, artifact.Principal, string, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
+	ReadReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
 	Select(artifact.Principal, string, string, string) (pebblestore.SessionArtifactSelectionReference, error)
 	DeleteVariant(artifact.Principal, string, string, string) error
 	DeleteCollection(artifact.Principal, string, string) error
@@ -96,11 +99,12 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create and manage durable artifacts owned by the current session. Uses opaque collection and variant references; ownership and target session always come from trusted run context. Reads return only bounded UTF-8 text and never expose private storage paths.",
+		Description: "Create and manage durable artifacts owned by the current session, and inspect explicitly attached source references from authenticated same-owner sessions. Uses opaque collection and variant references; ownership and target session always come from trusted run context. Reads return only bounded UTF-8 text and never expose private storage paths.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action":                 map[string]any{"type": "string", "enum": []string{"create", "create_package", "list", "get", "read", "select", "delete"}},
+				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session from an attached artifact reference; valid only for get/read"},
 				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference; optional on create and required for collection-scoped actions"},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
 				"collection_description": map[string]any{"type": "string", "maxLength": 2048},
@@ -110,8 +114,11 @@ func manageArtifactDefinition() Definition {
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for create"},
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
 				"presentation":           presentation,
+				"source_session_id":      map[string]any{"type": "string", "description": "Optional authenticated source session lineage from an attached artifact reference"},
 				"source_collection_id":   map[string]any{"type": "string", "description": "Optional opaque source collection lineage"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "Optional opaque source variant lineage"},
+				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence of the source artifact lineage"},
+				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence required with session_id for get/read"},
 				"status":                 map[string]any{"type": "string", "description": "Optional list filter: staging|ready|failed|unavailable"},
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit},
 				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxReadBytes, "description": "Maximum UTF-8 bytes returned by read"},
@@ -207,19 +214,38 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if err != nil {
 			return "", err
 		}
-		variant, err := r.artifactAuthority.Get(principal, variantID)
+		ref, explicitSource, err := parseArtifactReadReference(args, variantID)
+		if err != nil {
+			return "", err
+		}
+		var variant pebblestore.SessionArtifactVariant
+		if explicitSource {
+			variant, err = r.artifactAuthority.GetReference(principal, ref)
+		} else {
+			variant, err = r.artifactAuthority.Get(principal, variantID)
+		}
 		if err != nil {
 			return "", err
 		}
 		response["artifact"] = managedArtifactVariant(variant)
-		response["reference"] = managedArtifactReference(variant.CollectionID, variant.ID)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "read":
 		variantID, err := requireArtifactArgument(args, "variant_id")
 		if err != nil {
 			return "", err
 		}
 		maxBytes := clampInt(asInt(args["max_bytes"], manageArtifactDefaultReadBytes), 1, manageArtifactMaxReadBytes)
-		body, variant, err := r.artifactAuthority.Read(ctx, principal, variantID, int64(maxBytes))
+		ref, explicitSource, err := parseArtifactReadReference(args, variantID)
+		if err != nil {
+			return "", err
+		}
+		var body []byte
+		var variant pebblestore.SessionArtifactVariant
+		if explicitSource {
+			body, variant, err = r.artifactAuthority.ReadReference(ctx, principal, ref, int64(maxBytes))
+		} else {
+			body, variant, err = r.artifactAuthority.Read(ctx, principal, variantID, int64(maxBytes))
+		}
 		if err != nil {
 			return "", err
 		}
@@ -227,7 +253,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact read returns only UTF-8 text artifacts")
 		}
 		response["artifact"] = managedArtifactVariant(variant)
-		response["reference"] = managedArtifactReference(variant.CollectionID, variant.ID)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 		response["content"], response["bytes"] = string(body), len(body)
 	case "select":
 		collectionID, err := requireArtifactArgument(args, "collection_id")
@@ -332,7 +358,7 @@ func parseArtifactCreate(args map[string]any, sessionID, callID string, packageA
 	if err != nil {
 		return artifact.CreateInput{}, nil, err
 	}
-	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"]))}
+	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
 	if !packageArtifact {
 		content, ok := args["content"].(string)
 		if !ok || content == "" {
@@ -418,6 +444,45 @@ func managedArtifactOpaqueID(kind, sessionID, callID string) string {
 
 func managedArtifactReference(collectionID, variantID string) map[string]any {
 	return map[string]any{"collection_id": collectionID, "variant_id": variantID}
+}
+
+func managedArtifactReferenceWithSession(sessionID, collectionID, variantID string, eventSeq uint64) map[string]any {
+	return map[string]any{"session_id": sessionID, "collection_id": collectionID, "variant_id": variantID, "event_seq": eventSeq}
+}
+
+func parseArtifactReadReference(args map[string]any, variantID string) (pebblestore.SessionArtifactSelectionReference, bool, error) {
+	sessionID := strings.TrimSpace(asString(args["session_id"]))
+	collectionID := strings.TrimSpace(asString(args["collection_id"]))
+	eventSeq := asUint64(args["event_seq"])
+	explicit := sessionID != "" || eventSeq != 0
+	if !explicit {
+		return pebblestore.SessionArtifactSelectionReference{}, false, nil
+	}
+	if sessionID == "" || collectionID == "" || variantID == "" || eventSeq == 0 {
+		return pebblestore.SessionArtifactSelectionReference{}, false, errors.New("manage_artifact source get/read requires session_id, collection_id, variant_id, and event_seq")
+	}
+	return pebblestore.SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: collectionID, VariantID: variantID, EventSeq: eventSeq}, true, nil
+}
+
+func asUint64(value any) uint64 {
+	switch typed := value.(type) {
+	case float64:
+		if typed > 0 && typed <= float64(1<<53) && math.Trunc(typed) == typed {
+			return uint64(typed)
+		}
+	case int:
+		if typed > 0 {
+			return uint64(typed)
+		}
+	case uint64:
+		return typed
+	case json.Number:
+		parsed, _ := typed.Int64()
+		if parsed > 0 {
+			return uint64(parsed)
+		}
+	}
+	return 0
 }
 
 func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[string]any {

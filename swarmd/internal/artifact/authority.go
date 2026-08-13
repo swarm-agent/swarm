@@ -53,8 +53,10 @@ type CreateInput struct {
 	Filename              string
 	MediaType             string
 	Presentation          pebblestore.SessionArtifactPresentation
+	SourceSessionID       string
 	SourceCollectionID    string
 	SourceVariantID       string
+	SourceEventSeq        uint64
 	Body                   []byte
 }
 
@@ -86,6 +88,17 @@ func (a *Authority) CreatePackage(ctx context.Context, principal Principal, inpu
 func (a *Authority) create(ctx context.Context, principal Principal, input CreateInput, packageEntries []PackageEntry) (pebblestore.SessionArtifactVariant, error) {
 	service, principal, err := a.owned(principal)
 	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	input.SourceSessionID = strings.TrimSpace(input.SourceSessionID)
+	input.SourceCollectionID = strings.TrimSpace(input.SourceCollectionID)
+	input.SourceVariantID = strings.TrimSpace(input.SourceVariantID)
+	if input.SourceSessionID != "" || input.SourceEventSeq != 0 {
+		ref := pebblestore.SessionArtifactSelectionReference{SessionID: input.SourceSessionID, CollectionID: input.SourceCollectionID, VariantID: input.SourceVariantID, EventSeq: input.SourceEventSeq}
+		if _, err := a.GetReference(principal, ref); err != nil {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("resolve source artifact: %w", err)
+		}
+	} else if input.SourceCollectionID != "" || input.SourceVariantID != "" {
+		return pebblestore.SessionArtifactVariant{}, errors.New("source artifact lineage requires source_session_id and source_event_seq")
+	}
 	input.RequestID = strings.TrimSpace(input.RequestID)
 	if input.RequestID == "" { return pebblestore.SessionArtifactVariant{}, errors.New("artifact request id is required") }
 	lineage := a.lineage(principal, input)
@@ -187,6 +200,67 @@ func (a *Authority) Read(ctx context.Context, principal Principal, variantID str
 	return data, variant, err
 }
 
+// GetReference resolves an attached opaque reference without changing the
+// trusted current-run principal. The source session must belong to the same
+// authenticated account and user, and the reference must still identify the
+// exact ready variant event that was attached to the message.
+func (a *Authority) GetReference(principal Principal, ref pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error) {
+	if _, _, err := a.owned(principal); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	ref.SessionID = strings.TrimSpace(ref.SessionID)
+	ref.CollectionID = strings.TrimSpace(ref.CollectionID)
+	ref.VariantID = strings.TrimSpace(ref.VariantID)
+	if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || ref.EventSeq == 0 {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference requires session_id, collection_id, variant_id, and event_seq")
+	}
+	if _, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, ref.SessionID, ref.CollectionID)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	if !ok {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference was not found")
+	}
+	if collection.AccountScopeID != principal.AccountScopeID || collection.SessionID != ref.SessionID || collection.ID != ref.CollectionID {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference ownership is inconsistent")
+	}
+	variant, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, ref.SessionID, ref.CollectionID, ref.VariantID)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	if !ok {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference was not found")
+	}
+	if variant.AccountScopeID != principal.AccountScopeID || variant.SessionID != ref.SessionID || variant.CollectionID != ref.CollectionID || variant.ID != ref.VariantID {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference ownership is inconsistent")
+	}
+	if variant.Status != pebblestore.SessionArtifactStatusReady {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference is not ready")
+	}
+	if variant.EventSeq != ref.EventSeq {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact source reference is stale")
+	}
+	return variant, nil
+}
+
+// ReadReference reads bounded bytes through the source session's authenticated
+// storage authority. It never exposes or accepts a filesystem path.
+func (a *Authority) ReadReference(ctx context.Context, principal Principal, ref pebblestore.SessionArtifactSelectionReference, maxBytes int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
+	variant, err := a.GetReference(principal, ref)
+	if err != nil {
+		return nil, pebblestore.SessionArtifactVariant{}, err
+	}
+	service, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID)
+	if err != nil {
+		return nil, pebblestore.SessionArtifactVariant{}, err
+	}
+	data, _, err := service.Read(ctx, variant, maxBytes)
+	return data, variant, err
+}
+
 func (a *Authority) Select(principal Principal, requestID, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
 	_, principal, err := a.owned(principal)
 	if err != nil { return pebblestore.SessionArtifactSelectionReference{}, err }
@@ -264,8 +338,11 @@ func (a *Authority) owned(principal Principal) (*Service, Principal, error) {
 
 func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.SessionArtifactLineage {
 	childSessionID := strings.TrimSpace(principal.ChildSessionID)
-	sourceSessionID := principal.SessionID
-	if childSessionID != "" { sourceSessionID = childSessionID }
+	sourceSessionID := strings.TrimSpace(input.SourceSessionID)
+	if sourceSessionID == "" {
+		sourceSessionID = principal.SessionID
+		if childSessionID != "" { sourceSessionID = childSessionID }
+	}
 	return pebblestore.SessionArtifactLineage{
 		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
 		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID),

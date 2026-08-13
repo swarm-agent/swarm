@@ -478,7 +478,8 @@ func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, r
 						return record, 0, fmt.Errorf("inspect completed managed Designer job %q artifact: %w", job.JobID, artifactErr)
 					}
 					lineage := variant.Lineage
-					if !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.SessionID != parent.ID || variant.AccountScopeID != parent.AccountScopeID || lineage.ParentSessionID != parent.ID || lineage.SourceSessionID != job.ChildSessionID || lineage.ChildSessionID != job.ChildSessionID || lineage.TaskCallID != record.ReservationCallID || lineage.ProgramID != record.ProgramID || lineage.ProgramJobID != job.JobID {
+					lineageSourceMatches := lineage.SourceSessionID == job.ChildSessionID || (lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
+					if !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.SessionID != parent.ID || variant.AccountScopeID != parent.AccountScopeID || lineage.ParentSessionID != parent.ID || !lineageSourceMatches || lineage.ChildSessionID != job.ChildSessionID || lineage.TaskCallID != record.ReservationCallID || lineage.ProgramID != record.ProgramID || lineage.ProgramJobID != job.JobID {
 						return record, 0, fmt.Errorf("task program job %q completed without a valid ready managed artifact; resume the existing child to repair the handoff", job.JobID)
 					}
 					nextState, integration = pebblestore.TaskProgramJobCompleted, "artifact_ready"

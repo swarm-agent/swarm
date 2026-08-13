@@ -463,8 +463,9 @@ func (p *taskProgramScheduler) validateManagedDesignerArtifact(jobID, childSessi
 		return fmt.Errorf("managed Designer job %q artifact is missing", jobID)
 	}
 	lineage := variant.Lineage
+	lineageSourceMatches := lineage.SourceSessionID == childSessionID || (lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
 	if variant.SessionID != p.parentSession.ID || variant.AccountScopeID != p.parentSession.AccountScopeID || variant.CollectionID != expected.CollectionID || variant.Status != pebblestore.SessionArtifactStatusReady ||
-		lineage.ParentSessionID != p.parentSession.ID || lineage.SourceSessionID != childSessionID || lineage.TaskCallID != p.record.ReservationCallID || lineage.ProgramID != p.record.ProgramID || lineage.ProgramJobID != jobID || lineage.ChildSessionID != childSessionID {
+		lineage.ParentSessionID != p.parentSession.ID || !lineageSourceMatches || lineage.TaskCallID != p.record.ReservationCallID || lineage.ProgramID != p.record.ProgramID || lineage.ProgramJobID != jobID || lineage.ChildSessionID != childSessionID {
 		return fmt.Errorf("managed Designer job %q artifact lineage does not match its trusted program handoff", jobID)
 	}
 	return nil
