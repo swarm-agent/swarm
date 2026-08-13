@@ -685,12 +685,6 @@ function TaskElapsedTime({ row }: { row: TaskToolRow }) {
   return <>{taskElapsedLabel(row, nowMs)}</>;
 }
 
-function taskPreviewLabel(row: TaskToolRow): string {
-  const previewKind = row.previewKind.trim().toLowerCase();
-  if (previewKind === 'reasoning') return 'thinking';
-  return row.previewKind.trim() || 'live';
-}
-
 const TASK_CARD_HOVER_DEBOUNCE_MS = 180;
 
 function taskChildModelsEqual(left: DesktopV3TaskChildViewModel | null, right: DesktopV3TaskChildViewModel | null): boolean {
