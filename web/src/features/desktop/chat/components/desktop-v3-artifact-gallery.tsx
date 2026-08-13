@@ -20,6 +20,7 @@ import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import {
   buildDesktopV3ArtifactSandboxDocument,
+  DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
   desktopV3ArtifactSelection,
   fetchDesktopV3Artifact,
   fetchDesktopV3ArtifactBundle,
@@ -44,7 +45,7 @@ export interface DesktopV3ArtifactGalleryProps {
   artifacts: DesktopV3ArtifactGalleryEntry[]
   open?: boolean
   onOpenChange?: (open: boolean) => void
-  onAddToChat?: (artifact: DesktopV3ArtifactChatSelection) => void | Promise<void>
+  onAddToChat?: (artifacts: DesktopV3ArtifactChatSelection[]) => void | Promise<void>
   onUseThisDesign?: (artifact: DesktopV3ArtifactChatSelection) => void | Promise<void>
   onSelectionPersisted?: () => void | Promise<void>
   showTrigger?: boolean
@@ -145,6 +146,7 @@ export function DesktopV3ArtifactGallery({
 }: DesktopV3ArtifactGalleryProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(artifacts[0] ? artifactSelectionKey(artifacts[0]) : '')
+  const [chatSelectedIds, setChatSelectedIds] = useState<string[]>([])
   const [durableSelectedId, setDurableSelectedId] = useState('')
   const [previewURL, setPreviewURL] = useState('')
   const [previewText, setPreviewText] = useState('')
@@ -192,11 +194,26 @@ export function DesktopV3ArtifactGallery({
   const canonicalSelectedId = durableSelectedId || (persistedSelectedArtifact ? artifactSelectionKey(persistedSelectedArtifact) : '')
   const selectedIsCanonical = Boolean(selected && artifactSelectionKey(selected) === canonicalSelectedId)
   const selectedCanAttach = selected?.status === 'ready' && Boolean(selected.collectionId) && (selected.eventSeq ?? 0) > 0
+  const attachableSelectedArtifacts = artifacts.filter((artifact) => chatSelectedIds.includes(artifactSelectionKey(artifact))
+    && artifact.status === 'ready'
+    && Boolean(artifact.collectionId)
+    && (artifact.eventSeq ?? 0) > 0)
+  const pendingChatArtifacts = attachableSelectedArtifacts.length > 0
+    ? attachableSelectedArtifacts
+    : selectedCanAttach && selected ? [selected] : []
 
   useEffect(() => {
     const persisted = artifacts.find((artifact) => artifact.selected)
-    if (persisted) setDurableSelectedId(artifactSelectionKey(persisted))
+    setDurableSelectedId(persisted ? artifactSelectionKey(persisted) : '')
+    const availableKeys = new Set(artifacts.map(artifactSelectionKey))
+    setChatSelectedIds((current) => current.filter((id) => availableKeys.has(id)))
   }, [artifacts])
+
+  useEffect(() => {
+    if (open) return
+    setChatSelectedIds([])
+    setActionError('')
+  }, [open])
 
   useEffect(() => {
     if (!open || !initialArtifactId) return
@@ -312,14 +329,32 @@ export function DesktopV3ArtifactGallery({
     }
   }
 
+  const toggleChatSelection = (artifact: DesktopV3ArtifactGalleryEntry) => {
+    if (artifact.status !== 'ready' || !artifact.collectionId || (artifact.eventSeq ?? 0) <= 0) return
+    const key = artifactSelectionKey(artifact)
+    setActionError('')
+    setChatSelectedIds((current) => {
+      if (current.includes(key)) return current.filter((id) => id !== key)
+      if (current.length >= DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT) {
+        setActionError(`Select at most ${DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT} artifacts per message.`)
+        return current
+      }
+      return [...current, key]
+    })
+  }
+
   const emitAddToChat = async () => {
-    if (!selected || !onAddToChat) return
+    if (pendingChatArtifacts.length === 0 || !onAddToChat) return
     try {
       setActionPending('add')
       setActionError('')
-      await onAddToChat({ label: selected.label, selection: desktopV3ArtifactSelection(selected) })
+      await onAddToChat(pendingChatArtifacts.map((artifact) => ({
+        label: artifact.label,
+        selection: desktopV3ArtifactSelection(artifact),
+      })))
+      setChatSelectedIds([])
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Could not add the artifact to chat')
+      setActionError(error instanceof Error ? error.message : 'Could not add the artifacts to chat')
     } finally {
       setActionPending('')
     }
@@ -370,20 +405,37 @@ export function DesktopV3ArtifactGallery({
             {group.entries.map((artifact, index) => {
               const artifactActive = selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected)
               const canonical = artifactSelectionKey(artifact) === canonicalSelectedId
+              const chatSelected = chatSelectedIds.includes(artifactSelectionKey(artifact))
+              const canSelectForChat = artifact.status === 'ready' && Boolean(artifact.collectionId) && (artifact.eventSeq ?? 0) > 0
               return (
-                <button
+                <div
                   key={artifactSelectionKey(artifact)}
-                  type="button"
-                  className={cn('flex min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition', artifactActive ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')}
-                  aria-current={artifactActive ? 'page' : undefined}
-                  onClick={() => setSelectedId(artifactSelectionKey(artifact))}
+                  className={cn('flex min-w-0 items-center gap-1 rounded-lg transition', artifactActive ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')}
                 >
-                  <span className="grid size-5 shrink-0 place-items-center rounded border border-[var(--app-border)] text-[9px] font-semibold">{index + 1}</span>
-                  <span className="min-w-0 flex-1 truncate">{artifact.label}</span>
-                  {artifact.status === 'staging' ? <Clock3 className="size-3 shrink-0 text-[var(--app-primary)]" aria-label="Generating" /> : null}
-                  {artifact.status === 'failed' || artifact.status === 'unavailable' ? <AlertTriangle className="size-3 shrink-0 text-[var(--app-danger)]" aria-label={artifactStatusLabel(artifact)} /> : null}
-                  {canonical ? <Check className="size-3.5 shrink-0 text-[var(--app-success)]" aria-label="Selected design" /> : null}
-                </button>
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                    aria-current={artifactActive ? 'page' : undefined}
+                    onClick={() => setSelectedId(artifactSelectionKey(artifact))}
+                  >
+                    <span className="grid size-5 shrink-0 place-items-center rounded border border-[var(--app-border)] text-[9px] font-semibold">{index + 1}</span>
+                    <span className="min-w-0 flex-1 truncate">{artifact.label}</span>
+                    {artifact.status === 'staging' ? <Clock3 className="size-3 shrink-0 text-[var(--app-primary)]" aria-label="Generating" /> : null}
+                    {artifact.status === 'failed' || artifact.status === 'unavailable' ? <AlertTriangle className="size-3 shrink-0 text-[var(--app-danger)]" aria-label={artifactStatusLabel(artifact)} /> : null}
+                    {canonical ? <Check className="size-3.5 shrink-0 text-[var(--app-success)]" aria-label="Selected design" /> : null}
+                  </button>
+                  <button
+                    type="button"
+                    className={cn('mr-1 grid size-7 shrink-0 place-items-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]', chatSelected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-subtle)]')}
+                    aria-label={`${chatSelected ? 'Remove' : 'Select'} ${artifact.label} ${chatSelected ? 'from' : 'for'} chat`}
+                    aria-pressed={chatSelected}
+                    disabled={!canSelectForChat || (!chatSelected && chatSelectedIds.length >= DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT)}
+                    onClick={() => toggleChatSelection(artifact)}
+                    data-artifact-chat-selection
+                  >
+                    {chatSelected ? <Check className="size-3.5" aria-hidden="true" /> : <MessageSquarePlus className="size-3.5" aria-hidden="true" />}
+                  </button>
+                </div>
               )
             })}
           </div>
@@ -443,8 +495,8 @@ export function DesktopV3ArtifactGallery({
                   {!previewLoading && !previewError && selected.mediaType === 'text/plain' && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}
                 </div>
                 <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 sm:px-4" aria-live="polite">
-                  <div className="min-w-0 flex-1 text-xs">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : selectedIsCanonical ? <span className="inline-flex items-center gap-1.5 text-[var(--app-success)]"><Check className="size-3.5" />This is the durable selected design for the collection.</span> : <span className="text-[var(--app-text-subtle)]">Add a reference without changing the selected design, or select and use it.</span>}</div>
-                  <div className="flex shrink-0 items-center gap-2"><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" disabled={!selectedCanAttach || !onAddToChat || Boolean(actionPending)} title={!selectedCanAttach ? 'Only ready managed variants can be attached' : undefined} onClick={() => void emitAddToChat()}>{actionPending === 'add' ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-4" />}Add to chat</button><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50" disabled={!selectedCanAttach || !onUseThisDesign || Boolean(actionPending)} title={!selectedCanAttach ? 'Only ready managed variants can be used' : undefined} onClick={() => void persistAndUseDesign()}>{actionPending === 'use' ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}Use this design</button></div>
+                  <div className="min-w-0 flex-1 text-xs">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : chatSelectedIds.length > 0 ? <span className="text-[var(--app-text-subtle)]">{chatSelectedIds.length} ready variant{chatSelectedIds.length === 1 ? '' : 's'} selected for chat. This does not change the durable selected design.</span> : selectedIsCanonical ? <span className="inline-flex items-center gap-1.5 text-[var(--app-success)]"><Check className="size-3.5" />This is the durable selected design for the collection.</span> : <span className="text-[var(--app-text-subtle)]">Add a reference without changing the selected design, or select and use it.</span>}</div>
+                  <div className="flex shrink-0 items-center gap-2"><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" disabled={pendingChatArtifacts.length === 0 || !onAddToChat || Boolean(actionPending)} title={pendingChatArtifacts.length === 0 ? 'Only ready managed variants can be attached' : undefined} onClick={() => void emitAddToChat()}>{actionPending === 'add' ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-4" />}Add {pendingChatArtifacts.length > 1 ? `${pendingChatArtifacts.length} ` : ''}to chat</button><button type="button" className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50" disabled={!selectedCanAttach || !onUseThisDesign || Boolean(actionPending)} title={!selectedCanAttach ? 'Only ready managed variants can be used' : undefined} onClick={() => void persistAndUseDesign()}>{actionPending === 'use' ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}Use this design</button></div>
                 </footer>
               </> : null}
             </main>

@@ -38,7 +38,7 @@ import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
 import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
 import { DesktopV3ArtifactCatalogGallery } from './desktop-v3-artifact-gallery'
 import {
-  appendDesktopV3ArtifactMessageSelection,
+  appendDesktopV3ArtifactMessageSelections,
   removeDesktopV3ArtifactMessageSelection,
   type DesktopV3ArtifactMessageSelection,
 } from '../../session-v3/artifact-api'
@@ -148,7 +148,7 @@ export interface DesktopV3AgenticComposerProps {
   submitLabel?: string
   error?: string | null
   initialArtifactSelections?: readonly DesktopV3ArtifactMessageSelection[]
-  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | readonly DesktopV3ArtifactMessageSelection[] | null
   onArtifactSelectionRequestHandled?: () => void
   onSubmit: (draft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) => void | Promise<void>
   onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState>
@@ -318,7 +318,7 @@ export function DesktopV3AgenticComposer({
   const uploadAbortRef = useRef<AbortController | null>(null)
   const textAttachmentSequenceRef = useRef(0)
   const routedSubmissionRef = useRef(false)
-  const handledArtifactSelectionRequestRef = useRef<DesktopV3ArtifactMessageSelection | null>(null)
+  const handledArtifactSelectionRequestRef = useRef('')
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -590,14 +590,18 @@ export function DesktopV3AgenticComposer({
 
   useEffect(() => {
     if (!artifactSelectionRequest) {
-      handledArtifactSelectionRequestRef.current = null
+      handledArtifactSelectionRequestRef.current = ''
       return
     }
-    if (handledArtifactSelectionRequestRef.current === artifactSelectionRequest) return
-    handledArtifactSelectionRequestRef.current = artifactSelectionRequest
+    const artifactSelectionRequests: readonly DesktopV3ArtifactMessageSelection[] = Array.isArray(artifactSelectionRequest)
+      ? artifactSelectionRequest
+      : [artifactSelectionRequest as DesktopV3ArtifactMessageSelection]
+    const artifactSelectionRequestKey = JSON.stringify(artifactSelectionRequests)
+    if (handledArtifactSelectionRequestRef.current === artifactSelectionRequestKey) return
+    handledArtifactSelectionRequestRef.current = artifactSelectionRequestKey
     try {
-      setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelection(current, artifactSelectionRequest))
-      if (artifactSelectionRequest.action === 'use' && !draft.trim()) onDraftChange('Use this design.')
+      setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, artifactSelectionRequests))
+      if (artifactSelectionRequests.some((selection) => selection.action === 'use') && !draft.trim()) onDraftChange('Use this design.')
       setAttachmentError(null)
     } catch (cause) {
       setAttachmentError(cause instanceof Error ? cause.message : 'Artifact selection failed.')
@@ -1155,12 +1159,12 @@ export function DesktopV3AgenticComposer({
       <DesktopV3ArtifactCatalogGallery
         open={artifactViewerOpen}
         onOpenChange={setArtifactViewerOpen}
-        onAddToChat={({ label, selection }) => {
-          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelection(current, { ...selection, label, action: 'select' }))
+        onAddToChat={(artifacts) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, artifacts.map(({ label, selection }) => ({ ...selection, label, action: 'select' }))))
           setArtifactViewerOpen(false)
         }}
         onUseThisDesign={({ label, selection }) => {
-          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelection(current, { ...selection, label, action: 'use' }))
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, [{ ...selection, label, action: 'use' }]))
           if (!draft.trim()) onDraftChange('Use this design.')
           setArtifactViewerOpen(false)
         }}

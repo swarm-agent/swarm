@@ -24,11 +24,11 @@ test('gallery chat actions emit opaque references and persist use before callbac
 
   assert.match(gallery, /export interface DesktopV3ArtifactChatSelection/)
   assert.match(gallery, /selection: DesktopV3ArtifactSelection/)
-  assert.match(gallery, /onAddToChat\(\{ label: selected\.label, selection: desktopV3ArtifactSelection\(selected\) \}\)/)
+  assert.match(gallery, /onAddToChat\(pendingChatArtifacts\.map\(\(artifact\) => \(\{/)
   assert.match(gallery, /canonicalSelection = await useDesktopV3Artifact\(desktopV3ArtifactSelection\(selected\)\)/)
   assert.match(gallery, /await onUseThisDesign\(\{ label: selected\.label, selection: canonicalSelection \}\)/)
   assert.match(gallery, /data-artifact-selected-design/)
-  assert.match(gallery, /Add to chat<\/button>/)
+  assert.match(gallery, /to chat<\/button>/)
   assert.match(gallery, /Use this design<\/button>/)
   assert.doesNotMatch(gallery, /arrayBuffer\(\)/)
   assert.doesNotMatch(gallery, /onAddToChat\(\{[^}]*content:/)

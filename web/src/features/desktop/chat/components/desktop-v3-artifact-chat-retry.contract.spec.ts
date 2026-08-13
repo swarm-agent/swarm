@@ -15,10 +15,12 @@ test('Add to chat and Use this design attach opaque references without artifact 
     readFile(apiURL, 'utf8'),
   ])
 
-  assert.match(gallery, /onAddToChat\(\{ label: selected\.label, selection: desktopV3ArtifactSelection\(selected\) \}\)/)
+  assert.match(gallery, /onAddToChat\(pendingChatArtifacts\.map\(\(artifact\) => \(\{/)
   assert.match(gallery, /onUseThisDesign\(\{ label: selected\.label, selection: canonicalSelection \}\)/)
-  assert.match(composer, /appendDesktopV3ArtifactMessageSelection\(current, \{ \.\.\.selection, label, action: 'select' \}\)/)
-  assert.match(composer, /appendDesktopV3ArtifactMessageSelection\(current, \{ \.\.\.selection, label, action: 'use' \}\)/)
+  assert.match(composer, /appendDesktopV3ArtifactMessageSelections\(current, artifacts\.map/)
+  assert.match(composer, /appendDesktopV3ArtifactMessageSelections\(current, artifactSelectionRequests\)/)
+  assert.match(composer, /artifacts\.map\(\(\{ label, selection \}\) => \(\{ \.\.\.selection, label, action: 'select' \}\)\)/)
+  assert.match(composer, /\{ \.\.\.selection, label, action: 'use' \}/)
   assert.match(composer, /selections: artifactSelections/)
   assert.match(api, /session_id: entry\.sessionId/)
   assert.match(api, /collection_id: entry\.collectionId/)

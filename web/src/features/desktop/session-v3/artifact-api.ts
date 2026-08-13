@@ -234,15 +234,43 @@ export function appendDesktopV3ArtifactMessageSelection(
 ): DesktopV3ArtifactMessageSelection[] {
   const normalized = normalizeDesktopV3ArtifactMessageSelection(incoming)
   if (!normalized) throw new Error('Artifact chip requires a complete opaque selection, visible label, and action')
+  const singularSelections = normalized.action === 'use'
+    ? selections.map((selection) => selection.action === 'use'
+        && selection.session_id === normalized.session_id
+        && selection.collection_id === normalized.collection_id
+      ? { ...selection, action: 'select' as const }
+      : selection)
+    : selections
   const key = desktopV3ArtifactMessageSelectionKey(normalized)
-  const index = selections.findIndex((selection) => desktopV3ArtifactMessageSelectionKey(selection) === key)
+  const index = singularSelections.findIndex((selection) => desktopV3ArtifactMessageSelectionKey(selection) === key)
   if (index < 0) {
-    if (selections.length >= DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT) {
+    if (singularSelections.length >= DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT) {
       throw new Error(`A message supports at most ${DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT} artifact selections`)
     }
-    return [...selections, normalized]
+    return [...singularSelections, normalized]
   }
-  return selections.map((selection, selectionIndex) => selectionIndex === index ? normalized : selection)
+  return singularSelections.map((selection, selectionIndex) => selectionIndex === index ? normalized : selection)
+}
+
+export function appendDesktopV3ArtifactMessageSelections(
+  selections: readonly DesktopV3ArtifactMessageSelection[],
+  incoming: readonly DesktopV3ArtifactMessageSelection[],
+): DesktopV3ArtifactMessageSelection[] {
+  const remainingCapacity = DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT - selections.length
+  const normalizedIncoming = incoming.map((selection) => {
+    const normalized = normalizeDesktopV3ArtifactMessageSelection(selection)
+    if (!normalized) throw new Error('Artifact chip requires a complete opaque selection, visible label, and action')
+    return normalized
+  })
+  const uniqueIncomingKeys = new Set(
+    normalizedIncoming
+      .map(desktopV3ArtifactMessageSelectionKey)
+      .filter((key) => !selections.some((selection) => desktopV3ArtifactMessageSelectionKey(selection) === key)),
+  )
+  if (uniqueIncomingKeys.size > remainingCapacity) {
+    throw new Error(`A message supports at most ${DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT} artifact selections`)
+  }
+  return normalizedIncoming.reduce(appendDesktopV3ArtifactMessageSelection, [...selections])
 }
 
 export function removeDesktopV3ArtifactMessageSelection(

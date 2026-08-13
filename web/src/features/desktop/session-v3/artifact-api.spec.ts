@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   appendDesktopV3ArtifactMessageSelection,
+  appendDesktopV3ArtifactMessageSelections,
+  DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactSelection,
   removeDesktopV3ArtifactMessageSelection,
@@ -84,6 +86,34 @@ test('artifact chips dedupe by opaque identity, update intent, and remove withou
   assert.deepEqual(appendDesktopV3ArtifactMessageSelection([select], use), [use])
   assert.deepEqual(removeDesktopV3ArtifactMessageSelection([use], use), [])
   assert.equal(JSON.stringify(use).includes('content'), false)
+})
+
+test('artifact chips enforce bounded batches and keep use intent singular per collection', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  assert.ok(entry)
+  const other = { ...desktopV3ArtifactMessageSelection(entry, 'select'), variant_id: 'variant-2', label: 'Homepage alt' }
+  const batched = appendDesktopV3ArtifactMessageSelections([], [desktopV3ArtifactMessageSelection(entry, 'select'), other])
+  assert.equal(batched.length, 2)
+  const usedFirst = appendDesktopV3ArtifactMessageSelections(batched, [desktopV3ArtifactMessageSelection(entry, 'use')])
+  assert.deepEqual(usedFirst, [desktopV3ArtifactMessageSelection(entry, 'use'), other])
+  assert.deepEqual(
+    appendDesktopV3ArtifactMessageSelections(usedFirst, [{ ...other, action: 'use' }]),
+    [desktopV3ArtifactMessageSelection(entry, 'select'), { ...other, action: 'use' }],
+  )
+
+  const full = Array.from({ length: DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT }, (_, index) => ({
+    ...desktopV3ArtifactMessageSelection(entry, 'select'),
+    variant_id: `variant-${index}`,
+    label: `Variant ${index}`,
+  }))
+  assert.throws(
+    () => appendDesktopV3ArtifactMessageSelections(full, [{ ...other, variant_id: 'overflow' }]),
+    /at most 16 artifact selections/,
+  )
+  assert.throws(
+    () => appendDesktopV3ArtifactMessageSelections([], [{ ...other, label: '' }]),
+    /complete opaque selection/,
+  )
 })
 
 test('artifact selection helper emits only opaque authority fields', () => {
