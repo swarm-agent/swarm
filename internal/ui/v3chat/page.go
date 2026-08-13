@@ -106,7 +106,7 @@ type Page struct {
 	bashOutputModal              bool
 	bashOutputModalScroll        int
 	bashOutputModalTool          ToolTimelineItem
-	taskProgramCollapsed        map[string]bool
+	taskProgramCollapsed         map[string]bool
 	modelOptions                 []client.ModelCatalogRecord
 	modelIndex                   int
 	commandSuggestions           []CommandSuggestion

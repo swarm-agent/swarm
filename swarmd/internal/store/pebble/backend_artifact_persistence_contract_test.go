@@ -28,11 +28,11 @@ func TestBackendArtifactNativePersistenceSelectionAndRestartContract(t *testing.
 
 	apply("contract-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{
 		Collection: SessionArtifactCollection{ID: "collection", Name: "Alternatives"},
-		Variant: &SessionArtifactVariant{ID: "variant", CollectionID: "collection", Filename: "design.txt", MediaType: "text/plain"},
+		Variant:    &SessionArtifactVariant{ID: "variant", CollectionID: "collection", Filename: "design.txt", MediaType: "text/plain"},
 	})
 	ready := apply("contract-ready", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{
 		Collection: SessionArtifactCollection{ID: "collection"},
-		Variant: &SessionArtifactVariant{ID: "variant", CollectionID: "collection", Filename: "design.txt", MediaType: "text/plain", DigestSHA256: strings.Repeat("a", 64), Size: 6},
+		Variant:    &SessionArtifactVariant{ID: "variant", CollectionID: "collection", Filename: "design.txt", MediaType: "text/plain", DigestSHA256: strings.Repeat("a", 64), Size: 6},
 	})
 	if ready.Artifact == nil || ready.Artifact.Variant == nil || ready.Artifact.Variant.Status != SessionArtifactStatusReady {
 		t.Fatalf("ready projection = %#v", ready.Artifact)
@@ -40,7 +40,7 @@ func TestBackendArtifactNativePersistenceSelectionAndRestartContract(t *testing.
 	readySeq := ready.Artifact.Variant.EventSeq
 	selected := apply("contract-select", V3SessionMutationSelectArtifact, V3ArtifactMutation{
 		Collection: SessionArtifactCollection{ID: "collection"},
-		Selection: &SessionArtifactSelectionReference{SessionID: "artifact-persistence-contract", CollectionID: "collection", VariantID: "variant", EventSeq: readySeq, Action: "use"},
+		Selection:  &SessionArtifactSelectionReference{SessionID: "artifact-persistence-contract", CollectionID: "collection", VariantID: "variant", EventSeq: readySeq, Action: "use"},
 	})
 	if selected.Artifact == nil || selected.Artifact.Selection == nil || selected.Artifact.Collection.SelectedVariantID != "variant" {
 		t.Fatalf("selection projection = %#v", selected.Artifact)

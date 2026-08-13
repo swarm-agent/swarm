@@ -241,7 +241,9 @@ func TestResolveSessionV3NativeManagedArtifactUsesOpaqueMetadata(t *testing.T) {
 	created, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, TaskCallID: "call-1", ChildSessionID: "child-1"}, artifact.CreateInput{
 		RequestID: "native-create", CollectionID: "native-collection", CollectionName: "Designer alternatives", VariantID: "native-variant", Filename: "design.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Design", Previewable: true}, Body: []byte("native managed"),
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	resolved, found, err := server.resolveSessionV3Artifact(context.Background(), principal, created.SessionID, created.ID)
 	if err != nil || !found || resolved.Managed == nil || resolved.Descriptor.ID != created.ID || resolved.Reference.Path != "design.txt" {
 		t.Fatalf("resolve native managed = found=%t resolved=%+v err=%v", found, resolved, err)
@@ -252,10 +254,14 @@ func TestResolveSessionV3NativeManagedArtifactUsesOpaqueMetadata(t *testing.T) {
 		t.Fatalf("cross-account native resolve = found=%t err=%v", found, err)
 	}
 	file, _, err := server.openManagedSessionV3Artifact(context.Background(), mustSession(t, server, created.SessionID), resolved)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, readErr := io.ReadAll(file)
 	file.Close()
-	if readErr != nil || string(data) != "native managed" { t.Fatalf("native managed bytes = %q err=%v", data, readErr) }
+	if readErr != nil || string(data) != "native managed" {
+		t.Fatalf("native managed bytes = %q err=%v", data, readErr)
+	}
 }
 
 func TestManagedArtifactCatalogShowsPrivateReadyArtifactWithoutRepositoryOutput(t *testing.T) {
@@ -265,13 +271,19 @@ func TestManagedArtifactCatalogShowsPrivateReadyArtifactWithoutRepositoryOutput(
 	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "catalog-private-create", CollectionID: "catalog-private-collection", CollectionName: "Private catalog", VariantID: "catalog-private-variant", Filename: "preview.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Private preview", Previewable: true}, Body: []byte("managed bytes"),
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	workspace := mustSession(t, server, variant.SessionID).WorkspacePath
-	if _, err := os.Stat(filepath.Join(workspace, "artifacts")); !errors.Is(err, os.ErrNotExist) { t.Fatalf("managed create wrote repository artifacts/: %v", err) }
+	if _, err := os.Stat(filepath.Join(workspace, "artifacts")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed create wrote repository artifacts/: %v", err)
+	}
 	req := httptest.NewRequest("GET", "/v3/artifacts?limit=2000", nil)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), variant.ID) || !strings.Contains(rec.Body.String(), "Private preview") { t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String()) }
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), variant.ID) || !strings.Contains(rec.Body.String(), "Private preview") {
+		t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestManagedSVGArtifactCatalogAndEndpointExposeInlinePreview(t *testing.T) {
@@ -281,17 +293,28 @@ func TestManagedSVGArtifactCatalogAndEndpointExposeInlinePreview(t *testing.T) {
 	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "svg-preview-create", CollectionID: "svg-preview-collection", CollectionName: "SVG preview", VariantID: "svg-preview-variant", Filename: "preview.svg", MediaType: "image/svg+xml", Presentation: pebblestore.SessionArtifactPresentation{Kind: "image", Label: "SVG preview", Previewable: true}, Body: []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`),
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	catalogReq := httptest.NewRequest(http.MethodGet, "/v3/artifacts?limit=2000", nil)
 	catalogRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(catalogRec, withTestPrincipal(catalogReq))
-	if catalogRec.Code != http.StatusOK { t.Fatalf("catalog status=%d body=%s", catalogRec.Code, catalogRec.Body.String()) }
-	var payload struct { Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"` }
-	if err := json.Unmarshal(catalogRec.Body.Bytes(), &payload); err != nil { t.Fatal(err) }
+	if catalogRec.Code != http.StatusOK {
+		t.Fatalf("catalog status=%d body=%s", catalogRec.Code, catalogRec.Body.String())
+	}
+	var payload struct {
+		Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"`
+	}
+	if err := json.Unmarshal(catalogRec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
 	var cataloged *sessionsV3ArtifactCatalogItem
 	for i := range payload.Artifacts {
-		if payload.Artifacts[i].ArtifactID == variant.ID { cataloged = &payload.Artifacts[i]; break }
+		if payload.Artifacts[i].ArtifactID == variant.ID {
+			cataloged = &payload.Artifacts[i]
+			break
+		}
 	}
 	if cataloged == nil || cataloged.MediaType != "image/svg+xml" || cataloged.Kind != "image" || !cataloged.Previewable || cataloged.Category != "visual" {
 		t.Fatalf("SVG catalog entry = %+v", cataloged)
@@ -312,29 +335,49 @@ func TestManagedArtifactCatalogSuppressesUnavailableLegacyDuplicateForNativeHand
 	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, RunID: "run-native", PlanID: "plan-native", CheckpointID: "cp-native", AttemptID: "attempt-native"}, artifact.CreateInput{
 		RequestID: "native-handoff-create", CollectionID: "native-handoff-collection", CollectionName: "Native handoff", VariantID: "native-handoff-variant", Filename: "managed.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Label: "Managed handoff", Previewable: true}, Body: []byte("<!doctype html><title>managed</title>"),
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	doc := &pebblestore.SessionPlanDocument{ID: "plan-native", Title: "Native plan", Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-native", Status: sessionruntime.PlanCheckpointStatusCompleted, RunID: "run-native", AttemptID: "attempt-native", CompletedAt: time.Now().UnixMilli(), Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "managed.html", Role: "deliverable", Description: "Managed handoff", MediaType: "text/html"}}, Handoff: &pebblestore.SessionPlanCheckpointHandoff{Overview: "done"}}}}
-	if _, _, err := sessionSvc.SavePlanWithMetadata(variant.SessionID, doc.ID, doc.Title, "", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil { t.Fatal(err) }
+	if _, _, err := sessionSvc.SavePlanWithMetadata(variant.SessionID, doc.ID, doc.Title, "", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v3/artifacts?limit=2000", nil)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusOK { t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String()) }
-	var payload struct { Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"` }
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil { t.Fatal(err) }
+	if rec.Code != http.StatusOK {
+		t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
 	matching := make([]sessionsV3ArtifactCatalogItem, 0, 2)
-	for _, item := range payload.Artifacts { if item.SessionID == variant.SessionID && item.Filename == variant.Filename { matching = append(matching, item) } }
-	if len(matching) != 1 || matching[0].ArtifactID != variant.ID || matching[0].Status != pebblestore.SessionArtifactStatusReady { t.Fatalf("managed handoff catalog entries = %+v", matching) }
+	for _, item := range payload.Artifacts {
+		if item.SessionID == variant.SessionID && item.Filename == variant.Filename {
+			matching = append(matching, item)
+		}
+	}
+	if len(matching) != 1 || matching[0].ArtifactID != variant.ID || matching[0].Status != pebblestore.SessionArtifactStatusReady {
+		t.Fatalf("managed handoff catalog entries = %+v", matching)
+	}
 	previewReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID, nil)
 	previewRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(previewRec, withTestPrincipal(previewReq))
-	if previewRec.Code != http.StatusOK || !strings.Contains(previewRec.Body.String(), "<title>managed</title>") { t.Fatalf("managed handoff preview status=%d body=%s", previewRec.Code, previewRec.Body.String()) }
-	accessBody := bytes.NewBufferString(`{"artifact_id":"`+variant.ID+`"}`)
+	if previewRec.Code != http.StatusOK || !strings.Contains(previewRec.Body.String(), "<title>managed</title>") {
+		t.Fatalf("managed handoff preview status=%d body=%s", previewRec.Code, previewRec.Body.String())
+	}
+	accessBody := bytes.NewBufferString(`{"artifact_id":"` + variant.ID + `"}`)
 	accessReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+variant.SessionID+"/artifacts/preview-access", accessBody)
 	accessReq.Header.Set("Content-Type", "application/json")
 	accessRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(accessRec, withTestPrincipal(accessReq))
-	if accessRec.Code != http.StatusOK || !strings.Contains(accessRec.Body.String(), `"token"`) { t.Fatalf("managed HTML preview access status=%d body=%s", accessRec.Code, accessRec.Body.String()) }
+	if accessRec.Code != http.StatusOK || !strings.Contains(accessRec.Body.String(), `"token"`) {
+		t.Fatalf("managed HTML preview access status=%d body=%s", accessRec.Code, accessRec.Body.String())
+	}
 }
 
 func TestManagedSessionV3ArtifactPackageEntryPrefersRootIndexAndFallsBackToHTML(t *testing.T) {
@@ -351,13 +394,23 @@ func TestManagedSessionV3ArtifactPackageEntryPrefersRootIndexAndFallsBackToHTML(
 			writer := zip.NewWriter(&payload)
 			for _, name := range tc.entries {
 				entry, err := writer.Create(name)
-				if err != nil { t.Fatal(err) }
-				if _, err := entry.Write([]byte(name)); err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := entry.Write([]byte(name)); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if err := writer.Close(); err != nil { t.Fatal(err) }
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
 			archive, err := zip.NewReader(bytes.NewReader(payload.Bytes()), int64(payload.Len()))
-			if err != nil { t.Fatal(err) }
-			if got := managedSessionV3ArtifactPackageEntry(archive); got != tc.want { t.Fatalf("entry = %q, want %q", got, tc.want) }
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := managedSessionV3ArtifactPackageEntry(archive); got != tc.want {
+				t.Fatalf("entry = %q, want %q", got, tc.want)
+			}
 		})
 	}
 }
@@ -543,33 +596,61 @@ func TestSessionsV3ArtifactMessageSelectionContract(t *testing.T) {
 	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "message-ref-create", CollectionID: "message-ref-collection", CollectionName: "Review variants", VariantID: "message-ref-variant", Filename: "review.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Review choice", Description: "Chosen design"}, Body: []byte("private artifact bytes"),
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	selection := pebblestore.SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Action: "use"}
 	accepted, job, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-accepted", Role: "user", Content: "Use this design", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{selection}})
-	if err != nil || job != nil || accepted.Message == nil || len(accepted.Message.ArtifactSelections) != 1 { t.Fatalf("accept artifact message: result=%+v job=%+v err=%v", accepted, job, err) }
+	if err != nil || job != nil || accepted.Message == nil || len(accepted.Message.ArtifactSelections) != 1 {
+		t.Fatalf("accept artifact message: result=%+v job=%+v err=%v", accepted, job, err)
+	}
 	stored := accepted.Message.ArtifactSelections[0]
-	if stored.Label != "Review choice" || stored.Description != "Chosen design" || stored.EventSeq != variant.EventSeq { t.Fatalf("stored normalized selection = %+v", stored) }
+	if stored.Label != "Review choice" || stored.Description != "Chosen design" || stored.EventSeq != variant.EventSeq {
+		t.Fatalf("stored normalized selection = %+v", stored)
+	}
 	encoded, err := json.Marshal(accepted.Message)
-	if err != nil { t.Fatal(err) }
-	if bytes.Contains(encoded, []byte("private artifact bytes")) || bytes.Contains(encoded, []byte("private-data")) { t.Fatalf("message leaked artifact bytes or private path: %s", encoded) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("private artifact bytes")) || bytes.Contains(encoded, []byte("private-data")) {
+		t.Fatalf("message leaked artifact bytes or private path: %s", encoded)
+	}
 
 	replayed, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-accepted", Role: "user", Content: "Use this design", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{selection}})
-	if err != nil || !replayed.Replayed { t.Fatalf("idempotent replay = replayed=%t err=%v", replayed.Replayed, err) }
-	changed := selection; changed.Action = "select"
-	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-accepted", Role: "user", Content: "Use this design", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{changed}}); err == nil || !errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) { t.Fatalf("changed selection idempotency error = %v", err) }
+	if err != nil || !replayed.Replayed {
+		t.Fatalf("idempotent replay = replayed=%t err=%v", replayed.Replayed, err)
+	}
+	changed := selection
+	changed.Action = "select"
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-accepted", Role: "user", Content: "Use this design", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{changed}}); err == nil || !errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
+		t.Fatalf("changed selection idempotency error = %v", err)
+	}
 	stale := selection
 	stale.EventSeq++
-	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-stale", Role: "user", Content: "Use stale", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{stale}}); err == nil || !strings.Contains(err.Error(), "stale") { t.Fatalf("stale selection error = %v", err) }
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-stale", Role: "user", Content: "Use stale", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{stale}}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale selection error = %v", err)
+	}
 	other, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: "other-owned-session", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: "Other", WorkspacePath: t.TempDir()})
-	if err != nil { t.Fatal(err) }
-	crossSession := selection; crossSession.SessionID = other.ID
-	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-cross-session", Role: "user", Content: "Use mismatched session", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{crossSession}}); err == nil { t.Fatal("cross-session artifact selection was accepted") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	crossSession := selection
+	crossSession.SessionID = other.ID
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-cross-session", Role: "user", Content: "Use mismatched session", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{crossSession}}); err == nil {
+		t.Fatal("cross-session artifact selection was accepted")
+	}
 	wrong := principal
 	wrong.AccountScopeID = "account-2"
-	if _, _, err := server.acceptSessionsV3Message(wrong, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-cross-account", Role: "user", Content: "Use foreign", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{selection}}); err == nil { t.Fatal("cross-account artifact selection was accepted") }
+	if _, _, err := server.acceptSessionsV3Message(wrong, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-cross-account", Role: "user", Content: "Use foreign", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{selection}}); err == nil {
+		t.Fatal("cross-account artifact selection was accepted")
+	}
 	tooMany := make([]pebblestore.SessionArtifactSelectionReference, pebblestore.SessionArtifactMaxMessageSelections+1)
-	for i := range tooMany { tooMany[i] = selection }
-	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-bounds", Role: "user", Content: "Too many", ArtifactSelections: tooMany}); err == nil || !strings.Contains(err.Error(), "count limit") { t.Fatalf("selection bounds error = %v", err) }
+	for i := range tooMany {
+		tooMany[i] = selection
+	}
+	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-bounds", Role: "user", Content: "Too many", ArtifactSelections: tooMany}); err == nil || !strings.Contains(err.Error(), "count limit") {
+		t.Fatalf("selection bounds error = %v", err)
+	}
 }
 
 func TestSessionV3ArtifactSelectionActionPersistsThroughMutation(t *testing.T) {
@@ -577,40 +658,70 @@ func TestSessionV3ArtifactSelectionActionPersistsThroughMutation(t *testing.T) {
 	principal := testPrincipal()
 	authority := artifact.NewAuthority(registry, sessionSvc)
 	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{RequestID: "action-create", CollectionID: "action-collection", CollectionName: "Actions", VariantID: "action-variant", Filename: "action.txt", MediaType: "text/plain", Body: []byte("ready")})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := bytes.NewBufferString(fmt.Sprintf(`{"client_request_id":"select-action","event_seq":%d,"action":"use"}`, variant.EventSeq))
 	req := httptest.NewRequest("POST", "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/selection", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != 200 { t.Fatalf("selection status=%d body=%s", rec.Code, rec.Body.String()) }
-	var response struct { Selection pebblestore.SessionArtifactSelectionReference `json:"selection"` }
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil { t.Fatal(err) }
-	if response.Selection.VariantID != variant.ID || response.Selection.EventSeq <= variant.EventSeq || response.Selection.Action != "use" { t.Fatalf("selection response = %+v", response.Selection) }
-	if !strings.Contains(response.Selection.Label, "Actions") && !strings.Contains(response.Selection.Label, "action.txt") { t.Fatalf("selection label = %q", response.Selection.Label) }
+	if rec.Code != 200 {
+		t.Fatalf("selection status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Selection pebblestore.SessionArtifactSelectionReference `json:"selection"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Selection.VariantID != variant.ID || response.Selection.EventSeq <= variant.EventSeq || response.Selection.Action != "use" {
+		t.Fatalf("selection response = %+v", response.Selection)
+	}
+	if !strings.Contains(response.Selection.Label, "Actions") && !strings.Contains(response.Selection.Label, "action.txt") {
+		t.Fatalf("selection label = %q", response.Selection.Label)
+	}
 	collection, ok, err := sessionSvc.GetSessionArtifactCollection(principal.AccountScopeID, variant.SessionID, variant.CollectionID)
-	if err != nil || !ok || collection.SelectedVariantID != variant.ID || collection.EventSeq != response.Selection.EventSeq { t.Fatalf("selected collection = %+v ok=%t err=%v", collection, ok, err) }
+	if err != nil || !ok || collection.SelectedVariantID != variant.ID || collection.EventSeq != response.Selection.EventSeq {
+		t.Fatalf("selected collection = %+v ok=%t err=%v", collection, ok, err)
+	}
 	body = bytes.NewBufferString(`{"client_request_id":"select-action-stale","event_seq":0,"action":"select"}`)
 	req = httptest.NewRequest("POST", "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/selection", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "event sequence") { t.Fatalf("stale selection status=%d body=%s", rec.Code, rec.Body.String()) }
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "event sequence") {
+		t.Fatalf("stale selection status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestBuildSessionV3LegacyArtifactPackageRejectsSymlinkAndPreservesFiles(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "gallery", "assets"), 0o755); err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(root, "gallery", "index.html"), []byte("<link href=\"assets/site.css\">"), 0o600); err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(root, "gallery", "assets", "site.css"), []byte("body{}"), 0o600); err != nil { t.Fatal(err) }
+	if err := os.MkdirAll(filepath.Join(root, "gallery", "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gallery", "index.html"), []byte("<link href=\"assets/site.css\">"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gallery", "assets", "site.css"), []byte("body{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	payload, err := buildSessionV3LegacyArtifactPackage(root, "gallery/index.html")
-	if err != nil { t.Fatalf("build package: %v", err) }
+	if err != nil {
+		t.Fatalf("build package: %v", err)
+	}
 	repeated, err := buildSessionV3LegacyArtifactPackage(root, "gallery/index.html")
-	if err != nil || !bytes.Equal(payload, repeated) { t.Fatalf("package is not deterministic: err=%v", err) }
+	if err != nil || !bytes.Equal(payload, repeated) {
+		t.Fatalf("package is not deterministic: err=%v", err)
+	}
 	archive, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
-	if err != nil { t.Fatalf("open package: %v", err) }
+	if err != nil {
+		t.Fatalf("open package: %v", err)
+	}
 	got := make([]string, 0, len(archive.File))
-	for _, entry := range archive.File { got = append(got, entry.Name) }
+	for _, entry := range archive.File {
+		got = append(got, entry.Name)
+	}
 	if strings.Join(got, "|") != "assets/site.css|index.html" {
 		t.Fatalf("package entries = %v", got)
 	}
@@ -618,8 +729,12 @@ func TestBuildSessionV3LegacyArtifactPackageRejectsSymlinkAndPreservesFiles(t *t
 		t.Fatalf("package modes = %v, %v", archive.File[0].Mode(), archive.File[1].Mode())
 	}
 	outside := filepath.Join(t.TempDir(), "outside.txt")
-	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil { t.Fatal(err) }
-	if err := os.Symlink(outside, filepath.Join(root, "gallery", "linked.txt")); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "gallery", "linked.txt")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := buildSessionV3LegacyArtifactPackage(root, "gallery/index.html"); err == nil {
 		t.Fatal("legacy package import accepted a symlink")
 	}

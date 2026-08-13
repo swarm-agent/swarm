@@ -94,7 +94,10 @@ func TestArtifactPromotionPackageRejectsSpecialEntriesAndReplacesAtomically(t *t
 		zip  []byte
 	}{
 		{name: "traversal", zip: zipBytes(t, "../outside.txt", []byte("escape"))},
-		{name: "ambiguous", zip: zipBytesMany(t, []struct{ name string; data []byte }{{"a", []byte("file")}, {"a/b", []byte("child")}})},
+		{name: "ambiguous", zip: zipBytesMany(t, []struct {
+			name string
+			data []byte
+		}{{"a", []byte("file")}, {"a/b", []byte("child")}})},
 	}
 	for _, tc := range unsafeCases {
 		t.Run(tc.name, func(t *testing.T) {

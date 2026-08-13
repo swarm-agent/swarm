@@ -34,10 +34,10 @@ type Registry struct {
 }
 
 type MaintenanceReport struct {
-	SessionsVisited int
-	DeletedSessions int
-	RemovedStaging  int
-	RemovedBytes    int64
+	SessionsVisited     int
+	DeletedSessions     int
+	RemovedStaging      int
+	RemovedBytes        int64
 	CollectionsRepaired int
 }
 
@@ -185,7 +185,9 @@ func (r *Registry) RunMaintenance(limit int) (MaintenanceReport, error) {
 			break
 		}
 		repaired, err := r.resolver.RepairSessionArtifactCollections(session.ID)
-		if err != nil { return report, fmt.Errorf("repair artifact metadata for session %q: %w", session.ID, err) }
+		if err != nil {
+			return report, fmt.Errorf("repair artifact metadata for session %q: %w", session.ID, err)
+		}
 		report.CollectionsRepaired += repaired.CollectionsRepaired
 		service, err := r.ServiceForWorkspace(session.WorkspacePath)
 		if err != nil {

@@ -39,30 +39,50 @@ func (c *artifactCleanerStub) DeleteSession(sessionID, workspacePath string) err
 func TestPermanentDeleteCleansArtifactsAfterDurableTombstone(t *testing.T) {
 	sessions := newArtifactCleanupTestService(t)
 	created, _, err := sessions.CreateSessionWithOptions(artifactCleanupCreateOptions("artifact-delete", t.TempDir(), "delete"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	cleaner := &artifactCleanerStub{}
 	sessions.SetArtifactSessionCleaner(cleaner)
-	if err := sessions.DeleteSession(created.ID); err != nil { t.Fatal(err) }
-	if len(cleaner.calls) != 1 || cleaner.calls[0].workspacePath != created.WorkspacePath { t.Fatalf("cleanup calls = %+v", cleaner.calls) }
-	if tombstone, ok, err := sessions.GetSessionTombstone(created.ID); err != nil || !ok || !tombstone.Deleted || tombstone.ArtifactCleanupPending { t.Fatalf("durable tombstone cleanup state incorrect: ok=%t tombstone=%+v err=%v", ok, tombstone, err) }
+	if err := sessions.DeleteSession(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaner.calls) != 1 || cleaner.calls[0].workspacePath != created.WorkspacePath {
+		t.Fatalf("cleanup calls = %+v", cleaner.calls)
+	}
+	if tombstone, ok, err := sessions.GetSessionTombstone(created.ID); err != nil || !ok || !tombstone.Deleted || tombstone.ArtifactCleanupPending {
+		t.Fatalf("durable tombstone cleanup state incorrect: ok=%t tombstone=%+v err=%v", ok, tombstone, err)
+	}
 }
 
 func TestArtifactCleanupFailureIsHonestAndRetryable(t *testing.T) {
 	sessions := newArtifactCleanupTestService(t)
 	created, _, err := sessions.CreateSessionWithOptions(artifactCleanupCreateOptions("artifact-retry", t.TempDir(), "delete"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	cleaner := &artifactCleanerStub{err: errors.New("filesystem unavailable")}
 	sessions.SetArtifactSessionCleaner(cleaner)
-	if err := sessions.DeleteSession(created.ID); err == nil { t.Fatal("cleanup failure reported success") }
-	if tombstone, ok, err := sessions.GetSessionTombstone(created.ID); err != nil || !ok || !tombstone.Deleted || !tombstone.ArtifactCleanupPending || tombstone.WorkspacePath != created.WorkspacePath { t.Fatalf("retry tombstone missing: ok=%t tombstone=%+v err=%v", ok, tombstone, err) }
+	if err := sessions.DeleteSession(created.ID); err == nil {
+		t.Fatal("cleanup failure reported success")
+	}
+	if tombstone, ok, err := sessions.GetSessionTombstone(created.ID); err != nil || !ok || !tombstone.Deleted || !tombstone.ArtifactCleanupPending || tombstone.WorkspacePath != created.WorkspacePath {
+		t.Fatalf("retry tombstone missing: ok=%t tombstone=%+v err=%v", ok, tombstone, err)
+	}
 }
 
 func TestArchiveDoesNotCleanArtifacts(t *testing.T) {
 	sessions := newArtifactCleanupTestService(t)
 	created, _, err := sessions.CreateSessionWithOptions(artifactCleanupCreateOptions("artifact-archive", t.TempDir(), "archive"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	cleaner := &artifactCleanerStub{}
 	sessions.SetArtifactSessionCleaner(cleaner)
-	if err := sessions.ArchiveSession(created.ID); err != nil { t.Fatal(err) }
-	if len(cleaner.calls) != 0 { t.Fatalf("archive cleaned artifacts: %+v", cleaner.calls) }
+	if err := sessions.ArchiveSession(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaner.calls) != 0 {
+		t.Fatalf("archive cleaned artifacts: %+v", cleaner.calls)
+	}
 }

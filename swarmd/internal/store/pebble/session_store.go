@@ -97,33 +97,33 @@ type SessionLifecycleSnapshot struct {
 }
 
 type V3SessionTombstone struct {
-	SessionID      string          `json:"session_id"`
-	UserID         string          `json:"user_id,omitempty"`
-	AccountScopeID string          `json:"account_scope_id,omitempty"`
-	WorkspacePath  string          `json:"workspace_path,omitempty"`
-	Kind           string          `json:"kind"`
-	Deleted        bool            `json:"deleted,omitempty"`
-	Archived       bool            `json:"archived,omitempty"`
-	Hidden         bool            `json:"hidden,omitempty"`
-	EndpointSeq    uint64          `json:"endpoint_seq"`
-	EventSeq       uint64          `json:"event_seq"`
+	SessionID              string          `json:"session_id"`
+	UserID                 string          `json:"user_id,omitempty"`
+	AccountScopeID         string          `json:"account_scope_id,omitempty"`
+	WorkspacePath          string          `json:"workspace_path,omitempty"`
+	Kind                   string          `json:"kind"`
+	Deleted                bool            `json:"deleted,omitempty"`
+	Archived               bool            `json:"archived,omitempty"`
+	Hidden                 bool            `json:"hidden,omitempty"`
+	EndpointSeq            uint64          `json:"endpoint_seq"`
+	EventSeq               uint64          `json:"event_seq"`
 	UpdatedAt              int64           `json:"updated_at"`
 	ArtifactCleanupPending bool            `json:"artifact_cleanup_pending,omitempty"`
 	Session                SessionSnapshot `json:"session,omitempty"`
 }
 
 type MessageSnapshot struct {
-	ID             string                  `json:"id"`
-	SessionID      string                  `json:"session_id"`
-	UserID         string                  `json:"user_id,omitempty"`
-	AccountScopeID string                  `json:"account_scope_id,omitempty"`
-	GlobalSeq      uint64                  `json:"global_seq"`
-	Role           string                  `json:"role"`
-	Content        string                  `json:"content"`
-	Metadata           map[string]any                       `json:"metadata,omitempty"`
-	Media              []SessionMediaReference              `json:"media,omitempty"`
-	ArtifactSelections []SessionArtifactSelectionReference  `json:"artifact_selections,omitempty"`
-	CreatedAt          int64                                `json:"created_at"`
+	ID                 string                              `json:"id"`
+	SessionID          string                              `json:"session_id"`
+	UserID             string                              `json:"user_id,omitempty"`
+	AccountScopeID     string                              `json:"account_scope_id,omitempty"`
+	GlobalSeq          uint64                              `json:"global_seq"`
+	Role               string                              `json:"role"`
+	Content            string                              `json:"content"`
+	Metadata           map[string]any                      `json:"metadata,omitempty"`
+	Media              []SessionMediaReference             `json:"media,omitempty"`
+	ArtifactSelections []SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	CreatedAt          int64                               `json:"created_at"`
 }
 
 type SessionCodexConfig struct {
@@ -729,15 +729,15 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			outboxIndex++
 			now := time.Now().UnixMilli()
 			tombstone := V3SessionTombstone{
-				SessionID:      existing.ID,
-				UserID:         existing.UserID,
-				AccountScopeID: existing.AccountScopeID,
-				WorkspacePath:  existing.WorkspacePath,
-				Kind:           kind,
-				Deleted:        kind == "deleted",
-				Archived:       kind == "archived",
-				EndpointSeq:    endpointSeq,
-				EventSeq:       seq,
+				SessionID:              existing.ID,
+				UserID:                 existing.UserID,
+				AccountScopeID:         existing.AccountScopeID,
+				WorkspacePath:          existing.WorkspacePath,
+				Kind:                   kind,
+				Deleted:                kind == "deleted",
+				Archived:               kind == "archived",
+				EndpointSeq:            endpointSeq,
+				EventSeq:               seq,
 				UpdatedAt:              now,
 				ArtifactCleanupPending: kind == "deleted",
 			}
@@ -2050,7 +2050,9 @@ func sanitizeMessageMetadata(input map[string]any) map[string]any {
 }
 
 func normalizeSessionArtifactSelectionReferences(input []SessionArtifactSelectionReference) []SessionArtifactSelectionReference {
-	if len(input) == 0 { return nil }
+	if len(input) == 0 {
+		return nil
+	}
 	out := make([]SessionArtifactSelectionReference, 0, len(input))
 	for _, ref := range input {
 		ref.SessionID = strings.TrimSpace(ref.SessionID)

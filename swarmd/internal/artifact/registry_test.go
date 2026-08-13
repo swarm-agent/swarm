@@ -56,7 +56,9 @@ func (r *registryResolver) ListPendingSessionArtifactCleanups(limit int) ([]pebb
 }
 
 func (r *registryResolver) RepairSessionArtifactCollections(id string) (pebblestore.SessionArtifactRepairReport, error) {
-	if r.repaired == nil { r.repaired = make(map[string]int) }
+	if r.repaired == nil {
+		r.repaired = make(map[string]int)
+	}
 	r.repaired[id]++
 	return pebblestore.SessionArtifactRepairReport{}, nil
 }
@@ -81,16 +83,26 @@ func (r *registryResolver) ListSessionTombstonesForAccount(_ string, limit int) 
 func TestRegistryServiceForOwnedSessionRejectsMismatchedOwnerAndTombstone(t *testing.T) {
 	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "data"))
 	workspace := filepath.Join(t.TempDir(), "workspace")
-	if err := os.MkdirAll(workspace, 0o755); err != nil { t.Fatal(err) }
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	resolver := &registryResolver{
-		sessions: []pebblestore.SessionSnapshot{{ID: "owned", AccountScopeID: "account-1", UserID: "user-1", WorkspacePath: workspace}},
+		sessions:   []pebblestore.SessionSnapshot{{ID: "owned", AccountScopeID: "account-1", UserID: "user-1", WorkspacePath: workspace}},
 		tombstones: []pebblestore.V3SessionTombstone{{SessionID: "deleted", AccountScopeID: "account-1", UserID: "user-1", WorkspacePath: workspace, Deleted: true}},
 	}
 	registry := NewRegistry(resolver, Limits{})
-	if _, _, err := registry.ServiceForOwnedSession("owned", "other", "user-1"); err == nil { t.Fatal("expected account ownership error") }
-	if _, _, err := registry.ServiceForOwnedSession("owned", "account-1", "other"); err == nil { t.Fatal("expected user ownership error") }
-	if _, _, err := registry.ServiceForOwnedSession("deleted", "account-1", "user-1"); err == nil { t.Fatal("expected tombstone rejection") }
-	if _, _, err := registry.ServiceForOwnedSession("owned", "account-1", "user-1"); err != nil { t.Fatalf("owned service: %v", err) }
+	if _, _, err := registry.ServiceForOwnedSession("owned", "other", "user-1"); err == nil {
+		t.Fatal("expected account ownership error")
+	}
+	if _, _, err := registry.ServiceForOwnedSession("owned", "account-1", "other"); err == nil {
+		t.Fatal("expected user ownership error")
+	}
+	if _, _, err := registry.ServiceForOwnedSession("deleted", "account-1", "user-1"); err == nil {
+		t.Fatal("expected tombstone rejection")
+	}
+	if _, _, err := registry.ServiceForOwnedSession("owned", "account-1", "user-1"); err != nil {
+		t.Fatalf("owned service: %v", err)
+	}
 }
 
 func TestRegistryMaintenancePreservesArchivedAndDeletesDeleted(t *testing.T) {

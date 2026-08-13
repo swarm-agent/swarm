@@ -253,7 +253,9 @@ func (s *Service) ListPendingSessionArtifactCleanups(limit int) ([]SessionTombst
 }
 
 func (s *Service) RepairSessionArtifactCollections(sessionID string) (pebblestore.SessionArtifactRepairReport, error) {
-	if s == nil || s.store == nil { return pebblestore.SessionArtifactRepairReport{}, errors.New("session store is not configured") }
+	if s == nil || s.store == nil {
+		return pebblestore.SessionArtifactRepairReport{}, errors.New("session store is not configured")
+	}
 	return s.store.RepairSessionArtifactCollections(sessionID)
 }
 

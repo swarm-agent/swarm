@@ -82,13 +82,13 @@ type sessionsV3ModelProfileApplyRequest struct {
 }
 
 type sessionsV3MessageRequest struct {
-	ClientRequestID   string                              `json:"client_request_id,omitempty"`
-	IdempotencyKey    string                              `json:"idempotency_key,omitempty"`
-	MessageID         string                              `json:"message_id,omitempty"`
-	RunID             string                              `json:"run_id,omitempty"`
-	Role              string                              `json:"role"`
-	Content           string                              `json:"content"`
-	Metadata          map[string]any                      `json:"metadata,omitempty"`
+	ClientRequestID    string                                          `json:"client_request_id,omitempty"`
+	IdempotencyKey     string                                          `json:"idempotency_key,omitempty"`
+	MessageID          string                                          `json:"message_id,omitempty"`
+	RunID              string                                          `json:"run_id,omitempty"`
+	Role               string                                          `json:"role"`
+	Content            string                                          `json:"content"`
+	Metadata           map[string]any                                  `json:"metadata,omitempty"`
 	Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
 	ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
 	DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
@@ -3500,33 +3500,33 @@ func mergeSessionsV3PreferenceUpdate(current pebblestore.ModelPreference, req se
 
 func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest, message pebblestore.MessageSnapshot, runStatus, blockedReason string) (string, error) {
 	canonical := struct {
-		Operation         string                              `json:"operation"`
-		SessionID         string                              `json:"session_id"`
-		MessageID         string                              `json:"message_id,omitempty"`
-		RunID             string                              `json:"run_id,omitempty"`
-		Role              string                              `json:"role"`
-		Content           string                              `json:"content"`
-		Metadata          map[string]any                      `json:"metadata,omitempty"`
+		Operation          string                                          `json:"operation"`
+		SessionID          string                                          `json:"session_id"`
+		MessageID          string                                          `json:"message_id,omitempty"`
+		RunID              string                                          `json:"run_id,omitempty"`
+		Role               string                                          `json:"role"`
+		Content            string                                          `json:"content"`
+		Metadata           map[string]any                                  `json:"metadata,omitempty"`
 		Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
 		ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
-		RunStatus          string                                           `json:"run_status"`
-		BlockedReason     string                              `json:"blocked_reason"`
-		AuthorityStatus   string                              `json:"authority_status"`
-		DispatchAuthority map[string]any                      `json:"dispatch_authority,omitempty"`
+		RunStatus          string                                          `json:"run_status"`
+		BlockedReason      string                                          `json:"blocked_reason"`
+		AuthorityStatus    string                                          `json:"authority_status"`
+		DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
 	}{
-		Operation:         sessionruntime.SessionMutationAppendMessage,
-		SessionID:         strings.TrimSpace(sessionID),
-		MessageID:         strings.TrimSpace(message.ID),
-		RunID:             strings.TrimSpace(req.RunID),
-		Role:              strings.TrimSpace(message.Role),
-		Content:           message.Content,
-		Metadata:          cloneSessionsV3Metadata(message.Metadata),
+		Operation:          sessionruntime.SessionMutationAppendMessage,
+		SessionID:          strings.TrimSpace(sessionID),
+		MessageID:          strings.TrimSpace(message.ID),
+		RunID:              strings.TrimSpace(req.RunID),
+		Role:               strings.TrimSpace(message.Role),
+		Content:            message.Content,
+		Metadata:           cloneSessionsV3Metadata(message.Metadata),
 		Media:              append([]pebblestore.SessionMediaReference(nil), message.Media...),
 		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), message.ArtifactSelections...),
 		RunStatus:          runStatus,
-		BlockedReason:     blockedReason,
-		AuthorityStatus:   sessionsV3PrimaryAuthorityStatus(req),
-		DispatchAuthority: cloneSessionsV3Metadata(req.DispatchAuthority),
+		BlockedReason:      blockedReason,
+		AuthorityStatus:    sessionsV3PrimaryAuthorityStatus(req),
+		DispatchAuthority:  cloneSessionsV3Metadata(req.DispatchAuthority),
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {

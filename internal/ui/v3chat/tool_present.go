@@ -47,17 +47,17 @@ type taskProgramPresentationStage struct {
 }
 
 type taskPresentationRow struct {
-	Index         int
-	Status        string
-	Agent         string
-	Title         string
-	Model         string
-	Tool          string
-	Time          string
-	Preview       string
-	Error         string
-	SwarmStrategy string
-	AssemblyPart  string
+	Index          int
+	Status         string
+	Agent          string
+	Title          string
+	Model          string
+	Tool           string
+	Time           string
+	Preview        string
+	Error          string
+	SwarmStrategy  string
+	AssemblyPart   string
 	ProgramJobID   string
 	ProgramStageID string
 	DependsOn      []string
@@ -940,16 +940,16 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		}
 		assemblyPart := toolObject(launch, "assembly_part")
 		rows = append(rows, taskPresentationRow{
-			Index:         launchIndex,
-			Status:        status,
-			Agent:         firstNonEmptyToolRaw(toolString(launch, "resolved_agent_name"), toolString(launch, "requested_subagent_type"), toolString(launch, "agent_type"), toolString(launch, "subagent"), toolString(launch, "requested_subagent"), "subagent"),
-			Title:         firstNonEmptyToolRaw(toolString(assemblyPart, "name"), toolString(launch, "assignment_label"), toolString(launch, "meta_prompt"), "subagent"),
-			Model:         taskPresentationModel(launch),
-			Tool:          firstNonEmptyToolRaw(currentTool, "-"),
-			Time:          toolDurationLabel(int64(timeMS)),
-			Preview:       preview,
-			Error:         toolString(launch, "error"),
-			SwarmStrategy: firstNonEmptyToolRaw(toolString(launch, "swarm_strategy"), swarmStrategy),
+			Index:          launchIndex,
+			Status:         status,
+			Agent:          firstNonEmptyToolRaw(toolString(launch, "resolved_agent_name"), toolString(launch, "requested_subagent_type"), toolString(launch, "agent_type"), toolString(launch, "subagent"), toolString(launch, "requested_subagent"), "subagent"),
+			Title:          firstNonEmptyToolRaw(toolString(assemblyPart, "name"), toolString(launch, "assignment_label"), toolString(launch, "meta_prompt"), "subagent"),
+			Model:          taskPresentationModel(launch),
+			Tool:           firstNonEmptyToolRaw(currentTool, "-"),
+			Time:           toolDurationLabel(int64(timeMS)),
+			Preview:        preview,
+			Error:          toolString(launch, "error"),
+			SwarmStrategy:  firstNonEmptyToolRaw(toolString(launch, "swarm_strategy"), swarmStrategy),
 			AssemblyPart:   toolString(assemblyPart, "name"),
 			ProgramJobID:   programJobID,
 			ProgramStageID: programStageID,

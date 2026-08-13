@@ -105,7 +105,7 @@ type sessionsV3ArtifactCatalogItem struct {
 	UpdatedAt       int64                                 `json:"updated_at"`
 	EventSeq        uint64                                `json:"event_seq,omitempty"`
 	Progress        *sessionsV3ArtifactCollectionProgress `json:"progress,omitempty"`
-	Lineage         *pebblestore.SessionArtifactLineage  `json:"lineage,omitempty"`
+	Lineage         *pebblestore.SessionArtifactLineage   `json:"lineage,omitempty"`
 	Content         string                                `json:"content,omitempty"`
 }
 
@@ -192,7 +192,9 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					kind, previewable := sessionsV3ArtifactPresentation(variant)
 					if variant.Status == pebblestore.SessionArtifactStatusReady {
 						handoffKind, handoffMediaType := kind, variant.MediaType
-						if handoffKind == "package" && handoffMediaType == "application/zip" { handoffKind, handoffMediaType = "html", "text/html" }
+						if handoffKind == "package" && handoffMediaType == "application/zip" {
+							handoffKind, handoffMediaType = "html", "text/html"
+						}
 						nativeHandoffs[sessionsV3NativeHandoffKey(lineage.PlanID, lineage.CheckpointID, lineage.RunID, lineage.AttemptID, variant.Filename, handoffMediaType, handoffKind)] = struct{}{}
 					}
 					if kind == "package" && variant.Status == pebblestore.SessionArtifactStatusReady && variant.MediaType == "application/zip" {
@@ -514,7 +516,9 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(req.Action))
-	if action == "" { action = "select" }
+	if action == "" {
+		action = "select"
+	}
 	if action != "select" && action != "use" {
 		writeError(w, http.StatusBadRequest, errors.New("artifact selection action must be select or use"))
 		return
@@ -543,7 +547,7 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 	}
 	selection := &pebblestore.SessionArtifactSelectionReference{
 		SessionID: sessionID, CollectionID: collection.ID, VariantID: variant.ID, EventSeq: req.EventSeq, Action: action,
-		Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename),
+		Label:       firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename),
 		Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
 	}
 	payloadHash, err := sessionsV3ArtifactSelectionPayloadHash(sessionID, action, *selection)
@@ -581,7 +585,9 @@ func sessionsV3ArtifactSelectionPayloadHash(sessionID, action string, selection 
 		Selection pebblestore.SessionArtifactSelectionReference `json:"selection"`
 	}{sessionruntime.SessionMutationSelectArtifact, strings.TrimSpace(sessionID), strings.TrimSpace(action), selection}
 	raw, err := json.Marshal(canonical)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(raw)
 	return fmt.Sprintf("%x", sum[:]), nil
 }
@@ -1051,7 +1057,9 @@ func (s *Server) importLegacySessionV3Artifact(ctx context.Context, principal id
 
 	session, found, err := s.sessions.GetSession(plan.SessionID)
 	if err != nil || !found {
-		if err == nil { err = errors.New("legacy artifact session was not found") }
+		if err == nil {
+			err = errors.New("legacy artifact session was not found")
+		}
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	if session.UserID != principal.UserID || session.AccountScopeID != principal.AccountScopeID {
@@ -1126,7 +1134,9 @@ func (s *Server) importLegacySessionV3Artifact(ctx context.Context, principal id
 		}
 		stored, found, getErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID)
 		if getErr != nil || !found {
-			if getErr == nil { getErr = errors.New("managed artifact terminal metadata was not recorded") }
+			if getErr == nil {
+				getErr = errors.New("managed artifact terminal metadata was not recorded")
+			}
 			return pebblestore.SessionArtifactVariant{}, getErr
 		}
 		return stored, nil
@@ -1142,7 +1152,9 @@ func (s *Server) importLegacySessionV3Artifact(ctx context.Context, principal id
 		}
 		stored, found, getErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID)
 		if getErr != nil || !found {
-			if getErr == nil { getErr = errors.New("managed artifact finalize failure was not recorded") }
+			if getErr == nil {
+				getErr = errors.New("managed artifact finalize failure was not recorded")
+			}
 			return pebblestore.SessionArtifactVariant{}, getErr
 		}
 		return stored, nil
@@ -1157,7 +1169,9 @@ func (s *Server) importLegacySessionV3Artifact(ctx context.Context, principal id
 	}
 	stored, found, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, plan.SessionID, collectionID, variantID)
 	if err != nil || !found {
-		if err == nil { err = errors.New("managed artifact metadata was not finalized") }
+		if err == nil {
+			err = errors.New("managed artifact metadata was not finalized")
+		}
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	return stored, nil
@@ -1168,9 +1182,9 @@ func (s *Server) applyLegacyArtifactMutation(principal identity.Principal, sessi
 	sum := sha256.Sum256([]byte(keySource))
 	key := "legacy-artifact-" + base64.RawURLEncoding.EncodeToString(sum[:18])
 	payload, err := json.Marshal(struct {
-		Kind       string                                   `json:"kind"`
-		Collection pebblestore.SessionArtifactCollection    `json:"collection"`
-		Variant    pebblestore.SessionArtifactVariant       `json:"variant"`
+		Kind       string                                `json:"kind"`
+		Collection pebblestore.SessionArtifactCollection `json:"collection"`
+		Variant    pebblestore.SessionArtifactVariant    `json:"variant"`
 	}{Kind: kind, Collection: collection, Variant: variant})
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, err
@@ -1281,8 +1295,8 @@ func managedSessionV3ArtifactPackageEntry(archive *zip.Reader) string {
 }
 
 type sessionsV3MemoryFileInfo struct {
-	name string
-	size int64
+	name    string
+	size    int64
 	modTime time.Time
 }
 

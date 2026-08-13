@@ -105,7 +105,10 @@ func TestParseTaskProgramDesignerOutputModesAreExplicitAndDurable(t *testing.T) 
 	for _, mutate := range []func(map[string]any){
 		func(job map[string]any) { job["owned_scope"] = []any{"web/src/managed.tsx"} },
 		func(job map[string]any) { job["output_mode"] = "workspace" },
-		func(job map[string]any) { job["output_mode"] = "managed"; job["owned_scope"] = []any{"web/src/managed.tsx"} },
+		func(job map[string]any) {
+			job["output_mode"] = "managed"
+			job["owned_scope"] = []any{"web/src/managed.tsx"}
+		},
 	} {
 		invalid := taskProgramFixture(nil)
 		invalidProgram := invalid["program"].(map[string]any)
@@ -802,7 +805,7 @@ func TestTaskProgramStatusExposesBoundedReadyArtifactReferences(t *testing.T) {
 	record := pebblestore.TaskProgramRecord{
 		ParentSessionID: "parent", ProgramID: "managed_program", ReservationCallID: "call-managed", State: pebblestore.TaskProgramStateCompleted,
 		Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{{ID: "design", StageID: "variants", AgentType: "designer"}}},
-		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "design", StageID: "variants", State: pebblestore.TaskProgramJobCompleted, IntegrationState: "artifact_ready", ChildSessionID: "child"}},
+		Jobs:       []pebblestore.TaskProgramJobRecord{{JobID: "design", StageID: "variants", State: pebblestore.TaskProgramJobCompleted, IntegrationState: "artifact_ready", ChildSessionID: "child"}},
 	}
 	payload := taskProgramStatusPayload(record, false)
 	references, ok := payload["artifact_references"].([]*taskArtifactReference)

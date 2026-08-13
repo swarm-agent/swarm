@@ -33,23 +33,23 @@ type routedSessionMediaRequest struct {
 }
 
 type routedSessionStartRequest struct {
-	Input                    string                      `json:"input"`
-	ClientRequestID          string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey           string                      `json:"idempotency_key,omitempty"`
-	AgentName                string                      `json:"agent_name,omitempty"`
-	Metadata                 map[string]any              `json:"metadata,omitempty"`
-	ManagedWorktreeRequested *bool                       `json:"managed_worktree_requested"`
-	PlanModeRequested        *bool                       `json:"plan_mode_requested"`
-	WorkspacePath            string                      `json:"workspace_path"`
-	HostWorkspacePath        string                      `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath     string                      `json:"runtime_workspace_path,omitempty"`
-	WorkspaceBindingID       string                      `json:"workspace_binding_id"`
-	SwarmID                  string                      `json:"swarm_id"`
-	TargetKind               string                      `json:"target_kind"`
-	TargetRelationship       string                      `json:"target_relationship"`
-	Media                    []routedSessionMediaRequest `json:"media,omitempty"`
-	StagingIDs               []string                    `json:"staging_ids,omitempty"`
-	ArtifactSelections       []pebblestore.SessionArtifactSelectionReference  `json:"artifact_selections,omitempty"`
+	Input                    string                                          `json:"input"`
+	ClientRequestID          string                                          `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                                          `json:"idempotency_key,omitempty"`
+	AgentName                string                                          `json:"agent_name,omitempty"`
+	Metadata                 map[string]any                                  `json:"metadata,omitempty"`
+	ManagedWorktreeRequested *bool                                           `json:"managed_worktree_requested"`
+	PlanModeRequested        *bool                                           `json:"plan_mode_requested"`
+	WorkspacePath            string                                          `json:"workspace_path"`
+	HostWorkspacePath        string                                          `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string                                          `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID       string                                          `json:"workspace_binding_id"`
+	SwarmID                  string                                          `json:"swarm_id"`
+	TargetKind               string                                          `json:"target_kind"`
+	TargetRelationship       string                                          `json:"target_relationship"`
+	Media                    []routedSessionMediaRequest                     `json:"media,omitempty"`
+	StagingIDs               []string                                        `json:"staging_ids,omitempty"`
+	ArtifactSelections       []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
 }
 
 type routedSessionStartResult struct {
