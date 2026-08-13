@@ -40,13 +40,26 @@ type ArtifactAuthority interface {
 }
 
 // ArtifactRunContext is trusted lineage supplied by run orchestration. Session
-// ownership still comes from WorkspaceScope's authenticated principal.
+// ownership still comes from WorkspaceScope's authenticated principal. Managed
+// destinations use the parent SessionID and the producing child ChildSessionID.
 type ArtifactRunContext struct {
 	SessionID    string
 	RunID        string
 	PlanID       string
 	CheckpointID string
 	AttemptID    string
+
+	// Managed task destinations are injected only by trusted orchestration. When
+	// present, create calls are pinned to this parent-owned collection/variant;
+	// model-authored target arguments may not redirect the output.
+	TaskCallID     string
+	ProgramID      string
+	ProgramJobID   string
+	ChildSessionID string
+	IterationID    string
+	IterationIndex int
+	CollectionID   string
+	VariantID      string
 }
 
 type artifactRunContextKey struct{}
@@ -130,6 +143,24 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		input, entries, err := parseArtifactCreate(args, principal.SessionID, callID, actionName == "create_package")
 		if err != nil {
 			return "", err
+		}
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			trustedCollectionID, trustedVariantID := strings.TrimSpace(run.CollectionID), strings.TrimSpace(run.VariantID)
+			if trustedCollectionID != "" || trustedVariantID != "" {
+				if trustedCollectionID == "" || trustedVariantID == "" {
+					return "", errors.New("manage_artifact trusted destination is incomplete")
+				}
+				if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
+					return "", errors.New("manage_artifact managed create must omit collection_id; the destination is injected by trusted orchestration")
+				}
+				if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
+					return "", errors.New("manage_artifact managed create must omit variant_id; the destination is injected by trusted orchestration")
+				}
+				input.CollectionID, input.VariantID = trustedCollectionID, trustedVariantID
+				// The parent-owned collection already exists. Model-authored collection
+				// metadata must neither conflict with nor replace that trusted target.
+				input.CollectionName, input.CollectionDescription = "", ""
+			}
 		}
 		input.RequestID = requestID
 		var variant pebblestore.SessionArtifactVariant
@@ -249,14 +280,31 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 		sessionID = strings.TrimSpace(scope.SessionID)
 	}
 	principalSessionID := strings.TrimSpace(scope.Principal.SessionID)
-	if sessionID == "" || (strings.TrimSpace(scope.SessionID) != "" && strings.TrimSpace(scope.SessionID) != sessionID) || (principalSessionID != "" && principalSessionID != sessionID) {
+	scopeSessionID := strings.TrimSpace(scope.SessionID)
+	producerSessionID := strings.TrimSpace(run.ChildSessionID)
+	managedDestination := strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != ""
+	if producerSessionID == "" {
+		if managedDestination {
+			return artifact.Principal{}, errors.New("manage_artifact managed destination requires trusted child session lineage")
+		}
+		producerSessionID = sessionID
+	}
+	if sessionID == "" || scopeSessionID == "" || scopeSessionID != producerSessionID || (principalSessionID != "" && principalSessionID != sessionID && principalSessionID != producerSessionID) {
 		return artifact.Principal{}, errors.New("manage_artifact trusted session context is missing or inconsistent")
+	}
+	if managedDestination && (strings.TrimSpace(run.TaskCallID) == "" || strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "") {
+		return artifact.Principal{}, errors.New("manage_artifact managed destination lineage is incomplete")
 	}
 	accountScopeID, userID := strings.TrimSpace(scope.Principal.AccountScopeID), strings.TrimSpace(scope.Principal.UserID)
 	if accountScopeID == "" || userID == "" {
 		return artifact.Principal{}, errors.New("manage_artifact requires authenticated session ownership")
 	}
-	return artifact.Principal{SessionID: sessionID, AccountScopeID: accountScopeID, UserID: userID, RunID: strings.TrimSpace(run.RunID), PlanID: strings.TrimSpace(run.PlanID), CheckpointID: strings.TrimSpace(run.CheckpointID), AttemptID: strings.TrimSpace(run.AttemptID)}, nil
+	return artifact.Principal{
+		SessionID: sessionID, AccountScopeID: accountScopeID, UserID: userID,
+		RunID: strings.TrimSpace(run.RunID), PlanID: strings.TrimSpace(run.PlanID), CheckpointID: strings.TrimSpace(run.CheckpointID), AttemptID: strings.TrimSpace(run.AttemptID),
+		TaskCallID: strings.TrimSpace(run.TaskCallID), ProgramID: strings.TrimSpace(run.ProgramID), ProgramJobID: strings.TrimSpace(run.ProgramJobID),
+		ChildSessionID: strings.TrimSpace(run.ChildSessionID), IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex,
+	}, nil
 }
 
 func parseArtifactCreate(args map[string]any, sessionID, callID string, packageArtifact bool) (artifact.CreateInput, []artifact.PackageEntry, error) {

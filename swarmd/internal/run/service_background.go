@@ -74,6 +74,7 @@ type RunStartMeta struct {
 	CompiledPolicy       *permission.Policy
 	Principal            identity.Principal
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ArtifactRunContext   *tool.ArtifactRunContext
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -128,6 +129,7 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		PlanCheckpointContext: request.PlanCheckpointContext,
 		Principal:             meta.Principal,
 		ApplySessionMutation:  meta.ApplySessionMutation,
+		ArtifactRunContext:    cloneArtifactRunContext(meta.ArtifactRunContext),
 	}
 }
 

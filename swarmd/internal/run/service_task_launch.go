@@ -1428,6 +1428,16 @@ func taskDisabledToolNames(allowBash bool) []string {
 	return sortedDisabledToolNames(disabled)
 }
 
+func taskToolNameInSlice(values []string, want string) bool {
+	want = canonicalToolName(want)
+	for _, value := range values {
+		if canonicalToolName(value) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func sortedDisabledToolNames(disabled map[string]bool) []string {
 	if len(disabled) == 0 {
 		return nil
@@ -2560,6 +2570,16 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if strings.TrimSpace(row.OutputMode) != strings.TrimSpace(launchSpecs[i].OutputMode) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output mode mismatch", i)
 		}
+		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) && strings.TrimSpace(launchSpecs[i].OutputMode) == taskOutputModeManaged {
+			if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
+				return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d is missing manage_artifact", i)
+			}
+			for _, name := range []string{"write", "edit"} {
+				if !taskToolNameInSlice(row.DisabledTools, name) || row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) || taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
+					return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d retains checkout mutation tool %q", i, name)
+				}
+			}
+		}
 		if strings.TrimSpace(row.StreamKey) != strings.TrimSpace(launchSpecs[i].StreamKey) || row.SwarmMode != launchSpecs[i].SwarmMode || strings.TrimSpace(row.SwarmStrategy) != strings.TrimSpace(launchSpecs[i].SwarmStrategy) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d swarm identity mismatch", i)
 		}
@@ -2607,7 +2627,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	}
 	parentMode := sessionruntime.NormalizeMode(sessionMode)
 	childMode := effectiveTaskChildMode(sessionMode)
-	disabledTools := taskDisabledToolNames(false)
+	defaultDisabledTools := taskDisabledToolNames(false)
 
 	launches := make([]taskLaunchManifestRow, 0, len(parsed.Launches))
 	resolvedAgentName := ""
@@ -2659,7 +2679,11 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if toolErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q tool contract: %w", i, requested, toolErr)
 		}
-		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, disabledTools, executionMode)
+		launchDisabledTools := append([]string(nil), defaultDisabledTools...)
+		if agentruntime.IsDesignerAgentName(requested) && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
+			launchDisabledTools = disabledTaskToolNames("write", "edit")
+		}
+		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, launchDisabledTools, executionMode)
 		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
@@ -2680,11 +2704,11 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			SubagentServiceTier:   strings.TrimSpace(preference.ServiceTier),
 			ChildTitlePreview:     childTitle,
 			ChildMode:             childMode,
-			DisabledTools:         disabledTools,
+			DisabledTools:         launchDisabledTools,
 			ResolvedTools:         resolvedTools,
 			Capabilities: map[string]any{
 				"allow_bash":            false,
-				"disabled_tools":        disabledTools,
+				"disabled_tools":        launchDisabledTools,
 				"effective_child_mode":  childMode,
 				"resolved_tools":        resolvedTools,
 				"permission_session_id": strings.TrimSpace(sessionID),
@@ -2724,7 +2748,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		Action:             parsed.Action,
 		ParentMode:         parentMode,
 		EffectiveChildMode: childMode,
-		DisabledTools:      disabledTools,
+		DisabledTools:      launches[0].DisabledTools,
 		ResolvedTools:      launches[0].ResolvedTools,
 		SourceArguments:    parsed.SourceArguments,
 		Launches:           launches,

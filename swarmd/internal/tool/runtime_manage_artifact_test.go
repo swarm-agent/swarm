@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/artifact"
@@ -66,6 +67,47 @@ func artifactToolContext() (context.Context, WorkspaceScope) {
 	ctx := WithWorkspaceScope(context.Background(), scope)
 	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "attempt-1"})
 	return ctx, scope
+}
+
+func TestManageArtifactCreatePinsTrustedManagedDestinationAndLineage(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx := WithWorkspaceScope(context.Background(), WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}})
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{
+		SessionID: "parent-1", ChildSessionID: "child-1", TaskCallID: "call-1", ProgramID: "program-1", ProgramJobID: "job-1",
+		IterationID: "iteration-1", IterationIndex: 1, CollectionID: "collection-trusted", VariantID: "variant-trusted",
+	})
+	_, err := runtime.executeManageArtifact(ctx, WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}}, "artifact-call", map[string]any{
+		"action": "create", "collection_name": "redirected", "collection_description": "model-authored", "filename": "variant.txt", "media_type": "text/plain", "content": "managed",
+	})
+	if err != nil {
+		t.Fatalf("create trusted managed artifact: %v", err)
+	}
+	if authority.created.CollectionID != "collection-trusted" || authority.created.VariantID != "variant-trusted" {
+		t.Fatalf("trusted destination not pinned: %#v", authority.created)
+	}
+	if authority.created.CollectionName != "" || authority.created.CollectionDescription != "" {
+		t.Fatalf("managed create retained model-authored collection metadata: %#v", authority.created)
+	}
+	missingChild := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "parent-1", TaskCallID: "call-1", CollectionID: "collection-trusted", VariantID: "variant-trusted"})
+	if _, err := artifactPrincipal(missingChild, WorkspaceScope{SessionID: "parent-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}}); err == nil || !strings.Contains(err.Error(), "requires trusted child session lineage") {
+		t.Fatalf("missing managed child lineage error = %v", err)
+	}
+	if _, err := runtime.executeManageArtifact(ctx, WorkspaceScope{SessionID: "other-child", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}}, "artifact-call-mismatch", map[string]any{
+		"action": "create", "filename": "variant.txt", "media_type": "text/plain", "content": "managed",
+	}); err == nil || !strings.Contains(err.Error(), "trusted session context is missing or inconsistent") {
+		t.Fatalf("mismatched producer error = %v", err)
+	}
+	if _, err := runtime.executeManageArtifact(ctx, WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}}, "artifact-call-2", map[string]any{
+		"action": "create", "collection_id": "redirected", "filename": "variant.txt", "media_type": "text/plain", "content": "managed",
+	}); err == nil || !strings.Contains(err.Error(), "managed create must omit collection_id") {
+		t.Fatalf("trusted destination redirect error = %v", err)
+	}
+	principal, err := artifactPrincipal(ctx, WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}})
+	if err != nil || principal.SessionID != "parent-1" || principal.ChildSessionID != "child-1" || principal.TaskCallID != "call-1" || principal.ProgramJobID != "job-1" || principal.IterationIndex != 1 {
+		t.Fatalf("trusted managed principal = %#v err=%v", principal, err)
+	}
 }
 
 func TestManageArtifactCreateUsesTrustedOwnershipAndFinalAuthorityResult(t *testing.T) {

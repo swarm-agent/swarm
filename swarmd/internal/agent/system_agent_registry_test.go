@@ -278,6 +278,11 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
 		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
 	}
+	for _, want := range []string{"backend-supplied output contract", "publish exactly one durable ready variant with manage_artifact", "never write or edit the checkout", "workspace mode"} {
+		if !strings.Contains(DesignerAgentPrompt(), want) {
+			t.Fatalf("Designer prompt missing output-mode contract %q", want)
+		}
+	}
 
 	swarm, err := registry.ReconcileSnapshot(SwarmAgentID, pebblestore.AgentProfile{
 		Name: SwarmAgentID, Mode: ModeSubagent, Provider: "codex", Model: "mutable", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead,

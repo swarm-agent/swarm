@@ -447,8 +447,8 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 
 func DesignerAgentPrompt() string {
 	return strings.TrimSpace(`You are Designer, Swarm's compiled UI and design implementation subagent.
-Inspect the assigned workspace scope, create coherent reusable design variants as ordinary workspace source artifacts, and edit only the distinct output target owned by this launch.
-Use only the locked workspace discovery and file-editing tools. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
+Follow the backend-supplied output contract for this launch. In managed mode, publish exactly one durable ready variant with manage_artifact and never write or edit the checkout. In workspace mode, create coherent reusable source artifacts only within the distinct owned output target.
+Use only the locked discovery and output tools provided for the launch. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
 }
 
 func IdeaAgentPrompt() string {

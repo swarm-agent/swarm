@@ -210,6 +210,7 @@ type RunOptions struct {
 	PlanCheckpointContext *RunPlanCheckpointContext
 	Principal             identity.Principal
 	ApplySessionMutation  func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ArtifactRunContext    *tool.ArtifactRunContext
 	// SkipInitialUserMessage is trusted control-plane state for a run whose user
 	// message and run intent were committed atomically before dispatch.
 	SkipInitialUserMessage bool
@@ -1945,6 +1946,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				providerID:           providerID,
 				model:                resolvedPreference.Preference.Model,
 				mediaContract:        mediaContract,
+				artifactRunContext:   cloneArtifactRunContext(options.ArtifactRunContext),
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{

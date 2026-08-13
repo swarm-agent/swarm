@@ -730,6 +730,24 @@ func TestProviderManagedV3BashEmitsEachLineBeforeCompletion(t *testing.T) {
 	}
 }
 
+func TestProviderManagedArtifactRunContextPreservesTrustedManagedDestination(t *testing.T) {
+	svc := &Service{}
+	trusted := &tool.ArtifactRunContext{SessionID: "parent-1", ChildSessionID: "child-1", CollectionID: "collection-1", VariantID: "variant-1", TaskCallID: "call-1"}
+	run := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: "child-1", runID: "run-1", artifactRunContext: trusted})
+	if run.SessionID != "parent-1" || run.ChildSessionID != "child-1" || run.RunID != "run-1" || run.CollectionID != "collection-1" {
+		t.Fatalf("trusted child artifact context = %#v", run)
+	}
+	contextCopy := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: "child-1", runID: "run-2", artifactRunContext: trusted})
+	contextCopy.CollectionID = "mutated"
+	if trusted.CollectionID != "collection-1" {
+		t.Fatalf("trusted artifact context was mutated through provider copy: %#v", trusted)
+	}
+	redirected := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: "other-child", runID: "run-3", artifactRunContext: trusted})
+	if redirected.SessionID != "__invalid_managed_artifact_context__" || redirected.CollectionID != "collection-1" {
+		t.Fatalf("redirected trusted artifact context = %#v", redirected)
+	}
+}
+
 func TestProviderManagedArtifactRunContextUsesTrustedRunIntentLineage(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)

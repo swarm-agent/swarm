@@ -90,6 +90,7 @@ type ProviderManagedToolInvokerConfig struct {
 	Model                string
 	MediaContract        provideriface.SessionMediaContract
 	PlanContextGuard     *PlanContextGuard
+	ArtifactRunContext   *tool.ArtifactRunContext
 }
 
 type terminalPlanToolState struct {
@@ -140,6 +141,7 @@ type providerToolInvokerConfig struct {
 	model                string
 	mediaContract        provideriface.SessionMediaContract
 	planContextGuard     *PlanContextGuard
+	artifactRunContext   *tool.ArtifactRunContext
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -167,6 +169,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		model:                strings.TrimSpace(config.Model),
 		mediaContract:        config.MediaContract,
 		planContextGuard:     config.PlanContextGuard,
+		artifactRunContext:   cloneArtifactRunContext(config.ArtifactRunContext),
 	}
 }
 
@@ -291,7 +294,46 @@ func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []str
 	return originRoots
 }
 
+func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunContext {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
 func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerConfig) tool.ArtifactRunContext {
+	if config.artifactRunContext != nil {
+		run := *config.artifactRunContext
+		run.SessionID = strings.TrimSpace(run.SessionID)
+		run.TaskCallID = strings.TrimSpace(run.TaskCallID)
+		run.ProgramID = strings.TrimSpace(run.ProgramID)
+		run.ProgramJobID = strings.TrimSpace(run.ProgramJobID)
+		run.ChildSessionID = strings.TrimSpace(run.ChildSessionID)
+		run.IterationID = strings.TrimSpace(run.IterationID)
+		run.CollectionID = strings.TrimSpace(run.CollectionID)
+		run.VariantID = strings.TrimSpace(run.VariantID)
+		if run.SessionID == "" || run.ChildSessionID == "" || run.ChildSessionID != strings.TrimSpace(config.sessionID) || run.TaskCallID == "" || run.CollectionID == "" || run.VariantID == "" {
+			// Preserve a managed destination marker while forcing ownership checks to
+			// fail closed; never degrade a malformed trusted target into an ordinary
+			// child-session artifact context.
+			run.SessionID = "__invalid_managed_artifact_context__"
+			return run
+		}
+		if strings.TrimSpace(run.RunID) == "" {
+			run.RunID = strings.TrimSpace(config.runID)
+		} else {
+			run.RunID = strings.TrimSpace(run.RunID)
+		}
+		if s != nil && s.sessions != nil && strings.TrimSpace(config.runID) != "" {
+			if intent, ok, err := s.sessions.GetSessionRunIntent(strings.TrimSpace(config.sessionID), strings.TrimSpace(config.runID)); err == nil && ok {
+				run.PlanID = firstNonEmptyString(strings.TrimSpace(run.PlanID), strings.TrimSpace(intent.PlanID))
+				run.CheckpointID = firstNonEmptyString(strings.TrimSpace(run.CheckpointID), strings.TrimSpace(intent.CheckpointID))
+				run.AttemptID = firstNonEmptyString(strings.TrimSpace(run.AttemptID), strings.TrimSpace(intent.AttemptID))
+			}
+		}
+		return run
+	}
 	run := tool.ArtifactRunContext{
 		SessionID: strings.TrimSpace(config.sessionID),
 		RunID:     strings.TrimSpace(config.runID),
