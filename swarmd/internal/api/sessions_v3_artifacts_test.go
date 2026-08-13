@@ -298,6 +298,12 @@ func TestManagedArtifactCatalogSuppressesUnavailableLegacyDuplicateForNativeHand
 	previewRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(previewRec, withTestPrincipal(previewReq))
 	if previewRec.Code != http.StatusOK || !strings.Contains(previewRec.Body.String(), "<title>managed</title>") { t.Fatalf("managed handoff preview status=%d body=%s", previewRec.Code, previewRec.Body.String()) }
+	accessBody := bytes.NewBufferString(`{"artifact_id":"`+variant.ID+`"}`)
+	accessReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+variant.SessionID+"/artifacts/preview-access", accessBody)
+	accessReq.Header.Set("Content-Type", "application/json")
+	accessRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(accessRec, withTestPrincipal(accessReq))
+	if accessRec.Code != http.StatusOK || !strings.Contains(accessRec.Body.String(), `"token"`) { t.Fatalf("managed HTML preview access status=%d body=%s", accessRec.Code, accessRec.Body.String()) }
 }
 
 func TestManagedSessionV3ArtifactPackageEntryPrefersRootIndexAndFallsBackToHTML(t *testing.T) {

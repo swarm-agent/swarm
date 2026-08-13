@@ -360,8 +360,12 @@ func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady || artifact.Managed.MediaType != "application/zip" {
-		writeError(w, http.StatusNotFound, errors.New("artifact package not found"))
+	if !found || artifact.Descriptor.Kind != "html" || artifact.Managed == nil || artifact.Managed.Status != pebblestore.SessionArtifactStatusReady {
+		writeError(w, http.StatusNotFound, errors.New("artifact preview not found"))
+		return
+	}
+	if artifact.Managed.MediaType != "application/zip" && artifact.Managed.MediaType != "text/html" {
+		writeError(w, http.StatusNotFound, errors.New("artifact preview not found"))
 		return
 	}
 	expiresAt := time.Now().Add(sessionsV3ArtifactPreviewTokenTTL)
