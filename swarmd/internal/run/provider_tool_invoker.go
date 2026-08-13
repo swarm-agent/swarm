@@ -291,6 +291,38 @@ func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []str
 	return originRoots
 }
 
+func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerConfig) tool.ArtifactRunContext {
+	run := tool.ArtifactRunContext{
+		SessionID: strings.TrimSpace(config.sessionID),
+		RunID:     strings.TrimSpace(config.runID),
+	}
+	if s == nil || s.sessions == nil || run.SessionID == "" || run.RunID == "" {
+		return run
+	}
+	if intent, ok, err := s.sessions.GetSessionRunIntent(run.SessionID, run.RunID); err == nil && ok {
+		run.PlanID = strings.TrimSpace(intent.PlanID)
+		run.CheckpointID = strings.TrimSpace(intent.CheckpointID)
+		run.AttemptID = strings.TrimSpace(intent.AttemptID)
+	}
+	if run.PlanID != "" && run.CheckpointID != "" && run.AttemptID != "" {
+		return run
+	}
+	active, ok, err := s.sessions.GetActivePlan(run.SessionID)
+	if err != nil || !ok || active.Document == nil || active.Document.ExecutionState == nil || strings.TrimSpace(active.Document.ExecutionState.CurrentRunID) != run.RunID {
+		return run
+	}
+	if run.PlanID == "" {
+		run.PlanID = strings.TrimSpace(active.ID)
+	}
+	if run.CheckpointID == "" {
+		run.CheckpointID = strings.TrimSpace(active.Document.ActiveCheckpointID)
+	}
+	if run.AttemptID == "" {
+		run.AttemptID = strings.TrimSpace(active.Document.ExecutionState.ActiveAttemptID)
+	}
+	return run
+}
+
 func providerManagedCheckpointBoundaryCall(call tool.Call) bool {
 	if canonicalToolName(call.Name) != "plan_manage" {
 		return false
@@ -553,6 +585,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						Principal:   principal,
 						SessionID:   strings.TrimSpace(config.sessionID),
 					})
+					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {
 							return

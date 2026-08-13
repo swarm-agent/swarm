@@ -730,6 +730,33 @@ func TestProviderManagedV3BashEmitsEachLineBeforeCompletion(t *testing.T) {
 	}
 }
 
+func TestProviderManagedArtifactRunContextUsesTrustedRunIntentLineage(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+
+	_, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		ClientRequestID: "artifact-lineage-intent",
+		IdempotencyKey:  "artifact-lineage-intent",
+		PayloadHash:     "artifact-lineage-intent",
+		RequestHash:     "artifact-lineage-intent",
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		RunIntent: &pebblestore.V3SessionRunIntent{
+			RunID: "run-artifact", Status: sessionruntime.RunIntentRunning,
+			PlanID: "plan-1", CheckpointID: "cp-2", AttemptID: "cp-2:attempt-3",
+		},
+	})
+	if err != nil {
+		t.Fatalf("persist run intent: %v", err)
+	}
+
+	run := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: sessionID, runID: "run-artifact"})
+	if run.SessionID != sessionID || run.RunID != "run-artifact" || run.PlanID != "plan-1" || run.CheckpointID != "cp-2" || run.AttemptID != "cp-2:attempt-3" {
+		t.Fatalf("artifact run context = %#v", run)
+	}
+}
+
 func newProviderManagedV3PermissionTestService(t testing.TB, workspace string) (*Service, string, *permission.Service, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))

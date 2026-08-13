@@ -64,6 +64,53 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
+type artifactMetadataBoundary struct {
+	*sessionruntime.Service
+	mu        sync.RWMutex
+	publisher func(sessionruntime.RealtimeOutboxRecord) error
+}
+
+func (b *artifactMetadataBoundary) SetPublisher(publisher func(sessionruntime.RealtimeOutboxRecord) error) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.publisher = publisher
+	b.mu.Unlock()
+}
+
+func (b *artifactMetadataBoundary) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
+	if b == nil || b.Service == nil {
+		return pebblestore.V3SessionMutationResult{}, errors.New("artifact metadata boundary is not configured")
+	}
+	result, err := b.Service.ApplySessionMutation(input)
+	if err != nil || result.Replayed {
+		return result, err
+	}
+	b.mu.RLock()
+	publisher := b.publisher
+	b.mu.RUnlock()
+	if publisher == nil {
+		return result, errors.New("artifact realtime publisher is not configured")
+	}
+	outboxes := result.RealtimeOutboxes
+	if len(outboxes) == 0 && result.RealtimeOutbox != nil {
+		outboxes = []pebblestore.V3RealtimeOutboxRecord{*result.RealtimeOutbox}
+	}
+	if len(outboxes) == 0 {
+		return result, errors.New("committed artifact mutation is missing durable realtime outbox record")
+	}
+	for _, outbox := range outboxes {
+		if outbox.EndpointSeq == 0 {
+			continue
+		}
+		if publishErr := publisher(outbox); publishErr != nil {
+			log.Printf("warning: artifact realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, outbox.EndpointSeq, publishErr)
+		}
+	}
+	return result, nil
+}
+
 type Daemon struct {
 	cfg                       config.Config
 	lock                      *lock.FileLock
@@ -213,8 +260,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	artifactRegistry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
+	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
+	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
 	sessionSvc.SetArtifactSessionCleaner(artifactRegistry)
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
+	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
 	if err := sessionSvc.EnsureSessionRunStateIndex(); err != nil {
 		_ = secretStore.Close()
@@ -457,6 +507,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	apiServer.SetAITaskEnqueuer(aiTaskDispatcher)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
+	artifactMetadata.SetPublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetModelProfileService(modelProfileSvc)

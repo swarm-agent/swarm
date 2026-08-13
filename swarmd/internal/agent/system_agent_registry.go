@@ -322,6 +322,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_agent":    {Enabled: pebblestore.BoolPtr(false)},
 			"manage_theme":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_worktree": {Enabled: pebblestore.BoolPtr(true)},
 			"plan_manage":     {Enabled: pebblestore.BoolPtr(true)},
 			"ask_user":        {Enabled: pebblestore.BoolPtr(true)},
@@ -467,7 +468,7 @@ func IdeaAgentToolContract() *pebblestore.AgentToolContract {
 func DesignerAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
-		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)},
+		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
 		"bash": {Enabled: pebblestore.BoolPtr(false)}, "git_status": {Enabled: pebblestore.BoolPtr(false)}, "git_diff": {Enabled: pebblestore.BoolPtr(false)}, "git_add": {Enabled: pebblestore.BoolPtr(false)}, "git_commit": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)}, "manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
