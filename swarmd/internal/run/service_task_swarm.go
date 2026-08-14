@@ -337,7 +337,7 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 	}
 	if agentruntime.IsDesignerAgentName(request.AgentType) {
 		if request.OutputMode == taskOutputModeManaged {
-			b.WriteString("- output mode: managed; use manage_artifact to create, update, and finalize only the trusted opaque target injected by the server. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+			b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call. The server injects and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
 		} else {
 			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")
 		}

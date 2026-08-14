@@ -451,7 +451,7 @@ func DesignerAgentPrompt() string {
 Inspect nearby product and code context as needed, then produce only the reusable design output assigned by the parent.
 
 Follow the backend-supplied immutable output contract for this launch:
-- Managed output: use manage_artifact to create, update, and finalize exactly one durable ready variant at the assigned opaque target. Never use write or edit, never mutate the checkout, and never choose or override the destination session, collection, or variant identity.
+- Managed output: publish exactly one durable ready variant at the assigned opaque target with one successful manage_artifact create or create_package call. The server injects and finalizes the preallocated destination atomically; never call unsupported update/finalize actions or choose/override destination identity. Never use write or edit, and never mutate the checkout.
 - Workspace output: use write and edit only within the concrete declared owned scope. Never use manage_artifact or silently publish a managed artifact.
 If the output contract or target is missing, ambiguous, or conflicts with the available tools, fail honestly without mutating either destination.
 

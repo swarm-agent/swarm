@@ -129,12 +129,32 @@ func TestAuthorityFinalizesPreallocatedManagedPlaceholder(t *testing.T) {
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
 	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Iterations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
 	metadata.variant = pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Status: pebblestore.SessionArtifactStatusStaging, Lineage: lineage, Presentation: pebblestore.SessionArtifactPresentation{Label: "Compact"}}
+	// The parent reserves the placeholder before this child provider run exists.
+	principal.RunID, principal.PlanID, principal.CheckpointID, principal.AttemptID = "child-run-1", "child-plan-1", "child-cp-1", "child-attempt-1"
 	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "compact.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Label: "Compact", Previewable: true}, Body: []byte("<h1>compact</h1>")})
 	if err != nil {
 		t.Fatalf("finalize placeholder: %v", err)
 	}
 	if created.Status != pebblestore.SessionArtifactStatusReady || created.Filename != "compact.html" || created.MediaType != "text/html" || created.Lineage != lineage || metadata.readyCalls != 1 {
 		t.Fatalf("finalized placeholder = %#v calls=%d", created, metadata.readyCalls)
+	}
+}
+
+func TestAuthorityRejectsPreallocatedManagedPlaceholderWithDifferentStableLineage(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	principal.TaskCallID, principal.ChildSessionID = "call-1", "child-1"
+	principal.IterationGroupID, principal.IterationID, principal.IterationIndex = "group-1", "iteration-1", 1
+	lineage := authority.lineage(principal, CreateInput{})
+	collectionLineage := lineage
+	collectionLineage.SourceSessionID, collectionLineage.ChildSessionID = "", ""
+	collectionLineage.IterationID, collectionLineage.IterationIndex = "", 0
+	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Iterations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
+	lineage.TaskCallID = "other-call"
+	metadata.variant = pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Status: pebblestore.SessionArtifactStatusStaging, Lineage: lineage}
+	principal.RunID = "child-run-1"
+	_, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "compact.html", MediaType: "text/html", Body: []byte("<h1>compact</h1>")})
+	if err == nil || !strings.Contains(err.Error(), "incompatible status, metadata, or lineage") {
+		t.Fatalf("stable lineage mismatch error = %v", err)
 	}
 }
 

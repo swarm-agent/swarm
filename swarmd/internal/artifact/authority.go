@@ -29,16 +29,16 @@ type MetadataStore interface {
 // Principal is trusted run/session context. None of these ownership or lineage
 // fields are accepted from artifact content or model-authored metadata.
 type Principal struct {
-	SessionID      string
-	AccountScopeID string
-	UserID         string
-	RunID          string
-	PlanID         string
-	CheckpointID   string
-	AttemptID      string
-	TaskCallID     string
-	ProgramID      string
-	ProgramJobID   string
+	SessionID        string
+	AccountScopeID   string
+	UserID           string
+	RunID            string
+	PlanID           string
+	CheckpointID     string
+	AttemptID        string
+	TaskCallID       string
+	ProgramID        string
+	ProgramJobID     string
 	ChildSessionID   string
 	IterationGroupID string
 	IterationGroup   string
@@ -120,14 +120,15 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
 	} else if ok {
+		lineageCompatible := existing.Lineage == (pebblestore.SessionArtifactLineage{}) || artifactDestinationLineageCompatible(existing.Lineage, lineage)
 		if existing.Status == pebblestore.SessionArtifactStatusReady {
-			if existing.Lineage != lineage {
+			if !lineageCompatible {
 				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible lineage", variant.ID)
 			}
 			return existing, nil
 		}
 		metadataCompatible := (existing.Filename == "" && existing.MediaType == "") || (existing.Filename == variant.Filename && existing.MediaType == variant.MediaType)
-		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || (existing.Lineage != (pebblestore.SessionArtifactLineage{}) && existing.Lineage != lineage) {
+		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !lineageCompatible {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, or lineage", variant.ID)
 		}
 		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)
@@ -143,7 +144,14 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		// then the terminal mutation merges the produced metadata into it.
 		variant.Version, variant.AccountScopeID, variant.SessionID, variant.Status = existing.Version, existing.AccountScopeID, existing.SessionID, existing.Status
 		variant.CreatedAt, variant.UpdatedAt, variant.EventSeq = existing.CreatedAt, existing.UpdatedAt, existing.EventSeq
-		variant.Lineage = lineage
+		if existing.Lineage == (pebblestore.SessionArtifactLineage{}) {
+			variant.Lineage = lineage
+		} else {
+			// The placeholder is allocated before the child provider run exists, so
+			// preserve its stable trusted destination lineage instead of trying to
+			// mutate it with run/plan/attempt metadata discovered during execution.
+			variant.Lineage = existing.Lineage
+		}
 		if collection.Lineage == (pebblestore.SessionArtifactLineage{}) {
 			collection.Lineage = collectionLineage
 		}
@@ -470,6 +478,16 @@ func (a *Authority) owned(principal Principal) (*Service, Principal, error) {
 	}
 	principal.AccountScopeID, principal.UserID = session.AccountScopeID, session.UserID
 	return service, principal, nil
+}
+
+func artifactDestinationLineageCompatible(existing, incoming pebblestore.SessionArtifactLineage) bool {
+	// A managed destination is reserved before the child provider run is
+	// allocated. Execution-attempt identifiers are therefore unavailable on the
+	// placeholder and are not part of destination identity. Every parent/task/
+	// program/child/iteration/source field remains immutable and must match.
+	existing.RunID, existing.PlanID, existing.CheckpointID, existing.AttemptID = "", "", "", ""
+	incoming.RunID, incoming.PlanID, incoming.CheckpointID, incoming.AttemptID = "", "", "", ""
+	return existing == incoming
 }
 
 func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.SessionArtifactLineage {

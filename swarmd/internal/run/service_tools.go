@@ -4822,7 +4822,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString(config.ArtifactRunContext.CollectionID)
 			b.WriteString(", variant ")
 			b.WriteString(config.ArtifactRunContext.VariantID)
-			b.WriteString("\n- artifact contract: call manage_artifact create or create_package and omit collection_id/variant_id; trusted orchestration injects them. Completion without a ready artifact is a failed handoff; do not choose or override destination lineage\n")
+			b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id; trusted orchestration injects and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
 		case taskOutputModeWorkspace:
 			b.WriteString("- output mode: workspace\n")
 			b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
@@ -4865,7 +4865,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		b.WriteString("10. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
 	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
 		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
-			b.WriteString("9. For managed Designer work, use manage_artifact to create, update, and finalize the assigned opaque variant, and finish only after it returns the trusted ready reference; do not use write/edit or mutate the checkout.\n")
+			b.WriteString("9. For managed Designer work, publish with one successful manage_artifact create or create_package call; the server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference.\n")
 		} else {
 			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
 		}
