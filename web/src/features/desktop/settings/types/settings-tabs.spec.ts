@@ -10,6 +10,7 @@ test('account settings is the first/default settings tab', () => {
   assert.equal(normalizeSettingsTabID('not-a-tab'), 'account')
   assert.equal(normalizeSettingsTabID('behavior'), 'behavior')
   assert.equal(normalizeSettingsTabID('notifications'), 'notifications')
+  assert.equal(normalizeSettingsTabID('images'), 'images')
   assert.equal(normalizeSettingsTabID('models'), 'actions')
   assert.equal(normalizeSettingsTabID('actions'), 'actions')
   assert.equal(SETTINGS_TABS.includes('models' as never), false)
@@ -17,4 +18,5 @@ test('account settings is the first/default settings tab', () => {
   assert.equal(SETTINGS_TABS.includes('agents' as never), false)
   assert.equal(normalizeSettingsTabID('agents'), 'account')
   assert.equal(SETTINGS_TABS.includes('tailscale'), true)
+  assert.equal(SETTINGS_TABS.includes('images'), true)
 })

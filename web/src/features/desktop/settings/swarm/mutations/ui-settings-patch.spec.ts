@@ -8,6 +8,7 @@ import { saveShowCompactButtonSetting } from './save-show-compact-button-setting
 import { saveShowTipsSetting } from './save-show-tips-setting'
 import { saveSwarmSettings } from './save-swarm-settings'
 import { saveDefaultWorkspaceRoute } from './save-default-workspace-route'
+import { saveImageDefaultModel } from './save-image-default-model'
 
 function installFetchMock(handler: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>) {
   const original = globalThis.fetch
@@ -139,6 +140,30 @@ test('saveSwarmSettings sends only swarm name patch and returns refreshed target
       swarm: { name: 'Primary Renamed' },
     })
     assert(seenURLs.some((url) => url.includes('/v1/swarm/targets')), 'expected immediate target refresh')
+  } finally {
+    restore()
+  }
+})
+
+test('saveImageDefaultModel sends only the image tool patch', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({ tools: { image: { default_model: 'gemini-nano-banana-pro' } } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+
+  try {
+    const response = await saveImageDefaultModel({
+      current: { theme: { active_id: 'tide' }, chat: { thinking_tags: false }, tools: { image: { default_model: 'codex-image-gen' } } },
+      defaultModel: 'gemini-nano-banana-pro',
+    })
+    assert.equal(response.tools?.image?.default_model, 'gemini-nano-banana-pro')
+    assert.deepEqual(JSON.parse(capturedBody), {
+      tools: { image: { default_model: 'gemini-nano-banana-pro' } },
+    })
   } finally {
     restore()
   }
