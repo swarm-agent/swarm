@@ -2,8 +2,8 @@
   "schema_version": "2026-08-14.2",
   "api_version": "v1",
   "snapshot_schema_version": "2026-08-14.2",
-  "snapshot_id": "swarm-models-v1-2d9570e72578d0fe",
-  "snapshot_version": "2d9570e72578d0fe",
+  "snapshot_id": "swarm-models-v1-b1a2717c6a27fbb5",
+  "snapshot_version": "b1a2717c6a27fbb5",
   "generated_at": "2026-08-14T13:44:13Z",
   "model_count": 689,
   "provider_count": 7,
@@ -564,6 +564,34 @@
         },
         "live_api_semantics": "Live API is a distinct WebSocket/bidiGenerateContent serving surface. Native audio output and text/transcription events are documented separately in provider-specific output semantics.",
         "media_generation_semantics": "Gemini image models, Imagen, Veo, Gemini Omni, Lyria, and TTS entries publish their own output modalities; media output is never inferred from a neighboring family.",
+        "image_generation_settings": {
+          "explicit_profile_model_ids": [
+            "deep-research-max-preview-04-2026",
+            "deep-research-preview-04-2026",
+            "gemini-2.5-flash-image",
+            "gemini-3-pro-image",
+            "gemini-3-pro-image-preview",
+            "gemini-3.1-flash-image",
+            "gemini-3.1-flash-image-preview",
+            "gemini-3.1-flash-lite-image",
+            "imagen-4.0-fast-generate-001",
+            "imagen-4.0-generate-001",
+            "imagen-4.0-ultra-generate-001",
+            "nano-banana-pro-preview"
+          ],
+          "unknown_semantics": "Every Google image-output row has an explicit settings profile. status=unknown means clients must not advertise synthesized nil/default controls.",
+          "managed_tool_semantics": "provider_specific.google.image_generation.managed_image_tool records whether Swarm's current managed image tool accepts the exact model ID; supported_values remain model-specific."
+        },
+        "video_generation_settings": {
+          "explicit_profile_model_ids": [
+            "gemini-omni-flash-preview",
+            "veo-3.1-fast-generate-preview",
+            "veo-3.1-generate-preview",
+            "veo-3.1-lite-generate-preview"
+          ],
+          "unknown_semantics": "Every Google video-output row has an explicit settings profile. Fixed output facts, unsupported selectors, and unknown selectable ranges remain distinct.",
+          "conditional_semantics": "settings.variants and features.conditions preserve mode-, resolution-, feature-, and region-specific constraints; clients must not flatten them into universal enums."
+        },
         "unknown_alias_semantics": "Hot-swapped latest aliases or stale exact versions without a current exact first-party modality table remain explicitly unknown."
       },
       "source_urls": {
@@ -1984,6 +2012,34 @@
           "source_id": "google_gemini_media_generation_docs",
           "kind": "official_docs",
           "url": "https://ai.google.dev/gemini-api/docs/models.md.txt",
+          "method": "GET",
+          "auth_required": false
+        },
+        {
+          "source_id": "google_gemini_image_generation_docs",
+          "kind": "official_docs",
+          "url": "https://ai.google.dev/gemini-api/docs/image-generation",
+          "method": "GET",
+          "auth_required": false
+        },
+        {
+          "source_id": "google_gemini_imagen_docs",
+          "kind": "official_docs",
+          "url": "https://ai.google.dev/gemini-api/docs/imagen",
+          "method": "GET",
+          "auth_required": false
+        },
+        {
+          "source_id": "google_gemini_veo_docs",
+          "kind": "official_docs",
+          "url": "https://ai.google.dev/gemini-api/docs/veo",
+          "method": "GET",
+          "auth_required": false
+        },
+        {
+          "source_id": "google_gemini_omni_video_docs",
+          "kind": "official_docs",
+          "url": "https://ai.google.dev/gemini-api/docs/omni",
           "method": "GET",
           "auth_required": false
         },
@@ -27311,7 +27367,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Antigravity agent page lists text and image input and text output on the Interactions API."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -27684,7 +27742,9 @@
             "status": "unverified",
             "exact_model": false,
             "notes": "models.list exposes generateAnswer and an attributed-question-answering description, but it does not publish a safe modality table. Inputs and outputs remain explicitly unknown."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -28078,7 +28138,58 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Deep Research Max agent page lists text, image, PDF, audio, and video input plus cited-text reports and images as outputs."
-          }
+          },
+          "image_generation": {
+            "status": "unknown",
+            "api_surface": "interactions_api",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "No safe Swarm managed-image-tool mapping is verified for this exact model ID and API surface."
+            },
+            "settings": {
+              "image_size": {
+                "status": "unknown",
+                "client_parameter": "image_size",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model image-size selector was verified."
+              },
+              "aspect_ratio": {
+                "status": "unknown",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model aspect-ratio selector was verified."
+              },
+              "number_of_images": {
+                "status": "unknown",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model output-count selector was verified."
+              },
+              "person_generation": {
+                "status": "unknown",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model person-generation selector was verified."
+              }
+            },
+            "source_id": "google_gemini_per_model_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/models/deep-research-max-preview-04-2026",
+            "notes": "The exact Deep Research agent page lists images among report outputs, but does not define an image-generation settings contract. Clients must treat selectable image controls as unknown."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -28477,7 +28588,58 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Deep Research agent page lists text, image, PDF, audio, and video input plus cited-text reports and images as outputs."
-          }
+          },
+          "image_generation": {
+            "status": "unknown",
+            "api_surface": "interactions_api",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "No safe Swarm managed-image-tool mapping is verified for this exact model ID and API surface."
+            },
+            "settings": {
+              "image_size": {
+                "status": "unknown",
+                "client_parameter": "image_size",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model image-size selector was verified."
+              },
+              "aspect_ratio": {
+                "status": "unknown",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model aspect-ratio selector was verified."
+              },
+              "number_of_images": {
+                "status": "unknown",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model output-count selector was verified."
+              },
+              "person_generation": {
+                "status": "unknown",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model person-generation selector was verified."
+              }
+            },
+            "source_id": "google_gemini_per_model_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/models/deep-research-preview-04-2026",
+            "notes": "The exact Deep Research agent page lists images among report outputs, but does not define an image-generation settings contract. Clients must treat selectable image controls as unknown."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -28874,7 +29036,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Deep Research Pro agent page lists text, image, PDF, audio, and video input and cited-text report output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -29257,7 +29421,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists audio, image, video, and text input and text output. PDF is not listed."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -29640,7 +29806,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Gemini 2.0 Flash page explicitly lists the -001 version and the same audio, image, video, and text input with text output. PDF is not listed."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -30023,7 +30191,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists audio, image, video, and text input and text output. PDF is not listed."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -30406,7 +30576,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Gemini 2.0 Flash-Lite page explicitly lists the -001 version and the same audio, image, video, and text input with text output. PDF is not listed."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -30793,7 +30965,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Computer Use model page lists image and text input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -31229,7 +31403,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, and audio input and text output. Unlike adjacent versions, this page does not list PDF, so PDF is false here."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -31563,6 +31739,7 @@
       },
       "parameters": {
         "supported_parameters": [
+          "aspect_ratio",
           "max_temperature",
           "temperature",
           "top_k",
@@ -31702,6 +31879,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_25_image_aspect_ratio_docs",
+          "source_url": "https://developers.googleblog.com/gemini-2-5-flash-image-now-ready-for-production-with-new-aspect-ratios/",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.image_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash-image",
           "source_kind": "official_docs",
@@ -31809,7 +31998,78 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Nano Banana page lists image and text input and image and text output. PDF is not listed."
-          }
+          },
+          "image_generation": {
+            "status": "partially_verified",
+            "api_surface": "generate_content",
+            "managed_image_tool": {
+              "supported": true,
+              "client_setting_names": [
+                "aspect_ratio"
+              ],
+              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
+            },
+            "settings": {
+              "image_size": {
+                "status": "unknown",
+                "client_parameter": "image_size",
+                "provider_parameter": "generationConfig.imageConfig.imageSize",
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "The checked Gemini Developer API sources do not publish a safe selectable image_size enum for Gemini 2.5 Flash Image. The managed tool must not advertise 512, 2K, or 4K for this model."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "generationConfig.imageConfig.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "unsupported",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini generateContent does not expose a documented per-request image-count selector for this model; Swarm parallel output count is an orchestration control, not a provider parameter."
+              },
+              "person_generation": {
+                "status": "unsupported",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini native image generation does not expose Imagen's personGeneration selector on generateContent."
+              }
+            },
+            "source_id": "google_gemini_25_image_aspect_ratio_docs",
+            "source_url": "https://developers.googleblog.com/gemini-2-5-flash-image-now-ready-for-production-with-new-aspect-ratios/",
+            "notes": "This block is the client-readable image-generation control contract. Missing values are represented by an explicit unknown status rather than a synthetic nil/default option."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -32247,7 +32507,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -32659,7 +32921,9 @@
             "status": "partially_verified",
             "exact_model": false,
             "notes": "models.list exposes this exact Live API alias and bidiGenerateContent, but the checked first-party docs do not provide an exact alias modality table. No neighboring Live version is transferred."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -33067,7 +33331,9 @@
             "status": "partially_verified",
             "exact_model": false,
             "notes": "models.list exposes this exact Live API preview and bidiGenerateContent, but the checked first-party docs do not provide an exact version modality table. No newer Live version is transferred."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -33558,7 +33824,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Live model page lists audio, video, and text input plus audio and text output. Live text can include transcription events and is recorded separately from native audio response semantics."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -34009,7 +34277,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party TTS page lists text input and generated audio output; it is not an audio-transcription model."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -34435,7 +34705,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists audio, image, video, text, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -34887,7 +35159,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party TTS page lists text input and generated audio output; it is not an audio-transcription model."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -35338,7 +35612,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -35864,6 +36140,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_image_generation_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.image_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image",
           "source_kind": "official_docs",
@@ -35978,7 +36266,88 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Nano Banana Pro page lists image and text input and image and text output. PDF is not listed."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "generate_content",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
+            },
+            "settings": {
+              "image_size": {
+                "status": "verified",
+                "client_parameter": "image_size",
+                "provider_parameter": "generationConfig.imageConfig.imageSize",
+                "supported_values": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "provider_documented_values": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "default_value": "1K",
+                "notes": "Google documents 1K, 2K, and 4K for Gemini 3 Pro Image and requires uppercase K."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "generationConfig.imageConfig.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "unsupported",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini generateContent does not expose a documented per-request image-count selector for this model; Swarm parallel output count is an orchestration control, not a provider parameter."
+              },
+              "person_generation": {
+                "status": "unsupported",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini native image generation does not expose Imagen's personGeneration selector on generateContent."
+              }
+            },
+            "source_id": "google_gemini_image_generation_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+            "notes": "This block is the client-readable image-generation control contract. Missing values are represented by an explicit unknown status rather than a synthetic nil/default option."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -36364,6 +36733,8 @@
       },
       "parameters": {
         "supported_parameters": [
+          "aspect_ratio",
+          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -36503,6 +36874,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_image_generation_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.image_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image-preview",
           "source_kind": "official_docs",
@@ -36617,7 +37000,87 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party preview page lists image and text input and image and text output. PDF is not listed."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "generate_content",
+            "managed_image_tool": {
+              "supported": true,
+              "client_setting_names": [
+                "aspect_ratio",
+                "image_size"
+              ],
+              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
+            },
+            "settings": {
+              "image_size": {
+                "status": "verified",
+                "client_parameter": "image_size",
+                "provider_parameter": "generationConfig.imageConfig.imageSize",
+                "supported_values": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "provider_documented_values": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "default_value": "1K",
+                "notes": "Google documents 1K, 2K, and 4K for Gemini 3 Pro Image and requires uppercase K."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "generationConfig.imageConfig.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "unsupported",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini generateContent does not expose a documented per-request image-count selector for this model; Swarm parallel output count is an orchestration control, not a provider parameter."
+              },
+              "person_generation": {
+                "status": "unsupported",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini native image generation does not expose Imagen's personGeneration selector on generateContent."
+              }
+            },
+            "source_id": "google_gemini_image_generation_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+            "notes": "This block is the client-readable image-generation control contract. Missing values are represented by an explicit unknown status rather than a synthetic nil/default option."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -37008,7 +37471,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Gemini 3 Pro preview page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -37534,6 +37999,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_image_generation_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.image_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image",
           "source_kind": "official_docs",
@@ -37646,7 +38123,98 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Nano Banana 2 page lists text, image, and PDF input and image and text output."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "generate_content",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
+            },
+            "settings": {
+              "image_size": {
+                "status": "verified",
+                "client_parameter": "image_size",
+                "provider_parameter": "generationConfig.imageConfig.imageSize",
+                "supported_values": [
+                  "512",
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "provider_documented_values": [
+                  "512",
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "default_value": "1K",
+                "notes": "Google documents 512px (0.5K), 1K, 2K, and 4K and requires uppercase K for the K-valued choices."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "generationConfig.imageConfig.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "1:4",
+                  "1:8",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:1",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "8:1",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "1:4",
+                  "1:8",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:1",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "8:1",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "unsupported",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini generateContent does not expose a documented per-request image-count selector for this model; Swarm parallel output count is an orchestration control, not a provider parameter."
+              },
+              "person_generation": {
+                "status": "unsupported",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini native image generation does not expose Imagen's personGeneration selector on generateContent."
+              }
+            },
+            "source_id": "google_gemini_image_generation_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+            "notes": "This block is the client-readable image-generation control contract. Missing values are represented by an explicit unknown status rather than a synthetic nil/default option."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -38032,6 +38600,8 @@
       },
       "parameters": {
         "supported_parameters": [
+          "aspect_ratio",
+          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -38171,6 +38741,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_image_generation_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.image_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image-preview",
           "source_kind": "official_docs",
@@ -38283,7 +38865,88 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party preview page lists text, image, and PDF input and image and text output."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "generate_content",
+            "managed_image_tool": {
+              "supported": true,
+              "client_setting_names": [
+                "aspect_ratio",
+                "image_size"
+              ],
+              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
+            },
+            "settings": {
+              "image_size": {
+                "status": "verified",
+                "client_parameter": "image_size",
+                "provider_parameter": "generationConfig.imageConfig.imageSize",
+                "supported_values": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "provider_documented_values": [
+                  "512",
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "default_value": "1K",
+                "notes": "Google documents 512px (0.5K), 1K, 2K, and 4K for Gemini 3.1 Flash Image, but Swarm's current managed tool rejects 512 for this preview ID, so clients receive only the accepted intersection."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "generationConfig.imageConfig.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "unsupported",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini generateContent does not expose a documented per-request image-count selector for this model; Swarm parallel output count is an orchestration control, not a provider parameter."
+              },
+              "person_generation": {
+                "status": "unsupported",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini native image generation does not expose Imagen's personGeneration selector on generateContent."
+              }
+            },
+            "source_id": "google_gemini_image_generation_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/image-generation",
+            "notes": "This block is the client-readable image-generation control contract. Missing values are represented by an explicit unknown status rather than a synthetic nil/default option."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -38735,7 +39398,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -39222,6 +39887,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_31_flash_lite_image_model_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.image_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image",
           "source_kind": "official_docs",
@@ -39341,7 +40018,84 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Nano Banana 2 Lite page lists text and image input and image and text output. PDF is not listed."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "generate_content",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
+            },
+            "settings": {
+              "image_size": {
+                "status": "verified",
+                "client_parameter": "image_size",
+                "provider_parameter": "generationConfig.imageConfig.imageSize",
+                "supported_values": [
+                  "1K"
+                ],
+                "provider_documented_values": [
+                  "1K"
+                ],
+                "default_value": "1K",
+                "notes": "Google documents 1K as the only supported image_size; 2K and 4K are explicitly unsupported."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "generationConfig.imageConfig.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "unsupported",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini generateContent does not expose a documented per-request image-count selector for this model; Swarm parallel output count is an orchestration control, not a provider parameter."
+              },
+              "person_generation": {
+                "status": "unsupported",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Gemini native image generation does not expose Imagen's personGeneration selector on generateContent."
+              }
+            },
+            "source_id": "google_gemini_31_flash_lite_image_model_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image",
+            "notes": "This block is the client-readable image-generation control contract. Missing values are represented by an explicit unknown status rather than a synthetic nil/default option."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -39772,7 +40526,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party preview page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -40276,7 +41032,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Live model page lists text, image, audio, and video input plus text and audio output. The Live transport sends video as sampled image frames."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -40739,7 +41497,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party TTS page lists text input and generated audio output; it is not an audio-transcription model."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -41188,7 +41948,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -41618,7 +42380,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Gemini 3.1 Pro page explicitly lists this custom-tools endpoint as a version of the same model; its modality table is therefore applied without family inference."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -42071,7 +42835,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -42524,7 +43290,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -42968,7 +43736,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Live Translate page lists speech audio input and translated speech audio plus transcript text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -43420,7 +44190,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party model page lists text, image, video, audio, and PDF input and text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -43864,7 +44636,9 @@
           },
           "docs_enrichment_status": "official_model_docs_verified",
           "pricing_enrichment_status": "official_gemini_pricing_docs",
-          "note": "First-party exact-model and DeepMind model-card docs verify identity, multimodal inputs, token limits, stable model code, thinking levels, consumption options, and introductory token pricing. This hydration account has not yet verified the model through models.list, so API visibility, API-returned generation methods, and default generation parameters remain unverified."
+          "note": "First-party exact-model and DeepMind model-card docs verify identity, multimodal inputs, token limits, stable model code, thinking levels, consumption options, and introductory token pricing. This hydration account has not yet verified the model through models.list, so API visibility, API-returned generation methods, and default generation parameters remain unverified.",
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -44234,7 +45008,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party embedding model page lists text input and text embeddings output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -44608,7 +45384,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Embedding 2 page lists text, image, video, audio, and PDF input mapped into embeddings."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -44986,7 +45764,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Embedding 2 Preview page lists text, image, video, audio, and PDF input mapped into embeddings."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -45376,7 +46156,9 @@
             "status": "partially_verified",
             "exact_model": false,
             "notes": "Google documents latest as a hot-swapped alias. models.list does not reveal the current target, so no neighboring Flash model modalities are transferred."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -45762,7 +46544,9 @@
             "status": "partially_verified",
             "exact_model": false,
             "notes": "Google documents latest as a hot-swapped alias. models.list does not reveal the current target, so no neighboring Flash-Lite model modalities are transferred."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -46008,7 +46792,10 @@
       },
       "parameters": {
         "supported_parameters": [
+          "aspect_ratio",
+          "delivery",
           "max_temperature",
+          "task",
           "temperature",
           "top_k",
           "top_p"
@@ -46134,6 +46921,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_omni_video_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/omni",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.video_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-omni-flash",
           "source_kind": "official_docs",
@@ -46250,6 +47049,171 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Omni page lists text, image, and video input and video output on the Interactions API."
+          },
+          "image_generation": null,
+          "video_generation": {
+            "status": "partially_verified",
+            "api_surface": "interactions_api",
+            "settings": {
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "response_format.aspect_ratio",
+                "supported_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "provider_documented_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default_value": "16:9",
+                "variants": [],
+                "notes": "Gemini Omni supports landscape and portrait video output."
+              },
+              "resolution": {
+                "status": "unsupported",
+                "client_parameter": "resolution",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [
+                  "720p"
+                ],
+                "default_value": null,
+                "variants": [],
+                "notes": "The exact model page fixes current output at 720p; no selectable output-resolution parameter or alternative resolution enum is published."
+              },
+              "duration_seconds": {
+                "status": "unknown",
+                "client_parameter": "duration_seconds",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [
+                  "3-10"
+                ],
+                "default_value": null,
+                "variants": [],
+                "notes": "The exact model page documents output videos from 3 through 10 seconds, but the checked guide does not publish a client duration selector, exact enum/range parameter, or default."
+              },
+              "person_generation": {
+                "status": "unsupported",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Gemini Omni Interactions guide does not publish a personGeneration selector."
+              },
+              "seed": {
+                "status": "unsupported",
+                "client_parameter": "seed",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Gemini Omni Interactions guide does not publish a seed selector."
+              },
+              "task": {
+                "status": "verified",
+                "client_parameter": "task",
+                "provider_parameter": "generation_config.video_config.task",
+                "supported_values": [
+                  "text_to_video",
+                  "image_to_video",
+                  "reference_to_video",
+                  "edit"
+                ],
+                "provider_documented_values": [
+                  "text_to_video",
+                  "image_to_video",
+                  "reference_to_video",
+                  "edit"
+                ],
+                "default_value": null,
+                "variants": [],
+                "notes": "The task selector disambiguates the intended workflow; if omitted, the model infers the task from the prompt and inputs."
+              },
+              "delivery": {
+                "status": "verified",
+                "client_parameter": "delivery",
+                "provider_parameter": "response_format.delivery",
+                "supported_values": [
+                  "inline",
+                  "uri"
+                ],
+                "provider_documented_values": [
+                  "inline",
+                  "uri"
+                ],
+                "default_value": null,
+                "variants": [],
+                "notes": "Use uri for generated videos larger than 4 MB. The guide shows inline output when delivery is omitted but does not define a formal default enum value."
+              }
+            },
+            "features": {
+              "audio_generation": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "The model generates an appropriate audio track by default and accepts audio direction in the prompt; no audio on/off selector is published."
+              },
+              "initial_image": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "input[type=image]",
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "One or more images can guide image-to-video or subject-reference generation; the checked source does not publish a safe maximum image count."
+              },
+              "last_frame": {
+                "status": "unsupported",
+                "supported": false,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "The exact guide explicitly says video interpolation between first and last frames is unsupported."
+              },
+              "reference_images": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "input[type=image]",
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "Multiple subject-reference images are documented, but no authoritative maximum count is published in the checked guide."
+              },
+              "video_extension": {
+                "status": "unsupported",
+                "supported": false,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "The exact guide explicitly says video extension is unsupported."
+              },
+              "conversational_editing": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "previous_interaction_id",
+                "max_inputs": 1,
+                "conditions": {},
+                "notes": "Stored generated videos can be refined across turns with previous_interaction_id. Uploaded-video editing is unavailable in EEA, Switzerland, and the UK; editing model-generated video remains supported."
+              }
+            },
+            "output": {
+              "videos_per_request": 1,
+              "frame_rate_fps": 24,
+              "fixed_resolution": "720p",
+              "documented_duration_seconds": {
+                "min": 3,
+                "max": 10
+              }
+            },
+            "source_id": "google_gemini_omni_video_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/omni",
+            "notes": "Only documented Interactions API selectors are advertised. Fixed output facts and model-page ranges stay separate from selectable settings, and unpublished duration/reference-count controls remain explicit unknowns."
           }
         }
       },
@@ -46640,7 +47604,9 @@
             "status": "partially_verified",
             "exact_model": false,
             "notes": "Google documents latest as a hot-swapped alias. models.list does not reveal the current target, so no neighboring Pro model modalities are transferred."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -47027,7 +47993,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Robotics-ER page lists text, image, video, and audio input and text output. PDF is not listed."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -47444,7 +48412,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Robotics-ER page lists text, image, video, and audio input and text output. PDF is not listed."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -47831,7 +48801,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Gemma 4 model card names 26B A4B as text/image input with text generation; the Gemini API support page lists this exact endpoint."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -48216,7 +49188,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Gemma 4 model card names 31B as text/image input with text generation; the Gemini API support page lists this exact endpoint."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -48613,7 +49587,88 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Imagen 4 table lists this exact Gemini API code with text input and image output."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "predict",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The Swarm managed image tool uses Gemini generateContent and does not accept Imagen predict model IDs."
+            },
+            "settings": {
+              "image_size": {
+                "status": "unsupported",
+                "client_parameter": "image_size",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "Google documents imageSize only for Imagen 4 Standard and Ultra, so the Fast model must not advertise a nil/default imageSize selector."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "parameters.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "verified",
+                "client_parameter": "number_of_images",
+                "provider_parameter": "parameters.sampleCount",
+                "supported_values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "provider_documented_values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "default_value": 4,
+                "notes": "Imagen supports one through four images per request."
+              },
+              "person_generation": {
+                "status": "verified",
+                "client_parameter": "person_generation",
+                "provider_parameter": "parameters.personGeneration",
+                "supported_values": [
+                  "dont_allow",
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "provider_documented_values": [
+                  "dont_allow",
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "default_value": "allow_adult",
+                "notes": "allow_all is unavailable in EU, UK, CH, and MENA locations; clients must apply the provider's regional restriction."
+              }
+            },
+            "source_id": "google_gemini_imagen_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/imagen",
+            "notes": "Imagen 4 is deprecated and scheduled to shut down on 2026-08-17. Controls remain published for safe operation until retirement."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -49010,7 +50065,94 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Imagen 4 table lists this exact Gemini API code with text input and image output."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "predict",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The Swarm managed image tool uses Gemini generateContent and does not accept Imagen predict model IDs."
+            },
+            "settings": {
+              "image_size": {
+                "status": "verified",
+                "client_parameter": "image_size",
+                "provider_parameter": "parameters.imageSize",
+                "supported_values": [
+                  "1K",
+                  "2K"
+                ],
+                "provider_documented_values": [
+                  "1K",
+                  "2K"
+                ],
+                "default_value": "1K",
+                "notes": "Google documents imageSize only for Imagen 4 Standard and Ultra. Uppercase K is required."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "parameters.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "verified",
+                "client_parameter": "number_of_images",
+                "provider_parameter": "parameters.sampleCount",
+                "supported_values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "provider_documented_values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "default_value": 4,
+                "notes": "Imagen supports one through four images per request."
+              },
+              "person_generation": {
+                "status": "verified",
+                "client_parameter": "person_generation",
+                "provider_parameter": "parameters.personGeneration",
+                "supported_values": [
+                  "dont_allow",
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "provider_documented_values": [
+                  "dont_allow",
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "default_value": "allow_adult",
+                "notes": "allow_all is unavailable in EU, UK, CH, and MENA locations; clients must apply the provider's regional restriction."
+              }
+            },
+            "source_id": "google_gemini_imagen_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/imagen",
+            "notes": "Imagen 4 is deprecated and scheduled to shut down on 2026-08-17. Controls remain published for safe operation until retirement."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -49407,7 +50549,94 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Imagen 4 table lists this exact Gemini API code with text input and image output."
-          }
+          },
+          "image_generation": {
+            "status": "verified",
+            "api_surface": "predict",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The Swarm managed image tool uses Gemini generateContent and does not accept Imagen predict model IDs."
+            },
+            "settings": {
+              "image_size": {
+                "status": "verified",
+                "client_parameter": "image_size",
+                "provider_parameter": "parameters.imageSize",
+                "supported_values": [
+                  "1K",
+                  "2K"
+                ],
+                "provider_documented_values": [
+                  "1K",
+                  "2K"
+                ],
+                "default_value": "1K",
+                "notes": "Google documents imageSize only for Imagen 4 Standard and Ultra. Uppercase K is required."
+              },
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "parameters.aspectRatio",
+                "supported_values": [
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9"
+                ],
+                "provider_documented_values": [
+                  "1:1",
+                  "3:4",
+                  "4:3",
+                  "9:16",
+                  "16:9"
+                ],
+                "default_value": "1:1",
+                "notes": "supported_values is the safe client-visible set for this exact model/tool combination; provider_documented_values preserves the broader provider list when Swarm's managed tool is narrower."
+              },
+              "number_of_images": {
+                "status": "verified",
+                "client_parameter": "number_of_images",
+                "provider_parameter": "parameters.sampleCount",
+                "supported_values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "provider_documented_values": [
+                  1,
+                  2,
+                  3,
+                  4
+                ],
+                "default_value": 4,
+                "notes": "Imagen supports one through four images per request."
+              },
+              "person_generation": {
+                "status": "verified",
+                "client_parameter": "person_generation",
+                "provider_parameter": "parameters.personGeneration",
+                "supported_values": [
+                  "dont_allow",
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "provider_documented_values": [
+                  "dont_allow",
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "default_value": "allow_adult",
+                "notes": "allow_all is unavailable in EU, UK, CH, and MENA locations; clients must apply the provider's regional restriction."
+              }
+            },
+            "source_id": "google_gemini_imagen_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/imagen",
+            "notes": "Imagen 4 is deprecated and scheduled to shut down on 2026-08-17. Controls remain published for safe operation until retirement."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -49813,7 +51042,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Lyria page lists text and image input and MP3 audio plus lyrics text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -50220,7 +51451,9 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Lyria page lists text and image input and MP3 audio plus lyrics text output."
-          }
+          },
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -50596,7 +51829,9 @@
           },
           "docs_enrichment_status": "official_model_docs_verified",
           "pricing_enrichment_status": "pending",
-          "note": "models.list supplies identity, token limits, generation methods, thinking, and default generation parameters. Google thinking controls are mapped from first-party Gemini thinking docs; per-model docs and pricing docs still need parsing before publishing precise multimodal capabilities and prices."
+          "note": "models.list supplies identity, token limits, generation methods, thinking, and default generation parameters. Google thinking controls are mapped from first-party Gemini thinking docs; per-model docs and pricing docs still need parsing before publishing precise multimodal capabilities and prices.",
+          "image_generation": null,
+          "video_generation": null
         }
       },
       "swarm": {
@@ -50984,7 +52219,58 @@
             "status": "partially_verified",
             "exact_model": true,
             "notes": "models.list identifies this exact resource as Gemini 3 Pro Image Preview. The first-party exact resource description and methods support applying its text/image to text/image contract without a family-name inference."
-          }
+          },
+          "image_generation": {
+            "status": "unknown",
+            "api_surface": "generate_content",
+            "managed_image_tool": {
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "No safe Swarm managed-image-tool mapping is verified for this exact model ID and API surface."
+            },
+            "settings": {
+              "image_size": {
+                "status": "unknown",
+                "client_parameter": "image_size",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model image-size selector was verified."
+              },
+              "aspect_ratio": {
+                "status": "unknown",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model aspect-ratio selector was verified."
+              },
+              "number_of_images": {
+                "status": "unknown",
+                "client_parameter": "number_of_images",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model output-count selector was verified."
+              },
+              "person_generation": {
+                "status": "unknown",
+                "client_parameter": "person_generation",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "notes": "No authoritative exact-model person-generation selector was verified."
+              }
+            },
+            "source_id": "google_gemini_models_api_resource_description",
+            "source_url": "https://generativelanguage.googleapis.com/v1beta/models",
+            "notes": "The Models API identifies this exact resource as a Gemini 3 Pro Image Preview alias, but the checked first-party docs do not publish a stable alias-level control contract. Controls are not inherited from a neighboring model ID."
+          },
+          "video_generation": null
         }
       },
       "swarm": {
@@ -51181,7 +52467,11 @@
         "is_free": null
       },
       "parameters": {
-        "supported_parameters": [],
+        "supported_parameters": [
+          "aspect_ratio",
+          "duration_seconds",
+          "resolution"
+        ],
         "default_parameters": {},
         "supported_voices": null
       },
@@ -51311,6 +52601,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_veo_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/veo",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.video_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/veo-3.1-generate-preview",
           "source_kind": "official_docs",
@@ -51419,6 +52721,277 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The first-party Veo 3.1 page lists this exact Fast code with text and image input and video with synchronized audio output."
+          },
+          "image_generation": null,
+          "video_generation": {
+            "status": "verified",
+            "api_surface": "predict_long_running",
+            "settings": {
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "parameters.aspectRatio",
+                "supported_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "provider_documented_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default_value": "16:9",
+                "variants": [],
+                "notes": "Landscape and portrait are supported for every current Veo 3.1 variant."
+              },
+              "resolution": {
+                "status": "verified",
+                "client_parameter": "resolution",
+                "provider_parameter": "parameters.resolution",
+                "supported_values": [
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "provider_documented_values": [
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "default_value": "720p",
+                "variants": [
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "720p"
+                    ],
+                    "conditions": {},
+                    "notes": "Default resolution and the only resolution allowed for video extension."
+                  },
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "1080p"
+                    ],
+                    "conditions": {
+                      "duration_seconds": 8
+                    },
+                    "notes": "1080p requires an 8-second duration."
+                  },
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "4k"
+                    ],
+                    "conditions": {
+                      "duration_seconds": 8
+                    },
+                    "notes": "4k requires an 8-second duration."
+                  }
+                ],
+                "notes": "Veo 3.1 and Fast support 720p, 1080p, and 4k; 1080p and 4k require duration_seconds=8, and video extension requires 720p."
+              },
+              "duration_seconds": {
+                "status": "verified",
+                "client_parameter": "duration_seconds",
+                "provider_parameter": "parameters.durationSeconds",
+                "supported_values": [
+                  4,
+                  6,
+                  8
+                ],
+                "provider_documented_values": [
+                  4,
+                  6,
+                  8
+                ],
+                "default_value": null,
+                "variants": [
+                  {
+                    "mode": "standard_generation_720p",
+                    "supported_values": [
+                      4,
+                      6,
+                      8
+                    ],
+                    "conditions": {
+                      "resolution": "720p"
+                    },
+                    "notes": "All documented durations are available for ordinary 720p generation."
+                  },
+                  {
+                    "mode": "high_resolution",
+                    "supported_values": [
+                      8
+                    ],
+                    "conditions": {
+                      "resolution": "1080p_or_4k"
+                    },
+                    "notes": "High-resolution output requires eight seconds."
+                  },
+                  {
+                    "mode": "reference_images_or_extension",
+                    "supported_values": [
+                      8
+                    ],
+                    "conditions": {},
+                    "notes": "Reference images and extension require eight seconds."
+                  }
+                ],
+                "notes": "Four, six, and eight seconds are selectable. Eight seconds is required for 1080p, 4k, reference images, and extension."
+              },
+              "person_generation": {
+                "status": "verified",
+                "client_parameter": "person_generation",
+                "provider_parameter": "parameters.personGeneration",
+                "supported_values": [],
+                "provider_documented_values": [
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "default_value": null,
+                "variants": [
+                  {
+                    "mode": "text_to_video",
+                    "supported_values": [
+                      "allow_all"
+                    ],
+                    "conditions": {
+                      "restricted_regions_override": "allow_adult"
+                    },
+                    "notes": "Outside EU, UK, CH, and MENA, text-to-video accepts allow_all. In those restricted regions Google permits allow_adult only."
+                  },
+                  {
+                    "mode": "image_to_video_or_interpolation",
+                    "supported_values": [
+                      "allow_adult"
+                    ],
+                    "conditions": {},
+                    "notes": "Image-to-video and first/last-frame interpolation accept allow_adult only."
+                  },
+                  {
+                    "mode": "reference_images",
+                    "supported_values": [
+                      "allow_adult"
+                    ],
+                    "conditions": {
+                      "duration_seconds": 8
+                    },
+                    "notes": "Reference-image generation accepts allow_adult only and requires an 8-second duration."
+                  },
+                  {
+                    "mode": "video_extension",
+                    "supported_values": [
+                      "allow_all"
+                    ],
+                    "conditions": {
+                      "resolution": "720p",
+                      "duration_seconds": 8,
+                      "restricted_regions_override": "allow_adult"
+                    },
+                    "notes": "Outside restricted regions, extension accepts allow_all; extension is 720p and uses an 8-second generation setting even though each operation extends the source by 7 seconds."
+                  }
+                ],
+                "notes": "No value is universal across Veo modes or regions. Clients must select from the matching variant rather than flattening the union into a global enum. Google separately says the regional default is dont_allow, but does not list dont_allow as a selectable Veo 3.1 value in the main parameter table."
+              },
+              "seed": {
+                "status": "unknown",
+                "client_parameter": "seed",
+                "provider_parameter": "parameters.seed",
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "Google documents seed as available for Veo 3 models, but publishes no safe numeric range or default. Clients must not advertise a synthesized selector or enum."
+              },
+              "task": {
+                "status": "unsupported",
+                "client_parameter": "task",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Veo predictLongRunning surface does not use Gemini Omni's generation_config.video_config.task selector."
+              },
+              "delivery": {
+                "status": "unsupported",
+                "client_parameter": "delivery",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Veo long-running operation returns a generated video resource; Gemini Omni's response_format.delivery selector does not apply."
+              }
+            },
+            "features": {
+              "audio_generation": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "Native synchronized audio is always on; Google does not publish an audio on/off selector."
+              },
+              "initial_image": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.image",
+                "max_inputs": 1,
+                "conditions": {},
+                "notes": "An initial image can be animated for image-to-video generation."
+              },
+              "last_frame": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.lastFrame",
+                "max_inputs": 1,
+                "conditions": {
+                  "requires_initial_image": true
+                },
+                "notes": "A final image can be combined with the required initial image for interpolation."
+              },
+              "reference_images": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.referenceImages",
+                "max_inputs": 3,
+                "conditions": {
+                  "duration_seconds": 8
+                },
+                "notes": "Up to three asset images can guide subject appearance; this mode requires duration_seconds=8."
+              },
+              "video_extension": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.video",
+                "max_inputs": 1,
+                "conditions": {
+                  "resolution": "720p",
+                  "duration_seconds": 8,
+                  "source_video_max_seconds": 141,
+                  "max_extensions": 20
+                },
+                "notes": "Only a video from a previous Veo generation can be extended. Each operation adds 7 seconds and can be repeated up to 20 times."
+              },
+              "conversational_editing": {
+                "status": "unsupported",
+                "supported": false,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "Veo does not expose Gemini Omni's previous_interaction_id conversational editing workflow."
+              }
+            },
+            "output": {
+              "videos_per_request": 1,
+              "frame_rate_fps": 24,
+              "fixed_resolution": null,
+              "documented_duration_seconds": null
+            },
+            "source_id": "google_gemini_veo_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/veo",
+            "notes": "Client-readable Veo controls preserve mode, resolution, feature, and regional conditions instead of advertising incompatible values as universal support."
           }
         }
       },
@@ -51617,7 +53190,11 @@
         "is_free": null
       },
       "parameters": {
-        "supported_parameters": [],
+        "supported_parameters": [
+          "aspect_ratio",
+          "duration_seconds",
+          "resolution"
+        ],
         "default_parameters": {},
         "supported_voices": null
       },
@@ -51747,6 +53324,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_veo_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/veo",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.video_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/veo-3.1-generate-preview",
           "source_kind": "official_docs",
@@ -51855,6 +53444,277 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Veo 3.1 page lists text and image input and video with synchronized audio output."
+          },
+          "image_generation": null,
+          "video_generation": {
+            "status": "verified",
+            "api_surface": "predict_long_running",
+            "settings": {
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "parameters.aspectRatio",
+                "supported_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "provider_documented_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default_value": "16:9",
+                "variants": [],
+                "notes": "Landscape and portrait are supported for every current Veo 3.1 variant."
+              },
+              "resolution": {
+                "status": "verified",
+                "client_parameter": "resolution",
+                "provider_parameter": "parameters.resolution",
+                "supported_values": [
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "provider_documented_values": [
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "default_value": "720p",
+                "variants": [
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "720p"
+                    ],
+                    "conditions": {},
+                    "notes": "Default resolution and the only resolution allowed for video extension."
+                  },
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "1080p"
+                    ],
+                    "conditions": {
+                      "duration_seconds": 8
+                    },
+                    "notes": "1080p requires an 8-second duration."
+                  },
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "4k"
+                    ],
+                    "conditions": {
+                      "duration_seconds": 8
+                    },
+                    "notes": "4k requires an 8-second duration."
+                  }
+                ],
+                "notes": "Veo 3.1 and Fast support 720p, 1080p, and 4k; 1080p and 4k require duration_seconds=8, and video extension requires 720p."
+              },
+              "duration_seconds": {
+                "status": "verified",
+                "client_parameter": "duration_seconds",
+                "provider_parameter": "parameters.durationSeconds",
+                "supported_values": [
+                  4,
+                  6,
+                  8
+                ],
+                "provider_documented_values": [
+                  4,
+                  6,
+                  8
+                ],
+                "default_value": null,
+                "variants": [
+                  {
+                    "mode": "standard_generation_720p",
+                    "supported_values": [
+                      4,
+                      6,
+                      8
+                    ],
+                    "conditions": {
+                      "resolution": "720p"
+                    },
+                    "notes": "All documented durations are available for ordinary 720p generation."
+                  },
+                  {
+                    "mode": "high_resolution",
+                    "supported_values": [
+                      8
+                    ],
+                    "conditions": {
+                      "resolution": "1080p_or_4k"
+                    },
+                    "notes": "High-resolution output requires eight seconds."
+                  },
+                  {
+                    "mode": "reference_images_or_extension",
+                    "supported_values": [
+                      8
+                    ],
+                    "conditions": {},
+                    "notes": "Reference images and extension require eight seconds."
+                  }
+                ],
+                "notes": "Four, six, and eight seconds are selectable. Eight seconds is required for 1080p, 4k, reference images, and extension."
+              },
+              "person_generation": {
+                "status": "verified",
+                "client_parameter": "person_generation",
+                "provider_parameter": "parameters.personGeneration",
+                "supported_values": [],
+                "provider_documented_values": [
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "default_value": null,
+                "variants": [
+                  {
+                    "mode": "text_to_video",
+                    "supported_values": [
+                      "allow_all"
+                    ],
+                    "conditions": {
+                      "restricted_regions_override": "allow_adult"
+                    },
+                    "notes": "Outside EU, UK, CH, and MENA, text-to-video accepts allow_all. In those restricted regions Google permits allow_adult only."
+                  },
+                  {
+                    "mode": "image_to_video_or_interpolation",
+                    "supported_values": [
+                      "allow_adult"
+                    ],
+                    "conditions": {},
+                    "notes": "Image-to-video and first/last-frame interpolation accept allow_adult only."
+                  },
+                  {
+                    "mode": "reference_images",
+                    "supported_values": [
+                      "allow_adult"
+                    ],
+                    "conditions": {
+                      "duration_seconds": 8
+                    },
+                    "notes": "Reference-image generation accepts allow_adult only and requires an 8-second duration."
+                  },
+                  {
+                    "mode": "video_extension",
+                    "supported_values": [
+                      "allow_all"
+                    ],
+                    "conditions": {
+                      "resolution": "720p",
+                      "duration_seconds": 8,
+                      "restricted_regions_override": "allow_adult"
+                    },
+                    "notes": "Outside restricted regions, extension accepts allow_all; extension is 720p and uses an 8-second generation setting even though each operation extends the source by 7 seconds."
+                  }
+                ],
+                "notes": "No value is universal across Veo modes or regions. Clients must select from the matching variant rather than flattening the union into a global enum. Google separately says the regional default is dont_allow, but does not list dont_allow as a selectable Veo 3.1 value in the main parameter table."
+              },
+              "seed": {
+                "status": "unknown",
+                "client_parameter": "seed",
+                "provider_parameter": "parameters.seed",
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "Google documents seed as available for Veo 3 models, but publishes no safe numeric range or default. Clients must not advertise a synthesized selector or enum."
+              },
+              "task": {
+                "status": "unsupported",
+                "client_parameter": "task",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Veo predictLongRunning surface does not use Gemini Omni's generation_config.video_config.task selector."
+              },
+              "delivery": {
+                "status": "unsupported",
+                "client_parameter": "delivery",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Veo long-running operation returns a generated video resource; Gemini Omni's response_format.delivery selector does not apply."
+              }
+            },
+            "features": {
+              "audio_generation": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "Native synchronized audio is always on; Google does not publish an audio on/off selector."
+              },
+              "initial_image": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.image",
+                "max_inputs": 1,
+                "conditions": {},
+                "notes": "An initial image can be animated for image-to-video generation."
+              },
+              "last_frame": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.lastFrame",
+                "max_inputs": 1,
+                "conditions": {
+                  "requires_initial_image": true
+                },
+                "notes": "A final image can be combined with the required initial image for interpolation."
+              },
+              "reference_images": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.referenceImages",
+                "max_inputs": 3,
+                "conditions": {
+                  "duration_seconds": 8
+                },
+                "notes": "Up to three asset images can guide subject appearance; this mode requires duration_seconds=8."
+              },
+              "video_extension": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.video",
+                "max_inputs": 1,
+                "conditions": {
+                  "resolution": "720p",
+                  "duration_seconds": 8,
+                  "source_video_max_seconds": 141,
+                  "max_extensions": 20
+                },
+                "notes": "Only a video from a previous Veo generation can be extended. Each operation adds 7 seconds and can be repeated up to 20 times."
+              },
+              "conversational_editing": {
+                "status": "unsupported",
+                "supported": false,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "Veo does not expose Gemini Omni's previous_interaction_id conversational editing workflow."
+              }
+            },
+            "output": {
+              "videos_per_request": 1,
+              "frame_rate_fps": 24,
+              "fixed_resolution": null,
+              "documented_duration_seconds": null
+            },
+            "source_id": "google_gemini_veo_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/veo",
+            "notes": "Client-readable Veo controls preserve mode, resolution, feature, and regional conditions instead of advertising incompatible values as universal support."
           }
         }
       },
@@ -52036,7 +53896,11 @@
         "is_free": null
       },
       "parameters": {
-        "supported_parameters": [],
+        "supported_parameters": [
+          "aspect_ratio",
+          "duration_seconds",
+          "resolution"
+        ],
         "default_parameters": {},
         "supported_voices": null
       },
@@ -52166,6 +54030,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_veo_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/veo",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.video_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/veo-3.1-lite-generate-preview",
           "source_kind": "official_docs",
@@ -52274,6 +54150,228 @@
             "status": "verified",
             "exact_model": true,
             "notes": "The exact first-party Veo 3.1 Lite page lists text and image input and video with synchronized audio output."
+          },
+          "image_generation": null,
+          "video_generation": {
+            "status": "verified",
+            "api_surface": "predict_long_running",
+            "settings": {
+              "aspect_ratio": {
+                "status": "verified",
+                "client_parameter": "aspect_ratio",
+                "provider_parameter": "parameters.aspectRatio",
+                "supported_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "provider_documented_values": [
+                  "16:9",
+                  "9:16"
+                ],
+                "default_value": "16:9",
+                "variants": [],
+                "notes": "Landscape and portrait are supported for every current Veo 3.1 variant."
+              },
+              "resolution": {
+                "status": "verified",
+                "client_parameter": "resolution",
+                "provider_parameter": "parameters.resolution",
+                "supported_values": [
+                  "720p",
+                  "1080p"
+                ],
+                "provider_documented_values": [
+                  "720p",
+                  "1080p"
+                ],
+                "default_value": "720p",
+                "variants": [
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "720p"
+                    ],
+                    "conditions": {},
+                    "notes": "Default resolution and the only resolution allowed for video extension."
+                  },
+                  {
+                    "mode": "all_generation_modes",
+                    "supported_values": [
+                      "1080p"
+                    ],
+                    "conditions": {
+                      "duration_seconds": 8
+                    },
+                    "notes": "1080p requires an 8-second duration."
+                  }
+                ],
+                "notes": "Veo 3.1 Lite supports 720p and 1080p, but not 4k; 1080p requires duration_seconds=8."
+              },
+              "duration_seconds": {
+                "status": "verified",
+                "client_parameter": "duration_seconds",
+                "provider_parameter": "parameters.durationSeconds",
+                "supported_values": [
+                  4,
+                  6,
+                  8
+                ],
+                "provider_documented_values": [
+                  4,
+                  6,
+                  8
+                ],
+                "default_value": null,
+                "variants": [
+                  {
+                    "mode": "standard_generation_720p",
+                    "supported_values": [
+                      4,
+                      6,
+                      8
+                    ],
+                    "conditions": {
+                      "resolution": "720p"
+                    },
+                    "notes": "All documented durations are available for ordinary 720p generation."
+                  },
+                  {
+                    "mode": "high_resolution",
+                    "supported_values": [
+                      8
+                    ],
+                    "conditions": {
+                      "resolution": "1080p"
+                    },
+                    "notes": "High-resolution output requires eight seconds."
+                  }
+                ],
+                "notes": "Four, six, and eight seconds are selectable. Eight seconds is required for 1080p. The primary feature table marks reference images unsupported for Lite, despite separate duration/person rows mentioning them; this profile conservatively follows the feature table."
+              },
+              "person_generation": {
+                "status": "verified",
+                "client_parameter": "person_generation",
+                "provider_parameter": "parameters.personGeneration",
+                "supported_values": [],
+                "provider_documented_values": [
+                  "allow_adult",
+                  "allow_all"
+                ],
+                "default_value": null,
+                "variants": [
+                  {
+                    "mode": "text_to_video",
+                    "supported_values": [
+                      "allow_all"
+                    ],
+                    "conditions": {
+                      "restricted_regions_override": "allow_adult"
+                    },
+                    "notes": "Outside EU, UK, CH, and MENA, text-to-video accepts allow_all. In those restricted regions Google permits allow_adult only."
+                  },
+                  {
+                    "mode": "image_to_video_or_interpolation",
+                    "supported_values": [
+                      "allow_adult"
+                    ],
+                    "conditions": {},
+                    "notes": "Image-to-video and first/last-frame interpolation accept allow_adult only."
+                  }
+                ],
+                "notes": "No value is universal across Veo modes or regions. Clients must select from the matching variant rather than flattening the union into a global enum. Google separately says the regional default is dont_allow, but does not list dont_allow as a selectable Veo 3.1 value in the main parameter table."
+              },
+              "seed": {
+                "status": "unknown",
+                "client_parameter": "seed",
+                "provider_parameter": "parameters.seed",
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "Google documents seed as available for Veo 3 models, but publishes no safe numeric range or default. Clients must not advertise a synthesized selector or enum."
+              },
+              "task": {
+                "status": "unsupported",
+                "client_parameter": "task",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Veo predictLongRunning surface does not use Gemini Omni's generation_config.video_config.task selector."
+              },
+              "delivery": {
+                "status": "unsupported",
+                "client_parameter": "delivery",
+                "provider_parameter": null,
+                "supported_values": [],
+                "provider_documented_values": [],
+                "default_value": null,
+                "variants": [],
+                "notes": "The Veo long-running operation returns a generated video resource; Gemini Omni's response_format.delivery selector does not apply."
+              }
+            },
+            "features": {
+              "audio_generation": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "Native synchronized audio is always on; Google does not publish an audio on/off selector."
+              },
+              "initial_image": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.image",
+                "max_inputs": 1,
+                "conditions": {},
+                "notes": "An initial image can be animated for image-to-video generation."
+              },
+              "last_frame": {
+                "status": "verified",
+                "supported": true,
+                "provider_parameter": "instances.lastFrame",
+                "max_inputs": 1,
+                "conditions": {
+                  "requires_initial_image": true
+                },
+                "notes": "A final image can be combined with the required initial image for interpolation."
+              },
+              "reference_images": {
+                "status": "unsupported",
+                "supported": false,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "The primary Veo feature table marks referenceImages n/a for Lite. Conflicting duration/person table wording is not treated as support."
+              },
+              "video_extension": {
+                "status": "unsupported",
+                "supported": false,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "The exact Lite model page and Veo feature table explicitly say extension is unsupported."
+              },
+              "conversational_editing": {
+                "status": "unsupported",
+                "supported": false,
+                "provider_parameter": null,
+                "max_inputs": null,
+                "conditions": {},
+                "notes": "Veo does not expose Gemini Omni's previous_interaction_id conversational editing workflow."
+              }
+            },
+            "output": {
+              "videos_per_request": 1,
+              "frame_rate_fps": 24,
+              "fixed_resolution": null,
+              "documented_duration_seconds": null
+            },
+            "source_id": "google_gemini_veo_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/veo",
+            "notes": "Client-readable Veo controls preserve mode, resolution, feature, and regional conditions instead of advertising incompatible values as universal support."
           }
         }
       },
