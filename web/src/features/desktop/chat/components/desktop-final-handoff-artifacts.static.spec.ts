@@ -10,6 +10,7 @@ test('final handoff gallery uses authenticated opaque artifact routes and an iso
   const [pane, gallery, api] = await Promise.all([readFile(paneURL, 'utf8'), readFile(galleryURL, 'utf8'), readFile(apiURL, 'utf8')])
   assert.match(pane, /handoff\.artifacts\.length > 0/)
   assert.match(pane, /<DesktopV3ArtifactGallery artifacts=/)
+  assert.match(pane, /artifactHref=\{artifactHref\} collectionHref=\{artifactHref\} onArtifactNavigate=\{onArtifactNavigate\} onCollectionNavigate=\{onArtifactNavigate\} onTriggerOpen=\{onArtifactNavigate\}/)
   assert.match(gallery, /fetchDesktopV3Artifact\(selected\.sessionId, selected\.artifactId/)
   assert.match(gallery, /selected\.mediaType === 'text\/html'/)
   assert.match(gallery, /srcDoc=\{previewText\}/)

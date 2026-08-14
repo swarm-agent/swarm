@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
   AlertTriangle,
@@ -62,6 +62,7 @@ export interface DesktopV3ArtifactGalleryProps {
   collectionHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   onArtifactNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
   onCollectionNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
+  onTriggerOpen?: (artifact: DesktopV3ArtifactGalleryEntry) => void
 }
 
 type ArtifactCollectionGroup = {
@@ -83,8 +84,9 @@ function artifactSelectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
 }
 
 function artifactCollectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
+  const owningSessionId = artifact.lineage?.parentSessionId || artifact.sessionId
   return artifact.collectionId
-    ? `${artifact.sessionId}:${artifact.collectionId}`
+    ? `${owningSessionId}:${artifact.collectionId}`
     : `standalone:${artifact.sessionId}:${artifact.artifactId}`
 }
 
@@ -107,6 +109,12 @@ function collectionProgress(entries: DesktopV3ArtifactGalleryEntry[]): DesktopV3
     else progress.ready += 1
     return progress
   }, { total: 0, staging: 0, ready: 0, failed: 0, unavailable: 0 })
+}
+
+function collectionLandingArtifact(group: ArtifactCollectionGroup): DesktopV3ArtifactGalleryEntry | undefined {
+  return group.entries.find((entry) => entry.selected)
+    ?? group.entries.find((entry) => entry.status === 'ready')
+    ?? group.entries[0]
 }
 
 function collectionDisplayLabel(group: ArtifactCollectionGroup): string {
@@ -164,6 +172,7 @@ export function DesktopV3ArtifactGallery({
   collectionHref,
   onArtifactNavigate,
   onCollectionNavigate,
+  onTriggerOpen,
 }: DesktopV3ArtifactGalleryProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(artifacts[0] ? artifactSelectionKey(artifacts[0]) : '')
@@ -290,7 +299,6 @@ export function DesktopV3ArtifactGallery({
 
   useEffect(() => {
     if (!open || !selected) return undefined
-    setSelectedId(artifactSelectionKey(selected))
     setPreviewURL('')
     setPreviewText('')
     setPreviewError('')
@@ -353,12 +361,22 @@ export function DesktopV3ArtifactGallery({
   }
 
   const selectCollection = (group: ArtifactCollectionGroup) => {
-    const next = group.entries.find((entry) => entry.selected)
-      ?? group.entries.find((entry) => entry.status === 'ready')
-      ?? group.entries[0]
+    const next = collectionLandingArtifact(group)
     if (!next) return
     setSelectedId(artifactSelectionKey(next))
     onCollectionNavigate?.(next)
+  }
+
+  const openArtifactLink = (event: MouseEvent<HTMLAnchorElement>, artifact: DesktopV3ArtifactGalleryEntry) => {
+    if (!onArtifactNavigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    selectArtifact(artifact)
+  }
+
+  const openCollectionLink = (event: MouseEvent<HTMLAnchorElement>, group: ArtifactCollectionGroup) => {
+    if (!onCollectionNavigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    selectCollection(group)
   }
 
   const togglePreviewFullscreen = async () => {
@@ -442,6 +460,7 @@ export function DesktopV3ArtifactGallery({
   const renderCollection = (group: ArtifactCollectionGroup) => {
     const active = group.key === selectedGroupKey
     const partialFailure = group.progress.failed + group.progress.unavailable
+    const landingArtifact = collectionLandingArtifact(group)
     const requirementLabel = formatDesktopV3ArtifactOutputRequirements(group.entries[0]?.outputRequirements)
     return (
       <div key={group.key} className="min-w-0">
@@ -453,7 +472,7 @@ export function DesktopV3ArtifactGallery({
               : 'border-transparent hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]',
           )}
         >
-          <div className="flex min-w-0 items-center justify-between gap-2"><button type="button" className="min-w-0 flex-1 text-left" aria-expanded={active} onClick={() => selectCollection(group)}><span className="block truncate text-xs font-semibold text-[var(--app-text)]">{collectionDisplayLabel(group)}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{group.sessionLabel} · {group.progress.total} variant{group.progress.total === 1 ? '' : 's'}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-muted)]" data-artifact-output-requirements>{requirementLabel}</span> : null}</button>{collectionHref && group.entries[0]?.collectionId ? <a href={collectionHref(group.entries[0])} className="shrink-0 rounded px-1.5 py-1 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)]" aria-label={`Open unique URL for ${collectionDisplayLabel(group)}`}>Group URL</a> : null}</div>
+          <div className="flex min-w-0 items-center justify-between gap-2"><button type="button" className="min-w-0 flex-1 text-left" aria-expanded={active} onClick={() => selectCollection(group)}><span className="block truncate text-xs font-semibold text-[var(--app-text)]">{collectionDisplayLabel(group)}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{group.sessionLabel} · {group.progress.total} variant{group.progress.total === 1 ? '' : 's'}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-muted)]" data-artifact-output-requirements>{requirementLabel}</span> : null}</button>{collectionHref && landingArtifact?.collectionId ? <a href={collectionHref(landingArtifact)} className="shrink-0 rounded px-1.5 py-1 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)]" aria-label={`Open unique URL for ${collectionDisplayLabel(group)}`} onClick={(event) => openCollectionLink(event, group)}>Group URL</a> : null}</div>
           <button type="button" className="mt-2 flex w-full flex-wrap gap-1 text-left" aria-label="Collection progress" onClick={() => selectCollection(group)}>
             {group.progress.staging > 0 ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[9px] font-semibold text-[var(--app-primary)]"><Loader2 className="size-2.5 animate-spin" />{group.progress.staging} generating</span> : null}
             {group.progress.ready > 0 ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[9px] font-semibold text-[var(--app-success)]"><Check className="size-2.5" />{group.progress.ready} ready</span> : null}
@@ -484,7 +503,7 @@ export function DesktopV3ArtifactGallery({
                     {artifact.status === 'failed' || artifact.status === 'unavailable' ? <AlertTriangle className="size-3 shrink-0 text-[var(--app-danger)]" aria-label={artifactStatusLabel(artifact)} /> : null}
                     {canonical ? <Check className="size-3.5 shrink-0 text-[var(--app-success)]" aria-label="Selected design" /> : null}
                   </button>
-                  {artifactHref ? <a href={artifactHref(artifact)} className="shrink-0 rounded px-1.5 py-1 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)]" aria-label={`Open unique URL for ${artifact.label}`}>URL</a> : null}
+                  {artifactHref ? <a href={artifactHref(artifact)} className="shrink-0 rounded px-1.5 py-1 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)]" aria-label={`Open unique URL for ${artifact.label}`} onClick={(event) => openArtifactLink(event, artifact)}>URL</a> : null}
                   <button
                     type="button"
                     className={cn('mr-1 grid size-7 shrink-0 place-items-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]', chatSelected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-subtle)]')}
@@ -508,13 +527,16 @@ export function DesktopV3ArtifactGallery({
   const workspaceGroups = organization === 'workspace'
     ? Array.from(new Map(groups.map((group) => [group.workspaceLabel, group.workspaceLabel])).keys())
     : []
+  const triggerArtifact = artifacts.find((artifact) => artifact.selected)
+    ?? artifacts.find((artifact) => artifact.status === 'ready')
+    ?? artifacts[0]
 
   if (!showTrigger && !open) return null
   if (showTrigger && artifacts.length === 0) return null
 
   return (
     <div className={showTrigger ? 'mt-3' : undefined} data-final-handoff-artifacts={showTrigger ? true : undefined}>
-      {showTrigger ? <button ref={galleryButtonRef} type="button" className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => setOpen(true)}><GalleryHorizontal size={14} aria-hidden="true" />Open gallery ({artifacts.length})</button> : null}
+      {showTrigger ? <button ref={galleryButtonRef} type="button" className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => { if (onTriggerOpen && triggerArtifact) onTriggerOpen(triggerArtifact); else setOpen(true) }}><GalleryHorizontal size={14} aria-hidden="true" />Open gallery ({artifacts.length})</button> : null}
       {open ? createPortal(
         <section aria-label="Artifact collection review" className="fixed inset-0 z-[85] flex h-[100dvh] w-[100dvw] min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]" data-artifact-gallery-page data-artifact-review-surface>
           <header className="flex min-h-14 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 sm:px-5">
@@ -541,7 +563,7 @@ export function DesktopV3ArtifactGallery({
               {selected ? <>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4">
                   <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{selected.label}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}</div>
-                  <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]">Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">Download bundle</span></button> : null}</div>
+                  <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">Download bundle</span></button> : null}</div>
                 </div>
                 <div
                   ref={previewSurfaceRef}

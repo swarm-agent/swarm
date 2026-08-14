@@ -168,7 +168,7 @@ import {
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
-import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactCollectionViewerHref, desktopV3ArtifactCollectionViewerSearch, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   effectiveDesktopSidebarDisplayMode,
@@ -1906,6 +1906,9 @@ export function DesktopV3ExistingConversationPane({
     priorSessionHasPlanRef.current = false;
     setSessionArtifacts([]);
     setSidebarView("plan");
+    setArtifactGalleryOpen(false);
+    setArtifactGalleryInitialKey("");
+    dismissedArtifactViewerLocationKeyRef.current = "";
     void refreshSessionArtifacts();
   }, [normalizedSessionId, refreshSessionArtifacts]);
 
@@ -2097,13 +2100,6 @@ export function DesktopV3ExistingConversationPane({
       sessionId: normalizedSessionId,
     });
   }, [normalizedSessionId, routeWorkspaceSlug]);
-  const artifactCollectionViewerHref = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
-    if (!routeWorkspaceSlug || !artifact.collectionId) return '#';
-    return desktopV3ArtifactCollectionViewerHref(routeWorkspaceSlug, {
-      sessionId: normalizedSessionId,
-      collectionId: artifact.collectionId,
-    });
-  }, [normalizedSessionId, routeWorkspaceSlug]);
   const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     setArtifactGalleryInitialKey(artifactKey);
@@ -2115,25 +2111,6 @@ export function DesktopV3ExistingConversationPane({
       search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
     });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
-  const openArtifactCollection = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
-    if (!artifact.collectionId) {
-      openArtifactFullView(artifact);
-      return;
-    }
-    setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifact));
-    setArtifactGalleryOpen(true);
-    if (!routeWorkspaceSlug) return;
-    void navigate({
-      to: "/$workspaceSlug/$sessionId",
-      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
-      search: (previous) => ({
-        ...previous,
-        artifact: undefined,
-        collection: undefined,
-        ...desktopV3ArtifactCollectionViewerSearch({ sessionId: normalizedSessionId, collectionId: artifact.collectionId! }),
-      }),
-    });
-  }, [navigate, normalizedSessionId, openArtifactFullView, routeWorkspaceSlug]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     if (!routeWorkspaceSlug) return;
     void navigate({
@@ -2166,6 +2143,7 @@ export function DesktopV3ExistingConversationPane({
   useEffect(() => {
     if (!artifactViewerLocation) {
       dismissedArtifactViewerLocationKeyRef.current = "";
+      setArtifactGalleryOpen(false);
       return;
     }
     if (dismissedArtifactViewerLocationKeyRef.current === artifactViewerLocationKey) return;
@@ -3009,6 +2987,8 @@ export function DesktopV3ExistingConversationPane({
                             taskChildActions={taskChildActions}
                             onSuggestedPrompt={stableSuggestedPrompt}
                             artifactCatalog={sessionArtifacts}
+                            artifactHref={artifactViewerHref}
+                            onArtifactNavigate={navigateArtifactViewer}
                             onArtifactSelections={queueGalleryArtifactSelections}
                           />
                         </div>
@@ -3249,7 +3229,7 @@ export function DesktopV3ExistingConversationPane({
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
               : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
-                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} collectionHref={artifactCollectionViewerHref} onOpenArtifact={openArtifactFullView} onOpenCollection={openArtifactCollection} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
+                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
               ) : pendingPlanDocument && pendingPlanPermission && planSidebarViewport ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
@@ -3289,9 +3269,9 @@ export function DesktopV3ExistingConversationPane({
         title="Session artifacts"
         initialArtifactKey={artifactGalleryInitialKey}
         artifactHref={artifactViewerHref}
-        collectionHref={artifactCollectionViewerHref}
+        collectionHref={artifactViewerHref}
         onArtifactNavigate={navigateArtifactViewer}
-        onCollectionNavigate={openArtifactCollection}
+        onCollectionNavigate={navigateArtifactViewer}
         onAddToChat={(artifacts) => {
           queueGalleryArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" })));
           setArtifactGalleryOpenFromViewer(false);
@@ -3325,6 +3305,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   taskChildActions,
   onSuggestedPrompt,
   artifactCatalog = [],
+  artifactHref,
+  onArtifactNavigate,
   onArtifactSelections,
 }: {
   item: DesktopV3RenderItem;
@@ -3333,6 +3315,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   taskChildActions?: TaskChildCardActions;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
   artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   switch (item.type) {
@@ -3341,7 +3325,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
     case "plan-checkpoint-handoff":
       return <DesktopV3PlanCheckpointHandoff item={item} />;
     case "plan-final-handoff":
-      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} artifactCatalog={artifactCatalog} onArtifactSelections={onArtifactSelections} />;
+      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} onArtifactSelections={onArtifactSelections} />;
     case "plan-blocked-handoff":
       return <DesktopV3PlanBlockedHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "message":
@@ -3647,11 +3631,15 @@ function DesktopV3PlanFinalHandoff({
   item,
   onSuggestedPrompt,
   artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
   onArtifactSelections,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
   artifactCatalog: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   if (item.finalHandoff) {
@@ -3661,6 +3649,8 @@ function DesktopV3PlanFinalHandoff({
         handoff={item.finalHandoff}
         onSuggestedPrompt={onSuggestedPrompt}
         artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
         onArtifactSelections={onArtifactSelections}
       />
     );
@@ -3732,12 +3722,16 @@ function DesktopV3StructuredFinalHandoff({
   handoff,
   onSuggestedPrompt,
   artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
   onArtifactSelections,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   handoff: DesktopPlanFinalHandoff;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
   artifactCatalog: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const recommendation = handoff.recommendation;
@@ -3807,7 +3801,7 @@ function DesktopV3StructuredFinalHandoff({
         ) : null}
 
         {handoff.artifacts.length > 0 ? (
-          <DesktopV3ArtifactGallery artifacts={handoffArtifacts} title="Session artifacts" onAddToChat={onArtifactSelections ? (artifacts) => onArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" }))) : undefined} onUseThisDesign={onArtifactSelections ? ({ label, selection }) => onArtifactSelections([{ ...selection, label, action: "use" }]) : undefined} />
+          <DesktopV3ArtifactGallery artifacts={handoffArtifacts} title="Session artifacts" artifactHref={artifactHref} collectionHref={artifactHref} onArtifactNavigate={onArtifactNavigate} onCollectionNavigate={onArtifactNavigate} onTriggerOpen={onArtifactNavigate} onAddToChat={onArtifactSelections ? (artifacts) => onArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" }))) : undefined} onUseThisDesign={onArtifactSelections ? ({ label, selection }) => onArtifactSelections([{ ...selection, label, action: "use" }]) : undefined} />
         ) : null}
 
         {handoff.pullRequestUrl ? (

@@ -20,6 +20,12 @@ test('artifact gallery is a live collection review surface distinct from plan ex
   assert.match(gallery, /iterationDisplayLabel/)
   assert.match(gallery, /Open iteration URL/)
   assert.match(gallery, /onArtifactNavigate/)
+  assert.match(gallery, /onClick=\{\(event\) => openArtifactLink\(event, artifact\)\}/)
+  assert.match(gallery, /onClick=\{\(event\) => openArtifactLink\(event, selected\)\}/)
+  assert.match(gallery, /onClick=\{\(event\) => openCollectionLink\(event, group\)\}/)
+  assert.match(gallery, /event\.preventDefault\(\)/)
+  assert.match(gallery, /const owningSessionId = artifact\.lineage\?\.parentSessionId \|\| artifact\.sessionId/)
+  assert.doesNotMatch(gallery, /if \(!open \|\| !selected\) return undefined\s+setSelectedId\(artifactSelectionKey\(selected\)\)/)
   assert.doesNotMatch(gallery, /DesktopPlanExecutionSidebar/)
 })
 

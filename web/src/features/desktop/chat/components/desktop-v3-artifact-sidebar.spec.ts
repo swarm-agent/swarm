@@ -85,6 +85,15 @@ test('sidebar groups staged Iteration Swarm variants and preserves canonical pro
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.outputRequirements?.presetId), ['twitter_header', 'twitter_header', 'twitter_header'])
 })
 
+test('delegated collection variants group under their parent session', () => {
+  const first = { ...artifact('child-a', 'variant-1', 'session-a'), collectionId: 'collection-1' }
+  const second = { ...artifact('child-b', 'variant-2', 'session-a'), collectionId: 'collection-1' }
+
+  const groups = desktopV3ArtifactSidebarGroups([first, second])
+  assert.equal(groups.length, 1)
+  assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2'])
+})
+
 test('ordinary artifacts remain separate sidebar entries', () => {
   assert.deepEqual(desktopV3ArtifactSidebarGroups([artifact('session-a', 'one'), artifact('session-a', 'two')]).map((group) => group.entries.length), [1, 1])
 })

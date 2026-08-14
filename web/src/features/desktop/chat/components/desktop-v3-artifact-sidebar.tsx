@@ -44,9 +44,7 @@ export interface DesktopV3ArtifactSidebarProps {
   error?: string
   embedded?: boolean
   artifactHref: (artifact: DesktopV3ArtifactCatalogEntry) => string
-  collectionHref: (artifact: DesktopV3ArtifactCatalogEntry) => string
   onOpenArtifact: (artifact: DesktopV3ArtifactCatalogEntry) => void
-  onOpenCollection: (artifact: DesktopV3ArtifactCatalogEntry) => void
   onAddToChat?: (artifacts: DesktopV3ArtifactCatalogEntry[]) => void
 }
 
@@ -139,8 +137,9 @@ export function desktopV3ArtifactSidebarGroups(
   const groups = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
   for (const artifact of artifacts) {
     const collectionId = artifact.collectionId?.trim() ?? ''
+    const owningSessionId = artifact.lineage?.parentSessionId || artifact.sessionId
     const key = collectionId
-      ? `${artifact.sessionId}\u0000${collectionId}`
+      ? `${owningSessionId}\u0000${collectionId}`
       : `${artifact.sessionId}\u0000artifact\u0000${artifact.artifactId}`
     groups.set(key, [...(groups.get(key) ?? []), artifact])
   }
@@ -171,9 +170,7 @@ export function DesktopV3ArtifactSidebar({
   error = '',
   embedded = false,
   artifactHref,
-  collectionHref,
   onOpenArtifact,
-  onOpenCollection,
   onAddToChat,
 }: DesktopV3ArtifactSidebarProps) {
   const thin = displayMode === 'thin'
@@ -221,11 +218,11 @@ export function DesktopV3ArtifactSidebar({
             const grouped = Boolean(group.collectionId)
             const requirementLabel = formatDesktopV3ArtifactOutputRequirements(representative.outputRequirements)
             if (thin) {
-              return <a key={group.key} href={grouped ? collectionHref(representative) : artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); grouped ? onOpenCollection(representative) : onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
+              return <a key={group.key} href={artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
             }
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
-                <a href={grouped ? collectionHref(representative) : artifactHref(representative)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); grouped ? onOpenCollection(representative) : onOpenArtifact(representative) }}>
+                <a href={artifactHref(representative)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }}>
                   <span className="min-w-0"><span className="block truncate text-xs font-semibold">{grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{grouped ? sidebarProgressLabel(group) : representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}</span>
                   {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 animate-spin text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
