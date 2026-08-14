@@ -38,6 +38,42 @@ function price(value: number): string {
   return `$${value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`
 }
 
+function imagePriceLabel(record: Record<string, unknown>): string {
+  const direct = numberValue(record.per_image ?? record.image ?? record.output_image)
+  if (direct !== null) return `${price(direct)}/image`
+
+  const billing = record.billing
+  if (billing && typeof billing === 'object' && !Array.isArray(billing)) {
+    const lines = (billing as Record<string, unknown>).lines
+    if (Array.isArray(lines)) {
+      const equivalents = lines.flatMap((line) => {
+        if (!line || typeof line !== 'object' || Array.isArray(line)) return []
+        const item = line as Record<string, unknown>
+        const conditions = item.conditions
+        const serviceTier = conditions && typeof conditions === 'object' && !Array.isArray(conditions)
+          ? String((conditions as Record<string, unknown>).service_tier ?? '')
+          : ''
+        const value = numberValue(item.price_usd)
+        return item.kind === 'equivalent_cost' && item.billable === 'image_output' && item.unit === 'image' && serviceTier !== 'batch' && value !== null
+          ? [value]
+          : []
+      })
+      if (equivalents.length) {
+        const low = Math.min(...equivalents)
+        const high = Math.max(...equivalents)
+        return low === high ? `${price(low)}/image` : `${price(low)}–${price(high)}/image`
+      }
+    }
+  }
+
+  const imageOutput = record.image_output_price
+  if (imageOutput && typeof imageOutput === 'object' && !Array.isArray(imageOutput)) {
+    const value = numberValue((imageOutput as Record<string, unknown>).amount)
+    if (value !== null) return `${price(value)}/1M image tokens`
+  }
+  return ''
+}
+
 export function pricingLabel(pricing: unknown): string {
   if (!pricing || typeof pricing !== 'object' || Array.isArray(pricing)) return ''
   const record = pricing as Record<string, unknown>
@@ -45,13 +81,13 @@ export function pricingLabel(pricing: unknown): string {
   const input = numberValue(record.input_price_per_million_tokens ?? record.input_per_million ?? record.input_per_million_tokens ?? record.input)
   const output = numberValue(record.output_price_per_million_tokens ?? record.output_per_million ?? record.output_per_million_tokens ?? record.output)
   const cached = numberValue(record.cached_input_price_per_million_tokens ?? record.cached_input_per_million)
-  const image = numberValue(record.per_image ?? record.image ?? record.output_image)
+  const image = imagePriceLabel(record)
   const video = numberValue(record.per_minute ?? record.video_per_minute)
   const parts: string[] = []
   if (input !== null) parts.push(`${price(input)} in`)
   if (output !== null) parts.push(`${price(output)} out`)
   if (cached !== null) parts.push(`${price(cached)} cached`)
-  if (image !== null) parts.push(`${price(image)}/image`)
+  if (image) parts.push(image)
   if (video !== null) parts.push(`${price(video)}/min`)
   return parts.length ? `${parts.join(' · ')}${input !== null || output !== null ? ' / 1M tokens' : ''}` : ''
 }
@@ -75,6 +111,7 @@ function ModelSelect({ models, value, disabled, onChange }: { models: MediaCatal
   }, [models])
   return (
     <Select value={value} disabled={disabled || models.length === 0} onChange={(event) => onChange(event.target.value)}>
+      {!value ? <option value="" disabled>Choose a model</option> : null}
       {groups.map(([provider, options]) => (
         <optgroup key={provider} label={providerLabel(provider)}>
           {options.map((option) => <option key={option.id} value={option.id} disabled={!option.ready}>{optionLabel(option)}</option>)}
@@ -154,8 +191,8 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
     'gemini-2.5-flash-image': 'gemini-nano-banana',
   } as Record<string, string>)[configuredImage] ?? configuredImage
   const configuredTranscription = normalizeMediaTranscriptionModel(settingsQuery.data)
-  const selectedImage = imageModels.some((model) => model.id === configuredImageID) ? configuredImageID : imageModels.find((model) => model.ready)?.id || imageModels[0]?.id || ''
-  const selectedTranscription = transcriptionModels.some((model) => model.id === configuredTranscription) ? configuredTranscription : transcriptionModels.find((model) => model.ready)?.id || transcriptionModels[0]?.id || ''
+  const selectedImage = imageModels.some((model) => model.id === configuredImageID) ? configuredImageID : ''
+  const selectedTranscription = transcriptionModels.some((model) => model.id === configuredTranscription) ? configuredTranscription : ''
   const selectedImageOption = imageModels.find((model) => model.id === selectedImage)
   const selectedTranscriptionOption = transcriptionModels.find((model) => model.id === selectedTranscription)
   const settingsError = imageSave.error || transcriptionSave.error || settingsQuery.error || catalogQuery.error
