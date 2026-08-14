@@ -58,7 +58,9 @@ export interface DesktopV3ArtifactGalleryProps {
   title?: string
   initialArtifactKey?: string
   artifactHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
+  collectionHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   onArtifactNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
+  onCollectionNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
 }
 
 type ArtifactCollectionGroup = {
@@ -158,7 +160,9 @@ export function DesktopV3ArtifactGallery({
   title = 'Artifact review',
   initialArtifactKey = '',
   artifactHref,
+  collectionHref,
   onArtifactNavigate,
+  onCollectionNavigate,
 }: DesktopV3ArtifactGalleryProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(artifacts[0] ? artifactSelectionKey(artifacts[0]) : '')
@@ -349,7 +353,9 @@ export function DesktopV3ArtifactGallery({
     const next = group.entries.find((entry) => entry.selected)
       ?? group.entries.find((entry) => entry.status === 'ready')
       ?? group.entries[0]
-    if (next) selectArtifact(next)
+    if (!next) return
+    setSelectedId(artifactSelectionKey(next))
+    onCollectionNavigate?.(next)
   }
 
   const togglePreviewFullscreen = async () => {
@@ -433,25 +439,21 @@ export function DesktopV3ArtifactGallery({
     const partialFailure = group.progress.failed + group.progress.unavailable
     return (
       <div key={group.key} className="min-w-0">
-        <button
-          type="button"
+        <div
           className={cn(
             'w-64 shrink-0 rounded-xl border px-3 py-2.5 text-left transition md:w-full',
             active
               ? 'border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface))]'
               : 'border-transparent hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]',
           )}
-          aria-expanded={active}
-          onClick={() => selectCollection(group)}
         >
-          <span className="block truncate text-xs font-semibold text-[var(--app-text)]">{collectionDisplayLabel(group)}</span>
-          <span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{group.sessionLabel} · {group.progress.total} variant{group.progress.total === 1 ? '' : 's'}</span>
-          <span className="mt-2 flex flex-wrap gap-1" aria-label="Collection progress">
+          <div className="flex min-w-0 items-center justify-between gap-2"><button type="button" className="min-w-0 flex-1 text-left" aria-expanded={active} onClick={() => selectCollection(group)}><span className="block truncate text-xs font-semibold text-[var(--app-text)]">{collectionDisplayLabel(group)}</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-subtle)]">{group.sessionLabel} · {group.progress.total} variant{group.progress.total === 1 ? '' : 's'}</span></button>{collectionHref && group.entries[0]?.collectionId ? <a href={collectionHref(group.entries[0])} className="shrink-0 rounded px-1.5 py-1 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)]" aria-label={`Open unique URL for ${collectionDisplayLabel(group)}`}>Group URL</a> : null}</div>
+          <button type="button" className="mt-2 flex w-full flex-wrap gap-1 text-left" aria-label="Collection progress" onClick={() => selectCollection(group)}>
             {group.progress.staging > 0 ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[9px] font-semibold text-[var(--app-primary)]"><Loader2 className="size-2.5 animate-spin" />{group.progress.staging} generating</span> : null}
             {group.progress.ready > 0 ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[9px] font-semibold text-[var(--app-success)]"><Check className="size-2.5" />{group.progress.ready} ready</span> : null}
             {partialFailure > 0 ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-danger-bg)] px-2 py-0.5 text-[9px] font-semibold text-[var(--app-danger)]"><AlertTriangle className="size-2.5" />{partialFailure} failed</span> : null}
-          </span>
-        </button>
+          </button>
+        </div>
         {active ? (
           <div className="mt-1 grid gap-1 border-l border-[var(--app-border)] pl-2" aria-label="Collection variants">
             {group.entries.map((artifact, index) => {

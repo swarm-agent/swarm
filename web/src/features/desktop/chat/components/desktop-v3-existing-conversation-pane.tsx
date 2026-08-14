@@ -168,7 +168,7 @@ import {
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
-import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactCollectionViewerHref, desktopV3ArtifactCollectionViewerSearch, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   effectiveDesktopSidebarDisplayMode,
@@ -2084,8 +2084,18 @@ export function DesktopV3ExistingConversationPane({
     : undefined;
   const artifactViewerHref = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     if (!routeWorkspaceSlug) return '#';
-    return desktopV3ArtifactViewerHref(routeWorkspaceSlug, artifact);
-  }, [routeWorkspaceSlug]);
+    return desktopV3ArtifactViewerHref(routeWorkspaceSlug, {
+      ...artifact,
+      sessionId: normalizedSessionId,
+    });
+  }, [normalizedSessionId, routeWorkspaceSlug]);
+  const artifactCollectionViewerHref = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (!routeWorkspaceSlug || !artifact.collectionId) return '#';
+    return desktopV3ArtifactCollectionViewerHref(routeWorkspaceSlug, {
+      sessionId: normalizedSessionId,
+      collectionId: artifact.collectionId,
+    });
+  }, [normalizedSessionId, routeWorkspaceSlug]);
   const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     setArtifactGalleryInitialKey(artifactKey);
@@ -2094,15 +2104,35 @@ export function DesktopV3ExistingConversationPane({
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
-      search: (previous) => ({ ...previous, ...desktopV3ArtifactViewerSearch(artifact) }),
+      search: (previous) => ({ ...previous, artifactSession: undefined, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
     });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
+  const openArtifactCollection = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (!artifact.collectionId) {
+      openArtifactFullView(artifact);
+      return;
+    }
+    setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifact));
+    setArtifactGalleryOpen(true);
+    if (!routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
+      search: (previous) => ({
+        ...previous,
+        artifactSession: undefined,
+        artifact: undefined,
+        collection: undefined,
+        ...desktopV3ArtifactCollectionViewerSearch({ sessionId: normalizedSessionId, collectionId: artifact.collectionId! }),
+      }),
+    });
+  }, [navigate, normalizedSessionId, openArtifactFullView, routeWorkspaceSlug]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     if (!routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
-      search: (previous) => ({ ...previous, ...desktopV3ArtifactViewerSearch(artifact) }),
+      search: (previous) => ({ ...previous, artifactSession: undefined, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
       replace: true,
     });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
@@ -2122,10 +2152,10 @@ export function DesktopV3ExistingConversationPane({
     });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
   useEffect(() => {
-    if (!artifactViewerEntry) return;
-    setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifactViewerEntry));
+    if (!artifactViewerLocation) return;
     setArtifactGalleryOpen(true);
-  }, [artifactViewerEntry]);
+    if (artifactViewerEntry) setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifactViewerEntry));
+  }, [artifactViewerEntry, artifactViewerLocation]);
   const {
     scrollContainerRef,
     contentRef,
@@ -3203,7 +3233,7 @@ export function DesktopV3ExistingConversationPane({
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
               : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
-                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
+                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} collectionHref={artifactCollectionViewerHref} onOpenArtifact={openArtifactFullView} onOpenCollection={openArtifactCollection} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
               ) : pendingPlanDocument && pendingPlanPermission && planSidebarViewport ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
@@ -3243,7 +3273,9 @@ export function DesktopV3ExistingConversationPane({
         title="Session artifacts"
         initialArtifactKey={artifactGalleryInitialKey}
         artifactHref={artifactViewerHref}
+        collectionHref={artifactCollectionViewerHref}
         onArtifactNavigate={navigateArtifactViewer}
+        onCollectionNavigate={openArtifactCollection}
         onAddToChat={(artifacts) => {
           queueGalleryArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" })));
         }}

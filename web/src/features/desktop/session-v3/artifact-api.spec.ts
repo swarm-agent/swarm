@@ -8,6 +8,8 @@ import {
   desktopV3ArtifactCatalogEntryForKey,
   desktopV3ArtifactCatalogEntryForViewerLocation,
   desktopV3ArtifactCatalogEntryKey,
+  desktopV3ArtifactCollectionViewerHref,
+  desktopV3ArtifactCollectionViewerSearch,
   desktopV3ArtifactViewerHref,
   desktopV3ArtifactViewerLocation,
   desktopV3ArtifactViewerSearch,
@@ -61,6 +63,8 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
     checkpointTitle: '',
     label: 'Homepage',
     description: '',
+    collectionName: '',
+    collectionDescription: '',
     filename: '',
     mediaType: 'text/html',
     kind: 'html',
@@ -75,7 +79,8 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
     lineage: {
       parentSessionId: 'session-1', sourceSessionId: 'child-1', sourceCollectionId: 'source-collection',
       sourceVariantId: 'source-variant', taskCallId: 'call-1', programId: 'program-1', programJobId: 'job-1',
-      childSessionId: '', iterationId: '', iterationIndex: 2, runId: '', planId: '', checkpointId: '', attemptId: '',
+      childSessionId: '', iterationGroupId: '', iterationGroup: '', iterationId: '', iterationIndex: 2,
+      iterationLabel: '', iterationTheme: '', runId: '', planId: '', checkpointId: '', attemptId: '',
     },
   })
 })
@@ -154,21 +159,53 @@ test('artifact viewer URLs encode exact session, collection, and variant identit
   assert.equal(second.lineage?.iterationIndex, 2)
   assert.equal(second.lineage?.iterationLabel, 'Navigation Remix')
 
-  assert.deepEqual(desktopV3ArtifactViewerSearch(entry), { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' })
+  assert.deepEqual(desktopV3ArtifactViewerSearch(entry), { artifactSession: 'session-1', collection: 'collection-1', artifact: 'variant-1' })
   assert.equal(
     desktopV3ArtifactViewerHref('my workspace', entry),
-    '/my%20workspace/session-1?artifactSession=session-1&artifact=variant-1&collection=collection-1',
+    '/my%20workspace/session-1?artifactSession=session-1&collection=collection-1&artifact=variant-1',
   )
   const location = desktopV3ArtifactViewerLocation('session-1', { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' })
   assert.deepEqual(location, { sessionId: 'session-1', collectionId: 'collection-1', artifactId: 'variant-1' })
   assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([entry], location), entry)
 })
 
-test('artifact viewer location rejects incomplete URLs and prevents cross-session resolution', () => {
+test('artifact collection URLs round trip to a canonical landing variant', () => {
+  const first = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, selected: false, status: 'staging' })
+  const selected = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, artifact_id: 'variant-2', selected: true })
+  assert.ok(first)
+  assert.ok(selected)
+
+  const target = { sessionId: 'session-1', collectionId: 'collection-1' }
+  assert.deepEqual(desktopV3ArtifactCollectionViewerSearch(target), { artifactSession: 'session-1', collection: 'collection-1' })
+  assert.equal(
+    desktopV3ArtifactCollectionViewerHref('my workspace', target),
+    '/my%20workspace/session-1?artifactSession=session-1&collection=collection-1',
+  )
+  const location = desktopV3ArtifactViewerLocation('session-1', desktopV3ArtifactCollectionViewerSearch(target))
+  assert.deepEqual(location, { sessionId: 'session-1', collectionId: 'collection-1' })
+  assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([first, selected], location), selected)
+})
+
+test('artifact viewer resolves delegated entries against parent-session URLs', () => {
+  const delegated = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    session_id: 'child-1',
+    lineage: { ...managedCatalogWire.lineage, parent_session_id: 'session-1' },
+  })
+  assert.ok(delegated)
+  const location = desktopV3ArtifactViewerLocation('session-1', { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' })
+  assert.ok(location)
+  assert.equal(desktopV3ArtifactCatalogEntryForViewerLocation([delegated], location), delegated)
+})
+
+test('artifact viewer location rejects incomplete URLs, mismatched collection pairs, and cross-session resolution', () => {
   const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
   assert.ok(entry)
   assert.equal(desktopV3ArtifactViewerLocation('session-1', {}), null)
   assert.equal(desktopV3ArtifactViewerLocation('session-2', { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-1' }), null)
+  const mismatched = desktopV3ArtifactViewerLocation('session-1', { artifactSession: 'session-1', artifact: 'variant-1', collection: 'collection-2' })
+  assert.ok(mismatched)
+  assert.equal(desktopV3ArtifactCatalogEntryForViewerLocation([entry], mismatched), undefined)
 })
 
 test('artifact selection helper emits only opaque authority fields', () => {

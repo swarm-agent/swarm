@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { DesktopV3ArtifactCatalogEntry } from '../../session-v3/artifact-api'
-import { desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView } from './desktop-v3-artifact-sidebar'
+import { desktopV3ArtifactSidebarGroups, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView } from './desktop-v3-artifact-sidebar'
 
 function artifact(sessionId: string, artifactId: string, parentSessionId = ''): DesktopV3ArtifactCatalogEntry {
   return {
@@ -17,6 +17,8 @@ function artifact(sessionId: string, artifactId: string, parentSessionId = ''): 
     checkpointTitle: '',
     label: artifactId,
     description: '',
+    collectionName: '',
+    collectionDescription: '',
     filename: `${artifactId}.html`,
     mediaType: 'text/html',
     kind: 'html',
@@ -24,7 +26,7 @@ function artifact(sessionId: string, artifactId: string, parentSessionId = ''): 
     previewable: true,
     category: 'visual',
     updatedAt: 0,
-    lineage: parentSessionId ? {
+    lineage: {
       parentSessionId,
       sourceSessionId: sessionId,
       sourceCollectionId: '',
@@ -33,13 +35,17 @@ function artifact(sessionId: string, artifactId: string, parentSessionId = ''): 
       programId: '',
       programJobId: '',
       childSessionId: '',
+      iterationGroupId: '',
+      iterationGroup: '',
       iterationId: '',
       iterationIndex: 0,
+      iterationLabel: '',
+      iterationTheme: '',
       runId: '',
       planId: '',
       checkpointId: '',
       attemptId: '',
-    } : null,
+    },
   }
 }
 
@@ -55,6 +61,22 @@ test('session artifact sidebar includes native and delegated artifacts only for 
     desktopV3ArtifactsForSession(catalog, 'session-a').map((entry) => entry.artifactId),
     ['native', 'delegated'],
   )
+})
+
+test('sidebar groups staged Iteration Swarm variants and preserves canonical progress', () => {
+  const first = { ...artifact('session-a', 'variant-1'), collectionId: 'collection-1', status: 'staging' as const, progress: { total: 3, staging: 2, ready: 1, failed: 0, unavailable: 0 }, lineage: { ...artifact('session-a', 'variant-1').lineage, iterationGroupId: 'group-1', iterationGroup: 'Homepage remixes', iterationIndex: 1 } }
+  const second = { ...artifact('session-a', 'variant-2'), collectionId: 'collection-1', status: 'ready' as const, progress: first.progress, lineage: { ...first.lineage, iterationIndex: 2 } }
+  const third = { ...artifact('session-a', 'variant-3'), collectionId: 'collection-1', status: 'staging' as const, progress: first.progress, lineage: { ...first.lineage, iterationIndex: 3 } }
+
+  const groups = desktopV3ArtifactSidebarGroups([third, first, second])
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0]?.label, 'Homepage remixes')
+  assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2', 'variant-3'])
+  assert.deepEqual(groups[0]?.progress, { total: 3, staging: 2, ready: 1, failed: 0, unavailable: 0 })
+})
+
+test('ordinary artifacts remain separate sidebar entries', () => {
+  assert.deepEqual(desktopV3ArtifactSidebarGroups([artifact('session-a', 'one'), artifact('session-a', 'two')]).map((group) => group.entries.length), [1, 1])
 })
 
 test('first artifact opens artifact sidebar only when no plan exists', () => {
