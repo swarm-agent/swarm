@@ -8,7 +8,7 @@ import (
 func TestResolveOutputRequirementsAliasesAndPrecedence(t *testing.T) {
 	for alias, canonical := range map[string]string{
 		"twitter_header": "x_header", "twitter_banner": "x_header",
-		"x_video": "x_video_landscape", "twitter_video": "x_video_landscape",
+		"full_hd_landscape": "landscape_video", "vertical_video": "portrait_video",
 	} {
 		resolved, err := ResolveOutputRequirements(&OutputRequirementsInput{Preset: alias})
 		if err != nil {
@@ -25,11 +25,11 @@ func TestResolveOutputRequirementsAliasesAndPrecedence(t *testing.T) {
 	if resolved.PresetID != "x_header" || resolved.Width != 1500 || resolved.Height != 500 || resolved.AspectRatio != "3:1" || resolved.Orientation != "landscape" || resolved.ResolutionSource != "preset" || resolved.RegistryVersion != OutputRequirementsRegistryVersion {
 		t.Fatalf("resolved = %#v", resolved)
 	}
-	resolved, err = ResolveOutputRequirements(&OutputRequirementsInput{Preset: "x_video", Width: 1920, Height: 1080})
+	resolved, err = ResolveOutputRequirements(&OutputRequirementsInput{Preset: "landscape_video", Width: 1920, Height: 1080})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.ResolutionSource != "dimensions" || resolved.PresetID != "x_video_landscape" {
+	if resolved.ResolutionSource != "dimensions" || resolved.PresetID != "landscape_video" {
 		t.Fatalf("precedence = %#v", resolved)
 	}
 }
@@ -87,8 +87,8 @@ func TestOutputPresetRegistryRejectsDuplicateAlias(t *testing.T) {
 
 func TestOutputPresetRegistryIsUniqueAndVersioned(t *testing.T) {
 	expected := map[string][2]int{
-		"x_header": {1500, 500}, "x_video_landscape": {1920, 1080}, "x_video_portrait": {1080, 1920},
-		"full_hd_landscape": {1920, 1080}, "vertical_video": {1080, 1920}, "square_1080": {1080, 1080},
+		"x_header": {1500, 500}, "landscape_video": {1920, 1080},
+		"portrait_video": {1080, 1920}, "square_1080": {1080, 1080},
 	}
 	seen := map[string]string{}
 	for _, preset := range ListOutputPresets() {

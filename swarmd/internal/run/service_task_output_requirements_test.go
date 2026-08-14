@@ -12,7 +12,7 @@ import (
 
 func TestMasterHarnessExplainsArtifactOutputRequirementInference(t *testing.T) {
 	prompt := masterHarnessPromptWithScope(tool.WorkspaceScope{})
-	for _, expected := range []string{"twitter_header", "x_video_landscape", "x_video_portrait", "Semantic parent inference supplies this structured preset", "omit output_requirements", "publish once"} {
+	for _, expected := range []string{"twitter_header", "landscape_video", "portrait_video", "Semantic parent inference supplies this structured preset", "omit output_requirements", "publish once"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("master harness missing %q", expected)
 		}

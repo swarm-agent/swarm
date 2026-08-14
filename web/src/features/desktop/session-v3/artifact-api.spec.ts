@@ -107,6 +107,13 @@ test('artifact output requirements normalize and format the canonical requested 
     resolutionSource: 'preset', registryVersion: '2026-08-01',
   })
   assert.equal(formatDesktopV3ArtifactOutputRequirements(requirements), 'X header · 1500 × 500 · 3:1')
+  assert.equal(formatDesktopV3ArtifactOutputRequirements({
+    ...requirements,
+    presetId: 'x_video_landscape',
+    width: 1920,
+    height: 1080,
+    aspectRatio: '16:9',
+  }), 'Landscape video · 1920 × 1080 · 16:9')
 })
 
 test('historical artifacts omit requirements and malformed nested requirements fail closed', () => {

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	OutputRequirementsRegistryVersion = "2026-08-14.v1"
+	OutputRequirementsRegistryVersion = "2026-08-14.v2"
 	OutputRequirementsReviewedSource  = "Swarm reviewed social-media output presets"
 	OutputRequirementsReviewedDate    = "2026-08-14"
 	OutputRequirementsMinDimension    = 1
@@ -55,10 +55,8 @@ type outputPresetDefinition struct {
 
 var outputPresetDefinitions = []outputPresetDefinition{
 	{id: "x_header", aliases: []string{"twitter_header", "twitter_banner"}, width: 1500, height: 500},
-	{id: "x_video_landscape", aliases: []string{"x_video", "twitter_video"}, width: 1920, height: 1080},
-	{id: "x_video_portrait", width: 1080, height: 1920},
-	{id: "full_hd_landscape", width: 1920, height: 1080},
-	{id: "vertical_video", width: 1080, height: 1920},
+	{id: "landscape_video", aliases: []string{"full_hd_landscape"}, width: 1920, height: 1080},
+	{id: "portrait_video", aliases: []string{"vertical_video"}, width: 1080, height: 1920},
 	{id: "square_1080", width: 1080, height: 1080},
 }
 
@@ -213,7 +211,7 @@ func OutputRequirementsToolSchema() map[string]any {
 		"type":        "object",
 		"description": "Designer-only exact output target. Paired dimensions take precedence over preset; aliases resolve to a versioned canonical server preset.",
 		"properties": map[string]any{
-			"preset":       map[string]any{"type": "string", "description": "Canonical preset or supported alias, for example twitter_header or x_video."},
+			"preset":       map[string]any{"type": "string", "description": "Canonical preset or supported alias, for example twitter_header, landscape_video, or portrait_video."},
 			"width":        map[string]any{"type": "integer", "minimum": 1, "maximum": OutputRequirementsMaxDimension},
 			"height":       map[string]any{"type": "integer", "minimum": 1, "maximum": OutputRequirementsMaxDimension},
 			"aspect_ratio": map[string]any{"type": "string", "description": "Optional ratio assertion normalized from dimensions, for example 16:9."},
