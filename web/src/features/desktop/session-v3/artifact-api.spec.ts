@@ -15,6 +15,8 @@ import {
   desktopV3ArtifactViewerSearch,
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactSelection,
+  formatDesktopV3ArtifactOutputRequirements,
+  normalizeDesktopV3ArtifactOutputRequirements,
   removeDesktopV3ArtifactMessageSelection,
   normalizeDesktopV3ArtifactCatalogEntry,
   desktopV3ArtifactSelectionEndpoint,
@@ -36,6 +38,15 @@ const managedCatalogWire = {
   category: 'visual',
   updated_at: 100,
   event_seq: 42,
+  output_requirements: {
+    preset_id: 'twitter_header',
+    width: 1500,
+    height: 500,
+    aspect_ratio: '3:1',
+    orientation: 'landscape',
+    resolution_source: 'preset',
+    registry_version: '2026-08-01',
+  },
   progress: { total: 3, staging: 1, ready: 1, failed: 1, unavailable: 0 },
   lineage: {
     parent_session_id: 'session-1',
@@ -75,6 +86,10 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
     category: 'visual',
     updatedAt: 100,
     eventSeq: 42,
+    outputRequirements: {
+      presetId: 'twitter_header', width: 1500, height: 500, aspectRatio: '3:1', orientation: 'landscape',
+      resolutionSource: 'preset', registryVersion: '2026-08-01',
+    },
     progress: { total: 3, staging: 1, ready: 1, failed: 1, unavailable: 0 },
     lineage: {
       parentSessionId: 'session-1', sourceSessionId: 'child-1', sourceCollectionId: 'source-collection',
@@ -83,6 +98,35 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
       iterationLabel: '', iterationTheme: '', runId: '', planId: '', checkpointId: '', attemptId: '',
     },
   })
+})
+
+test('artifact output requirements normalize and format the canonical requested target', () => {
+  const requirements = normalizeDesktopV3ArtifactOutputRequirements(managedCatalogWire.output_requirements)
+  assert.deepEqual(requirements, {
+    presetId: 'twitter_header', width: 1500, height: 500, aspectRatio: '3:1', orientation: 'landscape',
+    resolutionSource: 'preset', registryVersion: '2026-08-01',
+  })
+  assert.equal(formatDesktopV3ArtifactOutputRequirements(requirements), 'X header · 1500 × 500 · 3:1')
+})
+
+test('historical artifacts omit requirements and malformed nested requirements fail closed', () => {
+  const historical = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, output_requirements: undefined })
+  assert.ok(historical)
+  assert.equal(historical.outputRequirements, undefined)
+  assert.equal(formatDesktopV3ArtifactOutputRequirements(historical.outputRequirements), '')
+
+  const malformedCases = [
+    { ...managedCatalogWire.output_requirements, width: '1500' },
+    { ...managedCatalogWire.output_requirements, width: -1 },
+    { ...managedCatalogWire.output_requirements, aspect_ratio: '1500:500' },
+    { ...managedCatalogWire.output_requirements, orientation: 'portrait' },
+    { ...managedCatalogWire.output_requirements, registry_version: '' },
+  ]
+  for (const malformed of malformedCases) {
+    const entry = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, output_requirements: malformed })
+    assert.ok(entry)
+    assert.equal(entry.outputRequirements, undefined)
+  }
 })
 
 test('artifact selection actions target the canonical variant selection route', () => {

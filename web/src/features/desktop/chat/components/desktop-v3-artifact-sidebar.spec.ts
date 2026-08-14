@@ -26,6 +26,15 @@ function artifact(sessionId: string, artifactId: string, parentSessionId = ''): 
     previewable: true,
     category: 'visual',
     updatedAt: 0,
+    outputRequirements: {
+      presetId: 'twitter_header',
+      width: 1500,
+      height: 500,
+      aspectRatio: '3:1',
+      orientation: 'landscape',
+      resolutionSource: 'preset',
+      registryVersion: '2026-08-01',
+    },
     lineage: {
       parentSessionId,
       sourceSessionId: sessionId,
@@ -73,6 +82,7 @@ test('sidebar groups staged Iteration Swarm variants and preserves canonical pro
   assert.equal(groups[0]?.label, 'Homepage remixes')
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2', 'variant-3'])
   assert.deepEqual(groups[0]?.progress, { total: 3, staging: 2, ready: 1, failed: 0, unavailable: 0 })
+  assert.deepEqual(groups[0]?.entries.map((entry) => entry.outputRequirements?.presetId), ['twitter_header', 'twitter_header', 'twitter_header'])
 })
 
 test('ordinary artifacts remain separate sidebar entries', () => {

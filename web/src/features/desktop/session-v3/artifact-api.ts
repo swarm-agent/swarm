@@ -2,6 +2,18 @@ import { apiFetch, readErrorMessage } from '../../../app/api'
 
 export type DesktopV3ArtifactCategory = 'plan' | 'visual' | 'document'
 export type DesktopV3ArtifactStatus = '' | 'staging' | 'ready' | 'failed' | 'unavailable'
+export type DesktopV3ArtifactOutputOrientation = 'landscape' | 'portrait' | 'square'
+
+/** Trusted, server-resolved output intent. This describes the requested target, not measured binary metadata. */
+export interface DesktopV3ArtifactOutputRequirements {
+  presetId: string
+  width: number
+  height: number
+  aspectRatio: string
+  orientation: DesktopV3ArtifactOutputOrientation
+  resolutionSource: string
+  registryVersion: string
+}
 
 export interface DesktopV3ArtifactCollectionProgress {
   total: number
@@ -76,6 +88,7 @@ export interface DesktopV3ArtifactCatalogEntry {
   eventSeq?: number
   progress?: DesktopV3ArtifactCollectionProgress | null
   lineage?: DesktopV3ArtifactLineage | null
+  outputRequirements?: DesktopV3ArtifactOutputRequirements
   content?: string
 }
 
@@ -110,6 +123,54 @@ function normalizeArtifactProgress(value: unknown): DesktopV3ArtifactCollectionP
     failed: artifactCatalogCount(record.failed),
     unavailable: artifactCatalogCount(record.unavailable),
   }
+}
+
+function artifactCatalogPositiveInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0
+}
+
+function artifactCatalogGreatestCommonDivisor(left: number, right: number): number {
+  let a = left
+  let b = right
+  while (b !== 0) {
+    [a, b] = [b, a % b]
+  }
+  return a
+}
+
+export function normalizeDesktopV3ArtifactOutputRequirements(value: unknown): DesktopV3ArtifactOutputRequirements | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const presetId = artifactCatalogString(record.preset_id)
+  const width = artifactCatalogPositiveInteger(record.width)
+  const height = artifactCatalogPositiveInteger(record.height)
+  const aspectRatio = artifactCatalogString(record.aspect_ratio)
+  const orientation = artifactCatalogString(record.orientation)
+  const resolutionSource = artifactCatalogString(record.resolution_source)
+  const registryVersion = artifactCatalogString(record.registry_version)
+  if (!presetId || !width || !height || !resolutionSource || !registryVersion) return null
+  if (orientation !== 'landscape' && orientation !== 'portrait' && orientation !== 'square') return null
+  const expectedOrientation: DesktopV3ArtifactOutputOrientation = width === height ? 'square' : width > height ? 'landscape' : 'portrait'
+  if (orientation !== expectedOrientation) return null
+  const divisor = artifactCatalogGreatestCommonDivisor(width, height)
+  const normalizedRatio = `${width / divisor}:${height / divisor}`
+  if (aspectRatio !== normalizedRatio) return null
+  return { presetId, width, height, aspectRatio, orientation, resolutionSource, registryVersion }
+}
+
+function artifactOutputPresetLabel(presetId: string): string {
+  const words = presetId.trim().toLowerCase().split(/[_-]+/).filter(Boolean)
+  if (words.length === 0) return ''
+  return words.map((word, index) => {
+    if (word === 'twitter' || word === 'x') return 'X'
+    return index === 0 ? `${word.charAt(0).toUpperCase()}${word.slice(1)}` : word
+  }).join(' ')
+}
+
+export function formatDesktopV3ArtifactOutputRequirements(requirements?: DesktopV3ArtifactOutputRequirements | null): string {
+  if (!requirements) return ''
+  const preset = artifactOutputPresetLabel(requirements.presetId)
+  return `${preset} · ${requirements.width} × ${requirements.height} · ${requirements.aspectRatio}`
 }
 
 function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | null {
@@ -155,6 +216,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     : typeof rawUpdatedAt === 'string' && rawUpdatedAt.trim()
       ? Date.parse(rawUpdatedAt)
       : 0
+  const outputRequirements = normalizeDesktopV3ArtifactOutputRequirements(record.output_requirements)
   return {
     artifactId,
     collectionId: artifactCatalogString(record.collection_id),
@@ -182,6 +244,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     eventSeq: artifactCatalogEventSeq(record.event_seq),
     progress: normalizeArtifactProgress(record.progress),
     lineage: normalizeArtifactLineage(record.lineage),
+    ...(outputRequirements ? { outputRequirements } : {}),
     ...(typeof record.content === 'string' ? { content: record.content } : {}),
   }
 }
