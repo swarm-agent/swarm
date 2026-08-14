@@ -220,6 +220,7 @@ type TaskContextCompaction struct {
 	ProgramJobID        string
 	WorkspacePath       string
 	WorktreeBranch      string
+	BaseBranch          string
 	ImmutableBaseCommit string
 }
 
@@ -3579,9 +3580,12 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	activePlanText := compactedActivePlanText(activePlan)
 	compactIndex := nextMemoryCompactionIndex(messages)
 	toolStream.SetCompactIndex(compactIndex)
+	normalizedOrigin := normalizeContextCompactionOrigin(origin)
 	transcript := buildMemoryCompactionTranscript(messages)
-	if normalizeContextCompactionOrigin(origin) == contextCompactionOriginTask {
-		transcript = buildTaskCompactionTranscript(messages)
+	var taskTranscriptEntries []taskCompactionTranscriptEntry
+	if normalizedOrigin == contextCompactionOriginTask {
+		taskTranscriptEntries = buildTaskCompactionTranscriptEntries(messages)
+		transcript = joinTaskCompactionTranscriptEntries(taskTranscriptEntries)
 	}
 	if strings.TrimSpace(transcript) == "" {
 		err := errors.New("memory compaction transcript is empty")
@@ -3594,17 +3598,26 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	}
 	instructions := buildMemoryCompactionInstructions(compactProfile.Prompt, summaryMaxRunes, origin)
 	inputBudgetTokens := effectiveMemoryCompactionInputBudget(contextWindow, maxOutputTokens, summaryMaxRunes)
-	transcript = boundCompactTranscript(transcript, inputBudgetTokens, instructions, runPrompt, activePlanText)
+	trustedTaskContext := ""
+	promptRunPrompt := runPrompt
+	if normalizedOrigin == contextCompactionOriginTask {
+		trustedTaskContext = runPrompt
+		promptRunPrompt = ""
+		transcript = boundTaskCompactionTranscript(taskTranscriptEntries, inputBudgetTokens, instructions, trustedTaskContext, activePlanText)
+	} else {
+		transcript = boundCompactTranscript(transcript, inputBudgetTokens, instructions, runPrompt, activePlanText)
+	}
 	transcriptRunes := len([]rune(transcript))
 	oneShotPrompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
-		RunPrompt:      runPrompt,
-		RollingSummary: "",
-		Chunk:          transcript,
-		Index:          1,
-		Total:          1,
-		Origin:         origin,
-		CompactIndex:   compactIndex,
-		ActivePlanText: activePlanText,
+		RunPrompt:          promptRunPrompt,
+		TrustedTaskContext: trustedTaskContext,
+		RollingSummary:     "",
+		Chunk:              transcript,
+		Index:              1,
+		Total:              1,
+		Origin:             origin,
+		CompactIndex:       compactIndex,
+		ActivePlanText:     activePlanText,
 	})
 	oneShotTokens := estimateMemoryCompactionTokens(instructions, oneShotPrompt)
 	runCompactionDebugEvent("memory_compaction_start", map[string]any{
@@ -3779,9 +3792,19 @@ func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot) str
 	return strings.TrimSpace(strings.Join(entries, "\n\n"))
 }
 
+type taskCompactionTranscriptEntry struct {
+	Text     string
+	Priority int
+	Order    int
+}
+
 func buildTaskCompactionTranscript(messages []pebblestore.MessageSnapshot) string {
-	entries := make([]string, 0, len(messages))
-	for _, message := range messages {
+	return joinTaskCompactionTranscriptEntries(buildTaskCompactionTranscriptEntries(messages))
+}
+
+func buildTaskCompactionTranscriptEntries(messages []pebblestore.MessageSnapshot) []taskCompactionTranscriptEntry {
+	entries := make([]taskCompactionTranscriptEntry, 0, len(messages))
+	for order, message := range messages {
 		content := strings.TrimSpace(message.Content)
 		if content == "" || isManualCompactionAcknowledgement(message) {
 			continue
@@ -3791,52 +3814,129 @@ func buildTaskCompactionTranscript(messages []pebblestore.MessageSnapshot) strin
 			if shouldDropSensitiveConversationMessage(message) {
 				continue
 			}
-			entries = append(entries, "user:\n"+content)
+			entries = append(entries, taskCompactionTranscriptEntry{Text: "user:\n" + content, Priority: 5, Order: order})
 		case "assistant":
-			entries = append(entries, "assistant:\n"+content)
+			entries = append(entries, taskCompactionTranscriptEntry{Text: "assistant:\n" + content, Priority: 2, Order: order})
 		case "system":
 			if isCompactionCheckpointMessage(content) {
-				entries = append(entries, "assistant prior compact checkpoint:\n"+content)
+				entries = append(entries, taskCompactionTranscriptEntry{Text: "assistant prior compact checkpoint:\n" + content, Priority: 6, Order: order})
 			}
 		case "tool":
-			if outcome := taskCompactionToolOutcome(content); outcome != "" {
-				entries = append(entries, outcome)
+			if outcome, priority := taskCompactionToolOutcome(content); outcome != "" {
+				entries = append(entries, taskCompactionTranscriptEntry{Text: outcome, Priority: priority, Order: order})
 			}
 		}
 	}
-	return strings.TrimSpace(strings.Join(entries, "\n\n"))
+	return entries
 }
 
-func taskCompactionToolOutcome(content string) string {
+func joinTaskCompactionTranscriptEntries(entries []taskCompactionTranscriptEntry) string {
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if text := strings.TrimSpace(entry.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func boundTaskCompactionTranscript(entries []taskCompactionTranscriptEntry, inputBudgetTokens int, fixedParts ...string) string {
+	if len(entries) == 0 || inputBudgetTokens <= 0 {
+		return joinTaskCompactionTranscriptEntries(entries)
+	}
+	fixedRunes := 0
+	for _, part := range fixedParts {
+		fixedRunes += len([]rune(part))
+	}
+	maxRunes := inputBudgetTokens*memoryCompactionTokenEstimateDivisor - fixedRunes - memoryCompactionMinimumChunkRunes
+	full := joinTaskCompactionTranscriptEntries(entries)
+	if maxRunes <= 0 || len([]rune(full)) <= maxRunes {
+		return full
+	}
+
+	// Select complete semantic records rather than slicing the transcript by rune
+	// position. Trusted prior checkpoints and user constraints win first, followed
+	// by typed mutation/command and discovery evidence, then assistant narration.
+	candidates := append([]taskCompactionTranscriptEntry(nil), entries...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Priority != candidates[j].Priority {
+			return candidates[i].Priority > candidates[j].Priority
+		}
+		return candidates[i].Order > candidates[j].Order
+	})
+	selected := make(map[int]bool, len(entries))
+	used := 0
+	const separatorRunes = 2
+	for _, entry := range candidates {
+		textRunes := len([]rune(strings.TrimSpace(entry.Text)))
+		if textRunes == 0 || textRunes > maxRunes-used {
+			continue
+		}
+		if used > 0 {
+			if textRunes+separatorRunes > maxRunes-used {
+				continue
+			}
+			used += separatorRunes
+		}
+		selected[entry.Order] = true
+		used += textRunes
+	}
+	bounded := make([]taskCompactionTranscriptEntry, 0, len(selected)+1)
+	omitted := len(entries) - len(selected)
+	if omitted > 0 {
+		bounded = append(bounded, taskCompactionTranscriptEntry{Text: fmt.Sprintf("semantic budget notice:\n- omitted lower-priority transcript records: %d\n- retained records are complete semantic units", omitted), Order: -1})
+	}
+	for _, entry := range entries {
+		if selected[entry.Order] {
+			bounded = append(bounded, entry)
+		}
+	}
+	return joinTaskCompactionTranscriptEntries(bounded)
+}
+
+func taskCompactionToolOutcome(content string) (string, int) {
 	type record struct {
 		PathID          string `json:"path_id"`
 		Tool            string `json:"tool"`
 		ToolName        string `json:"tool_name"`
+		Arguments       string `json:"arguments"`
 		CompletedOutput string `json:"completed_output"`
 		Output          string `json:"output"`
 		Error           string `json:"error"`
 	}
 	var item record
 	if json.Unmarshal([]byte(strings.TrimSpace(content)), &item) != nil || (item.PathID != toolHistoryPathID && item.PathID != v3ProviderManagedToolResultPathID) {
-		return ""
+		return "", 0
 	}
 	name := canonicalToolName(firstNonEmptyString(item.ToolName, item.Tool))
-	outcome := strings.TrimSpace(firstNonEmptyString(item.CompletedOutput, item.Error, item.Output))
-	// Task compaction intentionally excludes read/search/list and truncated raw
-	// tool dumps. Those are discovery traces, not reliable completion evidence.
-	if outcome == "" || strings.Contains(strings.ToLower(outcome), "truncated") {
-		return ""
-	}
+	kind, priority := "", 0
 	switch name {
-	case "edit", "write", "bash", "plan_manage", "manage_artifact", "manage_worktree":
+	case "read", "search", "list", "find", "glob":
+		kind, priority = "discovery", 3
+	case "edit", "write", "plan_manage", "manage_artifact", "manage_worktree":
+		kind, priority = "mutation", 4
+	case "bash":
+		kind, priority = "command", 4
 	default:
-		return ""
+		return "", 0
+	}
+	outcome := strings.TrimSpace(firstNonEmptyString(item.CompletedOutput, item.Error, item.Output))
+	if outcome == "" {
+		return "", 0
 	}
 	status := "completed"
 	if strings.TrimSpace(item.Error) != "" {
-		status = "failed"
+		status, priority = "failed", 5
 	}
-	return fmt.Sprintf("verified tool outcome:\n- name: %s\n- status: %s\n- outcome: %s", name, status, truncateRunes(outcome, memoryCompactionToolOutputMaxRunes))
+	arguments := summarizePlainToolOutput(strings.TrimSpace(item.Arguments), memoryCompactionToolArgumentsMaxRunes, 4)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	summary := summarizeToolOutput(name, outcome, memoryCompactionToolOutputMaxRunes, 8)
+	if summary == "" {
+		return "", 0
+	}
+	return fmt.Sprintf("typed tool evidence:\n- kind: %s\n- name: %s\n- status: %s\n- arguments: %s\n- outcome: %s", kind, name, status, arguments, truncateRunes(summary, memoryCompactionToolOutputMaxRunes)), priority
 }
 
 func buildMemoryCompactionToolTranscriptEntry(content string) string {
@@ -3993,14 +4093,15 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 }
 
 type memoryCompactionPromptOptions struct {
-	RunPrompt      string
-	RollingSummary string
-	Chunk          string
-	Index          int
-	Total          int
-	Origin         string
-	CompactIndex   int
-	ActivePlanText string
+	RunPrompt          string
+	TrustedTaskContext string
+	RollingSummary     string
+	Chunk              string
+	Index              int
+	Total              int
+	Origin             string
+	CompactIndex       int
+	ActivePlanText     string
 }
 
 func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
@@ -4025,6 +4126,14 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 	}
 
 	lines := []string{memoryCompactionContextLine(origin), fmt.Sprintf("This will become Compact #%d.", compactIndex)}
+	if origin == contextCompactionOriginTask {
+		if trustedTaskContext := strings.TrimSpace(options.TrustedTaskContext); trustedTaskContext != "" {
+			lines = append(lines,
+				"Trusted Task execution context (authoritative; preserve before interpreting transcript evidence):",
+				trustedTaskContext,
+			)
+		}
+	}
 	if activePlanText := strings.TrimSpace(options.ActivePlanText); activePlanText != "" {
 		lines = append(lines,
 			"Durable active plan/checkpoint state (authoritative; preserve this execution scope in the recap):",
@@ -4046,7 +4155,7 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 	case contextCompactionOriginPlanGuard:
 		lines = append(lines, "The main plan agent supplied this explicit research handoff. Preserve it verbatim in substance, carry the durable active plan state, and continue in fresh provider context without rerunning completed discovery.")
 	case contextCompactionOriginTask:
-		lines = append(lines, "Task orchestration supplied the immutable assignment, logical identity, compact index, and trusted workspace/Git snapshot. Produce a stable same-session continuation checkpoint; do not reinterpret this as a new launch or successor session.")
+		lines = append(lines, "Task orchestration supplied the immutable assignment, logical identity, compact index, and trusted workspace/Git snapshot above. Treat its canonical child worktree as the only execution root; parent or alternate paths in transcript evidence are non-authoritative historical context. Produce a stable same-session continuation checkpoint; do not reinterpret this as a new launch or successor session.")
 	case contextCompactionOriginOverflow:
 		lines = append(lines, "The provider overflow means the previous agent may have stopped mid-thought or mid-action. Preserve in-progress intent and tell the resumed agent exactly what to do next.")
 	}
@@ -4056,8 +4165,12 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 			chunk,
 		)
 	} else {
+		label := "Full transcript for compaction:"
+		if origin == contextCompactionOriginTask {
+			label = "Selected transcript evidence for compaction (non-authoritative where it conflicts with trusted Task execution context):"
+		}
 		lines = append(lines,
-			"Full transcript for compaction:",
+			label,
 			chunk,
 		)
 	}

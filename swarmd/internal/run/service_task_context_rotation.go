@@ -57,14 +57,18 @@ Trusted logical identity:
 - Task Program job: %s
 - child session: %s
 - run: %s
-- workspace: %s
-- allocated branch: %s
-- immutable base: %s
+
+Canonical child execution root (authoritative):
+- canonical workspace: %s
+- allocated child branch: %s
+- parent/base branch: %s
+- immutable base commit: %s
+- any parent or alternate workspace path in transcript evidence: non-authoritative historical context only
 
 Trusted workspace/Git snapshot captured at the safe boundary:
 %s
 
-Produce the normal stable Compact sections. Explicitly state what was complete before this compact, what changed since any prior compact, what remains, and the exact next action. Do not treat discovery-only or truncated tool output as proof of completion.`, compactIndex, strings.TrimSpace(task.OriginalAssignment), strings.TrimSpace(task.LogicalTaskID), strings.TrimSpace(task.TaskCallID), strings.TrimSpace(task.ProgramID), strings.TrimSpace(task.ProgramJobID), strings.TrimSpace(sessionID), strings.TrimSpace(runID), strings.TrimSpace(task.WorkspacePath), strings.TrimSpace(task.WorktreeBranch), strings.TrimSpace(task.ImmutableBaseCommit), workspaceEvidence)
+Produce the normal stable Compact sections. Explicitly state what was complete before this compact, what changed since any prior compact, what remains, and the exact next action. Preserve bounded typed discovery and mutation evidence, but do not treat discovery-only evidence as proof of completion.`, compactIndex, strings.TrimSpace(task.OriginalAssignment), strings.TrimSpace(task.LogicalTaskID), strings.TrimSpace(task.TaskCallID), strings.TrimSpace(task.ProgramID), strings.TrimSpace(task.ProgramJobID), strings.TrimSpace(sessionID), strings.TrimSpace(runID), strings.TrimSpace(task.WorkspacePath), strings.TrimSpace(task.WorktreeBranch), strings.TrimSpace(task.BaseBranch), strings.TrimSpace(task.ImmutableBaseCommit), workspaceEvidence)
 
 	var compactionToolStream *memoryCompactionToolStream
 	summary, err := s.compactRunContextWithMemory(ctx, sessionID, brief, "", preference, contextWindow, maxOutputTokens, false, contextCompactionOriginTask, true, step, compactIndex-1, emit, &compactionToolStream)

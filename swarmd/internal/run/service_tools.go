@@ -90,20 +90,24 @@ func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionI
 		meta.ContinuationBoundary = launch.ContextWatcher.Boundary
 	}
 	if meta.ContinuationBoundary != nil {
+		baseBranch := strings.TrimSpace(firstNonEmptyString(launch.ChildWorktreeBase, mapString(launch.ChildSession.Metadata, "worktree_base_branch"), mapString(launch.ChildSession.Metadata, "parent_branch")))
+		baseCommit := strings.TrimSpace(mapString(launch.ChildSession.Metadata, "base_commit"))
+		if launch.TaskBase != nil {
+			baseCommit = strings.TrimSpace(launch.TaskBase.BaseCommit)
+			if baseBranch == "" {
+				baseBranch = strings.TrimSpace(launch.TaskBase.ParentBranch)
+			}
+		}
 		meta.TaskCompaction = &TaskContextCompaction{
-			OriginalAssignment: strings.TrimSpace(firstNonEmptyString(mapString(launch.ChildSession.Metadata, "original_assignment"), launch.MetaPrompt, launch.AssignmentLabel)),
-			LogicalTaskID:      strings.TrimSpace(launch.LogicalTaskID),
-			TaskCallID:         strings.TrimSpace(launch.TaskCallID),
-			ProgramID:          strings.TrimSpace(launch.ProgramID),
-			ProgramJobID:       strings.TrimSpace(launch.ProgramJobID),
-			WorkspacePath:      strings.TrimSpace(launch.ChildWorkspacePath),
-			WorktreeBranch:     strings.TrimSpace(launch.ChildWorktreeBranch),
-			ImmutableBaseCommit: strings.TrimSpace(firstNonEmptyString(launch.ChildWorktreeBase, func() string {
-				if launch.TaskBase != nil {
-					return launch.TaskBase.BaseCommit
-				}
-				return ""
-			}())),
+			OriginalAssignment:  strings.TrimSpace(firstNonEmptyString(mapString(launch.ChildSession.Metadata, "original_assignment"), launch.MetaPrompt, launch.AssignmentLabel)),
+			LogicalTaskID:       strings.TrimSpace(launch.LogicalTaskID),
+			TaskCallID:          strings.TrimSpace(launch.TaskCallID),
+			ProgramID:           strings.TrimSpace(launch.ProgramID),
+			ProgramJobID:        strings.TrimSpace(launch.ProgramJobID),
+			WorkspacePath:       strings.TrimSpace(launch.ChildWorkspacePath),
+			WorktreeBranch:      strings.TrimSpace(launch.ChildWorktreeBranch),
+			BaseBranch:          baseBranch,
+			ImmutableBaseCommit: baseCommit,
 		}
 	}
 	return meta

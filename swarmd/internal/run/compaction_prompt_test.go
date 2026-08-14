@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestCompactModelRuntimeUsesCanonicalProviderMappings(t *testing.T) {
@@ -311,6 +313,71 @@ func TestMemoryCompactionTranscriptIncludesVisibleConversationAndBoundedToolOutc
 		if strings.Contains(transcript, unwanted) {
 			t.Fatalf("memory transcript included internal context %q:\n%s", unwanted, transcript)
 		}
+	}
+}
+
+func TestTaskCompactionTranscriptPreservesTypedDiscoveryAndTruncatedMutationEvidence(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"search","arguments":"{\"query\":\"TaskContextCompaction\",\"path\":\"swarmd/internal/run\"}","output":"{\"summary\":\"found TaskContextCompaction in service.go\",\"truncated\":true}"}`},
+		{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"edit","arguments":"{\"path\":\"swarmd/internal/run/service.go\"}","completed_output":"{\"path\":\"swarmd/internal/run/service.go\",\"replacements\":1,\"old_string_truncated\":true,\"new_string_truncated\":false,\"summary\":\"updated Compact assembly\"}"}`},
+	}
+	transcript := buildTaskCompactionTranscript(messages)
+	for _, want := range []string{
+		"- kind: discovery",
+		"- name: search",
+		"TaskContextCompaction",
+		"found TaskContextCompaction in service.go",
+		"- kind: mutation",
+		"- name: edit",
+		"updated Compact assembly",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("Task transcript missing typed evidence %q:\n%s", want, transcript)
+		}
+	}
+}
+
+func TestDelegatedSubagentRunStartMetaSeparatesBaseBranchAndCommit(t *testing.T) {
+	launch := taskLaunchPrepared{
+		SubagentProfile: pebblestore.AgentProfile{Name: "system-coder"},
+		ContinuationBoundary: func(RunContinuationBoundaryInput) (RunContinuationBoundaryDecision, error) {
+			return RunContinuationBoundaryDecision{}, nil
+		},
+		ChildWorkspacePath:  "/workspace/child",
+		ChildWorktreeBase:   "dev-parent",
+		ChildWorktreeBranch: "agent/child-context",
+		TaskBase:            &worktreeruntime.TaskBase{RepoRoot: "/repo", ParentBranch: "dev-parent", BaseCommit: "base-commit-123"},
+	}
+	meta := delegatedSubagentRunStartMeta(launch, "permission-session", identity.Principal{AccountScopeID: "account-1"}, nil)
+	if meta.TaskCompaction == nil {
+		t.Fatal("delegated run meta omitted Task compaction context")
+	}
+	if got := meta.TaskCompaction.BaseBranch; got != "dev-parent" {
+		t.Fatalf("Task base branch = %q, want dev-parent", got)
+	}
+	if got := meta.TaskCompaction.ImmutableBaseCommit; got != "base-commit-123" {
+		t.Fatalf("Task immutable base commit = %q, want base-commit-123", got)
+	}
+	if meta.TaskCompaction.ImmutableBaseCommit == meta.TaskCompaction.BaseBranch {
+		t.Fatalf("Task base branch was mislabeled as immutable commit: %+v", meta.TaskCompaction)
+	}
+}
+
+func TestBoundTaskCompactionTranscriptKeepsSemanticEvidenceUnits(t *testing.T) {
+	entries := []taskCompactionTranscriptEntry{
+		{Text: "assistant:\n" + strings.Repeat("low-priority narration ", 100), Priority: 2, Order: 0},
+		{Text: "typed tool evidence:\n- kind: discovery\n- outcome: middle-symbol -> service.go", Priority: 3, Order: 1},
+		{Text: "typed tool evidence:\n- kind: mutation\n- outcome: changed service.go", Priority: 4, Order: 2},
+		{Text: "assistant prior compact checkpoint:\ncritical baseline", Priority: 6, Order: 3},
+	}
+	bounded := boundTaskCompactionTranscript(entries, 1150)
+	for _, want := range []string{"critical baseline", "middle-symbol -> service.go", "changed service.go", "semantic budget notice"} {
+		if !strings.Contains(bounded, want) {
+			t.Fatalf("semantic Task budget dropped %q:\n%s", want, bounded)
+		}
+	}
+	if strings.Contains(bounded, "older middle transcript omitted") || strings.Contains(bounded, strings.Repeat("low-priority narration ", 50)) {
+		t.Fatalf("semantic Task budget reverted to rune slicing or retained low-priority dump:\n%s", bounded)
 	}
 }
 
