@@ -98,8 +98,15 @@ type TaskProgramJobRecord struct {
 	ImmutableStageBase string                     `json:"immutable_stage_base,omitempty"`
 	ChildHead          string                     `json:"child_head,omitempty"`
 	IntegrationState   string                     `json:"integration_state,omitempty"`
+	HandoffRef         *TaskProgramHandoffRef     `json:"handoff_ref,omitempty"`
 	Blocker            *TaskProgramBlocker        `json:"blocker,omitempty"`
 	UpdatedAt          int64                      `json:"updated_at"`
+}
+
+type TaskProgramHandoffRef struct {
+	SessionID string `json:"session_id"`
+	MessageID string `json:"message_id"`
+	GlobalSeq uint64 `json:"global_seq"`
 }
 
 type TaskProgramJobGeneration struct {
@@ -167,6 +174,7 @@ type TaskProgramJobTransition struct {
 	ImmutableStageBase string
 	ChildHead          string
 	IntegrationState   string
+	HandoffRef         *TaskProgramHandoffRef
 	Blocker            *TaskProgramBlocker
 	ClearBlocker       bool
 }
@@ -355,6 +363,10 @@ func applyTaskProgramJobTransition(job *TaskProgramJobRecord, update TaskProgram
 	if value := strings.TrimSpace(update.IntegrationState); value != "" {
 		job.IntegrationState = value
 	}
+	if update.HandoffRef != nil {
+		ref := normalizedTaskProgramHandoffRef(*update.HandoffRef)
+		job.HandoffRef = &ref
+	}
 	if update.ClearBlocker {
 		job.Blocker = nil
 	} else if update.Blocker != nil {
@@ -390,6 +402,13 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 		if len(job.GenerationHistory) > maxDelegatedChildGenerationHistory {
 			return fmt.Errorf("task program job %q exceeds bounded generation history", job.JobID)
 		}
+		if job.HandoffRef != nil {
+			ref := normalizedTaskProgramHandoffRef(*job.HandoffRef)
+			if ref.SessionID == "" || ref.MessageID == "" || ref.GlobalSeq == 0 || ref.SessionID != job.CurrentSessionID {
+				return fmt.Errorf("task program job %q has invalid handoff reference", job.JobID)
+			}
+			job.HandoffRef = &ref
+		}
 	}
 	for _, job := range record.Definition.Jobs {
 		if len(job.OwnedScope) > maxTaskProgramScopeRows || len(job.AcceptanceCriteria) > maxTaskProgramScopeRows || len([]rune(job.MetaPrompt)) > maxTaskProgramTextRunes || len([]rune(job.Deliverable)) > maxTaskProgramTextRunes {
@@ -411,6 +430,12 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 		}
 	}
 	return nil
+}
+
+func normalizedTaskProgramHandoffRef(ref TaskProgramHandoffRef) TaskProgramHandoffRef {
+	ref.SessionID = boundedTaskProgramText(ref.SessionID)
+	ref.MessageID = boundedTaskProgramText(ref.MessageID)
+	return ref
 }
 
 func normalizedTaskProgramBlocker(blocker TaskProgramBlocker) TaskProgramBlocker {

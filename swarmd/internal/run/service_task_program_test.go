@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -573,6 +574,107 @@ func TestTaskProgramManagedDesignerOutcomeRequiresReadyArtifact(t *testing.T) {
 				t.Fatalf("invalid managed Designer transition = %#v", updates)
 			}
 		})
+	}
+}
+
+func TestTaskProgramFinderHandoffHydratesDependentCoderWithVerificationWarning(t *testing.T) {
+	svc, parentID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	mutation, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID: parentID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
+		ClientRequestID: "finder-handoff", IdempotencyKey: "finder-handoff", PayloadHash: "finder-handoff", RequestHash: "finder-handoff",
+		Kind: sessionruntime.SessionMutationAppendMessage, Message: &pebblestore.MessageSnapshot{ID: "finder-handoff", Role: "assistant", Content: "Inspect service.go:42 before editing."},
+	})
+	if err != nil || mutation.Message == nil {
+		t.Fatalf("persist V3 Finder handoff: message=%#v err=%v", mutation.Message, err)
+	}
+	message := *mutation.Message
+	transitiveMutation, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID: parentID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
+		ClientRequestID: "transitive-finder-handoff", IdempotencyKey: "transitive-finder-handoff", PayloadHash: "transitive-finder-handoff", RequestHash: "transitive-finder-handoff",
+		Kind: sessionruntime.SessionMutationAppendMessage, Message: &pebblestore.MessageSnapshot{ID: "transitive-finder-handoff", Role: "assistant", Content: "Also inspect task_program_store.go:407."},
+	})
+	if err != nil || transitiveMutation.Message == nil {
+		t.Fatalf("persist transitive V3 Finder handoff: message=%#v err=%v", transitiveMutation.Message, err)
+	}
+	transitiveMessage := *transitiveMutation.Message
+	record := pebblestore.TaskProgramRecord{
+		Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{
+			{ID: "inspect", StageID: "research", AgentType: "finder"},
+			{ID: "audit", StageID: "audit", AgentType: "finder", DependsOn: []string{"inspect"}},
+			{ID: "implement", StageID: "build", AgentType: "coder", DependsOn: []string{"audit"}},
+		}},
+		Jobs: []pebblestore.TaskProgramJobRecord{
+			{JobID: "inspect", StageID: "research", State: pebblestore.TaskProgramJobCompleted, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: message.SessionID, MessageID: message.ID, GlobalSeq: message.GlobalSeq}},
+			{JobID: "audit", StageID: "audit", State: pebblestore.TaskProgramJobCompleted, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: transitiveMessage.SessionID, MessageID: transitiveMessage.ID, GlobalSeq: transitiveMessage.GlobalSeq}},
+			{JobID: "implement", StageID: "build", State: pebblestore.TaskProgramJobDeclared},
+		},
+	}
+	scheduler := taskProgramScheduler{service: svc, parentSession: pebblestore.SessionSnapshot{ID: parentID}, record: record}
+	handoff, err := scheduler.finderHandoffsForJob(2)
+	if err != nil {
+		t.Fatalf("hydrate Finder handoff: %v", err)
+	}
+	for _, required := range []string{"Inspect service.go:42 before editing.", "Also inspect task_program_store.go:407.", "Finder agents can make mistakes", "Independently verify every relevant claim"} {
+		if !strings.Contains(handoff, required) {
+			t.Fatalf("Finder handoff missing %q: %s", required, handoff)
+		}
+	}
+}
+
+func TestTaskProgramFinderHandoffLookupFailsClosedForMissingV3Message(t *testing.T) {
+	svc, parentID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	record := pebblestore.TaskProgramRecord{
+		Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{
+			{ID: "inspect", StageID: "research", AgentType: "finder"},
+			{ID: "implement", StageID: "build", AgentType: "coder", DependsOn: []string{"inspect"}},
+		}},
+		Jobs: []pebblestore.TaskProgramJobRecord{
+			{JobID: "inspect", StageID: "research", State: pebblestore.TaskProgramJobCompleted, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: parentID, MessageID: "missing", GlobalSeq: 999}},
+			{JobID: "implement", StageID: "build", State: pebblestore.TaskProgramJobDeclared},
+		},
+	}
+	scheduler := taskProgramScheduler{service: svc, parentSession: pebblestore.SessionSnapshot{ID: parentID}, record: record}
+	if _, err := scheduler.finderHandoffsForJob(1); err == nil || !strings.Contains(err.Error(), "no longer resolves") {
+		t.Fatalf("missing V3 handoff error = %v", err)
+	}
+}
+
+func TestTaskProgramCoderPromptRequiresFinderVerification(t *testing.T) {
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "implement", Prompt: "change the scoped file", RequestedSubagent: "coder"})
+	for _, required := range []string{"Treat Finder handoffs", "Agents can make mistakes", "independently verify every relevant claim against the current workspace before editing files"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("Coder delegation prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
+func TestTaskProgramFinderOutcomeRequiresAndPersistsDurableHandoff(t *testing.T) {
+	job := taskProgramJob{ID: "inspect", StageID: "research", RequestedSubagentType: "finder"}
+	ref := &taskReportRef{SessionID: "child-finder", MessageID: "msg-7", GlobalSeq: 7, Role: "assistant", Source: "child_session_transcript"}
+	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{job}}, []taskLaunchOutcome{{ChildSessionID: "child-finder", ReportRef: ref}}, []error{nil})
+	if len(updates) != 1 || updates[0].State != pebblestore.TaskProgramJobCompleted || updates[0].HandoffRef == nil || updates[0].HandoffRef.SessionID != "child-finder" || updates[0].HandoffRef.MessageID != "msg-7" || updates[0].HandoffRef.GlobalSeq != 7 {
+		t.Fatalf("Finder durable handoff transition = %#v", updates)
+	}
+	missing := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{job}}, []taskLaunchOutcome{{ChildSessionID: "child-finder"}}, []error{nil})
+	if len(missing) != 1 || missing[0].State != pebblestore.TaskProgramJobFailed || missing[0].Blocker == nil || missing[0].Blocker.Code != "finder_handoff_missing" {
+		t.Fatalf("missing Finder handoff transition = %#v", missing)
+	}
+}
+
+func TestTaskProgramOutcomesParseReportReference(t *testing.T) {
+	payload := map[string]any{"launches": []any{map[string]any{
+		"child_session_id": "child-finder",
+		"report_ref":       map[string]any{"session_id": "child-finder", "message_id": "msg-9", "global_seq": float64(9), "role": "assistant", "source": "child_session_transcript"},
+	}}}
+	outcomes := taskProgramOutcomesFromPayload(payload, 1)
+	if len(outcomes) != 1 || outcomes[0].ReportRef == nil || outcomes[0].ReportRef.SessionID != "child-finder" || outcomes[0].ReportRef.MessageID != "msg-9" || outcomes[0].ReportRef.GlobalSeq != 9 {
+		t.Fatalf("parsed report outcome = %#v", outcomes)
 	}
 }
 

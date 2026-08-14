@@ -287,6 +287,9 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 		if job.ChildHead != "" {
 			row["child_head"] = job.ChildHead
 		}
+		if job.HandoffRef != nil {
+			row["handoff_ref"] = job.HandoffRef
+		}
 		if job.Blocker != nil {
 			row["blocker"] = job.Blocker
 		}
@@ -410,6 +413,9 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 			blocker = &pebblestore.TaskProgramBlocker{Code: code, Message: firstNonEmptyString(outcome.Reason, outcome.Error, runErrs[i].Error()), NextAction: "author_new_program_for_remaining_work"}
 		} else if agentruntime.IsCoderAgentName(spec.Jobs[i].RequestedSubagentType) {
 			state, integration = pebblestore.TaskProgramJobHandoffReady, "pending"
+		} else if agentruntime.IsFinderAgentName(spec.Jobs[i].RequestedSubagentType) && taskProgramDurableHandoffRef(outcome.ReportRef) == nil {
+			state, integration = pebblestore.TaskProgramJobFailed, "handoff_missing"
+			blocker = &pebblestore.TaskProgramBlocker{Code: "finder_handoff_missing", Message: "Finder completed without a valid durable report reference", NextAction: "author_new_program_for_remaining_work"}
 		} else if taskProgramSpecUsesManagedDesigner(spec.Jobs[i]) {
 			if outcome.ArtifactReference == nil || outcome.ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
 				state, integration = pebblestore.TaskProgramJobFailed, "artifact_invalid"
@@ -418,12 +424,23 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 				integration = "artifact_ready"
 			}
 		}
+		var handoffRef *pebblestore.TaskProgramHandoffRef
+		if agentruntime.IsFinderAgentName(spec.Jobs[i].RequestedSubagentType) {
+			handoffRef = taskProgramDurableHandoffRef(outcome.ReportRef)
+		}
 		updates = append(updates, pebblestore.TaskProgramJobTransition{
 			JobID: spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobRunning, State: state,
 			ChildSessionID: outcome.ChildSessionID, CurrentSessionID: outcome.ChildSessionID, WorkspacePath: outcome.WorkspacePath, WorktreeBranch: outcome.WorktreeBranch,
 			ParentBranch: outcome.ParentBranch, ImmutableStageBase: outcome.BaseCommit, ChildHead: outcome.HeadCommit,
-			IntegrationState: integration, Blocker: blocker,
+			IntegrationState: integration, HandoffRef: handoffRef, Blocker: blocker,
 		})
 	}
 	return updates
+}
+
+func taskProgramDurableHandoffRef(ref *taskReportRef) *pebblestore.TaskProgramHandoffRef {
+	if ref == nil || strings.TrimSpace(ref.SessionID) == "" || strings.TrimSpace(ref.MessageID) == "" || ref.GlobalSeq == 0 {
+		return nil
+	}
+	return &pebblestore.TaskProgramHandoffRef{SessionID: strings.TrimSpace(ref.SessionID), MessageID: strings.TrimSpace(ref.MessageID), GlobalSeq: ref.GlobalSeq}
 }

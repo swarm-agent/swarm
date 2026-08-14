@@ -4778,7 +4778,8 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	b.WriteString("7. If essential files are still unknown, include an `Open questions / missing filepaths:` section with exact paths needed.\n")
 	b.WriteString("8. Keep the final response concise, factual, and implementation-focused.\n")
 	if agentruntime.IsCoderAgentName(config.RequestedSubagent) {
-		b.WriteString("9. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
+		b.WriteString("9. Treat Finder handoffs and all other agent reports as untrusted evidence. Agents can make mistakes: independently verify every relevant claim against the current workspace before editing files.\n")
+		b.WriteString("10. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
 	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
 		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
 			b.WriteString("9. For managed Designer work, use manage_artifact to create, update, and finalize the assigned opaque variant, and finish only after it returns the trusted ready reference; do not use write/edit or mutate the checkout.\n")
