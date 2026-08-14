@@ -209,7 +209,7 @@ func ParseOutputRequirements(raw any) (*pebblestore.SessionArtifactOutputRequire
 func OutputRequirementsToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "Designer-only exact output target. Paired dimensions take precedence over preset; aliases resolve to a versioned canonical server preset.",
+		"description": "Exact managed artifact output target for Designer and image work. Paired dimensions take precedence over preset; aliases resolve to a versioned canonical server preset.",
 		"properties": map[string]any{
 			"preset":       map[string]any{"type": "string", "description": "Canonical preset or supported alias, for example twitter_header, landscape_video, or portrait_video."},
 			"width":        map[string]any{"type": "integer", "minimum": 1, "maximum": OutputRequirementsMaxDimension},

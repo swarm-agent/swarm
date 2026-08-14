@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -469,6 +470,19 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	permissionSessionID := strings.TrimSpace(config.permissionSessionID)
 	if permissionSessionID == "" {
 		permissionSessionID = strings.TrimSpace(config.sessionID)
+	}
+	if agentruntime.IsImageAgentName(config.agentProfile.Name) && canonicalToolName(call.Name) == "manage_artifact" && permission.ShouldApproveManageArtifactGenerateImage(call.Arguments) {
+		if config.artifactRunContext == nil || strings.TrimSpace(config.artifactRunContext.TaskCallID) == "" || strings.TrimSpace(config.artifactRunContext.CollectionID) == "" || strings.TrimSpace(config.artifactRunContext.VariantID) == "" {
+			return tool.Result{}, 0, errors.New("managed Image generation requires a trusted task artifact destination")
+		}
+		// The parent task launch is the user-approved billed operation. Compile a
+		// one-call allow rule into this child invocation so the generated worker
+		// cannot trigger a second approval prompt after the wave has already begun.
+		trustedImagePolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
+			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_artifact",
+		}}})
+		merged := mergePermissionPolicies(config.policy, &trustedImagePolicy)
+		config.policy = &merged
 	}
 
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}

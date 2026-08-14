@@ -238,7 +238,7 @@ func validateTaskSwarmHydrationResult(result taskSwarmHydrationResult, count int
 
 func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []taskLaunchSpec) (taskSwarmHydrationRequest, error) {
 	if parsed.Swarm == nil || parsed.Swarm.AgentType == "idea" {
-		return taskSwarmHydrationRequest{}, errors.New("task swarm hydration requires a Coder or Designer swarm")
+		return taskSwarmHydrationRequest{}, errors.New("task swarm hydration requires a Coder, Designer, or image swarm")
 	}
 	if len(launchSpecs) != parsed.Swarm.Count {
 		return taskSwarmHydrationRequest{}, errors.New("task swarm hydration launch wave does not match its requested count")
@@ -253,7 +253,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 		if launch.RequestedSubagentType != request.AgentType || launch.SwarmStrategy != request.SwarmStrategy {
 			return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration launch %d identity mismatch", i+1)
 		}
-		if agentruntime.IsDesignerAgentName(request.AgentType) {
+		if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" {
 			if launch.OutputMode != request.OutputMode {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration Designer launch %d output mode mismatch", i+1)
 			}
@@ -305,6 +305,9 @@ func taskSwarmWorkerExecutionModel(agentType string) string {
 	if agentruntime.IsDesignerAgentName(agentType) {
 		return "designer_output_mode_contract"
 	}
+	if strings.EqualFold(strings.TrimSpace(agentType), "image") {
+		return "managed_image_generation_contract"
+	}
 	return "isolated_worktree_advisory_owned_scope_commit_clean_handoff"
 }
 
@@ -343,10 +346,10 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		b.WriteString("- owned scope: ")
 		b.WriteString(strings.Join(item.OwnedScope, ", "))
 		b.WriteString("\n")
-	} else if !agentruntime.IsDesignerAgentName(request.AgentType) {
+	} else if !agentruntime.IsDesignerAgentName(request.AgentType) && request.AgentType != "image" {
 		b.WriteString("- owned scope: entire isolated worktree\n")
 	}
-	if agentruntime.IsDesignerAgentName(request.AgentType) {
+	if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" {
 		if request.OutputRequirements != nil {
 			encoded, _ := json.Marshal(request.OutputRequirements)
 			b.WriteString("- exact output requirements (immutable; Router and worker may not rewrite): ")
@@ -354,7 +357,11 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			b.WriteString("\n")
 		}
 		if request.OutputMode == taskOutputModeManaged {
-			b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+			if request.AgentType == "image" {
+				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
+			} else {
+				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+			}
 		} else {
 			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")
 		}

@@ -1202,11 +1202,19 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// complete batch and applies it atomically, so this canonical operation is
 		// safe to flow without a separate permission round trip.
 		return PolicyDecisionAllow
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "manage_artifact":
-		// Managed artifact operations remain inside the authenticated session
+	case "manage_artifact":
+		// Image generation is a billed external provider operation. Ordinary
+		// callers must explicitly approve it; trusted delegated Image workers flow
+		// through the already-approved task manifest and permission-session scope.
+		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
+			return PolicyDecisionAsk
+		}
+		// Other managed artifact operations remain inside the authenticated session
 		// authority and private app-owned storage. The only action that can write
 		// into a workspace is materialize/promote, which independently requires an
 		// exact ready reference and a trusted workspace root.
+		return PolicyDecisionAllow
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow
 	case "action_change":
 		if bypass {

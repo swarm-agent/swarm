@@ -33,6 +33,7 @@ import (
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
@@ -162,6 +163,7 @@ type Runtime struct {
 	themeWorkspace       manageThemeWorkspaceService
 	artifacts            *artifact.Registry
 	artifactAuthority    ArtifactAuthority
+	imageGeneration      ManagedImageGenerationService
 	searchCoordinator    *SearchCoordinator
 }
 
@@ -271,6 +273,13 @@ type manageTodoService interface {
 	Reorder(input todoruntime.ReorderInput, options ...todoruntime.ListOptions) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	SetInProgress(workspacePath, itemID string, options ...todoruntime.ListOptions) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	ApplyBatch(workspacePath string, operations []todoruntime.BatchOperation, options ...todoruntime.ListOptions) ([]todoruntime.BatchResult, []pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+}
+
+// ManagedImageGenerationService is the provider-neutral in-memory generation
+// boundary used by manage_artifact. The runtime resolves the account setting;
+// AI-authored calls never select providers or models.
+type ManagedImageGenerationService interface {
+	GenerateManagedImage(context.Context, imagegen.ManagedGenerateRequest) (imagegen.ManagedImage, error)
 }
 
 type manageThemeUISettingsService interface {
@@ -455,6 +464,12 @@ func (r *Runtime) ArtifactAuthority() ArtifactAuthority {
 		return nil
 	}
 	return r.artifactAuthority
+}
+
+func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
+	if r != nil {
+		r.imageGeneration = service
+	}
 }
 
 func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntimeConfig, error)) {
@@ -1273,7 +1288,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one fully declared staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives or independent trials generated from one parent brief. The internal explore strategy remains implicit for backward compatibility and is the only launch-enabled Coder/Designer swarm behavior. Coder/Designer prompts are hydrated by Router, while every Idea Swarm receives the same question directly without Router. Both modes use the same subagent policy, reservation, permission, streaming, and child-session runtime; there is no extra permission path. Regular Designer alternatives and Designer Iteration Swarms default to output_mode=managed, where the server injects a trusted parent-owned artifact destination and workspace targets must be omitted. output_mode=workspace preserves shared-checkout write/edit behavior and requires concrete non-overlapping workspace-relative targets. The model may choose only managed versus workspace and cannot name session, collection, or variant destinations. Put regular-mode child definitions in the structured launches array. Do not embed launch JSON in prompt; each launch keeps its full instructive assignment in meta_prompt, not text embedded in prompt, plus a concise title ideally three words.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one fully declared staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives generated from one parent brief. Coder, Designer, and image swarm prompts are hydrated by Router; image swarms publish one generated image per managed variant using the account's canonical image model, while Idea Swarms repeat the same question directly. Both modes use the same subagent policy, reservation, permission, streaming, and durable child lineage. Managed Designer/image destinations are server-injected and cannot be named by the model. Put regular-mode child definitions in launches and keep full assignments in meta_prompt.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1286,14 +1301,14 @@ func (r *Runtime) Definitions() []Definition {
 					"program":    taskProgramToolSchema(),
 					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
-					"agent_type":           map[string]any{"type": "string", "enum": []string{"coder", "designer", "idea"}, "description": "Required for mode=swarm. Idea is tool-free and available only in swarm mode."},
+					"agent_type":           map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "idea"}, "description": "Required for mode=swarm. image uses Router-hydrated managed variants and one billed generation call per variant with the account image model. Idea is tool-free and available only in swarm mode."},
 					"count":                map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
-					"themes":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer seed themes; cardinality must equal count."},
+					"themes":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
 					"groups":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
-					"output_contract":      map[string]any{"type": "string", "description": "Shared Coder/Designer swarm deliverable contract. Omit for Idea swarms."},
+					"output_contract":      map[string]any{"type": "string", "description": "Shared Coder/Designer/image swarm deliverable contract. Omit for Idea swarms."},
 					"output_requirements":  artifact.OutputRequirementsToolSchema(),
-					"output_mode":          map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only. Defaults to managed. For Designer Iteration Swarms, managed publishes to a trusted server-injected parent collection and must omit owned_scope_template, while workspace requires a concrete non-overlapping owned_scope_template. For regular Designer launches, managed forbids owned_scope and workspace requires concrete owned_scope. Never supplies destination IDs."},
-					"owned_scope_template": map[string]any{"type": "string", "description": "Workspace-mode Iteration Swarm target containing exactly one {index}. Required only for output_mode=workspace Designer swarms; forbidden for managed Designer swarms and omitted for Idea swarms."},
+					"output_mode":          map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer and image output contract. Image is always managed. Designer defaults to managed; workspace Designer swarms require one non-overlapping owned_scope_template. Managed launches never supply destination IDs."},
+					"owned_scope_template": map[string]any{"type": "string", "description": "Workspace-mode Iteration Swarm target containing exactly one {index}. Required only for output_mode=workspace Designer swarms; forbidden for managed Designer/image swarms and omitted for Idea swarms."},
 					"description": map[string]any{
 						"type":        "string",
 						"description": "Short overall task label shown in UI.",

@@ -1,17 +1,44 @@
 package tool
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/imagegen"
+	"swarm/packages/swarmd/internal/uisettings"
+
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+type fakeManagedImageGenerator struct {
+	calls int
+	req   imagegen.ManagedGenerateRequest
+	image imagegen.ManagedImage
+}
+
+func (f *fakeManagedImageGenerator) GenerateManagedImage(_ context.Context, req imagegen.ManagedGenerateRequest) (imagegen.ManagedImage, error) {
+	f.calls++
+	f.req = req
+	return f.image, nil
+}
+
+type fakeImageUISettings struct {
+	settings uisettings.UISettings
+}
+
+func (f *fakeImageUISettings) Get() (uisettings.UISettings, error) { return f.settings, nil }
+func (f *fakeImageUISettings) GetForAccount(string) (uisettings.UISettings, error) { return f.settings, nil }
+func (f *fakeImageUISettings) Set(settings uisettings.UISettings) (uisettings.UISettings, error) { f.settings = settings; return settings, nil }
+func (f *fakeImageUISettings) SetForAccount(_ string, settings uisettings.UISettings) (uisettings.UISettings, error) { f.settings = settings; return settings, nil }
 
 type fakeArtifactAuthority struct {
 	principal       artifact.Principal
@@ -31,12 +58,12 @@ type fakeArtifactAuthority struct {
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.created = principal, input
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreatePackage(_ context.Context, principal artifact.Principal, input artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.packaged = principal, input
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: "application/zip", Size: 1, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: "application/zip", Size: 1, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) List(principal artifact.Principal, _ string, _ int) ([]pebblestore.SessionArtifactCollection, error) {
@@ -92,6 +119,113 @@ func artifactToolContext() (context.Context, WorkspaceScope) {
 	ctx := WithWorkspaceScope(context.Background(), scope)
 	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "attempt-1"})
 	return ctx, scope
+}
+
+func testPNGImage() []byte {
+	decoded, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	return decoded
+}
+
+func TestManageArtifactGenerateImageUsesCanonicalSettingAndTrustedDestination(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	generator := &fakeManagedImageGenerator{image: imagegen.ManagedImage{Bytes: testPNGImage(), MediaType: "image/png"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetManagedImageGenerationService(generator)
+	runtime.SetManageThemeServices(&fakeImageUISettings{settings: uisettings.UISettings{Tools: uisettings.ToolSettings{Image: uisettings.ToolImageSettings{DefaultModel: "gemini-nano-banana-2"}}}}, nil)
+	scope := WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "auth-1", AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "parent-1", ChildSessionID: "child-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1"})
+	output, err := runtime.executeManageArtifact(ctx, scope, "image-call", map[string]any{"action": "generate_image", "prompt": "A red square"})
+	if err != nil {
+		t.Fatalf("generate image: %v", err)
+	}
+	if generator.calls != 1 || generator.req.SelectionID != "gemini-nano-banana-2" || generator.req.Principal.AccountScopeID != "account-1" {
+		t.Fatalf("generation calls=%d request=%#v", generator.calls, generator.req)
+	}
+	if authority.created.CollectionID != "collection-1" || authority.created.VariantID != "variant-1" || authority.created.MediaType != "image/png" || string(authority.created.Body) != string(testPNGImage()) {
+		t.Fatalf("artifact create = %#v", authority.created)
+	}
+	if !strings.Contains(output, `"session_id"`) || !strings.Contains(output, `"event_seq"`) {
+		t.Fatalf("generation output lacks exact reference: %s", output)
+	}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "image-call-redirect", map[string]any{"action": "generate_image", "prompt": "A red square", "collection_id": "other"}); err == nil || !strings.Contains(err.Error(), "must omit collection_id") {
+		t.Fatalf("managed redirect error = %v", err)
+	}
+}
+
+func TestManageArtifactGenerateImageAppliesTrustedExactOutputRequirements(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	generator := &fakeManagedImageGenerator{image: imagegen.ManagedImage{Bytes: testPNGImage(), MediaType: "image/png"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetManagedImageGenerationService(generator)
+	runtime.SetManageThemeServices(&fakeImageUISettings{}, nil)
+	scope := WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "auth-1", AccountScopeID: "account-1", UserID: "user-1"}}
+	requirements := &pebblestore.SessionArtifactOutputRequirements{Width: 2, Height: 1, AspectRatio: "2:1", Orientation: "landscape", ResolutionSource: "dimensions", RegistryVersion: artifact.OutputRequirementsRegistryVersion}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "parent-1", ChildSessionID: "child-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", OutputRequirements: requirements})
+
+	if _, err := runtime.executeManageArtifact(ctx, scope, "image-call-requirements", map[string]any{"action": "generate_image", "prompt": "A wide red square"}); err != nil {
+		t.Fatalf("generate exact image: %v", err)
+	}
+	if authority.created.Presentation.Width != 2 || authority.created.Presentation.Height != 1 || authority.created.OutputRequirements == nil {
+		t.Fatalf("exact artifact create = %#v", authority.created)
+	}
+	if generator.req.Settings["aspect_ratio"] != "2:1" {
+		t.Fatalf("provider-neutral generation settings = %#v", generator.req.Settings)
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(authority.created.Body))
+	if err != nil || config.Width != 2 || config.Height != 1 {
+		t.Fatalf("published image config=%#v err=%v", config, err)
+	}
+}
+
+func TestManageArtifactImageReadRequiresExactReferenceAndReturnsBoundedBase64(t *testing.T) {
+	imageBytes := testPNGImage()
+	authority := &fakeArtifactAuthority{readBody: imageBytes, variant: pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", SessionID: "session-1", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	if _, err := runtime.executeManageArtifact(ctx, scope, "image-read-inexact", map[string]any{"action": "read", "variant_id": "variant-1"}); err == nil || !strings.Contains(err.Error(), "exact ready") {
+		t.Fatalf("inexact image read error = %v", err)
+	}
+	output, err := runtime.executeManageArtifact(ctx, scope, "image-read", map[string]any{"action": "read", "session_id": "session-1", "collection_id": "collection-1", "variant_id": "variant-1", "event_seq": 7, "max_bytes": 1024})
+	if err != nil {
+		t.Fatalf("exact image read: %v", err)
+	}
+	if !strings.Contains(output, `"encoding":"base64"`) || !strings.Contains(output, base64.StdEncoding.EncodeToString(imageBytes)) || strings.Contains(output, "data_url") || strings.Contains(output, "storage") {
+		t.Fatalf("image read output = %s", output)
+	}
+	authority.readBody = []byte("not an image")
+	if _, err := runtime.executeManageArtifact(ctx, scope, "image-read-mismatch", map[string]any{"action": "read", "session_id": "session-1", "collection_id": "collection-1", "variant_id": "variant-1", "event_seq": 7}); err == nil || !strings.Contains(err.Error(), "do not match") {
+		t.Fatalf("mismatched image bytes error = %v", err)
+	}
+}
+
+func TestManageArtifactDefinitionDoesNotExposeProviderOrModel(t *testing.T) {
+	raw, err := json.Marshal(manageArtifactDefinition().Parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	if _, ok := properties["provider"]; ok {
+		t.Fatal("manage_artifact schema exposes provider")
+	}
+	if _, ok := properties["model"]; ok {
+		t.Fatal("manage_artifact schema exposes model")
+	}
+	if imageSettings, ok := properties["image_settings"].(map[string]any); !ok {
+		t.Fatal("manage_artifact schema lacks image settings")
+	} else if nested, ok := imageSettings["properties"].(map[string]any); !ok {
+		t.Fatal("manage_artifact image settings schema lacks properties")
+	} else if _, provider := nested["provider"]; provider {
+		t.Fatal("manage_artifact image settings expose provider")
+	} else if _, model := nested["model"]; model {
+		t.Fatal("manage_artifact image settings expose model")
+	}
 }
 
 func TestManageArtifactCreatePinsTrustedManagedDestinationAndLineage(t *testing.T) {
@@ -249,7 +383,7 @@ func TestManageArtifactPackageAndBoundedTextRead(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected binary read rejection")
 	}
-	if err.Error() != "manage_artifact read returns only UTF-8 text artifacts" {
+	if err.Error() != "manage_artifact read returns only UTF-8 text or supported image artifacts" {
 		t.Fatalf("unexpected binary read error: %v", err)
 	}
 }

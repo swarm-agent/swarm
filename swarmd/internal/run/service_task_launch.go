@@ -818,11 +818,13 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		agentType = "designer"
 	case agentruntime.IsIdeaAgentName(agentType):
 		agentType = "idea"
+	case agentruntime.IsImageAgentName(agentType):
+		agentType = "image"
 	default:
-		return nil, nil, errors.New("task swarm mode agent_type must be coder, designer, or idea")
+		return nil, nil, errors.New("task swarm mode agent_type must be coder, designer, image, or idea")
 	}
-	if strategy == taskSwarmStrategyAssembly && agentType == "idea" {
-		return nil, nil, errors.New("task Idea swarms support only swarm_strategy=explore")
+	if strategy == taskSwarmStrategyAssembly && (agentType == "idea" || agentType == "image") {
+		return nil, nil, fmt.Errorf("task %s swarms support only swarm_strategy=explore", taskSwarmAgentLabel(agentType))
 	}
 	count, err := taskPositiveInt(args, "count")
 	if err != nil {
@@ -868,22 +870,27 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if outputMode != taskOutputModeManaged && outputMode != taskOutputModeWorkspace {
 			return nil, nil, errors.New("task Designer swarm output_mode must be managed or workspace")
 		}
+	} else if agentType == "image" {
+		if outputMode != "" && outputMode != taskOutputModeManaged {
+			return nil, nil, errors.New("task image swarm output_mode must be managed when supplied")
+		}
+		outputMode = taskOutputModeManaged
 	} else if outputModeProvided {
-		return nil, nil, errors.New("task swarm output_mode is supported only for Designer")
+		return nil, nil, errors.New("task swarm output_mode is supported only for Designer or image")
 	}
 	ownedScopeTemplate := strings.TrimSpace(mapString(args, "owned_scope_template"))
 	if agentType == "designer" && outputMode == taskOutputModeWorkspace && ownedScopeTemplate == "" {
 		return nil, nil, errors.New("task workspace Designer swarm requires owned_scope_template with exactly one {index} placeholder")
 	}
-	if agentType == "designer" && outputMode == taskOutputModeManaged && ownedScopeTemplate != "" {
-		return nil, nil, errors.New("task managed Designer swarm must omit owned_scope_template")
+	if (agentType == "designer" && outputMode == taskOutputModeManaged || agentType == "image") && ownedScopeTemplate != "" {
+		return nil, nil, fmt.Errorf("task managed %s swarm must omit owned_scope_template", taskSwarmAgentLabel(agentType))
 	}
 	if ownedScopeTemplate != "" && strings.Count(ownedScopeTemplate, "{index}") != 1 {
 		return nil, nil, errors.New("task swarm owned_scope_template must contain exactly one {index} placeholder")
 	}
 	_, outputRequirementsProvided := args["output_requirements"]
-	if outputRequirementsProvided && agentType != "designer" {
-		return nil, nil, errors.New("task swarm output_requirements is supported only for Designer")
+	if outputRequirementsProvided && agentType != "designer" && agentType != "image" {
+		return nil, nil, errors.New("task swarm output_requirements is supported only for Designer or image")
 	}
 	if outputRequirementsProvided && args["output_requirements"] == nil {
 		return nil, nil, errors.New("task swarm output_requirements must be an object")
@@ -1049,6 +1056,8 @@ func taskSwarmAgentLabel(agentType string) string {
 		return "Designer"
 	case "idea":
 		return "Idea"
+	case "image":
+		return "Image"
 	default:
 		return "Swarm"
 	}
@@ -1189,8 +1198,8 @@ func applyTaskOutputRequirements(launch *taskLaunchSpec, raw any, label string) 
 		}
 		return nil
 	}
-	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) {
-		return fmt.Errorf("%s output_requirements is supported only for Designer", label)
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) && !agentruntime.IsImageAgentName(launch.RequestedSubagentType) {
+		return fmt.Errorf("%s output_requirements is supported only for Designer or image", label)
 	}
 	if value, ok := raw.(map[string]any); ok && len(value) == 0 {
 		return fmt.Errorf("%s output_requirements must include a preset or paired width and height", label)
@@ -1215,10 +1224,20 @@ func applyTaskDesignerOutputMode(launch *taskLaunchSpec, rawMode, label string) 
 		return errors.New("task launch is required")
 	}
 	mode := strings.ToLower(strings.TrimSpace(rawMode))
-	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) {
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) && !agentruntime.IsImageAgentName(launch.RequestedSubagentType) {
 		if mode != "" {
-			return fmt.Errorf("%s output_mode is supported only for Designer", label)
+			return fmt.Errorf("%s output_mode is supported only for Designer or image", label)
 		}
+		return nil
+	}
+	if agentruntime.IsImageAgentName(launch.RequestedSubagentType) {
+		if mode != "" && mode != taskOutputModeManaged {
+			return fmt.Errorf("%s image output_mode must be managed", label)
+		}
+		if len(launch.OwnedScope) != 0 {
+			return fmt.Errorf("%s managed image must omit owned_scope", label)
+		}
+		launch.OutputMode = taskOutputModeManaged
 		return nil
 	}
 	if mode == "" {
@@ -1240,7 +1259,7 @@ func applyTaskDesignerOutputMode(launch *taskLaunchSpec, rawMode, label string) 
 func validateTaskDesignerScopes(launches []taskLaunchSpec) error {
 	designerIndexes := make([]int, 0, len(launches))
 	for i := range launches {
-		if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) {
+		if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) && !agentruntime.IsImageAgentName(launches[i].RequestedSubagentType) {
 			continue
 		}
 		if launches[i].OutputMode == taskOutputModeManaged {
@@ -2579,6 +2598,10 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		profile, err := s.agents.ResolveSystemAgent(agentruntime.IdeaAgentID, routerProfile)
 		return profile, false, "", err
 	}
+	if agentruntime.IsImageAgentName(requested) {
+		_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, parentSession.AccountScopeID, agentruntime.ImageAgentID, "")
+		return profile, false, "", err
+	}
 	if !agentruntime.IsCoderAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
 		return profile, false, "", err
@@ -2677,7 +2700,12 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if !reflect.DeepEqual(row.OwnedScope, launchSpecs[i].OwnedScope) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
 		}
-		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) {
+		if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+			if row.ResolvedTools == nil || len(row.ResolvedTools.AllowedTools) != 1 || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
+				return taskLaunchManifest{}, fmt.Errorf("approved managed Image manifest launch %d must allow only manage_artifact", i)
+			}
+		}
+		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
 			switch strings.TrimSpace(launchSpecs[i].OutputMode) {
 			case taskOutputModeManaged:
 				if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
@@ -2800,7 +2828,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var toolContract ResolvedAgentToolContract
 		var profileDisabledTools map[string]bool
 		var toolErr error
-		if virtualTarget || agentruntime.IsFinderAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) || agentruntime.IsIdeaAgentName(resolvedName) {
+		if virtualTarget || agentruntime.IsFinderAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) || agentruntime.IsImageAgentName(resolvedName) || agentruntime.IsIdeaAgentName(resolvedName) {
 			// Compiled Coder, Finder, Designer, and Idea profiles are trusted launch snapshots, not
 			// persisted agent rows. Compile their immutable
 			// contracts directly instead of looking them up in the agent store.
@@ -2812,7 +2840,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q tool contract: %w", i, requested, toolErr)
 		}
 		launchDisabledTools := append([]string(nil), defaultDisabledTools...)
-		if agentruntime.IsDesignerAgentName(requested) && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
+		if (agentruntime.IsDesignerAgentName(requested) || agentruntime.IsImageAgentName(requested)) && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
 			launchDisabledTools = disabledTaskToolNames("write", "edit")
 		}
 		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, launchDisabledTools, executionMode)

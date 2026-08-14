@@ -22,6 +22,16 @@ func TestManageArtifactDefaultsToAutomaticPrivateAuthority(t *testing.T) {
 	}
 }
 
+func TestManageArtifactGenerateImageRequiresBillingApproval(t *testing.T) {
+	arguments := `{"action":"generate_image","prompt":"a red square"}`
+	if got := ExplainPolicy("auto", "manage_artifact", arguments, Policy{}); got.Decision != PolicyDecisionAsk {
+		t.Fatalf("generate_image decision = %q source=%q reason=%q", got.Decision, got.Source, got.Reason)
+	}
+	if got := ExplainPolicy("auto+bypass_permissions", "manage_artifact", arguments, Policy{}); got.Decision != PolicyDecisionAllow {
+		t.Fatalf("bypassed generate_image decision = %q source=%q reason=%q", got.Decision, got.Source, got.Reason)
+	}
+}
+
 func bashArguments(t *testing.T, command string) string {
 	t.Helper()
 	payload, err := json.Marshal(map[string]any{"command": command, "explanation": []string{"Focused policy test."}, "category": "read", "critical": false})

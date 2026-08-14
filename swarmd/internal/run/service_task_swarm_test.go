@@ -40,6 +40,42 @@ func TestParseTaskSwarmRejectsFinderExplicitLaunchesAndTrustFields(t *testing.T)
 	}
 }
 
+func TestParseTaskSwarmImageBuildsManagedRouterHydratedWorkers(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"images","prompt":"create campaign art","agent_type":"image","count":2,"themes":["minimal","maximal"],"output_contract":"one ready image"}`)
+	if err != nil {
+		t.Fatalf("parse image swarm: %v", err)
+	}
+	if parsed.Swarm == nil || parsed.Swarm.AgentType != "image" || parsed.Swarm.OutputMode != taskOutputModeManaged || len(parsed.Launches) != 2 {
+		t.Fatalf("image swarm = %#v", parsed)
+	}
+	for i, launch := range parsed.Launches {
+		if launch.RequestedSubagentType != "image" || launch.OutputMode != taskOutputModeManaged || len(launch.OwnedScope) != 0 {
+			t.Fatalf("image launch %d = %#v", i, launch)
+		}
+	}
+	request, err := buildTaskSwarmHydrationRequest(parsed, parsed.Launches)
+	if err != nil || len(request.Items) != 2 || request.Items[0].WorkerExecution != "managed_image_generation_contract" {
+		t.Fatalf("image hydration request = %#v err=%v", request, err)
+	}
+	prompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Minimal Image", Theme: "minimal", Role: "Compose a minimal visual.", Deliverable: "Ready image"})
+	if err != nil || !strings.Contains(prompt, "action=generate_image") || !strings.Contains(prompt, "one billed generation call") || strings.Contains(prompt, "owned scope:") {
+		t.Fatalf("image child prompt = %q err=%v", prompt, err)
+	}
+	context := managedDesignerArtifactContext(pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: "account", UserID: "user"}, "call", parsed.Launches[0], 1)
+	if context == nil || context.CollectionID == "" || context.VariantID == "" {
+		t.Fatalf("image managed destination = %#v", context)
+	}
+	for _, raw := range []string{
+		`{"mode":"swarm","prompt":"x","agent_type":"image","count":1,"output_mode":"workspace"}`,
+		`{"mode":"swarm","prompt":"x","agent_type":"image","count":1,"owned_scope_template":"images/{index}.png"}`,
+		`{"mode":"swarm","swarm_strategy":"assembly","prompt":"x","agent_type":"image","count":1,"assembly_parts":[{"name":"image","owned_scope":["images/1.png"]}],"integration_contract":"image"}`,
+	} {
+		if _, err := parseTaskCallArguments(raw); err == nil {
+			t.Fatalf("invalid image swarm was accepted: %s", raw)
+		}
+	}
+}
+
 func TestParseTaskSwarmDesignerBuildsWorkspaceGroupsAndDistinctTargets(t *testing.T) {
 	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"objects","prompt":"make objects","agent_type":"designer","count":3,"groups":[{"name":"rocks","count":1},{"name":"plants","count":2}],"output_contract":"one object","output_mode":"workspace","owned_scope_template":"web/src/objects/item-{index}.tsx"}`)
 	if err != nil {

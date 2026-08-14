@@ -526,6 +526,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
 	imageThreadStore := pebblestore.NewImageThreadStore(store)
 	imageGenSvc := imagegen.NewService(codexClient, authStore, imageThreadStore)
+	toolRuntime.SetManagedImageGenerationService(imageGenSvc)
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)

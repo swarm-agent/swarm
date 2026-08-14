@@ -52,6 +52,30 @@ func (f *fakeCodexImageClient) GenerateImage(ctx context.Context, req codex.Imag
 	return f.result, nil
 }
 
+func TestGenerateManagedImageUsesCanonicalSelectionAndExactlyOneProviderCall(t *testing.T) {
+	client := &fakeCodexImageClient{result: codex.ImageGenerationResult{CallID: "managed", DecodedPNG: testPNGBytes()}}
+	svc, _, _, _ := newImageServiceTestHarnessWithClient(t, client)
+
+	result, err := svc.GenerateManagedImage(context.Background(), ManagedGenerateRequest{
+		SelectionID: "codex-image-gen", Prompt: "make one square", Size: "1024x1024", Principal: testImagePrincipal(),
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedImage: %v", err)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("provider calls = %d, want exactly one", len(client.requests))
+	}
+	if request := client.requests[0]; request.Model != defaultCodexImageModel || request.Count != 1 || request.Prompt != "make one square" || request.Size != "1024x1024" {
+		t.Fatalf("managed provider request = %#v", request)
+	}
+	if len(result.Bytes) == 0 || result.MediaType != "image/png" {
+		t.Fatalf("managed result = %#v", result)
+	}
+	if _, err := ResolveModelSelection("model-authored-unknown"); err == nil {
+		t.Fatal("unsupported configured image model was accepted")
+	}
+}
+
 func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testing.T) {
 	dataHome := filepath.Join(t.TempDir(), "data")
 	svc, threads, threadID, storagePath := newImageServiceTestHarnessWithDataHome(t, dataHome, &fakeCodexImageClient{result: codex.ImageGenerationResult{

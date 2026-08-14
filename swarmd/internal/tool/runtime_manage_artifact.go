@@ -1,28 +1,38 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	"image/png"
 	"math"
+	"net/http"
 	"strings"
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const (
 	manageArtifactDefaultListLimit = 50
 	manageArtifactMaxListLimit     = 100
-	manageArtifactMaxCreateBytes   = 1 << 20
-	manageArtifactMaxPackageFiles  = 128
-	manageArtifactMaxPackageBytes  = 8 << 20
-	manageArtifactDefaultReadBytes = 32 << 10
-	manageArtifactMaxReadBytes     = 256 << 10
+	manageArtifactMaxCreateBytes    = 1 << 20
+	manageArtifactMaxPackageFiles   = 128
+	manageArtifactMaxPackageBytes   = 8 << 20
+	manageArtifactDefaultReadBytes  = 32 << 10
+	manageArtifactMaxReadBytes      = 256 << 10
+	manageArtifactMaxImageReadBytes = 16 << 20
+	manageArtifactMaxPromptRunes    = 12000
 )
 
 // ArtifactAuthority is the session-owned managed artifact lifecycle boundary.
@@ -106,11 +116,13 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create and manage durable artifacts owned by the current session, inspect explicitly attached exact ready references (including bounded application/zip manifests or one UTF-8 entry), and explicitly materialize an exact ready reference into the trusted current workspace. Uses opaque collection and variant references; ownership, source bytes, and workspace root always come from trusted run context. Never exposes private storage paths.",
+		Description: "Generate one provider-billed image with the authenticated account's configured image model and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. Provider/model identifiers and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":                 map[string]any{"type": "string", "enum": []string{"create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
+				"action":                 map[string]any{"type": "string", "enum": []string{"generate_image", "create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
+				"prompt":                 map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image"},
+				"image_settings":         map[string]any{"type": "object", "properties": map[string]any{"size": map[string]any{"type": "string", "maxLength": 64}, "aspect_ratio": map[string]any{"type": "string", "maxLength": 32}, "image_size": map[string]any{"type": "string", "maxLength": 32}}, "additionalProperties": false, "description": "Optional provider-neutral image output controls. Never accepts provider or model."},
 				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session from an attached artifact reference; valid only for get/read/materialize/promote"},
 				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference; optional on create and required for collection-scoped actions"},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
@@ -129,7 +141,7 @@ func manageArtifactDefinition() Definition {
 				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence required with session_id for get/read/materialize/promote"},
 				"status":                 map[string]any{"type": "string", "description": "Optional list filter: staging|ready|failed|unavailable"},
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit},
-				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxReadBytes, "description": "Maximum UTF-8 bytes returned by read or one package entry"},
+				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. Text/package entries are capped at 256 KiB; supported ready images are capped at 16 MiB and returned as base64."},
 				"entry":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Optional normalized slash-delimited regular-file entry for application/zip read; omit to return the bounded package manifest"},
 				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace-relative file or directory destination required for materialize/promote"},
 				"overwrite":              map[string]any{"type": "boolean", "description": "Explicitly permit bounded replacement of destination files; defaults to false"},
@@ -170,9 +182,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		requestID = managedArtifactRequestID(principal.SessionID, callID, actionName)
 	}
 
-	if actionName != "create" && actionName != "create_package" {
+	if actionName != "create" && actionName != "create_package" && actionName != "generate_image" {
 		if _, supplied := args["output_requirements"]; supplied {
-			return "", errors.New("manage_artifact output_requirements is valid only for create or create_package")
+			return "", errors.New("manage_artifact output_requirements is valid only for generate_image, create, or create_package")
 		}
 	}
 	if actionName != "list_presets" && r.artifactAuthority == nil {
@@ -180,6 +192,13 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 	}
 
 	switch actionName {
+	case "generate_image":
+		variant, err := r.generateManagedImageArtifact(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "create", "create_package":
 		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
 			if _, supplied := args["output_requirements"]; supplied {
@@ -284,7 +303,8 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if err != nil {
 			return "", err
 		}
-		maxBytes := clampInt(asInt(args["max_bytes"], manageArtifactDefaultReadBytes), 1, manageArtifactMaxReadBytes)
+		_, maxBytesProvided := args["max_bytes"]
+		maxBytes := clampInt(asInt(args["max_bytes"], manageArtifactDefaultReadBytes), 1, manageArtifactMaxImageReadBytes)
 		ref, explicitSource, err := parseArtifactReadReference(args, variantID)
 		if err != nil {
 			return "", err
@@ -340,19 +360,36 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if _, exists := args["entry"]; exists {
 			return "", errors.New("manage_artifact read entry is valid only for application/zip artifacts")
 		}
+		isImage := managedArtifactImageMediaType(variant.MediaType)
+		if isImage && (variant.Status != pebblestore.SessionArtifactStatusReady || !explicitSource) {
+			return "", errors.New("manage_artifact image read requires an exact ready session_id, collection_id, variant_id, and event_seq reference")
+		}
+		readLimit := maxBytes
+		if isImage && !maxBytesProvided {
+			readLimit = manageArtifactMaxImageReadBytes
+		} else if !isImage && readLimit > manageArtifactMaxReadBytes {
+			readLimit = manageArtifactMaxReadBytes
+		}
 		if explicitSource {
-			body, variant, err = r.artifactAuthority.ReadReference(ctx, principal, ref, int64(maxBytes))
+			body, variant, err = r.artifactAuthority.ReadReference(ctx, principal, ref, int64(readLimit))
 		} else {
-			body, variant, err = r.artifactAuthority.Read(ctx, principal, variantID, int64(maxBytes))
+			body, variant, err = r.artifactAuthority.Read(ctx, principal, variantID, int64(readLimit))
 		}
 		if err != nil {
 			return "", err
 		}
-		if !utf8.Valid(body) || !managedArtifactTextMediaType(variant.MediaType) {
-			return "", errors.New("manage_artifact read returns only UTF-8 text artifacts")
-		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+		if isImage {
+			if !managedArtifactImageDataMatches(variant.MediaType, body) {
+				return "", errors.New("manage_artifact image bytes do not match the ready artifact media type")
+			}
+			response["encoding"], response["base64"], response["bytes"] = "base64", base64.StdEncoding.EncodeToString(body), len(body)
+			break
+		}
+		if !utf8.Valid(body) || !managedArtifactTextMediaType(variant.MediaType) {
+			return "", errors.New("manage_artifact read returns only UTF-8 text or supported image artifacts")
+		}
 		response["content"], response["bytes"] = string(body), len(body)
 	case "materialize", "promote":
 		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
@@ -419,6 +456,212 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
+	for key := range args {
+		switch key {
+		case "action", "prompt", "image_settings", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "output_requirements":
+		default:
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact generate_image contains unsupported field %q", key)
+		}
+	}
+	if r.imageGeneration == nil {
+		return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact image generation is not configured")
+	}
+	if r.uiSettings == nil {
+		return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact image model settings are not configured")
+	}
+	prompt := strings.TrimSpace(asString(args["prompt"]))
+	if prompt == "" {
+		return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact generate_image requires prompt")
+	}
+	if len([]rune(prompt)) > manageArtifactMaxPromptRunes {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact image prompt exceeds %d characters", manageArtifactMaxPromptRunes)
+	}
+	settings, size, err := parseManagedImageSettings(args["image_settings"])
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+
+	collectionID, variantID := managedArtifactOpaqueID("collection", principal.SessionID, callID), managedArtifactOpaqueID("variant", principal.SessionID, callID)
+	collectionName, collectionDescription := strings.TrimSpace(asString(args["collection_name"])), strings.TrimSpace(asString(args["collection_description"]))
+	if collectionName == "" {
+		collectionName = "Generated image"
+	}
+	var requirements *pebblestore.SessionArtifactOutputRequirements
+	if raw, exists := args["output_requirements"]; exists {
+		requirements, err = artifact.ParseOutputRequirements(raw)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, err
+		}
+	}
+	managedDestination := false
+	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+		managedDestination = true
+		if strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" {
+			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact trusted image destination is incomplete")
+		}
+		if strings.TrimSpace(asString(args["collection_id"])) != "" || strings.TrimSpace(asString(args["variant_id"])) != "" {
+			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact managed generate_image must omit collection_id and variant_id")
+		}
+		if _, supplied := args["output_requirements"]; supplied {
+			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact managed generate_image must omit output_requirements; trusted orchestration injects the immutable target")
+		}
+		collectionID, variantID = strings.TrimSpace(run.CollectionID), strings.TrimSpace(run.VariantID)
+		requirements = cloneArtifactOutputRequirements(run.OutputRequirements)
+		collectionName, collectionDescription = "", ""
+	}
+	if !managedDestination {
+		if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
+			collectionID = supplied
+		}
+		if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
+			variantID = supplied
+		}
+	}
+	if requirements != nil {
+		if int64(requirements.Width)*int64(requirements.Height) > 32<<20 {
+			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact image output requirements exceed the bounded pixel limit")
+		}
+		if settings == nil {
+			settings = map[string]any{}
+		}
+		applyImageOutputRequirements(settings, &size, requirements)
+		delete(settings, "image_size")
+	}
+
+	ui, err := r.uiSettings.GetForAccount(principal.AccountScopeID)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("resolve configured image model: %w", err)
+	}
+	selectionID := strings.TrimSpace(ui.Tools.Image.DefaultModel)
+	if selectionID == "" {
+		selectionID = imagegen.DefaultModelSelectionID
+	}
+	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
+		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings, Principal: scope.Principal,
+	})
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("generate managed image: %w", err)
+	}
+	if len(generated.Bytes) == 0 || len(generated.Bytes) > manageArtifactMaxImageReadBytes || !managedArtifactImageMediaType(generated.MediaType) {
+		return pebblestore.SessionArtifactVariant{}, errors.New("generated image is empty, oversized, or has an unsupported media type")
+	}
+	if requirements != nil {
+		generated.Bytes, generated.MediaType, err = resizeManagedImage(generated.Bytes, requirements.Width, requirements.Height)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, err
+		}
+	}
+	config, _, decodeErr := image.DecodeConfig(bytes.NewReader(generated.Bytes))
+	if decodeErr != nil || config.Width < 1 || config.Height < 1 {
+		return pebblestore.SessionArtifactVariant{}, errors.New("generated image dimensions could not be verified")
+	}
+	presentation := pebblestore.SessionArtifactPresentation{
+		Kind: "image", Label: strings.TrimSpace(asString(args["collection_name"])), Description: strings.TrimSpace(asString(args["collection_description"])),
+		Previewable: true, Width: config.Width, Height: config.Height,
+	}
+	if presentation.Label == "" {
+		presentation.Label = "Generated image"
+	}
+	if err := enforceArtifactPresentationRequirements(&presentation, requirements); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	filename := strings.TrimSpace(asString(args["filename"]))
+	if filename == "" {
+		filename = "generated-image" + managedImageExtension(generated.MediaType)
+	}
+	return r.artifactAuthority.Create(ctx, principal, artifact.CreateInput{
+		RequestID: requestID, CollectionID: collectionID, CollectionName: collectionName, CollectionDescription: collectionDescription,
+		VariantID: variantID, Filename: filename, MediaType: canonicalArtifactMediaType(generated.MediaType), Presentation: presentation,
+		OutputRequirements: requirements, Body: append([]byte(nil), generated.Bytes...),
+	})
+}
+
+func applyImageOutputRequirements(settings map[string]any, size *string, requirements *pebblestore.SessionArtifactOutputRequirements) {
+	if requirements == nil {
+		return
+	}
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	settings["aspect_ratio"] = requirements.AspectRatio
+	switch {
+	case requirements.Width == 1024 && requirements.Height == 1024:
+		settings["size"], *size = "1024x1024", "1024x1024"
+	case requirements.Width > requirements.Height:
+		settings["size"], *size = "1536x1024", "1536x1024"
+	case requirements.Width < requirements.Height:
+		settings["size"], *size = "1024x1536", "1024x1536"
+	}
+}
+
+func resizeManagedImage(data []byte, width, height int) ([]byte, string, error) {
+	if width < 1 || height < 1 {
+		return nil, "", errors.New("managed image output dimensions are invalid")
+	}
+	source, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode generated image for exact output requirements: %w", err)
+	}
+	bounds := source.Bounds()
+	if bounds.Dx() == width && bounds.Dy() == height {
+		return append([]byte(nil), data...), canonicalArtifactMediaType(http.DetectContentType(data)), nil
+	}
+	target := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		sourceY := bounds.Min.Y + y*bounds.Dy()/height
+		for x := 0; x < width; x++ {
+			sourceX := bounds.Min.X + x*bounds.Dx()/width
+			target.Set(x, y, source.At(sourceX, sourceY))
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, target); err != nil {
+		return nil, "", fmt.Errorf("encode generated image for exact output requirements: %w", err)
+	}
+	if encoded.Len() > manageArtifactMaxImageReadBytes {
+		return nil, "", fmt.Errorf("generated image exceeds %d bytes after applying output requirements", manageArtifactMaxImageReadBytes)
+	}
+	return encoded.Bytes(), "image/png", nil
+}
+
+func parseManagedImageSettings(raw any) (map[string]any, string, error) {
+	if raw == nil {
+		return nil, "", nil
+	}
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil, "", errors.New("manage_artifact image_settings must be an object")
+	}
+	settings := make(map[string]any, len(value))
+	for key, rawValue := range value {
+		if key != "size" && key != "aspect_ratio" && key != "image_size" {
+			return nil, "", fmt.Errorf("manage_artifact image_settings contains unsupported field %q", key)
+		}
+		text, ok := rawValue.(string)
+		if !ok {
+			return nil, "", fmt.Errorf("manage_artifact image_settings %s must be a string", key)
+		}
+		text = strings.TrimSpace(text)
+		if text != "" {
+			settings[key] = text
+		}
+	}
+	size, _ := settings["size"].(string)
+	return settings, size, nil
+}
+
+func managedImageExtension(mediaType string) string {
+	switch canonicalArtifactMediaType(mediaType) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
 }
 
 func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Principal, error) {
@@ -667,6 +910,27 @@ func enforceArtifactPresentationRequirements(presentation *pebblestore.SessionAr
 
 func managedArtifactCollection(c pebblestore.SessionArtifactCollection) map[string]any {
 	return map[string]any{"id": c.ID, "status": c.Status, "name": c.Name, "description": c.Description, "presentation": managedArtifactPresentation(c.Presentation), "variant_count": c.VariantCount, "selected_variant_id": c.SelectedVariantID, "created_at": c.CreatedAt, "updated_at": c.UpdatedAt, "event_seq": c.EventSeq}
+}
+
+func canonicalArtifactMediaType(mediaType string) string {
+	return strings.ToLower(strings.TrimSpace(strings.SplitN(mediaType, ";", 2)[0]))
+}
+
+func managedArtifactImageMediaType(mediaType string) bool {
+	switch canonicalArtifactMediaType(mediaType) {
+	case "image/png", "image/jpeg", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func managedArtifactImageDataMatches(mediaType string, data []byte) bool {
+	if len(data) == 0 || canonicalArtifactMediaType(http.DetectContentType(data)) != canonicalArtifactMediaType(mediaType) {
+		return false
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	return err == nil && config.Width > 0 && config.Height > 0
 }
 
 func managedArtifactTextMediaType(mediaType string) bool {

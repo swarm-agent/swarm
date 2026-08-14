@@ -103,8 +103,10 @@ func TestMasterHarnessAdvertisesIterationSwarmWithoutAssembly(t *testing.T) {
 	for _, want := range []string{
 		"Iteration Swarm: fast parallel alternatives or independent trials",
 		"backward-compatible internal strategy identifier remains explore",
-		"Coder/Designer Iteration Swarm mode",
+		"Coder/Designer/Image Iteration Swarm mode",
 		"hydrated Iteration Swarm",
+		"managed image Iteration Swarm",
+		"manage_artifact generate_image exactly once",
 		"quick Idea swarm",
 		"Never reinterpret a generic new-session request as delegation",
 	} {

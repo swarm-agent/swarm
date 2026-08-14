@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -278,6 +278,20 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
 		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
 	}
+	imageWorker, err := registry.ReconcileSnapshot(ImageAgentID, pebblestore.AgentProfile{Name: ImageAgentID, Provider: "openai", Model: "utility-model", Thinking: "medium", Prompt: "mutable", ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imageWorker.Name != ImageAgentID || imageWorker.Prompt != ImageAgentPrompt() || !imageWorker.Protected || imageWorker.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || imageWorker.ToolContract == nil || len(imageWorker.ToolContract.Tools) != 1 {
+		t.Fatalf("Image immutable contract was not restored: %+v", imageWorker)
+	}
+	if cfg := imageWorker.ToolContract.Tools["manage_artifact"]; cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("Image worker must allow only manage_artifact: %+v", imageWorker.ToolContract)
+	}
+	if !strings.Contains(ImageAgentPrompt(), "generate_image") || !strings.Contains(ImageAgentPrompt(), "Omit provider, model") {
+		t.Fatalf("Image prompt is missing generation restrictions: %s", ImageAgentPrompt())
+	}
+
 	workspaceDesigner := DesignerWorkspaceAgentProfileForParent(designer)
 	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
 		if cfg := workspaceDesigner.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
@@ -345,7 +359,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)

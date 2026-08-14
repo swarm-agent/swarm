@@ -47,6 +47,7 @@ func TestResolveSystemAgentUsesCanonicalAccountModelForAllOnboardingAgents(t *te
 		agentruntime.FinderAgentID,
 		agentruntime.CoderAgentID,
 		agentruntime.DesignerAgentID,
+		agentruntime.ImageAgentID,
 		agentruntime.RouterAgentID,
 	} {
 		t.Run(agentID, func(t *testing.T) {

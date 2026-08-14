@@ -23,6 +23,8 @@ const (
 	CoderAgentName               = "Coder"
 	DesignerAgentID              = "system-designer"
 	DesignerAgentName            = "Designer"
+	ImageAgentID                 = "system-image"
+	ImageAgentName               = "Image"
 	IdeaAgentID                  = "system-idea"
 	IdeaAgentName                = "Idea"
 	SwarmAgentID                 = "swarm"
@@ -282,6 +284,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Materialize:  DesignerAgentProfileForParent,
 		Reconcile:    reconcileDesignerAgentProfile,
 	},
+	{
+		ID:          ImageAgentID,
+		DisplayName: ImageAgentName,
+		Materialize: ImageAgentProfileForParent,
+		Reconcile:   reconcileImageAgentProfile,
+	},
 }
 
 func BuiltinSystemAgentRegistry() (*SystemAgentRegistry, error) {
@@ -459,6 +467,18 @@ If the output contract or target is missing, ambiguous, or conflicts with the av
 Use only the locked tools supplied for the selected output contract. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
 }
 
+func ImageAgentPrompt() string {
+	return strings.TrimSpace(`You are Image, Swarm's compiled managed image generation worker.
+Use the Router-hydrated assignment to write one complete specialized image prompt, then call manage_artifact exactly once with action=generate_image. Omit provider, model, collection_id, variant_id, and output_requirements: the backend resolves the authenticated account's image model and injects the trusted parent-owned destination.
+Do not inspect or mutate the checkout, call any other tool, orchestrate agents, or change product state. Finish only after manage_artifact returns the exact ready artifact reference; otherwise report the failure honestly.`)
+}
+
+func ImageAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+	}}
+}
+
 func IdeaAgentPrompt() string {
 	return strings.TrimSpace(`You are Idea, Swarm's compiled tool-free one-shot ideation agent.
 Answer only the assigned question independently and directly. Produce a concise useful response in one turn. Do not call tools, inspect the workspace, orchestrate agents, ask the user questions, or mutate any state.`)
@@ -501,6 +521,15 @@ func designerAgentToolContract(managed bool) *pebblestore.AgentToolContract {
 func IsDesignerAgentName(name string) bool {
 	switch normalizeName(name) {
 	case "designer", DesignerAgentID:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsImageAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "image", ImageAgentID:
 		return true
 	default:
 		return false
@@ -559,6 +588,8 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 		return CoderAgentID, true
 	case IsDesignerAgentName(name):
 		return DesignerAgentID, true
+	case IsImageAgentName(name):
+		return ImageAgentID, true
 	case IsIdeaAgentName(name):
 		return IdeaAgentID, true
 	case name == "ai sidechat":
@@ -701,6 +732,17 @@ func CoderAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.Age
 	})
 }
 
+func ImageAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: ImageAgentID, Mode: ModeSubagent, Description: "Compiled managed image generation worker",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Prompt: ImageAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ImageAgentToolContract(), Enabled: true,
+	})
+	profile.Protected = true
+	return profile
+}
+
 func IdeaAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: IdeaAgentID, Mode: ModeSubagent, Description: "Compiled tool-free one-shot ideation subagent",
@@ -814,6 +856,13 @@ func reconcileIdeaAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.Ag
 
 func reconcileDesignerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := DesignerAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	return profile
+}
+
+func reconcileImageAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := ImageAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile

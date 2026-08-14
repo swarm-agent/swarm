@@ -1498,6 +1498,12 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 			return "theme_change"
 		}
 		return "manage_theme"
+	case "manage_artifact":
+		_, bypass := splitPolicyMode(mode)
+		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
+			return "manage_artifact_generate_image"
+		}
+		return "manage_artifact"
 	case "manage_worktree":
 		return "manage_worktree"
 	case "manage_sessions":
@@ -1519,6 +1525,10 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	default:
 		return toolName
 	}
+}
+
+func ShouldApproveManageArtifactGenerateImage(toolArguments string) bool {
+	return manageAction(toolArguments) == "generate_image"
 }
 
 func ShouldApproveManageSkillMutation(toolArguments string) bool {

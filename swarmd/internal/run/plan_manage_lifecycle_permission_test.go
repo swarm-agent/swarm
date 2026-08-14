@@ -9,6 +9,12 @@ func TestManageArtifactPermissionRequirementIsAutomatic(t *testing.T) {
 			t.Fatalf("manage_artifact %s requirement = %q/%v, want manage_artifact/false", action, requirement, needsApproval)
 		}
 	}
+	if requirement, needsApproval := permissionRequirement("auto", "manage_artifact", `{"action":"generate_image","prompt":"one image"}`); !needsApproval || requirement != "manage_artifact_generate_image" {
+		t.Fatalf("manage_artifact generate_image requirement = %q/%v, want manage_artifact_generate_image/true", requirement, needsApproval)
+	}
+	if requirement, needsApproval := permissionRequirement("auto+bypass_permissions", "manage_artifact", `{"action":"generate_image","prompt":"one image"}`); needsApproval || requirement != "manage_artifact" {
+		t.Fatalf("bypassed manage_artifact generate_image requirement = %q/%v, want manage_artifact/false", requirement, needsApproval)
+	}
 }
 
 func TestPlanManagePermissionRequirementIsTypedForLifecycleActions(t *testing.T) {

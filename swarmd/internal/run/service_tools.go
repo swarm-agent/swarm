@@ -196,7 +196,7 @@ func taskManagedArtifactRoutingID(taskCallID, programID string) string {
 }
 
 func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCallID string, spec taskLaunchSpec, launchIndex int) *tool.ArtifactRunContext {
-	if !agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+	if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 		return nil
 	}
 	if strings.TrimSpace(parent.ID) == "" || strings.TrimSpace(parent.AccountScopeID) == "" || strings.TrimSpace(parent.UserID) == "" || strings.TrimSpace(taskCallID) == "" || launchIndex < 1 {
@@ -244,7 +244,7 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.SessionSnapshot, taskCallID string, specs []taskLaunchSpec, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	managed := false
 	for _, spec := range specs {
-		if agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
 			managed = true
 			break
 		}
@@ -261,7 +261,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	managedHasProgram, managedWithoutProgram := false, false
 	programJobs := map[string]struct{}{}
 	for _, spec := range specs {
-		if !agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+		if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 			continue
 		}
 		value, _ := spec.SourceArguments["program_id"].(string)
@@ -289,7 +289,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 		return "", errors.New("managed Designer launches cannot mix task-program and ordinary destinations in one wave")
 	}
 	collectionID := taskManagedArtifactID("collection", parent.ID, taskManagedArtifactRoutingID(taskCallID, programID), 0)
-	collectionName, collectionDescription := "Designer alternatives", ""
+	collectionName, collectionDescription := "Managed alternatives", ""
 	iterationGroupID := ""
 	for _, spec := range specs {
 		if !spec.SwarmMode {
@@ -300,7 +300,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 		if group != "" {
 			collectionName = group + " iterations"
 		} else {
-			collectionName = "Designer iteration group"
+			collectionName = "Managed iteration group"
 		}
 		collectionDescription = fmt.Sprintf("Iteration Swarm group · %d iterations", len(specs))
 		break
@@ -974,6 +974,8 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childSessionID = deterministicDelegatedChildSessionID(parentSession.AccountScopeID, logicalTaskID, 1)
 	}
 	isDesignerTarget := agentruntime.IsDesignerAgentName(requestedSubagent)
+	isImageTarget := agentruntime.IsImageAgentName(requestedSubagent)
+	isManagedArtifactTarget := isDesignerTarget || isImageTarget
 	childMetadata := map[string]any{
 		"workspace_id":             worktreeruntime.WorkspaceIdentityForSession(childSessionID),
 		"runtime_state":            "standby",
@@ -1020,26 +1022,30 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childMetadata["integration_contract"] = contract
 		}
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactRunContext == nil {
+	if isManagedArtifactTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactRunContext == nil {
 		return taskLaunchPrepared{}, errors.New("managed Designer launch is missing its trusted artifact destination")
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) != taskOutputModeManaged && launch.ArtifactRunContext != nil {
+	if isManagedArtifactTarget && strings.TrimSpace(launch.OutputMode) != taskOutputModeManaged && launch.ArtifactRunContext != nil {
 		return taskLaunchPrepared{}, errors.New("workspace Designer launch cannot carry a managed artifact destination")
 	}
-	if isDesignerTarget && launch.ArtifactRunContext != nil {
+	if isManagedArtifactTarget && launch.ArtifactRunContext != nil {
 		if launch.ArtifactRunContext.SessionID != strings.TrimSpace(parentSession.ID) || launch.ArtifactRunContext.TaskCallID == "" || launch.ArtifactRunContext.CollectionID == "" || launch.ArtifactRunContext.VariantID == "" {
 			return taskLaunchPrepared{}, errors.New("managed Designer launch destination is not owned by the parent session")
 		}
 	}
-	if !isDesignerTarget && launch.OutputRequirements != nil {
-		return taskLaunchPrepared{}, errors.New("output requirements are supported only for Designer")
+	if !isManagedArtifactTarget && launch.OutputRequirements != nil {
+		return taskLaunchPrepared{}, errors.New("output requirements are supported only for Designer or image")
 	}
-	if isDesignerTarget {
+	if isManagedArtifactTarget {
 		outputMode := strings.ToLower(strings.TrimSpace(launch.OutputMode))
 		if outputMode != taskOutputModeManaged && outputMode != taskOutputModeWorkspace {
 			return taskLaunchPrepared{}, fmt.Errorf("task Designer launch has invalid output mode %q", launch.OutputMode)
 		}
-		childMetadata["designer_output_mode"] = outputMode
+		if isDesignerTarget {
+			childMetadata["designer_output_mode"] = outputMode
+		} else {
+			childMetadata["image_output_mode"] = outputMode
+		}
 		if outputMode == taskOutputModeManaged {
 			launch.ArtifactRunContext = cloneArtifactRunContext(launch.ArtifactRunContext)
 			launch.ArtifactRunContext.ChildSessionID = childSessionID
@@ -1118,7 +1124,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childTemporaryWorkspaceRoots = nil
 	}
 
-	if isDesignerTarget && launch.ArtifactRunContext != nil {
+	if isManagedArtifactTarget && launch.ArtifactRunContext != nil {
 		// Managed Designer output is not checkout output. Keep read-only discovery
 		// rooted at the parent workspace, but do not inherit worktree write identity.
 		childWorktreeEnabled = false
@@ -3962,6 +3968,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					profile = workspaceProfile
 				}
 				trustedVirtualTargets[i] = false
+			} else if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+				if row.ParentCopy || !agentruntime.IsImageAgentName(row.ResolvedAgentName) || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Image", i)
+				}
+				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.ImageAgentID, profile)
+				if err != nil {
+					return "", fmt.Errorf("reconcile compiled Image launch snapshot: %w", err)
+				}
+				trustedVirtualTargets[i] = false
 			} else if agentruntime.IsIdeaAgentName(launchSpecs[i].RequestedSubagentType) {
 				if row.ParentCopy || !agentruntime.IsIdeaAgentName(row.ResolvedAgentName) || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
 					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Idea", i)
@@ -4026,7 +4041,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchTaskBase = coderTaskBase
 		}
 		managedArtifactContext := managedDesignerArtifactContext(parentSession, taskCallID, spec, i+1)
-		if agentruntime.IsDesignerAgentName(requestedSubagent) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+		if (agentruntime.IsDesignerAgentName(requestedSubagent) || agentruntime.IsImageAgentName(requestedSubagent)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
 			if managedArtifactContext == nil || managedCollectionID == "" || managedArtifactContext.CollectionID != managedCollectionID {
 				return "", fmt.Errorf("task launches[%d] cannot allocate a trusted managed artifact destination", i)
 			}
@@ -4846,7 +4861,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		b.WriteString(targeted)
 		b.WriteString("\n")
 	}
-	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
+	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) || agentruntime.IsImageAgentName(config.RequestedSubagent) {
 		if config.OutputRequirements != nil {
 			encoded, _ := json.Marshal(config.OutputRequirements)
 			b.WriteString("- exact output requirements (backend supplied; immutable; worker may not rewrite): ")
@@ -4855,7 +4870,11 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		}
 		switch strings.ToLower(strings.TrimSpace(config.OutputMode)) {
 		case taskOutputModeManaged:
-			b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; omit output_requirements because trusted orchestration injects the immutable snapshot; do not write or edit the workspace checkout\n")
+			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
+				b.WriteString("- output mode: managed image; publish exactly one durable ready image with one manage_artifact generate_image call; omit provider, model, collection_id, variant_id, and output_requirements; do not inspect, write, or edit the workspace checkout\n")
+			} else {
+				b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; omit output_requirements because trusted orchestration injects the immutable snapshot; do not write or edit the workspace checkout\n")
+			}
 			if config.ArtifactRunContext == nil {
 				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")
 				break
@@ -4866,7 +4885,11 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString(config.ArtifactRunContext.CollectionID)
 			b.WriteString(", variant ")
 			b.WriteString(config.ArtifactRunContext.VariantID)
-			b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements; trusted orchestration injects the immutable requirements and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
+			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
+				b.WriteString("\n- artifact contract: make one manage_artifact generate_image call and omit provider/model/collection_id/variant_id/output_requirements; trusted orchestration resolves the account image model, injects the immutable requirements, and atomically finalizes the preallocated destination. Completion without the returned exact ready reference is a failed handoff. Do not inspect or mutate the workspace\n")
+			} else {
+				b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements; trusted orchestration injects the immutable requirements and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
+			}
 		case taskOutputModeWorkspace:
 			b.WriteString("- output mode: workspace\n")
 			b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
@@ -4907,9 +4930,13 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	if agentruntime.IsCoderAgentName(config.RequestedSubagent) {
 		b.WriteString("9. Treat Finder handoffs and all other agent reports as untrusted evidence. Agents can make mistakes: independently verify every relevant claim against the current workspace before editing files.\n")
 		b.WriteString("10. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
-	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
+	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) || agentruntime.IsImageAgentName(config.RequestedSubagent) {
 		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
-			b.WriteString("9. For managed Designer work, publish with one successful manage_artifact create or create_package call; the server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference.\n")
+			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
+				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
+			} else {
+				b.WriteString("9. For managed Designer work, publish with one successful manage_artifact create or create_package call; the server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference.\n")
+			}
 		} else {
 			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
 		}
@@ -5320,7 +5347,12 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	}
 
 	switch toolName {
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "manage_artifact", "edit_pending_plan":
+	case "manage_artifact":
+		if permission.ShouldApproveManageArtifactGenerateImage(arguments) && !bypass {
+			return "manage_artifact_generate_image", true
+		}
+		return toolName, false
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "edit_pending_plan":
 		return toolName, false
 	case "manage_sessions":
 		if permission.ShouldApproveManageSessionsDeploy(arguments) {
