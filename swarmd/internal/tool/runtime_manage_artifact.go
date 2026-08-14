@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	manageArtifactDefaultListLimit = 50
-	manageArtifactMaxListLimit     = 100
+	manageArtifactDefaultListLimit  = 50
+	manageArtifactMaxListLimit      = 100
 	manageArtifactMaxCreateBytes    = 1 << 20
 	manageArtifactMaxPackageFiles   = 128
 	manageArtifactMaxPackageBytes   = 8 << 20
@@ -120,9 +120,13 @@ func manageArtifactDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":                 map[string]any{"type": "string", "enum": []string{"generate_image", "create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
-				"prompt":                 map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image"},
-				"image_settings":         map[string]any{"type": "object", "properties": map[string]any{"size": map[string]any{"type": "string", "maxLength": 64}, "aspect_ratio": map[string]any{"type": "string", "maxLength": 32}, "image_size": map[string]any{"type": "string", "maxLength": 32}}, "additionalProperties": false, "description": "Optional provider-neutral image output controls. Never accepts provider or model."},
+				"action": map[string]any{"type": "string", "enum": []string{"generate_image", "create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
+				"prompt": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image"},
+				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
+					"size":         map[string]any{"type": "string", "maxLength": 64, "description": "Optional portable output size, for example auto, 1024x1024, 1536x1024, or 1024x1536. The backend adapts it to the configured image provider."},
+					"aspect_ratio": map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, or 21:9."},
+					"image_size":   map[string]any{"type": "string", "maxLength": 32, "description": "Optional portable resolution tier: 512, 1K, 2K, or 4K. Equivalent square pixel aliases such as 1024x1024, 2048x2048, and 4096x4096 are accepted. The backend translates this for the configured provider."},
+				}, "additionalProperties": false, "description": "Optional provider-neutral image output controls. Omit unless the user requested a size or aspect ratio. The backend resolves the account's configured provider/model and translates these controls; never pass provider or model."},
 				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session from an attached artifact reference; valid only for get/read/materialize/promote"},
 				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference; optional on create and required for collection-scoped actions"},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
@@ -461,7 +465,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
 	for key := range args {
 		switch key {
-		case "action", "prompt", "image_settings", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "output_requirements":
+		case "action", "prompt", "image_settings", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements":
 		default:
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact generate_image contains unsupported field %q", key)
 		}
@@ -480,6 +484,10 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact image prompt exceeds %d characters", manageArtifactMaxPromptRunes)
 	}
 	settings, size, err := parseManagedImageSettings(args["image_settings"])
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	requestedPresentation, err := parseArtifactPresentation(args["presentation"])
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
@@ -558,9 +566,13 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if decodeErr != nil || config.Width < 1 || config.Height < 1 {
 		return pebblestore.SessionArtifactVariant{}, errors.New("generated image dimensions could not be verified")
 	}
-	presentation := pebblestore.SessionArtifactPresentation{
-		Kind: "image", Label: strings.TrimSpace(asString(args["collection_name"])), Description: strings.TrimSpace(asString(args["collection_description"])),
-		Previewable: true, Width: config.Width, Height: config.Height,
+	presentation := requestedPresentation
+	presentation.Kind, presentation.Previewable, presentation.Width, presentation.Height = "image", true, config.Width, config.Height
+	if strings.TrimSpace(presentation.Label) == "" {
+		presentation.Label = strings.TrimSpace(asString(args["collection_name"]))
+	}
+	if strings.TrimSpace(presentation.Description) == "" {
+		presentation.Description = strings.TrimSpace(asString(args["collection_description"]))
 	}
 	if presentation.Label == "" {
 		presentation.Label = "Generated image"

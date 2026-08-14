@@ -76,6 +76,24 @@ func TestGenerateManagedImageUsesCanonicalSelectionAndExactlyOneProviderCall(t *
 	}
 }
 
+func TestManagedImageSettingsAdaptToSelectedProvider(t *testing.T) {
+	portable := ManagedGenerateRequest{Size: "1536x1024", Settings: map[string]any{"image_size": "2K"}}
+	if got := managedCodexImageSize(portable); got != "1536x1024" {
+		t.Fatalf("managedCodexImageSize = %q, want 1536x1024", got)
+	}
+	if got := managedGeminiImageSize(portable); got != "2K" {
+		t.Fatalf("managedGeminiImageSize = %q, want 2K", got)
+	}
+	if got := managedGeminiAspectRatio(portable); got != "3:2" {
+		t.Fatalf("managedGeminiAspectRatio = %q, want 3:2", got)
+	}
+
+	tierOnly := ManagedGenerateRequest{Settings: map[string]any{"image_size": "2K"}}
+	if got := managedCodexImageSize(tierOnly); got != "2048x2048" {
+		t.Fatalf("managedCodexImageSize tier = %q, want 2048x2048", got)
+	}
+}
+
 func TestGenerateWorkspaceImageSessionBackendWritesOnePNGBeforeSuccess(t *testing.T) {
 	dataHome := filepath.Join(t.TempDir(), "data")
 	svc, threads, threadID, storagePath := newImageServiceTestHarnessWithDataHome(t, dataHome, &fakeCodexImageClient{result: codex.ImageGenerationResult{

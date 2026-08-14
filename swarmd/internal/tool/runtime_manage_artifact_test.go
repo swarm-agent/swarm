@@ -36,9 +36,17 @@ type fakeImageUISettings struct {
 }
 
 func (f *fakeImageUISettings) Get() (uisettings.UISettings, error) { return f.settings, nil }
-func (f *fakeImageUISettings) GetForAccount(string) (uisettings.UISettings, error) { return f.settings, nil }
-func (f *fakeImageUISettings) Set(settings uisettings.UISettings) (uisettings.UISettings, error) { f.settings = settings; return settings, nil }
-func (f *fakeImageUISettings) SetForAccount(_ string, settings uisettings.UISettings) (uisettings.UISettings, error) { f.settings = settings; return settings, nil }
+func (f *fakeImageUISettings) GetForAccount(string) (uisettings.UISettings, error) {
+	return f.settings, nil
+}
+func (f *fakeImageUISettings) Set(settings uisettings.UISettings) (uisettings.UISettings, error) {
+	f.settings = settings
+	return settings, nil
+}
+func (f *fakeImageUISettings) SetForAccount(_ string, settings uisettings.UISettings) (uisettings.UISettings, error) {
+	f.settings = settings
+	return settings, nil
+}
 
 type fakeArtifactAuthority struct {
 	principal       artifact.Principal
@@ -150,6 +158,30 @@ func TestManageArtifactGenerateImageUsesCanonicalSettingAndTrustedDestination(t 
 	}
 	if _, err := runtime.executeManageArtifact(ctx, scope, "image-call-redirect", map[string]any{"action": "generate_image", "prompt": "A red square", "collection_id": "other"}); err == nil || !strings.Contains(err.Error(), "must omit collection_id") {
 		t.Fatalf("managed redirect error = %v", err)
+	}
+}
+
+func TestManageArtifactGenerateImageAcceptsPresentationAndProviderNeutralPixelAlias(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	generator := &fakeManagedImageGenerator{image: imagegen.ManagedImage{Bytes: testPNGImage(), MediaType: "image/png"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetManagedImageGenerationService(generator)
+	runtime.SetManageThemeServices(&fakeImageUISettings{settings: uisettings.UISettings{Tools: uisettings.ToolSettings{Image: uisettings.ToolImageSettings{DefaultModel: "gemini-nano-banana-2"}}}}, nil)
+	ctx, scope := artifactToolContext()
+
+	_, err := runtime.executeManageArtifact(ctx, scope, "image-call-presentation", map[string]any{
+		"action": "generate_image", "prompt": "A red square", "image_settings": map[string]any{"aspect_ratio": "1:1", "image_size": "2048x2048"},
+		"presentation": map[string]any{"kind": "image", "label": "Red square", "previewable": true, "width": 2048, "height": 2048},
+	})
+	if err != nil {
+		t.Fatalf("generate image with presentation: %v", err)
+	}
+	if generator.req.Settings["image_size"] != "2048x2048" || generator.req.Settings["aspect_ratio"] != "1:1" {
+		t.Fatalf("provider-neutral generation settings = %#v", generator.req.Settings)
+	}
+	if authority.created.Presentation.Label != "Red square" || authority.created.Presentation.Kind != "image" || !authority.created.Presentation.Previewable || authority.created.Presentation.Width != 1 || authority.created.Presentation.Height != 1 {
+		t.Fatalf("generated presentation = %#v", authority.created.Presentation)
 	}
 }
 

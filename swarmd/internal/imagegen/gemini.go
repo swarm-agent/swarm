@@ -572,19 +572,26 @@ func normalizeGeminiAspectRatio(value string) string {
 
 func normalizeGeminiImageSize(model, value string) (string, error) {
 	value = strings.ToUpper(strings.TrimSpace(value))
-	if value == "" || value == "AUTO" {
+	switch value {
+	case "", "AUTO":
 		return "1K", nil
+	case "1024", "1024X1024":
+		value = "1K"
+	case "2048", "2048X2048":
+		value = "2K"
+	case "4096", "4096X4096":
+		value = "4K"
 	}
-	if value == "512" {
+	if value == "512" || value == "512X512" {
 		if strings.TrimSpace(model) == "gemini-2.5-flash-image" {
-			return value, nil
+			return "512", nil
 		}
 		return "", fmt.Errorf("image_size 512 is only supported for gemini-2.5-flash-image")
 	}
 	if value == "1K" || value == "2K" || value == "4K" {
 		return value, nil
 	}
-	return "", fmt.Errorf("unsupported Gemini image_size %q", value)
+	return "", fmt.Errorf("unsupported Gemini image_size %q; use 512, 1K, 2K, or 4K (square pixel aliases are also accepted)", value)
 }
 
 func imageFormatFromMIME(mimeType string) string {

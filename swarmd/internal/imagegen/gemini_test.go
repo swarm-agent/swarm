@@ -154,6 +154,18 @@ func TestGenerateGeminiSlotsParallelKeepsRESTSlotsParallel(t *testing.T) {
 	}
 }
 
+func TestNormalizeGeminiImageSizeAcceptsProviderNeutralPixelAliases(t *testing.T) {
+	for input, want := range map[string]string{"1024x1024": "1K", "2048x2048": "2K", "4096x4096": "4K", "2k": "2K"} {
+		got, err := normalizeGeminiImageSize("gemini-3.1-flash-image-preview", input)
+		if err != nil || got != want {
+			t.Fatalf("normalizeGeminiImageSize(%q) = %q, %v; want %q", input, got, err, want)
+		}
+	}
+	if got, err := normalizeGeminiImageSize("gemini-2.5-flash-image", "512x512"); err != nil || got != "512" {
+		t.Fatalf("normalizeGeminiImageSize(512x512) = %q, %v; want 512", got, err)
+	}
+}
+
 func hasGenerateEventType(events []GenerateStreamEvent, eventType string) bool {
 	for _, event := range events {
 		if event.Type == eventType {

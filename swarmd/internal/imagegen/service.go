@@ -22,14 +22,14 @@ import (
 )
 
 const (
-	ProviderCodexOpenAI       = "codex_openai"
-	ProviderGoogleGemini      = "google_gemini"
-	TargetWorkspaceImage      = "workspace_image_session"
-	defaultCodexImageModel    = "gpt-5.5"
-	defaultGeminiImageModel   = "gemini-3.1-flash-image-preview"
-	generatedImageExtension   = ".png"
-	assetPathMetadataKey      = "tool_storage_path"
-	assetURLBase              = "/v1/image/assets"
+	ProviderCodexOpenAI             = "codex_openai"
+	ProviderGoogleGemini            = "google_gemini"
+	TargetWorkspaceImage            = "workspace_image_session"
+	defaultCodexImageModel          = "gpt-5.5"
+	defaultGeminiImageModel         = "gemini-3.1-flash-image-preview"
+	generatedImageExtension         = ".png"
+	assetPathMetadataKey            = "tool_storage_path"
+	assetURLBase                    = "/v1/image/assets"
 	geminiMaxParallelRequests       = 10
 	managedImageMaxParallelRequests = 4
 	managedImageMaxBytes            = 16 << 20
@@ -303,7 +303,7 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 			return ManagedImage{}, errors.New("connect Codex with OAuth to enable image generation")
 		}
 		generated, err := s.codexClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), codex.ImageGenerationRequest{
-			Model: selection.Model, Prompt: prompt, Size: firstNonEmpty(strings.TrimSpace(req.Size), settingString(req.Settings, "size")), Count: 1,
+			Model: selection.Model, Prompt: prompt, Size: managedCodexImageSize(req), Count: 1,
 		})
 		if err != nil {
 			return ManagedImage{}, err
@@ -324,13 +324,13 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		if !ok || strings.TrimSpace(record.APIKey) == "" {
 			return ManagedImage{}, errors.New("connect a Google API key to enable Gemini image generation")
 		}
-		imageSize, err := normalizeGeminiImageSize(selection.Model, settingString(req.Settings, "image_size"))
+		imageSize, err := normalizeGeminiImageSize(selection.Model, managedGeminiImageSize(req))
 		if err != nil {
 			return ManagedImage{}, err
 		}
 		generated, err := s.geminiImageClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), GeminiImageGenerationRequest{
 			APIKey: record.APIKey, Model: selection.Model, Prompt: prompt,
-			AspectRatio: normalizeGeminiAspectRatio(firstNonEmpty(settingString(req.Settings, "aspect_ratio"), strings.TrimSpace(req.Size))), ImageSize: imageSize,
+			AspectRatio: managedGeminiAspectRatio(req), ImageSize: imageSize,
 		})
 		if err != nil {
 			return ManagedImage{}, err
@@ -343,6 +343,84 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 	default:
 		return ManagedImage{}, fmt.Errorf("unsupported image provider %q", selection.Provider)
 	}
+}
+
+func managedCodexImageSize(req ManagedGenerateRequest) string {
+	if value := strings.TrimSpace(firstNonEmpty(req.Size, settingString(req.Settings, "size"))); value != "" {
+		return value
+	}
+	switch strings.ToUpper(strings.TrimSpace(settingString(req.Settings, "image_size"))) {
+	case "512", "512X512":
+		return "512x512"
+	case "1K", "1024", "1024X1024":
+		return "1024x1024"
+	case "2K", "2048", "2048X2048":
+		return "2048x2048"
+	case "4K", "4096", "4096X4096":
+		return "4096x4096"
+	default:
+		return ""
+	}
+}
+
+func managedGeminiImageSize(req ManagedGenerateRequest) string {
+	if value := strings.TrimSpace(settingString(req.Settings, "image_size")); value != "" {
+		return value
+	}
+	if _, imageSize := splitPortableImageDimensions(firstNonEmpty(req.Size, settingString(req.Settings, "size"))); imageSize != "" {
+		return imageSize
+	}
+	return ""
+}
+
+func managedGeminiAspectRatio(req ManagedGenerateRequest) string {
+	if value := strings.TrimSpace(settingString(req.Settings, "aspect_ratio")); value != "" {
+		return normalizeGeminiAspectRatio(value)
+	}
+	aspectRatio, _ := splitPortableImageDimensions(firstNonEmpty(req.Size, settingString(req.Settings, "size")))
+	return normalizeGeminiAspectRatio(aspectRatio)
+}
+
+func splitPortableImageDimensions(value string) (aspectRatio, imageSize string) {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	parts := strings.Split(value, "X")
+	if len(parts) != 2 {
+		return "", ""
+	}
+	var width, height int
+	if _, err := fmt.Sscanf(parts[0], "%d", &width); err != nil || width < 1 {
+		return "", ""
+	}
+	if _, err := fmt.Sscanf(parts[1], "%d", &height); err != nil || height < 1 {
+		return "", ""
+	}
+	switch {
+	case width == height:
+		aspectRatio = "1:1"
+	case width*2 == height*3:
+		aspectRatio = "3:2"
+	case width*3 == height*2:
+		aspectRatio = "2:3"
+	case width*9 == height*16:
+		aspectRatio = "16:9"
+	case width*16 == height*9:
+		aspectRatio = "9:16"
+	}
+	maxDimension := width
+	if height > maxDimension {
+		maxDimension = height
+	}
+	switch {
+	case maxDimension <= 512:
+		imageSize = "512"
+	case maxDimension <= 1024:
+		imageSize = "1K"
+	case maxDimension <= 2048:
+		imageSize = "2K"
+	default:
+		imageSize = "4K"
+	}
+	return aspectRatio, imageSize
 }
 
 func managedImageFromCodex(image codex.ImageGenerationResult) (ManagedImage, error) {
