@@ -248,6 +248,11 @@ function imageDownloadName(asset: ImageAsset): string {
   return ext ? `generated-image.${ext.replace(/^\./, '')}` : 'generated-image'
 }
 
+function canonicalImageIterationURL(threadId: string, assetId: string): string {
+  if (typeof window === 'undefined') return ''
+  return new URL(imageAssetURL(threadId, assetId), window.location.origin).toString()
+}
+
 async function copyTextToClipboard(value: string): Promise<void> {
   const text = value.trim()
   if (!text) throw new Error('Nothing to copy')
@@ -299,7 +304,7 @@ export function ImageToolPage() {
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [lastStoragePath, setLastStoragePath] = useState('')
   const [pathCopyStatus, setPathCopyStatus] = useState('')
-  const [sessionLinkCopyStatus, setSessionLinkCopyStatus] = useState('')
+  const [iterationLinkCopyStatus, setIterationLinkCopyStatus] = useState('')
   const [imageActionStatus, setImageActionStatus] = useState('')
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
@@ -420,8 +425,8 @@ export function ImageToolPage() {
   const selectedSessionStoragePath = imageSessionPath(selectedThread)
   const selectedAssetFilePath = selectedImageAsset?.path ?? ''
   const selectedCopyFilePath = selectedAssetFilePath || selectedSessionStoragePath
-  const selectedSessionURL = selectedThread
-    ? `${typeof window !== 'undefined' ? window.location.origin : ''}${selectedWorkspaceSlug ? `/${selectedWorkspaceSlug}/tools/image/${selectedThread.id}` : `/tools/image/${selectedThread.id}`}`
+  const selectedIterationURL = selectedThread && selectedImageAsset
+    ? canonicalImageIterationURL(selectedThread.id, selectedImageAsset.id)
     : ''
   const connectedImageModelOptions = useMemo<ConnectedImageModelOption[]>(() => {
     const providers = imageProvidersQuery.data ?? []
@@ -776,16 +781,16 @@ export function ImageToolPage() {
     }
   }, [])
 
-  const handleCopySessionLink = useCallback(async () => {
+  const handleCopyIterationLink = useCallback(async () => {
     setGenerationError(null)
-    setSessionLinkCopyStatus('')
+    setIterationLinkCopyStatus('')
     try {
-      await copyTextToClipboard(selectedSessionURL)
-      setSessionLinkCopyStatus('Copied session URL.')
+      await copyTextToClipboard(selectedIterationURL)
+      setIterationLinkCopyStatus('Copied iteration URL.')
     } catch (error) {
       setGenerationError(error instanceof Error ? error.message : String(error))
     }
-  }, [selectedSessionURL])
+  }, [selectedIterationURL])
 
   const handleOpenSelectedImage = useCallback(() => {
     if (!selectedImageSource) return
@@ -1135,7 +1140,7 @@ export function ImageToolPage() {
                   <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                     <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
                     <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedThread.workspacePath}</p>
-                    {selectedSessionURL ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">URL: {selectedSessionURL}</p> : null}
+                    {selectedIterationURL ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">URL: {selectedIterationURL}</p> : null}
                     <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Folders</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageFolders.length}</div></div>
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Assets</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageAssets.length}</div></div>
@@ -1144,14 +1149,14 @@ export function ImageToolPage() {
                       <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
                         <Clipboard size={13} />Copy filepath
                       </Button>
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopySessionLink()} disabled={!selectedSessionURL}>
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopyIterationLink()} disabled={!selectedIterationURL}>
                         <Link2 size={13} />Copy URL
                       </Button>
                     </div>
                     <Button variant="outline" className="mt-2 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealImageStorage()} disabled={revealingStorage}>
                       <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal local folder'}
                     </Button>
-                    {(pathCopyStatus || sessionLinkCopyStatus) ? <p className="mt-2 text-[10px] text-[var(--app-text-muted)]">{pathCopyStatus || sessionLinkCopyStatus}</p> : null}
+                    {(pathCopyStatus || iterationLinkCopyStatus) ? <p className="mt-2 text-[10px] text-[var(--app-text-muted)]">{pathCopyStatus || iterationLinkCopyStatus}</p> : null}
                     {(lastStoragePath || selectedSessionStoragePath) ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">{lastStoragePath || selectedSessionStoragePath}</p> : null}
                   </div>
                 </div>
@@ -1748,9 +1753,9 @@ export function ImageToolPage() {
                     </label>
                   </div>
 
-                  {(pathCopyStatus || sessionLinkCopyStatus || imageActionStatus || lastStoragePath || selectedSessionStoragePath) ? (
+                  {(pathCopyStatus || iterationLinkCopyStatus || imageActionStatus || lastStoragePath || selectedSessionStoragePath) ? (
                     <div className="space-y-1 border border-[var(--app-border)] bg-[var(--app-bg)] p-3 text-[10px] leading-4 text-[var(--app-text-muted)]">
-                      {(pathCopyStatus || sessionLinkCopyStatus || imageActionStatus) ? <p>{pathCopyStatus || sessionLinkCopyStatus || imageActionStatus}</p> : null}
+                      {(pathCopyStatus || iterationLinkCopyStatus || imageActionStatus) ? <p>{pathCopyStatus || iterationLinkCopyStatus || imageActionStatus}</p> : null}
                       {(lastStoragePath || selectedSessionStoragePath) ? <p className="break-all">{lastStoragePath || selectedSessionStoragePath}</p> : null}
                     </div>
                   ) : null}
@@ -1759,7 +1764,7 @@ export function ImageToolPage() {
                     <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
                       <Clipboard size={13} />Copy path
                     </Button>
-                    <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopySessionLink()} disabled={!selectedSessionURL}>
+                    <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopyIterationLink()} disabled={!selectedIterationURL}>
                       <Link2 size={13} />Copy URL
                     </Button>
                   </div>
