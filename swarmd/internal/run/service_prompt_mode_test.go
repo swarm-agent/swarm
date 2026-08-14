@@ -103,10 +103,10 @@ func TestMasterHarnessAdvertisesIterationSwarmWithoutAssembly(t *testing.T) {
 	for _, want := range []string{
 		"Iteration Swarm: fast parallel alternatives or independent trials",
 		"backward-compatible internal strategy identifier remains explore",
-		"Coder/Designer/Image Iteration Swarm mode",
+		"Image Iteration Swarms are a distinct direct format",
 		"hydrated Iteration Swarm",
-		"managed image Iteration Swarm",
-		"manage_artifact generate_image exactly once",
+		"direct managed image Iteration Swarm",
+		"without launching an agent",
 		"quick Idea swarm",
 		"Never reinterpret a generic new-session request as delegation",
 	} {
@@ -114,7 +114,7 @@ func TestMasterHarnessAdvertisesIterationSwarmWithoutAssembly(t *testing.T) {
 			t.Fatalf("master harness missing Iteration Swarm contract %q\n--- instructions ---\n%s", want, instructions)
 		}
 	}
-	for _, forbidden := range []string{"swarm_strategy=assembly", "Assembly swarm", "assembly_parts", "integration_contract"} {
+	for _, forbidden := range []string{"swarm_strategy=assembly", "Assembly swarm", "assembly_parts", "integration_contract", "each Image child makes exactly one"} {
 		if strings.Contains(instructions, forbidden) {
 			t.Fatalf("master harness still advertises disabled Assembly capability %q\n--- instructions ---\n%s", forbidden, instructions)
 		}

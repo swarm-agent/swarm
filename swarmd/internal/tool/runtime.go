@@ -466,6 +466,18 @@ func (r *Runtime) ArtifactAuthority() ArtifactAuthority {
 	return r.artifactAuthority
 }
 
+// GenerateManagedImageArtifact is the trusted orchestration entrypoint for
+// direct image swarms. It reuses the canonical account image setting and
+// artifact finalization path without creating an AI worker session.
+func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, callID, prompt string, run ArtifactRunContext) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	return r.executeManageArtifact(ctx, scope, callID, map[string]any{"action": "generate_image", "prompt": strings.TrimSpace(prompt)})
+}
+
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
 	if r != nil {
 		r.imageGeneration = service
@@ -1288,7 +1300,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one fully declared staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives generated from one parent brief. Coder, Designer, and image swarm prompts are hydrated by Router; image swarms publish one generated image per managed variant using the account's canonical image model, while Idea Swarms repeat the same question directly. Both modes use the same subagent policy, reservation, permission, streaming, and durable child lineage. Managed Designer/image destinations are server-injected and cannot be named by the model. Put regular-mode child definitions in launches and keep full assignments in meta_prompt.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Coder and Designer swarms launch Router-hydrated workers. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1301,7 +1313,7 @@ func (r *Runtime) Definitions() []Definition {
 					"program":    taskProgramToolSchema(),
 					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
-					"agent_type":           map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "idea"}, "description": "Required for mode=swarm. image uses Router-hydrated managed variants and one billed generation call per variant with the account image model. Idea is tool-free and available only in swarm mode."},
+					"agent_type":           map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "idea"}, "description": "Required for mode=swarm. image independently Router-hydrates the parent brief plus each base theme and dispatches directly to the account image model without agent sessions. Idea is tool-free and available only in swarm mode."},
 					"count":                map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
 					"themes":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
 					"groups":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},

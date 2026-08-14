@@ -40,6 +40,8 @@ interface StructuredToolMessageInput {
     launchesByKey: Record<string, Record<string, unknown>>;
     launchOrder: string[];
     taskMode?: string;
+    executionFormat?: string;
+    imageCount?: number;
     programId?: string;
     programState?: string;
     activeStageId?: string;
@@ -548,13 +550,19 @@ function summarizeToolOutput(
         jsonStr(effective, "agent_type") ||
         jsonStr(effective, "subagent");
       const launchCount = jsonNum(effective, "launch_count");
+      const imageCount = jsonNum(effective, "image_count");
+      const executionFormat = jsonStr(effective, "execution_format");
       const parts: string[] = [];
       if (description) {
         parts.push(description);
       } else if (agentType) {
         parts.push("@" + agentType);
       }
-      if (launchCount > 1) parts.push(`(${launchCount} launches)`);
+      if (executionFormat === "direct_image_swarm" && imageCount > 0) {
+        parts.push(`(${imageCount} direct images)`);
+      } else if (launchCount > 1) {
+        parts.push(`(${launchCount} launches)`);
+      }
       if (status) parts.push("(" + status + ")");
       return parts.length ? "task " + parts.join(" ") : "task";
     }
@@ -1064,6 +1072,34 @@ function buildTaskToolRows(
   payload: Record<string, unknown> | null,
   taskStream?: StructuredToolMessageInput["taskStream"],
 ): StructuredToolMessage["taskRows"] {
+  const executionFormat = firstNonEmpty(jsonStr(payload, "execution_format"), taskStream?.executionFormat ?? "");
+  if (executionFormat === "direct_image_swarm") {
+    const terminalStatus = jsonStr(payload, "status").trim().toLowerCase();
+    const terminalImages = jsonObjectSlice(payload, "images");
+    const terminalPayload = terminalImages.length > 0 && ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(terminalStatus);
+    if (taskStream?.launchOrder.length && !terminalPayload) {
+      return taskStream.launchOrder
+        .map((imageKey, index) => {
+          const image = taskStream.launchesByKey[imageKey] ?? null;
+          return buildTaskToolRow(image ? { ...image, launch_key: jsonStr(image, "launch_key") || imageKey } : null, index + 1);
+        })
+        .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+    }
+    return jsonObjectSlice(payload, "images")
+      .map((image, index) => buildTaskToolRow({
+        ...image,
+        launch_index: jsonNum(image, "index") || index + 1,
+        requested_subagent: "image",
+        assignment_label: jsonStr(image, "title") || jsonStr(image, "theme") || `Image ${index + 1}`,
+        current_tool: "Image creation",
+        current_tool_display: "Routing → Image creation",
+        tool_order: ["Routing", "Image creation"],
+        current_preview_text: jsonStr(image, "error"),
+        current_preview_kind: jsonStr(image, "error") ? "error" : "",
+        swarm_mode: true,
+      }, index + 1))
+      .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+  }
   if (taskStream && !isTerminalTaskPayload(payload)) {
     return taskStream.launchOrder
       .map((launchKey, index) => {

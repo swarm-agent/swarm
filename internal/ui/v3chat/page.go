@@ -3155,7 +3155,10 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 	}
 	headerLabel := "ITERATION SWARM"
 	contextLabel := "fast parallel iterations · choose or synthesize"
-	if presentation.TaskSwarmStrategy == "assembly" {
+	if presentation.TaskSwarmAgent == "image" {
+		headerLabel = "IMAGE SWARM"
+		contextLabel = "each image runs Routing → Image creation"
+	} else if presentation.TaskSwarmStrategy == "assembly" {
 		headerLabel = "ASSEMBLY SWARM"
 		contextLabel = "complementary parts"
 		if presentation.TaskIntegrationRequired {
@@ -3175,7 +3178,11 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 	if presentation.TaskSwarmModel != "" {
 		headerLabel += "  ·  " + presentation.TaskSwarmModel
 	}
-	header := fmt.Sprintf("✦ %s  ·  %d AGENTS  ·  RUN %d  OK %d", headerLabel, len(presentation.TaskRows), running, done)
+	itemLabel := "AGENTS"
+	if presentation.TaskSwarmAgent == "image" {
+		itemLabel = "IMAGES"
+	}
+	header := fmt.Sprintf("✦ %s  ·  %d %s  ·  RUN %d  OK %d", headerLabel, len(presentation.TaskRows), itemLabel, running, done)
 	if pending > 0 {
 		header += fmt.Sprintf("  WAIT %d", pending)
 	}
@@ -3187,7 +3194,11 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 	if presentation.TaskSwarmStrategy == "assembly" && strings.TrimSpace(presentation.TaskIntegrationContract) != "" {
 		rows = append(rows, renderRow{text: truncateCells("  contract: "+presentation.TaskIntegrationContract, width), style: styles.Muted})
 	}
-	matrix := fmt.Sprintf("  %s matrix  ·  %d×%d  ·  showing %d/%d agents", strings.ToUpper(layout.density), layout.columns, maxInt(1, (layout.visibleRows+layout.columns-1)/layout.columns), layout.visibleRows, len(presentation.TaskRows))
+	itemNoun := "agents"
+	if presentation.TaskSwarmAgent == "image" {
+		itemNoun = "images"
+	}
+	matrix := fmt.Sprintf("  %s matrix  ·  %d×%d  ·  showing %d/%d %s", strings.ToUpper(layout.density), layout.columns, maxInt(1, (layout.visibleRows+layout.columns-1)/layout.columns), layout.visibleRows, len(presentation.TaskRows), itemNoun)
 	rows = append(rows, renderRow{text: truncateCells(matrix, width), style: styles.Muted})
 
 	for start := 0; start < layout.visibleRows; start += layout.columns {
@@ -3208,7 +3219,7 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 		rows = append(rows, renderRow{text: renderSpansText(spans), style: styles.Text, spans: spans})
 	}
 	if hidden := len(presentation.TaskRows) - layout.visibleRows; hidden > 0 {
-		footer := fmt.Sprintf("  … %d MORE AGENTS  ·  resize taller or wider to reveal more", hidden)
+		footer := fmt.Sprintf("  … %d MORE %s  ·  resize taller or wider to reveal more", hidden, strings.ToUpper(itemNoun))
 		rows = append(rows, renderRow{text: truncateCells(footer, width), style: styles.Warning.Bold(true)})
 	}
 	return append(rows, renderRow{text: "", style: styles.Text})

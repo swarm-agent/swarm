@@ -978,10 +978,10 @@ function taskSwarmHeaderLabel(rows: TaskToolRow[], strategy: "explore" | "assemb
   const agent = agents.length === 1 ? agents[0] : agents.length > 1 ? "mixed" : "";
   const baseLabel = agent === "idea"
     ? "IDEA SWARM"
-    : strategy === "assembly" ? "ASSEMBLY SWARM" : "ITERATION SWARM";
+    : agent === "image" ? "IMAGE SWARM" : strategy === "assembly" ? "ASSEMBLY SWARM" : "ITERATION SWARM";
   const workerLabel = agent === "coder"
     ? "CODERS"
-    : agent === "designer" ? "DESIGNERS" : agent === "mixed" ? "MIXED AGENTS" : "";
+    : agent === "designer" ? "DESIGNERS" : agent === "image" ? "IMAGES" : agent === "mixed" ? "MIXED AGENTS" : "";
   const models = Array.from(new Set(rows.map((row) => row.modelLabel.trim().replace(/\s*\/\s*/g, "/")).filter(Boolean)));
   const modelLabel = models.length === 1 ? models[0] : models.length > 1 ? "mixed models" : "";
   return [baseLabel, workerLabel, modelLabel].filter(Boolean).join(" · ");
@@ -989,9 +989,12 @@ function taskSwarmHeaderLabel(rows: TaskToolRow[], strategy: "explore" | "assemb
 
 function TaskRowsHeader({ counts, rows = [], swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; rows?: TaskToolRow[]; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean; density?: TaskSwarmDensity }) {
   const headerLabel = swarm ? taskSwarmHeaderLabel(rows, strategy) : "Subagent stream";
-  const swarmContext = strategy === "assembly"
-    ? integrationRequired ? "Complementary parts · parent integration required" : "Complementary parts"
-    : "Fast parallel iterations · choose or synthesize";
+  const imageSwarm = rows.length > 0 && rows.every((row) => row.agent.trim().toLowerCase() === "image");
+  const swarmContext = imageSwarm
+    ? "Each image runs Routing → Image creation"
+    : strategy === "assembly"
+      ? integrationRequired ? "Complementary parts · parent integration required" : "Complementary parts"
+      : "Fast parallel iterations · choose or synthesize";
   return (
     <div className={cn("min-w-0 border-b px-3 py-2", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))]" : "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)]")} data-task-card-header data-swarm-strategy={swarm ? strategy : undefined}>
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
@@ -2300,7 +2303,8 @@ export function ToolMessageView({
   const hasTaskRows = isTask && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram));
   const isTaskSwarm = (isTask && toolMessage.taskMode === "swarm") || (hasTaskRows && toolMessage.taskRows.some((row) => row.swarmMode));
   const swarmStrategy = toolMessage.swarmStrategy ?? "explore";
-  const taskLabel = isTaskSwarm ? (swarmStrategy === "assembly" ? "Assembly Swarm" : "Iteration Swarm") : label;
+  const directImageSwarm = isTaskSwarm && toolMessage.taskRows.length > 0 && toolMessage.taskRows.every((row) => row.agent.trim().toLowerCase() === "image");
+  const taskLabel = directImageSwarm ? "Image Swarm" : isTaskSwarm ? (swarmStrategy === "assembly" ? "Assembly Swarm" : "Iteration Swarm") : label;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
     ? ""

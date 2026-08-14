@@ -29,6 +29,8 @@ const (
 	taskLaunchPermissionPathID     = "permission.task_launch.v1"
 	taskModeRegular                = "regular"
 	taskModeSwarm                  = "swarm"
+	taskExecutionFormatSubagents   = "subagent_wave"
+	taskExecutionFormatImageDirect = "direct_image_swarm"
 	taskSwarmStrategyExplore       = "explore"
 	taskSwarmStrategyAssembly      = "assembly"
 	taskOutputModeManaged          = "managed"
@@ -133,10 +135,18 @@ type taskLaunchSpec struct {
 	SourceArguments       map[string]any
 }
 
+type taskImageManifestRow struct {
+	Index              int                                            `json:"index"`
+	Theme              string                                         `json:"theme,omitempty"`
+	StreamKey          string                                         `json:"stream_key"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+}
+
 type taskLaunchManifest struct {
 	PathID              string                         `json:"path_id"`
 	Goal                string                         `json:"goal"`
 	LaunchCount         int                            `json:"launch_count"`
+	ImageCount          int                            `json:"image_count,omitempty"`
 	Description         string                         `json:"description"`
 	Prompt              string                         `json:"prompt"`
 	SubagentType        string                         `json:"subagent_type"`
@@ -152,6 +162,8 @@ type taskLaunchManifest struct {
 	SourceArguments     map[string]any                 `json:"source_arguments,omitempty"`
 	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
+	Images              []taskImageManifestRow         `json:"images,omitempty"`
+	ExecutionFormat     string                         `json:"execution_format,omitempty"`
 	TaskMode            string                         `json:"task_mode,omitempty"`
 	Program             *taskProgramSpec               `json:"program,omitempty"`
 	ProgramID           string                         `json:"program_id,omitempty"`
@@ -2774,6 +2786,35 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	if !ok {
 		return taskLaunchManifest{}, fmt.Errorf("session %q not found", sessionID)
 	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "image" {
+		images := make([]taskImageManifestRow, len(parsed.Launches))
+		for i, launch := range parsed.Launches {
+			theme := ""
+			if i < len(parsed.Swarm.Themes) {
+				theme = strings.TrimSpace(parsed.Swarm.Themes[i])
+			}
+			images[i] = taskImageManifestRow{Index: i + 1, Theme: theme, StreamKey: strings.TrimSpace(launch.StreamKey), OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements)}
+		}
+		manifest := taskLaunchManifest{
+			PathID: taskLaunchPermissionPathID, Goal: parsed.Description, ImageCount: len(images), Description: parsed.Description,
+			Prompt: parsed.Prompt, Action: parsed.Action, ParentMode: sessionruntime.NormalizeMode(sessionMode), TaskMode: parsed.Mode,
+			SwarmAgentType: "image", SwarmStrategy: parsed.Swarm.Strategy, Images: images, ExecutionFormat: taskExecutionFormatImageDirect,
+			SourceArguments: parsed.SourceArguments,
+		}
+		if parent, found := s.lookupTaskLaunchParentSession(sessionID, manifest.ParentMode); found {
+			manifest.Parent = parent
+			manifest.TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
+			manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
+		}
+		digest, digestErr := taskLaunchManifestDigest(manifest)
+		if digestErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("hash direct image swarm manifest: %w", digestErr)
+		}
+		manifest.ManifestHash = digest
+		approvedManifest := manifest
+		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
+		return manifest, nil
+	}
 	if err := validatePlanSidechatTaskTargets(parentSession, parsed.Launches); err != nil {
 		return taskLaunchManifest{}, err
 	}
@@ -2899,6 +2940,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 
 	manifest := taskLaunchManifest{
 		PathID:             taskLaunchPermissionPathID,
+		ExecutionFormat:    taskExecutionFormatSubagents,
 		Goal:               parsed.Description,
 		LaunchCount:        len(launches),
 		Description:        parsed.Description,

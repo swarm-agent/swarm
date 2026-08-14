@@ -820,7 +820,9 @@ export interface LiveTaskToolStreamState {
   parentSessionId?: string
   taskCallId?: string
   launchCount?: number
+  imageCount?: number
   taskMode?: string
+  executionFormat?: string
   programId?: string
   programState?: string
   activeStageId?: string

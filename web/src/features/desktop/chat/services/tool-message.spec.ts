@@ -893,6 +893,70 @@ function testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting(): void {
   assert(message?.taskProgram?.stages[1]?.rows[0]?.status === 'pending', 'declared jobs must render pending');
 }
 
+function testDirectImageSwarmSummaryDoesNotClaimAgentLaunches(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', agent_type: 'image', count: 3 }),
+    outputText: JSON.stringify({
+      tool: 'task',
+      task_mode: 'swarm',
+      execution_format: 'direct_image_swarm',
+      image_count: 3,
+      subagent_launch_count: 0,
+      status: 'ok',
+      description: 'campaign images',
+      images: [{ index: 1 }, { index: 2 }, { index: 3 }],
+    }),
+  });
+  assert(message?.summary.includes('3 direct images') === true, `unexpected direct image summary: ${message?.summary}`);
+  assert(message?.summary.includes('launch') === false, `direct image summary must not claim launches: ${message?.summary}`);
+  assert(message?.taskRows.length === 3, 'completed direct images must retain per-image rows');
+  assert(message?.taskRows.every((row) => row.agent === 'image'), 'direct image rows must not be labeled as subagents');
+  assert(message?.taskRows.every((row) => row.tool === 'Routing → Image creation'), 'completed direct image rows must show the full pipeline');
+}
+
+function testDirectImageSwarmLiveRowsRemainRunningThroughImageCreation(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', agent_type: 'image', count: 2 }),
+    state: 'running',
+    taskStream: {
+      taskMode: 'swarm',
+      executionFormat: 'direct_image_swarm',
+      imageCount: 2,
+      launchOrder: ['image:1', 'image:2'],
+      launchesByKey: {
+        'image:1': {
+          launch_index: 1,
+          requested_subagent: 'image',
+          assignment_label: 'Minimal',
+          status: 'running',
+          current_tool: 'Routing',
+          current_tool_display: 'Routing',
+          tool_order: ['Routing'],
+          swarm_mode: true,
+        },
+        'image:2': {
+          launch_index: 2,
+          requested_subagent: 'image',
+          assignment_label: 'Editorial',
+          status: 'running',
+          current_tool: 'Image creation',
+          current_tool_display: 'Routing → Image creation',
+          tool_order: ['Routing', 'Image creation'],
+          swarm_mode: true,
+        },
+      },
+    },
+  });
+
+  assert(message?.taskRows.length === 2, 'live direct image progress must render one row per image');
+  assert(message?.taskRows.every((row) => row.status === 'running'), 'routing and image creation must both stay running');
+  assert(message?.taskRows[0]?.tool === 'Routing', `unexpected routing label: ${message?.taskRows[0]?.tool}`);
+  assert(message?.taskRows[1]?.tool === 'Routing → Image creation', `unexpected image creation pipeline: ${message?.taskRows[1]?.tool}`);
+  assert(message?.taskRows.every((row) => !row.childSessionId), 'direct image progress must not invent child sessions');
+}
+
 function testOrdinaryTaskDoesNotInferTaskProgramFromRows(): void {
   const message = buildStructuredToolMessage({
     tool: 'task',
@@ -1387,6 +1451,8 @@ function main(): void {
   testTaskRowsParseCanonicalStreamContractFields();
   testTaskProgramGroupsCanonicalOrderedStagesAndStatus();
   testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting();
+  testDirectImageSwarmSummaryDoesNotClaimAgentLaunches();
+  testDirectImageSwarmLiveRowsRemainRunningThroughImageCreation();
   testOrdinaryTaskDoesNotInferTaskProgramFromRows();
   testAssemblyTaskMetadataAndLegacyExploreCompatibility();
   testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();

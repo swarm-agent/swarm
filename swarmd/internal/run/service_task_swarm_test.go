@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestParseTaskSwarmRejectsFinderExplicitLaunchesAndTrustFields(t *testing.T)
 	}
 }
 
-func TestParseTaskSwarmImageBuildsManagedRouterHydratedWorkers(t *testing.T) {
+func TestParseTaskSwarmImageBuildsDirectRouterHydratedItems(t *testing.T) {
 	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"images","prompt":"create campaign art","agent_type":"image","count":2,"themes":["minimal","maximal"],"output_contract":"one ready image"}`)
 	if err != nil {
 		t.Fatalf("parse image swarm: %v", err)
@@ -48,18 +49,16 @@ func TestParseTaskSwarmImageBuildsManagedRouterHydratedWorkers(t *testing.T) {
 	if parsed.Swarm == nil || parsed.Swarm.AgentType != "image" || parsed.Swarm.OutputMode != taskOutputModeManaged || len(parsed.Launches) != 2 {
 		t.Fatalf("image swarm = %#v", parsed)
 	}
-	for i, launch := range parsed.Launches {
-		if launch.RequestedSubagentType != "image" || launch.OutputMode != taskOutputModeManaged || len(launch.OwnedScope) != 0 {
-			t.Fatalf("image launch %d = %#v", i, launch)
+	for i, item := range parsed.Launches {
+		if item.RequestedSubagentType != "image" || item.OutputMode != taskOutputModeManaged || len(item.OwnedScope) != 0 {
+			t.Fatalf("image item %d = %#v", i, item)
 		}
 	}
-	request, err := buildTaskSwarmHydrationRequest(parsed, parsed.Launches)
-	if err != nil || len(request.Items) != 2 || request.Items[0].WorkerExecution != "managed_image_generation_contract" {
-		t.Fatalf("image hydration request = %#v err=%v", request, err)
-	}
-	prompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Minimal Image", Theme: "minimal", Role: "Compose a minimal visual.", Deliverable: "Ready image"})
-	if err != nil || !strings.Contains(prompt, "action=generate_image") || !strings.Contains(prompt, "one billed generation call") || strings.Contains(prompt, "owned scope:") {
-		t.Fatalf("image child prompt = %q err=%v", prompt, err)
+	prompt := composeDirectImageSwarmPrompt("create campaign art", "minimal", taskSwarmHydratedDelta{Index: 1, Title: "Minimal Image", Theme: "quiet geometry", Role: "Compose a minimal visual.", Deliverable: "Ready image"})
+	for _, want := range []string{"create campaign art", "Base theme for this image:", "minimal", "Router-hydrated image direction:", "quiet geometry", "Compose a minimal visual."} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("direct image prompt missing %q: %s", want, prompt)
+		}
 	}
 	context := managedDesignerArtifactContext(pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: "account", UserID: "user"}, "call", parsed.Launches[0], 1)
 	if context == nil || context.CollectionID == "" || context.VariantID == "" {
@@ -73,6 +72,56 @@ func TestParseTaskSwarmImageBuildsManagedRouterHydratedWorkers(t *testing.T) {
 		if _, err := parseTaskCallArguments(raw); err == nil {
 			t.Fatalf("invalid image swarm was accepted: %s", raw)
 		}
+	}
+}
+
+func TestDirectImageSwarmApprovedManifestUsesImagesNotLaunches(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"images","prompt":"campaign brief","agent_type":"image","count":2,"themes":["minimal","editorial"]}`)
+	if err != nil {
+		t.Fatalf("parse direct image swarm: %v", err)
+	}
+	images := make([]taskImageManifestRow, len(parsed.Launches))
+	for i, item := range parsed.Launches {
+		images[i] = taskImageManifestRow{Index: i + 1, Theme: parsed.Swarm.Themes[i], StreamKey: item.StreamKey}
+	}
+	manifest := taskLaunchManifest{TaskMode: taskModeSwarm, SwarmAgentType: "image", SwarmStrategy: taskSwarmStrategyExplore, ImageCount: 2, Images: images, ExecutionFormat: taskExecutionFormatImageDirect}
+	digest, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		t.Fatalf("digest direct image manifest: %v", err)
+	}
+	manifest.ManifestHash = digest
+	envelope, err := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err != nil {
+		t.Fatalf("marshal direct image manifest: %v", err)
+	}
+	if err := validateApprovedDirectImageSwarm(string(envelope), parsed); err != nil {
+		t.Fatalf("validate direct image manifest: %v", err)
+	}
+	if manifest.LaunchCount != 0 || len(manifest.Launches) != 0 || manifest.ImageCount != 2 || len(manifest.Images) != 2 {
+		t.Fatalf("direct image manifest modeled agent launches: %#v", manifest)
+	}
+}
+
+func TestDirectImageSwarmStreamPayloadDoesNotModelSubagents(t *testing.T) {
+	payload := buildDirectImageSwarmStreamPayload("call", "spawn", "images", 2, 1, "hydrating", "", "minimal", "router", "hydrating", nil)
+	if payload["execution_format"] != taskExecutionFormatImageDirect || payload["image_count"] != 2 || payload["path_id"] != "tool.task.image_swarm.stream.v1" {
+		t.Fatalf("direct image stream = %#v", payload)
+	}
+	if _, exists := payload["launch"]; exists {
+		t.Fatalf("direct image stream modeled a launch: %#v", payload)
+	}
+	if _, exists := payload["launch_count"]; exists {
+		t.Fatalf("direct image stream modeled launch count: %#v", payload)
+	}
+	image, ok := payload["image"].(map[string]any)
+	if !ok || image["child_session_created"] != false || image["current_stage"] != "router" || image["status"] != "running" || image["current_stage_label"] != "Routing" {
+		t.Fatalf("direct image stream item = %#v", image)
+	}
+	generating := buildDirectImageSwarmStreamPayload("call", "spawn", "images", 2, 1, "generating", "Minimal", "minimal", "image_model", "Generating image", nil)
+	generatingImage, _ := generating["image"].(map[string]any)
+	stages, _ := generatingImage["stage_history"].([]string)
+	if generatingImage["status"] != "running" || generatingImage["current_stage_label"] != "Image creation" || !slices.Equal(stages, []string{"Routing", "Image creation"}) {
+		t.Fatalf("direct image generation progress = %#v", generatingImage)
 	}
 }
 

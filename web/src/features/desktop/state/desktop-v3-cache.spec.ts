@@ -2955,6 +2955,34 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
   assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')
 })
 
+test('realtime direct image swarm deltas merge per-image routing and creation progress without child sessions', () => {
+  const state = bootstrappedState()
+  const routing = JSON.stringify({
+    path_id: 'tool.task.image_swarm.stream.v1', tool: 'task', execution_format: 'direct_image_swarm', task_mode: 'swarm', image_count: 1,
+    image_key: 'image:1', image: { image_key: 'image:1', index: 1, status: 'running', theme: 'minimal', current_stage: 'router', current_stage_label: 'Routing', stage_history: ['Routing'], swarm_mode: true },
+  })
+  const creating = JSON.stringify({
+    path_id: 'tool.task.image_swarm.stream.v1', tool: 'task', execution_format: 'direct_image_swarm', task_mode: 'swarm', image_count: 1,
+    image_key: 'image:1', image: { image_key: 'image:1', index: 1, status: 'running', title: 'Minimal image', current_stage: 'image_model', current_stage_label: 'Image creation', stage_history: ['Routing', 'Image creation'], swarm_mode: true },
+  })
+  applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', {
+    call_id: 'call-image-task', step_id: 'step-image-task', tool_instance_id: 'tool-instance-image-task', tool_name: 'task', arguments: '{"mode":"swarm","agent_type":"image"}',
+  }, 40, 'cursor-image-start') })
+  for (const [index, output] of [routing, creating].entries()) {
+    applyRealtimeFrame(state, { frame: deltaFrame('session.tool.delta', { call_id: 'call-image-task', tool_name: 'task', output }, 41 + index, `cursor-image-${index}`) })
+  }
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-image-task']
+  assert.equal(tool.outputText, undefined)
+  assert.equal(tool.taskStream?.executionFormat, 'direct_image_swarm')
+  assert.equal(tool.taskStream?.imageCount, 1)
+  assert.deepEqual(tool.taskStream?.launchOrder, ['image:1'])
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.status, 'running')
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.current_tool, 'Image creation')
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.current_tool_display, 'Routing → Image creation')
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.child_session_id, undefined)
+})
+
 test('realtime task stream v2 retains Task Program definition and status metadata', () => {
   const state = bootstrappedState()
   const program = {

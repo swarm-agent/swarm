@@ -306,7 +306,7 @@ func taskSwarmWorkerExecutionModel(agentType string) string {
 		return "designer_output_mode_contract"
 	}
 	if strings.EqualFold(strings.TrimSpace(agentType), "image") {
-		return "managed_image_generation_contract"
+		return "direct_router_to_image_model_generation"
 	}
 	return "isolated_worktree_advisory_owned_scope_commit_clean_handoff"
 }

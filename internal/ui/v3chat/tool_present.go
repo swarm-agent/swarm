@@ -881,6 +881,10 @@ func manageSessionsStatusTone(status string) string {
 }
 
 func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
+	directImageSwarm := strings.EqualFold(strings.TrimSpace(toolString(output, "execution_format")), "direct_image_swarm")
+	if tool.TaskStream != nil && strings.EqualFold(strings.TrimSpace(tool.TaskStream.ExecutionFormat), "direct_image_swarm") {
+		directImageSwarm = true
+	}
 	launches := make([]map[string]any, 0)
 	launchCount := 0
 	if tool.TaskStream != nil {
@@ -895,13 +899,34 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		launches = toolObjectSlice(output, "launches")
 		launchCount = maxInt(launchCount, toolInt(output, "launch_count"))
 	}
+	finalImageStatus := normalizeTaskPresentationStatus(toolString(output, "status"))
+	terminalDirectImages := directImageSwarm && len(toolObjectSlice(output, "images")) > 0 && (finalImageStatus == "done" || finalImageStatus == "error" || finalImageStatus == "cancelled")
+	if terminalDirectImages {
+		launches = nil
+	}
+	if directImageSwarm && len(launches) == 0 {
+		for index, image := range toolObjectSlice(output, "images") {
+			imageIndex := toolInt(image, "index")
+			if imageIndex <= 0 {
+				imageIndex = index + 1
+			}
+			status := normalizeTaskPresentationStatus(toolString(image, "status"))
+			stages := []string{"Routing", "Image creation"}
+			errorText := toolString(image, "error")
+			launches = append(launches, map[string]any{
+				"launch_index": imageIndex, "status": status, "requested_subagent": "image", "swarm_mode": true,
+				"assignment_label": firstNonEmptyToolRaw(toolString(image, "title"), toolString(image, "theme"), fmt.Sprintf("Image %d", imageIndex)),
+				"current_tool":     "Image creation", "current_tool_display": strings.Join(stages, " → "), "tool_order": stages, "error": errorText,
+			})
+		}
+	}
 	if len(launches) == 0 && toolString(output, "path_id") == "tool.task.stream.v2" {
 		if launch := toolObject(output, "launch"); launch != nil {
 			launches = append(launches, launch)
 		}
 	}
 	launchCount = maxInt(launchCount, len(launches))
-	swarm := taskPresentationIsSwarm(arguments, output, launches)
+	swarm := directImageSwarm || taskPresentationIsSwarm(arguments, output, launches)
 	swarmStrategy := taskPresentationSwarmStrategy(arguments, output, tool.TaskStream, launches, swarm)
 	integrationContract := taskPresentationIntegrationContract(arguments, output, tool.TaskStream, launches)
 	integrationRequired := taskPresentationIntegrationRequired(output, tool.TaskStream, launches)
@@ -959,7 +984,10 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	summary := "subagent stream"
 	swarmAgent := ""
 	swarmModel := ""
-	if swarm {
+	if directImageSwarm {
+		summary = "Image Swarm · Routing → Image creation"
+		swarmAgent = "image"
+	} else if swarm {
 		summary = "Iteration Swarm"
 		if swarmStrategy == "assembly" {
 			summary = "Assembly Swarm"
@@ -984,7 +1012,9 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		}
 	}
 	if len(rows) == 0 && toolStatusRank(tool.Status) < 3 {
-		if swarm {
+		if directImageSwarm {
+			summary = "Image Swarm · Routing…"
+		} else if swarm {
 			if swarmStrategy == "assembly" {
 				summary = "hydrating Assembly Swarm…"
 			} else {
@@ -993,6 +1023,8 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		} else {
 			summary = "launching subagents…"
 		}
+	} else if directImageSwarm && len(rows) > 0 {
+		summary += " · " + toolCountLabel(len(rows), "image", "images")
 	} else if launchCount > 0 {
 		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
 	}

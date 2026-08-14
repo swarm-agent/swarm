@@ -1308,9 +1308,9 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 				continue
 			}
-			if manifest.Action != taskProgramActionStatus {
-				// Program status operates on the existing durable record and must not
-				// consume another parent invocation reservation.
+			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect {
+				// Program status and direct image generation do not allocate delegated
+				// child sessions, so neither consumes a subagent-wave reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
 				if callID == "" {
 					decisions[i].Err = errors.New("task call ID is required for durable reservation")
@@ -3843,6 +3843,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	prompt := parsed.Prompt
 	if strings.TrimSpace(req.PromptOverride) != "" {
 		prompt = strings.TrimSpace(req.PromptOverride)
+	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "image" {
+		return s.executeDirectImageSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
 	}
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {

@@ -267,6 +267,38 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 	}
 }
 
+func TestDirectImageSwarmRendersImageProgressWithoutSubagents(t *testing.T) {
+	presentation := presentTaskTool(ToolTimelineItem{Status: "completed"}, map[string]any{"mode": "swarm", "agent_type": "image"}, map[string]any{
+		"task_mode": "swarm", "execution_format": "direct_image_swarm", "image_count": float64(3),
+		"images": []any{
+			map[string]any{"index": float64(1), "theme": "minimal", "status": "ok"},
+			map[string]any{"index": float64(2), "theme": "editorial", "status": "ok"},
+			map[string]any{"index": float64(3), "theme": "product", "status": "ok"},
+		},
+	})
+	if !presentation.TaskSwarm || presentation.TaskSwarmAgent != "image" || !strings.Contains(presentation.Summary, "Routing → Image creation") || !strings.Contains(presentation.Summary, "3 images") || len(presentation.TaskRows) != 3 {
+		t.Fatalf("direct image swarm presentation = %#v", presentation)
+	}
+	for _, row := range presentation.TaskRows {
+		if row.Agent != "image" || row.Status != "done" || row.Tool != "Routing → Image creation" {
+			t.Fatalf("direct image row = %#v", row)
+		}
+	}
+
+	var live ToolTimelineItem
+	live.Name, live.Status = "task", "running"
+	if !applyTaskStreamPatch(&live, `{"tool":"task","path_id":"tool.task.image_swarm.stream.v1","execution_format":"direct_image_swarm","task_mode":"swarm","image_count":1,"image_key":"image:1","image":{"image_key":"image:1","index":1,"status":"running","theme":"minimal","current_stage":"router","current_stage_label":"Routing","stage_history":["Routing"],"swarm_mode":true}}`) {
+		t.Fatal("direct image progress patch was not accepted")
+	}
+	if !applyTaskStreamPatch(&live, `{"tool":"task","path_id":"tool.task.image_swarm.stream.v1","execution_format":"direct_image_swarm","task_mode":"swarm","image_count":1,"image_key":"image:1","image":{"image_key":"image:1","index":1,"status":"running","title":"Minimal image","current_stage":"image_model","current_stage_label":"Image creation","stage_history":["Routing","Image creation"],"swarm_mode":true}}`) {
+		t.Fatal("direct image generation patch was not accepted")
+	}
+	livePresentation := presentTaskTool(live, map[string]any{"mode": "swarm", "agent_type": "image"}, nil)
+	if len(livePresentation.TaskRows) != 1 || livePresentation.TaskRows[0].Status != "running" || livePresentation.TaskRows[0].Tool != "Routing → Image creation" || livePresentation.TaskRows[0].Agent != "image" {
+		t.Fatalf("live direct image presentation = %#v", livePresentation)
+	}
+}
+
 func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing.T) {
 	launches := make([]map[string]any, 0, 100)
 	for index := 1; index <= 100; index++ {

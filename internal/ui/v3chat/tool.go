@@ -38,7 +38,9 @@ type TaskStreamState struct {
 	PathID              string
 	Status              string
 	LaunchCount         int
+	ImageCount          int
 	TaskMode            string
+	ExecutionFormat     string
 	SwarmStrategy       string
 	IntegrationContract string
 	IntegrationRequired bool
@@ -295,22 +297,34 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		return false
 	}
 	var payload map[string]any
-	if json.Unmarshal([]byte(strings.TrimSpace(output)), &payload) != nil || strings.TrimSpace(anyString(payload["path_id"])) != "tool.task.stream.v2" || strings.TrimSpace(anyString(payload["tool"])) != "task" {
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &payload) != nil || strings.TrimSpace(anyString(payload["tool"])) != "task" {
+		return false
+	}
+	pathID := strings.TrimSpace(anyString(payload["path_id"]))
+	directImageStream := pathID == "tool.task.image_swarm.stream.v1"
+	if pathID != "tool.task.stream.v2" && !directImageStream {
 		return false
 	}
 	launch, _ := payload["launch"].(map[string]any)
-	if len(launch) == 0 && !taskStreamPayloadHasProgramMetadata(payload) {
+	if directImageStream {
+		launch, _ = payload["image"].(map[string]any)
+	}
+	if len(launch) == 0 && (!taskStreamPayloadHasProgramMetadata(payload) || directImageStream) {
 		return false
 	}
 	launchKey := firstNonEmpty(
 		anyString(payload["launch_key"]),
+		anyString(payload["image_key"]),
 		anyString(launch["launch_key"]),
+		anyString(launch["image_key"]),
 		anyString(payload["child_session_id"]),
 		anyString(launch["child_session_id"]),
 	)
 	if launchKey == "" {
 		if launchIndex := anyInt(launch["launch_index"]); launchIndex > 0 {
 			launchKey = fmt.Sprintf("launch:%d", launchIndex)
+		} else if imageIndex := anyInt(launch["index"]); imageIndex > 0 {
+			launchKey = fmt.Sprintf("image:%d", imageIndex)
 		}
 	}
 	if launchKey == "" && len(launch) > 0 {
@@ -318,7 +332,7 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 	}
 	stream := item.TaskStream
 	if stream == nil {
-		stream = &TaskStreamState{PathID: "tool.task.stream.v2", LaunchesByKey: make(map[string]map[string]any)}
+		stream = &TaskStreamState{PathID: pathID, LaunchesByKey: make(map[string]map[string]any)}
 	}
 	if stream.LaunchesByKey == nil {
 		stream.LaunchesByKey = make(map[string]map[string]any)
@@ -335,6 +349,23 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		stream.LaunchOrder = append([]string(nil), stream.LaunchOrder...)
 	}
 	if len(launch) > 0 {
+		if directImageStream {
+			index := anyInt(launch["index"])
+			stageHistory, _ := launch["stage_history"].([]any)
+			stages := make([]string, 0, len(stageHistory))
+			for _, stage := range stageHistory {
+				if label := strings.TrimSpace(anyString(stage)); label != "" {
+					stages = append(stages, label)
+				}
+			}
+			launch["launch_index"] = index
+			launch["requested_subagent"] = "image"
+			launch["assignment_label"] = firstNonEmpty(anyString(launch["title"]), anyString(launch["theme"]), fmt.Sprintf("Image %d", index))
+			launch["current_tool"] = firstNonEmpty(anyString(launch["current_stage_label"]), anyString(launch["current_stage"]))
+			launch["current_tool_display"] = strings.Join(stages, " → ")
+			launch["tool_order"] = stages
+			launch["swarm_mode"] = true
+		}
 		merged := make(map[string]any, len(stream.LaunchesByKey[launchKey])+len(launch)+1)
 		for key, value := range stream.LaunchesByKey[launchKey] {
 			merged[key] = value
@@ -365,9 +396,12 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		}
 		return stream.LaunchOrder[i] < stream.LaunchOrder[j]
 	})
+	stream.PathID = pathID
 	stream.Status = firstNonEmpty(anyString(payload["status"]), stream.Status)
 	stream.LaunchCount = maxInt(anyInt(payload["launch_count"]), len(stream.LaunchOrder))
+	stream.ImageCount = maxInt(anyInt(payload["image_count"]), stream.ImageCount)
 	stream.TaskMode = firstNonEmpty(anyString(payload["task_mode"]), stream.TaskMode)
+	stream.ExecutionFormat = firstNonEmpty(anyString(payload["execution_format"]), stream.ExecutionFormat)
 	stream.SwarmStrategy = firstNonEmpty(anyString(payload["swarm_strategy"]), stream.SwarmStrategy)
 	stream.IntegrationContract = firstNonEmpty(anyString(payload["integration_contract"]), stream.IntegrationContract)
 	if required, ok := payload["integration_required"].(bool); ok {

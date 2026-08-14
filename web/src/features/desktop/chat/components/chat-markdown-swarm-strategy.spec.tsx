@@ -78,6 +78,33 @@ test("Designer swarm header identifies designers", () => {
   assert.match(markup, /ITERATION SWARM · DESIGNERS · anthropic\/claude-sonnet-4-5/);
 });
 
+test("direct image swarm renders running pipeline rows without agent language", () => {
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    argumentsText: JSON.stringify({ mode: "swarm", agent_type: "image", count: 2 }),
+    state: "running",
+    taskStream: {
+      taskMode: "swarm",
+      executionFormat: "direct_image_swarm",
+      imageCount: 2,
+      launchOrder: ["image:1", "image:2"],
+      launchesByKey: {
+        "image:1": { launch_index: 1, requested_subagent: "image", assignment_label: "Minimal", status: "running", current_tool: "Routing", current_tool_display: "Routing", tool_order: ["Routing"], swarm_mode: true },
+        "image:2": { launch_index: 2, requested_subagent: "image", assignment_label: "Editorial", status: "running", current_tool: "Image creation", current_tool_display: "Routing → Image creation", tool_order: ["Routing", "Image creation"], swarm_mode: true },
+      },
+    },
+  });
+  assert(message);
+  const markup = renderToStaticMarkup(<ToolMessageView toolMessage={message} />);
+
+  assert.match(markup, /IMAGE SWARM · IMAGES/);
+  assert.match(markup, /Each image runs Routing → Image creation/);
+  assert.match(markup, /RUN 2/);
+  assert.match(markup, /Minimal/);
+  assert.match(markup, /Editorial/);
+  assert.doesNotMatch(markup, /DESIGNERS|CODERS|Subagent stream/);
+});
+
 test("active Task Program keeps live tool state in its row without a stacked stream section", () => {
   const program = {
     id: "release_program",
