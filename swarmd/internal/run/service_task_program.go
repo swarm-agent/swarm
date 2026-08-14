@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -144,7 +143,6 @@ func taskProgramPresentationPayload(record pebblestore.TaskProgramRecord) map[st
 		"state":             record.State,
 		"active_stage_id":   record.ActiveStageID,
 		"revision":          record.Revision,
-		"resume_generation": record.ResumeGeneration,
 		"stages":            stages,
 		"counts":            counts,
 		"details_truncated": false,
@@ -269,7 +267,7 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 		}
 		row := map[string]any{
 			"job_id": job.JobID, "stage_id": job.StageID, "state": state, "attempt_number": job.AttemptNumber,
-			"resume_generation": job.ResumeGeneration, "integration_state": job.IntegrationState,
+			"integration_state": job.IntegrationState,
 		}
 		if job.ChildSessionID != "" {
 			row["child_session_id"] = job.ChildSessionID
@@ -305,7 +303,7 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 		"tool": "task", "action": "status", "status": "ok", "program_id": record.ProgramID,
 		"task_call_id": record.ReservationCallID, "parent_session_id": record.ParentSessionID, "created": created, "revision": record.Revision,
 		"reservation_run_id": record.ReservationRunID, "reservation_call_id": record.ReservationCallID,
-		"resume_generation": record.ResumeGeneration, "program_state": record.State, "active_stage_id": record.ActiveStageID,
+		"program_state": record.State, "active_stage_id": record.ActiveStageID,
 		"parent_head": record.ParentHead, "next_action": record.NextAction, "jobs": jobs, "counts": counts,
 		"artifact_count": len(artifactReferences), "program_presentation": taskProgramPresentationPayload(record), "details_truncated": false, "path_id": "tool.task_program.status.v1",
 	}
@@ -323,237 +321,7 @@ func marshalTaskProgramStatus(record pebblestore.TaskProgramRecord, created bool
 	return string(raw), err
 }
 
-func taskProgramSpecFromRecord(record pebblestore.TaskProgramRecord) *taskProgramSpec {
-	spec := &taskProgramSpec{ID: record.ProgramID}
-	if record.Definition.MaxConcurrency > 0 {
-		cap := record.Definition.MaxConcurrency
-		spec.MaxConcurrency = &cap
-	}
-	for _, stage := range record.Definition.Stages {
-		spec.Stages = append(spec.Stages, taskProgramStage{ID: stage.ID, DependsOn: append([]string(nil), stage.DependsOn...), DependencyEvidence: stage.DependencyEvidence})
-	}
-	for _, job := range record.Definition.Jobs {
-		spec.Jobs = append(spec.Jobs, taskProgramJob{ID: job.ID, StageID: job.StageID, DependsOn: append([]string(nil), job.DependsOn...), RequestedSubagentType: job.AgentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.Title, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence})
-	}
-	return spec
-}
-
-func taskProgramLaunchesFromSpec(spec *taskProgramSpec) []taskLaunchSpec {
-	launches := make([]taskLaunchSpec, 0, len(spec.Jobs))
-	for _, job := range spec.Jobs {
-		outputMode := strings.ToLower(strings.TrimSpace(job.OutputMode))
-		if agentruntime.IsDesignerAgentName(job.RequestedSubagentType) && outputMode == "" {
-			// Legacy durable program definitions predate explicit output mode. Preserve
-			// their historical inference while new definitions persist the mode.
-			outputMode = taskOutputModeManaged
-			if len(job.OwnedScope) > 0 {
-				outputMode = taskOutputModeWorkspace
-			}
-		}
-		launches = append(launches, taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: outputMode, DependencyEvidence: job.DependencyEvidence, SourceArguments: map[string]any{"program_id": spec.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}})
-	}
-	return launches
-}
-
-func taskProgramResumeLaunches(prepared, prior pebblestore.TaskProgramRecord, spec *taskProgramSpec) []taskLaunchSpec {
-	launches := taskProgramLaunchesFromSpec(spec)
-	for i := range launches {
-		if i >= len(prepared.Jobs) || prepared.Jobs[i].State != pebblestore.TaskProgramJobDeclared {
-			continue
-		}
-		job := prepared.Jobs[i]
-		currentSessionID := strings.TrimSpace(firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID))
-		if currentSessionID == "" {
-			continue
-		}
-		launches[i].ResumeChildSessionID = currentSessionID
-		launches[i].ResumeWorkspacePath = strings.TrimSpace(job.WorkspacePath)
-		launches[i].ResumeWorktreeBranch = strings.TrimSpace(job.WorktreeBranch)
-		launches[i].ResumeImmutableBase = strings.TrimSpace(job.ImmutableStageBase)
-		launches[i].ResumeAttemptNumber = job.AttemptNumber
-		if i < len(prior.Jobs) && prior.Jobs[i].Blocker != nil {
-			launches[i].ResumeReason = firstNonEmptyString(prior.Jobs[i].Blocker.Message, prior.Jobs[i].Blocker.Code)
-		}
-		if launches[i].ResumeReason == "" && prior.Blocker != nil && (prior.Blocker.JobID == "" || prior.Blocker.JobID == job.JobID) {
-			launches[i].ResumeReason = firstNonEmptyString(prior.Blocker.Message, prior.Blocker.Code)
-		}
-	}
-	return launches
-}
-
-func taskProgramRecoveryPrompt(spec taskLaunchSpec) string {
-	return fmt.Sprintf(`Resume the same interrupted Task Program job in this existing child session.
-
-Before doing more work, inspect the durable conversation and current workspace state to determine what completed since the interruption. Preserve valid progress; do not blindly repeat completed steps. Continue under the original assignment and acceptance criteria, then finish with the normal child handoff. If completion is impossible, return one actionable blocker.
-
-Recovery context:
-- prior attempt: %d
-- interruption: %s
-- original assignment: %s`, spec.ResumeAttemptNumber, firstNonEmptyString(strings.TrimSpace(spec.ResumeReason), "the prior run stopped or was interrupted"), strings.TrimSpace(spec.MetaPrompt))
-}
-
-func (s *Service) prepareTaskProgramResume(parent pebblestore.SessionSnapshot, record pebblestore.TaskProgramRecord, parsed taskCallArguments) (pebblestore.TaskProgramRecord, int, error) {
-	if record.Revision != parsed.ExpectedRevision || record.ResumeGeneration != parsed.ExpectedGeneration {
-		if record.LastResumeRevision == parsed.ExpectedRevision && record.LastResumeGeneration == parsed.ExpectedGeneration && record.State == pebblestore.TaskProgramStateRunning && record.NextAction == "resume_program_scheduler" {
-			readyCount := len(taskProgramReadyJobIndexes(record, taskProgramStageIndex(record)))
-			if readyCount < 1 {
-				readyCount = 1 // Capacity is still needed to resume an integration-only barrier.
-			}
-			if s.permissions == nil {
-				return record, 0, errors.New("task program resume requires permission capacity service")
-			}
-			if _, capacityErr := s.permissions.ResumeSubagentProgramCapacity(parent.AccountScopeID, parent.ID, record.ReservationRunID, record.ReservationCallID, readyCount); capacityErr != nil {
-				return record, 0, capacityErr
-			}
-			return record, readyCount, nil
-		}
-		return record, 0, fmt.Errorf("task program resume guard mismatch: current revision=%d generation=%d", record.Revision, record.ResumeGeneration)
-	}
-	if record.State == pebblestore.TaskProgramStateCompleted {
-		return record, 0, nil
-	}
-	if record.State != pebblestore.TaskProgramStateBlocked && record.State != pebblestore.TaskProgramStateFailed && record.State != pebblestore.TaskProgramStateCancelled && record.State != pebblestore.TaskProgramStateRunning {
-		return record, 0, fmt.Errorf("task program state %q is not resumable", record.State)
-	}
-	repairedParentHead := ""
-	repairedJobs := make(map[string]bool)
-	if s.worktrees != nil {
-		base, baseErr := s.worktrees.ResolveTaskBase(parent.WorkspacePath)
-		if baseErr != nil {
-			return record, 0, fmt.Errorf("task program blocker is not resolved: %w", baseErr)
-		}
-		if record.ParentHead != "" && record.ParentHead != base.BaseCommit {
-			if record.Blocker == nil || record.Blocker.Code != "integration_conflict" || record.Blocker.ExpectedParentHead != record.ParentHead {
-				return record, 0, fmt.Errorf("task program blocker is not resolved: expected parent HEAD %s, found %s", record.ParentHead, base.BaseCommit)
-			}
-			for _, job := range record.Jobs {
-				jobIndex := taskProgramJobIndex(record, job.JobID)
-				if jobIndex < 0 || job.StageID != record.ActiveStageID || !agentruntime.IsCoderAgentName(record.Definition.Jobs[jobIndex].AgentType) {
-					continue
-				}
-				integrated, integrationErr := s.worktrees.TaskCommitRangeIntegratedInto(parent.WorkspacePath, job.ImmutableStageBase, job.ChildHead, base.BaseCommit)
-				if integrationErr != nil {
-					return record, 0, fmt.Errorf("verify repaired task program integration for job %q: %w", job.JobID, integrationErr)
-				}
-				if !integrated {
-					return record, 0, fmt.Errorf("task program blocker is not resolved: parent HEAD %s does not contain repaired integration for job %q", base.BaseCommit, job.JobID)
-				}
-				repairedJobs[job.JobID] = true
-			}
-			repairedParentHead = base.BaseCommit
-		}
-	}
-	updates := make([]pebblestore.TaskProgramJobTransition, 0)
-	readyCount := 0
-	for _, job := range record.Jobs {
-		if repairedJobs[job.JobID] {
-			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobIntegrated, ClearBlocker: true, IntegrationState: "integrated"})
-			continue
-		}
-		if job.State == pebblestore.TaskProgramJobDeclared {
-			readyCount++
-			continue
-		}
-		if job.State != pebblestore.TaskProgramJobRunning && job.State != pebblestore.TaskProgramJobFailed && job.State != pebblestore.TaskProgramJobBlocked && job.State != pebblestore.TaskProgramJobCancelled {
-			continue
-		}
-		definitionIndex := taskProgramDefinitionJobIndex(record, job.JobID)
-		if definitionIndex < 0 {
-			return record, 0, fmt.Errorf("task program job %q is missing its durable definition", job.JobID)
-		}
-		definition := record.Definition.Jobs[definitionIndex]
-		childCompleted := false
-		currentChildSessionID := strings.TrimSpace(firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID))
-		if currentChildSessionID != "" {
-			lifecycle, ok, lifecycleErr := s.GetSessionLifecycle(currentChildSessionID)
-			if lifecycleErr != nil {
-				return record, 0, fmt.Errorf("inspect task program child %q lifecycle: %w", job.JobID, lifecycleErr)
-			}
-			if ok {
-				if lifecycle.Active || isLifecycleActivePhase(lifecycle.Phase) {
-					return record, 0, fmt.Errorf("task program job %q child session %s is still active; wait for its durable outcome before resuming", job.JobID, currentChildSessionID)
-				}
-				childCompleted = strings.EqualFold(strings.TrimSpace(lifecycle.Phase), lifecyclePhaseCompleted)
-			}
-		}
-		if !agentruntime.IsCoderAgentName(definition.AgentType) || currentChildSessionID == "" || job.WorkspacePath == "" {
-			nextState, integration := pebblestore.TaskProgramJobDeclared, "resume_existing_child"
-			if childCompleted {
-				if taskProgramDefinitionUsesManagedDesigner(definition) {
-					if job.IntegrationState == "artifact_ready" {
-						updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobCompleted, ClearBlocker: true, IntegrationState: "artifact_ready"})
-						continue
-					}
-					expected := taskProgramExpectedArtifactReference(record, job.JobID)
-					variant, ok, artifactErr := s.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, expected.CollectionID, expected.VariantID)
-					if artifactErr != nil {
-						return record, 0, fmt.Errorf("inspect completed managed Designer job %q artifact: %w", job.JobID, artifactErr)
-					}
-					lineage := variant.Lineage
-					lineageSourceMatches := lineage.SourceSessionID == currentChildSessionID || (lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
-					if !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.SessionID != parent.ID || variant.AccountScopeID != parent.AccountScopeID || lineage.ParentSessionID != parent.ID || !lineageSourceMatches || lineage.ChildSessionID != currentChildSessionID || lineage.TaskCallID != record.ReservationCallID || lineage.ProgramID != record.ProgramID || lineage.ProgramJobID != job.JobID {
-						return record, 0, fmt.Errorf("task program job %q completed without a valid ready managed artifact; resume the existing child to repair the handoff", job.JobID)
-					}
-					nextState, integration = pebblestore.TaskProgramJobCompleted, "artifact_ready"
-				} else {
-					nextState, integration = pebblestore.TaskProgramJobCompleted, "not_required"
-				}
-			}
-			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: nextState, ClearBlocker: true, IntegrationState: integration})
-			if nextState == pebblestore.TaskProgramJobDeclared {
-				readyCount++
-			}
-			continue
-		}
-		if s.worktrees == nil {
-			return record, 0, errors.New("task program blocker is not resolved: worktree service is unavailable")
-		}
-		state, inspectErr := s.worktrees.InspectTaskWorkspace(job.WorkspacePath)
-		if inspectErr != nil {
-			return record, 0, fmt.Errorf("task program blocker is not resolved for job %q: %w", job.JobID, inspectErr)
-		}
-		if !state.Clean {
-			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobDeclared, ClearBlocker: true, IntegrationState: "resume_existing_child"})
-			readyCount++
-			continue
-		}
-		if job.WorktreeBranch != "" && state.BranchName != job.WorktreeBranch {
-			return record, 0, fmt.Errorf("task program blocker is not resolved for job %q: expected branch %s, found %s", job.JobID, job.WorktreeBranch, state.BranchName)
-		}
-		if state.HeadCommit == "" || state.HeadCommit == job.ImmutableStageBase {
-			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobDeclared, ClearBlocker: true, IntegrationState: "resume_existing_child"})
-			readyCount++
-			continue
-		}
-		descends, ancestryErr := s.worktrees.TaskCommitDescendsFrom(job.WorkspacePath, job.ImmutableStageBase, state.HeadCommit)
-		if ancestryErr != nil || !descends {
-			return record, 0, fmt.Errorf("task program blocker is not resolved for job %q: repaired HEAD does not descend from immutable base", job.JobID)
-		}
-		updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobHandoffReady, ChildHead: state.HeadCommit, ClearBlocker: true, IntegrationState: "pending"})
-	}
-	if readyCount < 1 {
-		readyCount = 1
-	}
-	if s.permissions == nil {
-		return record, 0, errors.New("task program resume requires permission capacity service")
-	}
-	if strings.TrimSpace(record.ReservationRunID) == "" || strings.TrimSpace(record.ReservationCallID) == "" {
-		return record, 0, errors.New("task program resume identity is unavailable; the stored program predates guarded resume support")
-	}
-	if _, capacityErr := s.permissions.ResumeSubagentProgramCapacity(parent.AccountScopeID, parent.ID, record.ReservationRunID, record.ReservationCallID, readyCount); capacityErr != nil {
-		return record, 0, capacityErr
-	}
-	state, next := pebblestore.TaskProgramStateRunning, "resume_program_scheduler"
-	mutationID := fmt.Sprintf("resume:%d:%d", parsed.ExpectedRevision, parsed.ExpectedGeneration)
-	transition := pebblestore.TaskProgramTransition{ExpectedRevision: parsed.ExpectedRevision, MutationID: mutationID, State: &state, NextAction: &next, ClearBlocker: true, Jobs: updates, IncrementResumeGeneration: true, ResumeFromRevision: parsed.ExpectedRevision, ResumeFromGeneration: parsed.ExpectedGeneration}
-	if repairedParentHead != "" {
-		transition.ParentHead = &repairedParentHead
-	}
-	returnRecord, _, err := s.sessions.TransitionTaskProgram(parent.ID, record.ProgramID, transition)
-	return returnRecord, readyCount, err
-}
-
-func taskProgramRunningTransitions(spec *taskProgramSpec, prepared []taskLaunchPrepared, generation int) []pebblestore.TaskProgramJobTransition {
+func taskProgramRunningTransitions(spec *taskProgramSpec, prepared []taskLaunchPrepared) []pebblestore.TaskProgramJobTransition {
 	updates := make([]pebblestore.TaskProgramJobTransition, 0, len(prepared))
 	for i, launch := range prepared {
 		if i >= len(spec.Jobs) {
@@ -561,7 +329,7 @@ func taskProgramRunningTransitions(spec *taskProgramSpec, prepared []taskLaunchP
 		}
 		updates = append(updates, pebblestore.TaskProgramJobTransition{
 			JobID: spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning,
-			AttemptNumber: 1, ResumeGeneration: generation, ChildSessionID: launch.ChildSession.ID,
+			AttemptNumber: 1, ChildSessionID: launch.ChildSession.ID,
 			CurrentSessionID: launch.ChildSession.ID, CurrentGeneration: 1,
 			GenerationHistory: []pebblestore.TaskProgramJobGeneration{{Generation: 1, SessionID: launch.ChildSession.ID, State: pebblestore.DelegatedChildGenerationActive}},
 			WorkspacePath:     launch.ChildSession.WorkspacePath, WorktreeBranch: launch.ChildSession.WorktreeBranch,
@@ -639,13 +407,13 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 			if taskProgramSpecUsesManagedDesigner(spec.Jobs[i]) && !strings.EqualFold(strings.TrimSpace(outcome.Phase), "cancelled") {
 				code, integration = "managed_artifact_invalid", "artifact_invalid"
 			}
-			blocker = &pebblestore.TaskProgramBlocker{Code: code, Message: firstNonEmptyString(outcome.Reason, outcome.Error, runErrs[i].Error()), NextAction: "repair_or_resume_program"}
+			blocker = &pebblestore.TaskProgramBlocker{Code: code, Message: firstNonEmptyString(outcome.Reason, outcome.Error, runErrs[i].Error()), NextAction: "author_new_program_for_remaining_work"}
 		} else if agentruntime.IsCoderAgentName(spec.Jobs[i].RequestedSubagentType) {
 			state, integration = pebblestore.TaskProgramJobHandoffReady, "pending"
 		} else if taskProgramSpecUsesManagedDesigner(spec.Jobs[i]) {
 			if outcome.ArtifactReference == nil || outcome.ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
 				state, integration = pebblestore.TaskProgramJobFailed, "artifact_invalid"
-				blocker = &pebblestore.TaskProgramBlocker{Code: "managed_artifact_invalid", Message: "managed Designer completed without a validated ready artifact", NextAction: "repair_or_resume_program"}
+				blocker = &pebblestore.TaskProgramBlocker{Code: "managed_artifact_invalid", Message: "managed Designer completed without a validated ready artifact", NextAction: "author_new_program_for_remaining_work"}
 			} else {
 				integration = "artifact_ready"
 			}

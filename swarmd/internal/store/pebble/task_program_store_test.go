@@ -32,7 +32,7 @@ func TestTaskProgramStoreScopesCreationAndStatusToParentSession(t *testing.T) {
 	store := openTaskProgramTestStore(t)
 	sessions := NewSessionStore(store)
 	created, fresh, err := sessions.CreateTaskProgram(taskProgramStoreFixture("parent-a", "release", "hash-a"))
-	if err != nil || !fresh || created.Revision != 1 || created.ResumeGeneration != 1 {
+	if err != nil || !fresh || created.Revision != 1 {
 		t.Fatalf("create=%#v fresh=%v err=%v", created, fresh, err)
 	}
 	duplicate, fresh, err := sessions.CreateTaskProgram(taskProgramStoreFixture("parent-a", "release", "hash-a"))
@@ -55,7 +55,7 @@ func TestTaskProgramStoreRevisionGuardsAndIdempotentTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, next := TaskProgramStateRunning, "await_running_jobs"
-	transition := TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "launch:call-1", State: &state, NextAction: &next, Jobs: []TaskProgramJobTransition{{JobID: "api", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobRunning, AttemptNumber: 1, ResumeGeneration: 1, ChildSessionID: "child", ImmutableStageBase: "base", WorktreeBranch: "agent/api", IntegrationState: "pending_handoff"}}}
+	transition := TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "launch:call-1", State: &state, NextAction: &next, Jobs: []TaskProgramJobTransition{{JobID: "api", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobRunning, AttemptNumber: 1, ChildSessionID: "child", ImmutableStageBase: "base", WorktreeBranch: "agent/api", IntegrationState: "pending_handoff"}}}
 	updated, changed, err := sessions.TransitionTaskProgram("parent", "release", transition)
 	if err != nil || !changed || updated.Revision != 2 || updated.Jobs[0].ChildSessionID != "child" {
 		t.Fatalf("transition=%#v changed=%v err=%v", updated, changed, err)
@@ -70,28 +70,18 @@ func TestTaskProgramStoreRevisionGuardsAndIdempotentTransitions(t *testing.T) {
 	}
 }
 
-func TestTaskProgramStorePersistsStructuredBlockerAndResumeIdempotency(t *testing.T) {
+func TestTaskProgramStorePersistsStructuredBlockerForNewProgramPlanning(t *testing.T) {
 	store := openTaskProgramTestStore(t)
 	sessions := NewSessionStore(store)
 	record, _, err := sessions.CreateTaskProgram(taskProgramStoreFixture("parent", "release", "hash"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, next := TaskProgramStateBlocked, "repair_integration_then_resume"
-	blocker := TaskProgramBlocker{Code: "integration_conflict", Message: "conflict", NextAction: next, RepairAction: next, ProgramID: "release", ProgramRevision: 2, ResumeGeneration: 1, StageID: "build", JobID: "api", AttemptNumber: 1, ExpectedParentHead: "base", PreservedChildren: []TaskProgramPreservedChild{{JobID: "api", State: TaskProgramJobHandoffReady, ChildSessionID: "child", ImmutableStageBase: "base", ChildHead: "head"}}}
+	state, next := TaskProgramStateBlocked, "author_new_program_for_remaining_work"
+	blocker := TaskProgramBlocker{Code: "integration_conflict", Message: "conflict", NextAction: next, RepairAction: next, ProgramID: "release", ProgramRevision: 2, StageID: "build", JobID: "api", AttemptNumber: 1, ExpectedParentHead: "base", PreservedChildren: []TaskProgramPreservedChild{{JobID: "api", State: TaskProgramJobHandoffReady, ChildSessionID: "child", ImmutableStageBase: "base", ChildHead: "head"}}}
 	blocked, _, err := sessions.TransitionTaskProgram("parent", "release", TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "blocked", State: &state, NextAction: &next, Blocker: &blocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resumeState, resumeNext := TaskProgramStateRunning, "resume_program_scheduler"
-	transition := TaskProgramTransition{ExpectedRevision: blocked.Revision, MutationID: "resume:2:1", State: &resumeState, NextAction: &resumeNext, ClearBlocker: true, IncrementResumeGeneration: true, ResumeFromRevision: blocked.Revision, ResumeFromGeneration: blocked.ResumeGeneration}
-	resumed, changed, err := sessions.TransitionTaskProgram("parent", "release", transition)
-	if err != nil || !changed || resumed.ResumeGeneration != 2 || resumed.LastResumeRevision != 2 || resumed.LastResumeGeneration != 1 || resumed.Blocker != nil {
-		t.Fatalf("resume=%#v changed=%v err=%v", resumed, changed, err)
-	}
-	duplicate, changed, err := sessions.TransitionTaskProgram("parent", "release", transition)
-	if err != nil || changed || duplicate.Revision != resumed.Revision {
-		t.Fatalf("duplicate resume=%#v changed=%v err=%v", duplicate, changed, err)
+	if err != nil || blocked.Blocker == nil || blocked.Blocker.NextAction != next || len(blocked.Blocker.PreservedChildren) != 1 {
+		t.Fatalf("blocked=%#v err=%v", blocked, err)
 	}
 }
 
@@ -124,7 +114,7 @@ func TestTaskProgramStoreParallelIntegrationDependentFixerAndTerminalCompletion(
 		t.Fatalf("dependent stage did not retain integrated barrier: %#v", advanced)
 	}
 	runningState, runningNext := TaskProgramStateRunning, "await_running_jobs"
-	running, _, err := sessions.TransitionTaskProgram("parent", "pipeline", TaskProgramTransition{ExpectedRevision: advanced.Revision, MutationID: "run-fixer", State: &runningState, NextAction: &runningNext, Jobs: []TaskProgramJobTransition{{JobID: "fixer", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobRunning, AttemptNumber: 1, ResumeGeneration: advanced.ResumeGeneration}}})
+	running, _, err := sessions.TransitionTaskProgram("parent", "pipeline", TaskProgramTransition{ExpectedRevision: advanced.Revision, MutationID: "run-fixer", State: &runningState, NextAction: &runningNext, Jobs: []TaskProgramJobTransition{{JobID: "fixer", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobRunning, AttemptNumber: 1}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +128,7 @@ func TestTaskProgramStoreParallelIntegrationDependentFixerAndTerminalCompletion(
 	}
 }
 
-func TestTaskProgramStoreConflictRepairResumeAndCompletionPreserveIntegratedJobs(t *testing.T) {
+func TestTaskProgramStoreBlockedContextPreservesIntegratedJobs(t *testing.T) {
 	store := openTaskProgramTestStore(t)
 	sessions := NewSessionStore(store)
 	fixture := taskProgramStoreFixture("parent", "repairable", "hash")
@@ -157,33 +147,11 @@ func TestTaskProgramStoreConflictRepairResumeAndCompletionPreserveIntegratedJobs
 	if err != nil {
 		t.Fatal(err)
 	}
-	blockedState, blockedNext := TaskProgramStateBlocked, "repair_integration_then_resume"
-	blocker := TaskProgramBlocker{Code: "integration_conflict", Message: "conflict", NextAction: blockedNext, RepairAction: blockedNext, ProgramID: record.ProgramID, ProgramRevision: record.Revision + 1, ResumeGeneration: record.ResumeGeneration, StageID: "build", JobID: "web", ExpectedParentHead: "base", PreservedChildren: []TaskProgramPreservedChild{{JobID: "api", State: TaskProgramJobIntegrated, ChildSessionID: "api-child", ChildHead: "api-head", IntegrationState: "integrated"}, {JobID: "web", State: TaskProgramJobHandoffReady, ChildSessionID: "web-child", ChildHead: "web-head", IntegrationState: "pending"}}}
+	blockedState, blockedNext := TaskProgramStateBlocked, "author_new_program_for_remaining_work"
+	blocker := TaskProgramBlocker{Code: "integration_conflict", Message: "conflict", NextAction: blockedNext, RepairAction: blockedNext, ProgramID: record.ProgramID, ProgramRevision: record.Revision + 1, StageID: "build", JobID: "web", ExpectedParentHead: "base", PreservedChildren: []TaskProgramPreservedChild{{JobID: "api", State: TaskProgramJobIntegrated, ChildSessionID: "api-child", ChildHead: "api-head", IntegrationState: "integrated"}, {JobID: "web", State: TaskProgramJobHandoffReady, ChildSessionID: "web-child", ChildHead: "web-head", IntegrationState: "pending"}}}
 	blocked, _, err := sessions.TransitionTaskProgram("parent", "repairable", TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "block-conflict", State: &blockedState, NextAction: &blockedNext, Blocker: &blocker})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if blocked.Jobs[0].State != TaskProgramJobIntegrated || blocked.Blocker == nil || len(blocked.Blocker.PreservedChildren) != 2 {
-		t.Fatalf("blocked record lost integrated work: %#v", blocked)
-	}
-	resumeState, resumeNext := TaskProgramStateRunning, "resume_program_scheduler"
-	resumed, _, err := sessions.TransitionTaskProgram("parent", "repairable", TaskProgramTransition{ExpectedRevision: blocked.Revision, MutationID: "resume-guarded", State: &resumeState, NextAction: &resumeNext, ClearBlocker: true, IncrementResumeGeneration: true, ResumeFromRevision: blocked.Revision, ResumeFromGeneration: blocked.ResumeGeneration, Jobs: []TaskProgramJobTransition{{JobID: "web", ExpectedState: TaskProgramJobHandoffReady, State: TaskProgramJobHandoffReady, ChildHead: "web-repaired-head", ClearBlocker: true, IntegrationState: "pending"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resumed.Jobs[0].State != TaskProgramJobIntegrated || resumed.Jobs[0].AttemptNumber != 1 || resumed.Jobs[1].AttemptNumber != 1 || resumed.Jobs[1].ChildHead != "web-repaired-head" {
-		t.Fatalf("resume relaunched or lost completed work: %#v", resumed.Jobs)
-	}
-	if _, _, err := sessions.TransitionTaskProgram("parent", "repairable", TaskProgramTransition{ExpectedRevision: blocked.Revision, MutationID: "stale-resume", State: &resumeState, NextAction: &resumeNext, IncrementResumeGeneration: true, ResumeFromRevision: blocked.Revision, ResumeFromGeneration: blocked.ResumeGeneration}); err == nil || !strings.Contains(err.Error(), "revision mismatch") {
-		t.Fatalf("stale resume guard error = %v", err)
-	}
-	completeState, completeNext := TaskProgramStateCompleted, "none"
-	completed, _, err := sessions.TransitionTaskProgram("parent", "repairable", TaskProgramTransition{ExpectedRevision: resumed.Revision, MutationID: "complete-program", State: &completeState, NextAction: &completeNext, Jobs: []TaskProgramJobTransition{{JobID: "web", ExpectedState: TaskProgramJobHandoffReady, State: TaskProgramJobIntegrated, IntegrationState: "integrated"}, {JobID: "fixer", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobIntegrated, AttemptNumber: 1, IntegrationState: "integrated"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if completed.State != TaskProgramStateCompleted || completed.Jobs[0].AttemptNumber != 1 || completed.Jobs[0].State != TaskProgramJobIntegrated || completed.Jobs[2].AttemptNumber != 1 {
-		t.Fatalf("completed repair flow = %#v", completed)
+	if err != nil || blocked.NextAction != blockedNext || blocked.Jobs[0].State != TaskProgramJobIntegrated || blocked.Jobs[1].State != TaskProgramJobHandoffReady || blocked.Blocker == nil || len(blocked.Blocker.PreservedChildren) != 2 {
+		t.Fatalf("blocked context cannot guide a new remaining-work program: %#v err=%v", blocked, err)
 	}
 }
 
@@ -199,7 +167,7 @@ func TestTaskProgramStoreReconstructsBoundedHandoffAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, next := TaskProgramStateRunning, "integrate_handoff_ready_jobs"
-	_, _, err = sessions.TransitionTaskProgram("parent", "release", TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "handoff", State: &state, NextAction: &next, Jobs: []TaskProgramJobTransition{{JobID: "api", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobHandoffReady, AttemptNumber: 1, ResumeGeneration: 1, ChildSessionID: "child", WorkspacePath: "worktree", WorktreeBranch: "agent/api", ParentBranch: "dev", ImmutableStageBase: "base", ChildHead: "head", IntegrationState: "pending"}}})
+	_, _, err = sessions.TransitionTaskProgram("parent", "release", TaskProgramTransition{ExpectedRevision: record.Revision, MutationID: "handoff", State: &state, NextAction: &next, Jobs: []TaskProgramJobTransition{{JobID: "api", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobHandoffReady, AttemptNumber: 1, ChildSessionID: "child", WorkspacePath: "worktree", WorktreeBranch: "agent/api", ParentBranch: "dev", ImmutableStageBase: "base", ChildHead: "head", IntegrationState: "pending"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

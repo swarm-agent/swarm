@@ -1,15 +1,12 @@
 package run
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
-	"swarm/packages/swarmd/internal/permission"
-	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -96,11 +93,6 @@ func TestParseTaskProgramDesignerOutputModesAreExplicitAndDurable(t *testing.T) 
 	}
 	if record.Jobs[0].OutputMode != taskOutputModeManaged || record.Jobs[1].OutputMode != taskOutputModeWorkspace {
 		t.Fatalf("durable Designer output modes = %#v", record.Jobs)
-	}
-	reconstructed := taskProgramSpecFromRecord(pebblestore.TaskProgramRecord{ProgramID: parsed.Program.ID, Definition: record})
-	reconstructedLaunches := taskProgramLaunchesFromSpec(reconstructed)
-	if len(reconstructedLaunches) != 2 || reconstructedLaunches[0].OutputMode != taskOutputModeManaged || reconstructedLaunches[1].OutputMode != taskOutputModeWorkspace || len(reconstructedLaunches[1].OwnedScope) != 1 {
-		t.Fatalf("restart reconstructed Designer launches = %#v", reconstructedLaunches)
 	}
 	for _, mutate := range []func(map[string]any){
 		func(job map[string]any) { job["owned_scope"] = []any{"web/src/managed.tsx"} },
@@ -244,7 +236,7 @@ func TestParseTaskProgramRejectsInvalidGraphAndScopesBeforeLaunch(t *testing.T) 
 
 func TestTaskProgramStatusProjectionIsBoundedAndComplete(t *testing.T) {
 	record := pebblestore.TaskProgramRecord{
-		ParentSessionID: "parent", ProgramID: "release", Revision: 4, ResumeGeneration: 2,
+		ParentSessionID: "parent", ProgramID: "release", Revision: 4,
 		State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build", NextAction: "integrate_handoff_ready_jobs",
 		Jobs: []pebblestore.TaskProgramJobRecord{
 			{JobID: "declared", StageID: "build", State: pebblestore.TaskProgramJobDeclared},
@@ -276,7 +268,7 @@ func TestTaskProgramStatusProjectionIsBoundedAndComplete(t *testing.T) {
 func TestTaskProgramPresentationGroupsOrderedStagesAndJobsWithoutPrivateFields(t *testing.T) {
 	record := pebblestore.TaskProgramRecord{
 		ParentSessionID: "parent", ProgramID: "release", ReservationCallID: "call-release",
-		Revision: 6, ResumeGeneration: 2, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
+		Revision: 6, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
 		Definition: pebblestore.TaskProgramDefinition{
 			Stages: []pebblestore.TaskProgramStageSpec{
 				{ID: "build", DependencyEvidence: "Independent work is ready."},
@@ -323,7 +315,7 @@ func TestTaskProgramPresentationGroupsOrderedStagesAndJobsWithoutPrivateFields(t
 func TestTaskProgramStatusCarriesStableGroupingIdentityAndPresentation(t *testing.T) {
 	record := pebblestore.TaskProgramRecord{
 		ParentSessionID: "parent", ProgramID: "release", ReservationCallID: "call-release",
-		Revision: 3, ResumeGeneration: 1, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
+		Revision: 3, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
 		Definition: pebblestore.TaskProgramDefinition{
 			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
 			Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", DependencyEvidence: "ready"}},
@@ -341,7 +333,7 @@ func TestTaskProgramProgressStreamCarriesCanonicalSnapshotAndStableCallID(t *tes
 	var event StreamEvent
 	record := pebblestore.TaskProgramRecord{
 		ParentSessionID: "parent", ProgramID: "release", ReservationCallID: "call-release",
-		Revision: 2, ResumeGeneration: 1, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
+		Revision: 2, State: pebblestore.TaskProgramStateRunning, ActiveStageID: "build",
 		Definition: pebblestore.TaskProgramDefinition{
 			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
 			Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "private", DependencyEvidence: "ready"}},
@@ -488,7 +480,7 @@ func TestTaskProgramSchedulerUnlocksOnlyIntegratedDependencies(t *testing.T) {
 }
 
 func TestTaskProgramStatusIncludesCoherentParentHead(t *testing.T) {
-	record := pebblestore.TaskProgramRecord{ParentSessionID: "parent", ProgramID: "release", ParentHead: strings.Repeat("a", 40), Revision: 2, ResumeGeneration: 1, State: pebblestore.TaskProgramStateCompleted}
+	record := pebblestore.TaskProgramRecord{ParentSessionID: "parent", ProgramID: "release", ParentHead: strings.Repeat("a", 40), Revision: 2, State: pebblestore.TaskProgramStateCompleted}
 	payload := taskProgramStatusPayload(record, false)
 	if payload["parent_head"] != record.ParentHead {
 		t.Fatalf("parent head = %#v", payload["parent_head"])
@@ -497,13 +489,13 @@ func TestTaskProgramStatusIncludesCoherentParentHead(t *testing.T) {
 
 func TestTaskProgramStructuredBlockerPreservesExactRepairState(t *testing.T) {
 	record := pebblestore.TaskProgramRecord{
-		ProgramID: "release", Revision: 7, ResumeGeneration: 2, ActiveStageID: "build", ParentHead: strings.Repeat("a", 40),
+		ProgramID: "release", Revision: 7, ActiveStageID: "build", ParentHead: strings.Repeat("a", 40),
 		Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder"}}},
 		Jobs:       []pebblestore.TaskProgramJobRecord{{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobHandoffReady, AttemptNumber: 1, ChildSessionID: "child", WorkspacePath: "worktree", WorktreeBranch: "agent/api", ParentBranch: "dev", ImmutableStageBase: strings.Repeat("a", 40), ChildHead: strings.Repeat("b", 40), IntegrationState: "pending"}},
 	}
 	scheduler := taskProgramScheduler{record: record, barrierJobID: "api", expectedParentHead: record.ParentHead}
-	blocker := scheduler.structuredBlocker("integration_conflict", errors.New("cherry-pick conflict"), "repair_integration_then_resume", "api")
-	if blocker.ProgramID != "release" || blocker.ProgramRevision != 8 || blocker.ResumeGeneration != 2 || blocker.StageID != "build" || blocker.JobID != "api" || blocker.AttemptNumber != 1 || blocker.ExpectedParentHead != record.ParentHead {
+	blocker := scheduler.structuredBlocker("integration_conflict", errors.New("cherry-pick conflict"), "", "api")
+	if blocker.ProgramID != "release" || blocker.ProgramRevision != 8 || blocker.StageID != "build" || blocker.JobID != "api" || blocker.AttemptNumber != 1 || blocker.ExpectedParentHead != record.ParentHead || blocker.RepairAction != "resolve_integration_conflict" || blocker.NextAction != "resolve_integration_conflict_then_author_new_program_for_remaining_work" {
 		t.Fatalf("blocker identity = %#v", blocker)
 	}
 	if len(blocker.PreservedChildren) != 1 || blocker.PreservedChildren[0].ChildSessionID != "child" || blocker.PreservedChildren[0].ChildHead != strings.Repeat("b", 40) {
@@ -511,201 +503,35 @@ func TestTaskProgramStructuredBlockerPreservesExactRepairState(t *testing.T) {
 	}
 }
 
-func TestTaskProgramSpecReconstructionDoesNotInventJobs(t *testing.T) {
-	record := pebblestore.TaskProgramRecord{ProgramID: "release", Definition: pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "build"}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "implement", Deliverable: "commit", OwnedScope: []string{"api/**"}, AcceptanceCriteria: []string{"done"}, DependencyEvidence: "ready"}}}}
-	spec := taskProgramSpecFromRecord(record)
-	launches := taskProgramLaunchesFromSpec(spec)
-	if spec.ID != "release" || len(spec.Jobs) != 1 || len(launches) != 1 || launches[0].SourceArguments["program_job_id"] != "api" {
-		t.Fatalf("reconstructed spec=%#v launches=%#v", spec, launches)
-	}
-}
-
-func TestTaskProgramResumeLaunchesPreserveChildIdentityAndRecoveryContext(t *testing.T) {
-	prior := pebblestore.TaskProgramRecord{
-		ProgramID: "release",
-		Blocker:   &pebblestore.TaskProgramBlocker{JobID: "api", Message: "user stopped subagent"},
-		Definition: pebblestore.TaskProgramDefinition{
-			Stages: []pebblestore.TaskProgramStageSpec{{ID: "build"}},
-			Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API", MetaPrompt: "implement API", Deliverable: "commit", AcceptanceCriteria: []string{"done"}}},
-		},
-		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobCancelled, AttemptNumber: 2, ChildSessionID: "child-api", WorkspacePath: "/worktree/api", WorktreeBranch: "agent/api", ImmutableStageBase: "base"}},
-	}
-	prepared := prior
-	prepared.Jobs = append([]pebblestore.TaskProgramJobRecord(nil), prior.Jobs...)
-	prepared.Jobs[0].State = pebblestore.TaskProgramJobDeclared
-	spec := taskProgramSpecFromRecord(prepared)
-	launches := taskProgramResumeLaunches(prepared, prior, spec)
-	if len(launches) != 1 {
-		t.Fatalf("launch count = %d", len(launches))
-	}
-	launch := launches[0]
-	if launch.ResumeChildSessionID != "child-api" || launch.ResumeWorkspacePath != "/worktree/api" || launch.ResumeWorktreeBranch != "agent/api" || launch.ResumeImmutableBase != "base" || launch.ResumeAttemptNumber != 2 || launch.ResumeReason != "user stopped subagent" {
-		t.Fatalf("resume launch lost durable identity: %#v", launch)
-	}
-	prompt := taskProgramRecoveryPrompt(launch)
-	for _, want := range []string{"existing child session", "inspect the durable conversation", "Preserve valid progress", "user stopped subagent", "implement API"} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("recovery prompt missing %q: %s", want, prompt)
+func TestMasterHarnessRequiresParentToResolveTaskProgramConflictBeforeReplacement(t *testing.T) {
+	prompt := masterHarnessPromptWithScope(tool.WorkspaceScope{})
+	for _, required := range []string{
+		"take ownership of repairing the blocker before continuing",
+		"For integration_conflict, you must resolve the reported conflict first",
+		"verify the parent worktree is clean and consistent",
+		"do not start replacement work while the conflict remains unresolved",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("Task Program recovery prompt missing %q", required)
 		}
 	}
 }
 
-func TestPrepareResumedTaskProgramLaunchUsesOriginalSessionAgentAndModel(t *testing.T) {
-	svc, parentID, cleanup := newTaskLaunchPermissionTestService(t)
-	defer cleanup()
-	parent, ok, err := svc.sessions.GetSession(parentID)
-	if err != nil || !ok {
-		t.Fatalf("get parent: ok=%t err=%v", ok, err)
-	}
-	profile := pebblestore.AgentProfile{Name: "finder", Mode: "subagent", Enabled: true, Prompt: "original finder prompt"}
-	child, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		UserID:         parent.UserID,
-		AccountScopeID: parent.AccountScopeID,
-		Title:          "Interrupted Finder",
-		WorkspacePath:  parent.WorkspacePath,
-		WorkspaceName:  parent.WorkspaceName,
-		Mode:           sessionruntime.ModeAuto,
-		Preference:     &pebblestore.ModelPreference{Provider: "original-provider", Model: "original-model", Thinking: "high"},
-		Metadata: map[string]any{
-			"parent_session_id":  parent.ID,
-			"requested_subagent": "finder",
-			"source_agent_name":  "finder",
-			"agent_profile":      profile,
-		},
-	})
-	if err != nil {
-		t.Fatalf("create child: %v", err)
-	}
-	launch, err := svc.prepareResumedTaskProgramLaunch(parent, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "finder"}, taskLaunchSpec{
-		RequestedSubagentType: "finder", MetaPrompt: "inspect repository", AssignmentLabel: "Resume Finder", ResumeChildSessionID: child.ID, ResumeAttemptNumber: 1, ResumeReason: "daemon restart",
-	})
-	if err != nil {
-		t.Fatalf("prepare resumed launch: %v", err)
-	}
-	if launch.ChildSession.ID != child.ID || launch.SubagentProfile.Prompt != "original finder prompt" || launch.SubagentProvider != "original-provider" || launch.SubagentModel != "original-model" {
-		t.Fatalf("resumed launch drifted from original identity: %#v", launch)
-	}
-	if !strings.Contains(launch.MetaPrompt, "daemon restart") || !strings.Contains(launch.MetaPrompt, "inspect repository") {
-		t.Fatalf("resumed launch lacks bounded recovery reprompt: %q", launch.MetaPrompt)
-	}
-}
-
-func TestPrepareTaskProgramResumeReconcilesCompletedChildWithoutReplay(t *testing.T) {
-	svc, parentID, permissions, cleanup := newTaskLaunchPermissionServiceWithPermissions(t)
-	defer cleanup()
-	parent, ok, err := svc.sessions.GetSession(parentID)
-	if err != nil || !ok {
-		t.Fatalf("get parent: ok=%t err=%v", ok, err)
-	}
-	profile := pebblestore.AgentProfile{Name: "finder", Mode: "subagent", Enabled: true, Prompt: "finder"}
-	child, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		AccountScopeID: parent.AccountScopeID, Title: "Completed Finder", WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Mode: sessionruntime.ModeAuto,
-		Preference: &pebblestore.ModelPreference{Provider: "original-provider", Model: "original-model", Thinking: "high"},
-		Metadata:   map[string]any{"parent_session_id": parent.ID, "requested_subagent": "finder", "agent_profile": profile},
-	})
-	if err != nil {
-		t.Fatalf("create child: %v", err)
-	}
-	if err := svc.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{SessionID: child.ID, RunID: "child-run", Active: false, Phase: lifecyclePhaseCompleted, Generation: 1}); err != nil {
-		t.Fatalf("persist completed child lifecycle: %v", err)
-	}
-	definition := pebblestore.TaskProgramDefinition{
-		Stages: []pebblestore.TaskProgramStageSpec{{ID: "inspect"}},
-		Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "finder", StageID: "inspect", AgentType: "finder", Title: "Find", MetaPrompt: "inspect", Deliverable: "report", AcceptanceCriteria: []string{"done"}}},
-	}
+func TestTaskProgramBlockerRetainsCompletedAndUnfinishedContextForNewProgram(t *testing.T) {
 	record := pebblestore.TaskProgramRecord{
-		ParentSessionID: parent.ID, ProgramID: "resume_completed", DefinitionHash: "hash", Definition: definition,
-		ReservationRunID: "parent-run", ReservationCallID: "task-call", State: pebblestore.TaskProgramStateRunning, ActiveStageID: "inspect", NextAction: "await_running_jobs",
-		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "finder", StageID: "inspect", State: pebblestore.TaskProgramJobRunning, AttemptNumber: 1, ChildSessionID: child.ID}},
+		ProgramID: "release", Revision: 4, ActiveStageID: "build",
+		Jobs: []pebblestore.TaskProgramJobRecord{
+			{JobID: "done", StageID: "build", State: pebblestore.TaskProgramJobCompleted, AttemptNumber: 1, ChildSessionID: "child-done", IntegrationState: "not_required"},
+			{JobID: "failed", StageID: "build", State: pebblestore.TaskProgramJobFailed, AttemptNumber: 1, ChildSessionID: "child-failed", IntegrationState: "blocked"},
+		},
 	}
-	record, _, err = svc.sessions.CreateTaskProgram(record)
-	if err != nil {
-		t.Fatalf("create task program: %v", err)
+	scheduler := taskProgramScheduler{record: record}
+	blocker := scheduler.structuredBlocker("child_execution_failed", errors.New("failed child"), "author_new_program_for_remaining_work", "failed")
+	if blocker.NextAction != "author_new_program_for_remaining_work" || blocker.RepairAction != "author_new_program_for_remaining_work" || len(blocker.PreservedChildren) != 2 {
+		t.Fatalf("new-program reconstruction context = %#v", blocker)
 	}
-	reserved, err := permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
-		SessionID: parent.ID, AccountScopeID: parent.AccountScopeID, RunID: record.ReservationRunID, CallID: record.ReservationCallID,
-		ManifestHash: "manifest", LaunchCount: 1, Program: true, ReadyCount: 1,
-	})
-	if err != nil || reserved.Decision != permission.SubagentReservationApprove {
-		t.Fatalf("reserve program: decision=%s err=%v", reserved.Decision, err)
-	}
-	resumed, readyCount, err := svc.prepareTaskProgramResume(parent, record, taskCallArguments{ExpectedRevision: record.Revision, ExpectedGeneration: record.ResumeGeneration})
-	if err != nil {
-		t.Fatalf("resume program: %v", err)
-	}
-	if readyCount != 1 || resumed.State != pebblestore.TaskProgramStateRunning || resumed.Jobs[0].State != pebblestore.TaskProgramJobCompleted || resumed.ResumeGeneration != record.ResumeGeneration+1 {
-		t.Fatalf("completed child reconciliation = ready:%d record:%#v", readyCount, resumed)
-	}
-}
-
-func TestGateTaskProgramResumeReusesReservationWithoutApproval(t *testing.T) {
-	svc, parentID, permissions, cleanup := newTaskLaunchPermissionServiceWithPermissions(t)
-	defer cleanup()
-	parent, ok, err := svc.sessions.GetSession(parentID)
-	if err != nil || !ok {
-		t.Fatalf("get parent: ok=%t err=%v", ok, err)
-	}
-	definition := pebblestore.TaskProgramDefinition{
-		Stages: []pebblestore.TaskProgramStageSpec{{ID: "inspect"}},
-		Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "finder", StageID: "inspect", AgentType: "finder", Title: "Find", MetaPrompt: "inspect", Deliverable: "report", AcceptanceCriteria: []string{"done"}}},
-	}
-	record, _, err := svc.sessions.CreateTaskProgram(pebblestore.TaskProgramRecord{
-		ParentSessionID: parent.ID, ProgramID: "resume_no_approval", DefinitionHash: "hash", Definition: definition,
-		ReservationRunID: "parent-run", ReservationCallID: "original-task-call", State: pebblestore.TaskProgramStateBlocked, ActiveStageID: "inspect", NextAction: "repair_failed_child_then_resume",
-		Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "finder", StageID: "inspect", State: pebblestore.TaskProgramJobBlocked, AttemptNumber: 1}},
-	})
-	if err != nil {
-		t.Fatalf("create task program: %v", err)
-	}
-	reserved, err := permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
-		SessionID: parent.ID, AccountScopeID: parent.AccountScopeID, RunID: record.ReservationRunID, CallID: record.ReservationCallID,
-		ManifestHash: "manifest", LaunchCount: 1, Program: true, ReadyCount: 1,
-	})
-	if err != nil || reserved.Decision != permission.SubagentReservationApprove {
-		t.Fatalf("reserve program: decision=%s err=%v", reserved.Decision, err)
-	}
-	statusCall := tool.Call{CallID: "status-lifecycle-call", Name: "task", Arguments: mustJSON(t, map[string]any{
-		"action": "status", "program_id": record.ProgramID,
-	})}
-	statusResults, statusApproved, _, statusMask, _, err := svc.gateToolCalls(context.Background(), parent.ID, "status-parent-run", 1, sessionruntime.ModeAuto, []tool.Call{statusCall}, nil, nil)
-	if err != nil || len(statusResults) != 1 || len(statusApproved) != 1 || len(statusMask) != 1 || !statusMask[0] {
-		t.Fatalf("read-only status was not approved inline: results=%#v approved=%d mask=%v err=%v", statusResults, len(statusApproved), statusMask, err)
-	}
-
-	call := tool.Call{CallID: "resume-lifecycle-call", Name: "task", Arguments: mustJSON(t, map[string]any{
-		"action": "resume", "program_id": record.ProgramID, "expected_revision": record.Revision, "expected_generation": record.ResumeGeneration,
-	})}
-	permissionEvents := 0
-	results, approved, _, mask, _, err := svc.gateToolCalls(context.Background(), parent.ID, "resume-parent-run", 1, sessionruntime.ModeAuto, []tool.Call{call}, func(event StreamEvent) {
-		if event.Type == StreamEventPermissionReq {
-			permissionEvents++
-		}
-	}, nil)
-	if err != nil {
-		t.Fatalf("gate resume: %v", err)
-	}
-	if len(results) != 1 || len(approved) != 1 || len(mask) != 1 || !mask[0] || permissionEvents != 0 {
-		t.Fatalf("guarded resume was not approved inline: results=%#v approved=%d mask=%v permission_events=%d", results, len(approved), mask, permissionEvents)
-	}
-	pending, err := permissions.ListPending(parent.ID, 10)
-	if err != nil {
-		t.Fatalf("list pending permissions: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("guarded resume created redundant approval records: %#v", pending)
-	}
-
-	state, next := pebblestore.TaskProgramStateRunning, "resume_program_scheduler"
-	resumed, _, err := svc.sessions.TransitionTaskProgram(parent.ID, record.ProgramID, pebblestore.TaskProgramTransition{
-		ExpectedRevision: record.Revision, MutationID: "resume-test", State: &state, NextAction: &next,
-		IncrementResumeGeneration: true, ResumeFromRevision: record.Revision, ResumeFromGeneration: record.ResumeGeneration,
-	})
-	if err != nil {
-		t.Fatalf("persist resumed generation: %v", err)
-	}
-	results, approved, _, mask, _, err = svc.gateToolCalls(context.Background(), parent.ID, "resume-parent-run", 2, sessionruntime.ModeAuto, []tool.Call{call}, nil, nil)
-	if err != nil || len(results) != 1 || len(approved) != 1 || len(mask) != 1 || !mask[0] {
-		t.Fatalf("idempotent guarded resume was not approved inline after generation advanced to %d: results=%#v approved=%d mask=%v err=%v", resumed.ResumeGeneration, results, len(approved), mask, err)
+	if blocker.PreservedChildren[0].State != pebblestore.TaskProgramJobCompleted || blocker.PreservedChildren[1].State != pebblestore.TaskProgramJobFailed {
+		t.Fatalf("completed/unfinished states were not preserved: %#v", blocker.PreservedChildren)
 	}
 }
 
@@ -723,19 +549,6 @@ func TestTaskProgramErrorCodesAreActionable(t *testing.T) {
 		if got := taskProgramErrorCode(errors.New(message)); got != want {
 			t.Fatalf("code for %q = %q, want %q", message, got, want)
 		}
-	}
-}
-
-func TestTaskProgramReconstructedDesignerLaunchesPreserveManagedAndWorkspaceModes(t *testing.T) {
-	spec := &taskProgramSpec{ID: "design_program", Jobs: []taskProgramJob{
-		{ID: "managed", StageID: "variants", RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged},
-		{ID: "workspace", StageID: "variants", RequestedSubagentType: "designer", OwnedScope: []string{"web/src/variant.tsx"}, OutputMode: taskOutputModeWorkspace},
-		{ID: "legacy_workspace", StageID: "variants", RequestedSubagentType: "designer", OwnedScope: []string{"web/src/legacy.tsx"}},
-		{ID: "finder", StageID: "variants", RequestedSubagentType: "finder"},
-	}}
-	launches := taskProgramLaunchesFromSpec(spec)
-	if len(launches) != 4 || launches[0].OutputMode != taskOutputModeManaged || launches[1].OutputMode != taskOutputModeWorkspace || launches[2].OutputMode != taskOutputModeWorkspace || launches[3].OutputMode != "" {
-		t.Fatalf("reconstructed output modes = %#v", launches)
 	}
 }
 
@@ -827,16 +640,15 @@ func TestTaskProgramStatusExposesBoundedReadyArtifactReferences(t *testing.T) {
 	}
 }
 
-func TestParseTaskProgramLifecycleGuards(t *testing.T) {
+func TestParseTaskProgramLifecycleRejectsAllExistingProgramContinuation(t *testing.T) {
 	status, err := parseTaskCallArguments(`{"action":"status","program_id":"release_program"}`)
 	if err != nil || status.ProgramID != "release_program" || len(status.Launches) != 0 {
 		t.Fatalf("status = %#v err=%v", status, err)
 	}
-	resume, err := parseTaskCallArguments(`{"action":"resume","program_id":"release_program","expected_revision":3,"expected_generation":2}`)
-	if err != nil || resume.ExpectedRevision != 3 || resume.ExpectedGeneration != 2 {
-		t.Fatalf("resume = %#v err=%v", resume, err)
+	if _, err := parseTaskCallArguments(`{"action":"start","program_id":"release_program"}`); err == nil || !strings.Contains(err.Error(), "new program definition") {
+		t.Fatalf("existing program start error = %v", err)
 	}
-	if _, err := parseTaskCallArguments(`{"action":"resume","program_id":"release_program"}`); err == nil || !strings.Contains(err.Error(), "requires positive") {
-		t.Fatalf("unguarded resume error = %v", err)
+	if _, err := parseTaskCallArguments(`{"action":"resume","program_id":"release_program"}`); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("retired resume error = %v", err)
 	}
 }

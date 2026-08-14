@@ -174,8 +174,8 @@ func taskManagedArtifactID(kind, parentSessionID, routingID string, launchIndex 
 	return kind + "-" + hex.EncodeToString(sum[:12])
 }
 
-// Task Program resumes reuse the program identity so completed collections and
-// per-job variants survive later scheduler cohorts with different call IDs.
+// Task Program scheduler cohorts reuse the program identity so one newly
+// authored program keeps a stable collection and per-job variants.
 func taskManagedArtifactRoutingID(taskCallID, programID string) string {
 	if programID = strings.TrimSpace(programID); programID != "" {
 		return "program:" + programID
@@ -226,8 +226,8 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 }
 
 // ensureManagedDesignerArtifactCollection reserves the parent-owned destination
-// before any child session is created. Task Program cohorts resolve the same
-// collection from ProgramID across resume calls.
+// before any child session is created. Cohorts within one Task Program resolve
+// the same collection from ProgramID.
 func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.SessionSnapshot, taskCallID string, specs []taskLaunchSpec, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	managed := false
 	for _, spec := range specs {
@@ -1097,96 +1097,6 @@ func (s *Service) prepareDelegatedSubagentLaunch(parentSession pebblestore.Sessi
 	return s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launch, description, targetedSubagentName, nil, "", applySessionMutation)
 }
 
-func (s *Service) prepareResumedTaskProgramLaunch(parentSession pebblestore.SessionSnapshot, launch taskLaunchPrepared, spec taskLaunchSpec) (taskLaunchPrepared, error) {
-	childID := strings.TrimSpace(spec.ResumeChildSessionID)
-	if childID == "" {
-		return taskLaunchPrepared{}, errors.New("task program recovery requires an existing child session")
-	}
-	child, ok, err := s.sessions.GetSession(childID)
-	if err != nil {
-		return taskLaunchPrepared{}, err
-	}
-	if !ok {
-		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child session %q no longer exists", childID)
-	}
-	if got := strings.TrimSpace(mapString(child.Metadata, "parent_session_id")); got != "" && got != strings.TrimSpace(parentSession.ID) {
-		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q belongs to parent %q, not %q", childID, got, parentSession.ID)
-	}
-	if agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged && launch.ArtifactRunContext == nil {
-		return taskLaunchPrepared{}, errors.New("task program recovery managed Designer is missing its trusted artifact destination")
-	}
-	if launch.ArtifactRunContext != nil {
-		if got := strings.TrimSpace(mapString(child.Metadata, "managed_artifact_parent_session_id")); got != launch.ArtifactRunContext.SessionID {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q managed artifact parent changed", childID)
-		}
-		if got := strings.TrimSpace(mapString(child.Metadata, "managed_artifact_collection_id")); got != launch.ArtifactRunContext.CollectionID {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q managed artifact collection changed", childID)
-		}
-		if got := strings.TrimSpace(mapString(child.Metadata, "managed_artifact_variant_id")); got != launch.ArtifactRunContext.VariantID {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q managed artifact variant changed", childID)
-		}
-		storedTaskCallID := strings.TrimSpace(mapString(child.Metadata, "managed_artifact_task_call_id"))
-		if storedTaskCallID == "" {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q managed artifact task call is missing", childID)
-		}
-		if got := strings.TrimSpace(mapString(child.Metadata, "managed_artifact_program_id")); got != launch.ArtifactRunContext.ProgramID {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q managed artifact program changed", childID)
-		}
-		if got := strings.TrimSpace(mapString(child.Metadata, "managed_artifact_program_job_id")); got != launch.ArtifactRunContext.ProgramJobID {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q managed artifact program job changed", childID)
-		}
-		launch.ArtifactRunContext = cloneArtifactRunContext(launch.ArtifactRunContext)
-		launch.ArtifactRunContext.TaskCallID = storedTaskCallID
-		launch.ArtifactRunContext.ChildSessionID = childID
-	}
-	profile, err := sessionV3AgentProfileFromMetadataMap(child.Metadata)
-	if err != nil {
-		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q original agent profile is unavailable: %w", childID, err)
-	}
-	requested := strings.TrimSpace(spec.RequestedSubagentType)
-	if stored := strings.TrimSpace(mapString(child.Metadata, "requested_subagent")); stored != "" && !strings.EqualFold(stored, requested) {
-		return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q agent type %q does not match declared %q", childID, stored, requested)
-	}
-	if agentruntime.IsCoderAgentName(requested) {
-		if strings.TrimSpace(spec.ResumeWorkspacePath) == "" || strings.TrimSpace(child.WorkspacePath) != strings.TrimSpace(spec.ResumeWorkspacePath) {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q workspace identity changed", childID)
-		}
-		if strings.TrimSpace(spec.ResumeWorktreeBranch) != "" && strings.TrimSpace(child.WorktreeBranch) != strings.TrimSpace(spec.ResumeWorktreeBranch) {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q worktree branch changed", childID)
-		}
-		launch.TaskBase = &worktreeruntime.TaskBase{
-			RepoRoot:     strings.TrimSpace(mapString(child.Metadata, "repository_root")),
-			ParentBranch: strings.TrimSpace(mapString(child.Metadata, "parent_branch")),
-			BaseCommit:   strings.TrimSpace(spec.ResumeImmutableBase),
-		}
-	}
-	launch.RequestedSubagent = requested
-	if agentruntime.IsDesignerAgentName(requested) {
-		storedOutputMode := strings.ToLower(strings.TrimSpace(mapString(child.Metadata, "designer_output_mode")))
-		if storedOutputMode != strings.ToLower(strings.TrimSpace(spec.OutputMode)) {
-			return taskLaunchPrepared{}, fmt.Errorf("task program recovery child %q Designer output mode changed", childID)
-		}
-		launch.OutputMode = storedOutputMode
-	}
-	launch.MetaPrompt = taskProgramRecoveryPrompt(spec)
-	launch.AssignmentLabel = taskAssignmentLabel(spec.AssignmentLabel, spec.MetaPrompt, "resume task program", strings.TrimSpace(profile.Name))
-	launch.SubagentProvider = strings.TrimSpace(child.Preference.Provider)
-	launch.SubagentModel = strings.TrimSpace(child.Preference.Model)
-	launch.SubagentProfile = profile
-	launch.SourceAgentName = strings.TrimSpace(mapString(child.Metadata, "source_agent_name"))
-	launch.VirtualTarget = mapBool(child.Metadata, "parent_copy")
-	launch.ChildSession = child
-	launch.ChildMode = strings.TrimSpace(child.Mode)
-	launch.ChildWorkspacePath = strings.TrimSpace(child.WorkspacePath)
-	launch.ChildWorkspaceName = strings.TrimSpace(child.WorkspaceName)
-	launch.ChildWorktreeEnabled = child.WorktreeEnabled
-	launch.ChildWorktreeRoot = strings.TrimSpace(child.WorktreeRootPath)
-	launch.ChildWorktreeBase = strings.TrimSpace(child.WorktreeBaseBranch)
-	launch.ChildWorktreeBranch = strings.TrimSpace(child.WorktreeBranch)
-	launch.LaunchStartedAtMS = time.Now().UnixMilli()
-	return launch, nil
-}
-
 func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, step int, sessionMode string, toolCalls []tool.Call, emit StreamHandler, overlay *permission.Policy) ([]tool.Result, []tool.Call, []int, []bool, []PermissionFeedback, error) {
 	results := make([]tool.Result, len(toolCalls))
 	approvedCalls := make([]tool.Call, 0, len(toolCalls))
@@ -1269,7 +1179,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 			if manifest.Action == taskProgramActionStatus {
 				// Status is a read-only lookup scoped to the authenticated parent session.
-				// It must never create an approval interaction before a guarded resume.
+				// It must never create an approval interaction.
 				if _, ok, statusErr := s.sessions.GetTaskProgram(sessionID, manifest.ProgramID); statusErr != nil {
 					decisions[i].Err = statusErr
 					decisions[i].Result.Error = statusErr.Error()
@@ -1281,19 +1191,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 				continue
 			}
-			if manifest.Action == taskProgramActionResume {
-				// Resume is a guarded continuation of an already-reserved durable program,
-				// not a new delegation wave. Reuse that reservation so generic task policy
-				// cannot create a redundant approval; execution still rechecks current
-				// policy/capacity before advancing the program generation.
-				resumedReservation, resumeErr := s.taskProgramResumeAuthorization(sessionID, manifest)
-				if resumeErr != nil {
-					decisions[i].Err = resumeErr
-					decisions[i].Result.Error = resumeErr.Error()
-					continue
-				}
-				subagentReservation = &resumedReservation
-			} else if manifest.Action != taskProgramActionStatus {
+			if manifest.Action != taskProgramActionStatus {
 				// Program status operates on the existing durable record and must not
 				// consume another parent invocation reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
@@ -3791,32 +3689,6 @@ func (s *Service) executeTaskTool(ctx context.Context, sessionID, sessionMode st
 	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal})
 }
 
-func (s *Service) taskProgramResumeAuthorization(sessionID string, manifest taskLaunchManifest) (permission.SubagentReservationResult, error) {
-	if s.sessions == nil || s.permissions == nil {
-		return permission.SubagentReservationResult{}, errors.New("task program resume authorization is not configured")
-	}
-	record, ok, err := s.sessions.GetTaskProgram(strings.TrimSpace(sessionID), strings.TrimSpace(manifest.ProgramID))
-	if err != nil {
-		return permission.SubagentReservationResult{}, err
-	}
-	if !ok {
-		return permission.SubagentReservationResult{}, fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
-	}
-	guardMatches := record.Revision == manifest.ExpectedRevision && record.ResumeGeneration == manifest.ExpectedGeneration
-	idempotentResume := record.LastResumeRevision == manifest.ExpectedRevision && record.LastResumeGeneration == manifest.ExpectedGeneration && record.State == pebblestore.TaskProgramStateRunning && record.NextAction == "resume_program_scheduler"
-	if !guardMatches && !idempotentResume {
-		return permission.SubagentReservationResult{}, fmt.Errorf("task program resume guard mismatch: current revision=%d generation=%d", record.Revision, record.ResumeGeneration)
-	}
-	reservation, ok, err := s.permissions.GetSubagentReservation(record.ParentSessionID, record.ReservationRunID, record.ReservationCallID)
-	if err != nil {
-		return permission.SubagentReservationResult{}, err
-	}
-	if !ok || !reservation.Program {
-		return permission.SubagentReservationResult{}, errors.New("subagent program reservation not found")
-	}
-	return permission.SubagentReservationResult{Decision: permission.SubagentReservationApprove, Reason: "guarded task program resume reuses its existing reservation", Reservation: reservation}, nil
-}
-
 func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (string, error) {
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
@@ -3837,7 +3709,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if strings.TrimSpace(action) == "" {
 		action = "spawn"
 	}
-	if action == taskProgramActionStatus || action == taskProgramActionResume {
+	if action == taskProgramActionStatus {
 		record, ok, lifecycleErr := s.sessions.GetTaskProgram(sessionID, parsed.ProgramID)
 		if lifecycleErr != nil {
 			return "", lifecycleErr
@@ -3845,33 +3717,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if !ok {
 			return "", fmt.Errorf("task program %q not found for calling parent session", parsed.ProgramID)
 		}
-		if action == taskProgramActionStatus {
-			return marshalTaskProgramStatus(record, false)
-		}
-		parentSession, parentOK, parentErr := s.sessions.GetSession(sessionID)
-		if parentErr != nil {
-			return "", parentErr
-		}
-		if !parentOK {
-			return "", fmt.Errorf("session %q not found", sessionID)
-		}
-		resumed, readyCount, resumeErr := s.prepareTaskProgramResume(parentSession, record, parsed)
-		if resumeErr != nil {
-			return "", resumeErr
-		}
-		if readyCount == 0 {
-			return marshalTaskProgramStatus(resumed, false)
-		}
-		spec := taskProgramSpecFromRecord(resumed)
-		resumeParsed := taskCallArguments{Action: taskProgramActionResume, Description: "resume task program " + resumed.ProgramID, Prompt: "Reconcile durable child progress and continue the stored task program from its guarded barrier.", Mode: taskModeRegular, Program: spec, ProgramID: resumed.ProgramID, Launches: taskProgramResumeLaunches(resumed, record, spec)}
-		resumeCall := call
-		resumeCall.CallID = resumed.ReservationCallID
-		resumeReq := req
-		resumeReq.Parsed, resumeReq.ParsedProvided = resumeParsed, true
-		resumeReq.ParentSession = &parentSession
-		resumeReq.RunID = resumed.ReservationRunID
-		resumeReq.ApprovedArguments = ""
-		return s.executeTaskProgram(ctx, sessionMode, step, resumeCall, emit, resumeReq, parentSession, resumeParsed, resumed, resumeParsed.Description, resumeParsed.Prompt)
+		return marshalTaskProgramStatus(record, false)
 	}
 	description := parsed.Description
 	if strings.TrimSpace(req.DescriptionOverride) != "" {
@@ -3930,7 +3776,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 		if !created {
-			return marshalTaskProgramStatus(programRecord, false)
+			return "", fmt.Errorf("task program %q already exists; inspect its status, then author a new program with a distinct program.id containing only unfinished work", programRecord.ProgramID)
 		}
 	}
 	if parsed.Program != nil {
@@ -4101,13 +3947,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchInput.ProgramJobID = strings.TrimSpace(mapString(spec.SourceArguments, "program_job_id"))
 			launchInput.LogicalTaskID = parentSession.ID + ":" + programID + ":" + launchInput.ProgramJobID
 		}
-		var launch taskLaunchPrepared
-		var prepareErr error
-		if strings.TrimSpace(spec.ResumeChildSessionID) != "" {
-			launch, prepareErr = s.prepareResumedTaskProgramLaunch(parentSession, launchInput, spec)
-		} else {
-			launch, prepareErr = s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launchInput, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
-		}
+		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launchInput, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
 			return "", prepareErr
 		}
@@ -4269,7 +4109,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		state := pebblestore.TaskProgramStateRunning
 		programRecord, _, err = s.sessions.TransitionTaskProgram(parentSession.ID, parsed.Program.ID, pebblestore.TaskProgramTransition{
 			ExpectedRevision: programRecord.Revision, MutationID: "launch:" + taskCallID, State: &state, NextAction: &nextAction,
-			Jobs: taskProgramRunningTransitions(parsed.Program, prepared, programRecord.ResumeGeneration),
+			Jobs: taskProgramRunningTransitions(parsed.Program, prepared),
 		})
 		if err != nil {
 			return "", err
@@ -4445,12 +4285,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, code)
 			}
 			artifactPrincipal := artifact.Principal{
-				SessionID:      launch.ArtifactRunContext.SessionID,
-				AccountScopeID: parentSession.AccountScopeID,
-				UserID:         parentSession.UserID,
-				TaskCallID:     launch.ArtifactRunContext.TaskCallID,
-				ProgramID:      launch.ArtifactRunContext.ProgramID,
-				ProgramJobID:   launch.ArtifactRunContext.ProgramJobID,
+				SessionID:        launch.ArtifactRunContext.SessionID,
+				AccountScopeID:   parentSession.AccountScopeID,
+				UserID:           parentSession.UserID,
+				TaskCallID:       launch.ArtifactRunContext.TaskCallID,
+				ProgramID:        launch.ArtifactRunContext.ProgramID,
+				ProgramJobID:     launch.ArtifactRunContext.ProgramJobID,
 				ChildSessionID:   launch.ChildSession.ID,
 				IterationGroupID: launch.ArtifactRunContext.IterationGroupID,
 				IterationGroup:   launch.ArtifactRunContext.IterationGroup,
@@ -4673,9 +4513,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		programState := pebblestore.TaskProgramStateRunning
 		nextAction := "integrate_handoff_ready_jobs"
 		if failedCount > 0 {
-			programState, nextAction = pebblestore.TaskProgramStateFailed, "repair_failed_job_then_resume"
+			programState, nextAction = pebblestore.TaskProgramStateFailed, "author_new_program_for_remaining_work"
 		} else if cancelledCount > 0 {
-			programState, nextAction = pebblestore.TaskProgramStateCancelled, "resume_cancelled_program"
+			programState, nextAction = pebblestore.TaskProgramStateCancelled, "author_new_program_for_remaining_work"
 		}
 		programRecord, _, err = s.sessions.TransitionTaskProgram(parentSession.ID, parsed.Program.ID, pebblestore.TaskProgramTransition{
 			ExpectedRevision: programRecord.Revision, MutationID: "outcomes:" + taskCallID, State: &programState, NextAction: &nextAction,

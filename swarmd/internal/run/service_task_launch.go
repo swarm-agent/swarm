@@ -36,23 +36,20 @@ const (
 	taskSwarmMaxAgents             = 256
 	taskProgramActionStart         = "start"
 	taskProgramActionStatus        = "status"
-	taskProgramActionResume        = "resume"
 )
 
 var taskProgramIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 type taskCallArguments struct {
-	Action             string
-	Description        string
-	Prompt             string
-	Mode               string
-	Swarm              *taskSwarmSpec
-	Program            *taskProgramSpec
-	ProgramID          string
-	ExpectedRevision   int
-	ExpectedGeneration int
-	Launches           []taskLaunchSpec
-	SourceArguments    map[string]any
+	Action          string
+	Description     string
+	Prompt          string
+	Mode            string
+	Swarm           *taskSwarmSpec
+	Program         *taskProgramSpec
+	ProgramID       string
+	Launches        []taskLaunchSpec
+	SourceArguments map[string]any
 }
 
 type taskProgramSpec struct {
@@ -125,12 +122,6 @@ type taskLaunchSpec struct {
 	OutputMode            string
 	DependencyEvidence    string
 	StreamKey             string
-	ResumeChildSessionID  string
-	ResumeWorkspacePath   string
-	ResumeWorktreeBranch  string
-	ResumeImmutableBase   string
-	ResumeAttemptNumber   int
-	ResumeReason          string
 	SwarmMode             bool
 	SwarmStrategy         string
 	AssemblyPart          *taskSwarmAssemblyPart
@@ -160,8 +151,6 @@ type taskLaunchManifest struct {
 	TaskMode            string                         `json:"task_mode,omitempty"`
 	Program             *taskProgramSpec               `json:"program,omitempty"`
 	ProgramID           string                         `json:"program_id,omitempty"`
-	ExpectedRevision    int                            `json:"expected_revision,omitempty"`
-	ExpectedGeneration  int                            `json:"expected_generation,omitempty"`
 	ProgramReadyCount   int                            `json:"program_ready_count,omitempty"`
 	SwarmAgentType      string                         `json:"swarm_agent_type,omitempty"`
 	SwarmStrategy       string                         `json:"swarm_strategy,omitempty"`
@@ -311,6 +300,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}
 
 	_, hasProgram := args["program"]
+	programID := strings.TrimSpace(mapString(args, "program_id"))
 	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
 	if hasProgram {
 		switch action {
@@ -321,9 +311,14 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 	} else {
 		switch action {
-		case "", "spawn", "start", "run":
+		case "", "spawn", "run":
 			action = "spawn"
-		case taskProgramActionStatus, taskProgramActionResume:
+		case taskProgramActionStart:
+			if programID != "" {
+				return taskCallArguments{}, errors.New("task program start requires a new program definition; continuing an existing program_id is not supported")
+			}
+			action = "spawn"
+		case taskProgramActionStatus:
 		default:
 			return taskCallArguments{}, fmt.Errorf("task action %q is not supported", action)
 		}
@@ -337,7 +332,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if prompt == "" {
 		prompt = strings.TrimSpace(mapString(args, "message"))
 	}
-	if prompt == "" && action != taskProgramActionStatus && action != taskProgramActionResume {
+	if prompt == "" && action != taskProgramActionStatus {
 		return taskCallArguments{}, fmt.Errorf("task requires prompt")
 	}
 
@@ -354,7 +349,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if mode != taskModeRegular && mode != taskModeSwarm {
 		return taskCallArguments{}, fmt.Errorf("task mode must be %q or %q", taskModeRegular, taskModeSwarm)
 	}
-	if (hasProgram || action == taskProgramActionStatus || action == taskProgramActionResume) && mode != taskModeRegular {
+	if (hasProgram || action == taskProgramActionStatus) && mode != taskModeRegular {
 		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
 	}
 
@@ -423,23 +418,18 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			Program: program, ProgramID: program.ID, Launches: launches, SourceArguments: args,
 		}, nil
 	}
-	if action == taskProgramActionStatus || action == taskProgramActionResume {
-		programID := strings.TrimSpace(mapString(args, "program_id"))
+	if action == taskProgramActionStatus {
 		if !taskProgramIDPattern.MatchString(programID) {
 			return taskCallArguments{}, errors.New("task program_id must match ^[a-z][a-z0-9_-]{0,63}$")
 		}
-		revision, err := taskOptionalNonNegativeInt(args, "expected_revision")
-		if err != nil {
-			return taskCallArguments{}, err
+		for key := range args {
+			switch key {
+			case "action", "description", "prompt", "message", "mode", "program_id":
+			default:
+				return taskCallArguments{}, fmt.Errorf("task program status contains unsupported field %q", key)
+			}
 		}
-		generation, err := taskOptionalNonNegativeInt(args, "expected_generation")
-		if err != nil {
-			return taskCallArguments{}, err
-		}
-		if action == taskProgramActionResume && (revision < 1 || generation < 1) {
-			return taskCallArguments{}, errors.New("task program resume requires positive expected_revision and expected_generation guards")
-		}
-		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, ProgramID: programID, ExpectedRevision: revision, ExpectedGeneration: generation, SourceArguments: args}, nil
+		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, ProgramID: programID, SourceArguments: args}, nil
 	}
 
 	if mode == taskModeSwarm {
@@ -740,18 +730,6 @@ func taskRequiredPositiveIntValue(value any, label string) (int, error) {
 	number, ok := value.(float64)
 	if !ok || number != math.Trunc(number) || number < 1 || number > math.MaxInt {
 		return 0, fmt.Errorf("%s must be a positive integer", label)
-	}
-	return int(number), nil
-}
-
-func taskOptionalNonNegativeInt(args map[string]any, key string) (int, error) {
-	value, exists := args[key]
-	if !exists {
-		return 0, nil
-	}
-	number, ok := value.(float64)
-	if !ok || number != math.Trunc(number) || number < 0 || number > math.MaxInt {
-		return 0, fmt.Errorf("task %s must be a non-negative integer", key)
 	}
 	return int(number), nil
 }
@@ -2628,11 +2606,11 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
 		return taskLaunchManifest{}, err
 	}
-	if parsed.Action == taskProgramActionStatus || parsed.Action == taskProgramActionResume {
+	if parsed.Action == taskProgramActionStatus {
 		manifest := taskLaunchManifest{
 			PathID: taskLaunchPermissionPathID, Goal: "task program " + parsed.Action, Description: parsed.Description,
 			Action: parsed.Action, ParentMode: sessionruntime.NormalizeMode(sessionMode), TaskMode: parsed.Mode,
-			ProgramID: parsed.ProgramID, ExpectedRevision: parsed.ExpectedRevision, ExpectedGeneration: parsed.ExpectedGeneration,
+			ProgramID:       parsed.ProgramID,
 			SourceArguments: parsed.SourceArguments,
 		}
 		digest, digestErr := taskLaunchManifestDigest(manifest)

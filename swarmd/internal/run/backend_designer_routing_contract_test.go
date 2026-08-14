@@ -82,7 +82,7 @@ func TestBackendDesignerWorkspaceModeRejectsImplicitOrOverlappingRepositoryTarge
 	}
 }
 
-func TestBackendTaskProgramPartialFailurePreservesCompletedSiblingForGuardedResume(t *testing.T) {
+func TestBackendTaskProgramPartialFailurePreservesContextForNewProgram(t *testing.T) {
 	spec := &taskProgramSpec{ID: "artifact_program", Jobs: []taskProgramJob{
 		{ID: "ready", StageID: "variants", RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged},
 		{ID: "failed", StageID: "variants", RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged},
@@ -92,23 +92,8 @@ func TestBackendTaskProgramPartialFailurePreservesCompletedSiblingForGuardedResu
 		{ChildSessionID: "child-failed", Phase: "failed", Reason: "render failed"},
 	}
 	updates := taskProgramOutcomeTransitions(spec, outcomes, []error{nil, errContractRenderFailed{}})
-	if len(updates) != 2 || updates[0].State != pebblestore.TaskProgramJobCompleted || updates[0].IntegrationState != "artifact_ready" || updates[1].State != pebblestore.TaskProgramJobFailed || updates[1].Blocker == nil {
+	if len(updates) != 2 || updates[0].State != pebblestore.TaskProgramJobCompleted || updates[0].IntegrationState != "artifact_ready" || updates[1].State != pebblestore.TaskProgramJobFailed || updates[1].Blocker == nil || updates[1].Blocker.NextAction != "author_new_program_for_remaining_work" {
 		t.Fatalf("partial failure transitions = %#v", updates)
-	}
-
-	prior := pebblestore.TaskProgramRecord{Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{
-		{ID: "ready", StageID: "variants", AgentType: "designer", OutputMode: taskOutputModeManaged},
-		{ID: "failed", StageID: "variants", AgentType: "designer", OutputMode: taskOutputModeManaged},
-	}}, Jobs: []pebblestore.TaskProgramJobRecord{
-		{JobID: "ready", StageID: "variants", State: pebblestore.TaskProgramJobCompleted, ChildSessionID: "child-ready", IntegrationState: "artifact_ready"},
-		{JobID: "failed", StageID: "variants", State: pebblestore.TaskProgramJobFailed, ChildSessionID: "child-failed", AttemptNumber: 1, Blocker: &pebblestore.TaskProgramBlocker{Message: "render failed"}},
-	}}
-	prepared := prior
-	prepared.Jobs = append([]pebblestore.TaskProgramJobRecord(nil), prior.Jobs...)
-	prepared.Jobs[1].State = pebblestore.TaskProgramJobDeclared
-	launches := taskProgramResumeLaunches(prepared, prior, spec)
-	if launches[0].ResumeChildSessionID != "" || launches[1].ResumeChildSessionID != "child-failed" || launches[1].ResumeReason != "render failed" {
-		t.Fatalf("guarded partial resume launches = %#v", launches)
 	}
 }
 

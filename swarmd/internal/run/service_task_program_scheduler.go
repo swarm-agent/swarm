@@ -206,7 +206,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	running := make([]pebblestore.TaskProgramJobTransition, 0, len(indexes))
 	for _, index := range indexes {
 		job := p.record.Jobs[index]
-		running = append(running, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1, ResumeGeneration: p.record.ResumeGeneration})
+		running = append(running, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1})
 	}
 	state, next := pebblestore.TaskProgramStateRunning, "await_running_jobs"
 	var err error
@@ -216,8 +216,8 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	}
 	p.emitProgramProgress("cohort.running", fmt.Sprintf("Stage %s is running", p.record.ActiveStageID))
 	cohort := p.parsed
-	// A resumed cohort uses the ordinary launch executor after the outer lifecycle
-	// action has already reconciled and guarded the durable program record.
+	// Each cohort uses the ordinary launch executor after this new program's
+	// scheduler selects its dependency-ready declared jobs.
 	cohort.Action = "spawn"
 	cohort.Launches = make([]taskLaunchSpec, 0, len(indexes))
 	jobs := make([]taskProgramJob, 0, len(indexes))
@@ -298,7 +298,9 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	state, next = pebblestore.TaskProgramStateRunning, "launch_ready_jobs"
 	var blocker *pebblestore.TaskProgramBlocker
 	if runErr != nil {
-		state, next = pebblestore.TaskProgramStateBlocked, "repair_failed_child_then_resume"
+		blockerCode := taskProgramErrorCode(runErr)
+		_, next = taskProgramBlockerActions(blockerCode)
+		state = pebblestore.TaskProgramStateBlocked
 		failedJobID := ""
 		for _, update := range updates {
 			if update.State == pebblestore.TaskProgramJobFailed || update.State == pebblestore.TaskProgramJobCancelled || update.State == pebblestore.TaskProgramJobBlocked {
@@ -325,7 +327,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		}
 		originalRecord := p.record
 		p.record = blockerRecord
-		value := p.structuredBlocker(taskProgramErrorCode(runErr), runErr, next, failedJobID)
+		value := p.structuredBlocker(blockerCode, runErr, next, failedJobID)
 		p.record = originalRecord
 		blocker = &value
 	}
@@ -622,8 +624,10 @@ func (p *taskProgramScheduler) finishProgramError(runErr error) (string, error) 
 }
 
 func (p *taskProgramScheduler) finishBlocked(blockErr error) (string, error) {
-	state, next := pebblestore.TaskProgramStateBlocked, "repair_integration_then_resume"
-	blocker := p.structuredBlocker(taskProgramErrorCode(blockErr), blockErr, next, p.barrierJobID)
+	blockerCode := taskProgramErrorCode(blockErr)
+	_, next := taskProgramBlockerActions(blockerCode)
+	state := pebblestore.TaskProgramStateBlocked
+	blocker := p.structuredBlocker(blockerCode, blockErr, next, p.barrierJobID)
 	record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("blocked:%d", p.record.Revision), State: &state, NextAction: &next, Blocker: &blocker})
 	if err != nil {
 		return "", err
@@ -656,8 +660,19 @@ func taskProgramErrorCode(err error) string {
 	}
 }
 
+func taskProgramBlockerActions(code string) (repairAction, nextAction string) {
+	if code == "integration_conflict" {
+		return "resolve_integration_conflict", "resolve_integration_conflict_then_author_new_program_for_remaining_work"
+	}
+	return "author_new_program_for_remaining_work", "author_new_program_for_remaining_work"
+}
+
 func (p *taskProgramScheduler) structuredBlocker(code string, cause error, nextAction, jobID string) pebblestore.TaskProgramBlocker {
-	blocker := pebblestore.TaskProgramBlocker{Code: code, Message: cause.Error(), NextAction: nextAction, RepairAction: nextAction, ProgramID: p.record.ProgramID, ProgramRevision: p.record.Revision + 1, ResumeGeneration: p.record.ResumeGeneration, StageID: p.record.ActiveStageID, JobID: jobID, ExpectedParentHead: firstNonEmptyString(p.expectedParentHead, p.record.ParentHead)}
+	repairAction, requiredNextAction := taskProgramBlockerActions(code)
+	if code == "integration_conflict" || strings.TrimSpace(nextAction) == "" {
+		nextAction = requiredNextAction
+	}
+	blocker := pebblestore.TaskProgramBlocker{Code: code, Message: cause.Error(), NextAction: nextAction, RepairAction: repairAction, ProgramID: p.record.ProgramID, ProgramRevision: p.record.Revision + 1, StageID: p.record.ActiveStageID, JobID: jobID, ExpectedParentHead: firstNonEmptyString(p.expectedParentHead, p.record.ParentHead)}
 	for _, job := range p.record.Jobs {
 		if firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID) == "" && job.WorkspacePath == "" && job.ChildHead == "" {
 			continue
@@ -666,10 +681,6 @@ func (p *taskProgramScheduler) structuredBlocker(code string, cause error, nextA
 	}
 	if index := taskProgramJobIndex(p.record, jobID); index >= 0 {
 		blocker.AttemptNumber = p.record.Jobs[index].AttemptNumber
-	}
-	if code == "planning_required" {
-		blocker.RepairAction = "submit_a_new_declared_program_revision"
-		blocker.NextAction = "planning_required"
 	}
 	return blocker
 }

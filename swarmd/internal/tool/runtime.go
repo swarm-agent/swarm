@@ -1279,14 +1279,12 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"action": map[string]any{
 						"type":        "string",
-						"description": "Optional action. Supported: spawn (default); Task Programs use start, status, or revision-guarded resume.",
+						"description": "Optional action. Supported: spawn (default); Task Programs use start or status. Start always requires a complete new program definition.",
 					},
-					"mode":                map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count."},
-					"program_id":          map[string]any{"type": "string", "description": "Stable program ID for status or resume. Start carries the same ID inside program.id."},
-					"expected_revision":   map[string]any{"type": "integer", "minimum": 1, "description": "Required stored program revision guard for resume."},
-					"expected_generation": map[string]any{"type": "integer", "minimum": 1, "description": "Required stored blocker/resume generation guard for resume."},
-					"program":             taskProgramToolSchema(),
-					"swarm_mode":          map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
+					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count."},
+					"program_id": map[string]any{"type": "string", "description": "Stable program ID for status. A new start carries a new ID inside program.id; existing IDs cannot be continued."},
+					"program":    taskProgramToolSchema(),
+					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
 					"agent_type":           map[string]any{"type": "string", "enum": []string{"coder", "designer", "idea"}, "description": "Required for mode=swarm. Idea is tool-free and available only in swarm mode."},
 					"count":                map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},

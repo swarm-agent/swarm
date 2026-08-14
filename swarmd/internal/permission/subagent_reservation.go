@@ -178,57 +178,6 @@ func (s *Service) UpdateSubagentProgramCohort(sessionID, runID, callID string, a
 	return s.store.UpdateSubagentProgramActiveCount(strings.TrimSpace(sessionID), strings.TrimSpace(runID), strings.TrimSpace(callID), activeCount, "approved")
 }
 
-// ResumeSubagentProgramCapacity rechecks the current account policy and active
-// reservations without consuming another parent launch-wave allowance. The
-// returned count is the only capacity the resumed scheduler may use.
-func (s *Service) ResumeSubagentProgramCapacity(accountScopeID, sessionID, runID, callID string, readyCount int) (pebblestore.SubagentWaveReservation, error) {
-	if s == nil || s.store == nil {
-		return pebblestore.SubagentWaveReservation{}, errors.New("permission service is not configured")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sessionID, runID, callID = strings.TrimSpace(sessionID), strings.TrimSpace(runID), strings.TrimSpace(callID)
-	record, ok, err := s.store.GetSubagentWaveReservation(sessionID, runID, callID)
-	if err != nil {
-		return pebblestore.SubagentWaveReservation{}, err
-	}
-	if !ok || !record.Program {
-		return pebblestore.SubagentWaveReservation{}, errors.New("subagent program reservation not found")
-	}
-	if readyCount < 1 || readyCount > record.LaunchCount {
-		return pebblestore.SubagentWaveReservation{}, errors.New("resumed task program ready count is invalid")
-	}
-	state, err := s.refreshPermissionStatePolicyLocked(strings.TrimSpace(accountScopeID))
-	if err != nil {
-		return pebblestore.SubagentWaveReservation{}, err
-	}
-	policy := NormalizePolicy(state.Policy).Subagents
-	if policy.Mode == SubagentModeDirect {
-		return pebblestore.SubagentWaveReservation{}, errors.New("current account policy denies task delegation")
-	}
-	reservations, err := s.store.ListSubagentWaveReservations(sessionID, runID)
-	if err != nil {
-		return pebblestore.SubagentWaveReservation{}, err
-	}
-	activeChildren := 0
-	for _, candidate := range reservations {
-		if candidate.CallID != callID && !candidate.SwarmMode && candidate.Status != "denied" {
-			activeChildren += candidate.ActiveCount
-		}
-	}
-	activeCount := readyCount
-	if remaining := policy.ActiveChildLimit - activeChildren; activeCount > remaining {
-		activeCount = remaining
-	}
-	if record.MaxConcurrency > 0 && activeCount > record.MaxConcurrency {
-		activeCount = record.MaxConcurrency
-	}
-	if activeCount < 1 {
-		return pebblestore.SubagentWaveReservation{}, errors.New("current account capacity has no slot for the resumed task program")
-	}
-	return s.store.UpdateSubagentProgramActiveCount(sessionID, runID, callID, activeCount, "approved")
-}
-
 func (s *Service) FinishSubagentWave(sessionID, runID, callID, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

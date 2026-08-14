@@ -39,25 +39,22 @@ const (
 // declared program. It deliberately stores no child transcript, report, or
 // artifact content; those remain authoritative in their native stores.
 type TaskProgramRecord struct {
-	ParentSessionID      string                 `json:"parent_session_id"`
-	ProgramID            string                 `json:"program_id"`
-	DefinitionHash       string                 `json:"definition_hash"`
-	ReservationRunID     string                 `json:"reservation_run_id,omitempty"`
-	ReservationCallID    string                 `json:"reservation_call_id,omitempty"`
-	Definition           TaskProgramDefinition  `json:"definition"`
-	Revision             int                    `json:"revision"`
-	ResumeGeneration     int                    `json:"resume_generation"`
-	ActiveStageID        string                 `json:"active_stage_id,omitempty"`
-	ParentHead           string                 `json:"parent_head,omitempty"`
-	State                string                 `json:"state"`
-	NextAction           string                 `json:"next_action"`
-	LastMutationID       string                 `json:"last_mutation_id,omitempty"`
-	LastResumeRevision   int                    `json:"last_resume_revision,omitempty"`
-	LastResumeGeneration int                    `json:"last_resume_generation,omitempty"`
-	Blocker              *TaskProgramBlocker    `json:"blocker,omitempty"`
-	Jobs                 []TaskProgramJobRecord `json:"jobs"`
-	CreatedAt            int64                  `json:"created_at"`
-	UpdatedAt            int64                  `json:"updated_at"`
+	ParentSessionID   string                 `json:"parent_session_id"`
+	ProgramID         string                 `json:"program_id"`
+	DefinitionHash    string                 `json:"definition_hash"`
+	ReservationRunID  string                 `json:"reservation_run_id,omitempty"`
+	ReservationCallID string                 `json:"reservation_call_id,omitempty"`
+	Definition        TaskProgramDefinition  `json:"definition"`
+	Revision          int                    `json:"revision"`
+	ActiveStageID     string                 `json:"active_stage_id,omitempty"`
+	ParentHead        string                 `json:"parent_head,omitempty"`
+	State             string                 `json:"state"`
+	NextAction        string                 `json:"next_action"`
+	LastMutationID    string                 `json:"last_mutation_id,omitempty"`
+	Blocker           *TaskProgramBlocker    `json:"blocker,omitempty"`
+	Jobs              []TaskProgramJobRecord `json:"jobs"`
+	CreatedAt         int64                  `json:"created_at"`
+	UpdatedAt         int64                  `json:"updated_at"`
 }
 
 type TaskProgramDefinition struct {
@@ -91,7 +88,6 @@ type TaskProgramJobRecord struct {
 	StageID            string                     `json:"stage_id"`
 	State              string                     `json:"state"`
 	AttemptNumber      int                        `json:"attempt_number"`
-	ResumeGeneration   int                        `json:"resume_generation"`
 	ChildSessionID     string                     `json:"child_session_id,omitempty"`
 	CurrentSessionID   string                     `json:"current_session_id,omitempty"`
 	CurrentGeneration  int                        `json:"current_generation,omitempty"`
@@ -124,7 +120,6 @@ type TaskProgramBlocker struct {
 	RepairAction       string                      `json:"repair_action,omitempty"`
 	ProgramID          string                      `json:"program_id,omitempty"`
 	ProgramRevision    int                         `json:"program_revision,omitempty"`
-	ResumeGeneration   int                         `json:"resume_generation,omitempty"`
 	StageID            string                      `json:"stage_id,omitempty"`
 	JobID              string                      `json:"job_id,omitempty"`
 	AttemptNumber      int                         `json:"attempt_number,omitempty"`
@@ -146,18 +141,15 @@ type TaskProgramPreservedChild struct {
 }
 
 type TaskProgramTransition struct {
-	ExpectedRevision          int
-	MutationID                string
-	State                     *string
-	ActiveStageID             *string
-	NextAction                *string
-	ParentHead                *string
-	Blocker                   *TaskProgramBlocker
-	ClearBlocker              bool
-	Jobs                      []TaskProgramJobTransition
-	IncrementResumeGeneration bool
-	ResumeFromRevision        int
-	ResumeFromGeneration      int
+	ExpectedRevision int
+	MutationID       string
+	State            *string
+	ActiveStageID    *string
+	NextAction       *string
+	ParentHead       *string
+	Blocker          *TaskProgramBlocker
+	ClearBlocker     bool
+	Jobs             []TaskProgramJobTransition
 }
 
 type TaskProgramJobTransition struct {
@@ -165,7 +157,6 @@ type TaskProgramJobTransition struct {
 	ExpectedState      string
 	State              string
 	AttemptNumber      int
-	ResumeGeneration   int
 	ChildSessionID     string
 	CurrentSessionID   string
 	CurrentGeneration  int
@@ -238,16 +229,12 @@ func (s *SessionStore) CreateTaskProgram(record TaskProgramRecord) (TaskProgramR
 	}
 	now := time.Now().UnixMilli()
 	record.Revision = 1
-	record.ResumeGeneration = maxTaskProgramInt(record.ResumeGeneration, 1)
 	if record.State == "" {
 		record.State = TaskProgramStateDeclared
 	}
 	for i := range record.Jobs {
 		if record.Jobs[i].State == "" {
 			record.Jobs[i].State = TaskProgramJobDeclared
-		}
-		if record.Jobs[i].ResumeGeneration == 0 {
-			record.Jobs[i].ResumeGeneration = record.ResumeGeneration
 		}
 		record.Jobs[i].UpdatedAt = now
 	}
@@ -302,11 +289,6 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 		blocker := normalizedTaskProgramBlocker(*transition.Blocker)
 		record.Blocker = &blocker
 	}
-	if transition.IncrementResumeGeneration {
-		record.LastResumeRevision = transition.ResumeFromRevision
-		record.LastResumeGeneration = transition.ResumeFromGeneration
-		record.ResumeGeneration++
-	}
 	jobIndexes := make(map[string]int, len(record.Jobs))
 	for i := range record.Jobs {
 		jobIndexes[record.Jobs[i].JobID] = i
@@ -342,9 +324,6 @@ func applyTaskProgramJobTransition(job *TaskProgramJobRecord, update TaskProgram
 	}
 	if update.AttemptNumber > 0 {
 		job.AttemptNumber = update.AttemptNumber
-	}
-	if update.ResumeGeneration > 0 {
-		job.ResumeGeneration = update.ResumeGeneration
 	}
 	if value := strings.TrimSpace(update.ChildSessionID); value != "" {
 		job.ChildSessionID = value
@@ -394,8 +373,8 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 	if len(record.Jobs) != len(record.Definition.Jobs) {
 		return errors.New("task program job projection does not match definition")
 	}
-	if record.Revision < 0 || record.ResumeGeneration < 0 {
-		return errors.New("task program revision or generation is invalid")
+	if record.Revision < 0 {
+		return errors.New("task program revision is invalid")
 	}
 	if len([]rune(record.NextAction)) > maxTaskProgramTextRunes {
 		return errors.New("task program next action exceeds bounded storage limit")

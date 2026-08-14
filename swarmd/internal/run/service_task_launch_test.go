@@ -261,9 +261,9 @@ func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) 
 	if left.ProgramID != "program-1" || left.ProgramJobID != "job-1" || left.TaskCallID != "call-1" || right.ProgramJobID != "job-2" {
 		t.Fatalf("managed lineage missing: %#v", left)
 	}
-	resume := managedDesignerArtifactContext(parent, "call-resume", first, 1)
-	if resume == nil || resume.CollectionID != left.CollectionID || resume.VariantID != left.VariantID || resume.IterationID != left.IterationID {
-		t.Fatalf("program routing changed across resume call: first=%#v resume=%#v", left, resume)
+	laterCohort := managedDesignerArtifactContext(parent, "call-later-cohort", first, 1)
+	if laterCohort == nil || laterCohort.CollectionID != left.CollectionID || laterCohort.VariantID != left.VariantID || laterCohort.IterationID != left.IterationID {
+		t.Fatalf("program routing changed across cohort calls: first=%#v later=%#v", left, laterCohort)
 	}
 	if got := managedDesignerArtifactContext(parent, "call-1", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SourceArguments: map[string]any{"program_id": "program-1"}}, 1); got != nil {
 		t.Fatalf("program route without trusted job id = %#v", got)
@@ -300,8 +300,8 @@ func TestManagedDesignerCollectionIsAllocatedBeforeLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocate program collection: %v", err)
 	}
-	if resumed, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-program-2", programSpecs, nil); err != nil || resumed != programCollection {
-		t.Fatalf("program collection changed across resume: first=%q resumed=%q err=%v", programCollection, resumed, err)
+	if laterCohort, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-program-2", programSpecs, nil); err != nil || laterCohort != programCollection {
+		t.Fatalf("program collection changed across cohorts: first=%q later=%q err=%v", programCollection, laterCohort, err)
 	}
 	mixed := append(append([]taskLaunchSpec(nil), programSpecs...), taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged})
 	if _, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-mixed", mixed, nil); err == nil || !strings.Contains(err.Error(), "cannot mix") {
@@ -360,22 +360,6 @@ func TestManagedDesignerPreparedChildUsesParentArtifactTargetWithoutWorktree(t *
 	}
 	if launch.ArtifactRunContext == nil || launch.ArtifactRunContext.ChildSessionID != launch.ChildSession.ID || artifactContext.ChildSessionID != "" {
 		t.Fatalf("managed child lineage = launch %#v input %#v, child=%q", launch.ArtifactRunContext, artifactContext, launch.ChildSession.ID)
-	}
-	resumeContext := managedDesignerArtifactContext(parent, "call-resume", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SourceArguments: map[string]any{"program_id": "program-1", "program_job_id": "job-1"}}, 1)
-	launch.ChildSession.Metadata["managed_artifact_program_id"] = "program-1"
-	launch.ChildSession.Metadata["managed_artifact_program_job_id"] = "job-1"
-	launch.ChildSession.Metadata["managed_artifact_collection_id"] = resumeContext.CollectionID
-	launch.ChildSession.Metadata["managed_artifact_variant_id"] = resumeContext.VariantID
-	launch.ChildSession.Metadata["managed_artifact_task_call_id"] = "call-original"
-	if _, _, err := svc.sessions.UpdateMetadata(launch.ChildSession.ID, launch.ChildSession.Metadata); err != nil {
-		t.Fatalf("persist resume metadata: %v", err)
-	}
-	resumed, err := svc.prepareResumedTaskProgramLaunch(parent, taskLaunchPrepared{RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, ArtifactRunContext: resumeContext}, taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, ResumeChildSessionID: launch.ChildSession.ID})
-	if err != nil {
-		t.Fatalf("resume managed Designer: %v", err)
-	}
-	if resumed.ArtifactRunContext == nil || resumed.ArtifactRunContext.TaskCallID != "call-original" || resumed.ArtifactRunContext.ChildSessionID != launch.ChildSession.ID {
-		t.Fatalf("resumed managed lineage = %#v", resumed.ArtifactRunContext)
 	}
 }
 
