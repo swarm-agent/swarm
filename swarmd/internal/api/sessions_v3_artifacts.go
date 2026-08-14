@@ -82,34 +82,34 @@ type sessionsV3ResolvedArtifact struct {
 }
 
 type sessionsV3ArtifactCatalogItem struct {
-	ArtifactID      string                                `json:"artifact_id"`
-	CollectionID    string                                `json:"collection_id,omitempty"`
-	SessionID       string                                `json:"session_id"`
-	SessionTitle    string                                `json:"session_title"`
-	WorkspacePath   string                                `json:"workspace_path,omitempty"`
-	WorkspaceName   string                                `json:"workspace_name,omitempty"`
-	PlanID          string                                `json:"plan_id,omitempty"`
-	PlanTitle       string                                `json:"plan_title,omitempty"`
-	CheckpointID    string                                `json:"checkpoint_id,omitempty"`
-	CheckpointTitle string                                `json:"checkpoint_title,omitempty"`
-	Label           string                                `json:"label"`
-	Description     string                                `json:"description"`
-	CollectionName  string                                `json:"collection_name,omitempty"`
-	CollectionDescription string                          `json:"collection_description,omitempty"`
-	Filename        string                                `json:"filename"`
-	MediaType       string                                `json:"media_type"`
-	Kind            string                                `json:"kind"`
-	Status          string                                `json:"status,omitempty"`
-	FailureCode     string                                `json:"failure_code,omitempty"`
-	Previewable     bool                                  `json:"previewable"`
-	Selected        bool                                  `json:"selected,omitempty"`
-	Category        string                                `json:"category"`
-	UpdatedAt       int64                                 `json:"updated_at"`
-	EventSeq        uint64                                `json:"event_seq,omitempty"`
-	Progress        *sessionsV3ArtifactCollectionProgress `json:"progress,omitempty"`
-	Lineage         *pebblestore.SessionArtifactLineage   `json:"lineage,omitempty"`
-	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	Content         string                                `json:"content,omitempty"`
+	ArtifactID            string                                         `json:"artifact_id"`
+	CollectionID          string                                         `json:"collection_id,omitempty"`
+	SessionID             string                                         `json:"session_id"`
+	SessionTitle          string                                         `json:"session_title"`
+	WorkspacePath         string                                         `json:"workspace_path,omitempty"`
+	WorkspaceName         string                                         `json:"workspace_name,omitempty"`
+	PlanID                string                                         `json:"plan_id,omitempty"`
+	PlanTitle             string                                         `json:"plan_title,omitempty"`
+	CheckpointID          string                                         `json:"checkpoint_id,omitempty"`
+	CheckpointTitle       string                                         `json:"checkpoint_title,omitempty"`
+	Label                 string                                         `json:"label"`
+	Description           string                                         `json:"description"`
+	CollectionName        string                                         `json:"collection_name,omitempty"`
+	CollectionDescription string                                         `json:"collection_description,omitempty"`
+	Filename              string                                         `json:"filename"`
+	MediaType             string                                         `json:"media_type"`
+	Kind                  string                                         `json:"kind"`
+	Status                string                                         `json:"status,omitempty"`
+	FailureCode           string                                         `json:"failure_code,omitempty"`
+	Previewable           bool                                           `json:"previewable"`
+	Selected              bool                                           `json:"selected,omitempty"`
+	Category              string                                         `json:"category"`
+	UpdatedAt             int64                                          `json:"updated_at"`
+	EventSeq              uint64                                         `json:"event_seq,omitempty"`
+	Progress              *sessionsV3ArtifactCollectionProgress          `json:"progress,omitempty"`
+	Lineage               *pebblestore.SessionArtifactLineage            `json:"lineage,omitempty"`
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	Content               string                                         `json:"content,omitempty"`
 }
 
 func cloneSessionsV3ArtifactOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {

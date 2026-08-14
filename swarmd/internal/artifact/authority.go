@@ -139,7 +139,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 				readyRequirementsCompatible = true
 			}
 			if !lineageCompatible || !readyRequirementsCompatible || !presentationCompatible {
-				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible lineage, requirements, or presentation", variant.ID)
+				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible metadata, lineage, requirements, or presentation", variant.ID)
 			}
 			return existing, nil
 		}
@@ -151,7 +151,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 			requirementsCompatible = true
 		}
 		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !lineageCompatible || !requirementsCompatible || !presentationCompatible {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, lineage, requirements, or presentation", variant.ID)
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, or lineage, or with incompatible requirements or presentation", variant.ID)
 		}
 		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)
 		if collectionErr != nil {

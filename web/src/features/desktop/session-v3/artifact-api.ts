@@ -148,7 +148,7 @@ export function normalizeDesktopV3ArtifactOutputRequirements(value: unknown): De
   const orientation = artifactCatalogString(record.orientation)
   const resolutionSource = artifactCatalogString(record.resolution_source)
   const registryVersion = artifactCatalogString(record.registry_version)
-  if (!presetId || !width || !height || !resolutionSource || !registryVersion) return null
+  if (!width || !height || !resolutionSource || !registryVersion) return null
   if (orientation !== 'landscape' && orientation !== 'portrait' && orientation !== 'square') return null
   const expectedOrientation: DesktopV3ArtifactOutputOrientation = width === height ? 'square' : width > height ? 'landscape' : 'portrait'
   if (orientation !== expectedOrientation) return null
@@ -170,7 +170,7 @@ function artifactOutputPresetLabel(presetId: string): string {
 export function formatDesktopV3ArtifactOutputRequirements(requirements?: DesktopV3ArtifactOutputRequirements | null): string {
   if (!requirements) return ''
   const preset = artifactOutputPresetLabel(requirements.presetId)
-  return `${preset} · ${requirements.width} × ${requirements.height} · ${requirements.aspectRatio}`
+  return [preset, `${requirements.width} × ${requirements.height}`, requirements.aspectRatio].filter(Boolean).join(' · ')
 }
 
 function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | null {

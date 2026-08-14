@@ -524,7 +524,7 @@ func TestArtifactFinalizationPreservesOutputRequirements(t *testing.T) {
 		ClientRequestID: "artifact-requirements-create", PayloadHash: "artifact-requirements-create", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{
 			Collection: SessionArtifactCollection{ID: "collection", Name: "Header"},
-			Variant: &SessionArtifactVariant{ID: "variant", OutputRequirements: requirements, Presentation: SessionArtifactPresentation{Width: 1500, Height: 500}},
+			Variant:    &SessionArtifactVariant{ID: "variant", OutputRequirements: requirements, Presentation: SessionArtifactPresentation{Width: 1500, Height: 500}},
 		},
 	})
 	if err != nil {
@@ -538,7 +538,7 @@ func TestArtifactFinalizationPreservesOutputRequirements(t *testing.T) {
 		ClientRequestID: "artifact-requirements-finalize", PayloadHash: "artifact-requirements-finalize", Kind: V3SessionMutationFinalizeArtifact,
 		Artifact: &V3ArtifactMutation{
 			Collection: SessionArtifactCollection{ID: "collection"},
-			Variant: &SessionArtifactVariant{ID: "variant", Filename: "header.svg", MediaType: "image/svg+xml", DigestSHA256: strings.Repeat("a", 64), Size: 1},
+			Variant:    &SessionArtifactVariant{ID: "variant", Filename: "header.svg", MediaType: "image/svg+xml", DigestSHA256: strings.Repeat("a", 64), Size: 1},
 		},
 	})
 	if err != nil {

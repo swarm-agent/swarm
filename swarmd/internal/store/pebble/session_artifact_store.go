@@ -66,33 +66,33 @@ type SessionArtifactPresentation struct {
 // SessionArtifactOutputRequirements is the immutable resolved target supplied by
 // trusted orchestration. It is distinct from model-authored Presentation hints.
 type SessionArtifactOutputRequirements struct {
-	PresetID        string `json:"preset_id,omitempty"`
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	AspectRatio     string `json:"aspect_ratio"`
-	Orientation     string `json:"orientation"`
+	PresetID         string `json:"preset_id,omitempty"`
+	Width            int    `json:"width"`
+	Height           int    `json:"height"`
+	AspectRatio      string `json:"aspect_ratio"`
+	Orientation      string `json:"orientation"`
 	ResolutionSource string `json:"resolution_source"`
-	RegistryVersion string `json:"registry_version"`
+	RegistryVersion  string `json:"registry_version"`
 }
 
 type SessionArtifactVariant struct {
-	Version        int                         `json:"version"`
-	ID             string                      `json:"id"`
-	CollectionID   string                      `json:"collection_id"`
-	AccountScopeID string                      `json:"account_scope_id"`
-	SessionID      string                      `json:"session_id"`
-	Status         string                      `json:"status"`
-	Filename       string                      `json:"filename,omitempty"`
-	MediaType      string                      `json:"media_type,omitempty"`
-	DigestSHA256   string                      `json:"digest_sha256,omitempty"`
-	Size           int64                       `json:"size,omitempty"`
-	FailureCode    string                      `json:"failure_code,omitempty"`
-	Lineage        SessionArtifactLineage      `json:"lineage,omitempty"`
-	Presentation   SessionArtifactPresentation `json:"presentation,omitempty"`
+	Version            int                                `json:"version"`
+	ID                 string                             `json:"id"`
+	CollectionID       string                             `json:"collection_id"`
+	AccountScopeID     string                             `json:"account_scope_id"`
+	SessionID          string                             `json:"session_id"`
+	Status             string                             `json:"status"`
+	Filename           string                             `json:"filename,omitempty"`
+	MediaType          string                             `json:"media_type,omitempty"`
+	DigestSHA256       string                             `json:"digest_sha256,omitempty"`
+	Size               int64                              `json:"size,omitempty"`
+	FailureCode        string                             `json:"failure_code,omitempty"`
+	Lineage            SessionArtifactLineage             `json:"lineage,omitempty"`
+	Presentation       SessionArtifactPresentation        `json:"presentation,omitempty"`
 	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	CreatedAt      int64                       `json:"created_at"`
-	UpdatedAt      int64                       `json:"updated_at"`
-	EventSeq       uint64                      `json:"event_seq"`
+	CreatedAt          int64                              `json:"created_at"`
+	UpdatedAt          int64                              `json:"updated_at"`
+	EventSeq           uint64                             `json:"event_seq"`
 }
 
 type SessionArtifactCollection struct {

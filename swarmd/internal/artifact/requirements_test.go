@@ -29,7 +29,9 @@ func TestResolveOutputRequirementsAliasesAndPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.ResolutionSource != "dimensions" || resolved.PresetID != "x_video_landscape" { t.Fatalf("precedence = %#v", resolved) }
+	if resolved.ResolutionSource != "dimensions" || resolved.PresetID != "x_video_landscape" {
+		t.Fatalf("precedence = %#v", resolved)
+	}
 }
 
 func TestResolveOutputRequirementsValidation(t *testing.T) {

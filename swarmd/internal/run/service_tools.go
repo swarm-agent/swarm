@@ -521,12 +521,12 @@ func (s *Service) cancelledTaskLaunchReason(childSessionID string, runErr error)
 }
 
 type taskArtifactReference struct {
-	SessionID          string                                              `json:"session_id"`
-	CollectionID       string                                              `json:"collection_id"`
-	VariantID          string                                              `json:"variant_id"`
-	Status             string                                              `json:"status"`
-	FailureCode        string                                              `json:"failure_code,omitempty"`
-	OutputRequirements *pebblestore.SessionArtifactOutputRequirements      `json:"output_requirements,omitempty"`
+	SessionID          string                                         `json:"session_id"`
+	CollectionID       string                                         `json:"collection_id"`
+	VariantID          string                                         `json:"variant_id"`
+	Status             string                                         `json:"status"`
+	FailureCode        string                                         `json:"failure_code,omitempty"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 }
 
 type taskReportRef struct {

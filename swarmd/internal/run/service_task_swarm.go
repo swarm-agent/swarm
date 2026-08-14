@@ -41,14 +41,14 @@ type taskSwarmHydrationItem struct {
 }
 
 type taskSwarmHydrationRequest struct {
-	Prompt              string                   `json:"prompt"`
-	AgentType           string                   `json:"agent_type"`
-	SwarmStrategy       string                   `json:"swarm_strategy"`
-	OutputContract      string                   `json:"output_contract,omitempty"`
-	OutputMode          string                   `json:"output_mode,omitempty"`
+	Prompt              string                                         `json:"prompt"`
+	AgentType           string                                         `json:"agent_type"`
+	SwarmStrategy       string                                         `json:"swarm_strategy"`
+	OutputContract      string                                         `json:"output_contract,omitempty"`
+	OutputMode          string                                         `json:"output_mode,omitempty"`
 	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	IntegrationContract string                   `json:"integration_contract,omitempty"`
-	Items               []taskSwarmHydrationItem `json:"items"`
+	IntegrationContract string                                         `json:"integration_contract,omitempty"`
+	Items               []taskSwarmHydrationItem                       `json:"items"`
 }
 
 type taskSwarmHydratedDelta struct {

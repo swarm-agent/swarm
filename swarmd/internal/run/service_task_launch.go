@@ -67,18 +67,18 @@ type taskProgramStage struct {
 }
 
 type taskProgramJob struct {
-	ID                    string   `json:"id"`
-	StageID               string   `json:"stage_id"`
-	DependsOn             []string `json:"depends_on,omitempty"`
-	RequestedSubagentType string   `json:"agent_type"`
-	MetaPrompt            string   `json:"meta_prompt"`
-	AssignmentLabel       string   `json:"title"`
-	Deliverable           string   `json:"deliverable"`
-	OwnedScope            []string `json:"owned_scope,omitempty"`
-	OutputMode            string   `json:"output_mode,omitempty"`
+	ID                    string                                         `json:"id"`
+	StageID               string                                         `json:"stage_id"`
+	DependsOn             []string                                       `json:"depends_on,omitempty"`
+	RequestedSubagentType string                                         `json:"agent_type"`
+	MetaPrompt            string                                         `json:"meta_prompt"`
+	AssignmentLabel       string                                         `json:"title"`
+	Deliverable           string                                         `json:"deliverable"`
+	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
+	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	AcceptanceCriteria    []string `json:"acceptance_criteria"`
-	DependencyEvidence    string   `json:"dependency_evidence"`
+	AcceptanceCriteria    []string                                       `json:"acceptance_criteria"`
+	DependencyEvidence    string                                         `json:"dependency_evidence"`
 }
 
 type taskProgramCapacity struct {
@@ -233,42 +233,42 @@ type taskLaunchParentInfo struct {
 }
 
 type taskLaunchManifestRow struct {
-	Description           string                                   `json:"description"`
-	RequestedSubagentType string                                   `json:"requested_subagent_type"`
-	ResolvedAgentName     string                                   `json:"resolved_agent_name"`
-	ResolvedAgentError    string                                   `json:"resolved_agent_error,omitempty"`
-	Action                string                                   `json:"action"`
-	MetaPrompt            string                                   `json:"meta_prompt,omitempty"`
-	AssignmentLabel       string                                   `json:"assignment_label,omitempty"`
-	Deliverable           string                                   `json:"deliverable,omitempty"`
-	ConcurrencyReason     string                                   `json:"concurrency_reason,omitempty"`
-	OwnedScope            []string                                 `json:"owned_scope,omitempty"`
-	OutputMode            string                                   `json:"output_mode,omitempty"`
+	Description           string                                         `json:"description"`
+	RequestedSubagentType string                                         `json:"requested_subagent_type"`
+	ResolvedAgentName     string                                         `json:"resolved_agent_name"`
+	ResolvedAgentError    string                                         `json:"resolved_agent_error,omitempty"`
+	Action                string                                         `json:"action"`
+	MetaPrompt            string                                         `json:"meta_prompt,omitempty"`
+	AssignmentLabel       string                                         `json:"assignment_label,omitempty"`
+	Deliverable           string                                         `json:"deliverable,omitempty"`
+	ConcurrencyReason     string                                         `json:"concurrency_reason,omitempty"`
+	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
+	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	DependencyEvidence    string                                   `json:"dependency_evidence,omitempty"`
-	SubagentProvider      string                                   `json:"subagent_provider,omitempty"`
-	SubagentModel         string                                   `json:"subagent_model,omitempty"`
-	SubagentThinking      string                                   `json:"subagent_thinking,omitempty"`
-	SubagentServiceTier   string                                   `json:"subagent_service_tier,omitempty"`
-	ChildTitlePreview     string                                   `json:"child_title_preview,omitempty"`
-	ChildMode             string                                   `json:"effective_child_mode"`
-	DisabledTools         []string                                 `json:"disabled_tools,omitempty"`
-	ResolvedTools         *taskLaunchResolvedToolSummary           `json:"resolved_tools,omitempty"`
-	Capabilities          map[string]any                           `json:"capabilities,omitempty"`
-	TargetWorkspacePath   string                                   `json:"target_workspace_path,omitempty"`
-	TargetWorkspaceName   string                                   `json:"target_workspace_name,omitempty"`
-	SourceArguments       map[string]any                           `json:"source_arguments,omitempty"`
-	ParentCopy            bool                                     `json:"parent_copy,omitempty"`
-	SourceAgentName       string                                   `json:"source_agent_name,omitempty"`
-	SourceProfileMode     string                                   `json:"source_profile_mode,omitempty"`
-	InheritedRuntimeMode  string                                   `json:"inherited_runtime_mode,omitempty"`
-	ProfileSnapshot       *pebblestore.AgentProfile                `json:"profile_snapshot,omitempty"`
-	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot `json:"model_profile_snapshot"`
-	StreamKey             string                                   `json:"stream_key,omitempty"`
-	SwarmMode             bool                                     `json:"swarm_mode,omitempty"`
-	SwarmStrategy         string                                   `json:"swarm_strategy,omitempty"`
-	AssemblyPart          *taskSwarmAssemblyPart                   `json:"assembly_part,omitempty"`
-	IntegrationContract   string                                   `json:"integration_contract,omitempty"`
+	DependencyEvidence    string                                         `json:"dependency_evidence,omitempty"`
+	SubagentProvider      string                                         `json:"subagent_provider,omitempty"`
+	SubagentModel         string                                         `json:"subagent_model,omitempty"`
+	SubagentThinking      string                                         `json:"subagent_thinking,omitempty"`
+	SubagentServiceTier   string                                         `json:"subagent_service_tier,omitempty"`
+	ChildTitlePreview     string                                         `json:"child_title_preview,omitempty"`
+	ChildMode             string                                         `json:"effective_child_mode"`
+	DisabledTools         []string                                       `json:"disabled_tools,omitempty"`
+	ResolvedTools         *taskLaunchResolvedToolSummary                 `json:"resolved_tools,omitempty"`
+	Capabilities          map[string]any                                 `json:"capabilities,omitempty"`
+	TargetWorkspacePath   string                                         `json:"target_workspace_path,omitempty"`
+	TargetWorkspaceName   string                                         `json:"target_workspace_name,omitempty"`
+	SourceArguments       map[string]any                                 `json:"source_arguments,omitempty"`
+	ParentCopy            bool                                           `json:"parent_copy,omitempty"`
+	SourceAgentName       string                                         `json:"source_agent_name,omitempty"`
+	SourceProfileMode     string                                         `json:"source_profile_mode,omitempty"`
+	InheritedRuntimeMode  string                                         `json:"inherited_runtime_mode,omitempty"`
+	ProfileSnapshot       *pebblestore.AgentProfile                      `json:"profile_snapshot,omitempty"`
+	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot       `json:"model_profile_snapshot"`
+	StreamKey             string                                         `json:"stream_key,omitempty"`
+	SwarmMode             bool                                           `json:"swarm_mode,omitempty"`
+	SwarmStrategy         string                                         `json:"swarm_strategy,omitempty"`
+	AssemblyPart          *taskSwarmAssemblyPart                         `json:"assembly_part,omitempty"`
+	IntegrationContract   string                                         `json:"integration_contract,omitempty"`
 }
 
 type taskLaunchResolvedToolSummary struct {

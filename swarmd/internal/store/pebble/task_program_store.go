@@ -70,18 +70,18 @@ type TaskProgramStageSpec struct {
 }
 
 type TaskProgramJobSpec struct {
-	ID                 string   `json:"id"`
-	StageID            string   `json:"stage_id"`
-	DependsOn          []string `json:"depends_on,omitempty"`
-	AgentType          string   `json:"agent_type"`
-	Title              string   `json:"title"`
-	MetaPrompt         string   `json:"meta_prompt"`
-	Deliverable        string   `json:"deliverable"`
-	OwnedScope         []string `json:"owned_scope,omitempty"`
-	OutputMode         string   `json:"output_mode,omitempty"`
+	ID                 string                             `json:"id"`
+	StageID            string                             `json:"stage_id"`
+	DependsOn          []string                           `json:"depends_on,omitempty"`
+	AgentType          string                             `json:"agent_type"`
+	Title              string                             `json:"title"`
+	MetaPrompt         string                             `json:"meta_prompt"`
+	Deliverable        string                             `json:"deliverable"`
+	OwnedScope         []string                           `json:"owned_scope,omitempty"`
+	OutputMode         string                             `json:"output_mode,omitempty"`
 	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
-	DependencyEvidence string   `json:"dependency_evidence"`
+	AcceptanceCriteria []string                           `json:"acceptance_criteria"`
+	DependencyEvidence string                             `json:"dependency_evidence"`
 }
 
 type TaskProgramJobRecord struct {

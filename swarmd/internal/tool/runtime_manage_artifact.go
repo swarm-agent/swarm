@@ -57,18 +57,18 @@ type ArtifactRunContext struct {
 	// Managed task destinations are injected only by trusted orchestration. When
 	// present, create calls are pinned to this parent-owned collection/variant;
 	// model-authored target arguments may not redirect the output.
-	TaskCallID     string
-	ProgramID      string
-	ProgramJobID   string
-	ChildSessionID   string
-	IterationGroupID string
-	IterationGroup   string
-	IterationID      string
-	IterationIndex   int
-	IterationLabel   string
-	IterationTheme   string
-	CollectionID     string
-	VariantID      string
+	TaskCallID         string
+	ProgramID          string
+	ProgramJobID       string
+	ChildSessionID     string
+	IterationGroupID   string
+	IterationGroup     string
+	IterationID        string
+	IterationIndex     int
+	IterationLabel     string
+	IterationTheme     string
+	CollectionID       string
+	VariantID          string
 	OutputRequirements *pebblestore.SessionArtifactOutputRequirements
 }
 

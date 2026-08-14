@@ -23,7 +23,9 @@ func TestTaskOutputRequirementsAllDesignerModes(t *testing.T) {
 	regular, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "design", "subagent_type": "designer", "meta_prompt": "create it", "output_requirements": map[string]any{"preset": "twitter_header"},
 	}))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertXHeaderRequirements(t, regular.Launches[0].OutputRequirements)
 	assertXHeaderRequirements(t, taskOutputRequirementsFromAny(t, regular.Launches[0].SourceArguments["output_requirements"]))
 	assertXHeaderRequirements(t, taskOutputRequirementsFromAny(t, regular.SourceArguments["output_requirements"]))
@@ -35,22 +37,32 @@ func TestTaskOutputRequirementsAllDesignerModes(t *testing.T) {
 	launches, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "design", "launches": []any{map[string]any{"subagent_type": "designer", "meta_prompt": "create it", "output_requirements": map[string]any{"preset": "twitter_header"}}, map[string]any{"subagent_type": "designer", "meta_prompt": "create another", "output_requirements": map[string]any{"preset": "square_1080"}}},
 	}))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertXHeaderRequirements(t, launches.Launches[0].OutputRequirements)
-	if launches.Launches[1].OutputRequirements == nil || launches.Launches[1].OutputRequirements.PresetID != "square_1080" { t.Fatalf("launch requirements = %#v", launches.Launches[1].OutputRequirements) }
+	if launches.Launches[1].OutputRequirements == nil || launches.Launches[1].OutputRequirements.PresetID != "square_1080" {
+		t.Fatalf("launch requirements = %#v", launches.Launches[1].OutputRequirements)
+	}
 
 	workspace, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "design", "subagent_type": "designer", "meta_prompt": "create it", "output_mode": "workspace", "owned_scope": []any{"design/header.svg"}, "output_requirements": map[string]any{"preset": "twitter_header"},
 	}))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertXHeaderRequirements(t, workspace.Launches[0].OutputRequirements)
 	workspacePrompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "header", Prompt: "create", RequestedSubagent: "designer", OwnedScope: workspace.Launches[0].OwnedScope, OutputMode: taskOutputModeWorkspace, OutputRequirements: workspace.Launches[0].OutputRequirements})
-	if !strings.Contains(workspacePrompt, `"preset_id":"x_header"`) || !strings.Contains(workspacePrompt, "output mode: workspace") { t.Fatalf("workspace prompt = %s", workspacePrompt) }
+	if !strings.Contains(workspacePrompt, `"preset_id":"x_header"`) || !strings.Contains(workspacePrompt, "output mode: workspace") {
+		t.Fatalf("workspace prompt = %s", workspacePrompt)
+	}
 
 	swarm, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"mode": "swarm", "prompt": "design", "agent_type": "designer", "count": 2, "output_requirements": map[string]any{"preset": "twitter_header"},
 	}))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertXHeaderRequirements(t, swarm.Swarm.OutputRequirements)
 	assertXHeaderRequirements(t, taskOutputRequirementsFromAny(t, swarm.SourceArguments["output_requirements"]))
 	for _, launch := range swarm.Launches {
@@ -60,8 +72,12 @@ func TestTaskOutputRequirementsAllDesignerModes(t *testing.T) {
 	swarmWorkspace, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"mode": "swarm", "prompt": "design", "agent_type": "designer", "count": 2, "output_mode": "workspace", "owned_scope_template": "design/variant-{index}.svg", "output_requirements": map[string]any{"preset": "twitter_header"},
 	}))
-	if err != nil { t.Fatal(err) }
-	for _, launch := range swarmWorkspace.Launches { assertXHeaderRequirements(t, launch.OutputRequirements) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, launch := range swarmWorkspace.Launches {
+		assertXHeaderRequirements(t, launch.OutputRequirements)
+	}
 
 	program, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "design", "program": map[string]any{
@@ -69,10 +85,14 @@ func TestTaskOutputRequirementsAllDesignerModes(t *testing.T) {
 			"jobs": []any{map[string]any{"id": "header", "stage_id": "variants", "agent_type": "designer", "meta_prompt": "create", "title": "Header", "deliverable": "header", "acceptance_criteria": []any{"ready"}, "dependency_evidence": "ready", "output_requirements": map[string]any{"preset": "twitter_header"}}},
 		},
 	}))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertXHeaderRequirements(t, program.Program.Jobs[0].OutputRequirements)
 	definition, _, err := taskProgramDefinitionFromSpec(program.Program)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertXHeaderRequirements(t, definition.Jobs[0].OutputRequirements)
 	assertXHeaderRequirements(t, program.Launches[0].OutputRequirements)
 	assertXHeaderRequirements(t, taskOutputRequirementsFromAny(t, program.Launches[0].SourceArguments["output_requirements"]))
@@ -141,18 +161,28 @@ func TestTaskOutputRequirementsApprovedManifestIsImmutable(t *testing.T) {
 	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, OutputRequirements: cloneTaskOutputRequirements(requirements)}
 	manifest := taskLaunchManifest{Launches: []taskLaunchManifestRow{{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, OutputRequirements: cloneTaskOutputRequirements(requirements), ProfileSnapshot: &pebblestore.AgentProfile{}, ResolvedTools: &taskLaunchResolvedToolSummary{AllowedTools: []string{"manage_artifact"}, DisabledTools: []string{"write", "edit"}}, DisabledTools: []string{"write", "edit"}}}}
 	digest, err := taskLaunchManifestDigest(manifest)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifest.ManifestHash = digest
 	raw, err := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
-	if err != nil { t.Fatal(err) }
-	if _, err := parseApprovedTaskLaunchManifest(string(raw), []taskLaunchSpec{spec}); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseApprovedTaskLaunchManifest(string(raw), []taskLaunchSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
 	var envelope map[string]any
-	if err := json.Unmarshal(raw, &envelope); err != nil { t.Fatal(err) }
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
 	manifestMap := envelope["manifest"].(map[string]any)
 	launchMap := manifestMap["launches"].([]any)[0].(map[string]any)
 	launchMap["output_requirements"].(map[string]any)["width"] = float64(1)
 	tampered, err := json.Marshal(envelope)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := parseApprovedTaskLaunchManifest(string(tampered), []taskLaunchSpec{spec}); err == nil || !strings.Contains(err.Error(), "snapshot hash mismatch") {
 		t.Fatalf("tampered approved snapshot err = %v", err)
 	}
@@ -172,19 +202,27 @@ func TestTaskOutputRequirementsRejectAmbiguousTopLevelWithLaunches(t *testing.T)
 func TestTaskOutputRequirementsRejectNonDesigner(t *testing.T) {
 	for _, agent := range []string{"coder", "finder"} {
 		_, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "work", "subagent_type": agent, "meta_prompt": "work", "output_requirements": map[string]any{"preset": "square_1080"}}))
-		if err == nil || !strings.Contains(err.Error(), "only for Designer") { t.Fatalf("%s err = %v", agent, err) }
+		if err == nil || !strings.Contains(err.Error(), "only for Designer") {
+			t.Fatalf("%s err = %v", agent, err)
+		}
 	}
 	program := map[string]any{
-		"id": "reject_program",
+		"id":     "reject_program",
 		"stages": []any{map[string]any{"id": "stage", "dependency_evidence": "ready"}},
-		"jobs": []any{map[string]any{"id": "job", "stage_id": "stage", "agent_type": "coder", "meta_prompt": "work", "title": "Work", "deliverable": "change", "owned_scope": []any{"swarmd/internal/**"}, "acceptance_criteria": []any{"done"}, "dependency_evidence": "ready", "output_requirements": map[string]any{"preset": "square_1080"}}},
+		"jobs":   []any{map[string]any{"id": "job", "stage_id": "stage", "agent_type": "coder", "meta_prompt": "work", "title": "Work", "deliverable": "change", "owned_scope": []any{"swarmd/internal/**"}, "acceptance_criteria": []any{"done"}, "dependency_evidence": "ready", "output_requirements": map[string]any{"preset": "square_1080"}}},
 	}
 	_, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "work", "program": program}))
-	if err == nil || !strings.Contains(err.Error(), "only for Designer") { t.Fatalf("program coder err = %v", err) }
+	if err == nil || !strings.Contains(err.Error(), "only for Designer") {
+		t.Fatalf("program coder err = %v", err)
+	}
 	_, err = parseTaskCallArguments(mustJSON(t, map[string]any{"mode": "swarm", "prompt": "code", "agent_type": "coder", "count": 2, "output_requirements": map[string]any{"preset": "square_1080"}}))
-	if err == nil || !strings.Contains(err.Error(), "only for Designer") { t.Fatalf("swarm coder err = %v", err) }
+	if err == nil || !strings.Contains(err.Error(), "only for Designer") {
+		t.Fatalf("swarm coder err = %v", err)
+	}
 	_, err = parseTaskCallArguments(mustJSON(t, map[string]any{"mode": "swarm", "prompt": "ideas", "agent_type": "idea", "count": 2, "output_requirements": map[string]any{"preset": "square_1080"}}))
-	if err == nil || !strings.Contains(err.Error(), "only for Designer") { t.Fatalf("idea err = %v", err) }
+	if err == nil || !strings.Contains(err.Error(), "only for Designer") {
+		t.Fatalf("idea err = %v", err)
+	}
 }
 
 func assertXHeaderRequirements(t *testing.T, requirements *pebblestore.SessionArtifactOutputRequirements) {

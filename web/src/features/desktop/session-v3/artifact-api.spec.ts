@@ -115,6 +115,14 @@ test('historical artifacts omit requirements and malformed nested requirements f
   assert.equal(historical.outputRequirements, undefined)
   assert.equal(formatDesktopV3ArtifactOutputRequirements(historical.outputRequirements), '')
 
+  const explicitDimensions = normalizeDesktopV3ArtifactOutputRequirements({
+    ...managedCatalogWire.output_requirements,
+    preset_id: '',
+    resolution_source: 'dimensions',
+  })
+  assert.ok(explicitDimensions)
+  assert.equal(formatDesktopV3ArtifactOutputRequirements(explicitDimensions), '1500 × 500 · 3:1')
+
   const malformedCases = [
     { ...managedCatalogWire.output_requirements, width: '1500' },
     { ...managedCatalogWire.output_requirements, width: -1 },

@@ -289,7 +289,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
 		}
 	}
-	for _, want := range []string{"backend-supplied immutable output contract", "Exact output requirements", "canonical preset", "never reinterpret or rewrite", "do not imply that Swarm inspected binary pixels", "Managed output", "manage_artifact", "omit output_requirements", "exactly one durable ready variant", "Never use write or edit", "Workspace output", "Never use manage_artifact", "orchestrate other agents"} {
+	for _, want := range []string{"backend-supplied immutable output contract", "Exact output requirements", "canonical preset", "never reinterpret or rewrite", "do not imply that Swarm inspected binary pixels", "Managed output", "manage_artifact", "Omit output_requirements", "exactly one durable ready variant", "Never use write or edit", "Workspace output", "Never use manage_artifact", "orchestrate other agents"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
 			t.Fatalf("Designer prompt missing immutable output contract %q", want)
 		}

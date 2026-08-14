@@ -210,14 +210,14 @@ func ParseOutputRequirements(raw any) (*pebblestore.SessionArtifactOutputRequire
 
 func OutputRequirementsToolSchema() map[string]any {
 	return map[string]any{
-		"type": "object",
+		"type":        "object",
 		"description": "Designer-only exact output target. Paired dimensions take precedence over preset; aliases resolve to a versioned canonical server preset.",
 		"properties": map[string]any{
-			"preset": map[string]any{"type": "string", "description": "Canonical preset or supported alias, for example twitter_header or x_video."},
-			"width": map[string]any{"type": "integer", "minimum": 1, "maximum": OutputRequirementsMaxDimension},
-			"height": map[string]any{"type": "integer", "minimum": 1, "maximum": OutputRequirementsMaxDimension},
+			"preset":       map[string]any{"type": "string", "description": "Canonical preset or supported alias, for example twitter_header or x_video."},
+			"width":        map[string]any{"type": "integer", "minimum": 1, "maximum": OutputRequirementsMaxDimension},
+			"height":       map[string]any{"type": "integer", "minimum": 1, "maximum": OutputRequirementsMaxDimension},
 			"aspect_ratio": map[string]any{"type": "string", "description": "Optional ratio assertion normalized from dimensions, for example 16:9."},
-			"orientation": map[string]any{"type": "string", "enum": []string{"landscape", "portrait", "square"}},
+			"orientation":  map[string]any{"type": "string", "enum": []string{"landscape", "portrait", "square"}},
 		},
 		"anyOf": []any{
 			map[string]any{"required": []string{"preset"}},
@@ -268,7 +268,7 @@ func validateOutputPresetRegistry(definitions []outputPresetDefinition) error {
 	return nil
 }
 
-func normalizePresetName(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+func normalizePresetName(value string) string      { return strings.ToLower(strings.TrimSpace(value)) }
 func normalizeOrientationName(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
 func normalizedOrientation(width, height int) string {
 	if width == height {
