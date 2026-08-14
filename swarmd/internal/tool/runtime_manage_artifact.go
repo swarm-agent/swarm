@@ -116,12 +116,13 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Generate one provider-billed image with the authenticated account's configured image model and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. Provider/model identifiers and private storage paths are never accepted or exposed.",
+		Description: "Before generating an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. Provider/model identifiers and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action": map[string]any{"type": "string", "enum": []string{"generate_image", "create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
-				"prompt": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image"},
+				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
+				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image"},
+				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for Google generate_image calls"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
 					"size":         map[string]any{"type": "string", "maxLength": 64, "description": "Optional portable output size, for example auto, 1024x1024, 1536x1024, or 1024x1536. The backend adapts it to the configured image provider."},
 					"aspect_ratio": map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, or 21:9."},
@@ -191,11 +192,17 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact output_requirements is valid only for generate_image, create, or create_package")
 		}
 	}
-	if actionName != "list_presets" && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
 	switch actionName {
+	case "image_capabilities":
+		capabilities, err := r.managedImageCapabilities(principal.AccountScopeID)
+		if err != nil {
+			return "", err
+		}
+		response["image_capabilities"] = capabilities
 	case "generate_image":
 		variant, err := r.generateManagedImageArtifact(ctx, scope, principal, callID, requestID, args)
 		if err != nil {
@@ -462,10 +469,28 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 	return string(encoded), nil
 }
 
+func (r *Runtime) managedImageCapabilities(accountScopeID string) (imagegen.ManagedImageCapabilities, error) {
+	if r == nil || r.imageGeneration == nil {
+		return imagegen.ManagedImageCapabilities{}, errors.New("manage_artifact image generation is not configured")
+	}
+	if r.uiSettings == nil {
+		return imagegen.ManagedImageCapabilities{}, errors.New("manage_artifact image model settings are not configured")
+	}
+	ui, err := r.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID))
+	if err != nil {
+		return imagegen.ManagedImageCapabilities{}, fmt.Errorf("resolve configured image model: %w", err)
+	}
+	selectionID := strings.TrimSpace(ui.Tools.Image.DefaultModel)
+	if selectionID == "" {
+		selectionID = imagegen.DefaultModelSelectionID
+	}
+	return r.imageGeneration.ManagedImageCapabilities(selectionID)
+}
+
 func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
 	for key := range args {
 		switch key {
-		case "action", "prompt", "image_settings", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements":
+		case "action", "prompt", "image_settings", "capability_token", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements":
 		default:
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact generate_image contains unsupported field %q", key)
 		}
@@ -548,7 +573,8 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		selectionID = imagegen.DefaultModelSelectionID
 	}
 	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
-		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings, Principal: scope.Principal,
+		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
+		CapabilityToken: strings.TrimSpace(asString(args["capability_token"])), Principal: scope.Principal,
 	})
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("generate managed image: %w", err)

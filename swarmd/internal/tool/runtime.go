@@ -279,6 +279,7 @@ type manageTodoService interface {
 // boundary used by manage_artifact. The runtime resolves the account setting;
 // AI-authored calls never select providers or models.
 type ManagedImageGenerationService interface {
+	ManagedImageCapabilities(selectionID string) (imagegen.ManagedImageCapabilities, error)
 	GenerateManagedImage(context.Context, imagegen.ManagedGenerateRequest) (imagegen.ManagedImage, error)
 }
 
@@ -475,7 +476,13 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 	}
 	ctx = WithWorkspaceScope(ctx, scope)
 	ctx = WithArtifactRunContext(ctx, run)
-	return r.executeManageArtifact(ctx, scope, callID, map[string]any{"action": "generate_image", "prompt": strings.TrimSpace(prompt)})
+	args := map[string]any{"action": "generate_image", "prompt": strings.TrimSpace(prompt)}
+	if capabilities, err := r.managedImageCapabilities(scope.Principal.AccountScopeID); err != nil {
+		return "", err
+	} else if capabilities.CapabilityToken != "" {
+		args["capability_token"] = capabilities.CapabilityToken
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
 }
 
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {

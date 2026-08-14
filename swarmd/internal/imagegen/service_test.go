@@ -3,6 +3,8 @@ package imagegen
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/codex"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -73,6 +76,51 @@ func TestGenerateManagedImageUsesCanonicalSelectionAndExactlyOneProviderCall(t *
 	}
 	if _, err := ResolveModelSelection("model-authored-unknown"); err == nil {
 		t.Fatal("unsupported configured image model was accepted")
+	}
+}
+
+type staticModelCatalog struct {
+	records []pebblestore.ModelCatalogRecord
+}
+
+func (c staticModelCatalog) ListCatalog(string, int) ([]pebblestore.ModelCatalogRecord, error) {
+	return append([]pebblestore.ModelCatalogRecord(nil), c.records...), nil
+}
+
+func googleImageProfileRecord(t *testing.T, model string, managed bool, surface string, settings string) pebblestore.ModelCatalogRecord {
+	t.Helper()
+	providerSpecific := json.RawMessage(`{"google":{"model_api_surface":"` + surface + `","image_generation":{"api_surface":"` + surface + `","status":"verified","managed_image_tool":{"supported":` + fmt.Sprint(managed) + `,"client_setting_names":["aspect_ratio","image_size"]},"settings":` + settings + `}}}`)
+	return pebblestore.ModelCatalogRecord{
+		Provider: "google", Model: model, ProviderSpecific: providerSpecific,
+		CatalogModalities: pebblestore.ModelCatalogModalities{Outputs: []string{"image"}},
+		Media:             &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent},
+		SourceSnapshotID:  "snapshot", SourceSnapshotVersion: "version",
+	}
+}
+
+func TestManagedGoogleImageCapabilitiesAreModelSpecificAndRequireFreshToken(t *testing.T) {
+	settings := `{"aspect_ratio":{"status":"verified","default_value":"1:1","supported_values":["1:1","16:9"]},"image_size":{"status":"verified","default_value":"1K","supported_values":["1K"]}}`
+	svc := &Service{modelCatalog: staticModelCatalog{records: []pebblestore.ModelCatalogRecord{
+		googleImageProfileRecord(t, "gemini-image", false, "generate_content", settings),
+		googleImageProfileRecord(t, "imagen-4.0-generate-001", true, "predict", settings),
+	}}}
+	capabilities, err := svc.ManagedImageCapabilities("gemini-image")
+	if err != nil || !capabilities.Available || capabilities.CapabilityToken == "" {
+		t.Fatalf("capabilities = %+v err=%v", capabilities, err)
+	}
+	if _, _, err := capabilities.validateRequest(ManagedGenerateRequest{Settings: map[string]any{"aspect_ratio": "16:9"}}); err == nil || !strings.Contains(err.Error(), "fresh") {
+		t.Fatalf("missing token error = %v", err)
+	}
+	ratio, size, err := capabilities.validateRequest(ManagedGenerateRequest{CapabilityToken: capabilities.CapabilityToken, Settings: map[string]any{"aspect_ratio": "16:9"}})
+	if err != nil || ratio != "16:9" || size != "1K" {
+		t.Fatalf("validated ratio=%q size=%q err=%v", ratio, size, err)
+	}
+	if _, _, err := capabilities.validateRequest(ManagedGenerateRequest{CapabilityToken: capabilities.CapabilityToken, Settings: map[string]any{"image_size": "2K"}}); err == nil {
+		t.Fatal("unsupported model-specific image size was accepted")
+	}
+	imagen, err := svc.ManagedImageCapabilities("imagen-4.0-generate-001")
+	if err != nil || imagen.Available {
+		t.Fatalf("Imagen capabilities = %+v err=%v, want unavailable", imagen, err)
 	}
 }
 

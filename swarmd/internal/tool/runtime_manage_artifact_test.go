@@ -20,9 +20,17 @@ import (
 )
 
 type fakeManagedImageGenerator struct {
-	calls int
-	req   imagegen.ManagedGenerateRequest
-	image imagegen.ManagedImage
+	calls        int
+	req          imagegen.ManagedGenerateRequest
+	image        imagegen.ManagedImage
+	capabilities imagegen.ManagedImageCapabilities
+}
+
+func (f *fakeManagedImageGenerator) ManagedImageCapabilities(string) (imagegen.ManagedImageCapabilities, error) {
+	if f.capabilities.Available || f.capabilities.CapabilityToken != "" || f.capabilities.Reason != "" {
+		return f.capabilities, nil
+	}
+	return imagegen.ManagedImageCapabilities{Available: true}, nil
 }
 
 func (f *fakeManagedImageGenerator) GenerateManagedImage(_ context.Context, req imagegen.ManagedGenerateRequest) (imagegen.ManagedImage, error) {
@@ -132,6 +140,24 @@ func artifactToolContext() (context.Context, WorkspaceScope) {
 func testPNGImage() []byte {
 	decoded, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
 	return decoded
+}
+
+func TestManageArtifactImageCapabilitiesExposeConfiguredSnapshotOptions(t *testing.T) {
+	generator := &fakeManagedImageGenerator{capabilities: imagegen.ManagedImageCapabilities{
+		Available: true, CapabilityToken: "snapshot-token",
+		Settings: map[string]imagegen.ManagedImageSettingCapability{"image_size": {Status: "verified", DefaultValue: "1K", SupportedValues: []any{"1K", "2K"}}},
+	}}
+	runtime := NewRuntime(1)
+	runtime.SetManagedImageGenerationService(generator)
+	runtime.SetManageThemeServices(&fakeImageUISettings{settings: uisettings.UISettings{Tools: uisettings.ToolSettings{Image: uisettings.ToolImageSettings{DefaultModel: "gemini-image"}}}}, nil)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.executeManageArtifact(ctx, scope, "image-capabilities", map[string]any{"action": "image_capabilities"})
+	if err != nil {
+		t.Fatalf("image capabilities: %v", err)
+	}
+	if !strings.Contains(output, `"capability_token":"snapshot-token"`) || !strings.Contains(output, `"supported_values":["1K","2K"]`) || strings.Contains(output, "gemini-image") {
+		t.Fatalf("image capabilities output = %s", output)
+	}
 }
 
 func TestManageArtifactGenerateImageUsesCanonicalSettingAndTrustedDestination(t *testing.T) {
