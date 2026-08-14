@@ -140,12 +140,24 @@ type ManagedImage struct {
 }
 
 type ModelSelection struct {
-	ID       string
-	Provider string
-	Model    string
+	ID          string
+	Provider    string
+	Model       string
+	DisplayName string
 }
 
 const DefaultModelSelectionID = "codex-image-gen"
+
+var supportedModelSelectionIDs = []string{
+	"codex-image-gen",
+	"gemini-nano-banana-2",
+	"gemini-nano-banana-pro",
+	"gemini-nano-banana",
+}
+
+func SupportedModelSelectionIDs() []string {
+	return append([]string(nil), supportedModelSelectionIDs...)
+}
 
 // ResolveModelSelection maps the canonical UI image selection to an internal
 // provider/model pair. This is the sole mapping for AI-facing image generation.
@@ -156,13 +168,13 @@ func ResolveModelSelection(selectionID string) (ModelSelection, error) {
 	}
 	switch selectionID {
 	case "codex-image-gen", defaultCodexImageModel:
-		return ModelSelection{ID: "codex-image-gen", Provider: ProviderCodexOpenAI, Model: defaultCodexImageModel}, nil
+		return ModelSelection{ID: "codex-image-gen", Provider: ProviderCodexOpenAI, Model: defaultCodexImageModel, DisplayName: "Codex Image Gen"}, nil
 	case "gemini-nano-banana-2", "gemini-3.1-flash-image-preview":
-		return ModelSelection{ID: "gemini-nano-banana-2", Provider: ProviderGoogleGemini, Model: "gemini-3.1-flash-image-preview"}, nil
+		return ModelSelection{ID: "gemini-nano-banana-2", Provider: ProviderGoogleGemini, Model: "gemini-3.1-flash-image-preview", DisplayName: "Nano Banana 2"}, nil
 	case "gemini-nano-banana-pro", "gemini-3-pro-image-preview":
-		return ModelSelection{ID: "gemini-nano-banana-pro", Provider: ProviderGoogleGemini, Model: "gemini-3-pro-image-preview"}, nil
+		return ModelSelection{ID: "gemini-nano-banana-pro", Provider: ProviderGoogleGemini, Model: "gemini-3-pro-image-preview", DisplayName: "Nano Banana Pro"}, nil
 	case "gemini-nano-banana", "gemini-2.5-flash-image":
-		return ModelSelection{ID: "gemini-nano-banana", Provider: ProviderGoogleGemini, Model: "gemini-2.5-flash-image"}, nil
+		return ModelSelection{ID: "gemini-nano-banana", Provider: ProviderGoogleGemini, Model: "gemini-2.5-flash-image", DisplayName: "Nano Banana"}, nil
 	default:
 		return ModelSelection{}, fmt.Errorf("configured image model %q is not supported", selectionID)
 	}

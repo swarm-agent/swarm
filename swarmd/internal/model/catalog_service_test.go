@@ -230,6 +230,29 @@ func TestDecodeSwarmSnapshotRecordsPreservesReviewedMediaAndDeniesOthers(t *test
 	}
 }
 
+func TestSnapshotCatalogModalitiesRemainSeparateFromRuntimeMedia(t *testing.T) {
+	var googleModel swarmSnapshotModel
+	if err := json.Unmarshal([]byte(`{"provider_id":"google","model_id":"gemini-video","capabilities":{"supports_text_input":true,"supports_text_output":true,"supports_video_input":true}}`), &googleModel); err != nil {
+		t.Fatalf("decode Google video fixture: %v", err)
+	}
+	modalities, err := snapshotModelCatalogModalities(googleModel, "google")
+	if err != nil {
+		t.Fatalf("snapshotModelCatalogModalities: %v", err)
+	}
+	if !stringSlicesEqual(modalities.Inputs, []string{"text", "video"}) || !stringSlicesEqual(modalities.Outputs, []string{"text"}) {
+		t.Fatalf("catalog modalities = %+v", modalities)
+	}
+	media, err := snapshotModelMediaCapabilities(swarmSnapshot{}, "google", googleModel)
+	if err != nil || media == nil {
+		t.Fatalf("snapshotModelMediaCapabilities: media=%+v err=%v", media, err)
+	}
+	for _, input := range media.Inputs {
+		if input.Modality == "video" {
+			t.Fatalf("catalog video fact leaked into reviewed runtime media admission: %+v", media)
+		}
+	}
+}
+
 func TestCatalogMediaSurfaceAliasesRemainProviderScoped(t *testing.T) {
 	for _, test := range []struct{ provider, catalogSurface, runtimeSurface string }{
 		{"google", "generate_content", provideriface.MediaProviderSurfaceGoogleGenerateContent},

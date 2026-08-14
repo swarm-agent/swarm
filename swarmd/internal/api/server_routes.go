@@ -65,6 +65,7 @@ func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/codex/account/reset-credits", s.handleCodexResetCredits)
 	mux.HandleFunc("/v1/codex/account/reset-credits/consume", s.handleCodexConsumeResetCredit)
 	mux.HandleFunc("/v1/image/providers", s.handleImageGenerationProviders)
+	mux.HandleFunc("/v1/media/settings/catalog", s.handleMediaSettingsCatalog)
 	mux.HandleFunc("/v1/image/generations", s.handleImageGenerations)
 	mux.HandleFunc("/v1/image/assets", s.handleImageAssets)
 	mux.HandleFunc("/v1/image/storage/reveal", s.handleImageStorageReveal)

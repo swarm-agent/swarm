@@ -3368,6 +3368,7 @@ type uiSettingsPatchPresence struct {
 	Swarming  *uiSwarmingSettingsPatchPresence `json:"swarming"`
 	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
 	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
+	Media     *uiMediaSettingsPatchPresence    `json:"media"`
 	UpdatedAt *int64                           `json:"updated_at"`
 }
 
@@ -3422,6 +3423,10 @@ type uiToolImageSettingsPatchPresence struct {
 
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
+}
+
+type uiMediaSettingsPatchPresence struct {
+	TranscriptionModel *string `json:"transcription_model"`
 }
 
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
@@ -3520,6 +3525,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		if raw.Tools.Image.DefaultModel != nil {
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
 		}
+	}
+	if raw.Media != nil && raw.Media.TranscriptionModel != nil {
+		settings.Media.TranscriptionModel = patch.Media.TranscriptionModel
 	}
 	return settings
 }

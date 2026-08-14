@@ -110,6 +110,10 @@ type ToolSettings struct {
 	Image ToolImageSettings `json:"image,omitempty"`
 }
 
+type MediaSettings struct {
+	TranscriptionModel string `json:"transcription_model,omitempty"`
+}
+
 type UISettings struct {
 	Theme     ThemeSettings    `json:"theme,omitempty"`
 	Input     InputSettings    `json:"input,omitempty"`
@@ -117,6 +121,7 @@ type UISettings struct {
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
 	Tools     ToolSettings     `json:"tools,omitempty"`
+	Media     MediaSettings    `json:"media,omitempty"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
@@ -171,6 +176,7 @@ func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UIS
 		Swarming: swarmingRecordFromSettings(settings.Swarming),
 		Swarm:    swarmRecordFromSettings(settings.Swarm),
 		Tools:    toolRecordFromSettings(settings.Tools),
+		Media:    mediaRecordFromSettings(settings.Media),
 	})
 	if err != nil {
 		return UISettings{}, fmt.Errorf("persist ui settings: %w", err)
@@ -250,6 +256,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 				DefaultModel: strings.TrimSpace(record.Tools.Image.DefaultModel),
 			},
 		},
+		Media: MediaSettings{TranscriptionModel: strings.TrimSpace(record.Media.TranscriptionModel)},
 		UpdatedAt: record.UpdatedAt,
 	}
 	for _, item := range record.Theme.CustomThemes {
@@ -364,6 +371,10 @@ func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRe
 			DefaultModel: strings.TrimSpace(settings.Image.DefaultModel),
 		},
 	}
+}
+
+func mediaRecordFromSettings(settings MediaSettings) *pebblestore.UIMediaSettingsRecord {
+	return &pebblestore.UIMediaSettingsRecord{TranscriptionModel: strings.TrimSpace(settings.TranscriptionModel)}
 }
 
 func paletteFromRecord(record pebblestore.UIThemePaletteRecord) ThemePalette {

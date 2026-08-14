@@ -98,6 +98,10 @@ type UIToolImageSettingsRecord struct {
 	DefaultModel string `json:"default_model,omitempty"`
 }
 
+type UIMediaSettingsRecord struct {
+	TranscriptionModel string `json:"transcription_model,omitempty"`
+}
+
 type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
 }
@@ -109,6 +113,7 @@ type UISettingsRecord struct {
 	Swarming  UISwarmingSettingsRecord `json:"swarming,omitempty"`
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
 	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
+	Media     UIMediaSettingsRecord    `json:"media,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
@@ -119,6 +124,7 @@ type UISettingsPatch struct {
 	Swarming *UISwarmingSettingsRecord
 	Swarm    *UISwarmSettingsRecord
 	Tools    *UIToolSettingsRecord
+	Media    *UIMediaSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -181,6 +187,9 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 	}
 	if patch.Tools != nil {
 		record.Tools = *patch.Tools
+	}
+	if patch.Media != nil {
+		record.Media = *patch.Media
 	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt

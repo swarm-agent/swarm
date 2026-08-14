@@ -74,6 +74,15 @@ type ModelCatalogMediaCapabilities struct {
 	SourceIDs         []string                     `json:"source_ids,omitempty"`
 }
 
+// ModelCatalogModalities preserves model facts from the Swarm snapshot for
+// product catalog and settings surfaces. It is intentionally separate from
+// Media, whose narrower contract controls reviewed runtime attachment admission.
+type ModelCatalogModalities struct {
+	Inputs     []string `json:"inputs,omitempty"`
+	Outputs    []string `json:"outputs,omitempty"`
+	Categories []string `json:"categories,omitempty"`
+}
+
 type ModelCatalogRecord struct {
 	Provider                  string                           `json:"provider"`
 	ProviderDisplayName       string                           `json:"provider_display_name,omitempty"`
@@ -93,6 +102,7 @@ type ModelCatalogRecord struct {
 	Recommendations           []ModelCatalogRecommendation     `json:"recommendations,omitempty"`
 	ContextModes              []ModelCatalogContextMode        `json:"context_modes,omitempty"`
 	Media                     *ModelCatalogMediaCapabilities   `json:"media,omitempty"`
+	CatalogModalities         ModelCatalogModalities           `json:"catalog_modalities,omitempty"`
 	Source                    string                           `json:"source"`
 	SourceSnapshotID          string                           `json:"source_snapshot_id,omitempty"`
 	SourceSnapshotVersion     string                           `json:"source_snapshot_version,omitempty"`
