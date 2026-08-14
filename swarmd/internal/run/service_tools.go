@@ -333,6 +333,86 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	return collectionID, nil
 }
 
+// ensureManagedDesignerArtifactPlaceholders projects every trusted managed
+// destination after child preparation and before any child execution. The
+// parent-owned staging variants make the complete wave visible through the
+// canonical artifact catalog while preserving the exact child/iteration
+// lineage that finalization must later validate.
+func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.SessionSnapshot, launches []taskLaunchPrepared, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	parent.ID, parent.AccountScopeID, parent.UserID = strings.TrimSpace(parent.ID), strings.TrimSpace(parent.AccountScopeID), strings.TrimSpace(parent.UserID)
+	if parent.ID == "" || parent.AccountScopeID == "" || parent.UserID == "" {
+		return errors.New("managed Designer placeholders require trusted parent ownership")
+	}
+	apply := applySessionMutation
+	if apply == nil {
+		if s == nil || s.sessions == nil {
+			return errors.New("managed Designer placeholders require the session mutation authority")
+		}
+		apply = s.sessions.ApplySessionMutation
+	}
+	for _, launch := range launches {
+		run := launch.ArtifactRunContext
+		if run == nil {
+			continue
+		}
+		childSessionID := strings.TrimSpace(launch.ChildSession.ID)
+		if strings.TrimSpace(run.SessionID) != parent.ID || strings.TrimSpace(run.TaskCallID) == "" || strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" || strings.TrimSpace(run.ChildSessionID) != childSessionID || childSessionID == "" {
+			return fmt.Errorf("managed Designer launch %d has an incomplete trusted artifact placeholder", launch.LaunchIndex)
+		}
+		if s == nil || s.sessions == nil {
+			return errors.New("managed Designer placeholders require artifact projection reads")
+		}
+		collection, ok, err := s.sessions.GetSessionArtifactCollection(parent.AccountScopeID, parent.ID, run.CollectionID)
+		if err != nil {
+			return err
+		}
+		if !ok || collection.SessionID != parent.ID || collection.AccountScopeID != parent.AccountScopeID {
+			return fmt.Errorf("managed Designer collection %q is unavailable or has inconsistent ownership", run.CollectionID)
+		}
+		lineage := pebblestore.SessionArtifactLineage{
+			ParentSessionID: parent.ID, SourceSessionID: childSessionID, TaskCallID: strings.TrimSpace(run.TaskCallID),
+			ProgramID: strings.TrimSpace(run.ProgramID), ProgramJobID: strings.TrimSpace(run.ProgramJobID), ChildSessionID: childSessionID,
+			IterationGroupID: strings.TrimSpace(run.IterationGroupID), IterationGroup: strings.TrimSpace(run.IterationGroup),
+			IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex,
+			IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
+		}
+		if existing, found, getErr := s.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, collection.ID, run.VariantID); getErr != nil {
+			return getErr
+		} else if found {
+			if existing.CollectionID != collection.ID || existing.Lineage != lineage {
+				return fmt.Errorf("managed Designer artifact placeholder %q has inconsistent lineage", run.VariantID)
+			}
+			continue
+		}
+		label := strings.TrimSpace(run.IterationLabel)
+		if label == "" && run.IterationIndex > 0 {
+			label = fmt.Sprintf("Iteration %d", run.IterationIndex)
+		}
+		variant := pebblestore.SessionArtifactVariant{
+			ID: run.VariantID, CollectionID: collection.ID, Lineage: lineage,
+			Presentation: pebblestore.SessionArtifactPresentation{Label: label, Description: strings.TrimSpace(run.IterationTheme)},
+		}
+		payload, err := json.Marshal(variant)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(payload)
+		requestID := "task-managed-placeholder:" + run.VariantID
+		result, err := apply(sessionruntime.SessionMutationInput{
+			SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
+			ClientRequestID: requestID, IdempotencyKey: requestID, PayloadHash: hex.EncodeToString(digest[:]), RequestHash: hex.EncodeToString(digest[:]),
+			Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli(),
+		})
+		if err != nil {
+			return fmt.Errorf("allocate managed Designer artifact placeholder %q: %w", run.VariantID, err)
+		}
+		if result.Artifact == nil || result.Artifact.Variant == nil || result.Artifact.Variant.ID != run.VariantID || result.Artifact.Variant.Status != pebblestore.SessionArtifactStatusStaging || result.Artifact.Variant.Lineage != lineage {
+			return fmt.Errorf("managed Designer artifact placeholder %q returned an inconsistent projection", run.VariantID)
+		}
+	}
+	return nil
+}
+
 func disabledTaskToolNames(extra ...string) []string {
 	disabled := taskDisabledTools(false)
 	for _, name := range extra {
@@ -3953,6 +4033,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launch.ContextWatcher = newTaskContextWatcher(s.sessions, launch)
 		prepared = append(prepared, launch)
+	}
+	if err := s.ensureManagedDesignerArtifactPlaceholders(parentSession, prepared, req.ApplySessionMutation); err != nil {
+		return "", err
 	}
 
 	taskToolName := strings.TrimSpace(call.Name)

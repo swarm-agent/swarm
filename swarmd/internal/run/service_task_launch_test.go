@@ -309,6 +309,61 @@ func TestManagedDesignerCollectionIsAllocatedBeforeLaunch(t *testing.T) {
 	}
 }
 
+func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	specs := []taskLaunchSpec{
+		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Compact Navigation", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact"}, SwarmMode: true},
+		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Spacious Navigation", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious"}, SwarmMode: true},
+	}
+	collectionID, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-swarm", specs, nil)
+	if err != nil {
+		t.Fatalf("allocate managed collection: %v", err)
+	}
+	launches := make([]taskLaunchPrepared, 0, len(specs))
+	for i, spec := range specs {
+		run := managedDesignerArtifactContext(parent, "call-swarm", spec, i+1)
+		run.ChildSessionID = fmt.Sprintf("child-%d", i+1)
+		launches = append(launches, taskLaunchPrepared{LaunchIndex: i + 1, ChildSession: pebblestore.SessionSnapshot{ID: run.ChildSessionID}, ArtifactRunContext: run})
+	}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, launches, nil); err != nil {
+		t.Fatalf("project placeholders: %v", err)
+	}
+	collection, ok, err := svc.sessions.GetSessionArtifactCollection(parent.AccountScopeID, parent.ID, collectionID)
+	if err != nil || !ok {
+		t.Fatalf("load projected collection: ok=%v err=%v", ok, err)
+	}
+	if collection.Status != pebblestore.SessionArtifactStatusStaging || collection.VariantCount != len(specs) || collection.StagingCount != len(specs) || collection.ReadyCount != 0 || collection.FailedCount != 0 || collection.Lineage.IterationGroupID == "" {
+		t.Fatalf("projected collection = %#v", collection)
+	}
+	variants, err := svc.sessions.ListSessionArtifactVariants(parent.AccountScopeID, parent.ID, collectionID, 10)
+	if err != nil || len(variants) != len(specs) {
+		t.Fatalf("projected variants = %#v err=%v", variants, err)
+	}
+	seenIndexes := make(map[int]bool, len(variants))
+	for _, variant := range variants {
+		lineage := variant.Lineage
+		if variant.Status != pebblestore.SessionArtifactStatusStaging || lineage.ParentSessionID != parent.ID || lineage.TaskCallID != "call-swarm" || lineage.ChildSessionID == "" || lineage.SourceSessionID != lineage.ChildSessionID || lineage.IterationGroupID != collection.Lineage.IterationGroupID || lineage.IterationID == "" || lineage.IterationIndex < 1 || lineage.IterationIndex > len(specs) || lineage.IterationLabel == "" || lineage.IterationTheme == "" {
+			t.Fatalf("staging variant = %#v", variant)
+		}
+		seenIndexes[lineage.IterationIndex] = true
+	}
+	if len(seenIndexes) != len(specs) {
+		t.Fatalf("projected iteration indexes = %#v", seenIndexes)
+	}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, launches, nil); err != nil {
+		t.Fatalf("idempotent placeholders: %v", err)
+	}
+	replayed, err := svc.sessions.ListSessionArtifactVariants(parent.AccountScopeID, parent.ID, collectionID, 10)
+	if err != nil || len(replayed) != len(specs) {
+		t.Fatalf("replayed variants = %#v err=%v", replayed, err)
+	}
+}
+
 func TestManagedDesignerMissingOutputProjectsFailedVariant(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()

@@ -126,7 +126,8 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 			}
 			return existing, nil
 		}
-		if existing.Status != pebblestore.SessionArtifactStatusStaging || existing.Filename != variant.Filename || existing.MediaType != variant.MediaType || (existing.Lineage != (pebblestore.SessionArtifactLineage{}) && existing.Lineage != lineage) {
+		metadataCompatible := (existing.Filename == "" && existing.MediaType == "") || (existing.Filename == variant.Filename && existing.MediaType == variant.MediaType)
+		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || (existing.Lineage != (pebblestore.SessionArtifactLineage{}) && existing.Lineage != lineage) {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, or lineage", variant.ID)
 		}
 		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)
@@ -136,10 +137,13 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		if !collectionOK {
 			return pebblestore.SessionArtifactVariant{}, errors.New("artifact staging collection metadata is missing")
 		}
-		collection, variant, existingStaging = storedCollection, existing, true
-		if variant.Lineage == (pebblestore.SessionArtifactLineage{}) {
-			variant.Lineage = lineage
-		}
+		collection, existingStaging = storedCollection, true
+		// Keep the caller's filename/media/presentation for byte staging. The
+		// preallocated canonical row contributes identity and immutable lineage,
+		// then the terminal mutation merges the produced metadata into it.
+		variant.Version, variant.AccountScopeID, variant.SessionID, variant.Status = existing.Version, existing.AccountScopeID, existing.SessionID, existing.Status
+		variant.CreatedAt, variant.UpdatedAt, variant.EventSeq = existing.CreatedAt, existing.UpdatedAt, existing.EventSeq
+		variant.Lineage = lineage
 		if collection.Lineage == (pebblestore.SessionArtifactLineage{}) {
 			collection.Lineage = collectionLineage
 		}
