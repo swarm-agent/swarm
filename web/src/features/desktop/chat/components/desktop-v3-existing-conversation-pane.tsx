@@ -3103,17 +3103,27 @@ export function DesktopV3ExistingConversationPane({
                   />
                 </summary>
                 <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
-                  <DesktopPlanExecutionSidebar
-                    view={planExecutionView}
-                    embedded
-                    busyAction={planExecutionBusyAction}
-                    canStop={Boolean(currentRun)}
-                    onAction={stablePlanExecutionAction}
-                    onStop={stableStop}
-                    onEditPlan={stableOpenPlan}
-                    belowActions={planSidebarBelowActions}
-                    canonicalRecommendation={canonicalFinalHandoffRecommendation}
-                  />
+                  {hasSessionArtifacts ? (
+                    <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />Plan</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifacts.length}</button>
+                    </div>
+                  ) : null}
+                  {activeSidebarView === "artifacts" ? (
+                    <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => ({ ...desktopV3ArtifactSelection(artifact), label: artifact.label, description: artifact.description || undefined, action: "select" })))} />
+                  ) : (
+                    <DesktopPlanExecutionSidebar
+                      view={planExecutionView}
+                      embedded
+                      busyAction={planExecutionBusyAction}
+                      canStop={Boolean(currentRun)}
+                      onAction={stablePlanExecutionAction}
+                      onStop={stableStop}
+                      onEditPlan={stableOpenPlan}
+                      belowActions={planSidebarBelowActions}
+                      canonicalRecommendation={canonicalFinalHandoffRecommendation}
+                    />
+                  )}
                 </div>
               </details>
             </div>

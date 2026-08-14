@@ -33,6 +33,9 @@ test('plan execution adapts its desktop sidebar and shifts above the composer be
   assert.ok(compactRegionIndex >= 0 && composerIndex > compactRegionIndex, 'compact plan surface should render immediately before the composer')
 
   const compactRegion = paneSource.slice(compactRegionIndex, composerIndex)
+  assert.match(compactRegion, /data-mobile-session-sidebar-toggle/)
+  assert.match(compactRegion, /activeSidebarView === "artifacts"/)
+  assert.match(compactRegion, /<DesktopV3ArtifactSidebar[\s\S]*embedded/)
   assert.match(compactRegion, /<DesktopPlanExecutionSidebar/)
   assert.match(compactRegion, /embedded/)
   assert.match(compactRegion, /busyAction=\{planExecutionBusyAction\}/)
