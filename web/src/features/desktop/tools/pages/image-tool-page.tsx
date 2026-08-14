@@ -95,7 +95,7 @@ const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
 
 const IMAGE_MODEL_OPTIONS = [
-  { id: 'codex-image-gen', provider: 'codex_openai', model: 'gpt-5.5', label: 'Codex Image Gen', helper: 'OAuth only. Uses Codex/ChatGPT OAuth image generation.', kind: 'codex-image-gen' },
+  { id: 'codex-image-gen', provider: 'codex_openai', model: 'gpt-5.5', label: 'Codex Image Gen', helper: 'OAuth only. Codex image generation is really slow and may not work well for image swarms.', kind: 'codex-image-gen' },
   { id: 'gemini-nano-banana-2', provider: 'google_gemini', model: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', helper: 'Google API key. Fast Gemini image generation with real streaming.', kind: 'google-gemini' },
   { id: 'gemini-nano-banana-pro', provider: 'google_gemini', model: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro', helper: 'Google API key. Pro Gemini image generation.', kind: 'google-gemini' },
   { id: 'gemini-nano-banana', provider: 'google_gemini', model: 'gemini-2.5-flash-image', label: 'Nano Banana', helper: 'Google API key. Supports 512, 1K, 2K, and 4K output sizes.', kind: 'google-gemini' },
@@ -1094,15 +1094,26 @@ export function ImageToolPage() {
                             >
                               <span className="block truncate text-[12px] font-semibold text-[var(--app-text)]">{option.label}</span>
                               <span className="mt-1 block truncate text-[10px] text-[var(--app-text-subtle)]">{option.providerLabel}</span>
+                              <span className={`mt-1 block text-[10px] leading-4 ${option.kind === 'codex-image-gen' ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-subtle)]'}`}>
+                                {option.helper}
+                              </span>
                             </button>
                           )
                         })}
                       </div>
                     ) : null}
                   </div>
-                  <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-                    {imageDefaultStatus || (connectedImageModelOptions.length > 0 ? 'Connected providers only. This DB-backed default auto-selects in the generator.' : 'Connect Codex OAuth or a Google API key to enable image defaults.')}
-                  </p>
+                  {imageDefaultStatus ? (
+                    <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">{imageDefaultStatus}</p>
+                  ) : activeImageDefaultOption ? (
+                    <p className={`mt-2 text-[10px] leading-4 ${activeImageDefaultOption.kind === 'codex-image-gen' ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-subtle)]'}`}>
+                      {activeImageDefaultOption.helper}
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                      Connect Codex OAuth or a Google API key to enable image defaults.
+                    </p>
+                  )}
                 </div>
               </div>
             )}
