@@ -3162,11 +3162,18 @@ func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availab
 			contextLabel += " · parent integration required"
 		}
 	}
-	if presentation.TaskSwarmAgent == "idea" {
+	switch presentation.TaskSwarmAgent {
+	case "idea":
 		headerLabel = "IDEA SWARM"
-		if presentation.TaskSwarmModel != "" {
-			headerLabel += "  ·  " + presentation.TaskSwarmModel
-		}
+	case "coder":
+		headerLabel += "  ·  CODERS"
+	case "designer":
+		headerLabel += "  ·  DESIGNERS"
+	case "mixed":
+		headerLabel += "  ·  MIXED AGENTS"
+	}
+	if presentation.TaskSwarmModel != "" {
+		headerLabel += "  ·  " + presentation.TaskSwarmModel
 	}
 	header := fmt.Sprintf("✦ %s  ·  %d AGENTS  ·  RUN %d  OK %d", headerLabel, len(presentation.TaskRows), running, done)
 	if pending > 0 {

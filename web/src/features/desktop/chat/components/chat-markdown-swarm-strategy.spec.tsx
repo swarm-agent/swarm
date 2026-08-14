@@ -40,6 +40,44 @@ test("legacy explore payload renders as Iteration Swarm", () => {
   assert.doesNotMatch(markup, /SWARM MODE/);
 });
 
+test("Iteration Swarm header shows worker type and shared provider/model", () => {
+  const markup = renderTask({
+    tool: "task",
+    path_id: "tool.task.v1",
+    task_mode: "swarm",
+    launches: [1, 2].map((launchIndex) => ({
+      launch_index: launchIndex,
+      swarm_mode: true,
+      subagent: "coder",
+      subagent_provider: "codex",
+      subagent_model: "gpt-5.6-sol",
+      assignment_label: `Coder ${launchIndex}`,
+      status: "running",
+    })),
+  }, { mode: "swarm", agent_type: "coder" });
+
+  assert.match(markup, /ITERATION SWARM · CODERS · codex\/gpt-5\.6-sol/);
+});
+
+test("Designer swarm header identifies designers", () => {
+  const markup = renderTask({
+    tool: "task",
+    path_id: "tool.task.v1",
+    task_mode: "swarm",
+    launches: [{
+      launch_index: 1,
+      swarm_mode: true,
+      subagent: "designer",
+      subagent_provider: "anthropic",
+      subagent_model: "claude-sonnet-4-5",
+      assignment_label: "Designer 1",
+      status: "running",
+    }],
+  }, { mode: "swarm", agent_type: "designer" });
+
+  assert.match(markup, /ITERATION SWARM · DESIGNERS · anthropic\/claude-sonnet-4-5/);
+});
+
 test("active Task Program keeps live tool state in its row without a stacked stream section", () => {
   const program = {
     id: "release_program",

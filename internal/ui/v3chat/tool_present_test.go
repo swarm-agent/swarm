@@ -321,6 +321,35 @@ func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing
 	}
 }
 
+func TestTaskSwarmHeaderShowsWorkerTypeAndSharedProviderModel(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		agent     string
+		wantAgent string
+	}{
+		{name: "coders", agent: "coder", wantAgent: "CODERS"},
+		{name: "designers", agent: "designer", wantAgent: "DESIGNERS"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			launches := []map[string]any{
+				{"launch_index": 1, "subagent": testCase.agent, "assignment_label": "Worker 1", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "running"},
+				{"launch_index": 2, "subagent": testCase.agent, "assignment_label": "Worker 2", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "ok"},
+			}
+			payload, err := json.Marshal(map[string]any{"tool": "task", "task_mode": "swarm", "launch_count": len(launches), "launches": launches})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tool := ToolTimelineItem{Name: "task", Arguments: fmt.Sprintf(`{"mode":"swarm","agent_type":%q}`, testCase.agent), Output: string(payload), Status: "running"}
+			text := renderTaskPresentationRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 100, 16, testPageStyles()))
+			for _, want := range []string{"ITERATION SWARM", testCase.wantAgent, "codex/gpt-5.6-sol"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("swarm header missing %q:\n%s", want, text)
+				}
+			}
+		})
+	}
+}
+
 func TestAssemblySwarmShowsPartsAndPendingParentIntegration(t *testing.T) {
 	payload := `{"tool":"task","path_id":"tool.task.v1","task_mode":"swarm","swarm_strategy":"assembly","integration_contract":"Combine committed parts into the parent deliverable.","integration_required":true,"integration_status":"pending_parent_assembly","ready_for_dependent_work":false,"launch_count":1,"launches":[{"launch_index":1,"swarm_mode":true,"swarm_strategy":"assembly","assembly_part":{"name":"Backend API","owned_scope":["swarmd/internal/api/**"]},"integration_contract":"Combine committed parts into the parent deliverable.","integration_required":true,"subagent":"coder","status":"ok"}]}`
 	tool := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","swarm_strategy":"assembly"}`, Output: payload, Status: "completed"}

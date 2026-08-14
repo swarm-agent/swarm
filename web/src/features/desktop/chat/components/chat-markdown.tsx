@@ -974,11 +974,17 @@ function taskRowsCounts(rows: TaskToolRow[]) {
 }
 
 function taskSwarmHeaderLabel(rows: TaskToolRow[], strategy: "explore" | "assembly"): string {
-  if (strategy === "assembly") return "ASSEMBLY SWARM";
-  const ideaSwarm = rows.length > 0 && rows.every((row) => row.agent.trim().toLowerCase() === "idea");
-  if (!ideaSwarm) return "ITERATION SWARM";
+  const agents = Array.from(new Set(rows.map((row) => row.agent.trim().toLowerCase()).filter(Boolean)));
+  const agent = agents.length === 1 ? agents[0] : agents.length > 1 ? "mixed" : "";
+  const baseLabel = agent === "idea"
+    ? "IDEA SWARM"
+    : strategy === "assembly" ? "ASSEMBLY SWARM" : "ITERATION SWARM";
+  const workerLabel = agent === "coder"
+    ? "CODERS"
+    : agent === "designer" ? "DESIGNERS" : agent === "mixed" ? "MIXED AGENTS" : "";
   const models = Array.from(new Set(rows.map((row) => row.modelLabel.trim().replace(/\s*\/\s*/g, "/")).filter(Boolean)));
-  return models.length === 1 ? `IDEA SWARM · ${models[0]}` : "IDEA SWARM";
+  const modelLabel = models.length === 1 ? models[0] : models.length > 1 ? "mixed models" : "";
+  return [baseLabel, workerLabel, modelLabel].filter(Boolean).join(" · ");
 }
 
 function TaskRowsHeader({ counts, rows = [], swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; rows?: TaskToolRow[]; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean; density?: TaskSwarmDensity }) {
