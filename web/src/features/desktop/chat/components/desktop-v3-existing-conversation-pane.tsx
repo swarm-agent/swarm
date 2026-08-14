@@ -1865,6 +1865,8 @@ export function DesktopV3ExistingConversationPane({
   const [sidebarView, setSidebarView] = useState<DesktopV3SessionSidebarView>("plan");
   const [artifactGalleryOpen, setArtifactGalleryOpen] = useState(false);
   const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
+  const [artifactComposerFocusSignal, setArtifactComposerFocusSignal] = useState(0);
+  const dismissedArtifactViewerLocationKeyRef = useRef("");
   const artifactSidebarSessionRef = useRef("");
   const priorSessionArtifactCountRef = useRef(0);
   const priorSessionHasPlanRef = useRef(false);
@@ -2073,7 +2075,18 @@ export function DesktopV3ExistingConversationPane({
     : hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts")
       ? "artifacts"
       : "plan";
-  const artifactViewerLocation = desktopV3ArtifactViewerLocation(normalizedSessionId, artifactRouteSearch);
+  const artifactViewerLocation = useMemo(
+    () => desktopV3ArtifactViewerLocation(normalizedSessionId, artifactRouteSearch),
+    [
+      artifactRouteSearch.artifact,
+      artifactRouteSearch.artifactSession,
+      artifactRouteSearch.collection,
+      normalizedSessionId,
+    ],
+  );
+  const artifactViewerLocationKey = artifactViewerLocation
+    ? `${artifactViewerLocation.sessionId}:${artifactViewerLocation.collectionId ?? ""}:${artifactViewerLocation.artifactId ?? ""}`
+    : "";
   const artifactViewerEntry = artifactViewerLocation
     ? desktopV3ArtifactCatalogEntryForViewerLocation(sessionArtifacts, artifactViewerLocation)
     : undefined;
@@ -2132,7 +2145,12 @@ export function DesktopV3ExistingConversationPane({
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
   const setArtifactGalleryOpenFromViewer = useCallback((nextOpen: boolean) => {
     setArtifactGalleryOpen(nextOpen);
-    if (nextOpen || !routeWorkspaceSlug) return;
+    if (nextOpen) {
+      dismissedArtifactViewerLocationKeyRef.current = "";
+      return;
+    }
+    dismissedArtifactViewerLocationKeyRef.current = artifactViewerLocationKey;
+    if (!routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
@@ -2144,12 +2162,16 @@ export function DesktopV3ExistingConversationPane({
       }),
       replace: true,
     });
-  }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
+  }, [artifactViewerLocationKey, navigate, normalizedSessionId, routeWorkspaceSlug]);
   useEffect(() => {
-    if (!artifactViewerLocation) return;
+    if (!artifactViewerLocation) {
+      dismissedArtifactViewerLocationKeyRef.current = "";
+      return;
+    }
+    if (dismissedArtifactViewerLocationKeyRef.current === artifactViewerLocationKey) return;
     setArtifactGalleryOpen(true);
     if (artifactViewerEntry) setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifactViewerEntry));
-  }, [artifactViewerEntry, artifactViewerLocation]);
+  }, [artifactViewerEntry, artifactViewerLocation, artifactViewerLocationKey]);
   const {
     scrollContainerRef,
     contentRef,
@@ -3123,7 +3145,7 @@ export function DesktopV3ExistingConversationPane({
             sessionId={normalizedSessionId}
             initialDraft={storedOperation?.request.content ?? ""}
             initialArtifactSelections={storedOperation?.request.artifact_selections ?? []}
-            focusSignal={composerFocusSignal}
+            focusSignal={composerFocusSignal + artifactComposerFocusSignal}
             hasStoredOperation={hasStoredOperation}
             canSubmitWithoutDraft={canSubmitWithoutDraft}
             controllerRef={composerControllerRef}
@@ -3272,10 +3294,13 @@ export function DesktopV3ExistingConversationPane({
         onCollectionNavigate={openArtifactCollection}
         onAddToChat={(artifacts) => {
           queueGalleryArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" })));
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
         }}
         onUseThisDesign={({ label, selection }) => {
           queueGalleryArtifactSelections([{ ...selection, label, action: "use" }]);
-          setArtifactGalleryOpen(false);
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
         }}
         onSelectionPersisted={refreshSessionArtifacts}
       />

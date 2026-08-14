@@ -412,6 +412,7 @@ export function DesktopV3ArtifactGallery({
         selection: desktopV3ArtifactSelection(artifact),
       })))
       setChatSelectedIds([])
+      setOpen(false)
       return true
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not add the artifacts to chat')
@@ -430,6 +431,7 @@ export function DesktopV3ArtifactGallery({
       setDurableSelectedId(artifactSelectionKey(selected))
       await onSelectionPersisted?.()
       await onUseThisDesign({ label: selected.label, selection: canonicalSelection })
+      setOpen(false)
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not use this design')
     } finally {
