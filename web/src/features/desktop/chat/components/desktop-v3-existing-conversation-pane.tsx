@@ -12,7 +12,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMatchRoute, useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
@@ -1554,7 +1554,7 @@ export function DesktopV3ExistingConversationPane({
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
-  const matchRoute = useMatchRoute();
+  const routeParams = useParams({ strict: false }) as { workspaceSlug?: unknown };
   const artifactRouteSearch = useSearch({ strict: false }) as { artifactSession?: unknown; artifact?: unknown; collection?: unknown };
   const queryClient = useQueryClient();
   const mountedRef = useRef(true);
@@ -1846,14 +1846,9 @@ export function DesktopV3ExistingConversationPane({
     effectiveContextWindowValue,
     displayedUsage,
   );
-  const workspaceSettingsMatch =
-    matchRoute({ to: "/$workspaceSlug/settings", fuzzy: false }) ??
-    matchRoute({ to: "/$workspaceSlug/$sessionId", fuzzy: false }) ??
-    matchRoute({ to: "/$workspaceSlug", fuzzy: false });
-  const routeWorkspaceSlug =
-    workspaceSettingsMatch && "workspaceSlug" in workspaceSettingsMatch
-      ? String(workspaceSettingsMatch.workspaceSlug ?? "").trim()
-      : "";
+  const routeWorkspaceSlug = typeof routeParams.workspaceSlug === "string"
+    ? routeParams.workspaceSlug.trim()
+    : "";
   const openPermissionsSettings = useCallback(() => {
     const search = { tab: "permissions" as const, returnSessionId: normalizedSessionId };
     if (routeWorkspaceSlug) {

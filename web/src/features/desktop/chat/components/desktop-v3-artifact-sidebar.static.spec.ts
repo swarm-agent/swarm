@@ -52,6 +52,8 @@ test('artifact sidebar renders authorized thumbnail previews and opens full gall
   assert.match(sidebar, /onAddToChat/)
   assert.match(sidebar, /Add \$\{artifact\.label\} to chat/)
   assert.match(sidebar, /MessageSquarePlus/)
+  assert.match(pane, /useParams\(\{ strict: false \}\)/)
+  assert.match(pane, /typeof routeParams\.workspaceSlug === "string"/)
   assert.match(pane, /desktopV3ArtifactViewerHref\(routeWorkspaceSlug/)
   assert.match(pane, /sessionId: normalizedSessionId/)
   assert.match(pane, /desktopV3ArtifactCollectionViewerHref\(routeWorkspaceSlug/)
