@@ -25,26 +25,27 @@ type Service struct {
 }
 
 type Resolution struct {
-	RequestedPath             string `json:"requested_path"`
-	ResolvedPath              string `json:"resolved_path"`
-	WorkspaceID               string `json:"workspace_id,omitempty"`
-	LocalWorkspaceBindingID   string `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceGeneration       int64  `json:"workspace_generation,omitempty"`
-	WorkspaceState            string `json:"workspace_state,omitempty"`
-	WorkspacePath             string `json:"workspace_path"`
-	WorkspaceName             string `json:"workspace_name"`
-	ThemeID                   string `json:"theme_id,omitempty"`
-	IconPNGDataURL            string `json:"icon_png_data_url,omitempty"`
-	Definition                string `json:"definition,omitempty"`
-	DefinitionStatus          string `json:"definition_status,omitempty"`
-	DefinitionAttemptCount    int    `json:"definition_attempt_count,omitempty"`
-	DefinitionGeneration      int64  `json:"definition_generation,omitempty"`
-	DefinitionError           string `json:"definition_error,omitempty"`
-	DefinitionModelSuggestion string `json:"definition_model_suggestion,omitempty"`
-	DefinitionPendingAt       int64  `json:"definition_pending_at,omitempty"`
-	DefinitionCompletedAt     int64  `json:"definition_completed_at,omitempty"`
-	DefinitionFailedAt        int64  `json:"definition_failed_at,omitempty"`
-	DefinitionUpdatedAt       int64  `json:"definition_updated_at,omitempty"`
+	RequestedPath             string   `json:"requested_path"`
+	ResolvedPath              string   `json:"resolved_path"`
+	WorkspaceID               string   `json:"workspace_id,omitempty"`
+	LocalWorkspaceBindingID   string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceGeneration       int64    `json:"workspace_generation,omitempty"`
+	WorkspaceState            string   `json:"workspace_state,omitempty"`
+	WorkspacePath             string   `json:"workspace_path"`
+	WorkspaceName             string   `json:"workspace_name"`
+	ThemeID                   string   `json:"theme_id,omitempty"`
+	IconPNGDataURL            string   `json:"icon_png_data_url,omitempty"`
+	SourceMediaDirectories    []string `json:"source_media_directories,omitempty"`
+	Definition                string   `json:"definition,omitempty"`
+	DefinitionStatus          string   `json:"definition_status,omitempty"`
+	DefinitionAttemptCount    int      `json:"definition_attempt_count,omitempty"`
+	DefinitionGeneration      int64    `json:"definition_generation,omitempty"`
+	DefinitionError           string   `json:"definition_error,omitempty"`
+	DefinitionModelSuggestion string   `json:"definition_model_suggestion,omitempty"`
+	DefinitionPendingAt       int64    `json:"definition_pending_at,omitempty"`
+	DefinitionCompletedAt     int64    `json:"definition_completed_at,omitempty"`
+	DefinitionFailedAt        int64    `json:"definition_failed_at,omitempty"`
+	DefinitionUpdatedAt       int64    `json:"definition_updated_at,omitempty"`
 }
 
 type Entry struct {
@@ -57,6 +58,7 @@ type Entry struct {
 	ThemeID                   string   `json:"theme_id,omitempty"`
 	IconPNGDataURL            string   `json:"icon_png_data_url,omitempty"`
 	Directories               []string `json:"directories"`
+	SourceMediaDirectories    []string `json:"source_media_directories,omitempty"`
 	IsGitRepo                 bool     `json:"is_git_repo"`
 	SortIndex                 int      `json:"sort_index"`
 	AddedAt                   int64    `json:"added_at"`
@@ -356,6 +358,89 @@ func (s *Service) AddDirectoryForPrincipal(principal identity.Principal, path, d
 	return resolutionForEntry(directory, targetPath, entry, name), nil
 }
 
+func (s *Service) ListSourceMediaDirectoriesForPrincipal(principal identity.Principal, path string) (Resolution, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	workspacePath, err := resolvePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	entry, ok, err := s.store.GetForAccount(principal.AccountScopeID, workspacePath)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if !ok {
+		return Resolution{}, fmt.Errorf("workspace not found for path %q", workspacePath)
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(entry.Path)
+	}
+	return resolutionForEntry(path, workspacePath, entry, name), nil
+}
+
+// AddSourceMediaDirectoryForPrincipal registers a canonical existing directory
+// for future explicit source-media analysis. It deliberately does not mutate
+// workspace Directories or Scope and therefore grants no generic filesystem access.
+func (s *Service) AddSourceMediaDirectoryForPrincipal(principal identity.Principal, path, directory string) (Resolution, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	workspacePath, err := resolvePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	targetPath, err := resolvePath(directory)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if err := ensureWorkspaceDirectory(targetPath); err != nil {
+		return Resolution{}, err
+	}
+	entry, err := s.store.AddSourceMediaDirectoryForAccount(principal.AccountScopeID, workspacePath, targetPath)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("add source media directory: %w", err)
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(entry.Path)
+	}
+	return resolutionForEntry(directory, targetPath, entry, name), nil
+}
+
+func (s *Service) RemoveSourceMediaDirectoryForPrincipal(principal identity.Principal, path, directory string) (Resolution, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	workspacePath, err := resolvePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	targetPath, err := resolvePath(directory)
+	if err != nil {
+		return Resolution{}, err
+	}
+	entry, err := s.store.RemoveSourceMediaDirectoryForAccount(principal.AccountScopeID, workspacePath, targetPath)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("remove source media directory: %w", err)
+	}
+	name := strings.TrimSpace(entry.Name)
+	if name == "" {
+		name = defaultWorkspaceName(entry.Path)
+	}
+	return resolutionForEntry(directory, targetPath, entry, name), nil
+}
+
 func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
 	return Resolution{}, identity.ErrPrincipalRequired
 }
@@ -579,6 +664,7 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
 			IconPNGDataURL:            entry.IconPNGDataURL,
 			Directories:               append([]string(nil), entry.Directories...),
+			SourceMediaDirectories:    append([]string(nil), entry.SourceMediaDirectories...),
 			IsGitRepo:                 isGitRepo,
 			SortIndex:                 entry.SortIndex,
 			AddedAt:                   entry.AddedAt,
@@ -629,6 +715,7 @@ func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int)
 			ThemeID:                   normalizeWorkspaceThemeID(entry.ThemeID),
 			IconPNGDataURL:            entry.IconPNGDataURL,
 			Directories:               append([]string(nil), entry.Directories...),
+			SourceMediaDirectories:    append([]string(nil), entry.SourceMediaDirectories...),
 			IsGitRepo:                 isGitRepo,
 			SortIndex:                 entry.SortIndex,
 			AddedAt:                   entry.AddedAt,
@@ -1230,6 +1317,7 @@ func resolutionFromScope(requestedPath string, scope Scope) Resolution {
 func resolutionForEntry(requestedPath, resolvedPath string, entry pebblestore.WorkspaceEntry, workspaceName string) Resolution {
 	resolution := resolutionForWorkspace(requestedPath, resolvedPath, entry.Path, entry.WorkspaceID, entry.WorkspaceGeneration, entry.State, workspaceName, normalizeWorkspaceThemeID(entry.ThemeID))
 	resolution.IconPNGDataURL = entry.IconPNGDataURL
+	resolution.SourceMediaDirectories = append([]string(nil), entry.SourceMediaDirectories...)
 	resolution.Definition = entry.Definition
 	resolution.DefinitionStatus = entry.DefinitionStatus
 	resolution.DefinitionAttemptCount = entry.DefinitionAttemptCount

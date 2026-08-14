@@ -43,6 +43,7 @@ type WorkspaceEntry struct {
 	ThemeID                   string   `json:"theme_id,omitempty"`
 	IconPNGDataURL            string   `json:"icon_png_data_url,omitempty"`
 	Directories               []string `json:"directories,omitempty"`
+	SourceMediaDirectories    []string `json:"source_media_directories,omitempty"`
 	SortIndex                 int      `json:"sort_index,omitempty"`
 	AddedAt                   int64    `json:"added_at"`
 	UpdatedAt                 int64    `json:"updated_at"`
@@ -477,6 +478,82 @@ func (s *WorkspaceStore) AddDirectoryForAccount(accountScopeID, path, directory 
 	return entry, nil
 }
 
+// AddSourceMediaDirectoryForAccount records source-media metadata separately
+// from Directories. Callers must not treat these paths as workspace scope or
+// generic filesystem roots.
+func (s *WorkspaceStore) AddSourceMediaDirectoryForAccount(accountScopeID, path, directory string) (WorkspaceEntry, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	path = strings.TrimSpace(path)
+	directory = strings.TrimSpace(directory)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+	}
+	if path == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace path is required")
+	}
+	if directory == "" {
+		return WorkspaceEntry{}, fmt.Errorf("source media directory path is required")
+	}
+	entry, ok, err := s.GetForAccount(accountScopeID, path)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", path)
+	}
+	for _, existing := range entry.SourceMediaDirectories {
+		if existing == directory {
+			return WorkspaceEntry{}, fmt.Errorf("source media directory %q is already shared with workspace %q", directory, path)
+		}
+	}
+	entry.SourceMediaDirectories = normalizeSourceMediaDirectories(append(entry.SourceMediaDirectories, directory))
+	entry.UpdatedAt = time.Now().UnixMilli()
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *WorkspaceStore) RemoveSourceMediaDirectoryForAccount(accountScopeID, path, directory string) (WorkspaceEntry, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	path = strings.TrimSpace(path)
+	directory = strings.TrimSpace(directory)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+	}
+	if path == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace path is required")
+	}
+	if directory == "" {
+		return WorkspaceEntry{}, fmt.Errorf("source media directory path is required")
+	}
+	entry, ok, err := s.GetForAccount(accountScopeID, path)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", path)
+	}
+	updated := make([]string, 0, len(entry.SourceMediaDirectories))
+	removed := false
+	for _, existing := range entry.SourceMediaDirectories {
+		if existing == directory {
+			removed = true
+			continue
+		}
+		updated = append(updated, existing)
+	}
+	if !removed {
+		return WorkspaceEntry{}, fmt.Errorf("source media directory %q is not shared with workspace %q", directory, path)
+	}
+	entry.SourceMediaDirectories = normalizeSourceMediaDirectories(updated)
+	entry.UpdatedAt = time.Now().UnixMilli()
+	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
+}
+
 func (s *WorkspaceStore) RemoveDirectoryForAccount(accountScopeID, path, directory string) (WorkspaceEntry, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {
@@ -829,6 +906,26 @@ func requireWorkspacePrincipalParts(accountScopeID, userID string) (string, stri
 	return accountScopeID, userID, nil
 }
 
+func normalizeSourceMediaDirectories(directories []string) []string {
+	seen := make(map[string]struct{}, len(directories))
+	out := make([]string, 0, len(directories))
+	for _, raw := range directories {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func normalizeWorkspaceDirectories(primary string, directories []string) []string {
 	primary = strings.TrimSpace(primary)
 	seen := make(map[string]struct{}, len(directories)+1)
@@ -886,6 +983,7 @@ func normalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEnt
 	entry.Name = strings.TrimSpace(entry.Name)
 	entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
 	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
+	entry.SourceMediaDirectories = normalizeSourceMediaDirectories(entry.SourceMediaDirectories)
 	entry.State = normalizeWorkspaceState(entry.State)
 	if entry.WorkspaceGeneration <= 0 {
 		entry.WorkspaceGeneration = 1
