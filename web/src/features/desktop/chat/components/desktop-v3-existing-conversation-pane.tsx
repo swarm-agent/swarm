@@ -2104,7 +2104,7 @@ export function DesktopV3ExistingConversationPane({
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
-      search: (previous) => ({ ...previous, artifactSession: undefined, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
+      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
     });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
   const openArtifactCollection = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
@@ -2120,7 +2120,6 @@ export function DesktopV3ExistingConversationPane({
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
       search: (previous) => ({
         ...previous,
-        artifactSession: undefined,
         artifact: undefined,
         collection: undefined,
         ...desktopV3ArtifactCollectionViewerSearch({ sessionId: normalizedSessionId, collectionId: artifact.collectionId! }),
@@ -2132,7 +2131,7 @@ export function DesktopV3ExistingConversationPane({
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
-      search: (previous) => ({ ...previous, artifactSession: undefined, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
+      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
       replace: true,
     });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
