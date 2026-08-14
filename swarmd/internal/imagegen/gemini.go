@@ -111,7 +111,7 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	}
 	modelID := strings.TrimSpace(req.Model)
 	if modelID == "" {
-		modelID = defaultGeminiImageModel
+		return GeminiImageGenerationResult{}, errors.New("Google image model is required")
 	}
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
@@ -245,7 +245,14 @@ func (s *Service) generateGoogleGemini(ctx context.Context, req GenerateRequest,
 		imageGenerationLogf("stage=open_session provider=%q thread_id=%q reason=%q will_save=false", ProviderGoogleGemini, strings.TrimSpace(req.Target.ThreadID), err.Error())
 		return GenerateResult{}, err
 	}
-	modelID := normalizeGeminiImageModel(req.Model)
+	selection, err := s.ResolveModelSelection(req.Model)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	if selection.Provider != ProviderGoogleGemini {
+		return GenerateResult{}, fmt.Errorf("configured image model %q is not a Google image model", req.Model)
+	}
+	modelID := selection.Model
 	aspectRatio := normalizeGeminiAspectRatio(firstNonEmpty(settingString(req.Settings, "aspect_ratio"), req.Size))
 	imageSize, err := normalizeGeminiImageSize(modelID, firstNonEmpty(settingString(req.Settings, "image_size"), settingString(req.Settings, "size")))
 	if err != nil {
@@ -546,19 +553,6 @@ func (s *Service) recordImageGenerationMetadata(thread pebblestore.ImageThreadSn
 		return pebblestore.ImageThreadSnapshot{}, fmt.Errorf("record image generation metadata: %w", err)
 	}
 	return updated, nil
-}
-
-func normalizeGeminiImageModel(model string) string {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return defaultGeminiImageModel
-	}
-	for _, allowed := range geminiImageModels {
-		if model == allowed {
-			return model
-		}
-	}
-	return defaultGeminiImageModel
 }
 
 func normalizeGeminiAspectRatio(value string) string {

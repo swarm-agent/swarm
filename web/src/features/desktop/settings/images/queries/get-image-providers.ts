@@ -14,33 +14,11 @@ export interface ImageProviderOption {
 }
 
 function selectionID(model: string): string {
-  switch (model.trim()) {
-    case 'gpt-5.5':
-      return 'codex-image-gen'
-    case 'gemini-3.1-flash-image-preview':
-      return 'gemini-nano-banana-2'
-    case 'gemini-3-pro-image-preview':
-      return 'gemini-nano-banana-pro'
-    case 'gemini-2.5-flash-image':
-      return 'gemini-nano-banana'
-    default:
-      return model.trim()
-  }
+  return model.trim() === 'gpt-5.5' ? 'codex-image-gen' : model.trim()
 }
 
 function modelLabel(model: string): string {
-  switch (selectionID(model)) {
-    case 'codex-image-gen':
-      return 'Codex Image Gen'
-    case 'gemini-nano-banana-2':
-      return 'Nano Banana 2'
-    case 'gemini-nano-banana-pro':
-      return 'Nano Banana Pro'
-    case 'gemini-nano-banana':
-      return 'Nano Banana'
-    default:
-      return model.trim()
-  }
+  return selectionID(model) === 'codex-image-gen' ? 'Codex Image Gen' : model.trim()
 }
 
 function parseProvider(value: unknown): ImageProviderOption | null {

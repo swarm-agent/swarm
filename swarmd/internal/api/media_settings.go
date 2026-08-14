@@ -68,23 +68,36 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities) (mediaCatalogR
 	for _, status := range caps.Providers {
 		providerStatus[status.ID] = status
 	}
-	for _, selectionID := range imagegen.SupportedModelSelectionIDs() {
-		selection, err := imagegen.ResolveModelSelection(selectionID)
-		if err != nil {
-			return mediaCatalogResponse{}, err
-		}
-		catalogProvider := imageCatalogProvider(selection.Provider)
-		lookup, err := s.model.GetCatalog(catalogProvider, selection.Model)
-		if err != nil {
-			return mediaCatalogResponse{}, err
-		}
+	for _, selection := range imagegen.HardcodedModelSelections() {
 		status := providerStatus[selection.Provider]
 		option := mediaCatalogOption{
 			ID: selection.ID, Provider: selection.Provider, Model: selection.Model, Kind: mediaKindImage,
 			Ready: status.Ready, Reason: status.Reason, DisplayName: selection.DisplayName,
 		}
+		lookup, err := s.model.GetCatalog("codex", selection.Model)
+		if err != nil {
+			return mediaCatalogResponse{}, err
+		}
 		if lookup.Found {
-			option.DisplayName = firstMediaDisplayName(lookup.Record.DisplayName, option.DisplayName, selection.Model)
+			option.Pricing = cloneMediaPricing(lookup.Record.Pricing)
+		}
+		response.ImageModels = append(response.ImageModels, option)
+	}
+	googleSelections, err := s.imageGen.GoogleImageModelSelections()
+	if err != nil {
+		return mediaCatalogResponse{}, err
+	}
+	googleStatus := providerStatus[imagegen.ProviderGoogleGemini]
+	for _, selection := range googleSelections {
+		lookup, err := s.model.GetCatalog("google", selection.Model)
+		if err != nil {
+			return mediaCatalogResponse{}, err
+		}
+		option := mediaCatalogOption{
+			ID: selection.ID, Provider: selection.Provider, Model: selection.Model, Kind: mediaKindImage,
+			Ready: googleStatus.Ready, Reason: googleStatus.Reason, DisplayName: selection.DisplayName,
+		}
+		if lookup.Found {
 			option.Pricing = cloneMediaPricing(lookup.Record.Pricing)
 		}
 		response.ImageModels = append(response.ImageModels, option)
@@ -94,7 +107,6 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities) (mediaCatalogR
 	if err != nil {
 		return mediaCatalogResponse{}, err
 	}
-	googleStatus := providerStatus[imagegen.ProviderGoogleGemini]
 	for _, record := range records {
 		if !isGoogleVideoTranscriptionCatalogRecord(record) {
 			continue
@@ -109,17 +121,6 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities) (mediaCatalogR
 		return response.TranscriptionModels[i].DisplayName < response.TranscriptionModels[j].DisplayName
 	})
 	return response, nil
-}
-
-func imageCatalogProvider(provider string) string {
-	switch provider {
-	case imagegen.ProviderCodexOpenAI:
-		return "codex"
-	case imagegen.ProviderGoogleGemini:
-		return "google"
-	default:
-		return provider
-	}
 }
 
 func isGoogleVideoTranscriptionCatalogRecord(record pebblestore.ModelCatalogRecord) bool {

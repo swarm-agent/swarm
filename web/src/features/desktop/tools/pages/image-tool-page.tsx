@@ -26,6 +26,25 @@ type ImageProviderStatus = {
   models?: string[]
 }
 
+type ImageModelOption = {
+  id: string
+  provider: string
+  model: string
+  label: string
+  helper: string
+  kind: 'codex-image-gen' | 'google-gemini'
+}
+
+type MediaCatalogModelOption = {
+  id: string
+  provider: string
+  model: string
+  display_name: string
+  kind: 'image_generation' | 'video_understanding'
+  ready: boolean
+  reason?: string
+}
+
 type ImageGenerationPartial = {
   item_id?: string
   output_index?: number
@@ -78,7 +97,7 @@ type GeminiChargeInfo = {
   hasCharge: boolean
 }
 
-type ConnectedImageModelOption = (typeof IMAGE_MODEL_OPTIONS)[number] & {
+type ConnectedImageModelOption = ImageModelOption & {
   providerLabel: string
   providerReady: boolean
 }
@@ -94,12 +113,14 @@ type GenerationControlMode = 'manual' | 'ai'
 const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
 
-const IMAGE_MODEL_OPTIONS = [
-  { id: 'codex-image-gen', provider: 'codex_openai', model: 'gpt-5.5', label: 'Codex Image Gen', helper: 'OAuth only. Codex image generation is really slow and may not work well for image swarms.', kind: 'codex-image-gen' },
-  { id: 'gemini-nano-banana-2', provider: 'google_gemini', model: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', helper: 'Google API key. Fast Gemini image generation with real streaming.', kind: 'google-gemini' },
-  { id: 'gemini-nano-banana-pro', provider: 'google_gemini', model: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro', helper: 'Google API key. Pro Gemini image generation.', kind: 'google-gemini' },
-  { id: 'gemini-nano-banana', provider: 'google_gemini', model: 'gemini-2.5-flash-image', label: 'Nano Banana', helper: 'Google API key. Supports 512, 1K, 2K, and 4K output sizes.', kind: 'google-gemini' },
-] as const
+const CODEX_IMAGE_MODEL_OPTION: ImageModelOption = {
+  id: 'codex-image-gen',
+  provider: 'codex_openai',
+  model: 'gpt-5.5',
+  label: 'Codex Image Gen',
+  helper: 'OAuth only. Codex image generation is really slow and may not work well for image swarms.',
+  kind: 'codex-image-gen',
+}
 
 const OPENAI_IMAGE_SIZE_OPTIONS = [
   { id: 'auto', label: 'Auto', helper: 'Best fit for prompt', aspectRatio: '1:1', size: 'Model default' },
@@ -290,6 +311,18 @@ async function fetchImageProviders(): Promise<ImageProviderStatus[]> {
   return response.providers ?? []
 }
 
+async function fetchImageModelOptions(): Promise<ImageModelOption[]> {
+  const response = await requestJson<{ image_models?: MediaCatalogModelOption[] }>('/v1/media/settings/catalog')
+  return (response.image_models ?? []).map((option) => ({
+    id: option.id,
+    provider: option.provider,
+    model: option.model,
+    label: option.display_name,
+    helper: option.provider === 'codex_openai' ? CODEX_IMAGE_MODEL_OPTION.helper : 'Google API key. Snapshot-backed Gemini image generation.',
+    kind: option.provider === 'codex_openai' ? 'codex-image-gen' : 'google-gemini',
+  }))
+}
+
 export function ImageToolPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -324,7 +357,7 @@ export function ImageToolPage() {
   const thumbnailScrollerRef = useRef<HTMLDivElement | null>(null)
   const mobileSelectedThumbnailButtonRef = useRef<HTMLButtonElement | null>(null)
   const mobileThumbnailScrollerRef = useRef<HTMLDivElement | null>(null)
-  const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
+  const [selectedImageModel, setSelectedImageModel] = useState<string>(CODEX_IMAGE_MODEL_OPTION.id)
   const [imageDefaultSaving, setImageDefaultSaving] = useState(false)
   const [imageDefaultStatus, setImageDefaultStatus] = useState('')
   const [imageDefaultMenuOpen, setImageDefaultMenuOpen] = useState(false)
@@ -354,6 +387,11 @@ export function ImageToolPage() {
     queryKey: ['image-generation-providers'],
     queryFn: fetchImageProviders,
     staleTime: 15_000,
+  })
+  const imageModelsQuery = useQuery({
+    queryKey: ['media-settings-catalog', 'image-tool'],
+    queryFn: fetchImageModelOptions,
+    staleTime: 30_000,
   })
   const workspaces = workspacesQuery.data ?? []
 
@@ -428,23 +466,23 @@ export function ImageToolPage() {
   const selectedIterationURL = selectedThread && selectedImageAsset
     ? canonicalImageIterationURL(selectedThread.id, selectedImageAsset.id)
     : ''
+  const imageModelOptions = imageModelsQuery.data ?? []
   const connectedImageModelOptions = useMemo<ConnectedImageModelOption[]>(() => {
     const providers = imageProvidersQuery.data ?? []
-    return IMAGE_MODEL_OPTIONS.flatMap((option) => {
+    return imageModelOptions.flatMap((option) => {
       const providerStatus = providers.find((provider) => provider.id === option.provider)
       if (providerStatus?.ready !== true) return []
-      const providerModels = Array.isArray(providerStatus.models) ? providerStatus.models : []
-      if (providerModels.length > 0 && !providerModels.includes(option.model)) return []
       return [{ ...option, providerLabel: providerStatus.label || option.provider, providerReady: true }]
     })
-  }, [imageProvidersQuery.data])
+  }, [imageModelOptions, imageProvidersQuery.data])
   const savedImageDefaultModel = normalizeImageDefaultModel(uiSettingsQuery.data)
-  const savedDefaultIsConnected = connectedImageModelOptions.some((option) => option.id === savedImageDefaultModel)
+  const normalizedSavedImageDefaultModel = savedImageDefaultModel === 'gpt-5.5' ? 'codex-image-gen' : savedImageDefaultModel
+  const savedDefaultIsConnected = connectedImageModelOptions.some((option) => option.id === normalizedSavedImageDefaultModel)
   const activeImageDefaultModel = savedDefaultIsConnected
-    ? savedImageDefaultModel
+    ? normalizedSavedImageDefaultModel
     : connectedImageModelOptions[0]?.id ?? ''
   const activeImageDefaultOption = connectedImageModelOptions.find((option) => option.id === activeImageDefaultModel) ?? null
-  const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
+  const selectedModelOption = imageModelOptions.find((option) => option.id === selectedImageModel) ?? imageModelOptions[0] ?? CODEX_IMAGE_MODEL_OPTION
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
   const selectedProviderReady = selectedProviderStatus?.ready === true
   const isGoogleGeminiModel = selectedModelOption.provider === 'google_gemini'
@@ -1506,7 +1544,7 @@ export function ImageToolPage() {
                       <div className="flex flex-col gap-1">
                         <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">MODEL</span>
                         <Select className="h-9 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
-                          {IMAGE_MODEL_OPTIONS.map((option) => (
+                          {imageModelOptions.map((option) => (
                             <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
                           ))}
                         </Select>
@@ -1701,7 +1739,7 @@ export function ImageToolPage() {
                   <label className="flex flex-col gap-1.5">
                     <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Model</span>
                     <Select className="h-11 rounded-xl border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm font-medium" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
-                      {IMAGE_MODEL_OPTIONS.map((option) => (
+                      {imageModelOptions.map((option) => (
                         <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
                       ))}
                     </Select>

@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	defaultCatalogURL          = "https://models.swarmagent.dev/v1/snapshot.json"
-	defaultCatalogVersionURL   = "https://models.swarmagent.dev/v1/snapshot-version.json"
-	defaultCatalogTTL          = time.Hour
-	defaultCatalogFetchTimeout = 10 * time.Second
+	catalogMaterializationVersion = 1
+	defaultCatalogURL             = "https://models.swarmagent.dev/v1/snapshot.json"
+	defaultCatalogVersionURL      = "https://models.swarmagent.dev/v1/snapshot-version.json"
+	defaultCatalogTTL             = time.Hour
+	defaultCatalogFetchTimeout    = 10 * time.Second
 
 	catalogSourcePinned = "swarm_snapshot:pinned"
 	catalogSourceLive   = "swarm_snapshot:live"
@@ -1537,24 +1538,25 @@ func (snapshot swarmSnapshot) version() swarmSnapshotVersion {
 
 func metaFromSnapshot(snapshot swarmSnapshotVersion, source, sourceURL, versionURL, etag, versionETag string, nowMs, expiresAt int64, reason string, recordCount int) pebblestore.ModelCatalogMeta {
 	meta := pebblestore.ModelCatalogMeta{
-		Source:                source,
-		SourceURL:             sourceURL,
-		SnapshotURL:           sourceURL,
-		VersionURL:            versionURL,
-		ETag:                  strings.TrimSpace(etag),
-		VersionETag:           strings.TrimSpace(versionETag),
-		SnapshotID:            snapshot.SnapshotID,
-		SnapshotVersion:       snapshot.SnapshotVersion,
-		SnapshotSchemaVersion: snapshot.SnapshotSchemaVersion,
-		GeneratedAt:           snapshot.GeneratedAt,
-		FetchedAt:             nowMs,
-		LastCheckedAt:         nowMs,
-		ExpiresAt:             expiresAt,
-		RecordCount:           recordCount,
-		ModelCount:            snapshot.ModelCount,
-		ProviderCount:         snapshot.ProviderCount,
-		HydratedProviderCount: snapshot.HydratedProviderCount,
-		LastRefreshReason:     reason,
+		MaterializationVersion: catalogMaterializationVersion,
+		Source:                 source,
+		SourceURL:              sourceURL,
+		SnapshotURL:            sourceURL,
+		VersionURL:             versionURL,
+		ETag:                   strings.TrimSpace(etag),
+		VersionETag:            strings.TrimSpace(versionETag),
+		SnapshotID:             snapshot.SnapshotID,
+		SnapshotVersion:        snapshot.SnapshotVersion,
+		SnapshotSchemaVersion:  snapshot.SnapshotSchemaVersion,
+		GeneratedAt:            snapshot.GeneratedAt,
+		FetchedAt:              nowMs,
+		LastCheckedAt:          nowMs,
+		ExpiresAt:              expiresAt,
+		RecordCount:            recordCount,
+		ModelCount:             snapshot.ModelCount,
+		ProviderCount:          snapshot.ProviderCount,
+		HydratedProviderCount:  snapshot.HydratedProviderCount,
+		LastRefreshReason:      reason,
 	}
 	if source == catalogSourcePinned {
 		meta.PinnedSnapshotID = snapshot.SnapshotID
@@ -1602,7 +1604,7 @@ func catalogMetaNeedsPinnedSeed(meta pebblestore.ModelCatalogMeta) bool {
 		return false
 	}
 	if sameCatalogSnapshot(meta, pinned) {
-		return false
+		return meta.MaterializationVersion != catalogMaterializationVersion
 	}
 	if meta.Source == catalogSourcePinned {
 		return true

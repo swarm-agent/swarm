@@ -498,6 +498,68 @@ func TestEnsureBootDefaultsSeedsPinnedSnapshotOffline(t *testing.T) {
 	}
 }
 
+func TestEnsureBootDefaultsRematerializesCurrentSnapshotRecords(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	pinned, ok := pinnedSnapshotVersionMetadata()
+	if !ok {
+		t.Fatal("pinned snapshot metadata is unavailable")
+	}
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if err := catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "gemini-3.1-flash-image",
+		ContextWindow:         65536,
+		Source:                catalogSourcePinned,
+		SourceSnapshotID:      pinned.SnapshotID,
+		SourceSnapshotVersion: pinned.SnapshotVersion,
+	}); err != nil {
+		t.Fatalf("seed unmaterialized record: %v", err)
+	}
+	if err := catalog.store.SetMeta(pebblestore.ModelCatalogMeta{
+		Source:          catalogSourcePinned,
+		SourceURL:       pinnedCatalogSourceURL,
+		SnapshotURL:     pinnedCatalogSourceURL,
+		VersionURL:      pinnedCatalogVersionURL,
+		SnapshotID:      pinned.SnapshotID,
+		SnapshotVersion: pinned.SnapshotVersion,
+		GeneratedAt:     pinned.GeneratedAt,
+		RecordCount:     1,
+		ModelCount:      1,
+	}); err != nil {
+		t.Fatalf("seed unmaterialized meta: %v", err)
+	}
+
+	if err := catalog.EnsureBootDefaults(); err != nil {
+		t.Fatalf("EnsureBootDefaults returned error: %v", err)
+	}
+	meta, ok, err := catalog.Meta()
+	if err != nil {
+		t.Fatalf("read rematerialized meta: %v", err)
+	}
+	if !ok || meta.MaterializationVersion != catalogMaterializationVersion {
+		t.Fatalf("materialization version = %d, want %d", meta.MaterializationVersion, catalogMaterializationVersion)
+	}
+	lookup, err := catalog.Get("google", "gemini-3.1-flash-image")
+	if err != nil {
+		t.Fatalf("lookup rematerialized Google image model: %v", err)
+	}
+	if !lookup.Found || !stringInSlice(lookup.Record.CatalogModalities.Outputs, "image") || lookup.Record.Media == nil {
+		t.Fatalf("expected rematerialized Google image fields, got %+v", lookup.Record)
+	}
+	lookup, err = catalog.Get("google", "gemini-2.5-flash")
+	if err != nil {
+		t.Fatalf("lookup rematerialized Google video-understanding model: %v", err)
+	}
+	if !lookup.Found || !stringInSlice(lookup.Record.CatalogModalities.Inputs, "video") || !stringInSlice(lookup.Record.CatalogModalities.Outputs, "text") {
+		t.Fatalf("expected rematerialized Google video-to-text fields, got %+v", lookup.Record)
+	}
+}
+
 func TestEnsureBootDefaultsRefreshesStalePersistedSnapshot(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
 	if err != nil {

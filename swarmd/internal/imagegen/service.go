@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegenlog"
 	"swarm/packages/swarmd/internal/provider/codex"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -26,7 +28,6 @@ const (
 	ProviderGoogleGemini            = "google_gemini"
 	TargetWorkspaceImage            = "workspace_image_session"
 	defaultCodexImageModel          = "gpt-5.5"
-	defaultGeminiImageModel         = "gemini-3.1-flash-image"
 	generatedImageExtension         = ".png"
 	assetPathMetadataKey            = "tool_storage_path"
 	assetURLBase                    = "/v1/image/assets"
@@ -34,13 +35,6 @@ const (
 	managedImageMaxParallelRequests = 4
 	managedImageMaxBytes            = 16 << 20
 )
-
-var geminiImageModels = []string{
-	"gemini-3.1-flash-image",
-	"gemini-3.1-flash-lite-image",
-	"gemini-3-pro-image",
-	"gemini-2.5-flash-image",
-}
 
 type CodexImageClient interface {
 	GenerateImage(ctx context.Context, req codex.ImageGenerationRequest) (codex.ImageGenerationResult, error)
@@ -50,11 +44,16 @@ type GeminiImageClient interface {
 	GenerateImage(ctx context.Context, req GeminiImageGenerationRequest) (GeminiImageGenerationResult, error)
 }
 
+type ModelCatalog interface {
+	ListCatalog(providerID string, limit int) ([]pebblestore.ModelCatalogRecord, error)
+}
+
 type Service struct {
 	codexClient       CodexImageClient
 	geminiImageClient GeminiImageClient
 	authStore         *pebblestore.AuthStore
 	imageThreads      *pebblestore.ImageThreadStore
+	modelCatalog      ModelCatalog
 	managedSlots      chan struct{}
 }
 
@@ -149,39 +148,100 @@ type ModelSelection struct {
 
 const DefaultModelSelectionID = "codex-image-gen"
 
-var supportedModelSelectionIDs = []string{
-	"codex-image-gen",
-	"gemini-nano-banana-2",
-	"gemini-nano-banana-2-lite",
-	"gemini-nano-banana-pro",
-	"gemini-nano-banana",
+func HardcodedModelSelections() []ModelSelection {
+	return []ModelSelection{{ID: DefaultModelSelectionID, Provider: ProviderCodexOpenAI, Model: defaultCodexImageModel, DisplayName: "Codex Image Gen"}}
 }
 
-func SupportedModelSelectionIDs() []string {
-	return append([]string(nil), supportedModelSelectionIDs...)
-}
-
-// ResolveModelSelection maps the canonical UI image selection to an internal
-// provider/model pair. This is the sole mapping for AI-facing image generation.
+// ResolveModelSelection resolves only the dedicated hardcoded Codex contract.
+// Snapshot-backed provider models are resolved by Service.ResolveModelSelection.
 func ResolveModelSelection(selectionID string) (ModelSelection, error) {
 	selectionID = strings.TrimSpace(selectionID)
 	if selectionID == "" {
 		selectionID = DefaultModelSelectionID
 	}
-	switch selectionID {
-	case "codex-image-gen", defaultCodexImageModel:
-		return ModelSelection{ID: "codex-image-gen", Provider: ProviderCodexOpenAI, Model: defaultCodexImageModel, DisplayName: "Codex Image Gen"}, nil
-	case "gemini-nano-banana-2", "gemini-3.1-flash-image", "gemini-3.1-flash-image-preview":
-		return ModelSelection{ID: "gemini-nano-banana-2", Provider: ProviderGoogleGemini, Model: "gemini-3.1-flash-image", DisplayName: "Nano Banana 2"}, nil
-	case "gemini-nano-banana-2-lite", "gemini-3.1-flash-lite-image":
-		return ModelSelection{ID: "gemini-nano-banana-2-lite", Provider: ProviderGoogleGemini, Model: "gemini-3.1-flash-lite-image", DisplayName: "Nano Banana 2 Lite"}, nil
-	case "gemini-nano-banana-pro", "gemini-3-pro-image", "gemini-3-pro-image-preview":
-		return ModelSelection{ID: "gemini-nano-banana-pro", Provider: ProviderGoogleGemini, Model: "gemini-3-pro-image", DisplayName: "Nano Banana Pro"}, nil
-	case "gemini-nano-banana", "gemini-2.5-flash-image":
-		return ModelSelection{ID: "gemini-nano-banana", Provider: ProviderGoogleGemini, Model: "gemini-2.5-flash-image", DisplayName: "Nano Banana"}, nil
-	default:
-		return ModelSelection{}, fmt.Errorf("configured image model %q is not supported", selectionID)
+	if selectionID == DefaultModelSelectionID || selectionID == defaultCodexImageModel {
+		return HardcodedModelSelections()[0], nil
 	}
+	return ModelSelection{}, fmt.Errorf("configured image model %q is not a hardcoded image model", selectionID)
+}
+
+func (s *Service) GoogleImageModelSelections() ([]ModelSelection, error) {
+	if s == nil || s.modelCatalog == nil {
+		return nil, nil
+	}
+	records, err := s.modelCatalog.ListCatalog("google", 2000)
+	if err != nil {
+		return nil, fmt.Errorf("list Google image models: %w", err)
+	}
+	selections := make([]ModelSelection, 0, len(records))
+	for _, record := range records {
+		if !isSnapshotGoogleGenerateContentImageModel(record) {
+			continue
+		}
+		selections = append(selections, ModelSelection{
+			ID: strings.TrimSpace(record.Model), Provider: ProviderGoogleGemini, Model: strings.TrimSpace(record.Model),
+			DisplayName: firstNonEmpty(strings.TrimSpace(record.DisplayName), strings.TrimSpace(record.Model)),
+		})
+	}
+	sort.Slice(selections, func(i, j int) bool {
+		if selections[i].DisplayName == selections[j].DisplayName {
+			return selections[i].Model < selections[j].Model
+		}
+		return selections[i].DisplayName < selections[j].DisplayName
+	})
+	return selections, nil
+}
+
+func (s *Service) ResolveModelSelection(selectionID string) (ModelSelection, error) {
+	selectionID = strings.TrimSpace(selectionID)
+	if selectionID == "" || selectionID == DefaultModelSelectionID || selectionID == defaultCodexImageModel {
+		return ResolveModelSelection(selectionID)
+	}
+	selections, err := s.GoogleImageModelSelections()
+	if err != nil {
+		return ModelSelection{}, err
+	}
+	for _, selection := range selections {
+		if selection.ID == selectionID || selection.Model == selectionID || legacyGoogleSelectionID(selection.DisplayName) == selectionID {
+			return selection, nil
+		}
+	}
+	return ModelSelection{}, fmt.Errorf("configured image model %q is not in the current Google image catalog", selectionID)
+}
+
+func legacyGoogleSelectionID(displayName string) string {
+	fields := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(displayName)), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	if len(fields) == 0 {
+		return ""
+	}
+	return "gemini-" + strings.Join(fields, "-")
+}
+
+func isSnapshotGoogleGenerateContentImageModel(record pebblestore.ModelCatalogRecord) bool {
+	if !strings.EqualFold(strings.TrimSpace(record.Provider), "google") || !containsStringFold(record.CatalogModalities.Outputs, "image") {
+		return false
+	}
+	if record.Media == nil || record.Media.State != pebblestore.ModelCatalogMediaStateSupported || record.Media.ProviderSurface != provideriface.MediaProviderSurfaceGoogleGenerateContent {
+		return false
+	}
+	var providerSpecific map[string]struct {
+		ModelAPISurface string `json:"model_api_surface"`
+	}
+	if err := json.Unmarshal(record.ProviderSpecific, &providerSpecific); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(providerSpecific["google"].ModelAPISurface), "generate_content")
+}
+
+func containsStringFold(values []string, wanted string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 type WorkspaceImageSessionTargetInfo struct {
@@ -208,14 +268,25 @@ type imageSession struct {
 	storagePath string
 }
 
-func NewService(codexClient CodexImageClient, authStore *pebblestore.AuthStore, imageThreads *pebblestore.ImageThreadStore) *Service {
-	return &Service{
+func NewService(codexClient CodexImageClient, authStore *pebblestore.AuthStore, imageThreads *pebblestore.ImageThreadStore, modelCatalog ...ModelCatalog) *Service {
+	service := &Service{
 		codexClient:       codexClient,
 		geminiImageClient: googleGeminiImageClient{},
 		authStore:         authStore,
 		imageThreads:      imageThreads,
 		managedSlots:      make(chan struct{}, managedImageMaxParallelRequests),
 	}
+	if len(modelCatalog) > 0 {
+		service.modelCatalog = modelCatalog[0]
+	}
+	return service
+}
+
+func (s *Service) SetModelCatalog(catalog ModelCatalog) {
+	if s == nil {
+		return
+	}
+	s.modelCatalog = catalog
 }
 
 func (s *Service) SetGeminiImageClient(client GeminiImageClient) {
@@ -258,11 +329,18 @@ func (s *Service) Capabilities(ctx context.Context) (Capabilities, error) {
 	} else {
 		codexStatus.Ready = true
 	}
-	geminiStatus := ProviderStatus{
-		ID:           ProviderGoogleGemini,
-		Label:        "Google Gemini / Nano Banana",
-		DefaultModel: defaultGeminiImageModel,
-		Models:       append([]string(nil), geminiImageModels...),
+	googleSelections, err := s.GoogleImageModelSelections()
+	if err != nil {
+		return Capabilities{}, err
+	}
+	geminiStatus := ProviderStatus{ID: ProviderGoogleGemini, Label: "Google Gemini"}
+	for _, selection := range googleSelections {
+		geminiStatus.Models = append(geminiStatus.Models, selection.Model)
+	}
+	if len(geminiStatus.Models) > 0 {
+		geminiStatus.DefaultModel = geminiStatus.Models[0]
+	} else {
+		geminiStatus.Reason = "no snapshot-backed Google image models are available"
 	}
 	if s == nil || s.geminiImageClient == nil || s.authStore == nil {
 		geminiStatus.Ready = false
@@ -275,7 +353,7 @@ func (s *Service) Capabilities(ctx context.Context) (Capabilities, error) {
 	} else if !ok || strings.TrimSpace(record.APIKey) == "" {
 		geminiStatus.Ready = false
 		geminiStatus.Reason = "connect a Google API key to enable Gemini image generation"
-	} else {
+	} else if len(geminiStatus.Models) > 0 {
 		geminiStatus.Ready = true
 	}
 	return Capabilities{Providers: []ProviderStatus{codexStatus, geminiStatus}}, nil
@@ -302,7 +380,7 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 			return ManagedImage{}, ctx.Err()
 		}
 	}
-	selection, err := ResolveModelSelection(req.SelectionID)
+	selection, err := s.ResolveModelSelection(req.SelectionID)
 	if err != nil {
 		return ManagedImage{}, err
 	}
