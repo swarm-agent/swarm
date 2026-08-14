@@ -156,7 +156,7 @@ func TestGenerateGeminiSlotsParallelKeepsRESTSlotsParallel(t *testing.T) {
 
 func TestNormalizeGeminiImageSizeAcceptsProviderNeutralPixelAliases(t *testing.T) {
 	for input, want := range map[string]string{"1024x1024": "1K", "2048x2048": "2K", "4096x4096": "4K", "2k": "2K"} {
-		got, err := normalizeGeminiImageSize("gemini-3.1-flash-image-preview", input)
+		got, err := normalizeGeminiImageSize("gemini-3.1-flash-image", input)
 		if err != nil || got != want {
 			t.Fatalf("normalizeGeminiImageSize(%q) = %q, %v; want %q", input, got, err, want)
 		}

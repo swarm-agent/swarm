@@ -186,7 +186,10 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
   const configuredImage = normalizeImageDefaultModel(settingsQuery.data)
   const configuredImageID = ({
     'gpt-5.5': 'codex-image-gen',
+    'gemini-3.1-flash-image': 'gemini-nano-banana-2',
     'gemini-3.1-flash-image-preview': 'gemini-nano-banana-2',
+    'gemini-3.1-flash-lite-image': 'gemini-nano-banana-2-lite',
+    'gemini-3-pro-image': 'gemini-nano-banana-pro',
     'gemini-3-pro-image-preview': 'gemini-nano-banana-pro',
     'gemini-2.5-flash-image': 'gemini-nano-banana',
   } as Record<string, string>)[configuredImage] ?? configuredImage

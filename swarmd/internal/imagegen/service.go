@@ -26,7 +26,7 @@ const (
 	ProviderGoogleGemini            = "google_gemini"
 	TargetWorkspaceImage            = "workspace_image_session"
 	defaultCodexImageModel          = "gpt-5.5"
-	defaultGeminiImageModel         = "gemini-3.1-flash-image-preview"
+	defaultGeminiImageModel         = "gemini-3.1-flash-image"
 	generatedImageExtension         = ".png"
 	assetPathMetadataKey            = "tool_storage_path"
 	assetURLBase                    = "/v1/image/assets"
@@ -36,8 +36,9 @@ const (
 )
 
 var geminiImageModels = []string{
-	"gemini-3.1-flash-image-preview",
-	"gemini-3-pro-image-preview",
+	"gemini-3.1-flash-image",
+	"gemini-3.1-flash-lite-image",
+	"gemini-3-pro-image",
 	"gemini-2.5-flash-image",
 }
 
@@ -151,6 +152,7 @@ const DefaultModelSelectionID = "codex-image-gen"
 var supportedModelSelectionIDs = []string{
 	"codex-image-gen",
 	"gemini-nano-banana-2",
+	"gemini-nano-banana-2-lite",
 	"gemini-nano-banana-pro",
 	"gemini-nano-banana",
 }
@@ -169,10 +171,12 @@ func ResolveModelSelection(selectionID string) (ModelSelection, error) {
 	switch selectionID {
 	case "codex-image-gen", defaultCodexImageModel:
 		return ModelSelection{ID: "codex-image-gen", Provider: ProviderCodexOpenAI, Model: defaultCodexImageModel, DisplayName: "Codex Image Gen"}, nil
-	case "gemini-nano-banana-2", "gemini-3.1-flash-image-preview":
-		return ModelSelection{ID: "gemini-nano-banana-2", Provider: ProviderGoogleGemini, Model: "gemini-3.1-flash-image-preview", DisplayName: "Nano Banana 2"}, nil
-	case "gemini-nano-banana-pro", "gemini-3-pro-image-preview":
-		return ModelSelection{ID: "gemini-nano-banana-pro", Provider: ProviderGoogleGemini, Model: "gemini-3-pro-image-preview", DisplayName: "Nano Banana Pro"}, nil
+	case "gemini-nano-banana-2", "gemini-3.1-flash-image", "gemini-3.1-flash-image-preview":
+		return ModelSelection{ID: "gemini-nano-banana-2", Provider: ProviderGoogleGemini, Model: "gemini-3.1-flash-image", DisplayName: "Nano Banana 2"}, nil
+	case "gemini-nano-banana-2-lite", "gemini-3.1-flash-lite-image":
+		return ModelSelection{ID: "gemini-nano-banana-2-lite", Provider: ProviderGoogleGemini, Model: "gemini-3.1-flash-lite-image", DisplayName: "Nano Banana 2 Lite"}, nil
+	case "gemini-nano-banana-pro", "gemini-3-pro-image", "gemini-3-pro-image-preview":
+		return ModelSelection{ID: "gemini-nano-banana-pro", Provider: ProviderGoogleGemini, Model: "gemini-3-pro-image", DisplayName: "Nano Banana Pro"}, nil
 	case "gemini-nano-banana", "gemini-2.5-flash-image":
 		return ModelSelection{ID: "gemini-nano-banana", Provider: ProviderGoogleGemini, Model: "gemini-2.5-flash-image", DisplayName: "Nano Banana"}, nil
 	default:
