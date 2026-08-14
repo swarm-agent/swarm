@@ -34,6 +34,10 @@ export interface UIToolSettingsWire {
   image?: UIToolImageSettingsWire
 }
 
+export interface UIMediaSettingsWire {
+  transcription_model?: string
+}
+
 export type DesktopSessionMode = 'auto' | 'plan'
 export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 
@@ -68,6 +72,7 @@ export interface UISettingsWire {
   swarming?: UISwarmingSettingsWire
   swarm?: UISwarmSettingsWire
   tools?: UIToolSettingsWire
+  media?: UIMediaSettingsWire
   updated_at?: number
 }
 
@@ -296,6 +301,20 @@ export function withImageDefaultModel(current: UISettingsWire, defaultModel: str
         ...(current.tools?.image ?? {}),
         default_model: defaultModel.trim(),
       },
+    },
+  }
+}
+
+export function normalizeMediaTranscriptionModel(payload?: UISettingsWire | null): string {
+  return typeof payload?.media?.transcription_model === 'string' ? payload.media.transcription_model.trim() : ''
+}
+
+export function withMediaTranscriptionModel(current: UISettingsWire, transcriptionModel: string): UISettingsWire {
+  return {
+    ...current,
+    media: {
+      ...(current.media ?? {}),
+      transcription_model: transcriptionModel.trim(),
     },
   }
 }
