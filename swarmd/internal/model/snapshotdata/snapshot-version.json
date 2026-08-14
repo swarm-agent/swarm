@@ -1,11 +1,11 @@
 {
-  "schema_version": "2026-06-09.1",
+  "schema_version": "2026-08-14.2",
   "api_version": "v1",
-  "snapshot_schema_version": "2026-07-01.1",
-  "snapshot_id": "swarm-models-v1-1a33d63c362ffae3",
-  "snapshot_version": "1a33d63c362ffae3",
-  "generated_at": "2026-08-13T17:34:23.000Z",
-  "model_count": 688,
+  "snapshot_schema_version": "2026-08-14.2",
+  "snapshot_id": "swarm-models-v1-2d9570e72578d0fe",
+  "snapshot_version": "2d9570e72578d0fe",
+  "generated_at": "2026-08-14T13:44:13Z",
+  "model_count": 689,
   "provider_count": 7,
   "hydrated_provider_count": 6,
   "snapshot_url": "/v1/snapshot.json"
