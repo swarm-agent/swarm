@@ -28,7 +28,7 @@ func taskProgramDefinitionFromSpec(spec *taskProgramSpec) (pebblestore.TaskProgr
 		definition.Jobs = append(definition.Jobs, pebblestore.TaskProgramJobSpec{
 			ID: job.ID, StageID: job.StageID, DependsOn: append([]string(nil), job.DependsOn...), AgentType: job.RequestedSubagentType,
 			Title: job.AssignmentLabel, MetaPrompt: job.MetaPrompt, Deliverable: job.Deliverable,
-			OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence,
+			OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence,
 		})
 	}
 	raw, err := json.Marshal(definition)
@@ -102,6 +102,7 @@ func taskProgramPresentationPayload(record pebblestore.TaskProgramRecord) map[st
 			"depends_on":          append([]string(nil), definition.DependsOn...),
 			"dependency_state":    dependencyState,
 			"dependency_evidence": boundedTaskProgramPresentationText(definition.DependencyEvidence),
+			"output_requirements": definition.OutputRequirements,
 			"state":               strings.TrimSpace(job.State),
 			"attempt_number":      job.AttemptNumber,
 		}

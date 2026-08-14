@@ -79,6 +79,7 @@ type TaskProgramJobSpec struct {
 	Deliverable        string   `json:"deliverable"`
 	OwnedScope         []string `json:"owned_scope,omitempty"`
 	OutputMode         string   `json:"output_mode,omitempty"`
+	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AcceptanceCriteria []string `json:"acceptance_criteria"`
 	DependencyEvidence string   `json:"dependency_evidence"`
 }

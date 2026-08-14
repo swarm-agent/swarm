@@ -108,7 +108,16 @@ type sessionsV3ArtifactCatalogItem struct {
 	EventSeq        uint64                                `json:"event_seq,omitempty"`
 	Progress        *sessionsV3ArtifactCollectionProgress `json:"progress,omitempty"`
 	Lineage         *pebblestore.SessionArtifactLineage   `json:"lineage,omitempty"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	Content         string                                `json:"content,omitempty"`
+}
+
+func cloneSessionsV3ArtifactOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
 }
 
 type sessionsV3ArtifactCollectionProgress struct {
@@ -209,7 +218,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename), Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
 						CollectionName: collection.Name, CollectionDescription: collection.Description, Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
 						Previewable: previewable, Selected: collection.SelectedVariantID == variant.ID,
-						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage,
+						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements),
 					})
 				}
 			}

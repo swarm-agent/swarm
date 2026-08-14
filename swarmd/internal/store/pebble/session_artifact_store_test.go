@@ -510,3 +510,59 @@ func TestApplyV3ArtifactLifecycleRejectsUnsafeOrInvalidMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestArtifactFinalizationPreservesOutputRequirements(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-requirements")
+	requirements := &SessionArtifactOutputRequirements{
+		PresetID: "x_header", Width: 1500, Height: 500, AspectRatio: "3:1",
+		Orientation: "landscape", ResolutionSource: "preset", RegistryVersion: "2026-08-14.v1",
+	}
+	create, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-requirements", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-requirements-create", PayloadHash: "artifact-requirements-create", Kind: V3SessionMutationCreateArtifact,
+		Artifact: &V3ArtifactMutation{
+			Collection: SessionArtifactCollection{ID: "collection", Name: "Header"},
+			Variant: &SessionArtifactVariant{ID: "variant", OutputRequirements: requirements, Presentation: SessionArtifactPresentation{Width: 1500, Height: 500}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if create.Artifact == nil || create.Artifact.Variant == nil || create.Artifact.Variant.OutputRequirements == nil {
+		t.Fatalf("create projection = %#v", create.Artifact)
+	}
+	finalized, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-requirements", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "artifact-requirements-finalize", PayloadHash: "artifact-requirements-finalize", Kind: V3SessionMutationFinalizeArtifact,
+		Artifact: &V3ArtifactMutation{
+			Collection: SessionArtifactCollection{ID: "collection"},
+			Variant: &SessionArtifactVariant{ID: "variant", Filename: "header.svg", MediaType: "image/svg+xml", DigestSHA256: strings.Repeat("a", 64), Size: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant := finalized.Artifact.Variant
+	if variant == nil || variant.OutputRequirements == nil || *variant.OutputRequirements != *requirements || variant.Presentation.Width != 1500 || variant.Presentation.Height != 500 {
+		t.Fatalf("finalized variant = %#v", variant)
+	}
+}
+
+func TestArtifactFinalizationRejectsOutputRequirementOverride(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-requirements-override")
+	requirements := &SessionArtifactOutputRequirements{PresetID: "x_header", Width: 1500, Height: 500, AspectRatio: "3:1", Orientation: "landscape", ResolutionSource: "preset", RegistryVersion: "2026-08-14.v1"}
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-requirements-override", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "create", PayloadHash: "create", Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection", Name: "Header"}, Variant: &SessionArtifactVariant{ID: "variant", OutputRequirements: requirements, Presentation: SessionArtifactPresentation{Width: 1500, Height: 500}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	override := *requirements
+	override.PresetID, override.Width, override.Height, override.AspectRatio, override.Orientation = "square_1080", 1080, 1080, "1:1", "square"
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-requirements-override", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "finalize", PayloadHash: "finalize", Kind: V3SessionMutationFinalizeArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection"}, Variant: &SessionArtifactVariant{ID: "variant", Filename: "header.svg", MediaType: "image/svg+xml", DigestSHA256: strings.Repeat("b", 64), Size: 1, OutputRequirements: &override}}})
+	if err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("override err = %v", err)
+	}
+}

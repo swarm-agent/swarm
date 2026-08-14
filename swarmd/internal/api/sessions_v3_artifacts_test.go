@@ -803,3 +803,15 @@ func TestCollectSessionV3ArtifactBundleRejectsPackageSymlink(t *testing.T) {
 		t.Fatal("bundle accepted a package symlink")
 	}
 }
+
+func TestSessionsV3ArtifactOutputRequirementsProjectionClonesSnapshot(t *testing.T) {
+	requirements := &pebblestore.SessionArtifactOutputRequirements{PresetID: "x_header", Width: 1500, Height: 500, AspectRatio: "3:1", Orientation: "landscape", ResolutionSource: "preset", RegistryVersion: "2026-08-14.v1"}
+	projected := cloneSessionsV3ArtifactOutputRequirements(requirements)
+	if projected == nil || *projected != *requirements {
+		t.Fatalf("projected = %#v", projected)
+	}
+	requirements.Width = 1
+	if projected.Width != 1500 {
+		t.Fatalf("projection aliases stored requirements: %#v", projected)
+	}
+}

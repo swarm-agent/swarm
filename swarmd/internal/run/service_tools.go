@@ -36,6 +36,7 @@ type taskLaunchPrepared struct {
 	AssignmentLabel      string
 	OwnedScope           []string
 	OutputMode           string
+	OutputRequirements   *pebblestore.SessionArtifactOutputRequirements
 	SubagentProvider     string
 	SubagentModel        string
 	SubagentProfile      pebblestore.AgentProfile
@@ -76,6 +77,12 @@ func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionI
 		Principal:            principal,
 		ApplySessionMutation: applySessionMutation,
 		ArtifactRunContext:   cloneArtifactRunContext(launch.ArtifactRunContext),
+	}
+	if meta.ArtifactRunContext != nil {
+		if launch.OutputRequirements == nil && meta.ArtifactRunContext.OutputRequirements != nil {
+			launch.OutputRequirements = cloneTaskOutputRequirements(meta.ArtifactRunContext.OutputRequirements)
+		}
+		meta.ArtifactRunContext.OutputRequirements = cloneTaskOutputRequirements(launch.OutputRequirements)
 	}
 	if launch.ContinuationBoundary != nil {
 		meta.ContinuationBoundary = launch.ContinuationBoundary
@@ -155,6 +162,7 @@ type taskLaunchOutcome struct {
 	IntegrationContract string
 	IntegrationRequired bool
 	OutputMode          string
+	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
 	ArtifactReference   *taskArtifactReference
 }
 
@@ -222,6 +230,7 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		SessionID: parent.ID, TaskCallID: taskCallID, ProgramID: strings.TrimSpace(programID), ProgramJobID: strings.TrimSpace(programJobID),
 		IterationGroupID: iterationGroupID, IterationGroup: strings.TrimSpace(iterationGroup), IterationID: iterationID, IterationIndex: iterationIndex,
 		IterationLabel: iterationLabel, IterationTheme: iterationTheme, CollectionID: collectionID, VariantID: variantID,
+		OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements),
 	}
 }
 
@@ -379,8 +388,13 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 		if existing, found, getErr := s.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, collection.ID, run.VariantID); getErr != nil {
 			return getErr
 		} else if found {
-			if existing.CollectionID != collection.ID || existing.Lineage != lineage {
-				return fmt.Errorf("managed Designer artifact placeholder %q has inconsistent lineage", run.VariantID)
+			requirementsMatch := reflect.DeepEqual(existing.OutputRequirements, run.OutputRequirements)
+			dimensionsMatch := run.OutputRequirements == nil || (existing.Presentation.Width == run.OutputRequirements.Width && existing.Presentation.Height == run.OutputRequirements.Height)
+			if existing.CollectionID != collection.ID || existing.Lineage != lineage || !requirementsMatch || !dimensionsMatch {
+				return fmt.Errorf("managed Designer artifact placeholder %q has inconsistent lineage, requirements, or presentation", run.VariantID)
+			}
+			if existing.Status != pebblestore.SessionArtifactStatusStaging && existing.Status != pebblestore.SessionArtifactStatusReady {
+				return fmt.Errorf("managed Designer artifact placeholder %q has incompatible status %q", run.VariantID, existing.Status)
 			}
 			continue
 		}
@@ -388,9 +402,13 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 		if label == "" && run.IterationIndex > 0 {
 			label = fmt.Sprintf("Iteration %d", run.IterationIndex)
 		}
+		presentation := pebblestore.SessionArtifactPresentation{Label: label, Description: strings.TrimSpace(run.IterationTheme)}
+		if run.OutputRequirements != nil {
+			presentation.Width, presentation.Height = run.OutputRequirements.Width, run.OutputRequirements.Height
+		}
 		variant := pebblestore.SessionArtifactVariant{
 			ID: run.VariantID, CollectionID: collection.ID, Lineage: lineage,
-			Presentation: pebblestore.SessionArtifactPresentation{Label: label, Description: strings.TrimSpace(run.IterationTheme)},
+			Presentation: presentation, OutputRequirements: cloneTaskOutputRequirements(run.OutputRequirements),
 		}
 		payload, err := json.Marshal(variant)
 		if err != nil {
@@ -406,7 +424,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 		if err != nil {
 			return fmt.Errorf("allocate managed Designer artifact placeholder %q: %w", run.VariantID, err)
 		}
-		if result.Artifact == nil || result.Artifact.Variant == nil || result.Artifact.Variant.ID != run.VariantID || result.Artifact.Variant.Status != pebblestore.SessionArtifactStatusStaging || result.Artifact.Variant.Lineage != lineage {
+		if result.Artifact == nil || result.Artifact.Variant == nil || result.Artifact.Variant.ID != run.VariantID || result.Artifact.Variant.Status != pebblestore.SessionArtifactStatusStaging || result.Artifact.Variant.Lineage != lineage || !reflect.DeepEqual(result.Artifact.Variant.OutputRequirements, run.OutputRequirements) || (run.OutputRequirements != nil && (result.Artifact.Variant.Presentation.Width != run.OutputRequirements.Width || result.Artifact.Variant.Presentation.Height != run.OutputRequirements.Height)) {
 			return fmt.Errorf("managed Designer artifact placeholder %q returned an inconsistent projection", run.VariantID)
 		}
 	}
@@ -503,11 +521,12 @@ func (s *Service) cancelledTaskLaunchReason(childSessionID string, runErr error)
 }
 
 type taskArtifactReference struct {
-	SessionID    string `json:"session_id"`
-	CollectionID string `json:"collection_id"`
-	VariantID    string `json:"variant_id"`
-	Status       string `json:"status"`
-	FailureCode  string `json:"failure_code,omitempty"`
+	SessionID          string                                              `json:"session_id"`
+	CollectionID       string                                              `json:"collection_id"`
+	VariantID          string                                              `json:"variant_id"`
+	Status             string                                              `json:"status"`
+	FailureCode        string                                              `json:"failure_code,omitempty"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements      `json:"output_requirements,omitempty"`
 }
 
 type taskReportRef struct {
@@ -549,13 +568,15 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		IntegrationContract: strings.TrimSpace(launch.IntegrationContract),
 		IntegrationRequired: launch.IntegrationRequired,
 		OutputMode:          strings.TrimSpace(launch.OutputMode),
+		OutputRequirements:  cloneTaskOutputRequirements(launch.OutputRequirements),
 	}
 	if launch.ArtifactRunContext != nil {
 		outcome.ArtifactReference = &taskArtifactReference{
-			SessionID:    strings.TrimSpace(launch.ArtifactRunContext.SessionID),
-			CollectionID: strings.TrimSpace(launch.ArtifactRunContext.CollectionID),
-			VariantID:    strings.TrimSpace(launch.ArtifactRunContext.VariantID),
-			Status:       "pending",
+			SessionID:          strings.TrimSpace(launch.ArtifactRunContext.SessionID),
+			CollectionID:       strings.TrimSpace(launch.ArtifactRunContext.CollectionID),
+			VariantID:          strings.TrimSpace(launch.ArtifactRunContext.VariantID),
+			Status:             "pending",
+			OutputRequirements: cloneTaskOutputRequirements(launch.ArtifactRunContext.OutputRequirements),
 		}
 	}
 	if launch.TaskBase != nil {
@@ -713,6 +734,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"integration_contract":       strings.TrimSpace(launch.IntegrationContract),
 		"integration_required":       launch.IntegrationRequired,
 		"output_mode":                strings.TrimSpace(launch.OutputMode),
+		"output_requirements":        launch.OutputRequirements,
 	}
 	if launch.ArtifactReference != nil {
 		row["artifact_reference"] = launch.ArtifactReference
@@ -825,6 +847,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"integration_contract":       strings.TrimSpace(launch.IntegrationContract),
 		"integration_required":       launch.IntegrationRequired,
 		"output_mode":                strings.TrimSpace(launch.OutputMode),
+		"output_requirements":        launch.OutputRequirements,
 	}
 	if launch.ArtifactReference != nil {
 		patch["artifact_reference"] = launch.ArtifactReference
@@ -1004,6 +1027,9 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			return taskLaunchPrepared{}, errors.New("managed Designer launch destination is not owned by the parent session")
 		}
 	}
+	if !isDesignerTarget && launch.OutputRequirements != nil {
+		return taskLaunchPrepared{}, errors.New("output requirements are supported only for Designer")
+	}
 	if isDesignerTarget {
 		outputMode := strings.ToLower(strings.TrimSpace(launch.OutputMode))
 		if outputMode != taskOutputModeManaged && outputMode != taskOutputModeWorkspace {
@@ -1013,6 +1039,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if outputMode == taskOutputModeManaged {
 			launch.ArtifactRunContext = cloneArtifactRunContext(launch.ArtifactRunContext)
 			launch.ArtifactRunContext.ChildSessionID = childSessionID
+			launch.ArtifactRunContext.OutputRequirements = cloneTaskOutputRequirements(launch.OutputRequirements)
 			launch.ArtifactRunContext.RunID, launch.ArtifactRunContext.PlanID, launch.ArtifactRunContext.CheckpointID, launch.ArtifactRunContext.AttemptID = "", "", "", ""
 			childMetadata["managed_artifact_output"] = true
 			childMetadata["managed_artifact_parent_session_id"] = launch.ArtifactRunContext.SessionID
@@ -4009,6 +4036,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			AssignmentLabel:      spec.AssignmentLabel,
 			OwnedScope:           append([]string(nil), spec.OwnedScope...),
 			OutputMode:           strings.TrimSpace(spec.OutputMode),
+			OutputRequirements:   cloneTaskOutputRequirements(spec.OutputRequirements),
 			StreamKey:            strings.TrimSpace(spec.StreamKey),
 			SwarmMode:            spec.SwarmMode,
 			SwarmStrategy:        strings.TrimSpace(spec.SwarmStrategy),
@@ -4146,6 +4174,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"integration_contract":   strings.TrimSpace(launch.IntegrationContract),
 				"integration_required":   launch.IntegrationRequired,
 				"output_mode":            strings.TrimSpace(launch.OutputMode),
+				"output_requirements":    launch.OutputRequirements,
 			}
 			if launch.ArtifactReference != nil {
 				launchRow["artifact_reference"] = launch.ArtifactReference
@@ -4220,6 +4249,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				RequestedSubagent:    launch.RequestedSubagent,
 				OwnedScope:           append([]string(nil), launch.OwnedScope...),
 				OutputMode:           strings.TrimSpace(launch.OutputMode),
+				OutputRequirements:   cloneTaskOutputRequirements(launch.OutputRequirements),
 				ArtifactRunContext:   launch.ArtifactRunContext,
 			})
 		}
@@ -4391,7 +4421,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				markMissing("managed_output_missing")
 				return outcome, fmt.Errorf("managed Designer completed without its required artifact: %w", artifactErr)
 			}
-			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode}
+			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements)}
 			lineage := variant.Lineage
 			lineageSourceMatches := lineage.SourceSessionID == launch.ChildSession.ID ||
 				(lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
@@ -4404,7 +4434,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.ProgramJobID == launch.ArtifactRunContext.ProgramJobID &&
 				lineage.IterationID == launch.ArtifactRunContext.IterationID &&
 				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex
-			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches {
+			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) {
 				if outcome.ArtifactReference.Status == "" || outcome.ArtifactReference.Status == pebblestore.SessionArtifactStatusStaging {
 					outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
 				}
@@ -4563,6 +4593,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if launch.ArtifactReference != nil {
 			launchPayload["artifact_reference"] = launch.ArtifactReference
 			launchPayload["artifact_status"] = launch.ArtifactReference.Status
+		}
+		if launch.OutputRequirements != nil {
+			launchPayload["output_requirements"] = launch.OutputRequirements
 		}
 		if reportExcerpt != "" {
 			excerptChars := len([]rune(reportExcerpt))
@@ -4787,6 +4820,7 @@ type taskDelegationPromptConfig struct {
 	RequestedSubagent    string
 	OwnedScope           []string
 	OutputMode           string
+	OutputRequirements   *pebblestore.SessionArtifactOutputRequirements
 	ArtifactRunContext   *tool.ArtifactRunContext
 }
 
@@ -4809,9 +4843,15 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		b.WriteString("\n")
 	}
 	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
+		if config.OutputRequirements != nil {
+			encoded, _ := json.Marshal(config.OutputRequirements)
+			b.WriteString("- exact output requirements (backend supplied; immutable; worker may not rewrite): ")
+			b.Write(encoded)
+			b.WriteString("\n")
+		}
 		switch strings.ToLower(strings.TrimSpace(config.OutputMode)) {
 		case taskOutputModeManaged:
-			b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; do not write or edit the workspace checkout\n")
+			b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; omit output_requirements because trusted orchestration injects the immutable snapshot; do not write or edit the workspace checkout\n")
 			if config.ArtifactRunContext == nil {
 				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")
 				break
@@ -4822,7 +4862,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString(config.ArtifactRunContext.CollectionID)
 			b.WriteString(", variant ")
 			b.WriteString(config.ArtifactRunContext.VariantID)
-			b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id; trusted orchestration injects and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
+			b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements; trusted orchestration injects the immutable requirements and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
 		case taskOutputModeWorkspace:
 			b.WriteString("- output mode: workspace\n")
 			b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")

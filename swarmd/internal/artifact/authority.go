@@ -57,6 +57,7 @@ type CreateInput struct {
 	Filename              string
 	MediaType             string
 	Presentation          pebblestore.SessionArtifactPresentation
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
 	SourceSessionID       string
 	SourceCollectionID    string
 	SourceVariantID       string
@@ -114,22 +115,43 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID = "", "", ""
 	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID = "", ""
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
+	if err := applyArtifactOutputRequirementsToPresentation(&input.Presentation, input.OutputRequirements); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
 	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, Lineage: lineage}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), Lineage: lineage}
 	existingStaging := false
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
 	} else if ok {
 		lineageCompatible := existing.Lineage == (pebblestore.SessionArtifactLineage{}) || artifactDestinationLineageCompatible(existing.Lineage, lineage)
+		presentationCompatible := artifactPresentationRequirementsCompatible(existing.Presentation, variant.Presentation, existing.OutputRequirements)
+		if existing.OutputRequirements != nil && variant.OutputRequirements == nil {
+			if (variant.Presentation.Width != 0 && variant.Presentation.Width != existing.OutputRequirements.Width) || (variant.Presentation.Height != 0 && variant.Presentation.Height != existing.OutputRequirements.Height) {
+				return pebblestore.SessionArtifactVariant{}, errors.New("artifact presentation dimensions conflict with output requirements")
+			}
+			variant.Presentation.Width, variant.Presentation.Height = existing.OutputRequirements.Width, existing.OutputRequirements.Height
+			presentationCompatible = artifactPresentationRequirementsCompatible(existing.Presentation, variant.Presentation, existing.OutputRequirements)
+		}
 		if existing.Status == pebblestore.SessionArtifactStatusReady {
-			if !lineageCompatible {
-				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible lineage", variant.ID)
+			readyRequirementsCompatible := equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements)
+			if existing.OutputRequirements != nil && variant.OutputRequirements == nil {
+				readyRequirementsCompatible = true
+			}
+			if !lineageCompatible || !readyRequirementsCompatible || !presentationCompatible {
+				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible lineage, requirements, or presentation", variant.ID)
 			}
 			return existing, nil
 		}
 		metadataCompatible := (existing.Filename == "" && existing.MediaType == "") || (existing.Filename == variant.Filename && existing.MediaType == variant.MediaType)
-		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !lineageCompatible {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, or lineage", variant.ID)
+		requirementsCompatible := equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements)
+		// Managed preallocation is the durable requirement authority. A caller may
+		// omit the trusted snapshot only when finalizing that same staging row.
+		if existing.OutputRequirements != nil && variant.OutputRequirements == nil {
+			requirementsCompatible = true
+		}
+		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !lineageCompatible || !requirementsCompatible || !presentationCompatible {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, lineage, requirements, or presentation", variant.ID)
 		}
 		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)
 		if collectionErr != nil {
@@ -155,6 +177,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		if collection.Lineage == (pebblestore.SessionArtifactLineage{}) {
 			collection.Lineage = collectionLineage
 		}
+		variant.OutputRequirements = cloneOutputRequirements(existing.OutputRequirements)
 	}
 	if !existingStaging {
 		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil {
@@ -191,6 +214,12 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		return failed, fmt.Errorf("finalize artifact bytes: %w", err)
 	}
 	variant.Filename, variant.MediaType, variant.DigestSHA256, variant.Size, variant.Presentation = blob.Filename, blob.MediaType, blob.DigestSHA256, blob.Size, blob.Presentation
+	// Requirements are the trusted target contract. Byte staging/finalization does
+	// not inspect binary pixel dimensions, so preserve the exact target metadata.
+	variant.Presentation.Width, variant.Presentation.Height = 0, 0
+	if err := applyArtifactOutputRequirementsToPresentation(&variant.Presentation, variant.OutputRequirements); err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("preserve finalized artifact output requirements: %w", err)
+	}
 	collection.Lineage = collectionLineage
 	if _, err := a.mutate(principal, input.RequestID+":ready:"+blob.DigestSHA256, pebblestore.V3SessionMutationFinalizeArtifact, collection, &variant, nil); err != nil {
 		// Finalized bytes may outlive a failed metadata write, but ready metadata is
@@ -478,6 +507,42 @@ func (a *Authority) owned(principal Principal) (*Service, Principal, error) {
 	}
 	principal.AccountScopeID, principal.UserID = session.AccountScopeID, session.UserID
 	return service, principal, nil
+}
+
+func cloneOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func equalOutputRequirements(left, right *pebblestore.SessionArtifactOutputRequirements) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func applyArtifactOutputRequirementsToPresentation(presentation *pebblestore.SessionArtifactPresentation, requirements *pebblestore.SessionArtifactOutputRequirements) error {
+	if requirements == nil {
+		return nil
+	}
+	if presentation == nil {
+		return errors.New("artifact presentation is required")
+	}
+	if (presentation.Width != 0 && presentation.Width != requirements.Width) || (presentation.Height != 0 && presentation.Height != requirements.Height) {
+		return errors.New("artifact presentation dimensions conflict with output requirements")
+	}
+	presentation.Width, presentation.Height = requirements.Width, requirements.Height
+	return nil
+}
+
+func artifactPresentationRequirementsCompatible(existing, incoming pebblestore.SessionArtifactPresentation, requirements *pebblestore.SessionArtifactOutputRequirements) bool {
+	if requirements == nil {
+		return true
+	}
+	return existing.Width == requirements.Width && existing.Height == requirements.Height && incoming.Width == requirements.Width && incoming.Height == requirements.Height
 }
 
 func artifactDestinationLineageCompatible(existing, incoming pebblestore.SessionArtifactLineage) bool {

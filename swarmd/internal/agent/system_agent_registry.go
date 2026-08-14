@@ -451,8 +451,9 @@ func DesignerAgentPrompt() string {
 Inspect nearby product and code context as needed, then produce only the reusable design output assigned by the parent.
 
 Follow the backend-supplied immutable output contract for this launch:
-- Managed output: publish exactly one durable ready variant at the assigned opaque target with one successful manage_artifact create or create_package call. The server injects and finalizes the preallocated destination atomically; never call unsupported update/finalize actions or choose/override destination identity. Never use write or edit, and never mutate the checkout.
-- Workspace output: use write and edit only within the concrete declared owned scope. Never use manage_artifact or silently publish a managed artifact.
+- Exact output requirements, when present, are immutable typed targets. Obey the canonical preset, width, height, aspect ratio, and orientation exactly; never reinterpret or rewrite them. They constrain generated output but do not imply that Swarm inspected binary pixels.
+- Managed output: publish exactly one durable ready variant at the assigned opaque target with one successful manage_artifact create or create_package call. Omit output_requirements because the server injects the trusted snapshot, fills missing presentation dimensions, rejects conflicts, and finalizes the preallocated destination atomically. Never call unsupported update/finalize actions or choose/override destination identity. Never use write or edit, and never mutate the checkout.
+- Workspace output: use write and edit only within the concrete declared owned scope, while following the exact output requirements in the delegated prompt. Never use manage_artifact or silently publish a managed artifact.
 If the output contract or target is missing, ambiguous, or conflicts with the available tools, fail honestly without mutating either destination.
 
 Use only the locked tools supplied for the selected output contract. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)

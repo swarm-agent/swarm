@@ -17,6 +17,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodel"
+	artifactruntime "swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -75,6 +76,7 @@ type taskProgramJob struct {
 	Deliverable           string   `json:"deliverable"`
 	OwnedScope            []string `json:"owned_scope,omitempty"`
 	OutputMode            string   `json:"output_mode,omitempty"`
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AcceptanceCriteria    []string `json:"acceptance_criteria"`
 	DependencyEvidence    string   `json:"dependency_evidence"`
 }
@@ -107,6 +109,7 @@ type taskSwarmSpec struct {
 	Groups              []taskSwarmGroup
 	OutputContract      string
 	OutputMode          string
+	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
 	OwnedScopeTemplate  string
 	AssemblyParts       []taskSwarmAssemblyPart
 	IntegrationContract string
@@ -120,6 +123,7 @@ type taskLaunchSpec struct {
 	ConcurrencyReason     string
 	OwnedScope            []string
 	OutputMode            string
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
 	DependencyEvidence    string
 	StreamKey             string
 	SwarmMode             bool
@@ -240,6 +244,7 @@ type taskLaunchManifestRow struct {
 	ConcurrencyReason     string                                   `json:"concurrency_reason,omitempty"`
 	OwnedScope            []string                                 `json:"owned_scope,omitempty"`
 	OutputMode            string                                   `json:"output_mode,omitempty"`
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	DependencyEvidence    string                                   `json:"dependency_evidence,omitempty"`
 	SubagentProvider      string                                   `json:"subagent_provider,omitempty"`
 	SubagentModel         string                                   `json:"subagent_model,omitempty"`
@@ -401,6 +406,14 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if err := applyTaskDesignerOutputMode(&launch, mapString(raw, "output_mode"), label); err != nil {
 			return taskLaunchSpec{}, err
 		}
+		if rawRequirements, exists := raw["output_requirements"]; exists {
+			if rawRequirements == nil {
+				return taskLaunchSpec{}, fmt.Errorf("%s output_requirements must be an object", label)
+			}
+			if err := applyTaskOutputRequirements(&launch, rawRequirements, label); err != nil {
+				return taskLaunchSpec{}, err
+			}
+		}
 		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
 	}
@@ -445,6 +458,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 
 	launches := make([]taskLaunchSpec, 0, 8)
 	if rawLaunches, ok := args["launches"]; ok {
+		if _, exists := args["output_requirements"]; exists {
+			return taskCallArguments{}, errors.New("task regular launches must declare output_requirements on each Designer launch, not at top level")
+		}
 		typed, ok := rawLaunches.([]any)
 		if !ok {
 			return taskCallArguments{}, fmt.Errorf("task launches must be an array")
@@ -458,6 +474,10 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			if err != nil {
 				return taskCallArguments{}, err
 			}
+			if launch.OutputRequirements != nil {
+				entry["output_requirements"] = cloneTaskOutputRequirements(launch.OutputRequirements)
+			}
+			launch.SourceArguments = cloneGenericMap(entry)
 			launches = append(launches, launch)
 		}
 		if len(launches) == 0 {
@@ -470,6 +490,10 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if err != nil {
 			return taskCallArguments{}, err
 		}
+		if launch.OutputRequirements != nil {
+			args["output_requirements"] = cloneTaskOutputRequirements(launch.OutputRequirements)
+		}
+		launch.SourceArguments = cloneGenericMap(args)
 		launches = append(launches, launch)
 	}
 	if err := validateTaskDesignerScopes(launches); err != nil {
@@ -581,7 +605,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "output_mode", "acceptance_criteria", "dependency_evidence":
+			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "output_mode", "output_requirements", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
 			}
@@ -634,6 +658,18 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if err := applyTaskDesignerOutputMode(&launch, mapString(row, "output_mode"), fmt.Sprintf("task program jobs[%d]", i)); err != nil {
 			return nil, nil, err
 		}
+		if rawRequirements, exists := row["output_requirements"]; exists {
+			if rawRequirements == nil {
+				return nil, nil, fmt.Errorf("task program jobs[%d] output_requirements must be an object", i)
+			}
+			if err := applyTaskOutputRequirements(&launch, rawRequirements, fmt.Sprintf("task program jobs[%d]", i)); err != nil {
+				return nil, nil, err
+			}
+		}
+		job.OutputRequirements = cloneTaskOutputRequirements(launch.OutputRequirements)
+		if job.OutputRequirements != nil {
+			row["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
+		}
 		if job.RequestedSubagentType == "designer" {
 			job.OutputMode = launch.OutputMode
 		} else if len(ownedScope) == 0 {
@@ -662,10 +698,14 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		jobStages[job.ID] = stageIndex
 		stageJobCounts[job.StageID]++
 		program.Jobs = append(program.Jobs, job)
+		sourceArguments := map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}
+		if job.OutputRequirements != nil {
+			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
+		}
 		launches = append(launches, taskLaunchSpec{
 			RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
-			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, DependencyEvidence: job.DependencyEvidence,
-			SourceArguments: map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)},
+			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), DependencyEvidence: job.DependencyEvidence,
+			SourceArguments: sourceArguments,
 		})
 	}
 	for i, stage := range program.Stages {
@@ -753,7 +793,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
 		"themes": true, "groups": true, "output_contract": true, "output_mode": true, "owned_scope_template": true, "assembly_parts": true,
-		"integration_contract": true, "launches": true,
+		"integration_contract": true, "output_requirements": true, "launches": true,
 	}
 	for key := range args {
 		if !allowed[key] {
@@ -793,6 +833,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	}
 
 	if strategy == taskSwarmStrategyAssembly {
+		if _, exists := args["output_requirements"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept output_requirements")
+		}
 		if _, exists := args["output_mode"]; exists {
 			return nil, nil, errors.New("task Assembly swarm does not accept output_mode")
 		}
@@ -838,11 +881,30 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if ownedScopeTemplate != "" && strings.Count(ownedScopeTemplate, "{index}") != 1 {
 		return nil, nil, errors.New("task swarm owned_scope_template must contain exactly one {index} placeholder")
 	}
-	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "") {
+	_, outputRequirementsProvided := args["output_requirements"]
+	if outputRequirementsProvided && agentType != "designer" {
+		return nil, nil, errors.New("task swarm output_requirements is supported only for Designer")
+	}
+	if outputRequirementsProvided && args["output_requirements"] == nil {
+		return nil, nil, errors.New("task swarm output_requirements must be an object")
+	}
+	if value, ok := args["output_requirements"].(map[string]any); outputRequirementsProvided && ok && len(value) == 0 {
+		return nil, nil, errors.New("task swarm output_requirements must include a preset or paired width and height")
+	}
+	var outputRequirements *pebblestore.SessionArtifactOutputRequirements
+	if outputRequirementsProvided {
+		var err error
+		outputRequirements, err = artifactruntime.ParseOutputRequirements(args["output_requirements"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("task swarm output_requirements: %w", err)
+		}
+		args["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
+	}
+	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "" || outputRequirements != nil) {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OwnedScopeTemplate: ownedScopeTemplate}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), OwnedScopeTemplate: ownedScopeTemplate}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -862,12 +924,16 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if agentType == "idea" {
 			assignmentLabel = fmt.Sprintf("Agent #%d", index)
 		}
+		sourceArguments := map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
+		if outputRequirements != nil {
+			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
+		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
-			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope, OutputMode: outputMode,
+			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements),
 			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
 			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
-			SourceArguments: map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode},
+			SourceArguments: sourceArguments,
 		}
 		applyCanonicalCoderOwnedScope(&launches[i])
 	}
@@ -1102,6 +1168,46 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func cloneTaskOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func applyTaskOutputRequirements(launch *taskLaunchSpec, raw any, label string) error {
+	if launch == nil {
+		return errors.New("task launch is required")
+	}
+	if raw == nil {
+		launch.OutputRequirements = nil
+		if launch.SourceArguments != nil {
+			delete(launch.SourceArguments, "output_requirements")
+		}
+		return nil
+	}
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) {
+		return fmt.Errorf("%s output_requirements is supported only for Designer", label)
+	}
+	if value, ok := raw.(map[string]any); ok && len(value) == 0 {
+		return fmt.Errorf("%s output_requirements must include a preset or paired width and height", label)
+	}
+	resolved, err := artifactruntime.ParseOutputRequirements(raw)
+	if err != nil {
+		return fmt.Errorf("%s output_requirements: %w", label, err)
+	}
+	launch.OutputRequirements = cloneTaskOutputRequirements(resolved)
+	if launch.SourceArguments != nil {
+		if resolved == nil {
+			delete(launch.SourceArguments, "output_requirements")
+		} else {
+			launch.SourceArguments["output_requirements"] = cloneTaskOutputRequirements(resolved)
+		}
+	}
+	return nil
 }
 
 func applyTaskDesignerOutputMode(launch *taskLaunchSpec, rawMode, label string) error {
@@ -2558,6 +2664,16 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if strings.TrimSpace(row.OutputMode) != strings.TrimSpace(launchSpecs[i].OutputMode) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output mode mismatch", i)
 		}
+		if !reflect.DeepEqual(row.OutputRequirements, launchSpecs[i].OutputRequirements) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output requirements mismatch", i)
+		}
+		if row.SourceArguments != nil {
+			row.SourceArguments = cloneGenericMap(row.SourceArguments)
+			if launchSpecs[i].OutputRequirements != nil {
+				row.SourceArguments["output_requirements"] = cloneTaskOutputRequirements(launchSpecs[i].OutputRequirements)
+			}
+		}
+		approvedLaunches[i] = row
 		if !reflect.DeepEqual(row.OwnedScope, launchSpecs[i].OwnedScope) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
 		}
@@ -2713,6 +2829,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			ConcurrencyReason:     strings.TrimSpace(launch.ConcurrencyReason),
 			OwnedScope:            append([]string(nil), launch.OwnedScope...),
 			OutputMode:            strings.TrimSpace(launch.OutputMode),
+			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),
 			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),

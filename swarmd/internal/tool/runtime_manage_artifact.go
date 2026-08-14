@@ -69,6 +69,7 @@ type ArtifactRunContext struct {
 	IterationTheme   string
 	CollectionID     string
 	VariantID      string
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements
 }
 
 type artifactRunContextKey struct{}
@@ -109,7 +110,7 @@ func manageArtifactDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":                 map[string]any{"type": "string", "enum": []string{"create", "create_package", "list", "get", "read", "materialize", "promote", "select", "delete"}},
+				"action":                 map[string]any{"type": "string", "enum": []string{"create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
 				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session from an attached artifact reference; valid only for get/read/materialize/promote"},
 				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference; optional on create and required for collection-scoped actions"},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
@@ -120,6 +121,7 @@ func manageArtifactDefinition() Definition {
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for create"},
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
 				"presentation":           presentation,
+				"output_requirements":    artifact.OutputRequirementsToolSchema(),
 				"source_session_id":      map[string]any{"type": "string", "description": "Optional authenticated source session lineage from an attached artifact reference"},
 				"source_collection_id":   map[string]any{"type": "string", "description": "Optional opaque source collection lineage"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "Optional opaque source variant lineage"},
@@ -139,23 +141,51 @@ func manageArtifactDefinition() Definition {
 }
 
 func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
-	if r == nil || r.artifactAuthority == nil {
-		return "", errors.New("manage_artifact authority is not configured")
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
 	}
-	principal, err := artifactPrincipal(ctx, scope)
-	if err != nil {
-		return "", err
+	actionName := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	if actionName == "list_presets" {
+		for key := range args {
+			if key != "action" {
+				return "", fmt.Errorf("manage_artifact list_presets contains unsupported field %q", key)
+			}
+		}
+	}
+	var principal artifact.Principal
+	if actionName != "list_presets" {
+		var err error
+		principal, err = artifactPrincipal(ctx, scope)
+		if err != nil {
+			return "", err
+		}
 	}
 	callID = strings.TrimSpace(callID)
 	if callID == "" {
 		return "", errors.New("manage_artifact requires a trusted tool call id")
 	}
-	actionName := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	response := map[string]any{"tool": "manage_artifact", "action": actionName, "status": "ok", "path_id": toolPathID("manage_artifact"), "details_truncated": false}
-	requestID := managedArtifactRequestID(principal.SessionID, callID, actionName)
+	requestID := ""
+	if actionName != "list_presets" {
+		requestID = managedArtifactRequestID(principal.SessionID, callID, actionName)
+	}
+
+	if actionName != "create" && actionName != "create_package" {
+		if _, supplied := args["output_requirements"]; supplied {
+			return "", errors.New("manage_artifact output_requirements is valid only for create or create_package")
+		}
+	}
+	if actionName != "list_presets" && r.artifactAuthority == nil {
+		return "", errors.New("manage_artifact authority is not configured")
+	}
 
 	switch actionName {
 	case "create", "create_package":
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+			if _, supplied := args["output_requirements"]; supplied {
+				return "", errors.New("manage_artifact managed create must omit output_requirements; trusted orchestration injects the immutable target")
+			}
+		}
 		input, entries, err := parseArtifactCreate(args, principal.SessionID, callID, actionName == "create_package")
 		if err != nil {
 			return "", err
@@ -173,6 +203,10 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 					return "", errors.New("manage_artifact managed create must omit variant_id; the destination is injected by trusted orchestration")
 				}
 				input.CollectionID, input.VariantID = trustedCollectionID, trustedVariantID
+				input.OutputRequirements = cloneArtifactOutputRequirements(run.OutputRequirements)
+				if err := enforceArtifactPresentationRequirements(&input.Presentation, input.OutputRequirements); err != nil {
+					return "", err
+				}
 				// The parent-owned collection already exists. Model-authored collection
 				// metadata must neither conflict with nor replace that trusted target.
 				input.CollectionName, input.CollectionDescription = "", ""
@@ -190,6 +224,13 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReference(variant.CollectionID, variant.ID)
+	case "list_presets":
+		presets := artifact.ListOutputPresets()
+		response["registry_version"] = artifact.OutputRequirementsRegistryVersion
+		response["reviewed_source"] = artifact.OutputRequirementsReviewedSource
+		response["reviewed_date"] = artifact.OutputRequirementsReviewedDate
+		response["presets"] = presets
+		response["count"] = len(presets)
 	case "list":
 		limit := clampInt(asInt(args["limit"], manageArtifactDefaultListLimit), 1, manageArtifactMaxListLimit)
 		status := strings.ToLower(strings.TrimSpace(asString(args["status"])))
@@ -446,7 +487,25 @@ func parseArtifactCreate(args map[string]any, sessionID, callID string, packageA
 	if err != nil {
 		return artifact.CreateInput{}, nil, err
 	}
-	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
+	if rawRequirements, exists := args["output_requirements"]; exists {
+		if rawRequirements == nil {
+			return artifact.CreateInput{}, nil, errors.New("output_requirements must be an object")
+		}
+		if value, ok := rawRequirements.(map[string]any); ok && len(value) == 0 {
+			return artifact.CreateInput{}, nil, errors.New("output_requirements must include a preset or paired width and height")
+		}
+	}
+	var requirements *pebblestore.SessionArtifactOutputRequirements
+	if rawRequirements, exists := args["output_requirements"]; exists {
+		requirements, err = artifact.ParseOutputRequirements(rawRequirements)
+		if err != nil {
+			return artifact.CreateInput{}, nil, err
+		}
+	}
+	if err := enforceArtifactPresentationRequirements(&presentation, requirements); err != nil {
+		return artifact.CreateInput{}, nil, err
+	}
+	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, OutputRequirements: requirements, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
 	if !packageArtifact {
 		content, ok := args["content"].(string)
 		if !ok || content == "" {
@@ -578,7 +637,32 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 }
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
-	return map[string]any{"id": v.ID, "collection_id": v.CollectionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	return map[string]any{"id": v.ID, "collection_id": v.CollectionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+}
+
+func cloneArtifactOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func enforceArtifactPresentationRequirements(presentation *pebblestore.SessionArtifactPresentation, requirements *pebblestore.SessionArtifactOutputRequirements) error {
+	if requirements == nil {
+		return nil
+	}
+	if presentation == nil {
+		return errors.New("artifact presentation is required")
+	}
+	if presentation.Width != 0 && presentation.Width != requirements.Width {
+		return fmt.Errorf("artifact presentation width %d conflicts with output requirement %d", presentation.Width, requirements.Width)
+	}
+	if presentation.Height != 0 && presentation.Height != requirements.Height {
+		return fmt.Errorf("artifact presentation height %d conflicts with output requirement %d", presentation.Height, requirements.Height)
+	}
+	presentation.Width, presentation.Height = requirements.Width, requirements.Height
+	return nil
 }
 
 func managedArtifactCollection(c pebblestore.SessionArtifactCollection) map[string]any {

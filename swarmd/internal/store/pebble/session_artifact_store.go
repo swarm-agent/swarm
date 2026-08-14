@@ -63,6 +63,18 @@ type SessionArtifactPresentation struct {
 	Height      int    `json:"height,omitempty"`
 }
 
+// SessionArtifactOutputRequirements is the immutable resolved target supplied by
+// trusted orchestration. It is distinct from model-authored Presentation hints.
+type SessionArtifactOutputRequirements struct {
+	PresetID        string `json:"preset_id,omitempty"`
+	Width           int    `json:"width"`
+	Height          int    `json:"height"`
+	AspectRatio     string `json:"aspect_ratio"`
+	Orientation     string `json:"orientation"`
+	ResolutionSource string `json:"resolution_source"`
+	RegistryVersion string `json:"registry_version"`
+}
+
 type SessionArtifactVariant struct {
 	Version        int                         `json:"version"`
 	ID             string                      `json:"id"`
@@ -77,6 +89,7 @@ type SessionArtifactVariant struct {
 	FailureCode    string                      `json:"failure_code,omitempty"`
 	Lineage        SessionArtifactLineage      `json:"lineage,omitempty"`
 	Presentation   SessionArtifactPresentation `json:"presentation,omitempty"`
+	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	CreatedAt      int64                       `json:"created_at"`
 	UpdatedAt      int64                       `json:"updated_at"`
 	EventSeq       uint64                      `json:"event_seq"`
@@ -657,6 +670,9 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if err := validateArtifactPresentation(variant.Presentation); err != nil {
 			return err
 		}
+		if err := validateArtifactOutputRequirements(variant.OutputRequirements); err != nil {
+			return err
+		}
 	}
 	switch input.Kind {
 	case V3SessionMutationCreateArtifact:
@@ -730,6 +746,72 @@ func validateArtifactPresentation(presentation SessionArtifactPresentation) erro
 		return errors.New("artifact presentation dimensions are invalid")
 	}
 	return nil
+}
+
+func validateArtifactOutputRequirements(requirements *SessionArtifactOutputRequirements) error {
+	if requirements == nil {
+		return nil
+	}
+	if requirements.Width < 1 || requirements.Height < 1 || requirements.Width > 16384 || requirements.Height > 16384 {
+		return errors.New("artifact output requirement dimensions are invalid")
+	}
+	if len(requirements.PresetID) > 128 || len(requirements.AspectRatio) > 64 || len(requirements.Orientation) > 32 || len(requirements.ResolutionSource) > 32 || len(requirements.RegistryVersion) > 128 {
+		return errors.New("artifact output requirements exceed bounds")
+	}
+	if requirements.AspectRatio == "" || (requirements.Orientation != "landscape" && requirements.Orientation != "portrait" && requirements.Orientation != "square") || (requirements.ResolutionSource != "preset" && requirements.ResolutionSource != "dimensions") || (requirements.ResolutionSource == "preset" && requirements.PresetID == "") || requirements.RegistryVersion == "" {
+		return errors.New("artifact output requirements are incomplete")
+	}
+	if requirements.PresetID != "" {
+		if len(requirements.PresetID) > 128 || requirements.PresetID == "." || requirements.PresetID == ".." {
+			return errors.New("artifact output preset id is invalid")
+		}
+		for _, character := range requirements.PresetID {
+			if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-' || character == '.' {
+				continue
+			}
+			return errors.New("artifact output preset id is invalid")
+		}
+	}
+	expectedOrientation := "portrait"
+	if requirements.Width == requirements.Height {
+		expectedOrientation = "square"
+	} else if requirements.Width > requirements.Height {
+		expectedOrientation = "landscape"
+	}
+	if requirements.Orientation != expectedOrientation {
+		return errors.New("artifact output requirement orientation conflicts with dimensions")
+	}
+	divisor := artifactDimensionGCD(requirements.Width, requirements.Height)
+	expectedRatio := fmt.Sprintf("%d:%d", requirements.Width/divisor, requirements.Height/divisor)
+	if requirements.AspectRatio != expectedRatio {
+		return errors.New("artifact output requirement aspect ratio conflicts with dimensions")
+	}
+	return nil
+}
+
+func artifactDimensionGCD(left, right int) int {
+	for right != 0 {
+		left, right = right, left%right
+	}
+	if left < 1 {
+		return 1
+	}
+	return left
+}
+
+func equalArtifactOutputRequirements(left, right *SessionArtifactOutputRequirements) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func cloneSessionArtifactOutputRequirements(input *SessionArtifactOutputRequirements) *SessionArtifactOutputRequirements {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
 }
 
 func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, seq uint64, now int64) (preparedV3ArtifactMutation, error) {
@@ -845,6 +927,21 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		}
 		if variantOK && incoming.Variant.Lineage != (SessionArtifactLineage{}) && current.Lineage != (SessionArtifactLineage{}) && incoming.Variant.Lineage != current.Lineage {
 			return preparedV3ArtifactMutation{}, errors.New("artifact variant lineage is immutable")
+		}
+		if variantOK && !equalArtifactOutputRequirements(current.OutputRequirements, incoming.Variant.OutputRequirements) {
+			if current.OutputRequirements == nil || incoming.Variant.OutputRequirements != nil {
+				return preparedV3ArtifactMutation{}, errors.New("artifact output requirements are immutable")
+			}
+		}
+		if variantOK {
+			incoming.Variant.OutputRequirements = cloneSessionArtifactOutputRequirements(current.OutputRequirements)
+			if current.OutputRequirements != nil {
+				if (incoming.Variant.Presentation.Width != 0 && incoming.Variant.Presentation.Width != current.OutputRequirements.Width) || (incoming.Variant.Presentation.Height != 0 && incoming.Variant.Presentation.Height != current.OutputRequirements.Height) {
+					return preparedV3ArtifactMutation{}, errors.New("artifact presentation dimensions conflict with immutable output requirements")
+				}
+				incoming.Variant.Presentation.Width = current.OutputRequirements.Width
+				incoming.Variant.Presentation.Height = current.OutputRequirements.Height
+			}
 		}
 		if variantOK && current.Lineage == (SessionArtifactLineage{}) && incoming.Variant.Lineage != (SessionArtifactLineage{}) {
 			current.Lineage = incoming.Variant.Lineage

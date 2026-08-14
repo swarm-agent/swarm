@@ -1291,6 +1291,7 @@ func (r *Runtime) Definitions() []Definition {
 					"themes":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer seed themes; cardinality must equal count."},
 					"groups":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
 					"output_contract":      map[string]any{"type": "string", "description": "Shared Coder/Designer swarm deliverable contract. Omit for Idea swarms."},
+					"output_requirements":  artifact.OutputRequirementsToolSchema(),
 					"output_mode":          map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only. Defaults to managed. For Designer Iteration Swarms, managed publishes to a trusted server-injected parent collection and must omit owned_scope_template, while workspace requires a concrete non-overlapping owned_scope_template. For regular Designer launches, managed forbids owned_scope and workspace requires concrete owned_scope. Never supplies destination IDs."},
 					"owned_scope_template": map[string]any{"type": "string", "description": "Workspace-mode Iteration Swarm target containing exactly one {index}. Required only for output_mode=workspace Designer swarms; forbidden for managed Designer swarms and omitted for Idea swarms."},
 					"description": map[string]any{
@@ -1346,6 +1347,7 @@ func (r *Runtime) Definitions() []Definition {
 								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
+								"output_requirements": artifact.OutputRequirementsToolSchema(),
 								"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
 								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree."},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
@@ -1387,6 +1389,7 @@ func taskProgramToolSchema() map[string]any {
 					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
 					"title":               map[string]any{"type": "string", "minLength": 1},
 					"deliverable":         map[string]any{"type": "string", "minLength": 1},
+					"output_requirements": artifact.OutputRequirementsToolSchema(),
 					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
 					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs."},
 					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},

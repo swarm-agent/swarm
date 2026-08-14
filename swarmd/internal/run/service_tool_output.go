@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/gitstatus"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -1284,6 +1285,8 @@ func cloneGenericValue(value any) any {
 			out = append(out, cloneGenericMap(item))
 		}
 		return out
+	case *pebblestore.SessionArtifactOutputRequirements:
+		return cloneTaskOutputRequirements(typed)
 	default:
 		return value
 	}
