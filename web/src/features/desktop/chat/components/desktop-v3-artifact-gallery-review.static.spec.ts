@@ -44,6 +44,19 @@ test('gallery chat actions emit opaque references and persist use before callbac
   assert.doesNotMatch(gallery, /onAddToChat\(\{[^}]*content:/)
 })
 
+test('mobile gallery reserves a stable middle generation viewport between selectors and actions', async () => {
+  const gallery = await readFile(galleryURL, 'utf8')
+
+  assert.match(gallery, /data-mobile-artifact-three-zone-layout/)
+  assert.match(gallery, /grid-rows-\[auto_minmax\(0,1fr\)_auto\]/)
+  assert.match(gallery, /data-mobile-generation-selector/)
+  assert.match(gallery, /aria-label="Select generation"/)
+  assert.match(gallery, /data-mobile-generation-actions/)
+  assert.match(gallery, /h-\[100dvh\] w-full/)
+  assert.match(gallery, /safe-area-inset-bottom/)
+  assert.doesNotMatch(gallery, /h-\[100dvh\] w-\[100dvw\].*data-artifact-review-surface/)
+})
+
 test('open catalog consumes realtime refresh demand and keeps previews sandboxed', async () => {
   const gallery = await readFile(galleryURL, 'utf8')
 
