@@ -313,6 +313,9 @@ func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessio
 			if variant.Status != pebblestore.SessionArtifactStatusReady {
 				return fmt.Errorf("referenced artifact variant %q is not in ready status (status: %s)", ref.VariantID, variant.Status)
 			}
+			if ref.EventSeq == 0 || ref.EventSeq != variant.EventSeq {
+				return fmt.Errorf("referenced artifact variant %q event sequence is stale or missing", ref.VariantID)
+			}
 		}
 		if clip.DesignInput != nil {
 			input := clip.DesignInput
@@ -329,6 +332,9 @@ func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessio
 			}
 			if variant.Status != pebblestore.SessionArtifactStatusReady {
 				return fmt.Errorf("referenced design input variant %q is not ready (status: %s)", input.VariantID, variant.Status)
+			}
+			if input.EventSeq == 0 || input.EventSeq != variant.EventSeq {
+				return fmt.Errorf("referenced design input variant %q event sequence is stale or missing", input.VariantID)
 			}
 		}
 	}

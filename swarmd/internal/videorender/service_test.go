@@ -266,6 +266,7 @@ func TestRenderJobSuccessfulFlow(t *testing.T) {
 		Filename:     "intro_card.png",
 		MediaType:    "image/png",
 		Status:       pebblestore.SessionArtifactStatusReady,
+		EventSeq:     7,
 		Size:         500,
 	}
 
@@ -288,6 +289,7 @@ func TestRenderJobSuccessfulFlow(t *testing.T) {
 						SessionID:    sessionID,
 						CollectionID: "col_intro",
 						VariantID:    "var_intro_1",
+						EventSeq:     7,
 					},
 					DurationMs: 2000,
 					Visible:    true,

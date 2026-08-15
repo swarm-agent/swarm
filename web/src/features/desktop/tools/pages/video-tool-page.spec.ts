@@ -13,7 +13,7 @@ test('serializeVideoClipForRequest sends Go API wire fields for clip metadata', 
   const clip: VideoClip = {
     id: 'clip-1',
     name: 'launch.mp4',
-    path: '/workspace/video/launch.mp4',
+    sourceRef: 'videosrc_launch',
     extension: '.mp4',
     sizeBytes: 123456,
     modifiedAt: 1700000000000,
@@ -24,11 +24,12 @@ test('serializeVideoClipForRequest sends Go API wire fields for clip metadata', 
   assert.deepEqual(payload, {
     id: 'clip-1',
     name: 'launch.mp4',
-    path: '/workspace/video/launch.mp4',
+    source_ref: 'videosrc_launch',
     extension: '.mp4',
     size_bytes: 123456,
     modified_at: 1700000000000,
   })
+  assert.equal('path' in payload, false)
   assert.equal('sizeBytes' in payload, false)
   assert.equal('modifiedAt' in payload, false)
 })
@@ -38,7 +39,7 @@ test('timelineSegmentsToProjectTimeline builds structured V3 VideoProject timeli
     {
       id: 'clip-1',
       name: 'intro.mp4',
-      path: '/workspace/intro.mp4',
+      sourceRef: 'videosrc_intro',
       extension: '.mp4',
       sizeBytes: 5000,
       modifiedAt: 1700000000000,
@@ -46,7 +47,7 @@ test('timelineSegmentsToProjectTimeline builds structured V3 VideoProject timeli
     {
       id: 'clip-2',
       name: 'demo.mp4',
-      path: '/workspace/demo.mp4',
+      sourceRef: 'videosrc_demo',
       extension: '.mp4',
       sizeBytes: 8000,
       modifiedAt: 1700000000000,
@@ -79,6 +80,10 @@ test('timelineSegmentsToProjectTimeline builds structured V3 VideoProject timeli
 
   assert.equal(timeline.schema_version, 1)
   assert.equal(timeline.output_preset, 'landscape_1080p')
+  assert.equal(timeline.width, 1920)
+  assert.equal(timeline.height, 1080)
+  assert.equal(timeline.fps, 30)
+  assert.equal(timeline.total_duration_ms, 4000)
   assert.equal(timeline.clips.length, 2)
 
   assert.deepEqual(timeline.clips[0], {
@@ -87,7 +92,7 @@ test('timelineSegmentsToProjectTimeline builds structured V3 VideoProject timeli
     track: 0,
     sequence: 0,
     source_kind: 'source_video',
-    source_ref: '/workspace/intro.mp4',
+    source_ref: 'videosrc_intro',
     source_start_ms: 1500,
     source_end_ms: 5500,
     timeline_start_ms: 0,
@@ -103,7 +108,7 @@ test('timelineSegmentsToProjectTimeline builds structured V3 VideoProject timeli
     track: 0,
     sequence: 1,
     source_kind: 'source_video',
-    source_ref: '/workspace/demo.mp4',
+    source_ref: 'videosrc_demo',
     source_start_ms: 0,
     source_end_ms: 6000,
     timeline_start_ms: 0,

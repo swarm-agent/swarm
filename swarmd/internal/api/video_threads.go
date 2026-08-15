@@ -9,12 +9,12 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videosource"
 )
 
 type videoThreadCreateRequest struct {
+	SessionID      string                          `json:"session_id"`
 	Title          string                          `json:"title"`
 	WorkspacePath  string                          `json:"workspace_path"`
 	WorkspaceName  string                          `json:"workspace_name"`
@@ -75,13 +75,31 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		workspacePath := owned.WorkspacePath
-		threadID := session.NewSessionID()
+		threadID := strings.TrimSpace(req.SessionID)
+		if threadID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("session_id is required; video threads are session-owned"))
+			return
+		}
+		boundSession, found, sessionErr := s.sessions.GetSession(threadID)
+		if sessionErr != nil {
+			writeError(w, http.StatusInternalServerError, sessionErr)
+			return
+		}
+		if !found || boundSession.AccountScopeID != principal.AccountScopeID || (boundSession.UserID != "" && boundSession.UserID != principal.UserID) {
+			writeError(w, http.StatusBadRequest, errors.New("video session does not belong to the authenticated principal"))
+			return
+		}
+		if filepath.Clean(strings.TrimSpace(boundSession.WorkspacePath)) != filepath.Clean(workspacePath) {
+			writeError(w, http.StatusBadRequest, errors.New("video session workspace does not match requested workspace"))
+			return
+		}
 		storagePath, err := ensureWorkspaceToolStorage(workspacePath, "video", threadID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		metadata := ensureManagedToolStorageMetadata(req.Metadata, storagePath)
+		req.VideoClips = sanitizeVideoThreadSourceClips(req.VideoClips)
 		thread, err := s.videoThreads.CreateForAccount(principal.AccountScopeID, principal.UserID, pebblestore.VideoThreadSnapshot{
 			ID:             threadID,
 			WorkspacePath:  workspacePath,
@@ -118,7 +136,7 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if isClipMedia {
-		s.handleWorkspaceVideoClipMedia(w, r, principal.AccountScopeID, threadID, clipID)
+		s.handleWorkspaceVideoClipMedia(w, r, principal, threadID, clipID)
 		return
 	}
 	switch r.Method {
@@ -157,7 +175,7 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		if req.VideoClips != nil {
-			thread.VideoClips = req.VideoClips
+			thread.VideoClips = sanitizeVideoThreadSourceClips(req.VideoClips)
 		}
 		if req.VideoClipOrder != nil {
 			thread.VideoClipOrder = req.VideoClipOrder
@@ -176,6 +194,19 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func sanitizeVideoThreadSourceClips(clips []pebblestore.VideoClipSnapshot) []pebblestore.VideoClipSnapshot {
+	out := make([]pebblestore.VideoClipSnapshot, 0, len(clips))
+	for _, clip := range clips {
+		clip.SourceRef = strings.TrimSpace(clip.SourceRef)
+		if clip.SourceRef != "" {
+			clip.ID = clip.SourceRef
+			clip.Path = ""
+		}
+		out = append(out, clip)
+	}
+	return out
 }
 
 func parseVideoThreadPath(requestPath string) (threadID string, clipID string, isClipMedia bool, err error) {
@@ -209,7 +240,7 @@ func parseVideoThreadPath(requestPath string) (threadID string, clipID string, i
 	return "", "", false, errors.New("invalid video thread path")
 }
 
-func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Request, accountScopeID string, threadID string, clipID string) {
+func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Request, principal identity.Principal, threadID string, clipID string) {
 	if clipID == "" {
 		clipID = strings.TrimSpace(r.URL.Query().Get("clip_id"))
 	}
@@ -217,7 +248,7 @@ func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Re
 		methodNotAllowed(w)
 		return
 	}
-	thread, ok, err := s.videoThreads.GetForAccount(accountScopeID, threadID)
+	thread, ok, err := s.videoThreads.GetForAccount(principal.AccountScopeID, threadID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -231,10 +262,31 @@ func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusNotFound, errors.New("video clip not found"))
 		return
 	}
-	clipPath, file, err := openManagedVideoClip(thread, clip.Path)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	var clipPath string
+	var file *os.File
+	if strings.TrimSpace(clip.SourceRef) != "" {
+		owned, resolveErr := s.resolveAccountOwnedPath(principal, thread.WorkspacePath)
+		if resolveErr != nil {
+			writeError(w, http.StatusBadRequest, resolveErr)
+			return
+		}
+		record, found, sourceErr := s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, owned.WorkspaceID, clip.SourceRef)
+		if sourceErr != nil || !found {
+			writeError(w, http.StatusNotFound, errors.New("video source is no longer registered"))
+			return
+		}
+		file, sourceErr = pebblestore.OpenValidatedVideoSource(record)
+		if sourceErr != nil {
+			writeError(w, http.StatusBadRequest, sourceErr)
+			return
+		}
+		clipPath = record.RelativePath
+	} else {
+		clipPath, file, err = openManagedVideoClip(thread, clip.Path)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	defer file.Close()
 	info, err := file.Stat()

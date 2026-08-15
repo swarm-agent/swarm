@@ -127,6 +127,8 @@ type Service struct {
 	opener    ArtifactFileOpener
 	workspace WorkspaceAuthority
 	runner    CommandRunner
+	mu        sync.Mutex
+	cancels   map[string]context.CancelFunc
 }
 
 func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, opener ArtifactFileOpener, workspace WorkspaceAuthority, runner CommandRunner) *Service {
@@ -152,6 +154,7 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ope
 		opener:    opener,
 		workspace: workspace,
 		runner:    runner,
+		cancels:   make(map[string]context.CancelFunc),
 	}
 }
 
@@ -200,8 +203,14 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	if job.Status == pebblestore.VideoRenderJobStatusReady {
 		return job, nil
 	}
+	if job.Status == pebblestore.VideoRenderJobStatusRendering {
+		return job, fmt.Errorf("render job %q is already rendering", jobID)
+	}
 	if job.Status == pebblestore.VideoRenderJobStatusCancelled || job.Status == pebblestore.VideoRenderJobStatusFailed {
 		return job, fmt.Errorf("render job %q is in terminal state %s", jobID, job.Status)
+	}
+	if job.ProjectID != projectID {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("render job %q does not belong to project %q", jobID, projectID)
 	}
 
 	project, ok, err := s.store.GetVideoProject(principal.AccountScopeID, sessionID, projectID)
@@ -220,6 +229,9 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		revID = project.CurrentRevisionID
 	}
 
+	if job.RevisionID != "" && revID != job.RevisionID {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("render job %q is pinned to revision %q", jobID, job.RevisionID)
+	}
 	revision, ok, err := s.store.GetVideoProjectRevision(principal.AccountScopeID, sessionID, projectID, revID)
 	if err != nil || !ok {
 		if err == nil {
@@ -243,6 +255,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		SessionID:      sessionID,
 		JobID:          jobID,
 		Status:         pebblestore.VideoRenderJobStatusRendering,
+		ExpectedStatus: pebblestore.VideoRenderJobStatusQueued,
 		Progress:       0.05,
 		NowUnixMs:      time.Now().UnixMilli(),
 	})
@@ -265,7 +278,15 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		timeout = s.cfg.DefaultTimeout
 	}
 	renderCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	s.mu.Lock()
+	s.cancels[jobID] = cancel
+	s.mu.Unlock()
+	defer func() {
+		cancel()
+		s.mu.Lock()
+		delete(s.cancels, jobID)
+		s.mu.Unlock()
+	}()
 
 	// Materialize inputs
 	materialized, err := s.materializeTimelineInputs(renderCtx, principal, session, req.WorkspacePath, jobDir, timeline)
@@ -297,7 +318,10 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	_, err = s.runner.RunCommand(renderCtx, "ffmpeg", plan.FFmpegArgs...)
 	if err != nil {
 		if renderCtx.Err() != nil {
-			s.cancelJob(principal, sessionID, jobID, "Render was cancelled or timed out")
+			current, currentOK, _ := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+			if !currentOK || current.Status != pebblestore.VideoRenderJobStatusCancelled {
+				s.cancelJob(principal, sessionID, jobID, "Render was cancelled or timed out")
+			}
 			return pebblestore.VideoRenderJobSnapshot{}, renderCtx.Err()
 		}
 		s.failJob(principal, sessionID, jobID, "ffmpeg_execution_error", err.Error())
@@ -526,6 +550,9 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			if variant.Status != pebblestore.SessionArtifactStatusReady {
 				return nil, fmt.Errorf("clip %d referenced artifact variant %q is not in ready status (status: %s)", i, variant.ID, variant.Status)
 			}
+			if targetRef.EventSeq == 0 || targetRef.EventSeq != variant.EventSeq {
+				return nil, fmt.Errorf("clip %d referenced artifact variant %q with a stale or missing event sequence", i, variant.ID)
+			}
 
 			destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_%s", input.Index, variant.Filename))
 			if s.opener != nil {
@@ -578,6 +605,9 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			if designVariant.Status != pebblestore.SessionArtifactStatusReady {
 				return nil, fmt.Errorf("clip %d design input variant %q is not ready", i, designVariant.ID)
 			}
+			if designRef.EventSeq == 0 || designRef.EventSeq != designVariant.EventSeq {
+				return nil, fmt.Errorf("clip %d design input variant %q has a stale or missing event sequence", i, designVariant.ID)
+			}
 			designPath := filepath.Join(jobDir, fmt.Sprintf("design_%d_%s", input.Index, designVariant.Filename))
 			if s.opener != nil {
 				dFile, _, err := s.opener.Open(ctx, designVariant)
@@ -606,7 +636,17 @@ func (s *Service) CancelRenderJob(ctx context.Context, principal identity.Princi
 	if s == nil || s.store == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videorender service is not configured")
 	}
-	return s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
+	job, ok, err := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+	if err != nil || !ok {
+		if err == nil {
+			err = fmt.Errorf("render job %q not found", jobID)
+		}
+		return pebblestore.VideoRenderJobSnapshot{}, err
+	}
+	s.mu.Lock()
+	cancel := s.cancels[jobID]
+	s.mu.Unlock()
+	updated, err := s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
 		SessionID:      sessionID,
@@ -614,8 +654,16 @@ func (s *Service) CancelRenderJob(ctx context.Context, principal identity.Princi
 		Status:         pebblestore.VideoRenderJobStatusCancelled,
 		FailureCode:    "cancelled_by_user",
 		FailureReason:  "Render job was cancelled",
+		ExpectedStatus: job.Status,
 		NowUnixMs:      time.Now().UnixMilli(),
 	})
+	if err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, err
+	}
+	if cancel != nil {
+		cancel()
+	}
+	return updated, nil
 }
 
 func (s *Service) ReconcileInterruptedJobs(ctx context.Context, accountScopeID, sessionID, projectID string) (int, error) {

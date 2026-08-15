@@ -19,7 +19,7 @@ import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
 export type VideoClip = {
   id: string
   name: string
-  path: string
+  sourceRef: string
   extension: string
   sizeBytes: number
   modifiedAt: number
@@ -96,6 +96,8 @@ type VideoClipWire = {
   id?: string
   name?: string
   path?: string
+  ref?: string
+  source_ref?: string
   extension?: string
   size_bytes?: number
   sizeBytes?: number
@@ -106,7 +108,7 @@ type VideoClipWire = {
 type VideoClipRequest = {
   id: string
   name: string
-  path: string
+  source_ref: string
   extension: string
   size_bytes: number
   modified_at: number
@@ -179,16 +181,16 @@ function mapVideoClip(entry: unknown): VideoClip | null {
   if (!isRecord(entry)) {
     return null
   }
-  const id = String(entry.id ?? '').trim()
+  const sourceRef = String(entry.source_ref ?? entry.ref ?? entry.id ?? '').trim()
+  const id = String(entry.id ?? sourceRef).trim()
   const name = String(entry.name ?? '').trim()
-  const path = String(entry.path ?? '').trim()
-  if (!id || !name || !path) {
+  if (!id || !name || !sourceRef) {
     return null
   }
   return {
     id,
     name,
-    path,
+    sourceRef,
     extension: String(entry.extension ?? '').trim(),
     sizeBytes: typeof entry.size_bytes === 'number'
       ? entry.size_bytes
@@ -216,7 +218,7 @@ export function serializeVideoClipForRequest(clip: VideoClip): VideoClipRequest 
   return {
     id: clip.id,
     name: clip.name,
-    path: clip.path,
+    source_ref: clip.sourceRef,
     extension: clip.extension,
     size_bytes: clip.sizeBytes,
     modified_at: clip.modifiedAt,
@@ -497,10 +499,18 @@ async function createVideoThread(input: {
   folderPath?: string
   clips: VideoClip[]
 }): Promise<VideoThreadRecord> {
+  const createdSession = await createSession({
+    title: input.title,
+    workspacePath: input.workspacePath,
+    workspaceName: input.workspaceName,
+    mode: 'auto',
+    metadata: { launch_source: 'video_tool', lineage_kind: 'video_project' },
+  })
   const response = await requestJson<{ thread?: VideoThreadWire }>('/v1/workspace/video/threads', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      session_id: createdSession.id,
       title: input.title,
       workspace_path: input.workspacePath,
       workspace_name: input.workspaceName,
@@ -563,7 +573,7 @@ export function timelineSegmentsToProjectTimeline(
       track: 0,
       sequence: idx,
       source_kind: 'source_video',
-      source_ref: clip?.path ?? seg.clipId,
+      source_ref: clip?.sourceRef ?? seg.clipId,
       source_start_ms: Math.round(seg.sourceStart * 1000),
       source_end_ms: Math.round((seg.sourceStart + dur) * 1000),
       timeline_start_ms: layoutSeg ? Math.round(layoutSeg.timelineStart * 1000) : 0,
@@ -573,9 +583,14 @@ export function timelineSegmentsToProjectTimeline(
       volume: 1.0,
     }
   })
+  const [width, height] = outputPreset.startsWith('portrait') ? [1080, 1920] : outputPreset.startsWith('square') ? [1080, 1080] : [1920, 1080]
   return {
     schema_version: 1,
     output_preset: outputPreset,
+    width,
+    height,
+    fps: 30,
+    total_duration_ms: Math.round(timelineDuration(layout) * 1000),
     clips: timelineClips,
   }
 }
@@ -605,14 +620,25 @@ export function projectTimelineToTimelineSegments(
 
 export async function startVideoRender(sessionId: string, projectId: string, timeline?: VideoProjectTimelineWire): Promise<VideoRenderJobSnapshotWire> {
   if (timeline) {
-    await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/revisions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        timeline,
-        change_summary: 'Render revision from Video Tool',
-      }),
-    }).catch(() => null)
+    let projectExists = true
+    try {
+      await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}`)
+    } catch {
+      projectExists = false
+    }
+    if (projectExists) {
+      await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/revisions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timeline, change_summary: 'Render revision from Video Tool' }),
+      })
+    } else {
+      await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId, title: 'Video Tool project', output_preset: timeline.output_preset, initial_timeline: timeline }),
+      })
+    }
   }
   const response = await requestJson<{ ok?: boolean; render_job?: VideoRenderJobSnapshotWire }>(
     `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/render`,
@@ -1084,8 +1110,8 @@ export function VideoToolPage() {
         const folderSet = new Set(selectedThread.videoFolders)
         folderSet.add(scanned.folderPath)
         const existingClipIds = new Set(selectedThread.videoClips.map((clip) => clip.id))
-        const existingClipPaths = new Set(selectedThread.videoClips.map((clip) => clip.path))
-        const clipsToAdd = scanned.clips.filter((clip) => !existingClipIds.has(clip.id) && !existingClipPaths.has(clip.path))
+        const existingSourceRefs = new Set(selectedThread.videoClips.map((clip) => clip.sourceRef))
+        const clipsToAdd = scanned.clips.filter((clip) => !existingClipIds.has(clip.id) && !existingSourceRefs.has(clip.sourceRef))
         const orderedExistingClipIds = orderedClips(selectedThread).map((clip) => clip.id)
         const updatedThread = await updateVideoThread({
           ...selectedThread,
@@ -1531,7 +1557,7 @@ export function VideoToolPage() {
                         {browserClips.map((clip) => (
                           <div key={clip.id} className="rounded-xl border border-[var(--app-border)] bg-transparent px-3 py-2">
                             <div className="truncate text-sm font-medium text-[var(--app-text)]">{clip.name}</div>
-                            <div className="truncate text-xs text-[var(--app-text-subtle)]">{clip.path}</div>
+                            <div className="truncate text-xs text-[var(--app-text-subtle)]">{clip.sourceRef}</div>
                           </div>
                         ))}
                       </div>
