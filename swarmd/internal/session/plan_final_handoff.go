@@ -201,6 +201,41 @@ func ProjectPlanFinalHandoffArtifacts(planID, checkpointID string, artifacts []p
 	result := make([]pebblestore.PlanFinalHandoffArtifact, 0, len(artifacts))
 	seen := make(map[string]struct{}, len(artifacts))
 	for _, artifact := range artifacts {
+		if isManagedPlanArtifact(artifact) {
+			role := strings.ToLower(strings.TrimSpace(artifact.Role))
+			if role != "" && role != "deliverable" {
+				continue
+			}
+			variantID := strings.TrimSpace(artifact.VariantID)
+			if variantID == "" {
+				continue
+			}
+			id := variantID
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			label := strings.TrimSpace(artifact.Label)
+			description := strings.TrimSpace(artifact.Description)
+			if label == "" {
+				label = description
+			}
+			if label == "" {
+				label = variantID
+			}
+			mediaType, kind, previewable := planFinalHandoffManagedArtifactPresentation(artifact)
+			result = append(result, pebblestore.PlanFinalHandoffArtifact{
+				ID:          id,
+				Label:       label,
+				Description: description,
+				Filename:    variantID,
+				MediaType:   mediaType,
+				Kind:        kind,
+				Previewable: previewable,
+			})
+			continue
+		}
+
 		if strings.ToLower(strings.TrimSpace(artifact.Role)) != "deliverable" {
 			continue
 		}
@@ -241,6 +276,26 @@ func ProjectPlanFinalHandoffArtifacts(planID, checkpointID string, artifacts []p
 		})
 	}
 	return result
+}
+
+// planFinalHandoffManagedArtifactPresentation derives the canonical media type,
+// presentation kind, and previewability for an immutable managed artifact reference.
+func planFinalHandoffManagedArtifactPresentation(artifact pebblestore.SessionPlanArtifactReference) (string, string, bool) {
+	declared := strings.TrimSpace(artifact.MediaType)
+	if declared != "" {
+		parsed, _, err := mime.ParseMediaType(declared)
+		if err == nil {
+			parsed = strings.ToLower(strings.TrimSpace(parsed))
+			if kind, ok := planFinalHandoffViewableMediaTypes[parsed]; ok {
+				return parsed, kind, true
+			}
+			if parsed == "application/zip" {
+				return parsed, "package", true
+			}
+			return parsed, "document", false
+		}
+	}
+	return "text/plain", "text", true
 }
 
 // PlanFinalHandoffArtifactPresentation returns the canonical safe media type

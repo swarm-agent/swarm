@@ -122,7 +122,11 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 
 	for i, artifact := range doc.Artifacts {
 		if err := validatePlanArtifact(artifact); err != nil {
-			add(fmt.Sprintf("artifacts[%d].path", i), err.Error())
+			if isManagedPlanArtifact(artifact) {
+				add(fmt.Sprintf("artifacts[%d]", i), err.Error())
+			} else {
+				add(fmt.Sprintf("artifacts[%d].path", i), err.Error())
+			}
 		}
 	}
 	seenIDs := make(map[string]struct{}, len(doc.Checkpoints))
@@ -155,7 +159,11 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		}
 		for artifactIndex, artifact := range checkpoint.Artifacts {
 			if err := validatePlanArtifact(artifact); err != nil {
-				add(fmt.Sprintf("%s.artifacts[%d].path", prefix, artifactIndex), err.Error())
+				if isManagedPlanArtifact(artifact) {
+					add(fmt.Sprintf("%s.artifacts[%d]", prefix, artifactIndex), err.Error())
+				} else {
+					add(fmt.Sprintf("%s.artifacts[%d].path", prefix, artifactIndex), err.Error())
+				}
 			}
 		}
 		if checkpoint.Status == PlanCheckpointStatusPending && id != "" {
@@ -967,6 +975,17 @@ func clonePlanDocumentCheckpointSlice(checkpoints []pebblestore.SessionPlanCheck
 			review := *checkpoints[i].Review
 			clone[i].Review = &review
 		}
+		if checkpoints[i].Recommendation != nil {
+			rec := *checkpoints[i].Recommendation
+			clone[i].Recommendation = &rec
+		}
+		if checkpoints[i].Handoff != nil {
+			handoff := *checkpoints[i].Handoff
+			handoff.ImpactBullets = cloneStringSlice(checkpoints[i].Handoff.ImpactBullets)
+			handoff.CopyableCodeBlocks = append([]pebblestore.PlanFinalHandoffCopyableCodeBlock(nil), checkpoints[i].Handoff.CopyableCodeBlocks...)
+			handoff.SuggestedPrompts = append([]pebblestore.PlanFinalHandoffSuggestedPrompt(nil), checkpoints[i].Handoff.SuggestedPrompts...)
+			clone[i].Handoff = &handoff
+		}
 		clone[i].Attempts = make([]pebblestore.SessionPlanCheckpointAttempt, len(checkpoints[i].Attempts))
 		for j := range checkpoints[i].Attempts {
 			clone[i].Attempts[j] = checkpoints[i].Attempts[j]
@@ -1023,6 +1042,15 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 	checkpoint.Result = strings.TrimSpace(checkpoint.Result)
 	checkpoint.ChangedFiles = trimStringSlice(checkpoint.ChangedFiles)
 	checkpoint.Validation = trimStringSlice(checkpoint.Validation)
+	if checkpoint.Recommendation != nil {
+		rec := normalizePlanCheckpointRecommendation(*checkpoint.Recommendation)
+		checkpoint.Recommendation = &rec
+	}
+	if checkpoint.Handoff != nil {
+		if norm, err := NormalizePlanCheckpointHandoff(*checkpoint.Handoff); err == nil {
+			checkpoint.Handoff = &norm
+		}
+	}
 	normalizePlanCheckpointRuntime(checkpoint)
 }
 
@@ -1041,6 +1069,10 @@ func trimPlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblest
 	}
 	out := make([]pebblestore.SessionPlanArtifactReference, 0, len(in))
 	for _, artifact := range in {
+		artifact.SessionID = strings.TrimSpace(artifact.SessionID)
+		artifact.CollectionID = strings.TrimSpace(artifact.CollectionID)
+		artifact.VariantID = strings.TrimSpace(artifact.VariantID)
+		artifact.Label = strings.TrimSpace(artifact.Label)
 		artifact.Path = strings.TrimSpace(artifact.Path)
 		artifact.Role = strings.ToLower(strings.TrimSpace(artifact.Role))
 		artifact.Description = strings.TrimSpace(artifact.Description)
@@ -1050,16 +1082,92 @@ func trimPlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblest
 	return out
 }
 
+func isManagedPlanArtifact(artifact pebblestore.SessionPlanArtifactReference) bool {
+	return strings.TrimSpace(artifact.VariantID) != "" || strings.TrimSpace(artifact.CollectionID) != "" || strings.TrimSpace(artifact.SessionID) != "" || artifact.EventSeq != 0
+}
+
+func validateArtifactIDString(label, value string) error {
+	if value == "" {
+		return fmt.Errorf("managed artifact %s id is required", label)
+	}
+	if len(value) > 128 {
+		return fmt.Errorf("managed artifact %s id exceeds bounds", label)
+	}
+	if value == "." || value == ".." {
+		return fmt.Errorf("managed artifact %s id contains unsupported characters", label)
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return fmt.Errorf("managed artifact %s id contains unsupported characters", label)
+	}
+	return nil
+}
+
 func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArtifactReference) error {
+	seen := make(map[string]struct{}, len(artifacts))
 	for i, artifact := range artifacts {
 		if err := validatePlanArtifact(artifact); err != nil {
+			if isManagedPlanArtifact(artifact) {
+				return fmt.Errorf("plan document %s[%d] %w", field, i, err)
+			}
 			return fmt.Errorf("plan document %s[%d].path %w", field, i, err)
 		}
+		var key string
+		if isManagedPlanArtifact(artifact) {
+			key = strings.Join([]string{"managed", strings.TrimSpace(artifact.SessionID), strings.TrimSpace(artifact.CollectionID), strings.TrimSpace(artifact.VariantID)}, "\x00")
+		} else {
+			key = strings.Join([]string{"workspace", strings.TrimSpace(artifact.Path)}, "\x00")
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("plan document %s[%d] is duplicated", field, i)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }
 
 func validatePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) error {
+	if isManagedPlanArtifact(artifact) {
+		if strings.TrimSpace(artifact.Path) != "" {
+			return errors.New("managed artifact references must not declare a workspace path")
+		}
+		sessionID := strings.TrimSpace(artifact.SessionID)
+		if sessionID == "" {
+			return errors.New("managed artifact session_id is required")
+		}
+		if len(sessionID) > 256 || sessionID == "." || sessionID == ".." || strings.ContainsAny(sessionID, `/\\`) {
+			return errors.New("managed artifact session_id is invalid")
+		}
+		if !utf8.ValidString(sessionID) {
+			return errors.New("managed artifact session_id must be valid UTF-8")
+		}
+		if err := validateArtifactIDString("collection", strings.TrimSpace(artifact.CollectionID)); err != nil {
+			return err
+		}
+		if err := validateArtifactIDString("variant", strings.TrimSpace(artifact.VariantID)); err != nil {
+			return err
+		}
+		if artifact.EventSeq == 0 {
+			return errors.New("managed artifact event_seq is required")
+		}
+		role := strings.ToLower(strings.TrimSpace(artifact.Role))
+		if role != "" && role != "input" && role != "deliverable" {
+			return errors.New("has unsupported role; use input or deliverable")
+		}
+		if len(artifact.Label) > 256 || !utf8.ValidString(artifact.Label) {
+			return errors.New("managed artifact label exceeds bounds or is invalid UTF-8")
+		}
+		if len(artifact.Description) > 2048 || !utf8.ValidString(artifact.Description) {
+			return errors.New("managed artifact description exceeds bounds or is invalid UTF-8")
+		}
+		if len(artifact.MediaType) > 128 || !utf8.ValidString(artifact.MediaType) {
+			return errors.New("managed artifact media_type exceeds bounds or is invalid UTF-8")
+		}
+		return nil
+	}
+
 	role := strings.ToLower(strings.TrimSpace(artifact.Role))
 	if role != "" && role != "input" && role != "deliverable" {
 		return errors.New("has unsupported role; use input or deliverable")
@@ -1077,6 +1185,12 @@ func validatePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) err
 	}
 	if clean != path {
 		return errors.New("must be a clean portable workspace-relative path")
+	}
+	if len(artifact.Description) > 2048 || !utf8.ValidString(artifact.Description) {
+		return errors.New("artifact description exceeds bounds or is invalid UTF-8")
+	}
+	if len(artifact.MediaType) > 128 || !utf8.ValidString(artifact.MediaType) {
+		return errors.New("artifact media_type exceeds bounds or is invalid UTF-8")
 	}
 	return nil
 }
