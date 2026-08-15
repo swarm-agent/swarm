@@ -58,6 +58,8 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	update "swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videoproject"
+	"swarm/packages/swarmd/internal/videorender"
 	"swarm/packages/swarmd/internal/videosource"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
@@ -70,6 +72,21 @@ type artifactMetadataBoundary struct {
 	*sessionruntime.Service
 	mu        sync.RWMutex
 	publisher func(sessionruntime.RealtimeOutboxRecord) error
+}
+
+type artifactOpener struct {
+	registry *artifact.Registry
+}
+
+func (o *artifactOpener) Open(ctx context.Context, variant pebblestore.SessionArtifactVariant) (*os.File, artifact.Blob, error) {
+	if o == nil || o.registry == nil {
+		return nil, artifact.Blob{}, errors.New("artifact registry not configured")
+	}
+	svc, err := o.registry.ServiceForSession(variant.SessionID)
+	if err != nil {
+		return nil, artifact.Blob{}, err
+	}
+	return svc.Open(ctx, variant)
 }
 
 func (b *artifactMetadataBoundary) SetPublisher(publisher func(sessionruntime.RealtimeOutboxRecord) error) {
@@ -391,7 +408,21 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageActionService(actionSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
-	toolRuntime.SetManageVideoServices(videoTranscriptionSvc, videosource.NewService(workspaceSvc, sessionSvc.Store()))
+	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
+	videoRenderSvc := videorender.NewService(
+		videorender.Config{},
+		sessionSvc.Store(),
+		artifactAuthority,
+		&artifactOpener{registry: artifactRegistry},
+		workspaceSvc,
+		nil,
+	)
+	toolRuntime.SetManageVideoPipelineServices(
+		videoTranscriptionSvc,
+		videosource.NewService(workspaceSvc, sessionSvc.Store()),
+		videoProjectSvc,
+		videoRenderSvc,
+	)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
 		cfg := tool.ExaRuntimeConfig{
 			SearchURL:   "https://api.exa.ai/search",

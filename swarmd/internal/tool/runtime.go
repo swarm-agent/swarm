@@ -167,6 +167,8 @@ type Runtime struct {
 	imageGeneration      ManagedImageGenerationService
 	video                manageVideoService
 	videoSources         *videosource.Service
+	videoProjects        manageVideoProjectService
+	videoRender          manageVideoRenderService
 	searchCoordinator    *SearchCoordinator
 }
 
@@ -503,6 +505,22 @@ func (r *Runtime) SetManageVideoServices(service manageVideoService, sources *vi
 	if r != nil {
 		r.video = service
 		r.videoSources = sources
+	}
+}
+
+func (r *Runtime) SetManageVideoPipelineServices(service manageVideoService, sources *videosource.Service, projects manageVideoProjectService, render manageVideoRenderService) {
+	if r != nil {
+		r.video = service
+		r.videoSources = sources
+		r.videoProjects = projects
+		r.videoRender = render
+	}
+}
+
+func (r *Runtime) SetManageVideoProjectServices(projects manageVideoProjectService, render manageVideoRenderService) {
+	if r != nil {
+		r.videoProjects = projects
+		r.videoRender = render
 	}
 }
 

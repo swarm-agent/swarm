@@ -846,7 +846,7 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		}
 		visibleLines = append(visibleLines, line)
 	}
-	lines = append(lines, "Use manage_artifact get/read with the complete reference to inspect one. Reads are authenticated and exact-event. Text reads are bounded UTF-8; application/zip reads return a bounded regular-file manifest when entry is omitted or one bounded UTF-8 regular entry when entry is supplied. To derive a variant, pass the same reference as source_session_id, source_collection_id, source_variant_id, and source_event_seq to create/create_package; the target remains trusted run context.")
+	lines = append(lines, "Use manage_artifact get/read with the complete reference to inspect one. Reads are authenticated and exact-event. Text reads are bounded UTF-8; application/zip reads return a bounded regular-file manifest when entry is omitted or one bounded UTF-8 regular entry when entry is supplied. To derive a variant, pass the same reference as source_session_id, source_collection_id, source_variant_id, and source_event_seq to create/create_package; the target remains trusted run context. To use selected artifacts in video projects or revisions, pass the selection reference in timeline clips as artifact_ref or design_input via manage_video.")
 	lines = append(lines, visibleLines...)
 	return strings.Join(lines, "\n")
 }

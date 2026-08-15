@@ -288,6 +288,13 @@ func (s *Service) GetRenderJob(principal identity.Principal, sessionID, jobID st
 	return s.sessions.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
 }
 
+func (s *Service) ListRenderJobs(principal identity.Principal, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return nil, errors.New("videoproject service is not configured")
+	}
+	return s.sessions.ListVideoRenderJobs(principal.AccountScopeID, sessionID, projectID, limit)
+}
+
 func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessionID string, timeline pebblestore.VideoProjectTimeline) error {
 	for _, clip := range timeline.Clips {
 		if clip.ArtifactRef != nil {
