@@ -116,7 +116,7 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Before generating an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. Provider/model identifiers and private storage paths are never accepted or exposed.",
+		Description: "Before generating an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. To retrieve, read, materialize, or promote an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from its reference into the same call. Provider/model identifiers and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -128,11 +128,11 @@ func manageArtifactDefinition() Definition {
 					"aspect_ratio": map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, or 21:9."},
 					"image_size":   map[string]any{"type": "string", "maxLength": 32, "description": "Optional portable resolution tier: 512, 1K, 2K, or 4K. Equivalent square pixel aliases such as 1024x1024, 2048x2048, and 4096x4096 are accepted. The backend translates this for the configured provider."},
 				}, "additionalProperties": false, "description": "Optional provider-neutral image output controls. Omit unless the user requested a size or aspect ratio. The backend resolves the account's configured provider/model and translates these controls; never pass provider or model."},
-				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session from an attached artifact reference; valid only for get/read/materialize/promote"},
-				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference; optional on create and required for collection-scoped actions"},
+				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session. For get/read/materialize/promote of an attached ready artifact, copy this together with collection_id, variant_id, and event_seq from the same returned reference."},
+				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, variant_id, and event_seq from the same returned reference; otherwise optional on create and required for collection-scoped actions."},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
 				"collection_description": map[string]any{"type": "string", "maxLength": 2048},
-				"variant_id":             map[string]any{"type": "string", "description": "Opaque variant reference; optional on create"},
+				"variant_id":             map[string]any{"type": "string", "description": "Opaque variant reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and event_seq from the same returned reference; otherwise optional on create."},
 				"filename":               map[string]any{"type": "string", "maxLength": 255},
 				"media_type":             map[string]any{"type": "string", "maxLength": 255},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for create"},
@@ -143,7 +143,7 @@ func manageArtifactDefinition() Definition {
 				"source_collection_id":   map[string]any{"type": "string", "description": "Optional opaque source collection lineage"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "Optional opaque source variant lineage"},
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence of the source artifact lineage"},
-				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence required with session_id for get/read/materialize/promote"},
+				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and variant_id from the same returned reference."},
 				"status":                 map[string]any{"type": "string", "description": "Optional list filter: staging|ready|failed|unavailable"},
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit},
 				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. Text/package entries are capped at 256 KiB; supported ready images are capped at 16 MiB and returned as base64."},
@@ -290,6 +290,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			response["collections"], response["count"] = items, len(items)
 		}
 	case "get":
+		if err := validateArtifactRetrievalIdentity(args, "get", false); err != nil {
+			return "", err
+		}
 		variantID, err := requireArtifactArgument(args, "variant_id")
 		if err != nil {
 			return "", err
@@ -310,6 +313,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "read":
+		if err := validateArtifactRetrievalIdentity(args, "read", false); err != nil {
+			return "", err
+		}
 		variantID, err := requireArtifactArgument(args, "variant_id")
 		if err != nil {
 			return "", err
@@ -405,6 +411,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 	case "materialize", "promote":
 		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
 			return "", errors.New("manage_artifact managed Designer runs cannot materialize into the workspace; promotion requires an explicit parent workspace action")
+		}
+		if err := validateArtifactRetrievalIdentity(args, actionName, true); err != nil {
+			return "", err
 		}
 		variantID := strings.TrimSpace(asString(args["variant_id"]))
 		ref, explicit, err := parseArtifactReadReference(args, variantID)
@@ -878,16 +887,31 @@ func managedArtifactReferenceWithSession(sessionID, collectionID, variantID stri
 	return map[string]any{"session_id": sessionID, "collection_id": collectionID, "variant_id": variantID, "event_seq": eventSeq}
 }
 
+func validateArtifactRetrievalIdentity(args map[string]any, action string, exactRequired bool) error {
+	sessionID := strings.TrimSpace(asString(args["session_id"]))
+	collectionID := strings.TrimSpace(asString(args["collection_id"]))
+	variantID := strings.TrimSpace(asString(args["variant_id"]))
+	eventSeq := asUint64(args["event_seq"])
+	hasExactField := sessionID != "" || collectionID != "" || eventSeq != 0
+	if !hasExactField && !exactRequired && variantID != "" {
+		return nil
+	}
+	if sessionID == "" || collectionID == "" || variantID == "" || eventSeq == 0 {
+		return fmt.Errorf("manage_artifact %s requires the complete ready reference; copy session_id, collection_id, variant_id, and event_seq together from the same returned reference", action)
+	}
+	return nil
+}
+
 func parseArtifactReadReference(args map[string]any, variantID string) (pebblestore.SessionArtifactSelectionReference, bool, error) {
 	sessionID := strings.TrimSpace(asString(args["session_id"]))
 	collectionID := strings.TrimSpace(asString(args["collection_id"]))
 	eventSeq := asUint64(args["event_seq"])
-	explicit := sessionID != "" || eventSeq != 0
+	explicit := sessionID != "" || collectionID != "" || eventSeq != 0
 	if !explicit {
 		return pebblestore.SessionArtifactSelectionReference{}, false, nil
 	}
 	if sessionID == "" || collectionID == "" || variantID == "" || eventSeq == 0 {
-		return pebblestore.SessionArtifactSelectionReference{}, false, errors.New("manage_artifact source get/read requires session_id, collection_id, variant_id, and event_seq")
+		return pebblestore.SessionArtifactSelectionReference{}, false, errors.New("manage_artifact exact source reference is incomplete; copy session_id, collection_id, variant_id, and event_seq together from the same ready reference")
 	}
 	return pebblestore.SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: collectionID, VariantID: variantID, EventSeq: eventSeq}, true, nil
 }

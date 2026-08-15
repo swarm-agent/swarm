@@ -259,6 +259,53 @@ func TestManageArtifactImageReadRequiresExactReferenceAndReturnsBoundedBase64(t 
 	}
 }
 
+func TestManageArtifactRetrievalContractSurfacesCompleteReadyReference(t *testing.T) {
+	definition := manageArtifactDefinition()
+	if !strings.Contains(definition.Description, "copy session_id, collection_id, variant_id, and event_seq together") {
+		t.Fatalf("definition does not explain exact ready reference retrieval: %s", definition.Description)
+	}
+	properties := definition.Parameters["properties"].(map[string]any)
+	for _, key := range []string{"session_id", "collection_id", "variant_id", "event_seq"} {
+		field := properties[key].(map[string]any)
+		description := field["description"].(string)
+		for _, peer := range []string{"session_id", "collection_id", "variant_id", "event_seq"} {
+			if peer != key && !strings.Contains(description, peer) {
+				t.Fatalf("%s description does not name peer %s: %s", key, peer, description)
+			}
+		}
+	}
+
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	for _, test := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "read without reference", args: map[string]any{"action": "read"}},
+		{name: "read partial reference", args: map[string]any{"action": "read", "variant_id": "variant-1", "event_seq": 7}},
+		{name: "get collection only", args: map[string]any{"action": "get", "collection_id": "collection-1"}},
+		{name: "materialize partial reference", args: map[string]any{"action": "materialize", "variant_id": "variant-1", "destination": "artifact.txt"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := runtime.executeManageArtifact(ctx, scope, "retrieval-contract", test.args)
+			if err == nil {
+				t.Fatal("expected incomplete reference error")
+			}
+			message := err.Error()
+			for _, key := range []string{"session_id", "collection_id", "variant_id", "event_seq"} {
+				if !strings.Contains(message, key) {
+					t.Fatalf("error does not identify complete reference field %s: %s", key, message)
+				}
+			}
+			if !strings.Contains(message, "same returned reference") {
+				t.Fatalf("error does not explain how to recover: %s", message)
+			}
+		})
+	}
+}
+
 func TestManageArtifactDefinitionDoesNotExposeProviderOrModel(t *testing.T) {
 	raw, err := json.Marshal(manageArtifactDefinition().Parameters)
 	if err != nil {
