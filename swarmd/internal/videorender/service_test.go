@@ -499,6 +499,35 @@ func TestRenderJobFailureHandling(t *testing.T) {
 	}
 }
 
+func TestRenderJobDaemonInterruptionRequeuesPinnedJob(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
+	store := newFakeSessionStore()
+	store.sessions["sess_1"] = pebblestore.SessionSnapshot{ID: "sess_1", AccountScopeID: "acc_1", UserID: "usr_1"}
+	store.projects["proj_1"] = pebblestore.VideoProjectSnapshot{ID: "proj_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1", CurrentRevisionID: "rev_1"}
+	store.revisions["rev_1"] = pebblestore.VideoProjectRevisionSnapshot{
+		ID: "rev_1", ProjectID: "proj_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1",
+		Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{
+			ID: "clip", SourceKind: pebblestore.VideoClipSourceKindColor,
+			DurationMs: 1000, TimelineEndMs: 1000, Visible: true,
+		}}},
+	}
+	store.jobs["job_1"] = pebblestore.VideoRenderJobSnapshot{ID: "job_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1", ProjectID: "proj_1", RevisionID: "rev_1", Status: pebblestore.VideoRenderJobStatusQueued}
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &fakeCommandRunner{runHook: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		cancel()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	svc := NewService(Config{}, store, &fakeArtifactAuthority{}, nil, nil, runner)
+	if _, err := svc.RenderJob(ctx, principal, RenderJobRequest{SessionID: "sess_1", ProjectID: "proj_1", RevisionID: "rev_1", JobID: "job_1"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RenderJob() error = %v, want context canceled", err)
+	}
+	job := store.jobs["job_1"]
+	if job.Status != pebblestore.VideoRenderJobStatusQueued || job.FailureCode != "" {
+		t.Fatalf("interrupted job = status %s failure %s, want durable queued retry", job.Status, job.FailureCode)
+	}
+}
+
 func TestRecoverJobsResumesPinnedRevisionAndWorkspace(t *testing.T) {
 	store := newFakeSessionStore()
 	store.sessions["sess_1"] = pebblestore.SessionSnapshot{ID: "sess_1", AccountScopeID: "acc_1", UserID: "usr_1", WorkspacePath: "/trusted/workspace"}

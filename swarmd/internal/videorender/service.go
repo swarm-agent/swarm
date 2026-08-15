@@ -326,8 +326,21 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	if err != nil {
 		if renderCtx.Err() != nil {
 			current, currentOK, _ := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
-			if !currentOK || current.Status != pebblestore.VideoRenderJobStatusCancelled {
-				s.cancelJob(principal, sessionID, jobID, "Render was cancelled or timed out")
+			if currentOK && current.Status == pebblestore.VideoRenderJobStatusCancelled {
+				return pebblestore.VideoRenderJobSnapshot{}, renderCtx.Err()
+			}
+			if ctx.Err() != nil {
+				// Losing the daemon/request lifetime is an interruption, not a user
+				// cancellation. Put the pinned job back on the durable queue so the
+				// next recovery pass can safely rematerialize private scratch and retry.
+				_, _ = s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
+					AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+					SessionID: sessionID, JobID: jobID,
+					Status: pebblestore.VideoRenderJobStatusQueued, ExpectedStatus: pebblestore.VideoRenderJobStatusRendering,
+					NowUnixMs: time.Now().UnixMilli(),
+				})
+			} else {
+				s.cancelJob(principal, sessionID, jobID, "Render timed out")
 			}
 			return pebblestore.VideoRenderJobSnapshot{}, renderCtx.Err()
 		}
