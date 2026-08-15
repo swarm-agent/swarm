@@ -148,3 +148,92 @@ test('normalizeDesktopSessionPlan omits unsafe final handoff pull request URLs',
   assert.equal(plan.document?.checkpoints[0]?.finalHandoff?.pullRequestUrl, '')
   assert.deepEqual(plan.document?.checkpoints[0]?.finalHandoff?.artifacts, [])
 })
+
+test('normalizeDesktopSessionPlan decodes recommendation prompt and rich managed artifact references', () => {
+  const plan = normalizeDesktopSessionPlan({
+    id: 'plan-rich',
+    document: {
+      title: 'Plan with managed artifacts',
+      info: { goal: 'Brainstorm and produce artifacts' },
+      checkpoints: [{
+        id: 'cp-1',
+        title: 'Brainstorm concepts',
+        final_handoff: {
+          schema_version: 1,
+          title: 'Concepts ready',
+          overview: 'Created multiple artifact concepts.',
+          recommendation: {
+            decision: 'ship',
+            action: 'review concepts',
+            reason: '3 distinct variants created',
+            action_state: 'ready',
+            prompt: 'Please review the 3 brainstormed concepts and select one.',
+          },
+          suggested_prompts: [
+            { label: 'Next steps', prompt: 'What should we work on next?' },
+          ],
+          artifacts: [
+            {
+              session_id: 'sess-1',
+              collection_id: 'col-1',
+              variant_id: 'var-1',
+              event_seq: 12,
+              label: 'Interactive Mockup',
+              description: 'HTML prototype',
+              filename: 'mockup.html',
+              media_type: 'text/html',
+              category: 'visual',
+              previewable: true,
+            },
+            {
+              session_id: 'sess-1',
+              collection_id: 'col-1',
+              variant_id: 'var-2',
+              event_seq: 13,
+              label: 'Design Spec',
+              description: 'Markdown specification',
+              filename: 'spec.md',
+              media_type: 'text/markdown',
+              category: 'document',
+              previewable: true,
+            },
+          ],
+          details: {
+            result: 'Artifacts generated successfully',
+          },
+        },
+      }],
+    },
+  })
+
+  const handoff = plan.document?.checkpoints[0]?.finalHandoff
+  assert.equal(handoff?.title, 'Concepts ready')
+  assert.equal(handoff?.recommendation?.decision, 'ship')
+  assert.equal(handoff?.recommendation?.action, 'review concepts')
+  assert.equal(handoff?.recommendation?.prompt, 'Please review the 3 brainstormed concepts and select one.')
+  assert.equal(handoff?.artifacts.length, 2)
+  assert.deepEqual(handoff?.artifacts[0], {
+    artifactId: 'var-1',
+    sessionId: 'sess-1',
+    collectionId: 'col-1',
+    eventSeq: 12,
+    label: 'Interactive Mockup',
+    description: 'HTML prototype',
+    filename: 'mockup.html',
+    mediaType: 'text/html',
+    category: 'visual',
+    previewable: true,
+  })
+  assert.deepEqual(handoff?.artifacts[1], {
+    artifactId: 'var-2',
+    sessionId: 'sess-1',
+    collectionId: 'col-1',
+    eventSeq: 13,
+    label: 'Design Spec',
+    description: 'Markdown specification',
+    filename: 'spec.md',
+    mediaType: 'text/markdown',
+    category: 'document',
+    previewable: true,
+  })
+})

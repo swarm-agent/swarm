@@ -1410,6 +1410,46 @@ function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
   assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
 }
 
+function testManageArtifactToolMessageParsesArtifactData(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_artifact",
+    callId: "call_artifact_1",
+    outputText: JSON.stringify({
+      tool: "manage_artifact",
+      action: "create",
+      status: "ok",
+      artifact: {
+        id: "variant-1",
+        collection_id: "col-1",
+        session_id: "sess-1",
+        event_seq: 1,
+        filename: "concept.html",
+        media_type: "text/html",
+        label: "Concept document",
+        description: "Brainstorming idea",
+        status: "ready",
+        category: "visual",
+      },
+      reference: {
+        session_id: "sess-1",
+        collection_id: "col-1",
+        variant_id: "variant-1",
+        event_seq: 1,
+      },
+    }),
+  });
+  assert(Boolean(message), "expected structured manage_artifact tool message");
+  assert(message?.summary === "artifact create · Concept document", `unexpected summary: ${message?.summary}`);
+  assert(message?.artifactData?.action === "create", "expected action create");
+  assert(message?.artifactData?.artifact?.artifactId === "variant-1", "expected artifactId variant-1");
+  assert(message?.artifactData?.artifact?.sessionId === "sess-1", "expected sessionId sess-1");
+  assert(message?.artifactData?.artifact?.label === "Concept document", "expected label");
+  assert(message?.artifactData?.reference?.variant_id === "variant-1", "expected reference variant_id");
+  assert(message?.previewLines.includes("action: create") === true, "missing action preview line");
+  assert(message?.previewLines.includes("label: Concept document") === true, "missing label preview line");
+  assert(message?.previewLines.includes("id: variant-1") === true, "missing id preview line");
+}
+
 function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('edit').kind === 'edit', 'edit should use edit semantics');
   assert(describeToolActivity('edit').activeLabel === 'Editing', 'edit should expose active label');
@@ -1427,6 +1467,7 @@ function testProviderNeutralToolActivityDescriptors(): void {
 
 function main(): void {
   testProviderNeutralToolActivityDescriptors();
+  testManageArtifactToolMessageParsesArtifactData();
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
   testExitPlanDefaultApprovalFeedbackIsHidden();

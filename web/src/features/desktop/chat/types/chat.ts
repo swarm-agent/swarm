@@ -192,6 +192,14 @@ export interface TaskChildCardActions {
   onNavigate: (sessionId: string, workspacePath: string) => void;
 }
 
+export interface ArtifactToolData {
+  action: string;
+  status: string;
+  artifact?: import('../../session-v3/artifact-api').DesktopV3ArtifactCatalogEntry | null;
+  reference?: import('../../session-v3/artifact-api').DesktopV3ArtifactSelection | null;
+  count?: number;
+}
+
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;
@@ -217,6 +225,7 @@ export interface StructuredToolMessage {
   webFetchData?: WebFetchToolData | null;
   todoData?: TodoToolData | null;
   bashData?: BashToolData | null;
+  artifactData?: ArtifactToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
   taskProgram?: TaskProgram | null;
@@ -549,6 +558,7 @@ export interface DesktopSessionPlanCheckpointRecommendation {
   action: string;
   reason: string;
   actionState: string;
+  prompt?: string;
 }
 
 export interface DesktopPlanFinalHandoffCopyableCodeBlock {
@@ -575,6 +585,12 @@ export interface DesktopPlanFinalHandoffArtifact {
   description: string;
   mediaType: string;
   previewable: boolean;
+  sessionId?: string;
+  collectionId?: string;
+  eventSeq?: number;
+  kind?: string;
+  category?: import('../../session-v3/artifact-api').DesktopV3ArtifactCategory;
+  filename?: string;
 }
 
 export interface DesktopPlanFinalHandoff {

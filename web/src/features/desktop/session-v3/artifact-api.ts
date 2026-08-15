@@ -204,7 +204,7 @@ function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | nu
 export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV3ArtifactCatalogEntry | null {
   const record = artifactCatalogRecord(value)
   if (!record) return null
-  const artifactId = artifactCatalogString(record.artifact_id)
+  const artifactId = artifactCatalogString(record.artifact_id) || artifactCatalogString(record.id) || artifactCatalogString(record.variant_id)
   const sessionId = artifactCatalogString(record.session_id)
   if (!artifactId || !sessionId) return null
   const rawCategory = artifactCatalogString(record.category)
@@ -490,7 +490,7 @@ export function normalizeDesktopV3ArtifactSelection(value: unknown): DesktopV3Ar
   if (!record) return null
   const sessionId = artifactCatalogString(record.session_id)
   const collectionId = artifactCatalogString(record.collection_id)
-  const variantId = artifactCatalogString(record.variant_id)
+  const variantId = artifactCatalogString(record.variant_id) || artifactCatalogString(record.id) || artifactCatalogString(record.artifact_id)
   const eventSeq = artifactCatalogEventSeq(record.event_seq)
   if (!sessionId || !collectionId || !variantId || eventSeq <= 0) return null
   return { session_id: sessionId, collection_id: collectionId, variant_id: variantId, event_seq: eventSeq }

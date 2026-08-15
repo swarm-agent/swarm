@@ -845,6 +845,44 @@ function testTaskElapsedClockUsesDisplayCadence(): void {
   assert(TASK_ELAPSED_TICK_MS === 1_000, `expected one-second elapsed cadence, got ${TASK_ELAPSED_TICK_MS}`);
 }
 
+function testManageArtifactRendersTypedArtifactCard(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_artifact",
+    callId: "call_artifact_test",
+    outputText: JSON.stringify({
+      tool: "manage_artifact",
+      action: "create",
+      status: "ok",
+      artifact: {
+        id: "var-123",
+        collection_id: "col-abc",
+        session_id: "sess-xyz",
+        event_seq: 4,
+        filename: "landing.html",
+        media_type: "text/html",
+        label: "Landing Page Mockup",
+        description: "Interactive landing page prototype",
+        status: "ready",
+        category: "visual",
+      },
+      reference: {
+        session_id: "sess-xyz",
+        collection_id: "col-abc",
+        variant_id: "var-123",
+        event_seq: 4,
+      },
+    }),
+  });
+  assert(Boolean(message), "expected manage_artifact message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes('data-testid="desktop-artifact-tool-card"'), "expected artifact tool card testid");
+  assert(markup.includes("Landing Page Mockup"), "expected artifact label in markup");
+  assert(markup.includes("Interactive landing page prototype"), "expected description in markup");
+  assert(markup.includes("text/html"), "expected media type badge");
+  assert(markup.includes("Ready"), "expected Ready status badge");
+  assert(markup.includes("Open in viewer"), "expected Open in viewer button or link");
+}
+
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesMinimalTransitionView();
@@ -867,6 +905,7 @@ function main(): void {
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsReviewWorktreesHydratesCandidates();
   testSearchToolRendersSimpleSummary();
+  testManageArtifactRendersTypedArtifactCard();
   testSearchActivityKeepsInvestigationLabelAcrossSingleAndGroupedCalls();
   testSearchReadGroupRendersCompactFileAggregation();
   testManageSessionsListRendersCardsWithoutRawJson();

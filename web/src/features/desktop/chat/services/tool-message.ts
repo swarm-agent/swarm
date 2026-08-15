@@ -1,4 +1,5 @@
 import type {
+  ArtifactToolData,
   EditDiffPreview,
   SearchToolData,
   SearchToolFileGroup,
@@ -12,6 +13,10 @@ import type {
   WebSearchQueryData,
   WebSearchToolData,
 } from "../types/chat";
+import {
+  normalizeDesktopV3ArtifactCatalogEntry,
+  normalizeDesktopV3ArtifactSelection,
+} from "../../session-v3/artifact-api";
 
 interface ToolHistoryPayload {
   path_id?: string;
@@ -71,6 +76,9 @@ export interface ToolActivityDescriptor {
 
 export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   const normalized = String(toolName ?? "").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "manage_artifact") {
+    return { kind: "generic", label: "Artifact", activeLabel: "Creating artifact" };
+  }
   if (normalized === "edit" || normalized === "write") {
     return { kind: "edit", label: "Edit", activeLabel: "Editing" };
   }
@@ -583,6 +591,10 @@ function summarizeToolOutput(
       }
       if (resultSummary) return `theme · ${resultSummary}`;
       return action ? `theme ${action}` : "theme";
+    }
+    case "manage_artifact":
+    case "manage-artifact": {
+      return summarizeManageArtifactToolOutput(outputJson, argumentsJson);
     }
     case "manage_worktree":
     case "manage-worktree": {
@@ -1630,6 +1642,10 @@ function extractPreviewLines(
       if (out.length === 0) pushPreviewLine(out, jsonStr(effective, "summary"), 8);
       return out;
     }
+    case "manage_artifact":
+    case "manage-artifact": {
+      return extractManageArtifactPreviewLines(outputJson, argumentsJson, 6);
+    }
     case "manage_worktree":
     case "manage-worktree": {
       return buildManageWorktreePreviewLines(effective, 8);
@@ -2218,6 +2234,67 @@ function extractExitPlanDetails(
   };
 }
 
+export function extractArtifactToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): ArtifactToolData | null {
+  if (!outputJson && !argumentsJson) return null;
+  const action = jsonStr(outputJson, "action") || jsonStr(argumentsJson, "action") || "create";
+  const status = jsonStr(outputJson, "status") || (outputJson ? "ok" : "running");
+  const rawArtifact = outputJson?.artifact ?? outputJson?.variant ?? null;
+  let artifact: import("../../session-v3/artifact-api").DesktopV3ArtifactCatalogEntry | null = null;
+  if (rawArtifact && typeof rawArtifact === "object" && !Array.isArray(rawArtifact)) {
+    artifact = normalizeDesktopV3ArtifactCatalogEntry(rawArtifact);
+  }
+  const rawReference = outputJson?.reference ?? null;
+  let reference: import("../../session-v3/artifact-api").DesktopV3ArtifactSelection | null = null;
+  if (rawReference && typeof rawReference === "object" && !Array.isArray(rawReference)) {
+    reference = normalizeDesktopV3ArtifactSelection(rawReference);
+  }
+  return {
+    action,
+    status,
+    artifact,
+    reference,
+    count: typeof outputJson?.count === "number" ? outputJson.count : undefined,
+  };
+}
+
+function summarizeManageArtifactToolOutput(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): string {
+  const effective = outputJson ?? argumentsJson;
+  const action = jsonStr(effective, "action") || "create";
+  const artifact = jsonRecord(outputJson?.artifact) ?? jsonRecord(outputJson?.variant);
+  const label = jsonStr(artifact, "label") || jsonStr(artifact, "filename") || jsonStr(argumentsJson, "label") || jsonStr(argumentsJson, "filename") || "";
+  if (label) {
+    return `artifact ${action.replace(/_/g, " ")} · ${label}`;
+  }
+  return `artifact ${action.replace(/_/g, " ")}`;
+}
+
+function extractManageArtifactPreviewLines(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+  maxLines = 5,
+): string[] {
+  const lines: string[] = [];
+  const effective = outputJson ?? argumentsJson;
+  const action = jsonStr(effective, "action") || "create";
+  pushPreviewLine(lines, `action: ${action.replace(/_/g, " ")}`, maxLines);
+  const artifact = jsonRecord(outputJson?.artifact) ?? jsonRecord(outputJson?.variant);
+  const label = jsonStr(artifact, "label") || jsonStr(argumentsJson, "label") || jsonStr(argumentsJson, "filename");
+  if (label) pushPreviewLine(lines, `label: ${label}`, maxLines);
+  const id = jsonStr(artifact, "id") || jsonStr(artifact, "artifact_id") || jsonStr(argumentsJson, "variant_id");
+  if (id) pushPreviewLine(lines, `id: ${id}`, maxLines);
+  const mediaType = jsonStr(artifact, "media_type") || jsonStr(argumentsJson, "media_type");
+  if (mediaType) pushPreviewLine(lines, `type: ${mediaType}`, maxLines);
+  const status = jsonStr(artifact, "status") || jsonStr(outputJson, "status");
+  if (status) pushPreviewLine(lines, `status: ${status}`, maxLines);
+  return lines;
+}
+
 function summarizeExitPlanToolOutput(
   toolName: string,
   outputJson: Record<string, unknown> | null,
@@ -2295,6 +2372,10 @@ export function buildStructuredToolMessage(
     normalizedToolName === "bash"
       ? extractBashToolData(outputJson, outputText || completedOutputText, argumentsJson)
       : null;
+  const artifactData =
+    normalizedToolName === "manage_artifact" || normalizedToolName === "manage-artifact"
+      ? extractArtifactToolData(outputJson, argumentsJson)
+      : null;
   const previewLines = searchData || webSearchData || webFetchData
     ? []
     : extractPreviewLines(
@@ -2338,6 +2419,8 @@ export function buildStructuredToolMessage(
     "plan_manage",
     "exit-plan-mode",
     "exit_plan_mode",
+    "manage-artifact",
+    "manage_artifact",
   ].includes(normalizedToolName);
   const outputWasStructured = outputJson !== null;
 
@@ -2369,6 +2452,7 @@ export function buildStructuredToolMessage(
     webFetchData,
     todoData,
     bashData,
+    artifactData,
     previewLines,
     taskRows,
     taskProgram,
