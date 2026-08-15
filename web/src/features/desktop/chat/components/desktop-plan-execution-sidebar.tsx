@@ -3,7 +3,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { DesktopSessionPlanCheckpointRecommendation, TaskChildCardActions, TaskToolRow } from "../types/chat";
+import type { TaskChildCardActions, TaskToolRow } from "../types/chat";
 import type { DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
 import { DesktopPlanSubagentList } from "./desktop-plan-subagent-list";
 import { ChevronDown } from "lucide-react";
@@ -38,7 +38,6 @@ export interface DesktopPlanExecutionSidebarProps {
   displayMode?: "full" | "compact" | "thin";
   taskChildren?: Array<{ row: TaskToolRow; view: DesktopV3TaskChildViewModel | null }>;
   taskChildActions?: TaskChildCardActions;
-  canonicalRecommendation?: DesktopSessionPlanCheckpointRecommendation | null;
 }
 
 type Tone = "muted" | "primary" | "success" | "warning" | "danger";
@@ -511,24 +510,11 @@ function ActiveCheckpointSection({
   );
 }
 
-function ReviewRecommendation({ recommendation }: { recommendation?: DesktopSessionPlanCheckpointRecommendation | null }) {
-  if (!recommendation || !recommendation.decision || !recommendation.action || !recommendation.reason) return null;
-  return (
-    <div className="mt-3 rounded-md border border-[var(--app-primary-border)] px-2.5 py-2 text-[11px] leading-4 text-[var(--app-text-muted)]" data-plan-recommendation>
-      <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--app-text-subtle)]">Recommendation</div>
-      <div className="mt-1 font-medium text-[var(--app-text)]">{humanize(recommendation.decision)} — {humanize(recommendation.action)}</div>
-      <p className="mt-1">{recommendation.reason}</p>
-      <p className="mt-1 text-[11px]">Action state: {humanize(recommendation.actionState)}</p>
-    </div>
-  );
-}
-
 function ActionsSection({
   view,
   busyAction,
   canStop,
   onAction,
-  canonicalRecommendation,
   unified = false,
 }: DesktopPlanExecutionSidebarProps & { view: DesktopPlanExecutionView; unified?: boolean }) {
   const checkpointId =
@@ -633,8 +619,6 @@ function ActionsSection({
         Actions
       </div>
 
-      <ReviewRecommendation recommendation={canonicalRecommendation ?? view.activeCheckpoint?.recommendation} />
-
       <div className="mt-3 grid gap-2">
         <div className="grid gap-1.5">
           <Button
@@ -695,7 +679,6 @@ export const DesktopPlanExecutionSidebar = memo(
     displayMode = "full",
     taskChildren = [],
     taskChildActions,
-    canonicalRecommendation,
   }: DesktopPlanExecutionSidebarProps) {
     const document = view?.plan.document ?? null;
     if (!view || !document) return null;
@@ -806,7 +789,6 @@ export const DesktopPlanExecutionSidebar = memo(
                   canStop={canStop}
                   onAction={onAction}
                   onEditPlan={onEditPlan}
-                  canonicalRecommendation={canonicalRecommendation}
                   unified={!embedded}
                 />
               </div>

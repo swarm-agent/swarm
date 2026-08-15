@@ -67,7 +67,7 @@ import type {
   ModelProfileRecord,
   ChatMessageRecord,
   DesktopPlanFinalHandoff,
-  DesktopSessionPlanCheckpointRecommendation,
+  DesktopPlanFinalHandoffSuggestedPrompt,
   TaskChildCardActions,
   TaskToolRow,
 } from "../types/chat";
@@ -1955,16 +1955,6 @@ export function DesktopV3ExistingConversationPane({
     [renderedMessages],
   );
 
-  const canonicalFinalHandoffRecommendation = useMemo<DesktopSessionPlanCheckpointRecommendation | null>(() => {
-    const checkpointId = planExecutionView?.activeCheckpointId || planExecutionView?.activeCheckpoint?.id || "";
-    for (let index = renderItems.length - 1; index >= 0; index -= 1) {
-      const item = renderItems[index];
-      if (item.type !== "plan-final-handoff" || !item.finalHandoff?.recommendation) continue;
-      const handoffCheckpointId = metadataString(item.message.metadata, "checkpoint_id");
-      if (!checkpointId || handoffCheckpointId === checkpointId) return item.finalHandoff.recommendation;
-    }
-    return null;
-  }, [planExecutionView, renderItems]);
   const taskChildRows = useMemo<TaskToolRow[]>(() => {
     const rows: TaskToolRow[] = [];
     for (const item of renderItems) {
@@ -2832,6 +2822,12 @@ export function DesktopV3ExistingConversationPane({
   } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
 
   const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, [], [], []), [stableSubmit]);
+  const prefillSuggestedPrompt = useCallback((prompt: string) => {
+    const normalizedPrompt = prompt.trim();
+    if (!normalizedPrompt) return;
+    composerControllerRef.current?.setDraft(normalizedPrompt);
+    setArtifactComposerFocusSignal((current) => current + 1);
+  }, []);
   const queueGalleryArtifactSelections = useCallback((selections: DesktopV3ArtifactMessageSelection[]) => {
     if (selections.length === 0) return;
     try {
@@ -2988,6 +2984,7 @@ export function DesktopV3ExistingConversationPane({
                             index={virtualRow.index}
                             taskChildActions={taskChildActions}
                             onSuggestedPrompt={stableSuggestedPrompt}
+                            onPrefillPrompt={prefillSuggestedPrompt}
                             artifactCatalog={sessionArtifacts}
                             artifactHref={artifactViewerHref}
                             onArtifactNavigate={navigateArtifactViewer}
@@ -3123,7 +3120,6 @@ export function DesktopV3ExistingConversationPane({
                       onStop={stableStop}
                       onEditPlan={stableOpenPlan}
                       belowActions={planSidebarBelowActions}
-                      canonicalRecommendation={canonicalFinalHandoffRecommendation}
                     />
                   )}
                 </div>
@@ -3263,7 +3259,6 @@ export function DesktopV3ExistingConversationPane({
                   displayMode={planSidebarDisplayMode}
                   taskChildren={taskChildren}
                   taskChildActions={taskChildActions}
-                  canonicalRecommendation={canonicalFinalHandoffRecommendation}
                 />
               ) : null}
             </div>
@@ -3316,6 +3311,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   thinkingTagsEnabled,
   taskChildActions,
   onSuggestedPrompt,
+  onPrefillPrompt,
   artifactCatalog = [],
   artifactHref,
   onArtifactNavigate,
@@ -3326,6 +3322,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   index: number;
   taskChildActions?: TaskChildCardActions;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
+  onPrefillPrompt?: (prompt: string) => void;
   artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
   artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
@@ -3337,7 +3334,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
     case "plan-checkpoint-handoff":
       return <DesktopV3PlanCheckpointHandoff item={item} />;
     case "plan-final-handoff":
-      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} />;
+      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} onPrefillPrompt={onPrefillPrompt} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} />;
     case "plan-blocked-handoff":
       return <DesktopV3PlanBlockedHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "message":
@@ -3655,12 +3652,14 @@ function DesktopV3PlanCheckpointHandoff({
 function DesktopV3PlanFinalHandoff({
   item,
   onSuggestedPrompt,
+  onPrefillPrompt,
   artifactCatalog,
   artifactHref,
   onArtifactNavigate,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
+  onPrefillPrompt?: (prompt: string) => void;
   artifactCatalog: DesktopV3ArtifactCatalogEntry[];
   artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
@@ -3671,6 +3670,7 @@ function DesktopV3PlanFinalHandoff({
         item={item}
         handoff={item.finalHandoff}
         onSuggestedPrompt={onSuggestedPrompt}
+        onPrefillPrompt={onPrefillPrompt}
         artifactCatalog={artifactCatalog}
         artifactHref={artifactHref}
         onArtifactNavigate={onArtifactNavigate}
@@ -3739,10 +3739,82 @@ export function selectDesktopV3SuggestedPrompt(
   void onSuggestedPrompt(prompt);
 }
 
+type DesktopV3FinalHandoffNextStep = DesktopPlanFinalHandoffSuggestedPrompt & {
+  behavior: "send" | "prefill";
+};
+
+function finalHandoffActionLabel(value: string): string {
+  const normalized = value.trim().replace(/[-_]+/g, " ");
+  if (!normalized) return "Continue";
+  return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function buildDesktopV3FinalHandoffNextSteps(
+  handoff: DesktopPlanFinalHandoff,
+  includeRecommendationPrompt = true,
+): DesktopV3FinalHandoffNextStep[] {
+  if (handoff.suggestedPrompts.length > 0) {
+    return handoff.suggestedPrompts.slice(0, 3).map((suggestion) => ({
+      ...suggestion,
+      behavior: /clar/i.test(suggestion.label) ? "prefill" : "send",
+    }));
+  }
+
+  const steps: DesktopV3FinalHandoffNextStep[] = [];
+  const recommendationAction = handoff.recommendation?.action.trim() ?? "";
+  const normalizedAction = recommendationAction.toLowerCase().replace(/[-_]+/g, " ");
+  const recommendationPrompt = handoff.recommendation?.prompt?.trim() ?? "";
+  const isReviewOnly = /\breview\b/.test(normalizedAction);
+
+  if (includeRecommendationPrompt && recommendationPrompt && !isReviewOnly) {
+    steps.push({
+      label: finalHandoffActionLabel(recommendationAction),
+      prompt: recommendationPrompt,
+      behavior: "send",
+    });
+  } else if (handoff.recommendation?.decision.trim().toLowerCase() === "change") {
+    steps.push({
+      label: "Request changes",
+      prompt: "Please make the following changes: ",
+      behavior: "prefill",
+    });
+  }
+
+  if (handoff.details.changedFiles.length > 0 && steps.length < 3) {
+    steps.push({
+      label: "Commit changes",
+      prompt: "Commit the completed changes with an appropriate commit message.",
+      behavior: "send",
+    });
+  }
+
+  const validationWasSkipped = handoff.details.validation.length === 0
+    || handoff.details.validation.every((entry) => /not run|not requested|skipped/i.test(entry));
+  if (validationWasSkipped && steps.length < 3) {
+    steps.push({
+      label: "Run focused tests",
+      prompt: "Run the focused tests for these changes and report the results.",
+      behavior: "send",
+    });
+  }
+
+  const substantialHandoff = handoff.details.changedFiles.length >= 3 || handoff.impactBullets.length >= 2;
+  if ((substantialHandoff || steps.length === 0) && steps.length < 3) {
+    steps.push({
+      label: "Ask for clarity",
+      prompt: "I have a question about these changes: ",
+      behavior: "prefill",
+    });
+  }
+
+  return steps;
+}
+
 function DesktopV3StructuredFinalHandoff({
   item,
   handoff,
   onSuggestedPrompt,
+  onPrefillPrompt,
   artifactCatalog,
   artifactHref,
   onArtifactNavigate,
@@ -3750,6 +3822,7 @@ function DesktopV3StructuredFinalHandoff({
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   handoff: DesktopPlanFinalHandoff;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
+  onPrefillPrompt?: (prompt: string) => void;
   artifactCatalog: DesktopV3ArtifactCatalogEntry[];
   artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
@@ -3757,6 +3830,7 @@ function DesktopV3StructuredFinalHandoff({
   const recommendation = handoff.recommendation;
   const details = handoff.details;
   const hasDetails = Boolean(details.report || details.result);
+  const nextSteps = buildDesktopV3FinalHandoffNextSteps(handoff, handoff.artifacts.length === 0);
   const handoffArtifacts = handoff.artifacts.flatMap((artifact): DesktopV3ArtifactGalleryEntry[] => {
     const isManagedArtifact = Boolean(artifact.sessionId || artifact.collectionId || artifact.eventSeq);
     const exactCatalogEntry = artifactCatalog.find((entry) => (
@@ -3826,25 +3900,11 @@ function DesktopV3StructuredFinalHandoff({
         {recommendation ? (
           <div className="mt-3 border-l-2 border-[var(--app-primary)] pl-3" data-final-handoff-recommendation>
             <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Recommendation</div>
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              <div className="font-medium text-[var(--app-text)]">
-                {recommendation.decision.replace(/[-_]+/g, " ")} — {recommendation.action.replace(/[-_]+/g, " ")}
-              </div>
-              {handoffArtifacts.length === 0 && ((recommendation.prompt || recommendation.action || "").trim()) ? (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border-active)] bg-[var(--app-primary)] px-2.5 py-1 text-xs font-medium text-[var(--app-primary-text)] transition hover:bg-[var(--app-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!onSuggestedPrompt}
-                  title={(recommendation.prompt || recommendation.action || "").trim()}
-                  onClick={() => selectDesktopV3SuggestedPrompt((recommendation.prompt || recommendation.action || "").trim(), onSuggestedPrompt)}
-                  data-final-handoff-recommendation-action={(recommendation.prompt || recommendation.action || "").trim()}
-                  data-final-handoff-prompt={(recommendation.prompt || recommendation.action || "").trim()}
-                >
-                  {recommendation.action.replace(/[-_]+/g, " ")}
-                </button>
-              ) : null}
-            </div>
-            {recommendation.reason ? <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{recommendation.reason}</p> : null}
+            {recommendation.reason ? (
+              <p className="mt-1 text-sm leading-5 text-[var(--app-text-muted)]" data-final-handoff-recommendation-summary>
+                {recommendation.reason}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
@@ -3897,23 +3957,30 @@ function DesktopV3StructuredFinalHandoff({
           </div>
         ) : null}
 
-        {handoff.suggestedPrompts.length > 0 ? (
+        {nextSteps.length > 0 ? (
           <div className="mt-3" data-final-handoff-suggestions>
-            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next steps</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Suggested next steps</div>
             <div className="mt-1.5 flex flex-wrap gap-2">
-              {handoff.suggestedPrompts.map((suggestion, index) => (
-                <button
-                  key={`${item.message.id}:prompt:${index}`}
-                  type="button"
-                  className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-left text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!onSuggestedPrompt}
-                  title={suggestion.prompt}
-                  onClick={() => selectDesktopV3SuggestedPrompt(suggestion.prompt, onSuggestedPrompt)}
-                  data-final-handoff-prompt={suggestion.prompt}
-                >
-                  {suggestion.label}
-                </button>
-              ))}
+              {nextSteps.map((suggestion, index) => {
+                const available = suggestion.behavior === "prefill" ? Boolean(onPrefillPrompt) : Boolean(onSuggestedPrompt);
+                return (
+                  <button
+                    key={`${item.message.id}:prompt:${index}`}
+                    type="button"
+                    className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-left text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!available}
+                    title={suggestion.prompt}
+                    onClick={() => {
+                      if (suggestion.behavior === "prefill") onPrefillPrompt?.(suggestion.prompt);
+                      else selectDesktopV3SuggestedPrompt(suggestion.prompt, onSuggestedPrompt);
+                    }}
+                    data-final-handoff-prompt={suggestion.prompt}
+                    data-final-handoff-prompt-behavior={suggestion.behavior}
+                  >
+                    {suggestion.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}

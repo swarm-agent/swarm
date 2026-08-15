@@ -866,13 +866,13 @@ test("final accept-and-archive review action dispatches checkpoint acceptance fi
   assert.deepEqual(actions, [{ action: "accept_checkpoint", checkpointId: "cp-1" }]);
 });
 
-test("final review renders the terminal recommendation", () => {
+test("final review keeps recommendations out of the plan sidebar", () => {
   const base = view({ reviewRequired: true, status: "waiting_review" });
   base.activeCheckpoint = {
     ...base.activeCheckpoint!,
     recommendation: {
       decision: "ship",
-      action: "accept_and_archive",
+      action: "review",
       reason: "Focused lifecycle coverage passes.",
       actionState: "ready",
     },
@@ -881,41 +881,9 @@ test("final review renders the terminal recommendation", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} onEditPlan={() => undefined} />,
   );
-  assert.match(markup, /Recommendation/);
-  assert.match(markup, /Ship — Accept And Archive/);
-  assert.match(markup, /Focused lifecycle coverage passes/);
-  assert.match(markup, /data-plan-recommendation=""/);
-  assert.match(markup, /border border-\[var\(--app-primary-border\)\]/);
-});
-
-test("final review sidebar prefers the same canonical handoff recommendation as the inline card", () => {
-  const base = view({ reviewRequired: true, status: "waiting_review" });
-  base.activeCheckpoint = {
-    ...base.activeCheckpoint!,
-    recommendation: {
-      decision: "change",
-      action: "old_action",
-      reason: "Stale checkpoint value.",
-      actionState: "ready",
-    },
-  };
-  base.plan.document.checkpoints = [base.activeCheckpoint];
-  const markup = renderToStaticMarkup(
-    <DesktopPlanExecutionSidebar
-      view={base}
-      canonicalRecommendation={{
-        decision: "ship",
-        action: "review",
-        reason: "Canonical projected value.",
-        actionState: "ready",
-      }}
-      onAction={() => undefined}
-      onEditPlan={() => undefined}
-    />,
-  );
-  assert.match(markup, /Ship — Review/);
-  assert.match(markup, /Canonical projected value/);
-  assert.doesNotMatch(markup, /Stale checkpoint value/);
+  assert.doesNotMatch(markup, /data-plan-recommendation/);
+  assert.doesNotMatch(markup, /Focused lifecycle coverage passes/);
+  assert.match(markup, /Accept &amp; archive plan/);
 });
 
 test("desktop plan sidebar never renders manual execution mode controls", () => {
