@@ -2767,7 +2767,7 @@ export function DesktopV3ExistingConversationPane({
   const submitRef = useRef(handleSubmit);
   submitRef.current = handleSubmit;
   const stableSubmit = useCallback(
-    (submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) => submitRef.current(submittedDraft, attachments, artifactSelections),
+    (submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: import('../services/video-source-attachments').DesktopVideoSourceAttachment[]) => submitRef.current(submittedDraft, attachments, artifactSelections, videoAttachments),
     [],
   );
 

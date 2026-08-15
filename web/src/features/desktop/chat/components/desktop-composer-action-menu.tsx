@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { AlertTriangle, ChevronLeft, ChevronRight, FolderVideo, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Pin, Plus, Settings, Sparkles, Trash2, Zap } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, FileVideo, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Pin, Plus, Settings, Sparkles, Trash2, Zap } from 'lucide-react'
 import { deleteWorkspaceAction, fetchWorkspaceActions, orderWorkspaceActionsForQuickAccess, type WorkspaceAction } from '../../../workspaces/actions/types'
 import { deleteWorkspaceSkill, fetchWorkspaceSkills, type WorkspaceSkill } from '../services/workspace-skills'
 
@@ -364,7 +364,7 @@ export function DesktopComposerActionMenu({
                   data-testid="desktop-composer-add-media-folder-menu-item"
                 >
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
-                    <FolderVideo size={16} aria-hidden="true" />
+                    <FileVideo size={16} aria-hidden="true" />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block font-semibold">Add media folder</span>
