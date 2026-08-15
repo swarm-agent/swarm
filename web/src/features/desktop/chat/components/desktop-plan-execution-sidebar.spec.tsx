@@ -436,7 +436,7 @@ test("pending-only overflow always exposes a keyboard-accessible chevron disclos
   assert.match(source, /pendingTasks\.slice\(COLLAPSED_VISIBLE_PENDING_TASKS\)/);
 });
 
-test("Git integration uses the remaining sidebar height and scrolls at the bottom edge", () => {
+test("Git integration keeps commit and file details collapsed above the integrate action", () => {
   const sidebarSource = readFileSync(
     new URL("./desktop-v3-existing-conversation-pane.tsx", import.meta.url),
     "utf8",
@@ -453,8 +453,11 @@ test("Git integration uses the remaining sidebar height and scrolls at the botto
   assert.match(sidebarSource, /data-plan-scroll-region/);
   assert.match(appPageSource, /data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"/);
   assert.match(appPageSource, /flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region/);
-  assert.match(appPageSource, /min-h-0 flex-1 overflow-y-auto rounded-xl bg-\[var\(--app-bg-alt\)\] p-1 \[scrollbar-gutter:stable\]" data-plan-git-file-list data-plan-git-scroll="at-sidebar-edge"/);
-  assert.doesNotMatch(appPageSource, /data-plan-git-file-list[^\n]*max-h-/);
+  assert.match(appPageSource, /<details[^\n]*data-plan-git-session-commits>/);
+  assert.match(appPageSource, /<details[^\n]*data-plan-git-file-details>/);
+  assert.match(appPageSource, /data-plan-git-scroll="inside-disclosure"/);
+  assert.match(appPageSource, /data-plan-git-integrate-anchor/);
+  assert.doesNotMatch(appPageSource, /data-plan-git-scroll="at-sidebar-edge"/);
   assert.doesNotMatch(appPageSource, /data-plan-git-visible-rows/);
   assert.doesNotMatch(appPageSource, /h-\[calc\(100%-0\.5rem\)\]/);
   assert.doesNotMatch(appPageSource, /flex-\[0_0_36%\]/);

@@ -53,7 +53,7 @@ test('sidebar header renders workspace context instead of the swarm role label',
   assert.doesNotMatch(headerSource, /currentSwarmRoleLabel/)
 })
 
-test('plan Git panel fills the remaining sidebar height and scrolls its file list at the bottom edge', async () => {
+test('plan Git panel keeps changed files compact and expandable so integration remains visible', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
   const panelEnd = source.indexOf('const sidebarContent =', panelStart)
@@ -62,9 +62,12 @@ test('plan Git panel fills the remaining sidebar height and scrolls its file lis
   assert.ok(panelStart >= 0 && panelEnd > panelStart)
   assert.match(panelSource, /desktop-plan-git-sidebar[^\n]*flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden/)
   assert.match(panelSource, /flex min-h-0 flex-1 flex-col overflow-hidden[^\n]*data-plan-git-scroll-region/)
-  assert.match(panelSource, /min-h-0 flex-1 overflow-y-auto[^\n]*data-plan-git-file-list[^\n]*data-plan-git-scroll="at-sidebar-edge"/)
+  assert.match(panelSource, /<details[^\n]*data-plan-git-file-details>/)
+  assert.match(panelSource, /gitSnapshot\.files\.length\} file\{gitSnapshot\.files\.length === 1 \? '' : 's'\} changed/)
+  assert.match(panelSource, /max-h-40 overflow-y-auto[^\n]*data-plan-git-file-list[^\n]*data-plan-git-scroll="inside-disclosure"/)
   assert.match(panelSource, /shrink-0[^\n]*data-plan-git-commit|data-plan-git-commit[^\n]*shrink-0/)
-  assert.doesNotMatch(panelSource, /data-plan-git-file-list[^\n]*max-h-/)
+  assert.match(panelSource, /data-plan-git-integrate-anchor/)
+  assert.doesNotMatch(panelSource, /data-plan-git-scroll="at-sidebar-edge"/)
   assert.doesNotMatch(panelSource, /data-plan-git-visible-rows/)
 })
 

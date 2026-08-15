@@ -4839,10 +4839,15 @@ export function DesktopAppPage() {
         </div>
       ) : null}
       {activeSessionWorktree ? (
-        <div className="mt-2 shrink-0" data-plan-git-session-commits>
-          <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]"><GitCommitHorizontal size={11} />Session commits <span className="ml-auto">{activeSessionCommits.length}</span></div>
-          {activeSessionCommits.length > 0 ? <div className="mt-1 max-h-28 overflow-y-auto rounded-lg border border-[var(--app-border)] [scrollbar-gutter:stable]">{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="mt-1 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
-        </div>
+        <details className="group mt-2 shrink-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]" data-plan-git-session-commits>
+          <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)] [&::-webkit-details-marker]:hidden">
+            <GitCommitHorizontal size={11} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate">Session commits</span>
+            <span className="shrink-0 normal-case tracking-normal">{activeSessionCommits.length}</span>
+            <ChevronDown size={12} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+          </summary>
+          {activeSessionCommits.length > 0 ? <div className="max-h-28 overflow-y-auto border-t border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-session-commit-list>{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
+        </details>
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region>
         {gitSidebarMissingGit ? <button type="button" className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-warning)] px-2 py-1.5 text-xs font-semibold text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitInstallHelpBusy} onClick={() => { void handleAskSwarmToInstallGit() }}>{gitInstallHelpBusy ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Bot size={13} aria-hidden="true" />}{gitInstallHelpBusy ? 'Asking Swarm…' : "Git isn't installed, Ask Swarm to install Git?"}</button>
@@ -4850,7 +4855,13 @@ export function DesktopAppPage() {
           : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
           : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
-          : <div className="mt-2 min-h-0 flex-1 overflow-y-auto rounded-xl bg-[var(--app-bg-alt)] p-1 [scrollbar-gutter:stable]" data-plan-git-file-list data-plan-git-scroll="at-sidebar-edge">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>}
+          : <details className="group mt-2 min-h-0 shrink overflow-hidden rounded-xl bg-[var(--app-bg-alt)]" data-plan-git-file-details>
+              <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-2 text-[10px] font-semibold text-[var(--app-text-muted)] [&::-webkit-details-marker]:hidden">
+                <span className="min-w-0 flex-1 truncate">{gitSnapshot.files.length} file{gitSnapshot.files.length === 1 ? '' : 's'} changed</span>
+                <ChevronDown size={12} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
+              </summary>
+              <div className="max-h-40 overflow-y-auto border-t border-[var(--app-border)] p-1 [scrollbar-gutter:stable]" data-plan-git-file-list data-plan-git-scroll="inside-disclosure">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>
+            </details>}
       </div>
       {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <div ref={gitIntegrateAnchorRef} className="relative mt-2 shrink-0" data-plan-git-integrate-anchor>
         {gitIntegrateModal?.presentation === 'sidebar-popout' && typeof document !== 'undefined' ? createPortal(
