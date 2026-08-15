@@ -1,4 +1,4 @@
-import type { DesktopPlanFinalHandoff, DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanInfo, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { DesktopPlanFinalHandoff, DesktopPlanFinalHandoffArtifact, DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanInfo, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
 
 export interface DesktopSessionPlanWire {
   id?: string
@@ -301,7 +301,7 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
     })
     .filter((block) => block.code.trim())
     .slice(0, 3)
-  const artifacts = (Array.isArray(record.artifacts) ? record.artifacts : [])
+  const artifacts: DesktopPlanFinalHandoffArtifact[] = (Array.isArray(record.artifacts) ? record.artifacts : [])
     .map((entry: unknown) => {
       const artifact = objectValue(entry) ?? {}
       const artifactId = stringValue(artifact, 'artifactId', 'artifact_id', 'id', 'variant_id', 'variantId')
