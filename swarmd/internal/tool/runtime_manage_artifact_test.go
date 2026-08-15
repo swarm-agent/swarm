@@ -350,8 +350,12 @@ func TestManageArtifactCreateUsesTrustedOwnershipAndFinalAuthorityResult(t *test
 	if artifactPayload["status"] != pebblestore.SessionArtifactStatusReady {
 		t.Fatalf("output = %s", output)
 	}
-	if _, exists := artifactPayload["session_id"]; exists {
-		t.Fatalf("output exposed ownership: %s", output)
+	if artifactPayload["session_id"] != "session-1" {
+		t.Fatalf("output omitted exact artifact session identity: %s", output)
+	}
+	reference := payload["reference"].(map[string]any)
+	if reference["session_id"] != "session-1" || reference["collection_id"] != artifactPayload["collection_id"] || reference["variant_id"] != artifactPayload["id"] || reference["event_seq"] != artifactPayload["event_seq"] {
+		t.Fatalf("output reference does not match the exact ready artifact: %s", output)
 	}
 }
 

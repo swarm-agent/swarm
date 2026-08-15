@@ -3762,26 +3762,39 @@ function DesktopV3StructuredFinalHandoff({
   const recommendation = handoff.recommendation;
   const details = handoff.details;
   const hasDetails = Boolean(details.report || details.result);
-  const handoffArtifacts = handoff.artifacts.map((artifact): DesktopV3ArtifactGalleryEntry => artifactCatalog.find((entry) =>
-    entry.artifactId === artifact.artifactId
-    || (entry.label === artifact.label && entry.description === artifact.description && entry.mediaType === artifact.mediaType)
-  ) ?? ({
-    ...artifact,
-    sessionId: item.message.session_id,
-    sessionTitle: "This session",
-    workspacePath: "",
-    workspaceName: "",
-    planId: "",
-    planTitle: "",
-    checkpointId: "",
-    checkpointTitle: "",
-    collectionName: "",
-    collectionDescription: "",
-    filename: artifact.label,
-    kind: artifact.mediaType,
-    category: artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") ? "visual" : "document",
-    updatedAt: 0,
-  }));
+  const handoffArtifacts = handoff.artifacts.flatMap((artifact): DesktopV3ArtifactGalleryEntry[] => {
+    const isManagedArtifact = Boolean(artifact.sessionId || artifact.collectionId || artifact.eventSeq);
+    const exactCatalogEntry = artifactCatalog.find((entry) => (
+      entry.artifactId === artifact.artifactId
+      && (!isManagedArtifact || (
+        entry.sessionId === artifact.sessionId
+        && entry.collectionId === artifact.collectionId
+        && entry.eventSeq === artifact.eventSeq
+      ))
+    ));
+    if (exactCatalogEntry) return [exactCatalogEntry];
+    if (isManagedArtifact && (!artifact.sessionId || !artifact.collectionId || !artifact.eventSeq)) return [];
+    return [{
+      ...artifact,
+      sessionId: artifact.sessionId || item.message.session_id,
+      collectionId: artifact.collectionId || "",
+      eventSeq: artifact.eventSeq || 0,
+      sessionTitle: "This session",
+      workspacePath: "",
+      workspaceName: "",
+      planId: "",
+      planTitle: "",
+      checkpointId: "",
+      checkpointTitle: "",
+      collectionName: "",
+      collectionDescription: "",
+      filename: artifact.filename || artifact.label,
+      kind: artifact.kind || artifact.mediaType,
+      category: artifact.category || (artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") ? "visual" : "document"),
+      status: "ready",
+      updatedAt: 0,
+    }];
+  });
   return (
     <div className="flex w-full min-w-0 justify-start py-1" data-testid="desktop-v3-plan-final-handoff">
       <section

@@ -228,7 +228,7 @@ func TestMergePlanCheckpointArtifactsCoexistenceAndDeduplication(t *testing.T) {
 
 func TestSavePlanAuthenticatesManagedArtifacts(t *testing.T) {
 	sessions := newArtifactCleanupTestService(t)
-	created, err := sessions.CreateSession(artifactCleanupCreateOptions("session-auth", "/ws", "Artifact Test"))
+	created, _, err := sessions.CreateSessionWithOptions(artifactCleanupCreateOptions("session-auth", "/ws", "Artifact Test"))
 	if err != nil {
 		t.Fatal(err)
 	}

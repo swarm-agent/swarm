@@ -82,6 +82,36 @@ test('timeline parses successful manage_artifact tool message into typed artifac
   assert(markup.includes('/ws-1/sess-abc-123?artifactSession=sess-abc-123&amp;collection=col-brainstorm&amp;artifact=var-concept-1'), 'must link to exact viewer route')
 })
 
+test('timeline artifact actions fail closed when the exact ready identity is incomplete', () => {
+  const outputJson = {
+    tool: 'manage_artifact',
+    action: 'create',
+    status: 'ok',
+    artifact: {
+      id: 'var-incomplete',
+      session_id: 'sess-abc-123',
+      collection_id: 'col-brainstorm',
+      filename: 'prototype.html',
+      media_type: 'text/html',
+      label: 'Incomplete Prototype',
+      status: 'ready',
+    },
+  }
+  const toolMessage = buildStructuredToolMessage({
+    tool: 'manage_artifact',
+    callId: 'call_art_incomplete',
+    outputText: JSON.stringify(outputJson),
+  })!
+  const markup = renderToStaticMarkup(
+    <ToolMessageView
+      toolMessage={toolMessage}
+      onArtifactSelections={() => assert.fail('incomplete artifact identity must not be sent to chat')}
+    />,
+  )
+  assert(!markup.includes('data-testid="add-artifact-to-chat-button"'))
+  assert(!markup.includes('data-testid="use-artifact-design-button"'))
+})
+
 test('manage_artifact activity descriptor uses generic category with clean labels', () => {
   const descriptor = describeToolActivity('manage_artifact')
   assert.equal(descriptor.kind, 'generic')

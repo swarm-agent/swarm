@@ -674,7 +674,11 @@ func TestSessionsV3ArtifactMessageSelectionContract(t *testing.T) {
 	if _, _, err := server.acceptSessionsV3Message(principal, variant.SessionID, sessionsV3MessageRequest{ClientRequestID: "message-ref-stale", Role: "user", Content: "Use stale", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{stale}}); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale selection error = %v", err)
 	}
-	other, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: "other-owned-session", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: "Other", WorkspacePath: t.TempDir()})
+	other, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "other-owned-session", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		Title: "Other", WorkspacePath: t.TempDir(),
+		Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test-model", Thinking: "medium"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -67,7 +67,7 @@ func TestManageArtifactToolOutputIsStructured(t *testing.T) {
 }
 
 func TestBrainstormingArtifactPromptGuidance(t *testing.T) {
-	checkpointPrompt, err := checkpointRunPrompt(checkpointRunPromptPayload{
+	checkpointPrompt, err := renderCheckpointRunPrompt(checkpointRunPromptPayload{
 		Checkpoint: pebblestore.SessionPlanCheckpoint{ID: "cp-1", Title: "Brainstorm"},
 		Artifacts:  []pebblestore.SessionPlanArtifactReference{{Path: "docs/spec.md", Role: "input"}},
 	})

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	pathpkg "path"
 	"strings"
+	"unicode/utf8"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
