@@ -24,6 +24,7 @@ import { displayAgentName } from "../services/agent-display";
 import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
 import { ToolActivityShell } from "./tool-activity-shell";
+import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { desktopV3ArtifactMessageSelection, normalizeDesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 
 interface ChatMarkdownProps {
@@ -1576,6 +1577,32 @@ export function ManageArtifactCard({
           <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)] line-clamp-2" title={description}>{description}</p>
         ) : null}
 
+        {artifact && status === "ready" ? (
+          href ? (
+            <a
+              href={href}
+              onClick={handleOpenViewer}
+              className="mt-3 block overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              aria-label={`Open ${label} artifact`}
+              data-testid="artifact-preview-link"
+            >
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} />
+            </a>
+          ) : onArtifactNavigate ? (
+            <button
+              type="button"
+              onClick={() => handleOpenViewer()}
+              className="mt-3 block w-full overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              aria-label={`Open ${label} artifact`}
+              data-testid="artifact-preview-button"
+            >
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} />
+            </button>
+          ) : (
+            <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="mt-3" />
+          )
+        ) : null}
+
         <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-[var(--app-text-subtle)]">
           {mediaType ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
           {filename && filename !== label ? <span className="font-mono text-[10px] truncate max-w-48">{filename}</span> : null}
@@ -1599,7 +1626,7 @@ export function ManageArtifactCard({
               >
                 Open in viewer <ExternalLink size={12} />
               </a>
-            ) : (
+            ) : onArtifactNavigate ? (
               <button
                 type="button"
                 onClick={() => handleOpenViewer()}
@@ -1608,7 +1635,7 @@ export function ManageArtifactCard({
               >
                 Open in viewer <ExternalLink size={12} />
               </button>
-            )}
+            ) : null}
 
             {onArtifactSelections && artifactSelection && status === "ready" ? (
               <>
