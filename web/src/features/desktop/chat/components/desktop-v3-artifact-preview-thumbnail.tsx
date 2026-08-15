@@ -11,11 +11,13 @@ import {
 interface DesktopV3ArtifactPreviewThumbnailProps {
   artifact: DesktopV3ArtifactCatalogEntry
   className?: string
+  presentation?: 'thumbnail' | 'wide'
 }
 
 export function DesktopV3ArtifactPreviewThumbnail({
   artifact,
   className,
+  presentation = 'thumbnail',
 }: DesktopV3ArtifactPreviewThumbnailProps) {
   const [previewURL, setPreviewURL] = useState('')
   const [previewText, setPreviewText] = useState('')
@@ -83,13 +85,21 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const hasPDFPreview = artifact.mediaType === 'application/pdf' && Boolean(previewURL)
   const hasTextPreview = (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
 
+  const wideImage = presentation === 'wide' && artifact.mediaType.startsWith('image/')
+  const previewAspectRatio = wideImage && artifact.outputRequirements
+    ? `${artifact.outputRequirements.width} / ${artifact.outputRequirements.height}`
+    : undefined
+
   return (
     <div
       className={cn(
-        'relative aspect-video w-full max-w-sm overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]',
+        'relative aspect-video w-full overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]',
+        wideImage ? 'max-w-3xl' : 'max-w-sm',
         className,
       )}
+      style={previewAspectRatio ? { aspectRatio: previewAspectRatio } : undefined}
       data-artifact-preview-thumbnail
+      data-artifact-preview-presentation={wideImage ? 'wide' : 'thumbnail'}
       data-artifact-preview-media-type={artifact.mediaType}
     >
       {loading ? (

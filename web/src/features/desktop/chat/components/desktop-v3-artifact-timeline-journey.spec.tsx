@@ -116,14 +116,79 @@ test('timeline artifact actions fail closed when the exact ready identity is inc
   assert(!markup.includes('data-testid="artifact-preview-button"'), 'a preview without a concrete route must not render an inert button')
 })
 
-test('manage_artifact activity descriptor uses generic category with clean labels', () => {
+test('image generation artifact timeline shows a pending canvas before the provider result arrives', () => {
+  const toolMessage = buildStructuredToolMessage({
+    tool: 'manage_artifact',
+    callId: 'call_image_pending',
+    argumentsText: JSON.stringify({ action: 'generate_image', prompt: 'A mountain at sunrise' }),
+    state: 'running',
+  })
+  assert(Boolean(toolMessage), 'toolMessage should be created')
+
+  const markup = renderToStaticMarkup(<ToolMessageView toolMessage={toolMessage!} />)
+  assert(markup.includes('Image generation'), 'must identify the operation as image generation')
+  assert(markup.includes('Generating your image'), 'must explain the pending state')
+  assert(markup.includes('data-testid="image-generation-pending"'), 'must render the animated pending canvas')
+  assert(!markup.includes('text/html'), 'must not invent an HTML media type for image setup or generation')
+})
+
+test('ready generated images use a wide clickable timeline preview', () => {
+  const outputJson = {
+    tool: 'manage_artifact',
+    action: 'generate_image',
+    status: 'ok',
+    artifact: {
+      id: 'var-image-1',
+      collection_id: 'col-images',
+      session_id: 'sess-image-1',
+      event_seq: 18,
+      filename: 'sunrise.jpg',
+      media_type: 'image/jpeg',
+      label: 'Mountain sunrise',
+      status: 'ready',
+      previewable: true,
+      category: 'visual',
+    },
+  }
+  const toolMessage = buildStructuredToolMessage({
+    tool: 'manage_artifact',
+    callId: 'call_image_ready',
+    outputText: JSON.stringify(outputJson),
+  })
+  assert(Boolean(toolMessage), 'toolMessage should be created')
+
+  const markup = renderToStaticMarkup(
+    <ToolMessageView toolMessage={toolMessage!} artifactHref={() => '/ws/sess-image-1?artifact=var-image-1'} />,
+  )
+  assert(markup.includes('Image ready'), 'must communicate successful image generation')
+  assert(markup.includes('data-artifact-preview-presentation="wide"'), 'must use the wide image presentation')
+  assert(markup.includes('data-testid="artifact-preview-link"'), 'must keep the full preview clickable')
+})
+
+test('image capability lookup uses meaningful metadata without a fake artifact type', () => {
+  const toolMessage = buildStructuredToolMessage({
+    tool: 'manage_artifact',
+    callId: 'call_image_capabilities',
+    argumentsText: JSON.stringify({ action: 'image_capabilities' }),
+    outputText: JSON.stringify({ tool: 'manage_artifact', action: 'image_capabilities', status: 'ok', image_capabilities: { supported: true } }),
+  })
+  assert(Boolean(toolMessage), 'toolMessage should be created')
+
+  const markup = renderToStaticMarkup(<ToolMessageView toolMessage={toolMessage!} />)
+  assert(markup.includes('Image setup'), 'must explain this is an image setup lookup')
+  assert(markup.includes('Image generation options'), 'must give the lookup a meaningful label')
+  assert(markup.includes('Options ready'), 'must describe completion without claiming an artifact is ready')
+  assert(!markup.includes('text/html'), 'must not display the generic HTML fallback')
+})
+
+test('manage_artifact activity descriptor uses artifact category with clean labels', () => {
   const descriptor = describeToolActivity('manage_artifact')
-  assert.equal(descriptor.kind, 'generic')
+  assert.equal(descriptor.kind, 'artifact')
   assert.equal(descriptor.label, 'Artifact')
   assert.equal(descriptor.activeLabel, 'Creating artifact')
 
   const hyphenDescriptor = describeToolActivity('manage-artifact')
-  assert.equal(hyphenDescriptor.kind, 'generic')
+  assert.equal(hyphenDescriptor.kind, 'artifact')
   assert.equal(hyphenDescriptor.label, 'Artifact')
   assert.equal(hyphenDescriptor.activeLabel, 'Creating artifact')
 })

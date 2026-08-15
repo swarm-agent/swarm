@@ -66,7 +66,7 @@ interface StructuredToolMessageInput {
 const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
 const MAX_PREVIEW_LINES = 12;
 
-export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "generic";
+export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "artifact" | "generic";
 
 export interface ToolActivityDescriptor {
   kind: ToolActivitySemanticKind;
@@ -77,7 +77,7 @@ export interface ToolActivityDescriptor {
 export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   const normalized = String(toolName ?? "").trim().toLowerCase().replace(/-/g, "_");
   if (normalized === "manage_artifact") {
-    return { kind: "generic", label: "Artifact", activeLabel: "Creating artifact" };
+    return { kind: "artifact", label: "Artifact", activeLabel: "Creating artifact" };
   }
   if (normalized === "edit" || normalized === "write") {
     return { kind: "edit", label: "Edit", activeLabel: "Editing" };

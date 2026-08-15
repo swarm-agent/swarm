@@ -1499,6 +1499,8 @@ export function ManageArtifactCard({
   const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
   const action = toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create";
+  const isImageCapabilities = action === "image_capabilities";
+  const isImageGeneration = action === "generate_image";
   const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
 
   const matchedCatalogEntry = rawArtifact
@@ -1513,14 +1515,25 @@ export function ManageArtifactCard({
 
   const isRunning = toolMessage.state === "running";
   const isError = toolMessage.state === "error" || Boolean(toolMessage.error);
-  const label = artifact?.label || toolJsonString(args, "label") || toolJsonString(args, "filename") || "Artifact";
-  const description = artifact?.description || toolJsonString(args, "description");
-  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type") || (action === "generate_image" ? "image/png" : "text/html");
+  const label = artifact?.label
+    || toolJsonString(args, "label")
+    || toolJsonString(args, "filename")
+    || (isImageCapabilities ? "Image generation options" : isImageGeneration ? "Generated image" : "Artifact");
+  const description = artifact?.description
+    || toolJsonString(args, "description")
+    || (isImageCapabilities ? "Checking the configured image model and supported output sizes." : "");
+  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type");
   const filename = artifact?.filename || toolJsonString(args, "filename");
   const status = artifact?.status || (isError ? "failed" : isRunning ? "staging" : "ready");
 
-  const actionTitle = action === "generate_image" ? "Image artifact" : action === "create_package" ? "Artifact package" : action === "list" ? "Artifact list" : action === "get" || action === "read" ? "Artifact read" : "Artifact";
-  const statusLabel = isRunning ? "Creating…" : isError ? "Failed" : status === "ready" ? "Ready" : status || "Created";
+  const actionTitle = isImageCapabilities ? "Image setup" : isImageGeneration ? "Image generation" : action === "create_package" ? "Artifact package" : action === "list" ? "Artifact list" : action === "get" || action === "read" ? "Artifact read" : "Artifact";
+  const statusLabel = isError
+    ? "Failed"
+    : isImageCapabilities
+      ? isRunning ? "Checking…" : "Options ready"
+      : isImageGeneration
+        ? isRunning ? "Generating…" : status === "ready" ? "Image ready" : status || "Created"
+        : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
 
   const href = artifact && artifactHref ? artifactHref(artifact) : undefined;
 
@@ -1577,34 +1590,54 @@ export function ManageArtifactCard({
           <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)] line-clamp-2" title={description}>{description}</p>
         ) : null}
 
+        {isImageGeneration && isRunning ? (
+          <div
+            className="relative mt-3 aspect-video w-full max-w-3xl overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_28%,var(--app-border))] bg-[linear-gradient(120deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-bg-alt)),var(--app-bg-alt),color-mix(in_srgb,var(--app-accent)_10%,var(--app-bg-alt)))]"
+            data-testid="image-generation-pending"
+            role="status"
+            aria-label="Generating image"
+          >
+            <div className="absolute inset-0 motion-safe:animate-pulse bg-[radial-gradient(circle_at_30%_35%,color-mix(in_srgb,var(--app-primary)_20%,transparent),transparent_42%),radial-gradient(circle_at_70%_65%,color-mix(in_srgb,var(--app-accent)_18%,transparent),transparent_40%)] motion-reduce:animate-none" aria-hidden="true" />
+            <div className="relative grid size-full place-items-center px-5 text-center">
+              <div>
+                <span className="mx-auto grid size-11 place-items-center rounded-2xl bg-[color-mix(in_srgb,var(--app-primary)_14%,var(--app-surface))] text-[var(--app-primary)] shadow-sm">
+                  <Sparkles size={20} className="motion-safe:animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                </span>
+                <div className="mt-3 text-sm font-semibold text-[var(--app-text)]">Generating your image…</div>
+                <div className="mt-1 text-xs text-[var(--app-text-muted)]">The full preview will appear here when it is ready.</div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {artifact && status === "ready" ? (
           href ? (
             <a
               href={href}
               onClick={handleOpenViewer}
-              className="mt-3 block w-full max-w-sm overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              className={cn("mt-3 block w-full overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", artifact.mediaType.startsWith("image/") ? "max-w-3xl" : "max-w-sm")}
               aria-label={`Open ${label} artifact`}
               data-testid="artifact-preview-link"
             >
-              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} />
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={artifact.mediaType.startsWith("image/") ? "wide" : "thumbnail"} />
             </a>
           ) : onArtifactNavigate ? (
             <button
               type="button"
               onClick={() => handleOpenViewer()}
-              className="mt-3 block w-full max-w-sm overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              className={cn("mt-3 block w-full overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", artifact.mediaType.startsWith("image/") ? "max-w-3xl" : "max-w-sm")}
               aria-label={`Open ${label} artifact`}
               data-testid="artifact-preview-button"
             >
-              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} />
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={artifact.mediaType.startsWith("image/") ? "wide" : "thumbnail"} />
             </button>
           ) : (
-            <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="mt-3" />
+            <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="mt-3" presentation={artifact.mediaType.startsWith("image/") ? "wide" : "thumbnail"} />
           )
         ) : null}
 
         <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-[var(--app-text-subtle)]">
-          {mediaType ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
+          {mediaType && !isImageCapabilities ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
           {filename && filename !== label ? <span className="font-mono text-[10px] truncate max-w-48">{filename}</span> : null}
           {artifact?.collectionId ? <span className="font-mono text-[10px] truncate max-w-36">col: {artifact.collectionId}</span> : null}
         </div>
@@ -1621,7 +1654,7 @@ export function ManageArtifactCard({
               <a
                 href={href}
                 onClick={handleOpenViewer}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                 data-testid="open-artifact-viewer-link"
               >
                 Open in viewer <ExternalLink size={12} />
@@ -1630,7 +1663,7 @@ export function ManageArtifactCard({
               <button
                 type="button"
                 onClick={() => handleOpenViewer()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                 data-testid="open-artifact-viewer-button"
               >
                 Open in viewer <ExternalLink size={12} />
@@ -2443,6 +2476,7 @@ export function ToolMessageView({
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
+  const isManageArtifactActivity = ["manage-artifact", "manage_artifact"].includes(normalizedToolName);
   const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
   const hasStructuredTaskRows = normalizedToolName === "task" && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram));
   const activityOnly = toolMessage.state === "running"
@@ -2458,7 +2492,7 @@ export function ToolMessageView({
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
-  if (activityOnly || terminalWithoutResult) {
+  if ((activityOnly || terminalWithoutResult) && !isManageArtifactActivity) {
     const errorBody = toolMessage.error.trim();
     return (
       <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", "w-full")}>
@@ -2508,7 +2542,7 @@ export function ToolMessageView({
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
-  const isManageArtifact = ["manage-artifact", "manage_artifact"].includes(normalizedTool);
+  const isManageArtifact = isManageArtifactActivity;
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
   const isManageWorktree = ["manage-worktree", "manage_worktree"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
