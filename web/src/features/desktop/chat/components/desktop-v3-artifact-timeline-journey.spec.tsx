@@ -79,6 +79,8 @@ test('timeline parses successful manage_artifact tool message into typed artifac
   assert(markup.includes('text/html'), 'must display media type')
   assert(markup.includes('col: col-brainstorm'), 'must display collection info')
   assert(markup.includes('Open in viewer'), 'must provide viewer open affordance')
+  assert(markup.includes('data-testid="artifact-preview-link"'), 'must expose an immediately clickable artifact preview')
+  assert(markup.includes('data-artifact-preview-thumbnail'), 'must render the artifact thumbnail surface')
   assert(markup.includes('/ws-1/sess-abc-123?artifactSession=sess-abc-123&amp;collection=col-brainstorm&amp;artifact=var-concept-1'), 'must link to exact viewer route')
 })
 
@@ -110,6 +112,8 @@ test('timeline artifact actions fail closed when the exact ready identity is inc
   )
   assert(!markup.includes('data-testid="add-artifact-to-chat-button"'))
   assert(!markup.includes('data-testid="use-artifact-design-button"'))
+  assert(markup.includes('data-artifact-preview-thumbnail'), 'display-only artifact metadata still renders a preview surface')
+  assert(!markup.includes('data-testid="artifact-preview-button"'), 'a preview without a concrete route must not render an inert button')
 })
 
 test('manage_artifact activity descriptor uses generic category with clean labels', () => {

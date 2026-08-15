@@ -8,6 +8,7 @@ import {
   useState,
   type ComponentProps,
   type MutableRefObject,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -169,6 +170,7 @@ import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-recor
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
 import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   effectiveDesktopSidebarDisplayMode,
@@ -3337,7 +3339,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
     case "plan-checkpoint-handoff":
       return <DesktopV3PlanCheckpointHandoff item={item} />;
     case "plan-final-handoff":
-      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} onArtifactSelections={onArtifactSelections} />;
+      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} />;
     case "plan-blocked-handoff":
       return <DesktopV3PlanBlockedHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "message":
@@ -3658,14 +3660,12 @@ function DesktopV3PlanFinalHandoff({
   artifactCatalog,
   artifactHref,
   onArtifactNavigate,
-  onArtifactSelections,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
   artifactCatalog: DesktopV3ArtifactCatalogEntry[];
   artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
-  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   if (item.finalHandoff) {
     return (
@@ -3676,7 +3676,6 @@ function DesktopV3PlanFinalHandoff({
         artifactCatalog={artifactCatalog}
         artifactHref={artifactHref}
         onArtifactNavigate={onArtifactNavigate}
-        onArtifactSelections={onArtifactSelections}
       />
     );
   }
@@ -3749,7 +3748,6 @@ function DesktopV3StructuredFinalHandoff({
   artifactCatalog,
   artifactHref,
   onArtifactNavigate,
-  onArtifactSelections,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   handoff: DesktopPlanFinalHandoff;
@@ -3757,7 +3755,6 @@ function DesktopV3StructuredFinalHandoff({
   artifactCatalog: DesktopV3ArtifactCatalogEntry[];
   artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
-  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const recommendation = handoff.recommendation;
   const details = handoff.details;
@@ -3835,7 +3832,7 @@ function DesktopV3StructuredFinalHandoff({
               <div className="font-medium text-[var(--app-text)]">
                 {recommendation.decision.replace(/[-_]+/g, " ")} — {recommendation.action.replace(/[-_]+/g, " ")}
               </div>
-              {((recommendation.prompt || recommendation.action || "").trim()) ? (
+              {handoffArtifacts.length === 0 && ((recommendation.prompt || recommendation.action || "").trim()) ? (
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border-active)] bg-[var(--app-primary)] px-2.5 py-1 text-xs font-medium text-[var(--app-primary-text)] transition hover:bg-[var(--app-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
@@ -3853,8 +3850,38 @@ function DesktopV3StructuredFinalHandoff({
           </div>
         ) : null}
 
-        {handoff.artifacts.length > 0 ? (
-          <DesktopV3ArtifactGallery artifacts={handoffArtifacts} title="Session artifacts" artifactHref={artifactHref} collectionHref={artifactHref} onArtifactNavigate={onArtifactNavigate} onCollectionNavigate={onArtifactNavigate} onTriggerOpen={onArtifactNavigate} onAddToChat={onArtifactSelections ? (artifacts) => onArtifactSelections(artifacts.map(({ label, selection }) => ({ ...selection, label, action: "select" }))) : undefined} onUseThisDesign={onArtifactSelections ? ({ label, selection }) => onArtifactSelections([{ ...selection, label, action: "use" }]) : undefined} />
+        {handoffArtifacts.length > 0 ? (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2" data-final-handoff-artifacts>
+            {handoffArtifacts.map((artifact) => {
+              const href = artifactHref?.(artifact);
+              if (!href) return null;
+              const openArtifact = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+                if (!onArtifactNavigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                onArtifactNavigate(artifact);
+              };
+              return (
+                <a
+                  key={`${artifact.sessionId}:${artifact.collectionId ?? ""}:${artifact.artifactId}`}
+                  href={href}
+                  onClick={openArtifact}
+                  className="group overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                  aria-label={`Open ${artifact.label} artifact`}
+                  data-final-handoff-artifact-link
+                  data-artifact-id={artifact.artifactId}
+                >
+                  <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="rounded-none border-0 border-b border-[var(--app-border)]" />
+                  <div className="flex min-w-0 items-center justify-between gap-3 p-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold text-[var(--app-text)]">{artifact.label}</div>
+                      <div className="truncate text-[10px] text-[var(--app-text-subtle)]">{artifact.filename || artifact.mediaType}</div>
+                    </div>
+                    <ExternalLink size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  </div>
+                </a>
+              );
+            })}
+          </div>
         ) : null}
 
         {handoff.pullRequestUrl ? (
