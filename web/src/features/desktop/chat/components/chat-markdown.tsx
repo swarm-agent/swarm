@@ -1582,7 +1582,7 @@ export function ManageArtifactCard({
             <a
               href={href}
               onClick={handleOpenViewer}
-              className="mt-3 block overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              className="mt-3 block w-full max-w-sm overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
               aria-label={`Open ${label} artifact`}
               data-testid="artifact-preview-link"
             >
@@ -1592,7 +1592,7 @@ export function ManageArtifactCard({
             <button
               type="button"
               onClick={() => handleOpenViewer()}
-              className="mt-3 block w-full overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              className="mt-3 block w-full max-w-sm overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
               aria-label={`Open ${label} artifact`}
               data-testid="artifact-preview-button"
             >

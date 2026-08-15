@@ -86,7 +86,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
   return (
     <div
       className={cn(
-        'relative h-36 w-full overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]',
+        'relative aspect-video w-full max-w-sm overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]',
         className,
       )}
       data-artifact-preview-thumbnail
@@ -109,7 +109,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
         />
       ) : null}
       {!loading && hasImagePreview ? (
-        <img src={previewURL} alt="" className="size-full object-cover" data-artifact-image-preview />
+        <img src={previewURL} alt="" className="size-full object-contain" data-artifact-image-preview />
       ) : null}
       {!loading && hasPDFPreview ? (
         <iframe

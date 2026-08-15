@@ -2097,11 +2097,8 @@ export function DesktopV3ExistingConversationPane({
     : undefined;
   const artifactViewerHref = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     if (!routeWorkspaceSlug) return '#';
-    return desktopV3ArtifactViewerHref(routeWorkspaceSlug, {
-      ...artifact,
-      sessionId: normalizedSessionId,
-    });
-  }, [normalizedSessionId, routeWorkspaceSlug]);
+    return desktopV3ArtifactViewerHref(routeWorkspaceSlug, artifact);
+  }, [routeWorkspaceSlug]);
   const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     setArtifactGalleryInitialKey(artifactKey);
@@ -2109,19 +2106,19 @@ export function DesktopV3ExistingConversationPane({
     if (!routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
-      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
-      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },
+      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
     });
-  }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
+  }, [navigate, routeWorkspaceSlug]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     if (!routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
-      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
-      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch({ ...artifact, sessionId: normalizedSessionId }) }),
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },
+      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
       replace: true,
     });
-  }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
+  }, [navigate, routeWorkspaceSlug]);
   const setArtifactGalleryOpenFromViewer = useCallback((nextOpen: boolean) => {
     setArtifactGalleryOpen(nextOpen);
     if (nextOpen) {
@@ -3851,7 +3848,7 @@ function DesktopV3StructuredFinalHandoff({
         ) : null}
 
         {handoffArtifacts.length > 0 ? (
-          <div className="mt-3 grid gap-3 sm:grid-cols-2" data-final-handoff-artifacts>
+          <div className="mt-3 flex flex-wrap gap-3" data-final-handoff-artifacts>
             {handoffArtifacts.map((artifact) => {
               const href = artifactHref?.(artifact);
               if (!href) return null;
@@ -3865,7 +3862,7 @@ function DesktopV3StructuredFinalHandoff({
                   key={`${artifact.sessionId}:${artifact.collectionId ?? ""}:${artifact.artifactId}`}
                   href={href}
                   onClick={openArtifact}
-                  className="group overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                  className="group w-full max-w-sm overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
                   aria-label={`Open ${artifact.label} artifact`}
                   data-final-handoff-artifact-link
                   data-artifact-id={artifact.artifactId}
