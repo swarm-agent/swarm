@@ -98,6 +98,60 @@ func TestSafeDirectVideoTranscriptBoundsOutputAndOmitsProviderIdentity(t *testin
 	}
 }
 
+func TestDirectVideoTranscriptionRejectsCrossWorkspaceVideoReference(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "direct-video-cross-workspace.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	principal := accountTestPrincipal()
+	workspaceOne, workspaceTwo := t.TempDir(), t.TempDir()
+	mediaTwo := t.TempDir()
+	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(db))
+	if _, err := workspaceService.AddForPrincipal(principal, workspaceOne, "workspace-one", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspaceService.AddForPrincipal(principal, workspaceTwo, "workspace-two", "", false); err != nil {
+		t.Fatal(err)
+	}
+	sessions := pebblestore.NewSessionStore(db)
+	server := NewServer(nil, nil, nil, nil, session.NewService(sessions, nil), workspaceService, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	server.SetVideoTranscriptionService(&videotranscription.Service{})
+	if _, err := workspaceService.AddSourceMediaDirectoryForPrincipal(principal, workspaceTwo, mediaTwo); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := workspaceService.ListSourceMediaDirectoriesForPrincipal(principal, workspaceTwo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignPath := filepath.Join(mediaTwo, "foreign.mp4")
+	if err := os.WriteFile(foreignPath, []byte("synthetic video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(foreignPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := sessions.PutVideoSourceRecord(pebblestore.VideoSourceRecord{
+		AccountScopeID: principal.AccountScopeID, WorkspaceID: resolution.WorkspaceID,
+		RootPath: mediaTwo, RelativePath: "foreign.mp4", DisplayName: "foreign.mp4",
+		MIMEType: "video/mp4", SizeBytes: info.Size(), ModifiedAt: info.ModTime().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]string{"workspace_path": workspaceOne, "video_ref": foreign.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := requestWithTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe", bytes.NewReader(payload)))
+	recorder := httptest.NewRecorder()
+	server.handleWorkspaceVideoTranscribe(recorder, req)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "not registered in the authenticated workspace") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestResolveDirectVideoSessionRejectsOtherUserSession(t *testing.T) {
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "direct-video-session.pebble"))
 	if err != nil {

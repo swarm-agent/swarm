@@ -52,6 +52,25 @@ export function removeSourceMediaDirectory(workspacePath: string, directoryPath:
   return mutateSourceMediaDirectory('remove', workspacePath, directoryPath)
 }
 
+export const VIDEO_FOCUS_NOTES_MAX_BYTES = 500
+
+export function videoFocusNotesByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength
+}
+
+export function truncateVideoFocusNotes(value: string, maxBytes = VIDEO_FOCUS_NOTES_MAX_BYTES): string {
+  const encoder = new TextEncoder()
+  let bytes = 0
+  let result = ''
+  for (const character of value) {
+    const characterBytes = encoder.encode(character).byteLength
+    if (bytes + characterBytes > maxBytes) break
+    result += character
+    bytes += characterBytes
+  }
+  return result
+}
+
 export type VideoTranscriptionJobStatus = 'queued' | 'uploading' | 'processing' | 'partial' | 'ready' | 'failed' | 'cancelled' | 'stale'
 
 export interface VideoTranscriptionJob {
@@ -73,6 +92,9 @@ export interface VideoTranscript {
   segments: Array<{ start_ms: number; end_ms: number; speech?: string; audio?: string; visual?: string; on_screen_text?: string; text: string }>
   metadata: { language?: string; duration_ms?: number; summary?: string; content_empty?: boolean }
   validation: { state: string }
+  text_truncated?: boolean
+  segments_truncated?: boolean
+  details_truncated?: boolean
 }
 
 export async function startVideoTranscription(workspacePath: string, videoRef: string, focusNotes: string): Promise<{ session_id: string; job: VideoTranscriptionJob }> {

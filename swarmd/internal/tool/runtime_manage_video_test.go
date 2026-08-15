@@ -24,7 +24,7 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
 		}
 	}
-	for _, required := range []string{"job_refs", "job_ref", "transcript_ref"} {
+	for _, required := range []string{"job_refs", "job_ref", "transcript_ref", "focus_notes"} {
 		if !strings.Contains(text, `"`+required+`"`) {
 			t.Fatalf("manage_video schema lacks %q", required)
 		}
@@ -48,7 +48,7 @@ func TestManageVideoRequiresTrustedRunContext(t *testing.T) {
 	sessions := sessionruntime.NewService(sessionStore, events)
 	runtime := NewRuntime(1)
 	runtime.sessions = sessions
-	runtime.video = fakeManageVideoService{}
+	runtime.video = &fakeManageVideoService{}
 	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}}
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{CallID: "call-1", Name: "manage_video", Arguments: `{"action":"inspect_attachments"}`})
 	if err == nil || !strings.Contains(err.Error(), "trusted triggering message") {
@@ -56,20 +56,23 @@ func TestManageVideoRequiresTrustedRunContext(t *testing.T) {
 	}
 }
 
-type fakeManageVideoService struct{}
+type fakeManageVideoService struct {
+	focusNotes string
+}
 
-func (fakeManageVideoService) Start(context.Context, identity.Principal, string, string) (videotranscription.StartResult, error) {
+func (f *fakeManageVideoService) StartWithFocus(_ context.Context, _ identity.Principal, _, _, focusNotes string) (videotranscription.StartResult, error) {
+	f.focusNotes = focusNotes
 	return videotranscription.StartResult{}, nil
 }
-func (fakeManageVideoService) Status(identity.Principal, string, []string) ([]pebblestore.TranscriptionJob, error) {
+func (*fakeManageVideoService) Status(identity.Principal, string, []string) ([]pebblestore.TranscriptionJob, error) {
 	return nil, nil
 }
-func (fakeManageVideoService) Read(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
+func (*fakeManageVideoService) Read(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
 	return pebblestore.NormalizedTranscript{}, nil
 }
-func (fakeManageVideoService) ReadByWorkspace(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
+func (*fakeManageVideoService) ReadByWorkspace(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
 	return pebblestore.NormalizedTranscript{}, nil
 }
-func (fakeManageVideoService) Cancel(identity.Principal, string, string) (pebblestore.TranscriptionJob, error) {
+func (*fakeManageVideoService) Cancel(identity.Principal, string, string) (pebblestore.TranscriptionJob, error) {
 	return pebblestore.TranscriptionJob{}, nil
 }

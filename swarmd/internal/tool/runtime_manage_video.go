@@ -19,7 +19,7 @@ const (
 )
 
 type manageVideoService interface {
-	Start(ctx context.Context, principal identity.Principal, sessionID, messageID string) (videotranscription.StartResult, error)
+	StartWithFocus(ctx context.Context, principal identity.Principal, sessionID, messageID, focusNotes string) (videotranscription.StartResult, error)
 	Status(principal identity.Principal, sessionID string, refs []string) ([]pebblestore.TranscriptionJob, error)
 	Read(principal identity.Principal, sessionID, transcriptRef string) (pebblestore.NormalizedTranscript, error)
 	ReadByWorkspace(principal identity.Principal, workspaceID, transcriptRef string) (pebblestore.NormalizedTranscript, error)
@@ -29,7 +29,7 @@ type manageVideoService interface {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect video attachments on the trusted triggering user message, start a bounded transcription batch, check exact job references, cancel one job, or read one durably stored workspace transcript by exact opaque reference. Starts remain restricted to the triggering user message; transcript reuse also requires authenticated account, user, and workspace authority. Paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect video attachments on the trusted triggering user message, start a bounded multimodal transcription batch with optional subordinate focus notes, check exact job references, cancel one job, or read one durably stored workspace transcript by exact opaque reference. Starts remain restricted to the triggering user message; transcript reuse also requires authenticated account, user, and workspace authority. Paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -37,6 +37,7 @@ func manageVideoDefinition() Definition {
 				"job_refs":       map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}},
 				"job_ref":        map[string]any{"type": "string"},
 				"transcript_ref": map[string]any{"type": "string"},
+				"focus_notes":    map[string]any{"type": "string", "maxLength": videotranscription.MaxFocusNotesBytes, "description": "Optional emphasis guidance for start_transcription only. It cannot change the multimodal schema or source authority."},
 				"max_bytes":      map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxTranscriptBytes},
 				"max_segments":   map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxSegments},
 			},
@@ -86,7 +87,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		response["attachments"], response["count"] = attachments, len(attachments)
 	case "start_transcription":
-		started, err := r.video.Start(ctx, scope.Principal, scope.SessionID, run.MessageID)
+		focusNotes, err := videotranscription.NormalizeFocusNotes(asString(args["focus_notes"]))
+		if err != nil {
+			return "", err
+		}
+		started, err := r.video.StartWithFocus(ctx, scope.Principal, scope.SessionID, run.MessageID, focusNotes)
 		if err != nil {
 			return "", err
 		}

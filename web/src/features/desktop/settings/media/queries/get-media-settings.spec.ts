@@ -6,6 +6,8 @@ import {
   pollVideoTranscriptionJob,
   readVideoTranscript,
   startVideoTranscription,
+  truncateVideoFocusNotes,
+  videoFocusNotesByteLength,
 } from './get-media-settings'
 import { formatTimelineRange, transcriptSegmentDetails } from '../components/video-transcript-presentation'
 
@@ -40,6 +42,15 @@ test('direct video transcription clients send only workspace and opaque authorit
   assert.deepEqual(requests[2].body, { workspace_path: '/workspace', session_id: 'session_1', transcript_ref: 'transcript_1' })
   assert.equal(JSON.stringify(requests).includes('file_uri'), false)
   assert.equal(JSON.stringify(requests).includes('api_key'), false)
+})
+
+test('focus notes use the backend byte limit without splitting unicode', () => {
+  const value = `${'a'.repeat(498)}éextra`
+  assert.equal(value.length < 500, false)
+  assert.equal(videoFocusNotesByteLength(value), 505)
+  const truncated = truncateVideoFocusNotes(value)
+  assert.equal(truncated, `${'a'.repeat(498)}é`)
+  assert.equal(videoFocusNotesByteLength(truncated), 500)
 })
 
 test('bounded polling reports updates and stops at ready', async () => {

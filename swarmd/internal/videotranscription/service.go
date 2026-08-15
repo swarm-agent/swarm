@@ -331,6 +331,14 @@ func (s *Service) process(ctx context.Context, principal identity.Principal, ini
 		return
 	}
 	if generated.Partial {
+		partial, _, transitionErr := s.sessions.TransitionTranscriptionJob(pebblestore.TransitionTranscriptionJobInput{
+			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: job.SessionID,
+			JobRef: job.Ref, ExpectedStatus: job.Status, Status: pebblestore.TranscriptionJobPartial,
+			ClientRequestID: fmt.Sprintf("video-transcription-partial:%s:%d", job.Ref, time.Now().UnixMilli()),
+		})
+		if transitionErr == nil {
+			job = partial
+		}
 		s.fail(principal, job, "invalid_provider_output", "provider output did not satisfy the normalized multimodal timeline contract")
 		return
 	}
@@ -383,6 +391,34 @@ func (s *Service) resolveModel(accountScopeID string) (string, string, string, e
 		return model, snapshot, hex.EncodeToString(hash[:]), nil
 	}
 	return "", "", "", errors.New("configured transcription model is absent from the current Google video catalog")
+}
+
+func StructuredTranscriptJSONSchema() map[string]any {
+	segment := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"start_ms", "end_ms", "speech", "audio", "visual", "on_screen_text"},
+		"properties": map[string]any{
+			"start_ms":       map[string]any{"type": "integer", "minimum": 0},
+			"end_ms":         map[string]any{"type": "integer", "minimum": 1},
+			"speech":         map[string]any{"type": "string"},
+			"audio":          map[string]any{"type": "string"},
+			"visual":         map[string]any{"type": "string"},
+			"on_screen_text": map[string]any{"type": "string"},
+		},
+	}
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"summary", "language", "duration_ms", "content_empty", "segments"},
+		"properties": map[string]any{
+			"summary":       map[string]any{"type": "string"},
+			"language":      map[string]any{"type": "string"},
+			"duration_ms":   map[string]any{"type": "integer", "minimum": 1},
+			"content_empty": map[string]any{"type": "boolean"},
+			"segments":      map[string]any{"type": "array", "minItems": 1, "maxItems": 10000, "items": segment},
+		},
+	}
 }
 
 func StructuredTranscriptPrompt(focusNotes string) string {

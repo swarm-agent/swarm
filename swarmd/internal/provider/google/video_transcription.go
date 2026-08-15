@@ -72,7 +72,11 @@ func (a *VideoTranscriptionAdapter) Transcribe(ctx context.Context, request vide
 	if err != nil {
 		return videotranscription.GeneratedTranscript{}, err
 	}
-	defer a.delete(context.WithoutCancel(ctx), credential.APIKey, file.Name)
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		a.delete(cleanupCtx, credential.APIKey, file.Name)
+	}()
 	file, err = a.waitUntilActive(ctx, credential.APIKey, file)
 	if err != nil {
 		return videotranscription.GeneratedTranscript{}, err
@@ -192,7 +196,11 @@ func (a *VideoTranscriptionAdapter) generate(ctx context.Context, apiKey, model,
 			map[string]any{"file_data": map[string]string{"mime_type": mimeType, "file_uri": fileURI}},
 			map[string]string{"text": prompt},
 		}}},
-		"generationConfig": map[string]any{"responseMimeType": "application/json", "temperature": 0},
+		"generationConfig": map[string]any{
+			"responseMimeType":  "application/json",
+			"responseJsonSchema": videotranscription.StructuredTranscriptJSONSchema(),
+			"temperature":       0,
+		},
 	}
 	raw, _ := json.Marshal(body)
 	endpoint := strings.TrimRight(a.baseURL, "/") + "/v1beta/models/" + url.PathEscape(model) + ":generateContent"
@@ -240,9 +248,7 @@ func (a *VideoTranscriptionAdapter) delete(ctx context.Context, apiKey, name str
 	if strings.TrimSpace(name) == "" {
 		return
 	}
-	deleteCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(deleteCtx, http.MethodDelete, strings.TrimRight(a.baseURL, "/")+"/v1beta/"+strings.TrimLeft(name, "/"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, strings.TrimRight(a.baseURL, "/")+"/v1beta/"+strings.TrimLeft(name, "/"), nil)
 	if err != nil {
 		return
 	}
