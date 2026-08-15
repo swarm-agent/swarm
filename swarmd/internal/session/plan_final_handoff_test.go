@@ -219,19 +219,19 @@ func TestProjectPlanFinalHandoffArtifactsManagedAndWorkspaceCoexistence(t *testi
 	}
 
 	// 1. Managed HTML
-	if projected[0].ID != "var-html" || projected[0].Label != "Interactive Brainstorm Spec" || projected[0].Filename != "var-html" || projected[0].MediaType != "text/html" || projected[0].Kind != "html" || !projected[0].Previewable {
+	if projected[0].ID != "var-html" || projected[0].Label != "Interactive Brainstorm Spec" || projected[0].Filename != "var-html" || projected[0].MediaType != "text/html" || projected[0].Kind != "html" || !projected[0].Previewable || projected[0].SessionID != "sess-1" || projected[0].CollectionID != "col-1" || projected[0].VariantID != "var-html" || projected[0].EventSeq != 10 {
 		t.Fatalf("managed html descriptor mismatch: %#v", projected[0])
 	}
 	// 2. Managed PNG
-	if projected[1].ID != "var-img" || projected[1].Label != "Design Image" || projected[1].Filename != "var-img" || projected[1].MediaType != "image/png" || projected[1].Kind != "image" || !projected[1].Previewable {
+	if projected[1].ID != "var-img" || projected[1].Label != "Design Image" || projected[1].Filename != "var-img" || projected[1].MediaType != "image/png" || projected[1].Kind != "image" || !projected[1].Previewable || projected[1].SessionID != "sess-1" || projected[1].CollectionID != "col-1" || projected[1].VariantID != "var-img" || projected[1].EventSeq != 11 {
 		t.Fatalf("managed image descriptor mismatch: %#v", projected[1])
 	}
 	// 3. Managed ZIP package
-	if projected[2].ID != "var-pkg" || projected[2].Label != "Interactive Package" || projected[2].MediaType != "application/zip" || projected[2].Kind != "package" || !projected[2].Previewable {
+	if projected[2].ID != "var-pkg" || projected[2].Label != "Interactive Package" || projected[2].MediaType != "application/zip" || projected[2].Kind != "package" || !projected[2].Previewable || projected[2].SessionID != "sess-1" || projected[2].CollectionID != "col-1" || projected[2].VariantID != "var-pkg" || projected[2].EventSeq != 12 {
 		t.Fatalf("managed package descriptor mismatch: %#v", projected[2])
 	}
 	// 4. Workspace deliverable
-	if projected[3].ID == "" || projected[3].Filename != "summary.md" || projected[3].Label != "Workspace Markdown Summary" || projected[3].MediaType != "text/markdown" || projected[3].Kind != "markdown" || !projected[3].Previewable {
+	if projected[3].ID == "" || projected[3].Filename != "summary.md" || projected[3].Label != "Workspace Markdown Summary" || projected[3].MediaType != "text/markdown" || projected[3].Kind != "markdown" || !projected[3].Previewable || projected[3].SessionID != "" || projected[3].VariantID != "" {
 		t.Fatalf("workspace deliverable descriptor mismatch: %#v", projected[3])
 	}
 }
@@ -242,6 +242,7 @@ func TestValidatePlanCheckpointRecommendationPromptSemantics(t *testing.T) {
 		Action:      "Review the interactive brainstorming spec and proceed with phase 2.",
 		Reason:      "All acceptance criteria and artifact checks passed cleanly.",
 		ActionState: "ready",
+		Prompt:      "Please review the interactive brainstorming spec and let me know if we can proceed.",
 	}
 	normalized := normalizePlanCheckpointRecommendation(valid)
 	if err := validatePlanCheckpointRecommendation(normalized); err != nil {
@@ -287,6 +288,21 @@ func TestValidatePlanCheckpointRecommendationPromptSemantics(t *testing.T) {
 			name:    "executable directive code block in reason",
 			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review change", Reason: "```bash\nrm -rf /\n```", ActionState: "ready"},
 			wantErr: "must be display text or an ordinary chat prompt",
+		},
+		{
+			name:    "executable directive slash in prompt",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review", Reason: "done", ActionState: "ready", Prompt: "/commit and push"},
+			wantErr: "must be display text or an ordinary chat prompt",
+		},
+		{
+			name:    "executable directive tool json in prompt",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review", Reason: "done", ActionState: "ready", Prompt: `{"tool":"bash","command":"git push"}`},
+			wantErr: "must be display text or an ordinary chat prompt",
+		},
+		{
+			name:    "oversized prompt",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review", Reason: "done", ActionState: "ready", Prompt: strings.Repeat("x", PlanFinalHandoffMaxSuggestedPromptRunes+1)},
+			wantErr: "recommendation.prompt exceeds",
 		},
 	}
 

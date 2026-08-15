@@ -308,6 +308,7 @@ type SessionPlanCheckpointRecommendation struct {
 	Action      string `json:"action,omitempty"`
 	Reason      string `json:"reason,omitempty"`
 	ActionState string `json:"action_state,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
 }
 
 // SessionPlanCheckpointHandoff stores only the concise author-authored fields.
@@ -356,13 +357,17 @@ type PlanFinalHandoff struct {
 // deliverable. It intentionally omits the workspace-relative path; clients use
 // ID with the authenticated session artifact route instead.
 type PlanFinalHandoffArtifact struct {
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-	Filename    string `json:"filename,omitempty"`
-	MediaType   string `json:"media_type,omitempty"`
-	Kind        string `json:"kind,omitempty"`
-	Previewable bool   `json:"previewable"`
+	ID           string `json:"id"`
+	Label        string `json:"label"`
+	Description  string `json:"description,omitempty"`
+	Filename     string `json:"filename,omitempty"`
+	MediaType    string `json:"media_type,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	Previewable  bool   `json:"previewable"`
+	SessionID    string `json:"session_id,omitempty"`
+	CollectionID string `json:"collection_id,omitempty"`
+	VariantID    string `json:"variant_id,omitempty"`
+	EventSeq     uint64 `json:"event_seq,omitempty"`
 }
 
 // PlanFinalHandoffDetails keeps the complete terminal evidence available to

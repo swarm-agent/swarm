@@ -225,13 +225,17 @@ func ProjectPlanFinalHandoffArtifacts(planID, checkpointID string, artifacts []p
 			}
 			mediaType, kind, previewable := planFinalHandoffManagedArtifactPresentation(artifact)
 			result = append(result, pebblestore.PlanFinalHandoffArtifact{
-				ID:          id,
-				Label:       label,
-				Description: description,
-				Filename:    variantID,
-				MediaType:   mediaType,
-				Kind:        kind,
-				Previewable: previewable,
+				ID:           id,
+				Label:        label,
+				Description:  description,
+				Filename:     variantID,
+				MediaType:    mediaType,
+				Kind:         kind,
+				Previewable:  previewable,
+				SessionID:    strings.TrimSpace(artifact.SessionID),
+				CollectionID: strings.TrimSpace(artifact.CollectionID),
+				VariantID:    variantID,
+				EventSeq:     artifact.EventSeq,
 			})
 			continue
 		}
