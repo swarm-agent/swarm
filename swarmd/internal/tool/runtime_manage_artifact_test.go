@@ -210,6 +210,20 @@ func TestManageArtifactGenerateImageResolvesExactRemixSourceAndPublishesLineage(
 	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source-variant" || authority.created.SourceEventSeq != 9 {
 		t.Fatalf("published remix lineage = %#v", authority.created)
 	}
+
+	_, err = runtime.executeManageArtifact(ctx, scope, "remix-same-collection", map[string]any{
+		"action": "generate_image", "prompt": "make it brighter", "collection_id": "source-collection",
+		"collection_name": "Generated image", "collection_description": "model-authored defaults",
+		"source_session_id": "source-session", "source_collection_id": "source-collection",
+		"source_variant_id": "source-variant", "source_event_seq": 9,
+	})
+	if err != nil {
+		t.Fatalf("generate image remix in source collection: %v", err)
+	}
+	if authority.created.CollectionID != "source-collection" || authority.created.CollectionName != "" || authority.created.CollectionDescription != "" {
+		t.Fatalf("existing collection metadata was not omitted: %#v", authority.created)
+	}
+
 	if _, err := runtime.executeManageArtifact(ctx, scope, "partial-remix", map[string]any{"action": "generate_image", "prompt": "change it", "source_variant_id": "source-variant"}); err == nil || !strings.Contains(err.Error(), "source_session_id") {
 		t.Fatalf("partial remix error = %v", err)
 	}
@@ -300,8 +314,15 @@ func TestManageArtifactImageReadRequiresExactReferenceAndReturnsBoundedBase64(t 
 
 func TestManageArtifactRetrievalContractSurfacesCompleteReadyReference(t *testing.T) {
 	definition := manageArtifactDefinition()
-	if !strings.Contains(definition.Description, "copy session_id, collection_id, variant_id, and event_seq together") {
-		t.Fatalf("definition does not explain exact ready reference retrieval: %s", definition.Description)
+	for _, requiredInstruction := range []string{
+		"Collection-list results are not complete ready references",
+		"call list again with collection_id",
+		"obtain variant_id and event_seq",
+		"copy session_id, collection_id, variant_id, and event_seq together",
+	} {
+		if !strings.Contains(definition.Description, requiredInstruction) {
+			t.Fatalf("definition does not explain %q: %s", requiredInstruction, definition.Description)
+		}
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
 	for _, key := range []string{"session_id", "collection_id", "variant_id", "event_seq"} {

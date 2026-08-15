@@ -116,7 +116,7 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. To retrieve, read, materialize, or promote an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from its reference into the same call. Provider/model identifiers and private storage paths are never accepted or exposed.",
+		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, or promote an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. Provider/model identifiers and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -129,7 +129,7 @@ func manageArtifactDefinition() Definition {
 					"image_size":   map[string]any{"type": "string", "maxLength": 32, "description": "Optional portable resolution tier: 512, 1K, 2K, or 4K. Equivalent square pixel aliases such as 1024x1024, 2048x2048, and 4096x4096 are accepted. The backend translates this for the configured provider."},
 				}, "additionalProperties": false, "description": "Optional provider-neutral image output controls. Omit unless the user requested a size or aspect ratio. The backend resolves the account's configured provider/model and translates these controls; never pass provider or model."},
 				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session. For get/read/materialize/promote of an attached ready artifact, copy this together with collection_id, variant_id, and event_seq from the same returned reference."},
-				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, variant_id, and event_seq from the same returned reference; otherwise optional on create and required for collection-scoped actions."},
+				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, variant_id, and event_seq from the same returned reference. For standalone generate_image, omit to create a new collection or pass an existing collection to append the generated variant without replacing collection metadata. Required for collection-scoped actions."},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
 				"collection_description": map[string]any{"type": "string", "maxLength": 2048},
 				"variant_id":             map[string]any{"type": "string", "description": "Opaque variant reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and event_seq from the same returned reference; otherwise optional on create."},
@@ -557,6 +557,10 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if !managedDestination {
 		if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
 			collectionID = supplied
+			// An existing collection owns its durable metadata. Appending a generated
+			// variant must not send the standalone generation defaults as replacement
+			// metadata; the artifact mutation boundary preserves the stored values.
+			collectionName, collectionDescription = "", ""
 		}
 		if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
 			variantID = supplied
