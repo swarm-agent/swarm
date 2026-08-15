@@ -40,6 +40,7 @@ func TestRequestNewPlanPermissionRoundTripPreservesValidatedDocument(t *testing.
 	sessionID := createPlanManageTestSession(t, sessionSvc)
 
 	doc := completeExecutablePlanDocument("Round trip")
+	doc.Checkpoints[0].TaskProgram = &pebblestore.TaskProgramDefinition{ID: "approved_program", Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "Approved work is ready."}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API Work", MetaPrompt: "Implement the approved API scope.", Deliverable: "Committed API change", OwnedScope: []string{"swarmd/internal/api/**"}, AcceptanceCriteria: []string{"API works"}, DependencyEvidence: "No unfinished dependency."}}}
 	rawDoc, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestRequestNewPlanPermissionRoundTripPreservesValidatedDocument(t *testing.
 	if err := sessionruntime.ValidateExecutablePlanDocument(&approved); err != nil {
 		t.Fatalf("approved document lost executable fields: %v", err)
 	}
-	if approved.Checkpoints[0].AcceptanceCriteria[0] != doc.Checkpoints[0].AcceptanceCriteria[0] || approved.Checkpoints[0].Order != 1 {
+	if approved.Checkpoints[0].AcceptanceCriteria[0] != doc.Checkpoints[0].AcceptanceCriteria[0] || approved.Checkpoints[0].Order != 1 || approved.Checkpoints[0].TaskProgram == nil || approved.Checkpoints[0].TaskProgram.ID != "approved_program" || approved.Checkpoints[0].TaskProgram.Jobs[0].Title != "API Work" {
 		t.Fatalf("approved document = %#v", approved)
 	}
 }

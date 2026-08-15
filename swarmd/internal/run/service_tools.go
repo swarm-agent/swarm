@@ -3818,6 +3818,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 	}
+	parsed, err = s.resolveApprovedCheckpointTaskProgram(sessionID, parsed)
+	if err != nil {
+		return "", err
+	}
 	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
 		return "", err
 	}

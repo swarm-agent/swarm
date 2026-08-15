@@ -152,6 +152,9 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		if len(trimStringSlice(checkpoint.AcceptanceCriteria)) == 0 {
 			add(prefix+".acceptance_criteria", "at least one acceptance criterion is required")
 		}
+		if err := ValidatePlanTaskProgramDefinition(checkpoint.TaskProgram); err != nil {
+			add(prefix+".task_program", err.Error())
+		}
 		if checkpoint.Order != i+1 {
 			add(prefix+".order", fmt.Sprintf("checkpoint order must be %d", i+1))
 		}
@@ -221,6 +224,9 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 		seen[id] = struct{}{}
 		if err := validatePlanCheckpointRuntime(checkpoint); err != nil {
 			return err
+		}
+		if err := ValidatePlanTaskProgramDefinition(checkpoint.TaskProgram); err != nil {
+			return fmt.Errorf("plan document checkpoint %q task_program: %w", id, err)
 		}
 		if err := validatePlanArtifacts(fmt.Sprintf("checkpoints[%d].artifacts", i), checkpoint.Artifacts); err != nil {
 			return err
@@ -1036,6 +1042,7 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 	checkpoint.Tasks = trimStringSlice(checkpoint.Tasks)
 	checkpoint.ActiveSubtaskID = strings.TrimSpace(checkpoint.ActiveSubtaskID)
 	checkpoint.AcceptanceCriteria = trimStringSlice(checkpoint.AcceptanceCriteria)
+	trimPlanTaskProgram(checkpoint.TaskProgram)
 	checkpoint.Artifacts = trimPlanArtifacts(checkpoint.Artifacts)
 	checkpoint.SourceMessageID = strings.TrimSpace(checkpoint.SourceMessageID)
 	checkpoint.Notes = strings.TrimSpace(checkpoint.Notes)
@@ -1053,6 +1060,34 @@ func trimPlanCheckpoint(checkpoint *pebblestore.SessionPlanCheckpoint) {
 		}
 	}
 	normalizePlanCheckpointRuntime(checkpoint)
+}
+
+func trimPlanTaskProgram(program *pebblestore.TaskProgramDefinition) {
+	if program == nil {
+		return
+	}
+	program.ID = strings.TrimSpace(program.ID)
+	for i := range program.Stages {
+		program.Stages[i].ID = strings.TrimSpace(program.Stages[i].ID)
+		program.Stages[i].DependsOn = trimStringSlice(program.Stages[i].DependsOn)
+		program.Stages[i].DependencyEvidence = strings.TrimSpace(program.Stages[i].DependencyEvidence)
+	}
+	for i := range program.Jobs {
+		program.Jobs[i].ID = strings.TrimSpace(program.Jobs[i].ID)
+		program.Jobs[i].StageID = strings.TrimSpace(program.Jobs[i].StageID)
+		program.Jobs[i].DependsOn = trimStringSlice(program.Jobs[i].DependsOn)
+		program.Jobs[i].AgentType = strings.ToLower(strings.TrimSpace(program.Jobs[i].AgentType))
+		program.Jobs[i].Title = strings.TrimSpace(program.Jobs[i].Title)
+		program.Jobs[i].MetaPrompt = strings.TrimSpace(program.Jobs[i].MetaPrompt)
+		program.Jobs[i].Deliverable = strings.TrimSpace(program.Jobs[i].Deliverable)
+		program.Jobs[i].OwnedScope = trimStringSlice(program.Jobs[i].OwnedScope)
+		program.Jobs[i].OutputMode = strings.ToLower(strings.TrimSpace(program.Jobs[i].OutputMode))
+		if program.Jobs[i].AgentType == "designer" && program.Jobs[i].OutputMode == "" {
+			program.Jobs[i].OutputMode = "managed"
+		}
+		program.Jobs[i].AcceptanceCriteria = trimStringSlice(program.Jobs[i].AcceptanceCriteria)
+		program.Jobs[i].DependencyEvidence = strings.TrimSpace(program.Jobs[i].DependencyEvidence)
+	}
 }
 
 func clonePlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {

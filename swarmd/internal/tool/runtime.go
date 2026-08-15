@@ -1352,7 +1352,7 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"action": map[string]any{
 						"type":        "string",
-						"description": "Optional action. Supported: spawn (default); Task Programs use start or status. Start always requires a complete new program definition.",
+						"description": "Optional action. Supported: spawn (default); Task Programs use start or status. Start uses program when supplied, or the canonical task_program on the active approved checkpoint when program is omitted.",
 					},
 					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count."},
 					"program_id": map[string]any{"type": "string", "description": "Stable program ID for status. A new start carries a new ID inside program.id; existing IDs cannot be continued."},
@@ -1436,10 +1436,14 @@ func (r *Runtime) Definitions() []Definition {
 }
 
 func taskProgramToolSchema() map[string]any {
+	return taskProgramDefinitionToolSchema("Optional complete staged Task Program. The backend validates every job and stage before any reservation or child launch. Designer jobs default to managed output and omit owned_scope; explicit workspace Designer jobs set output_mode=workspace and require concrete non-overlapping workspace-relative owned_scope targets. One accepted program counts as one parent task invocation; internal capacity cohorts do not require another model-authored task call.")
+}
+
+func taskProgramDefinitionToolSchema(description string) map[string]any {
 	id := map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}
 	return map[string]any{
 		"type":        "object",
-		"description": "Optional complete staged Task Program. The backend validates every job and stage before any reservation or child launch. Designer jobs default to managed output and omit owned_scope; explicit workspace Designer jobs set output_mode=workspace and require concrete non-overlapping workspace-relative owned_scope targets. One accepted program counts as one parent task invocation; internal capacity cohorts do not require another model-authored task call.",
+		"description": description,
 		"properties": map[string]any{
 			"id":              id,
 			"max_concurrency": map[string]any{"type": "integer", "minimum": 1, "description": "Optional explicit lower concurrency cap. Omit to use the number of ready jobs bounded by current account capacity and backend safety limits."},
@@ -1524,6 +1528,7 @@ func sessionPlanCheckpointToolSchema() map[string]any {
 			"objective":           map[string]any{"type": "string"},
 			"tasks":               stringArray(),
 			"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+			"task_program":        taskProgramDefinitionToolSchema("Canonical staged implementation program for this lifecycle checkpoint. Include it when dependent delegated implementation qualifies for a Task Program; the approved definition is shown to the user and delivered to the executing checkpoint."),
 			"artifacts":           map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifacts relevant to or delivered by this checkpoint."},
 			"notes":               map[string]any{"type": "string"},
 		},

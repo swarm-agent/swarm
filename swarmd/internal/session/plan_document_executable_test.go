@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -46,6 +47,19 @@ func TestValidateExecutablePlanDocumentReportsCheckpointFields(t *testing.T) {
 	assertExecutablePlanIssue(t, validationErr, "checkpoints[0].title", "checkpoint title is required")
 	assertExecutablePlanIssue(t, validationErr, "checkpoints[0].objective", "checkpoint objective or at least one concrete task is required")
 	assertExecutablePlanIssue(t, validationErr, "checkpoints[0].acceptance_criteria", "at least one acceptance criterion is required")
+}
+
+func TestValidateExecutablePlanDocumentRejectsSemanticallyInvalidTaskProgram(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		Title: "Invalid staged program", Info: pebblestore.SessionPlanInfo{Goal: "Reject invalid graph"}, ActiveCheckpointID: "cp-1",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Build", Status: PlanCheckpointStatusPending, Order: 1, Tasks: []string{"Build"}, AcceptanceCriteria: []string{"Done"}, TaskProgram: &pebblestore.TaskProgramDefinition{
+			ID: "invalid_program", Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "Ready"}, {ID: "audit", DependsOn: []string{"missing"}, DependencyEvidence: "Needs build"}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "job", StageID: "build", AgentType: "coder", Title: "Build", MetaPrompt: "Build", Deliverable: "Change", OwnedScope: []string{"swarmd/internal/run/**"}, AcceptanceCriteria: []string{"Done"}, DependencyEvidence: "Ready"}},
+		}}},
+	}
+	err := ValidateExecutablePlanDocument(doc)
+	if err == nil || !strings.Contains(err.Error(), "checkpoints[0].task_program") || !strings.Contains(err.Error(), "earlier stage") {
+		t.Fatalf("error = %v", err)
+	}
 }
 
 func TestValidateExecutablePlanDocumentAcceptsCompleteDocumentWithoutMutation(t *testing.T) {

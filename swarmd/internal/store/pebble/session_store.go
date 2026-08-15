@@ -242,27 +242,31 @@ type SessionPlanCheckpoint struct {
 	Objective string `json:"objective,omitempty"`
 	// Tasks is accepted as legacy compatibility input. Subtasks is the canonical
 	// durable execution checklist once a document is normalized or mutated.
-	Tasks              []string                             `json:"tasks,omitempty"`
-	Subtasks           []SessionPlanSubtask                 `json:"subtasks,omitempty"`
-	ActiveSubtaskID    string                               `json:"active_subtask_id,omitempty"`
-	AcceptanceCriteria []string                             `json:"acceptance_criteria,omitempty"`
-	Artifacts          []SessionPlanArtifactReference       `json:"artifacts,omitempty"`
-	SourceMessageID    string                               `json:"source_message_id,omitempty"`
-	Notes              string                               `json:"notes,omitempty"`
-	Report             string                               `json:"report,omitempty"`
-	Result             string                               `json:"result,omitempty"`
-	ChangedFiles       []string                             `json:"changed_files,omitempty"`
-	Validation         []string                             `json:"validation,omitempty"`
-	AttemptID          string                               `json:"attempt_id,omitempty"`
-	RunID              string                               `json:"run_id,omitempty"`
-	SessionID          string                               `json:"session_id,omitempty"`
-	StartedAt          int64                                `json:"started_at,omitempty"`
-	CompletedAt        int64                                `json:"completed_at,omitempty"`
-	Review             *SessionPlanCheckpointReview         `json:"review,omitempty"`
-	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
-	Handoff            *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
-	Attempts           []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
-	Order              int                                  `json:"order,omitempty"`
+	Tasks              []string             `json:"tasks,omitempty"`
+	Subtasks           []SessionPlanSubtask `json:"subtasks,omitempty"`
+	ActiveSubtaskID    string               `json:"active_subtask_id,omitempty"`
+	AcceptanceCriteria []string             `json:"acceptance_criteria,omitempty"`
+	// TaskProgram is the canonical, approval-visible implementation graph for a
+	// checkpoint that requires staged delegated work. The checkpoint remains the
+	// lifecycle authority; this definition owns only implementation stages/jobs.
+	TaskProgram     *TaskProgramDefinition               `json:"task_program,omitempty"`
+	Artifacts       []SessionPlanArtifactReference       `json:"artifacts,omitempty"`
+	SourceMessageID string                               `json:"source_message_id,omitempty"`
+	Notes           string                               `json:"notes,omitempty"`
+	Report          string                               `json:"report,omitempty"`
+	Result          string                               `json:"result,omitempty"`
+	ChangedFiles    []string                             `json:"changed_files,omitempty"`
+	Validation      []string                             `json:"validation,omitempty"`
+	AttemptID       string                               `json:"attempt_id,omitempty"`
+	RunID           string                               `json:"run_id,omitempty"`
+	SessionID       string                               `json:"session_id,omitempty"`
+	StartedAt       int64                                `json:"started_at,omitempty"`
+	CompletedAt     int64                                `json:"completed_at,omitempty"`
+	Review          *SessionPlanCheckpointReview         `json:"review,omitempty"`
+	Recommendation  *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Handoff         *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
+	Attempts        []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
+	Order           int                                  `json:"order,omitempty"`
 }
 
 type SessionPlanSubtask struct {

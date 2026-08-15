@@ -72,6 +72,26 @@ export interface StructuredPlanCheckpointAttempt {
   validation: string[]
 }
 
+export interface StructuredPlanTaskProgram {
+  id: string
+  maxConcurrency: number
+  stages: Array<{ id: string; dependsOn: string[]; dependencyEvidence: string }>
+  jobs: Array<{
+    id: string
+    stageId: string
+    dependsOn: string[]
+    agentType: string
+    title: string
+    metaPrompt: string
+    deliverable: string
+    ownedScope: string[]
+    outputMode: string
+    outputRequirements: Record<string, unknown> | null
+    acceptanceCriteria: string[]
+    dependencyEvidence: string
+  }>
+}
+
 export interface StructuredPlanCheckpoint {
   id: string
   title: string
@@ -79,6 +99,7 @@ export interface StructuredPlanCheckpoint {
   objective: string
   tasks: string[]
   acceptanceCriteria: string[]
+  taskProgram: StructuredPlanTaskProgram | null
   notes: string
   report: string
   result: string
@@ -195,6 +216,32 @@ function numberValue(record: Record<string, unknown>, ...keys: string[]): number
   return 0
 }
 
+function normalizeStructuredPlanTaskProgram(value: unknown): StructuredPlanTaskProgram | null {
+  const record = objectValue(value)
+  if (!record) return null
+  const stages = (Array.isArray(record.stages) ? record.stages : []).map((value) => objectValue(value)).filter((value): value is Record<string, unknown> => value !== null).map((stage) => ({
+    id: stringValue(stage, 'id'),
+    dependsOn: stringArrayValue(stage, 'dependsOn', 'depends_on'),
+    dependencyEvidence: stringValue(stage, 'dependencyEvidence', 'dependency_evidence'),
+  }))
+  const jobs = (Array.isArray(record.jobs) ? record.jobs : []).map((value) => objectValue(value)).filter((value): value is Record<string, unknown> => value !== null).map((job) => ({
+    id: stringValue(job, 'id'),
+    stageId: stringValue(job, 'stageId', 'stage_id'),
+    dependsOn: stringArrayValue(job, 'dependsOn', 'depends_on'),
+    agentType: stringValue(job, 'agentType', 'agent_type', 'subagent_type'),
+    title: stringValue(job, 'title'),
+    metaPrompt: stringValue(job, 'metaPrompt', 'meta_prompt'),
+    deliverable: stringValue(job, 'deliverable'),
+    ownedScope: stringArrayValue(job, 'ownedScope', 'owned_scope'),
+    outputMode: stringValue(job, 'outputMode', 'output_mode'),
+    outputRequirements: objectValue(job.outputRequirements ?? job.output_requirements),
+    acceptanceCriteria: stringArrayValue(job, 'acceptanceCriteria', 'acceptance_criteria'),
+    dependencyEvidence: stringValue(job, 'dependencyEvidence', 'dependency_evidence'),
+  }))
+  const id = stringValue(record, 'id')
+  return id && stages.length > 0 && jobs.length > 0 ? { id, maxConcurrency: numberValue(record, 'maxConcurrency', 'max_concurrency'), stages, jobs } : null
+}
+
 function normalizeStructuredPlanExecutionPolicy(value: unknown): StructuredPlanDocument['executionPolicy'] {
   const record = objectValue(value)
   if (!record) return null
@@ -281,6 +328,7 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
         objective: stringValue(checkpoint, 'objective'),
         tasks: stringArrayValue(checkpoint, 'tasks'),
         acceptanceCriteria: stringArrayValue(checkpoint, 'acceptanceCriteria', 'acceptance_criteria'),
+        taskProgram: normalizeStructuredPlanTaskProgram(checkpoint.taskProgram ?? checkpoint.task_program),
         notes: stringValue(checkpoint, 'notes'),
         report: stringValue(checkpoint, 'report'),
         result: stringValue(checkpoint, 'result'),
@@ -354,6 +402,12 @@ export function structuredPlanCheckpointToWire(checkpoint: StructuredPlanCheckpo
     objective: checkpoint.objective,
     tasks: checkpoint.tasks,
     acceptance_criteria: checkpoint.acceptanceCriteria,
+    task_program: checkpoint.taskProgram ? {
+      id: checkpoint.taskProgram.id,
+      max_concurrency: checkpoint.taskProgram.maxConcurrency || undefined,
+      stages: checkpoint.taskProgram.stages.map((stage) => ({ id: stage.id, depends_on: stage.dependsOn, dependency_evidence: stage.dependencyEvidence })),
+      jobs: checkpoint.taskProgram.jobs.map((job) => ({ id: job.id, stage_id: job.stageId, depends_on: job.dependsOn, agent_type: job.agentType, title: job.title, meta_prompt: job.metaPrompt, deliverable: job.deliverable, owned_scope: job.ownedScope, output_mode: job.outputMode || undefined, output_requirements: job.outputRequirements ?? undefined, acceptance_criteria: job.acceptanceCriteria, dependency_evidence: job.dependencyEvidence })),
+    } : undefined,
     notes: checkpoint.notes,
     report: checkpoint.report,
     result: checkpoint.result,
@@ -582,6 +636,26 @@ function CheckpointTextSection({ title, value }: { title: string; value: string 
   )
 }
 
+function TaskProgramSection({ program }: { program: StructuredPlanTaskProgram | null }) {
+  if (!program) return null
+  return (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task Program · {program.id}</div>
+      <div className="mt-2 grid gap-2">
+        {program.stages.map((stage) => (
+          <div key={stage.id} className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+            <div className="text-sm font-semibold text-[var(--app-text)]">{stage.id}</div>
+            {stage.dependencyEvidence ? <p className="mt-1 text-xs text-[var(--app-text-muted)]">{stage.dependencyEvidence}</p> : null}
+            <ul className="mt-2 space-y-1 text-sm text-[var(--app-text-muted)]">
+              {program.jobs.filter((job) => job.stageId === stage.id).map((job) => <li key={job.id}>• {job.title} <span className="text-[var(--app-text-subtle)]">({job.agentType})</span></li>)}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function CheckpointItem({ checkpoint, active }: { checkpoint: StructuredPlanCheckpoint; active: boolean }) {
   return (
     <article
@@ -618,6 +692,7 @@ function CheckpointItem({ checkpoint, active }: { checkpoint: StructuredPlanChec
       <div className="mt-4 grid gap-3 border-t border-[var(--app-border)] pt-4">
         <CheckpointSection title="Tasks" values={checkpoint.tasks} />
         <CheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
+        <TaskProgramSection program={checkpoint.taskProgram} />
         <CheckpointTextSection title="Notes" value={checkpoint.notes} />
         <CheckpointTextSection title="Report" value={checkpoint.report} />
         <CheckpointTextSection title="Result" value={checkpoint.result} />
@@ -679,6 +754,7 @@ export function StructuredPlanReviewView({ document, className }: { document: St
               <CheckpointTextSection title="Objective" value={checkpoint.objective} />
               <CheckpointSection title="Tasks" values={checkpoint.tasks} />
               <CheckpointSection title="Acceptance" values={checkpoint.acceptanceCriteria} />
+              <TaskProgramSection program={review.authoritativeDocument.checkpoints.find((item) => item.id === checkpoint.id)?.taskProgram ?? null} />
             </div>
           </details>
         )) : <p className="px-4 py-4 text-sm text-[var(--app-text-muted)]">No checkpoints are defined.</p>}

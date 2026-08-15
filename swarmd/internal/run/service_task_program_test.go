@@ -812,6 +812,43 @@ func TestTaskProgramStatusExposesBoundedReadyArtifactReferences(t *testing.T) {
 	}
 }
 
+func TestParseTaskProgramStartWithoutDefinitionSelectsApprovedCheckpointProgram(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"action":"start"}`)
+	if err != nil || !parsed.PlannedProgram || parsed.Program != nil || parsed.Action != taskProgramActionStart {
+		t.Fatalf("planned start = %#v err=%v", parsed, err)
+	}
+}
+
+func TestResolveApprovedCheckpointTaskProgramUsesCanonicalDefinition(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	program := pebblestore.TaskProgramDefinition{
+		ID:     "approved_program",
+		Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "Ready from the approved checkpoint."}},
+		Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "api", StageID: "build", AgentType: "coder", Title: "API Work", MetaPrompt: "Implement the approved API scope.", Deliverable: "Committed API change", OwnedScope: []string{"swarmd/internal/api/**"}, AcceptanceCriteria: []string{"API is complete"}, DependencyEvidence: "No unfinished dependency."}},
+	}
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-program", "Approved program", "# display", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ID: "plan-program", Title: "Approved program", Status: "approved", Info: pebblestore.SessionPlanInfo{Goal: "Run approved implementation"},
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoints:     []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Build", Objective: "Build the feature", Status: sessionruntime.PlanCheckpointStatusInProgress, Order: 1, AcceptanceCriteria: []string{"Feature is built"}, TaskProgram: &program}}, ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseTaskCallArguments(`{"action":"start"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := runSvc.resolveApprovedCheckpointTaskProgram(sessionID, parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Program == nil || resolved.Program.ID != program.ID || len(resolved.Launches) != 1 || resolved.Launches[0].AssignmentLabel != "API Work" {
+		t.Fatalf("resolved program = %#v", resolved)
+	}
+}
+
 func TestParseTaskProgramLifecycleRejectsAllExistingProgramContinuation(t *testing.T) {
 	status, err := parseTaskCallArguments(`{"action":"status","program_id":"release_program"}`)
 	if err != nil || status.ProgramID != "release_program" || len(status.Launches) != 0 {

@@ -51,6 +51,7 @@ type taskCallArguments struct {
 	Swarm           *taskSwarmSpec
 	Program         *taskProgramSpec
 	ProgramID       string
+	PlannedProgram  bool
 	Launches        []taskLaunchSpec
 	SourceArguments map[string]any
 }
@@ -332,9 +333,8 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			action = "spawn"
 		case taskProgramActionStart:
 			if programID != "" {
-				return taskCallArguments{}, errors.New("task program start requires a new program definition; continuing an existing program_id is not supported")
+				return taskCallArguments{}, errors.New("task program start requires a new program definition or the approved active checkpoint program; continuing an existing program_id is not supported")
 			}
-			action = "spawn"
 		case taskProgramActionStatus:
 		default:
 			return taskCallArguments{}, fmt.Errorf("task action %q is not supported", action)
@@ -349,7 +349,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if prompt == "" {
 		prompt = strings.TrimSpace(mapString(args, "message"))
 	}
-	if prompt == "" && action != taskProgramActionStatus {
+	if prompt == "" && action != taskProgramActionStatus && !(action == taskProgramActionStart && !hasProgram) {
 		return taskCallArguments{}, fmt.Errorf("task requires prompt")
 	}
 
@@ -442,6 +442,16 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			Action: action, Description: description, Prompt: prompt, Mode: mode,
 			Program: program, ProgramID: program.ID, Launches: launches, SourceArguments: args,
 		}, nil
+	}
+	if action == taskProgramActionStart && !hasProgram {
+		for key := range args {
+			switch key {
+			case "action", "description", "prompt", "message", "mode":
+			default:
+				return taskCallArguments{}, fmt.Errorf("planned task program start contains unsupported field %q", key)
+			}
+		}
+		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, PlannedProgram: true, SourceArguments: args}, nil
 	}
 	if action == taskProgramActionStatus {
 		if !taskProgramIDPattern.MatchString(programID) {
@@ -2756,6 +2766,10 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 
 func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string, call tool.Call) (taskLaunchManifest, error) {
 	parsed, err := parseTaskCallArguments(call.Arguments)
+	if err != nil {
+		return taskLaunchManifest{}, err
+	}
+	parsed, err = s.resolveApprovedCheckpointTaskProgram(sessionID, parsed)
 	if err != nil {
 		return taskLaunchManifest{}, err
 	}

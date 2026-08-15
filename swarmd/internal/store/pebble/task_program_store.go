@@ -57,7 +57,11 @@ type TaskProgramRecord struct {
 	UpdatedAt         int64                  `json:"updated_at"`
 }
 
+// TaskProgramDefinition is the canonical staged implementation graph. It can
+// be embedded in an approved lifecycle checkpoint before runtime state exists,
+// then copied unchanged into TaskProgramRecord when execution starts.
 type TaskProgramDefinition struct {
+	ID             string                 `json:"id,omitempty"`
 	MaxConcurrency int                    `json:"max_concurrency,omitempty"`
 	Stages         []TaskProgramStageSpec `json:"stages"`
 	Jobs           []TaskProgramJobSpec   `json:"jobs"`

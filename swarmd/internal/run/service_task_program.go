@@ -15,7 +15,7 @@ func taskProgramDefinitionFromSpec(spec *taskProgramSpec) (pebblestore.TaskProgr
 	if spec == nil {
 		return pebblestore.TaskProgramDefinition{}, "", errors.New("task program is required")
 	}
-	definition := pebblestore.TaskProgramDefinition{}
+	definition := pebblestore.TaskProgramDefinition{ID: spec.ID}
 	if spec.MaxConcurrency != nil {
 		definition.MaxConcurrency = *spec.MaxConcurrency
 	}

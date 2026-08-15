@@ -23,6 +23,11 @@ function permission(
             title: "First checkpoint",
             tasks: ["Implement it"],
             acceptance_criteria: ["It works"],
+            task_program: {
+              id: "approved_program",
+              stages: [{ id: "build", dependency_evidence: "Approved work is ready." }],
+              jobs: [{ id: "api", stage_id: "build", agent_type: "coder", title: "API Work", meta_prompt: "Implement the approved API scope.", deliverable: "Committed API", owned_scope: ["swarmd/internal/api/**"], acceptance_criteria: ["API works"], dependency_evidence: "No unfinished dependency." }],
+            },
           },
         ],
       },
@@ -80,6 +85,7 @@ for (const [requirement, toolName] of [
     markup.includes("First checkpoint"),
     `expected checkpoint for ${requirement}`,
   );
+  assert(markup.includes("Task Program · approved_program") && markup.includes("API Work"), `expected approved Task Program stages for ${requirement}`);
   assert(markup.includes(">Reject<") && markup.includes(">Accept once<"), `expected concise review controls for ${requirement}`);
   if (requirement !== "plan_update") {
     assert(markup.includes(">Always allow<"), `expected persistent plan acceptance control for ${requirement}`);
