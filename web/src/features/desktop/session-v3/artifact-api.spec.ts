@@ -114,6 +114,21 @@ test('artifact output requirements normalize and format the canonical requested 
     height: 1080,
     aspectRatio: '16:9',
   }), 'Landscape video · 1920 × 1080 · 16:9')
+  assert.equal(formatDesktopV3ArtifactOutputRequirements({
+    ...requirements,
+    presetId: 'landscape_video',
+    width: 1920,
+    height: 1080,
+    aspectRatio: '16:9',
+  }), 'Landscape video · 1920 × 1080 · 16:9')
+  assert.equal(formatDesktopV3ArtifactOutputRequirements({
+    ...requirements,
+    presetId: 'portrait_video',
+    width: 1080,
+    height: 1920,
+    aspectRatio: '9:16',
+    orientation: 'portrait',
+  }), 'Portrait video · 1080 × 1920 · 9:16')
 })
 
 test('historical artifacts omit requirements and malformed nested requirements fail closed', () => {
@@ -146,6 +161,33 @@ test('historical artifacts omit requirements and malformed nested requirements f
 
 test('artifact selection actions target the canonical variant selection route', () => {
   assert.equal(desktopV3ArtifactSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/selection')
+})
+
+test('artifact catalog normalizes video mp4 entry with visual category and video kind', () => {
+  const videoWire = {
+    ...managedCatalogWire,
+    artifact_id: 'video-var-1',
+    label: 'Final Video Render',
+    filename: 'render.mp4',
+    media_type: 'video/mp4',
+    kind: 'video',
+    output_requirements: {
+      preset_id: 'landscape_video',
+      width: 1920,
+      height: 1080,
+      aspect_ratio: '16:9',
+      orientation: 'landscape',
+      resolution_source: 'preset',
+      registry_version: '2026-08-14.v2',
+    },
+  }
+  const entry = normalizeDesktopV3ArtifactCatalogEntry(videoWire)
+  assert.ok(entry)
+  assert.equal(entry.category, 'visual')
+  assert.equal(entry.kind, 'video')
+  assert.equal(entry.mediaType, 'video/mp4')
+  assert.equal(entry.previewable, true)
+  assert.equal(formatDesktopV3ArtifactOutputRequirements(entry.outputRequirements), 'Landscape video · 1920 × 1080 · 16:9')
 })
 
 test('artifact chips dedupe by opaque identity, update intent, and remove without touching bytes', () => {

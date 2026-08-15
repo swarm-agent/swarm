@@ -304,3 +304,35 @@ func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 		t.Fatalf("derived lineage = %+v", created.Lineage)
 	}
 }
+
+func TestAuthorityCreateFromFileVideo(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	mp4Header := []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+	mp4Content := append(mp4Header, []byte("videodata")...)
+	sourceFile := filepath.Join(t.TempDir(), "render.mp4")
+	if err := os.WriteFile(sourceFile, mp4Content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := authority.CreateFromFile(context.Background(), principal, CreateFileInput{
+		CreateInput: CreateInput{
+			RequestID:      "video-create-1",
+			CollectionID:   "video-collection",
+			CollectionName: "Rendered Videos",
+			VariantID:      "video-variant",
+			Filename:       "render.mp4",
+			MediaType:      "video/mp4",
+			Presentation:   pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Final Render"},
+		},
+		SourcePath: sourceFile,
+	})
+	if err != nil {
+		t.Fatalf("CreateFromFile: %v", err)
+	}
+	if created.Status != pebblestore.SessionArtifactStatusReady || created.Filename != "render.mp4" || created.MediaType != "video/mp4" {
+		t.Fatalf("created variant = %+v", created)
+	}
+	if metadata.readyCalls != 1 {
+		t.Fatalf("readyCalls = %d, want 1", metadata.readyCalls)
+	}
+}

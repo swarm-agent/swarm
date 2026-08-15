@@ -26,11 +26,12 @@ import (
 )
 
 const (
-	DefaultMaxArtifactBytes     = int64(64 << 20)
-	DefaultMaxSessionBytes      = int64(512 << 20)
-	DefaultMaxPackageFiles      = 512
-	DefaultMaxPackageEntryBytes = int64(16 << 20)
-	DefaultMaxPackageBytes      = int64(128 << 20)
+	DefaultMaxArtifactBytes      = int64(64 << 20)
+	DefaultMaxVideoArtifactBytes = int64(512 << 20)
+	DefaultMaxSessionBytes       = int64(2048 << 20)
+	DefaultMaxPackageFiles       = 512
+	DefaultMaxPackageEntryBytes  = int64(16 << 20)
+	DefaultMaxPackageBytes       = int64(128 << 20)
 )
 
 var (
@@ -41,11 +42,12 @@ var (
 
 // Limits bounds both stored bytes and expanded package input.
 type Limits struct {
-	MaxArtifactBytes     int64
-	MaxSessionBytes      int64
-	MaxPackageFiles      int
-	MaxPackageEntryBytes int64
-	MaxPackageBytes      int64
+	MaxArtifactBytes      int64
+	MaxVideoArtifactBytes int64
+	MaxSessionBytes       int64
+	MaxPackageFiles       int
+	MaxPackageEntryBytes  int64
+	MaxPackageBytes       int64
 }
 
 // Service is scoped to one workspace. Its root is app-owned storage, never the
@@ -127,6 +129,9 @@ func normalizeLimits(l Limits) Limits {
 	if l.MaxArtifactBytes <= 0 {
 		l.MaxArtifactBytes = DefaultMaxArtifactBytes
 	}
+	if l.MaxVideoArtifactBytes <= 0 {
+		l.MaxVideoArtifactBytes = DefaultMaxVideoArtifactBytes
+	}
 	if l.MaxSessionBytes <= 0 {
 		l.MaxSessionBytes = DefaultMaxSessionBytes
 	}
@@ -142,6 +147,19 @@ func normalizeLimits(l Limits) Limits {
 	return l
 }
 
+func (s *Service) maxArtifactLimit(mediaType, kind string) int64 {
+	if isVideoMediaTypeOrKind(mediaType, kind) {
+		return s.limits.MaxVideoArtifactBytes
+	}
+	return s.limits.MaxArtifactBytes
+}
+
+func isVideoMediaTypeOrKind(mediaType, kind string) bool {
+	normMedia := strings.ToLower(strings.TrimSpace(mediaType))
+	normKind := strings.ToLower(strings.TrimSpace(kind))
+	return normKind == "video" || normMedia == "video/mp4" || strings.HasPrefix(normMedia, "video/")
+}
+
 // Stage writes and verifies one variant in a same-directory private staging
 // file. The supplied variant is a metadata boundary, not a source of ownership
 // or storage paths.
@@ -153,8 +171,9 @@ func (s *Service) Stage(ctx context.Context, variant pebblestore.SessionArtifact
 	if err != nil {
 		return Staged{}, err
 	}
+	limit := s.maxArtifactLimit(staged.MediaType, staged.Presentation.Kind)
 	return s.stage(ctx, staged, func(dst io.Writer) ([]byte, error) {
-		return copyBounded(ctx, dst, body, s.limits.MaxArtifactBytes)
+		return copyBounded(ctx, dst, body, limit)
 	})
 }
 
@@ -176,7 +195,8 @@ func (s *Service) ImportFile(ctx context.Context, variant pebblestore.SessionArt
 	if resolved, resolveErr := filepath.EvalSymlinks(sourcePath); resolveErr != nil || filepath.Clean(resolved) != filepath.Clean(sourcePath) {
 		return Staged{}, errors.New("artifact import source path contains a symlink")
 	}
-	if info.Size() > s.limits.MaxArtifactBytes {
+	limit := s.maxArtifactLimit(variant.MediaType, variant.Presentation.Kind)
+	if info.Size() > limit {
 		return Staged{}, ErrQuotaExceeded
 	}
 	file, err := os.Open(sourcePath)
@@ -466,7 +486,8 @@ func (s *Service) stage(ctx context.Context, staged Staged, write func(io.Writer
 		return Staged{}, err
 	}
 	staged.Size = info.Size()
-	if staged.Size <= 0 || staged.Size > s.limits.MaxArtifactBytes || usage > s.limits.MaxSessionBytes-staged.Size {
+	limit := s.maxArtifactLimit(staged.MediaType, staged.Presentation.Kind)
+	if staged.Size <= 0 || staged.Size > limit || usage > s.limits.MaxSessionBytes-staged.Size {
 		_ = os.Remove(stagePath)
 		return Staged{}, ErrQuotaExceeded
 	}
@@ -534,7 +555,8 @@ func (s *Service) Finalize(ctx context.Context, staged Staged, expectedDigest st
 		return Blob{}, err
 	}
 	expectedDigest = strings.ToLower(strings.TrimSpace(expectedDigest))
-	if !validDigest(staged.DigestSHA256) || staged.Size <= 0 || staged.Size > s.limits.MaxArtifactBytes {
+	limit := s.maxArtifactLimit(staged.MediaType, staged.Presentation.Kind)
+	if !validDigest(staged.DigestSHA256) || staged.Size <= 0 || staged.Size > limit {
 		return Blob{}, errors.New("artifact staging handle has invalid digest or size")
 	}
 	if expectedDigest != "" && (!validDigest(expectedDigest) || expectedDigest != staged.DigestSHA256) {
@@ -615,8 +637,9 @@ func (s *Service) Open(ctx context.Context, variant pebblestore.SessionArtifactV
 
 // Read returns verified bytes up to maxBytes.
 func (s *Service) Read(ctx context.Context, variant pebblestore.SessionArtifactVariant, maxBytes int64) ([]byte, Blob, error) {
-	if maxBytes <= 0 || maxBytes > s.limits.MaxArtifactBytes {
-		maxBytes = s.limits.MaxArtifactBytes
+	limit := s.maxArtifactLimit(variant.MediaType, variant.Presentation.Kind)
+	if maxBytes <= 0 || maxBytes > limit {
+		maxBytes = limit
 	}
 	file, blob, err := s.Open(ctx, variant)
 	if err != nil {
@@ -870,6 +893,8 @@ func (s *Service) validateVariant(variant pebblestore.SessionArtifactVariant, pa
 		if presentation.Kind == "" {
 			presentation.Kind = "package"
 		}
+	} else if presentation.Kind == "" && (mediaType == "video/mp4" || strings.HasPrefix(mediaType, "video/")) {
+		presentation.Kind = "video"
 	}
 	if err := validatePresentation(mediaType, presentation); err != nil {
 		return Staged{}, err
@@ -878,7 +903,7 @@ func (s *Service) validateVariant(variant pebblestore.SessionArtifactVariant, pa
 }
 
 func validatePresentation(mediaType string, p pebblestore.SessionArtifactPresentation) error {
-	allowed := map[string]bool{"": true, "download": true, "text": true, "code": true, "image": true, "html": true, "package": true}
+	allowed := map[string]bool{"": true, "download": true, "text": true, "code": true, "image": true, "html": true, "package": true, "video": true}
 	if !allowed[p.Kind] {
 		return errors.New("artifact presentation kind is unsupported")
 	}
@@ -886,7 +911,8 @@ func validatePresentation(mediaType string, p pebblestore.SessionArtifactPresent
 		(p.Kind == "image" && strings.HasPrefix(mediaType, "image/")) ||
 		((p.Kind == "text" || p.Kind == "code") && (strings.HasPrefix(mediaType, "text/") || mediaType == "application/json")) ||
 		(p.Kind == "html" && mediaType == "text/html") ||
-		(p.Kind == "package" && mediaType == "application/zip")
+		(p.Kind == "package" && mediaType == "application/zip") ||
+		(p.Kind == "video" && (mediaType == "video/mp4" || strings.HasPrefix(mediaType, "video/")))
 	if !compatible {
 		return errors.New("artifact presentation is incompatible with its media type")
 	}
@@ -894,6 +920,13 @@ func validatePresentation(mediaType string, p pebblestore.SessionArtifactPresent
 		return errors.New("artifact media type is not safely previewable")
 	}
 	return nil
+}
+
+func isMP4Sample(sample []byte) bool {
+	if len(sample) < 8 {
+		return false
+	}
+	return string(sample[4:8]) == "ftyp"
 }
 
 func validateContentType(path, declared string, presentation pebblestore.SessionArtifactPresentation) (string, pebblestore.SessionArtifactPresentation, error) {
@@ -910,7 +943,11 @@ func validateContentType(path, declared string, presentation pebblestore.Session
 	detected, _, _ := mime.ParseMediaType(http.DetectContentType(sample[:n]))
 	declared = strings.ToLower(strings.TrimSpace(declared))
 	if declared == "" {
-		declared = detected
+		if isMP4Sample(sample[:n]) {
+			declared = "video/mp4"
+		} else {
+			declared = detected
+		}
 	}
 	if declared == "application/octet-stream" || !previewSafeMediaType(declared) {
 		presentation.Kind = "download"
@@ -923,9 +960,15 @@ func validateContentType(path, declared string, presentation pebblestore.Session
 		}
 	} else if strings.HasPrefix(declared, "image/") && detected != declared {
 		return "", presentation, errors.New("artifact image bytes do not match declared media type")
+	} else if declared == "video/mp4" && detected != "video/mp4" && !isMP4Sample(sample[:n]) {
+		return "", presentation, errors.New("artifact video bytes do not match declared media type")
 	}
 	if declared == "text/html" && detected != "text/html" && detected != "text/plain" {
 		return "", presentation, errors.New("artifact HTML bytes do not match declared media type")
+	}
+	if (declared == "video/mp4" || strings.HasPrefix(declared, "video/")) && presentation.Kind == "" {
+		presentation.Kind = "video"
+		presentation.Previewable = true
 	}
 	if err := validatePresentation(declared, presentation); err != nil {
 		return "", presentation, err
@@ -938,7 +981,7 @@ func previewSafeMediaType(mediaType string) bool {
 		return true
 	}
 	switch mediaType {
-	case "application/json", "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml":
+	case "application/json", "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml", "video/mp4":
 		return true
 	default:
 		return false

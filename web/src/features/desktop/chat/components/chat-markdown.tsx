@@ -1565,6 +1565,8 @@ export function ManageArtifactCard({
     onArtifactSelections([{ ...artifactSelection, action: "use" }]);
   };
 
+  const isMediaWide = artifact?.mediaType.startsWith("image/") || artifact?.mediaType.startsWith("video/") || artifact?.kind === "video";
+
   return (
     <div className="mb-2 w-full min-w-0 py-1.5" data-testid="desktop-artifact-tool-card" data-timeline-artifact-card>
       <div className="w-full min-w-0 rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-accent)_8%,var(--app-surface)),var(--app-surface)_45%)] p-3.5 shadow-sm">
@@ -1615,24 +1617,24 @@ export function ManageArtifactCard({
             <a
               href={href}
               onClick={handleOpenViewer}
-              className={cn("mt-3 block w-full overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", artifact.mediaType.startsWith("image/") ? "max-w-3xl" : "max-w-sm")}
+              className={cn("mt-3 block w-full overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", isMediaWide ? "max-w-3xl" : "max-w-sm")}
               aria-label={`Open ${label} artifact`}
               data-testid="artifact-preview-link"
             >
-              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={artifact.mediaType.startsWith("image/") ? "wide" : "thumbnail"} />
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={isMediaWide ? "wide" : "thumbnail"} />
             </a>
           ) : onArtifactNavigate ? (
             <button
               type="button"
               onClick={() => handleOpenViewer()}
-              className={cn("mt-3 block w-full overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", artifact.mediaType.startsWith("image/") ? "max-w-3xl" : "max-w-sm")}
+              className={cn("mt-3 block w-full overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", isMediaWide ? "max-w-3xl" : "max-w-sm")}
               aria-label={`Open ${label} artifact`}
               data-testid="artifact-preview-button"
             >
-              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={artifact.mediaType.startsWith("image/") ? "wide" : "thumbnail"} />
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={isMediaWide ? "wide" : "thumbnail"} />
             </button>
           ) : (
-            <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="mt-3" presentation={artifact.mediaType.startsWith("image/") ? "wide" : "thumbnail"} />
+            <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="mt-3" presentation={isMediaWide ? "wide" : "thumbnail"} />
           )
         ) : null}
 

@@ -160,8 +160,8 @@ export function normalizeDesktopV3ArtifactOutputRequirements(value: unknown): De
 
 function artifactOutputPresetLabel(presetId: string): string {
   const normalized = presetId.trim().toLowerCase()
-  if (normalized === 'x_video' || normalized === 'twitter_video' || normalized === 'x_video_landscape') return 'Landscape video'
-  if (normalized === 'x_video_portrait') return 'Portrait video'
+  if (normalized === 'x_video' || normalized === 'twitter_video' || normalized === 'x_video_landscape' || normalized === 'landscape_video' || normalized === 'full_hd_landscape') return 'Landscape video'
+  if (normalized === 'x_video_portrait' || normalized === 'portrait_video' || normalized === 'vertical_video') return 'Portrait video'
   const words = normalized.split(/[_-]+/).filter(Boolean)
   if (words.length === 0) return ''
   return words.map((word, index) => {

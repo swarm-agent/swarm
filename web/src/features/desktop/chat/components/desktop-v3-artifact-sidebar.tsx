@@ -74,7 +74,7 @@ function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactC
           }
           return
         }
-        if (artifact.mediaType.startsWith('image/') || artifact.mediaType === 'application/pdf') {
+        if (artifact.mediaType.startsWith('image/') || artifact.mediaType.startsWith('video/') || artifact.kind === 'video' || artifact.mediaType === 'application/pdf') {
           objectURL = URL.createObjectURL(blob)
           setPreviewURL(objectURL)
         }
@@ -93,6 +93,9 @@ function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactC
   if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) return <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
   if (artifact.mediaType.startsWith('image/') && previewURL) {
     return <img src={previewURL} alt="" className="size-full object-contain" />
+  }
+  if ((artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) {
+    return <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" />
   }
   if (artifact.mediaType === 'text/html' && previewHTML) {
     return <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />

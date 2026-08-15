@@ -82,11 +82,12 @@ export function DesktopV3ArtifactPreviewThumbnail({
 
   const hasHTMLPreview = artifact.mediaType === 'text/html' && Boolean(previewText)
   const hasImagePreview = artifact.mediaType.startsWith('image/') && Boolean(previewURL)
+  const hasVideoPreview = (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && Boolean(previewURL)
   const hasPDFPreview = artifact.mediaType === 'application/pdf' && Boolean(previewURL)
   const hasTextPreview = (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
 
-  const wideImage = presentation === 'wide' && artifact.mediaType.startsWith('image/')
-  const previewAspectRatio = wideImage && artifact.outputRequirements
+  const isWide = presentation === 'wide' && (artifact.mediaType.startsWith('image/') || artifact.mediaType.startsWith('video/') || artifact.kind === 'video')
+  const previewAspectRatio = isWide && artifact.outputRequirements
     ? `${artifact.outputRequirements.width} / ${artifact.outputRequirements.height}`
     : undefined
 
@@ -94,12 +95,12 @@ export function DesktopV3ArtifactPreviewThumbnail({
     <div
       className={cn(
         'relative aspect-video w-full overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]',
-        wideImage ? 'max-w-3xl' : 'max-w-sm',
+        isWide ? 'max-w-3xl' : 'max-w-sm',
         className,
       )}
       style={previewAspectRatio ? { aspectRatio: previewAspectRatio } : undefined}
       data-artifact-preview-thumbnail
-      data-artifact-preview-presentation={wideImage ? 'wide' : 'thumbnail'}
+      data-artifact-preview-presentation={isWide ? 'wide' : 'thumbnail'}
       data-artifact-preview-media-type={artifact.mediaType}
     >
       {loading ? (
@@ -121,6 +122,16 @@ export function DesktopV3ArtifactPreviewThumbnail({
       {!loading && hasImagePreview ? (
         <img src={previewURL} alt="" className="size-full object-contain" data-artifact-image-preview />
       ) : null}
+      {!loading && hasVideoPreview ? (
+        <video
+          src={previewURL}
+          controls
+          playsInline
+          preload="metadata"
+          className="size-full object-contain bg-black"
+          data-artifact-video-preview
+        />
+      ) : null}
       {!loading && hasPDFPreview ? (
         <iframe
           title={`${artifact.label} preview`}
@@ -137,7 +148,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
           {previewText}
         </pre>
       ) : null}
-      {!loading && !hasHTMLPreview && !hasImagePreview && !hasPDFPreview && !hasTextPreview ? (
+      {!loading && !hasHTMLPreview && !hasImagePreview && !hasVideoPreview && !hasPDFPreview && !hasTextPreview ? (
         <div className="grid size-full place-items-center text-center text-[var(--app-text-muted)]">
           <div>
             <FileText className="mx-auto size-6" aria-hidden="true" />

@@ -3859,7 +3859,7 @@ function DesktopV3StructuredFinalHandoff({
       collectionDescription: "",
       filename: artifact.filename || artifact.label,
       kind: artifact.kind || artifact.mediaType,
-      category: artifact.category || (artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") ? "visual" : "document"),
+      category: artifact.category || (artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") || artifact.mediaType.startsWith("video/") || artifact.kind === "video" ? "visual" : "document"),
       status: "ready",
       updatedAt: 0,
     }];

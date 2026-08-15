@@ -30,6 +30,7 @@ import (
 
 const (
 	sessionsV3ArtifactMaxBytes            int64 = 32 << 20
+	sessionsV3ArtifactVideoMaxBytes       int64 = 512 << 20
 	sessionsV3ArtifactBundleMaxBytes      int64 = 128 << 20
 	sessionsV3ArtifactBundleMaxFiles            = 2_000
 	sessionsV3ArtifactPreviewTokenTTL           = 5 * time.Minute
@@ -271,7 +272,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						continue
 					}
 					category := "document"
-					if descriptor.Kind == "html" || descriptor.Kind == "image" || descriptor.Kind == "pdf" {
+					if descriptor.Kind == "html" || descriptor.Kind == "image" || descriptor.Kind == "pdf" || descriptor.Kind == "video" {
 						category = "visual"
 					}
 					updatedAt := checkpoint.CompletedAt
@@ -321,13 +322,18 @@ func sessionsV3ArtifactPresentation(variant pebblestore.SessionArtifactVariant) 
 	if kind == "package" && variant.MediaType == "application/zip" {
 		return "html", true
 	}
+	if strings.EqualFold(strings.TrimSpace(variant.MediaType), "video/mp4") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(variant.MediaType)), "video/") {
+		if kind == "" || kind == "video" {
+			return "video", true
+		}
+	}
 	return kind, previewable
 }
 
 func sessionsV3ManagedArtifactCategory(variant pebblestore.SessionArtifactVariant) string {
 	kind, _ := sessionsV3ArtifactPresentation(variant)
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "html", "package", "image", "pdf":
+	case "html", "package", "image", "pdf", "video":
 		return "visual"
 	default:
 		return "document"
@@ -640,7 +646,11 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer file.Close()
-	if info.Size() > sessionsV3ArtifactMaxBytes {
+	maxAllowedBytes := sessionsV3ArtifactMaxBytes
+	if artifact.Descriptor.Kind == "video" || artifact.Descriptor.MediaType == "video/mp4" || strings.HasPrefix(artifact.Descriptor.MediaType, "video/") {
+		maxAllowedBytes = sessionsV3ArtifactVideoMaxBytes
+	}
+	if info.Size() > maxAllowedBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, errors.New("artifact exceeds the preview size limit"))
 		return
 	}
@@ -653,7 +663,8 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:; frame-ancestors 'self'")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data: blob:; media-src 'self' data: blob:; style-src 'unsafe-inline'; font-src data:; frame-ancestors 'self'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	http.ServeContent(w, r, artifact.Descriptor.Filename, info.ModTime(), file)
 }

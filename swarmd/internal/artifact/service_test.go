@@ -638,6 +638,80 @@ func TestDeleteSessionRejectsSymlinkWithoutTouchingTarget(t *testing.T) {
 	}
 }
 
+func TestStageAndImportVideoMP4Artifact(t *testing.T) {
+	service := newTestService(t, Limits{})
+	mp4Header := []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+	mp4Content := append(mp4Header, bytes.Repeat([]byte{0x00}, 64)...)
+
+	t.Run("stage mp4 reader", func(t *testing.T) {
+		variant := testVariant("video-1", "output.mp4", "video/mp4", "video")
+		staged, err := service.Stage(context.Background(), variant, bytes.NewReader(mp4Content))
+		if err != nil {
+			t.Fatalf("Stage video: %v", err)
+		}
+		if staged.MediaType != "video/mp4" || staged.Presentation.Kind != "video" || !staged.Presentation.Previewable {
+			t.Fatalf("staged video presentation = %+v, mediaType = %s", staged.Presentation, staged.MediaType)
+		}
+		blob, err := service.Finalize(context.Background(), staged, "", 0)
+		if err != nil {
+			t.Fatalf("Finalize video: %v", err)
+		}
+		variant.Status = pebblestore.SessionArtifactStatusReady
+		variant.DigestSHA256 = blob.DigestSHA256
+		variant.Size = blob.Size
+		readBytes, _, err := service.Read(context.Background(), variant, 1024)
+		if err != nil {
+			t.Fatalf("Read video: %v", err)
+		}
+		if !bytes.Equal(readBytes, mp4Content) {
+			t.Fatalf("read video content mismatch")
+		}
+	})
+
+	t.Run("import mp4 file", func(t *testing.T) {
+		sourceFile := filepath.Join(t.TempDir(), "rendered.mp4")
+		if err := os.WriteFile(sourceFile, mp4Content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		variant := testVariant("video-2", "rendered.mp4", "video/mp4", "video")
+		staged, err := service.ImportFile(context.Background(), variant, sourceFile)
+		if err != nil {
+			t.Fatalf("ImportFile video: %v", err)
+		}
+		if staged.MediaType != "video/mp4" || staged.Presentation.Kind != "video" || !staged.Presentation.Previewable {
+			t.Fatalf("staged video presentation = %+v", staged.Presentation)
+		}
+	})
+}
+
+func TestVideoSpecificQuotaAllowsLargerVideoThanDocumentLimit(t *testing.T) {
+	service := newTestService(t, Limits{
+		MaxArtifactBytes:      100,
+		MaxVideoArtifactBytes: 500,
+		MaxSessionBytes:       2000,
+	})
+
+	mp4Header := []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+	mp4Content := append(mp4Header, bytes.Repeat([]byte{0x01}, 200)...) // 224 bytes (> 100 max artifact bytes)
+	docContent := bytes.Repeat([]byte("a"), 200)
+
+	// Document of 200 bytes should exceed MaxArtifactBytes (100)
+	docVariant := testVariant("doc-1", "doc.txt", "text/plain", "text")
+	if _, err := service.Stage(context.Background(), docVariant, bytes.NewReader(docContent)); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("document of 200 bytes expected ErrQuotaExceeded, got %v", err)
+	}
+
+	// Video of 224 bytes should succeed within MaxVideoArtifactBytes (500)
+	videoVariant := testVariant("video-1", "clip.mp4", "video/mp4", "video")
+	staged, err := service.Stage(context.Background(), videoVariant, bytes.NewReader(mp4Content))
+	if err != nil {
+		t.Fatalf("video of 224 bytes stage failed: %v", err)
+	}
+	if _, err := service.Finalize(context.Background(), staged, "", 0); err != nil {
+		t.Fatalf("video finalize failed: %v", err)
+	}
+}
+
 func TestDeleteSessionRemovesOnlyOwnedSession(t *testing.T) {
 	service := newTestService(t, Limits{})
 	for _, sessionID := range []string{"session-1", "session-2"} {

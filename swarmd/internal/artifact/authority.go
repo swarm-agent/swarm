@@ -70,6 +70,11 @@ type CreatePackageInput struct {
 	Entries []PackageEntry
 }
 
+type CreateFileInput struct {
+	CreateInput
+	SourcePath string
+}
+
 type Authority struct {
 	registry *Registry
 	metadata MetadataStore
@@ -81,16 +86,20 @@ func NewAuthority(registry *Registry, metadata MetadataStore) *Authority {
 }
 
 func (a *Authority) Create(ctx context.Context, principal Principal, input CreateInput) (pebblestore.SessionArtifactVariant, error) {
-	return a.create(ctx, principal, input, nil)
+	return a.create(ctx, principal, input, nil, "")
 }
 
 func (a *Authority) CreatePackage(ctx context.Context, principal Principal, input CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
 	entries := make([]PackageEntry, len(input.Entries))
 	copy(entries, input.Entries)
-	return a.create(ctx, principal, input.CreateInput, entries)
+	return a.create(ctx, principal, input.CreateInput, entries, "")
 }
 
-func (a *Authority) create(ctx context.Context, principal Principal, input CreateInput, packageEntries []PackageEntry) (pebblestore.SessionArtifactVariant, error) {
+func (a *Authority) CreateFromFile(ctx context.Context, principal Principal, input CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
+	return a.create(ctx, principal, input.CreateInput, nil, strings.TrimSpace(input.SourcePath))
+}
+
+func (a *Authority) create(ctx context.Context, principal Principal, input CreateInput, packageEntries []PackageEntry, sourcePath string) (pebblestore.SessionArtifactVariant, error) {
 	service, principal, err := a.owned(principal)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
@@ -195,6 +204,8 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 			entries = append(entries, PackageEntry{Name: entry.Name, Data: append([]byte(nil), entry.Data...)})
 		}
 		staged, err = service.StagePackage(ctx, variant, entries)
+	} else if sourcePath != "" {
+		staged, err = service.ImportFile(ctx, variant, sourcePath)
 	} else {
 		staged, err = service.Stage(ctx, variant, bytes.NewReader(input.Body))
 	}

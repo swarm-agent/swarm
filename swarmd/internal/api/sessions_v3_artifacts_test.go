@@ -819,3 +819,109 @@ func TestSessionsV3ArtifactOutputRequirementsProjectionClonesSnapshot(t *testing
 		t.Fatalf("projection aliases stored requirements: %#v", projected)
 	}
 }
+
+func TestSessionsV3VideoArtifactRangeServingAndVisualCategory(t *testing.T) {
+	server, sessionSvc, registry, plan, checkpoint, _, _ := newLegacyArtifactImportFixture(t, "output.mp4", "")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+
+	mp4Header := []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+	mp4Content := append(mp4Header, bytes.Repeat([]byte{0x42}, 128)...)
+
+	created, err := authority.Create(context.Background(), artifact.Principal{
+		SessionID:      plan.SessionID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		RunID:          checkpoint.RunID,
+		PlanID:         plan.ID,
+		CheckpointID:   checkpoint.ID,
+		AttemptID:      checkpoint.AttemptID,
+	}, artifact.CreateInput{
+		RequestID:      "req-video-1",
+		CollectionID:   "video-col-1",
+		CollectionName: "Rendered Clip",
+		VariantID:      "video-var-1",
+		Filename:       "output.mp4",
+		MediaType:      "video/mp4",
+		Presentation:   pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Output Clip"},
+		Body:           mp4Content,
+	})
+	if err != nil {
+		t.Fatalf("create video artifact: %v", err)
+	}
+	if created.Status != pebblestore.SessionArtifactStatusReady {
+		t.Fatalf("video status = %s", created.Status)
+	}
+
+	// 1. Check artifact catalog projection has Category == "visual" and Kind == "video"
+	catalogReq := httptest.NewRequest("GET", "/v3/artifacts", nil)
+	catalogRec := httptest.NewRecorder()
+	server.handleSessionsV3Artifacts(catalogRec, catalogReq.WithContext(ContextWithPrincipal(catalogReq.Context(), principal)))
+	if catalogRec.Code != http.StatusOK {
+		t.Fatalf("catalog status = %d: %s", catalogRec.Code, catalogRec.Body.String())
+	}
+	var catalogResp struct {
+		OK        bool                            `json:"ok"`
+		Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"`
+	}
+	if err := json.Unmarshal(catalogRec.Body.Bytes(), &catalogResp); err != nil {
+		t.Fatal(err)
+	}
+	var foundVideo bool
+	for _, item := range catalogResp.Artifacts {
+		if item.ArtifactID == created.ID {
+			foundVideo = true
+			if item.Category != "visual" {
+				t.Fatalf("catalog category = %q, want visual", item.Category)
+			}
+			if item.Kind != "video" {
+				t.Fatalf("catalog kind = %q, want video", item.Kind)
+			}
+			if item.MediaType != "video/mp4" {
+				t.Fatalf("catalog media_type = %q, want video/mp4", item.MediaType)
+			}
+			if !item.Previewable {
+				t.Fatalf("catalog previewable = false, want true")
+			}
+		}
+	}
+	if !foundVideo {
+		t.Fatal("video artifact not found in catalog")
+	}
+
+	// 2. Full GET request checks headers (Accept-Ranges, Content-Type, CSP media-src)
+	getReq := httptest.NewRequest("GET", "/v3/sessions/"+plan.SessionID+"/artifacts/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	server.handleSessionV3Artifact(getRec, getReq, principal, plan.SessionID, created.ID)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get artifact status = %d: %s", getRec.Code, getRec.Body.String())
+	}
+	if getRec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("Accept-Ranges = %q, want bytes", getRec.Header().Get("Accept-Ranges"))
+	}
+	if getRec.Header().Get("Content-Type") != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want video/mp4", getRec.Header().Get("Content-Type"))
+	}
+	csp := getRec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "media-src") {
+		t.Fatalf("CSP missing media-src directive: %q", csp)
+	}
+	if !bytes.Equal(getRec.Body.Bytes(), mp4Content) {
+		t.Fatalf("body length = %d, want %d", getRec.Body.Len(), len(mp4Content))
+	}
+
+	// 3. Range request returns 206 Partial Content
+	rangeReq := httptest.NewRequest("GET", "/v3/sessions/"+plan.SessionID+"/artifacts/"+created.ID, nil)
+	rangeReq.Header.Set("Range", "bytes=0-15")
+	rangeRec := httptest.NewRecorder()
+	server.handleSessionV3Artifact(rangeRec, rangeReq, principal, plan.SessionID, created.ID)
+	if rangeRec.Code != http.StatusPartialContent {
+		t.Fatalf("range request status = %d, want 206", rangeRec.Code)
+	}
+	if rangeRec.Header().Get("Content-Range") != fmt.Sprintf("bytes 0-15/%d", len(mp4Content)) {
+		t.Fatalf("Content-Range = %q, want bytes 0-15/%d", rangeRec.Header().Get("Content-Range"), len(mp4Content))
+	}
+	if !bytes.Equal(rangeRec.Body.Bytes(), mp4Content[0:16]) {
+		t.Fatalf("range body mismatch")
+	}
+}
