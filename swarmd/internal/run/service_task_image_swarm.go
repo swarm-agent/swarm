@@ -175,7 +175,7 @@ func validateApprovedDirectImageSwarm(approved string, parsed taskCallArguments)
 		if i < len(parsed.Swarm.Themes) {
 			baseTheme = strings.TrimSpace(parsed.Swarm.Themes[i])
 		}
-		if row.Index != i+1 || row.StreamKey != parsed.Launches[i].StreamKey || strings.TrimSpace(row.Theme) != baseTheme || !equalTaskOutputRequirements(row.OutputRequirements, parsed.Launches[i].OutputRequirements) {
+		if row.Index != i+1 || row.StreamKey != parsed.Launches[i].StreamKey || strings.TrimSpace(row.Theme) != baseTheme || !equalTaskOutputRequirements(row.OutputRequirements, parsed.Launches[i].OutputRequirements) || !equalTaskImageSourceArtifact(row.SourceArtifact, parsed.Swarm.SourceArtifact) {
 			return fmt.Errorf("approved direct image swarm item %d mismatch", i+1)
 		}
 	}
@@ -253,7 +253,7 @@ func (s *Service) executeDirectImageSwarm(ctx context.Context, sessionID, sessio
 				scope.Principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 			}
 			emitDirectImageSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "generating", hydrated[i].Title, hydrated[i].Theme, "image_model", "Generating image", nil)
-			_, generateErr := s.tools.GenerateManagedImageArtifact(ctx, scope, fmt.Sprintf("%s:image:%d", callID, i+1), hydrated[i].Prompt, run)
+			_, generateErr := s.tools.GenerateManagedImageArtifact(ctx, scope, fmt.Sprintf("%s:image:%d", callID, i+1), hydrated[i].Prompt, run, cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact))
 			if generateErr != nil {
 				s.markManagedDesignerArtifactFailed(parent, &run, parent.ID, "direct_image_generation_failed")
 				results[i].Err = generateErr
@@ -270,7 +270,7 @@ func (s *Service) executeDirectImageSwarm(ctx context.Context, sessionID, sessio
 				emitDirectImageSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "failed", hydrated[i].Title, hydrated[i].Theme, "image_model", boundedTaskLaunchReason(getErr.Error()), nil)
 				return
 			}
-			results[i].Reference = &taskArtifactReference{SessionID: parent.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements)}
+			results[i].Reference = &taskArtifactReference{SessionID: parent.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Status: variant.Status, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements)}
 			emitDirectImageSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "completed", hydrated[i].Title, hydrated[i].Theme, "image_model", "Image ready", results[i].Reference)
 		}()
 	}
@@ -301,6 +301,9 @@ func (s *Service) executeDirectImageSwarm(ctx context.Context, sessionID, sessio
 		status = "error"
 	}
 	payload := map[string]any{"tool": "task", "path_id": "tool.task.image_swarm.v1", "task_call_id": callID, "action": parsed.Action, "status": status, "description": description, "goal": description, "prompt": prompt, "task_mode": taskModeSwarm, "swarm_strategy": parsed.Swarm.Strategy, "execution_format": taskExecutionFormatImageDirect, "image_count": len(items), "images": items, "success_count": len(items) - failed, "failed_count": failed, "artifact_references": references, "artifact_count": len(references), "child_session_count": 0, "subagent_launch_count": 0, "details_truncated": false}
+	if parsed.Swarm.SourceArtifact != nil {
+		payload["source_artifact"] = cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact)
+	}
 	encoded, encodeErr := json.Marshal(payload)
 	if encodeErr != nil {
 		return "", encodeErr

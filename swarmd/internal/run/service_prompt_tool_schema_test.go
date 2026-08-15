@@ -59,6 +59,14 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if !ok || !reflect.DeepEqual(outputMode["enum"], []string{"managed", "workspace"}) {
 		t.Fatalf("task output_mode = %#v", outputMode)
 	}
+	source, ok := properties["source_artifact"].(map[string]any)
+	if !ok {
+		t.Fatal("task schema omits exact source_artifact")
+	}
+	sourceProperties, _ := source["properties"].(map[string]any)
+	if !reflect.DeepEqual(source["required"], []string{"session_id", "collection_id", "variant_id", "event_seq"}) || sourceProperties["event_seq"] == nil {
+		t.Fatalf("task source_artifact schema = %#v", source)
+	}
 	for _, forbidden := range []string{"target_session_id", "collection_id", "variant_id", "artifact_target"} {
 		if _, exists := properties[forbidden]; exists {
 			t.Fatalf("task schema exposes trusted destination field %q", forbidden)

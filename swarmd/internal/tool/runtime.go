@@ -480,13 +480,19 @@ func (r *Runtime) ArtifactAuthority() ArtifactAuthority {
 // GenerateManagedImageArtifact is the trusted orchestration entrypoint for
 // direct image swarms. It reuses the canonical account image setting and
 // artifact finalization path without creating an AI worker session.
-func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, callID, prompt string, run ArtifactRunContext) (string, error) {
+func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, callID, prompt string, run ArtifactRunContext, source *pebblestore.SessionArtifactSelectionReference) (string, error) {
 	if r == nil {
 		return "", errors.New("manage_artifact runtime is not configured")
 	}
 	ctx = WithWorkspaceScope(ctx, scope)
 	ctx = WithArtifactRunContext(ctx, run)
 	args := map[string]any{"action": "generate_image", "prompt": strings.TrimSpace(prompt)}
+	if source != nil {
+		args["source_session_id"] = strings.TrimSpace(source.SessionID)
+		args["source_collection_id"] = strings.TrimSpace(source.CollectionID)
+		args["source_variant_id"] = strings.TrimSpace(source.VariantID)
+		args["source_event_seq"] = int(source.EventSeq)
+	}
 	if capabilities, err := r.managedImageCapabilities(scope.Principal.AccountScopeID); err != nil {
 		return "", err
 	} else if capabilities.CapabilityToken != "" {
@@ -1365,6 +1371,10 @@ func (r *Runtime) Definitions() []Definition {
 					"groups":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
 					"output_contract":      map[string]any{"type": "string", "description": "Shared Coder/Designer/image swarm deliverable contract. Omit for Idea swarms."},
 					"output_requirements":  artifact.OutputRequirementsToolSchema(),
+					"source_artifact": map[string]any{"type": "object", "properties": map[string]any{
+						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
+						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
+					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed image reference for direct image swarm remixing. The trusted generation boundary resolves its authenticated bounded bytes; Router receives text only."},
 					"output_mode":          map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer and image output contract. Image is always managed. Designer defaults to managed; workspace Designer swarms require one non-overlapping owned_scope_template. Managed launches never supply destination IDs."},
 					"owned_scope_template": map[string]any{"type": "string", "description": "Workspace-mode Iteration Swarm target containing exactly one {index}. Required only for output_mode=workspace Designer swarms; forbidden for managed Designer/image swarms and omitted for Idea swarms."},
 					"description": map[string]any{

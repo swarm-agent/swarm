@@ -113,6 +113,7 @@ type taskSwarmSpec struct {
 	OutputContract      string
 	OutputMode          string
 	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
+	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
 	OwnedScopeTemplate  string
 	AssemblyParts       []taskSwarmAssemblyPart
 	IntegrationContract string
@@ -137,10 +138,11 @@ type taskLaunchSpec struct {
 }
 
 type taskImageManifestRow struct {
-	Index              int                                            `json:"index"`
-	Theme              string                                         `json:"theme,omitempty"`
-	StreamKey          string                                         `json:"stream_key"`
-	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	Index              int                                             `json:"index"`
+	Theme              string                                          `json:"theme,omitempty"`
+	StreamKey          string                                          `json:"stream_key"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements  `json:"output_requirements,omitempty"`
+	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 }
 
 type taskLaunchManifest struct {
@@ -368,6 +370,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}
 	if (hasProgram || action == taskProgramActionStatus) && mode != taskModeRegular {
 		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
+	}
+	if _, supplied := args["source_artifact"]; supplied && mode != taskModeSwarm {
+		return taskCallArguments{}, errors.New("task source_artifact is supported only for direct image swarms")
 	}
 
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
@@ -857,6 +862,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	}
 
 	if strategy == taskSwarmStrategyAssembly {
+		if _, exists := args["source_artifact"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept source_artifact")
+		}
 		if _, exists := args["output_requirements"]; exists {
 			return nil, nil, errors.New("task Assembly swarm does not accept output_requirements")
 		}
@@ -929,11 +937,25 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		}
 		args["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
 	}
+	rawSourceArtifact, sourceArtifactProvided := args["source_artifact"]
+	if sourceArtifactProvided && rawSourceArtifact == nil {
+		return nil, nil, errors.New("task source_artifact must be an exact ready artifact reference object")
+	}
+	sourceArtifact, err := parseTaskImageSourceArtifact(rawSourceArtifact)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sourceArtifact != nil && agentType != "image" {
+		return nil, nil, errors.New("task source_artifact is supported only for direct image swarms")
+	}
+	if sourceArtifact != nil {
+		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
+	}
 	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "" || outputRequirements != nil) {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), OwnedScopeTemplate: ownedScopeTemplate}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), OwnedScopeTemplate: ownedScopeTemplate}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -956,6 +978,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		sourceArguments := map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
 		if outputRequirements != nil {
 			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
+		}
+		if sourceArtifact != nil {
+			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
@@ -1199,6 +1224,44 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func parseTaskImageSourceArtifact(raw any) (*pebblestore.SessionArtifactSelectionReference, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New("task source_artifact must be an object")
+	}
+	var ref pebblestore.SessionArtifactSelectionReference
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&ref); err != nil {
+		return nil, fmt.Errorf("task source_artifact is invalid: %w", err)
+	}
+	ref.SessionID = strings.TrimSpace(ref.SessionID)
+	ref.CollectionID = strings.TrimSpace(ref.CollectionID)
+	ref.VariantID = strings.TrimSpace(ref.VariantID)
+	if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || ref.EventSeq < 1 || ref.EventSeq > uint64(math.MaxInt) {
+		return nil, errors.New("task source_artifact requires session_id, collection_id, variant_id, and event_seq from one exact ready artifact reference")
+	}
+	return &ref, nil
+}
+
+func cloneTaskImageSourceArtifact(input *pebblestore.SessionArtifactSelectionReference) *pebblestore.SessionArtifactSelectionReference {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func equalTaskImageSourceArtifact(left, right *pebblestore.SessionArtifactSelectionReference) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.SessionID == right.SessionID && left.CollectionID == right.CollectionID && left.VariantID == right.VariantID && left.EventSeq == right.EventSeq
 }
 
 func cloneTaskOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
@@ -2807,7 +2870,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			if i < len(parsed.Swarm.Themes) {
 				theme = strings.TrimSpace(parsed.Swarm.Themes[i])
 			}
-			images[i] = taskImageManifestRow{Index: i + 1, Theme: theme, StreamKey: strings.TrimSpace(launch.StreamKey), OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements)}
+			images[i] = taskImageManifestRow{Index: i + 1, Theme: theme, StreamKey: strings.TrimSpace(launch.StreamKey), OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact)}
 		}
 		manifest := taskLaunchManifest{
 			PathID: taskLaunchPermissionPathID, Goal: parsed.Description, ImageCount: len(images), Description: parsed.Description,

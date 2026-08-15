@@ -528,6 +528,7 @@ type taskArtifactReference struct {
 	SessionID          string                                         `json:"session_id"`
 	CollectionID       string                                         `json:"collection_id"`
 	VariantID          string                                         `json:"variant_id"`
+	EventSeq           uint64                                         `json:"event_seq,omitempty"`
 	Status             string                                         `json:"status"`
 	FailureCode        string                                         `json:"failure_code,omitempty"`
 	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`

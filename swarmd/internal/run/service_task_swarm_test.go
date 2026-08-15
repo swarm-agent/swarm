@@ -75,6 +75,52 @@ func TestParseTaskSwarmImageBuildsDirectRouterHydratedItems(t *testing.T) {
 	}
 }
 
+func TestDirectImageSwarmParsesAndApprovesExactSourceArtifact(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"change the lighting","agent_type":"image","count":2,"source_artifact":{"session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":9}}`)
+	if err != nil {
+		t.Fatalf("parse image remix swarm: %v", err)
+	}
+	want := &pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 9}
+	if parsed.Swarm == nil || !equalTaskImageSourceArtifact(parsed.Swarm.SourceArtifact, want) {
+		t.Fatalf("source artifact = %#v", parsed.Swarm)
+	}
+	for i, launch := range parsed.Launches {
+		got, err := parseTaskImageSourceArtifact(launch.SourceArguments["source_artifact"])
+		if err != nil || !equalTaskImageSourceArtifact(got, want) {
+			t.Fatalf("launch %d source artifact = %#v, %v", i, got, err)
+		}
+	}
+	images := make([]taskImageManifestRow, len(parsed.Launches))
+	for i, launch := range parsed.Launches {
+		images[i] = taskImageManifestRow{Index: i + 1, StreamKey: launch.StreamKey, SourceArtifact: cloneTaskImageSourceArtifact(want)}
+	}
+	manifest := taskLaunchManifest{TaskMode: taskModeSwarm, SwarmAgentType: "image", SwarmStrategy: taskSwarmStrategyExplore, ImageCount: len(images), Images: images, ExecutionFormat: taskExecutionFormatImageDirect}
+	digest, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		t.Fatalf("digest image remix manifest: %v", err)
+	}
+	manifest.ManifestHash = digest
+	envelope, _ := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err := validateApprovedDirectImageSwarm(string(envelope), parsed); err != nil {
+		t.Fatalf("validate image remix manifest: %v", err)
+	}
+	manifest.Images[0].SourceArtifact.EventSeq++
+	digest, _ = taskLaunchManifestDigest(manifest)
+	manifest.ManifestHash = digest
+	tampered, _ := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err := validateApprovedDirectImageSwarm(string(tampered), parsed); err == nil {
+		t.Fatal("approved image remix manifest accepted changed source event")
+	}
+	for _, raw := range []string{
+		`{"mode":"swarm","prompt":"x","agent_type":"image","count":1,"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v"}}`,
+		`{"mode":"swarm","prompt":"x","agent_type":"designer","count":1,"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1}}`,
+	} {
+		if _, err := parseTaskCallArguments(raw); err == nil {
+			t.Fatalf("invalid source artifact accepted: %s", raw)
+		}
+	}
+}
+
 func TestDirectImageSwarmApprovedManifestUsesImagesNotLaunches(t *testing.T) {
 	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"images","prompt":"campaign brief","agent_type":"image","count":2,"themes":["minimal","editorial"]}`)
 	if err != nil {
