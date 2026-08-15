@@ -89,38 +89,38 @@ type VideoAudioPolicy struct {
 
 // VideoTimelineClip represents one ordered clip in the video timeline.
 type VideoTimelineClip struct {
-	ID              string                     `json:"id"`
-	Name            string                     `json:"name,omitempty"`
-	Track           int                        `json:"track"`
-	Sequence        int                        `json:"sequence"`
-	SourceKind      string                     `json:"source_kind"` // "source_video", "managed_artifact", "color", "text"
-	SourceRef       string                     `json:"source_ref,omitempty"`
+	ID              string                             `json:"id"`
+	Name            string                             `json:"name,omitempty"`
+	Track           int                                `json:"track"`
+	Sequence        int                                `json:"sequence"`
+	SourceKind      string                             `json:"source_kind"` // "source_video", "managed_artifact", "color", "text"
+	SourceRef       string                             `json:"source_ref,omitempty"`
 	ArtifactRef     *SessionArtifactSelectionReference `json:"artifact_ref,omitempty"`
-	SourceStartMs   int64                      `json:"source_start_ms"`
-	SourceEndMs     int64                      `json:"source_end_ms"`
-	TimelineStartMs int64                      `json:"timeline_start_ms"`
-	TimelineEndMs   int64                      `json:"timeline_end_ms"`
-	DurationMs      int64                      `json:"duration_ms"`
-	Visible         bool                       `json:"visible"`
-	Layer           int                        `json:"layer,omitempty"`
-	Volume          float64                    `json:"volume,omitempty"`
-	Muted           bool                       `json:"muted,omitempty"`
-	AudioPolicy     *VideoAudioPolicy          `json:"audio_policy,omitempty"`
-	Captions        []VideoTextOverlay         `json:"captions,omitempty"`
-	DesignInput     *VideoDesignInputReference `json:"design_input,omitempty"`
+	SourceStartMs   int64                              `json:"source_start_ms"`
+	SourceEndMs     int64                              `json:"source_end_ms"`
+	TimelineStartMs int64                              `json:"timeline_start_ms"`
+	TimelineEndMs   int64                              `json:"timeline_end_ms"`
+	DurationMs      int64                              `json:"duration_ms"`
+	Visible         bool                               `json:"visible"`
+	Layer           int                                `json:"layer,omitempty"`
+	Volume          float64                            `json:"volume,omitempty"`
+	Muted           bool                               `json:"muted,omitempty"`
+	AudioPolicy     *VideoAudioPolicy                  `json:"audio_policy,omitempty"`
+	Captions        []VideoTextOverlay                 `json:"captions,omitempty"`
+	DesignInput     *VideoDesignInputReference         `json:"design_input,omitempty"`
 }
 
 // VideoProjectTimeline defines the structured, versioned timeline contract.
 type VideoProjectTimeline struct {
-	SchemaVersion   int                `json:"schema_version"`
-	OutputPreset    string             `json:"output_preset"`
-	Width           int                `json:"width"`
-	Height          int                `json:"height"`
-	FPS             float64            `json:"fps"`
-	TotalDurationMs int64              `json:"total_duration_ms"`
+	SchemaVersion   int                 `json:"schema_version"`
+	OutputPreset    string              `json:"output_preset"`
+	Width           int                 `json:"width"`
+	Height          int                 `json:"height"`
+	FPS             float64             `json:"fps"`
+	TotalDurationMs int64               `json:"total_duration_ms"`
 	Clips           []VideoTimelineClip `json:"clips"`
-	AudioPolicy     *VideoAudioPolicy  `json:"audio_policy,omitempty"`
-	Metadata        map[string]any     `json:"metadata,omitempty"`
+	AudioPolicy     *VideoAudioPolicy   `json:"audio_policy,omitempty"`
+	Metadata        map[string]any      `json:"metadata,omitempty"`
 }
 
 // VideoProjectSnapshot represents a durable session-owned video project.
@@ -949,18 +949,18 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 	}
 
 	project := VideoProjectSnapshot{
-		SchemaVersion: VideoProjectSchemaVersion,
-		ID:            input.ProjectID,
+		SchemaVersion:  VideoProjectSchemaVersion,
+		ID:             input.ProjectID,
 		AccountScopeID: input.AccountScopeID,
-		UserID:        input.UserID,
-		WorkspaceID:   input.WorkspaceID,
-		SessionID:     input.SessionID,
-		Title:         input.Title,
-		Description:   input.Description,
-		OutputPreset:  normalizeVideoPreset(input.OutputPreset),
-		Metadata:      input.Metadata,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		UserID:         input.UserID,
+		WorkspaceID:    input.WorkspaceID,
+		SessionID:      input.SessionID,
+		Title:          input.Title,
+		Description:    input.Description,
+		OutputPreset:   normalizeVideoPreset(input.OutputPreset),
+		Metadata:       input.Metadata,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	var revision *VideoProjectRevisionSnapshot
@@ -968,18 +968,18 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 		timeline := *input.InitialTimeline
 		normalizeVideoTimeline(&timeline)
 		rev := VideoProjectRevisionSnapshot{
-			SchemaVersion: VideoProjectRevisionSchemaVersion,
-			ID:            generateDeterministicOrRandomID("vrev"),
-			ProjectID:     project.ID,
+			SchemaVersion:  VideoProjectRevisionSchemaVersion,
+			ID:             generateDeterministicOrRandomID("vrev"),
+			ProjectID:      project.ID,
 			RevisionNumber: 1,
 			AccountScopeID: input.AccountScopeID,
-			UserID:        input.UserID,
-			WorkspaceID:   input.WorkspaceID,
-			SessionID:     input.SessionID,
-			Description:   "Initial revision",
-			ChangeSummary: "Created initial timeline",
-			Timeline:      timeline,
-			CreatedAt:     now,
+			UserID:         input.UserID,
+			WorkspaceID:    input.WorkspaceID,
+			SessionID:      input.SessionID,
+			Description:    "Initial revision",
+			ChangeSummary:  "Created initial timeline",
+			Timeline:       timeline,
+			CreatedAt:      now,
 		}
 		revision = &rev
 	}

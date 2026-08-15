@@ -207,13 +207,13 @@ func TestFinalHandoffPrimaryRecommendationAndSecondaryPromptsNavigation(t *testi
 						},
 						"artifacts": []any{
 							map[string]any{
-								"id":           "art-1",
-								"label":        "Summary Spec",
-								"media_type":   "text/markdown",
-								"status":       "ready",
-								"session_id":   "sess-recommendation",
-								"variant_id":   "art-1",
-								"previewable":  true,
+								"id":          "art-1",
+								"label":       "Summary Spec",
+								"media_type":  "text/markdown",
+								"status":      "ready",
+								"session_id":  "sess-recommendation",
+								"variant_id":  "art-1",
+								"previewable": true,
 							},
 						},
 					},
@@ -281,7 +281,7 @@ func TestFinalHandoffPrimaryRecommendationAndSecondaryPromptsNavigation(t *testi
 
 func TestManageArtifactToolPresentationInTimeline(t *testing.T) {
 	item := ToolTimelineItem{
-		Name: "manage_artifact",
+		Name:      "manage_artifact",
 		Arguments: `{"action":"create","media_type":"text/html","title":"Brainstorming Mockup"}`,
 		Output: `{
 			"tool":"manage_artifact",

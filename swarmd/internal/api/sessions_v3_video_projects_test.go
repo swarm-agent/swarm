@@ -65,8 +65,8 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	}
 
 	var createResp struct {
-		OK       bool                                     `json:"ok"`
-		Project  pebblestore.VideoProjectSnapshot         `json:"project"`
+		OK       bool                                      `json:"ok"`
+		Project  pebblestore.VideoProjectSnapshot          `json:"project"`
 		Revision *pebblestore.VideoProjectRevisionSnapshot `json:"revision"`
 	}
 	if err := json.Unmarshal(createRec.Body.Bytes(), &createResp); err != nil {
@@ -88,9 +88,9 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 		t.Fatalf("list projects status = %d, want 200", listRec.Code)
 	}
 	var listResp struct {
-		OK       bool                              `json:"ok"`
+		OK       bool                               `json:"ok"`
 		Projects []pebblestore.VideoProjectSnapshot `json:"projects"`
-		Count    int                               `json:"count"`
+		Count    int                                `json:"count"`
 	}
 	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("unmarshal list response: %v", err)
@@ -189,7 +189,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 		t.Fatalf("start render status = %d, want 202. body = %s", renderRec.Code, renderRec.Body.String())
 	}
 	var renderResp struct {
-		OK        bool                             `json:"ok"`
+		OK        bool                               `json:"ok"`
 		RenderJob pebblestore.VideoRenderJobSnapshot `json:"render_job"`
 	}
 	if err := json.Unmarshal(renderRec.Body.Bytes(), &renderResp); err != nil {

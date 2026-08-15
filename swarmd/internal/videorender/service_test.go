@@ -330,10 +330,10 @@ func TestRenderJobSuccessfulFlow(t *testing.T) {
 
 	ctx := context.Background()
 	result, err := svc.RenderJob(ctx, principal, RenderJobRequest{
-		SessionID: sessionID,
-		ProjectID: projectID,
+		SessionID:  sessionID,
+		ProjectID:  projectID,
 		RevisionID: revID,
-		JobID:     jobID,
+		JobID:      jobID,
 	})
 	if err != nil {
 		t.Fatalf("render job failed: %v", err)
@@ -464,10 +464,10 @@ func TestRenderJobFailureHandling(t *testing.T) {
 	svc := NewService(Config{}, store, artAuth, nil, nil, runner)
 
 	_, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{
-		SessionID: sessionID,
-		ProjectID: projectID,
+		SessionID:  sessionID,
+		ProjectID:  projectID,
 		RevisionID: revID,
-		JobID:     jobID,
+		JobID:      jobID,
 	})
 	if err == nil {
 		t.Fatalf("expected error from failed ffmpeg run")
