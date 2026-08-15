@@ -2,6 +2,7 @@ package v3chat
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -70,11 +71,35 @@ func finalHandoffExpandableSections(handoff *client.PlanFinalHandoff) []string {
 	return sections
 }
 
+func finalHandoffRecommendationPrompt(rec *client.SessionPlanCheckpointRecommendation) string {
+	if rec == nil {
+		return ""
+	}
+	if prompt := strings.TrimSpace(rec.Prompt); prompt != "" {
+		return prompt
+	}
+	if action := strings.TrimSpace(rec.Action); action != "" {
+		return action
+	}
+	return strings.TrimSpace(rec.Decision)
+}
+
+func hasActionableRecommendation(handoff *client.PlanFinalHandoff) bool {
+	if handoff == nil || handoff.Recommendation == nil {
+		return false
+	}
+	return finalHandoffRecommendationPrompt(handoff.Recommendation) != ""
+}
+
 func finalHandoffControlCount(handoff *client.PlanFinalHandoff) int {
 	if handoff == nil {
 		return 0
 	}
-	return len(handoff.SuggestedPrompts) + len(finalHandoffExpandableSections(handoff))
+	count := len(handoff.SuggestedPrompts) + len(finalHandoffExpandableSections(handoff))
+	if hasActionableRecommendation(handoff) {
+		count++
+	}
+	return count
 }
 
 func finalHandoffSelectedAction(messages []Message, messageID string, control int) string {
@@ -83,11 +108,19 @@ func finalHandoffSelectedAction(messages []Message, messageID string, control in
 		if message.ID != messageID || !isStructuredFinalHandoffMessage(message) || message.FinalHandoff == nil {
 			continue
 		}
-		if control >= 0 && control < len(message.FinalHandoff.SuggestedPrompts) {
-			return finalHandoffPromptAction(message.ID, control)
+		offset := 0
+		if hasActionableRecommendation(message.FinalHandoff) {
+			if control == 0 {
+				return finalHandoffRecommendationAction(message.ID)
+			}
+			offset = 1
+		}
+		promptIndex := control - offset
+		if promptIndex >= 0 && promptIndex < len(message.FinalHandoff.SuggestedPrompts) {
+			return finalHandoffPromptAction(message.ID, promptIndex)
 		}
 		sections := finalHandoffExpandableSections(message.FinalHandoff)
-		sectionIndex := control - len(message.FinalHandoff.SuggestedPrompts)
+		sectionIndex := promptIndex - len(message.FinalHandoff.SuggestedPrompts)
 		if sectionIndex >= 0 && sectionIndex < len(sections) {
 			return finalHandoffSectionAction(message.ID, sections[sectionIndex])
 		}
@@ -189,6 +222,22 @@ func (p *Page) activateFinalHandoffControlLocked(message Message, index int) {
 	if handoff == nil || index < 0 {
 		return
 	}
+	if hasActionableRecommendation(handoff) {
+		if index == 0 {
+			prompt := finalHandoffRecommendationPrompt(handoff.Recommendation)
+			if prompt == "" || p.busy {
+				return
+			}
+			p.handoffFocus = false
+			p.input = nil
+			p.cursor = 0
+			p.follow = true
+			p.scroll = 0
+			go p.Send(prompt)
+			return
+		}
+		index--
+	}
 	if index < len(handoff.SuggestedPrompts) {
 		prompt := strings.TrimSpace(handoff.SuggestedPrompts[index].Prompt)
 		if prompt == "" || p.busy {
@@ -267,7 +316,7 @@ func (p *Page) closeFinalHandoffDetailsLocked() {
 
 func (p *Page) activateFinalHandoffTargetLocked(action string) bool {
 	parts := strings.Split(action, ":")
-	if len(parts) != 4 || parts[0] != "handoff" {
+	if (len(parts) != 4 && len(parts) != 3) || parts[0] != "handoff" {
 		return false
 	}
 	message, ok := p.latestFinalHandoffLocked()
@@ -276,21 +325,37 @@ func (p *Page) activateFinalHandoffTargetLocked(action string) bool {
 	}
 	p.handoffMessageID = message.ID
 	p.handoffFocus = true
-	if parts[2] == "prompt" {
+	if parts[2] == "recommendation" {
+		if hasActionableRecommendation(message.FinalHandoff) {
+			p.handoffControl = 0
+			p.activateFinalHandoffControlLocked(message, 0)
+			return true
+		}
+		return false
+	}
+	if len(parts) == 4 && parts[2] == "prompt" {
 		var index int
 		if _, err := fmt.Sscanf(parts[3], "%d", &index); err == nil && index >= 0 && index < len(message.FinalHandoff.SuggestedPrompts) {
-			p.handoffControl = index
-			p.activateFinalHandoffControlLocked(message, index)
+			controlIndex := index
+			if hasActionableRecommendation(message.FinalHandoff) {
+				controlIndex++
+			}
+			p.handoffControl = controlIndex
+			p.activateFinalHandoffControlLocked(message, controlIndex)
 			return true
 		}
 	}
-	if parts[2] == "section" {
+	if len(parts) == 4 && parts[2] == "section" {
 		sections := finalHandoffExpandableSections(message.FinalHandoff)
 		for sectionIndex, section := range sections {
 			if section != parts[3] {
 				continue
 			}
-			p.handoffControl = len(message.FinalHandoff.SuggestedPrompts) + sectionIndex
+			controlIndex := len(message.FinalHandoff.SuggestedPrompts) + sectionIndex
+			if hasActionableRecommendation(message.FinalHandoff) {
+				controlIndex++
+			}
+			p.handoffControl = controlIndex
 			p.activateFinalHandoffControlLocked(message, p.handoffControl)
 			return true
 		}
@@ -390,7 +455,13 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 		if action := strings.TrimSpace(strings.ReplaceAll(recommendation.Action, "_", " ")); action != "" {
 			label = strings.TrimSpace(label + " — " + action)
 		}
-		appendBody(label, styles.Text.Bold(true), "", false)
+		recAction := ""
+		recActive := false
+		if hasActionableRecommendation(handoff) {
+			recAction = finalHandoffRecommendationAction(message.ID)
+			recActive = focused && selected == 0
+		}
+		appendBody(label, styles.Text.Bold(true), recAction, recActive)
 		if recommendation.Reason != "" {
 			appendBody(recommendation.Reason, styles.Muted, "", false)
 		}
@@ -398,15 +469,24 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 	if len(handoff.SuggestedPrompts) > 0 {
 		appendSectionGap()
 		appendBody("NEXT STEPS", styles.Secondary.Bold(true), "", false)
+		promptOffset := 0
+		if hasActionableRecommendation(handoff) {
+			promptOffset = 1
+		}
 		for index, suggestion := range handoff.SuggestedPrompts {
 			action := finalHandoffPromptAction(message.ID, index)
-			appendBody(fmt.Sprintf("%d. %s", index+1, suggestion.Label), styles.Text, action, focused && selected == index)
+			controlIndex := promptOffset + index
+			appendBody(fmt.Sprintf("%d. %s", index+1, suggestion.Label), styles.Text, action, focused && selected == controlIndex)
 		}
 	}
 	sections := finalHandoffExpandableSections(handoff)
 	if len(sections) > 0 {
 		appendSectionGap()
 		appendBody("EVIDENCE", styles.Secondary.Bold(true), "", false)
+		sectionOffset := len(handoff.SuggestedPrompts)
+		if hasActionableRecommendation(handoff) {
+			sectionOffset++
+		}
 		for sectionIndex, section := range sections {
 			label := ""
 			switch section {
@@ -426,7 +506,7 @@ func (p *Page) renderFinalHandoffRows(message Message, width int, styles PageSty
 			case "validation":
 				label = fmt.Sprintf("▸ Validation (%d)", len(handoff.Details.Validation))
 			}
-			controlIndex := len(handoff.SuggestedPrompts) + sectionIndex
+			controlIndex := sectionOffset + sectionIndex
 			appendBody(label, styles.Muted, finalHandoffSectionAction(message.ID, section), focused && selected == controlIndex)
 		}
 	}
@@ -506,33 +586,81 @@ func appendArtifactList(lines *[]permissionCardLine, artifacts []client.PlanFina
 	}
 	*lines = append(*lines, permissionCardLine{Text: "DELIVERABLE ARTIFACTS", Style: styles.Secondary.Bold(true)})
 	for index, artifact := range artifacts {
-		label := firstNonEmpty(strings.TrimSpace(artifact.Label), strings.TrimSpace(artifact.Description), strings.TrimSpace(artifact.WorkspaceRelativePath), strings.TrimSpace(artifact.RelativePath), strings.TrimSpace(artifact.Path), fmt.Sprintf("Artifact %d", index+1))
+		label := firstNonEmpty(
+			strings.TrimSpace(artifact.Label),
+			strings.TrimSpace(artifact.Description),
+			strings.TrimSpace(artifact.Filename),
+			strings.TrimSpace(artifact.VariantID),
+			strings.TrimSpace(artifact.WorkspaceRelativePath),
+			strings.TrimSpace(artifact.RelativePath),
+			strings.TrimSpace(artifact.Path),
+			fmt.Sprintf("Artifact %d", index+1),
+		)
 		mediaType := firstNonEmpty(strings.TrimSpace(artifact.MediaType), "file")
-		preview := "download"
+
+		status := strings.TrimSpace(artifact.Status)
+		availability := "download"
 		if artifact.Previewable {
-			preview = "preview available"
+			availability = "preview available"
 		}
-		for lineIndex, line := range wrapDisplayText(fmt.Sprintf("%d. %s  ·  %s  ·  %s", index+1, label, mediaType, preview), maxInt(1, width-2)) {
+		if status != "" {
+			if strings.EqualFold(status, "ready") {
+				if artifact.Previewable {
+					availability = "ready · preview available"
+				} else {
+					availability = "ready"
+				}
+			} else {
+				availability = status
+			}
+		}
+
+		for lineIndex, line := range wrapDisplayText(fmt.Sprintf("%d. %s  ·  %s  ·  %s", index+1, label, mediaType, availability), maxInt(1, width-2)) {
 			prefix := "  "
 			if lineIndex == 0 {
 				prefix = "• "
 			}
 			*lines = append(*lines, permissionCardLine{Text: prefix + line, Style: styles.Text})
 		}
+
+		identityParts := make([]string, 0, 4)
+		if sID := strings.TrimSpace(artifact.SessionID); sID != "" {
+			identityParts = append(identityParts, "session="+sID)
+		}
+		if cID := strings.TrimSpace(artifact.CollectionID); cID != "" {
+			identityParts = append(identityParts, "collection="+cID)
+		}
+		if vID := strings.TrimSpace(artifact.VariantID); vID != "" {
+			identityParts = append(identityParts, "variant="+vID)
+		}
+		if artifact.EventSeq > 0 {
+			identityParts = append(identityParts, fmt.Sprintf("event_seq=%d", artifact.EventSeq))
+		}
+		if len(identityParts) > 0 {
+			for _, line := range wrapDisplayText("Identity: "+strings.Join(identityParts, " · "), maxInt(1, width-2)) {
+				*lines = append(*lines, permissionCardLine{Text: "  " + line, Style: styles.Muted})
+			}
+		}
+
 		path := firstNonEmpty(strings.TrimSpace(artifact.WorkspaceRelativePath), strings.TrimSpace(artifact.RelativePath), strings.TrimSpace(artifact.Path))
 		if path != "" {
 			for _, line := range wrapDisplayText("Path: "+path, maxInt(1, width-2)) {
 				*lines = append(*lines, permissionCardLine{Text: "  " + line, Style: styles.Muted})
 			}
 		}
-		artifactID := firstNonEmpty(strings.TrimSpace(artifact.ArtifactID), strings.TrimSpace(artifact.ID))
+
+		artifactID := firstNonEmpty(strings.TrimSpace(artifact.ArtifactID), strings.TrimSpace(artifact.ID), strings.TrimSpace(artifact.VariantID))
 		if artifactID != "" {
-			sessionSegment := firstNonEmpty(strings.TrimSpace(sessionID), "{session_id}")
-			route := firstNonEmpty(strings.TrimSpace(artifact.PreviewURL), "/v3/sessions/"+sessionSegment+"/artifacts/"+artifactID)
+			sessionSegment := firstNonEmpty(strings.TrimSpace(artifact.SessionID), strings.TrimSpace(sessionID), "{session_id}")
+			route := strings.TrimSpace(artifact.PreviewURL)
+			if route == "" {
+				route = fmt.Sprintf("/v3/sessions/%s/artifacts/%s", url.PathEscape(sessionSegment), url.PathEscape(artifactID))
+			}
 			for _, line := range wrapDisplayText("Route: "+route, maxInt(1, width-2)) {
 				*lines = append(*lines, permissionCardLine{Text: "  " + line, Style: styles.Muted})
 			}
 		}
+
 		if index+1 < len(artifacts) {
 			*lines = append(*lines, permissionCardLine{Text: "", Style: styles.Muted})
 		}
@@ -641,6 +769,10 @@ func displayCellWidth(text string) int {
 		text = rest
 	}
 	return width
+}
+
+func finalHandoffRecommendationAction(messageID string) string {
+	return fmt.Sprintf("handoff:%s:recommendation", messageID)
 }
 
 func finalHandoffPromptAction(messageID string, index int) string {
