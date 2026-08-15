@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -52,7 +53,7 @@ func TestManageVideoDefinitionExposesAdaptiveJobInstructions(t *testing.T) {
 
 func TestManageVideoDefinitionExposesSourceNavigationWorkflow(t *testing.T) {
 	definition := manageVideoDefinition()
-	if !strings.Contains(definition.Description, "registered source-video folders") || !strings.Contains(definition.Description, "selected opaque video references") || !strings.Contains(definition.Description, "no triggering-message attachment") {
+	if !strings.Contains(definition.Description, "registered source-video folders") || !strings.Contains(definition.Description, "selected opaque video references") || !strings.Contains(definition.Description, "inspect triggering-message attachments") {
 		t.Fatalf("description does not expose source workflow: %s", definition.Description)
 	}
 	raw, err := json.Marshal(definition.Parameters)
@@ -231,8 +232,6 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
 	workspacePath := t.TempDir()
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
@@ -405,6 +404,14 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(payload, "cancelled") {
 		t.Fatalf("unexpected cancel_render output: %s", payload)
+	}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := videoRender.WaitForIdle(waitCtx); err != nil {
+		t.Fatalf("render goroutine did not stop before test cleanup: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
 	}
 }
 

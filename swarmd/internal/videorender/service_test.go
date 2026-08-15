@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
@@ -536,9 +535,13 @@ func TestRecoverJobsResumesPinnedRevisionAndWorkspace(t *testing.T) {
 	store.jobs["job_1"] = pebblestore.VideoRenderJobSnapshot{ID: "job_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1", ProjectID: "proj_1", RevisionID: "rev_old", Status: pebblestore.VideoRenderJobStatusRendering}
 	svc := NewService(Config{}, store, &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
 	count, err := svc.RecoverJobs(context.Background())
-	if err != nil || count != 1 { t.Fatalf("RecoverJobs() = %d, %v", count, err) }
+	if err != nil || count != 1 {
+		t.Fatalf("RecoverJobs() = %d, %v", count, err)
+	}
 	job := store.jobs["job_1"]
-	if job.Status != pebblestore.VideoRenderJobStatusReady { t.Fatalf("status = %s, want ready", job.Status) }
+	if job.Status != pebblestore.VideoRenderJobStatusReady {
+		t.Fatalf("status = %s, want ready", job.Status)
+	}
 }
 
 func TestRecoverJobsPreservesExistingReadyArtifact(t *testing.T) {
@@ -548,18 +551,32 @@ func TestRecoverJobsPreservesExistingReadyArtifact(t *testing.T) {
 	store.variants["acc_1/sess_1/vproj_proj_1/vrender_job_1"] = pebblestore.SessionArtifactVariant{ID: "vrender_job_1", CollectionID: "vproj_proj_1", SessionID: "sess_1", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 9, Size: 44}
 	runner := &fakeCommandRunner{}
 	svc := NewService(Config{}, store, nil, nil, nil, runner)
-	if count, err := svc.RecoverJobs(context.Background()); err != nil || count != 1 { t.Fatalf("RecoverJobs() = %d, %v", count, err) }
-	if store.jobs[job.ID].Status != pebblestore.VideoRenderJobStatusReady { t.Fatal("artifact recovery did not complete") }
-	if len(runner.calls) != 0 { t.Fatalf("ffmpeg calls = %d, want 0", len(runner.calls)) }
-	if store.jobs[job.ID].OutputArtifact == nil { t.Fatal("ready artifact reference was not restored") }
+	if count, err := svc.RecoverJobs(context.Background()); err != nil || count != 1 {
+		t.Fatalf("RecoverJobs() = %d, %v", count, err)
+	}
+	if store.jobs[job.ID].Status != pebblestore.VideoRenderJobStatusReady {
+		t.Fatal("artifact recovery did not complete")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("ffmpeg calls = %d, want 0", len(runner.calls))
+	}
+	if store.jobs[job.ID].OutputArtifact == nil {
+		t.Fatal("ready artifact reference was not restored")
+	}
 }
 
 func TestRenderJobProcessAdmissionRejectsDuplicate(t *testing.T) {
 	svc := NewService(Config{}, newFakeSessionStore(), nil, nil, nil, nil)
-	if !svc.admit("job") { t.Fatal("first admission failed") }
-	if svc.admit("job") { t.Fatal("duplicate admission succeeded") }
+	if !svc.admit("job") {
+		t.Fatal("first admission failed")
+	}
+	if svc.admit("job") {
+		t.Fatal("duplicate admission succeeded")
+	}
 	svc.release("job")
-	if !svc.admit("job") { t.Fatal("admission after release failed") }
+	if !svc.admit("job") {
+		t.Fatal("admission after release failed")
+	}
 	svc.release("job")
 }
 

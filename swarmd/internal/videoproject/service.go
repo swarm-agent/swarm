@@ -61,14 +61,14 @@ type CreateRevisionInput struct {
 }
 
 type RestoreRevisionInput struct {
-	SessionID             string
-	ProjectID             string
-	SourceRevisionID      string
-	RevisionID            string
-	Description           string
-	ChangeSummary         string
-	AuthorPrincipal       string
-	NowUnixMs             int64
+	SessionID        string
+	ProjectID        string
+	SourceRevisionID string
+	RevisionID       string
+	Description      string
+	ChangeSummary    string
+	AuthorPrincipal  string
+	NowUnixMs        int64
 }
 
 type StartRenderJobInput struct {
@@ -339,6 +339,23 @@ func (s *Service) GetRevision(principal identity.Principal, sessionID, projectID
 func (s *Service) ListProjects(principal identity.Principal, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return nil, errors.New("videoproject service is not configured")
+	}
+	if !principal.Valid() {
+		return nil, errors.New("authenticated principal is required")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("session not found")
+		}
+		return nil, err
+	}
+	if session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) {
+		return nil, errors.New("session ownership does not match authenticated principal")
 	}
 	return s.sessions.ListVideoProjects(principal.AccountScopeID, sessionID, limit)
 }

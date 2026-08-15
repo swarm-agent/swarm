@@ -13,14 +13,15 @@ import (
 )
 
 func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
-	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "clip.mp4", "")
+	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "fixture")
 	store := sessionSvc.Store()
 	videoProjectSvc := videoproject.NewService(store)
 	server.SetVideoProjectService(videoProjectSvc)
 
 	principal := testPrincipal()
 
-	createdSession, err := store.CreateSession(pebblestore.CreateSessionInput{
+	createdSession := pebblestore.SessionSnapshot{
+		ID:             "video-session-workflow",
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
 		Title:          "Video Session",
@@ -28,8 +29,8 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 		Metadata: map[string]any{
 			"workspace_id": "ws-1",
 		},
-	})
-	if err != nil {
+	}
+	if err := store.CreateSession(createdSession); err != nil {
 		t.Fatalf("failed to create session: %v", err)
 	}
 
@@ -58,7 +59,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 
 	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+createdSession.ID+"/video/projects", bytes.NewReader(createProjectBody))
 	createRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(createRec, createReq.WithContext(ContextWithPrincipal(createReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(createRec, createReq.WithContext(identity.ContextWithPrincipal(createReq.Context(), principal)))
 
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create video project status = %d, want 201. body = %s", createRec.Code, createRec.Body.String())
@@ -82,7 +83,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	// 2. GET /v3/sessions/{id}/video/projects -> list projects
 	listReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createdSession.ID+"/video/projects", nil)
 	listRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(listRec, listReq.WithContext(ContextWithPrincipal(listReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(listRec, listReq.WithContext(identity.ContextWithPrincipal(listReq.Context(), principal)))
 
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("list projects status = %d, want 200", listRec.Code)
@@ -102,7 +103,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	// 3. GET /v3/sessions/{id}/video/projects/{project_id} -> get project detail
 	getReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1", nil)
 	getRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(getRec, getReq.WithContext(ContextWithPrincipal(getReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(getRec, getReq.WithContext(identity.ContextWithPrincipal(getReq.Context(), principal)))
 
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get project status = %d, want 200", getRec.Code)
@@ -140,7 +141,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	})
 	revReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1/revisions", bytes.NewReader(createRevBody))
 	revRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(revRec, revReq.WithContext(ContextWithPrincipal(revReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(revRec, revReq.WithContext(identity.ContextWithPrincipal(revReq.Context(), principal)))
 
 	if revRec.Code != http.StatusCreated {
 		t.Fatalf("create revision status = %d, want 201. body = %s", revRec.Code, revRec.Body.String())
@@ -160,7 +161,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	// 5. GET /v3/sessions/{id}/video/projects/{project_id}/revisions -> list revisions
 	listRevsReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1/revisions", nil)
 	listRevsRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(listRevsRec, listRevsReq.WithContext(ContextWithPrincipal(listRevsReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(listRevsRec, listRevsReq.WithContext(identity.ContextWithPrincipal(listRevsReq.Context(), principal)))
 
 	if listRevsRec.Code != http.StatusOK {
 		t.Fatalf("list revisions status = %d, want 200", listRevsRec.Code)
@@ -180,7 +181,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	// Restoring an exact immutable revision creates a new head and records its source.
 	restoreReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1/revisions/"+createResp.Revision.ID+"/restore", bytes.NewReader([]byte(`{"change_summary":"Restore original cut"}`)))
 	restoreRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(restoreRec, restoreReq.WithContext(ContextWithPrincipal(restoreReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(restoreRec, restoreReq.WithContext(identity.ContextWithPrincipal(restoreReq.Context(), principal)))
 	if restoreRec.Code != http.StatusCreated {
 		t.Fatalf("restore revision status = %d, want 201. body = %s", restoreRec.Code, restoreRec.Body.String())
 	}
@@ -201,7 +202,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	})
 	renderReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1/render", bytes.NewReader(renderReqBody))
 	renderRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(renderRec, renderReq.WithContext(ContextWithPrincipal(renderReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(renderRec, renderReq.WithContext(identity.ContextWithPrincipal(renderReq.Context(), principal)))
 
 	if renderRec.Code != http.StatusAccepted {
 		t.Fatalf("start render status = %d, want 202. body = %s", renderRec.Code, renderRec.Body.String())
@@ -220,7 +221,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	// 7. GET /v3/sessions/{id}/video/render-jobs/{job_id} -> get render job
 	jobReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createdSession.ID+"/video/render-jobs/job-1", nil)
 	jobRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(jobRec, jobReq.WithContext(ContextWithPrincipal(jobReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(jobRec, jobReq.WithContext(identity.ContextWithPrincipal(jobReq.Context(), principal)))
 
 	if jobRec.Code != http.StatusOK {
 		t.Fatalf("get render job status = %d, want 200", jobRec.Code)
@@ -228,31 +229,31 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 }
 
 func TestSessionsV3PrimaryVideoProjectDiscovery(t *testing.T) {
-	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "clip.mp4", "")
+	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "fixture")
 	store := sessionSvc.Store()
 	server.SetVideoProjectService(videoproject.NewService(store))
 	principal := testPrincipal()
-	created, err := store.CreateSession(pebblestore.CreateSessionInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Title: "Video Tool", WorkspacePath: "/workspace/test"})
-	if err != nil {
+	created := pebblestore.SessionSnapshot{ID: "video-session-primary", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Title: "Video Tool", WorkspacePath: "/workspace/test"}
+	if err := store.CreateSession(created); err != nil {
 		t.Fatal(err)
 	}
 	body := bytes.NewReader([]byte(`{"title":"Shared project","output_preset":"landscape_1080p"}`))
 	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/video/projects/primary", body)
 	createRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(createRec, createReq.WithContext(ContextWithPrincipal(createReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(createRec, createReq.WithContext(identity.ContextWithPrincipal(createReq.Context(), principal)))
 	if createRec.Code != http.StatusCreated {
 		t.Fatalf("create primary status=%d body=%s", createRec.Code, createRec.Body.String())
 	}
 	getReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/video/projects/primary", nil)
 	getRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(getRec, getReq.WithContext(ContextWithPrincipal(getReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(getRec, getReq.WithContext(identity.ContextWithPrincipal(getReq.Context(), principal)))
 	if getRec.Code != http.StatusOK || !bytes.Contains(getRec.Body.Bytes(), []byte(`"project_kind":"video_tool"`)) {
 		t.Fatalf("discover primary status=%d body=%s", getRec.Code, getRec.Body.String())
 	}
 }
 
 func TestSessionsV3VideoProjectSecurityAndValidation(t *testing.T) {
-	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "clip.mp4", "")
+	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "fixture")
 	store := sessionSvc.Store()
 	videoProjectSvc := videoproject.NewService(store)
 	server.SetVideoProjectService(videoProjectSvc)
@@ -270,7 +271,7 @@ func TestSessionsV3VideoProjectSecurityAndValidation(t *testing.T) {
 	// 2. Nonexistent session
 	req = httptest.NewRequest(http.MethodGet, "/v3/sessions/nonexistent-session/video/projects", nil)
 	rec = httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(rec, req.WithContext(ContextWithPrincipal(req.Context(), principal)))
+	server.handleSessionV3PrimaryByID(rec, req.WithContext(identity.ContextWithPrincipal(req.Context(), principal)))
 	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want error status", rec.Code)
 	}
@@ -281,7 +282,7 @@ func TestSessionsV3VideoProjectSecurityAndValidation(t *testing.T) {
 	})
 	exportReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/session-1/video/projects/vproj-1/export", bytes.NewReader(exportBody))
 	exportRec := httptest.NewRecorder()
-	server.handleSessionV3PrimaryByID(exportRec, exportReq.WithContext(ContextWithPrincipal(exportReq.Context(), principal)))
+	server.handleSessionV3PrimaryByID(exportRec, exportReq.WithContext(identity.ContextWithPrincipal(exportReq.Context(), principal)))
 	if exportRec.Code != http.StatusBadRequest && exportRec.Code != http.StatusNotFound {
 		t.Fatalf("export path escaping workspace status = %d, want error", exportRec.Code)
 	}

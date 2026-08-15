@@ -129,6 +129,10 @@ type Service struct {
 	runner    CommandRunner
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc
+	workers   sync.WaitGroup
+	workerMu  sync.Mutex
+	workerN   int
+	idle      chan struct{}
 }
 
 func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, opener ArtifactFileOpener, workspace WorkspaceAuthority, runner CommandRunner) *Service {
@@ -655,38 +659,93 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 	return inputs, nil
 }
 
+// StartRenderJob starts a tracked background render. Callers that own service
+// shutdown can use WaitForIdle before closing durable dependencies.
+func (s *Service) StartRenderJob(principal identity.Principal, req RenderJobRequest) {
+	if s == nil {
+		return
+	}
+	s.workerMu.Lock()
+	if s.workerN == 0 {
+		s.idle = make(chan struct{})
+	}
+	s.workerN++
+	s.workers.Add(1)
+	s.workerMu.Unlock()
+	go func() {
+		defer func() {
+			s.workers.Done()
+			s.workerMu.Lock()
+			s.workerN--
+			if s.workerN == 0 {
+				close(s.idle)
+			}
+			s.workerMu.Unlock()
+		}()
+		_, _ = s.RenderJob(context.Background(), principal, req)
+	}()
+}
+
+// WaitForIdle waits for all background renders started through StartRenderJob.
+func (s *Service) WaitForIdle(ctx context.Context) error {
+	if s == nil {
+		return errors.New("videorender service is not configured")
+	}
+	s.workerMu.Lock()
+	if s.workerN == 0 {
+		s.workerMu.Unlock()
+		return nil
+	}
+	idle := s.idle
+	s.workerMu.Unlock()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Service) CancelRenderJob(ctx context.Context, principal identity.Principal, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videorender service is not configured")
 	}
-	job, ok, err := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
-	if err != nil || !ok {
-		if err == nil {
-			err = fmt.Errorf("render job %q not found", jobID)
-		}
-		return pebblestore.VideoRenderJobSnapshot{}, err
-	}
 	s.mu.Lock()
 	cancel := s.cancels[jobID]
 	s.mu.Unlock()
-	updated, err := s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
-		AccountScopeID: principal.AccountScopeID,
-		UserID:         principal.UserID,
-		SessionID:      sessionID,
-		JobID:          jobID,
-		Status:         pebblestore.VideoRenderJobStatusCancelled,
-		FailureCode:    "cancelled_by_user",
-		FailureReason:  "Render job was cancelled",
-		ExpectedStatus: job.Status,
-		NowUnixMs:      time.Now().UnixMilli(),
-	})
-	if err != nil {
-		return pebblestore.VideoRenderJobSnapshot{}, err
-	}
 	if cancel != nil {
 		cancel()
 	}
-	return updated, nil
+	for attempts := 0; attempts < 3; attempts++ {
+		job, ok, err := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("render job %q not found", jobID)
+			}
+			return pebblestore.VideoRenderJobSnapshot{}, err
+		}
+		if job.Status == pebblestore.VideoRenderJobStatusCancelled {
+			return job, nil
+		}
+		updated, err := s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
+			AccountScopeID: principal.AccountScopeID,
+			UserID:         principal.UserID,
+			SessionID:      sessionID,
+			JobID:          jobID,
+			Status:         pebblestore.VideoRenderJobStatusCancelled,
+			FailureCode:    "cancelled_by_user",
+			FailureReason:  "Render job was cancelled",
+			ExpectedStatus: job.Status,
+			NowUnixMs:      time.Now().UnixMilli(),
+		})
+		if err == nil {
+			return updated, nil
+		}
+		if !strings.Contains(err.Error(), "status conflict") {
+			return pebblestore.VideoRenderJobSnapshot{}, err
+		}
+	}
+	return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("render job %q changed status while cancellation was applied", jobID)
 }
 
 // RecoverJobs is the daemon-startup recovery authority. It discovers a bounded
@@ -755,8 +814,8 @@ func (s *Service) restoreReadyArtifact(job pebblestore.VideoRenderJobSnapshot) b
 		AccountScopeID: job.AccountScopeID, UserID: job.UserID, SessionID: job.SessionID, JobID: job.ID,
 		Status: pebblestore.VideoRenderJobStatusReady, ExpectedStatus: job.Status, Progress: 1,
 		OutputSizeBytes: variant.Size,
-		OutputArtifact: &pebblestore.SessionArtifactSelectionReference{SessionID: job.SessionID, CollectionID: collectionID, VariantID: variant.ID, EventSeq: variant.EventSeq},
-		NowUnixMs: time.Now().UnixMilli(),
+		OutputArtifact:  &pebblestore.SessionArtifactSelectionReference{SessionID: job.SessionID, CollectionID: collectionID, VariantID: variant.ID, EventSeq: variant.EventSeq},
+		NowUnixMs:       time.Now().UnixMilli(),
 	})
 	return err == nil
 }

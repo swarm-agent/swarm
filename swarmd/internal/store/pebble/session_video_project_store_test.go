@@ -1,7 +1,6 @@
 package pebblestore
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -347,14 +346,14 @@ func TestVideoProjectAccountAndSessionIsolation(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()
 
-	accountA := "acc_A"
-	userA := "usr_A"
-	sessionA := "sess_A"
+	accountA := "acc_a"
+	userA := "usr_a"
+	sessionA := "sess_a"
 	createTestSession(t, store, accountA, userA, sessionA)
 
-	accountB := "acc_B"
-	userB := "usr_B"
-	sessionB := "sess_B"
+	accountB := "acc_b"
+	userB := "usr_b"
+	sessionB := "sess_b"
 	createTestSession(t, store, accountB, userB, sessionB)
 
 	// Create project in Account A
@@ -488,6 +487,9 @@ func TestTimelineValidationRules(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.timeline.Width = 1920
+			tc.timeline.Height = 1080
+			tc.timeline.FPS = 30
 			err := validateVideoTimeline(tc.timeline)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("validateVideoTimeline() error = %v, want substring %q", err, tc.wantErr)

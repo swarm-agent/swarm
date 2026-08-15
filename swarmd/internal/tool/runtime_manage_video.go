@@ -45,7 +45,7 @@ type manageVideoProjectService interface {
 }
 
 type manageVideoRenderService interface {
-	RenderJob(ctx context.Context, principal identity.Principal, req videorender.RenderJobRequest) (pebblestore.VideoRenderJobSnapshot, error)
+	StartRenderJob(principal identity.Principal, req videorender.RenderJobRequest)
 	CancelRenderJob(ctx context.Context, principal identity.Principal, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, error)
 	GetRenderJobStatus(ctx context.Context, principal identity.Principal, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error)
 }
@@ -512,16 +512,13 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		if r.videoRender != nil {
-			workspacePath := manageVideoWorkspacePath(session)
-			go func(jID, rID string) {
-				_, _ = r.videoRender.RenderJob(context.Background(), scope.Principal, videorender.RenderJobRequest{
-					SessionID:     projectSessionID,
-					ProjectID:     projectID,
-					RevisionID:    rID,
-					JobID:         jID,
-					WorkspacePath: workspacePath,
-				})
-			}(job.ID, job.RevisionID)
+			r.videoRender.StartRenderJob(scope.Principal, videorender.RenderJobRequest{
+				SessionID:     projectSessionID,
+				ProjectID:     projectID,
+				RevisionID:    job.RevisionID,
+				JobID:         job.ID,
+				WorkspacePath: manageVideoWorkspacePath(session),
+			})
 		}
 		response["render_job"] = safeVideoRenderJob(job)
 		response["job_id"] = job.ID
@@ -653,16 +650,16 @@ func safeVideoProjectRevision(rev *pebblestore.VideoProjectRevisionSnapshot) map
 		return nil
 	}
 	return map[string]any{
-		"id":                 rev.ID,
-		"project_id":         rev.ProjectID,
-		"revision_number":    rev.RevisionNumber,
-		"session_id":         rev.SessionID,
-		"parent_revision_id": rev.ParentRevisionID,
+		"id":                        rev.ID,
+		"project_id":                rev.ProjectID,
+		"revision_number":           rev.RevisionNumber,
+		"session_id":                rev.SessionID,
+		"parent_revision_id":        rev.ParentRevisionID,
 		"restored_from_revision_id": rev.RestoredFromRevisionID,
-		"description":        rev.Description,
-		"change_summary":     rev.ChangeSummary,
-		"timeline":           rev.Timeline,
-		"created_at":         rev.CreatedAt,
+		"description":               rev.Description,
+		"change_summary":            rev.ChangeSummary,
+		"timeline":                  rev.Timeline,
+		"created_at":                rev.CreatedAt,
 	}
 }
 

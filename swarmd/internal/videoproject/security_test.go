@@ -15,10 +15,12 @@ func TestVideoprojectSecurityRejections(t *testing.T) {
 	svc := NewService(store)
 
 	principalA := identity.Principal{
+		Type:           identity.PrincipalTypeUser,
 		AccountScopeID: "acc_alpha",
 		UserID:         "usr_alpha",
 	}
 	principalB := identity.Principal{
+		Type:           identity.PrincipalTypeUser,
 		AccountScopeID: "acc_beta",
 		UserID:         "usr_beta",
 	}

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -255,9 +254,7 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				WorkspacePath: wsPath,
 				Timeout:       timeout,
 			}
-			go func(p identity.Principal, rReq videorender.RenderJobRequest) {
-				_, _ = s.videoRender.RenderJob(context.Background(), p, rReq)
-			}(principal, renderReq)
+			s.videoRender.StartRenderJob(principal, renderReq)
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "render_job": job})
 	case "render-jobs":

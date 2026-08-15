@@ -821,7 +821,7 @@ func TestSessionsV3ArtifactOutputRequirementsProjectionClonesSnapshot(t *testing
 }
 
 func TestSessionsV3VideoArtifactRangeServingAndVisualCategory(t *testing.T) {
-	server, sessionSvc, registry, plan, checkpoint, _, _ := newLegacyArtifactImportFixture(t, "output.mp4", "")
+	server, sessionSvc, registry, plan, checkpoint, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "fixture")
 	principal := testPrincipal()
 	authority := artifact.NewAuthority(registry, sessionSvc)
 
@@ -856,7 +856,7 @@ func TestSessionsV3VideoArtifactRangeServingAndVisualCategory(t *testing.T) {
 	// 1. Check artifact catalog projection has Category == "visual" and Kind == "video"
 	catalogReq := httptest.NewRequest("GET", "/v3/artifacts", nil)
 	catalogRec := httptest.NewRecorder()
-	server.handleSessionsV3Artifacts(catalogRec, catalogReq.WithContext(ContextWithPrincipal(catalogReq.Context(), principal)))
+	server.handleSessionsV3Artifacts(catalogRec, catalogReq.WithContext(identity.ContextWithPrincipal(catalogReq.Context(), principal)))
 	if catalogRec.Code != http.StatusOK {
 		t.Fatalf("catalog status = %d: %s", catalogRec.Code, catalogRec.Body.String())
 	}

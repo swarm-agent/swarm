@@ -109,20 +109,20 @@ func (f *fakeSessionStore) CreateVideoProjectRevision(input pebblestore.CreateVi
 		revID = fmt.Sprintf("vrev_%d", nextNum)
 	}
 	r := pebblestore.VideoProjectRevisionSnapshot{
-		SchemaVersion:    1,
-		ID:               revID,
-		ProjectID:        input.ProjectID,
-		RevisionNumber:   nextNum,
-		AccountScopeID:   input.AccountScopeID,
-		UserID:           input.UserID,
-		SessionID:        input.SessionID,
+		SchemaVersion:          1,
+		ID:                     revID,
+		ProjectID:              input.ProjectID,
+		RevisionNumber:         nextNum,
+		AccountScopeID:         input.AccountScopeID,
+		UserID:                 input.UserID,
+		SessionID:              input.SessionID,
 		ParentRevisionID:       p.CurrentRevisionID,
 		RestoredFromRevisionID: input.RestoredFromRevisionID,
-		Description:      input.Description,
-		ChangeSummary:    input.ChangeSummary,
-		Timeline:         input.Timeline,
-		AuthorPrincipal:  input.AuthorPrincipal,
-		CreatedAt:        200,
+		Description:            input.Description,
+		ChangeSummary:          input.ChangeSummary,
+		Timeline:               input.Timeline,
+		AuthorPrincipal:        input.AuthorPrincipal,
+		CreatedAt:              200,
 	}
 	if f.revisions[input.ProjectID] == nil {
 		f.revisions[input.ProjectID] = make(map[string]pebblestore.VideoProjectRevisionSnapshot)
@@ -240,6 +240,7 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 	svc := NewService(store)
 
 	principal := identity.Principal{
+		Type:           identity.PrincipalTypeUser,
 		AccountScopeID: "acc_1",
 		UserID:         "usr_1",
 	}
@@ -257,6 +258,7 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 		CollectionID: "col_intro",
 		Status:       pebblestore.SessionArtifactStatusReady,
 		MediaType:    "video/mp4",
+		EventSeq:     1,
 	}
 
 	// 1. Create project with design input clip
@@ -278,6 +280,7 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 						SessionID:    sessionID,
 						CollectionID: "col_intro",
 						VariantID:    "var_intro_v1",
+						EventSeq:     1,
 					},
 					DurationMs:      4000,
 					TimelineStartMs: 0,
