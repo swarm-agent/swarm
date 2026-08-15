@@ -6,6 +6,8 @@ I also want to set expectations: Swarm is moving quickly, and many areas are alr
 
 With that in mind, if you like the project and want to contribute, please reach out first or open a GitHub issue so we can discuss the direction before implementation.
 
+Please keep proposed changes narrowly scoped and easy to review.
+
 Feel free to clone the app and modify it in any way you like!
 
 For security issues, please contact swarm@swarmagent.dev.
