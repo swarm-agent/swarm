@@ -564,6 +564,69 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: head}, nil
 }
 
+// RemoveIntegratedTaskWorkspace removes only a clean, private managed child
+// worktree whose immutable commit range is already represented in the parent.
+// The child branch remains available as durable Git lineage after its checkout
+// is removed.
+func (s *Service) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error {
+	parentRoot, err := resolveRepositoryRoot(parentPath)
+	if err != nil {
+		return fmt.Errorf("resolve parent repository for integrated worktree cleanup: %w", err)
+	}
+	expectedPath, err := deterministicSessionWorktreePath(parentRoot, sessionWorkspaceID(sessionID))
+	if err != nil {
+		return err
+	}
+	actualPath, err := filepath.Abs(strings.TrimSpace(childPath))
+	if err != nil {
+		return fmt.Errorf("resolve integrated child worktree path: %w", err)
+	}
+	actualPath = filepath.Clean(actualPath)
+	managedRoot, err := worktreeCacheRoot(parentRoot)
+	if err != nil {
+		return err
+	}
+	if !sameCleanPath(actualPath, expectedPath) || !pathWithinRoot(managedRoot, actualPath) {
+		return errors.New("integrated child worktree is outside its expected private managed path")
+	}
+	if _, statErr := os.Stat(actualPath); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	} else if statErr != nil {
+		return fmt.Errorf("inspect integrated child worktree: %w", statErr)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	integrationLock, err := acquireIntegrationLock(parentRoot)
+	if err != nil {
+		return err
+	}
+	defer integrationLock.Release()
+
+	state, err := s.VerifyTaskIntegrationWorkspace(parentRoot, actualPath, sessionID, branchName, baseCommit, headCommit)
+	if err != nil {
+		return fmt.Errorf("verify integrated child worktree before cleanup: %w", err)
+	}
+	if !state.Clean {
+		return fmt.Errorf("integrated child worktree is dirty and remains recoverable:\n%s", state.Status)
+	}
+	parentState, err := s.InspectTaskWorkspace(parentRoot)
+	if err != nil {
+		return fmt.Errorf("inspect parent before integrated worktree cleanup: %w", err)
+	}
+	integrated, err := s.TaskCommitRangeIntegratedInto(parentRoot, baseCommit, headCommit, parentState.HeadCommit)
+	if err != nil {
+		return fmt.Errorf("verify child integration before worktree cleanup: %w", err)
+	}
+	if !integrated {
+		return errors.New("child commit range is not integrated; worktree remains recoverable")
+	}
+	if _, err := runGit(parentRoot, "worktree", "remove", actualPath); err != nil {
+		return fmt.Errorf("remove integrated child worktree: %w", err)
+	}
+	return nil
+}
+
 func rollbackTaskIntegration(parentPath, parentHead string) error {
 	// One multi-commit cherry-pick gives Git a single sequencer transaction;
 	// abort restores its original HEAD and index without an unconditional hard

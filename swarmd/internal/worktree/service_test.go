@@ -248,6 +248,68 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestRemoveIntegratedTaskWorkspaceRemovesOnlyCleanIntegratedManagedChild(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	const sessionID = "cleanup-child"
+	svc := &Service{}
+	allocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: base}, sessionID)
+	if err != nil {
+		t.Fatalf("allocate task worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(allocation.WorkspacePath, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(allocation.WorkspacePath, "add", "child.txt")
+	_, _ = runGit(allocation.WorkspacePath, "commit", "-m", "child")
+	head, _ := runGit(allocation.WorkspacePath, "rev-parse", "HEAD")
+	plan, err := svc.PrepareTaskIntegration(repo, base, []TaskIntegrationChild{{SessionID: sessionID, BaseCommit: base, HeadCommit: head}})
+	if err != nil {
+		t.Fatalf("prepare task integration: %v", err)
+	}
+	if _, err := svc.ApplyTaskIntegration(repo, plan); err != nil {
+		t.Fatalf("apply task integration: %v", err)
+	}
+	if err := svc.RemoveIntegratedTaskWorkspace(repo, allocation.WorkspacePath, sessionID, allocation.BranchName, base, head); err != nil {
+		t.Fatalf("remove integrated task worktree: %v", err)
+	}
+	if _, err := os.Stat(allocation.WorkspacePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("integrated worktree still exists: %v", err)
+	}
+	branchHead, err := runGit(repo, "rev-parse", "--verify", "refs/heads/"+allocation.BranchName)
+	if err != nil || branchHead != head {
+		t.Fatalf("durable child branch = %q, %v; want %s", branchHead, err, head)
+	}
+
+	dirtyID := "cleanup-dirty"
+	dirtyAllocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: strings.TrimSpace(plan.ParentHead)}, dirtyID)
+	if err != nil {
+		t.Fatalf("allocate dirty task worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirtyAllocation.WorkspacePath, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirtyHead, _ := runGit(dirtyAllocation.WorkspacePath, "rev-parse", "HEAD")
+	if err := svc.RemoveIntegratedTaskWorkspace(repo, dirtyAllocation.WorkspacePath, dirtyID, dirtyAllocation.BranchName, strings.TrimSpace(plan.ParentHead), dirtyHead); err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("dirty worktree cleanup error = %v", err)
+	}
+	if _, err := os.Stat(dirtyAllocation.WorkspacePath); err != nil {
+		t.Fatalf("dirty worktree was not preserved: %v", err)
+	}
+}
+
 func TestTaskIntegrationSkipsAlreadyIntegratedCommitAndAppliesRemainingCommit(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {

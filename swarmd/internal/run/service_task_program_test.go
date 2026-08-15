@@ -10,6 +10,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func taskProgramFixture(maxConcurrency any) map[string]any {
@@ -444,6 +445,75 @@ func TestTaskProgramSchedulerRetainsQueuedJobsAcrossCapacityCohorts(t *testing.T
 	if !taskProgramStageHasRunningOrDeclared(record, 0) {
 		t.Fatal("stage should remain active while queued or running jobs exist")
 	}
+}
+
+func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.T) {
+	tests := []struct {
+		name            string
+		cleanupErr      error
+		wantIntegration string
+	}{
+		{name: "removed", wantIntegration: "integrated_worktree_removed"},
+		{name: "cleanup failure remains nonblocking", cleanupErr: errors.New("worktree busy"), wantIntegration: "integrated_worktree_cleanup_failed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, parentID, cleanup := newTaskLaunchPermissionTestService(t)
+			defer cleanup()
+			parent, ok, err := svc.sessions.GetSession(parentID)
+			if err != nil || !ok {
+				t.Fatalf("load parent: ok=%v err=%v", ok, err)
+			}
+			stub := &taskProgramCleanupWorktreeStub{taskLaunchWorktreeStub: taskLaunchWorktreeStub{cleanupErr: tc.cleanupErr}}
+			svc.SetWorktreeService(stub)
+			record, _, err := svc.sessions.CreateTaskProgram(pebblestore.TaskProgramRecord{
+				ParentSessionID: parentID, ProgramID: "cleanup-program", DefinitionHash: "cleanup-definition",
+				Definition: pebblestore.TaskProgramDefinition{
+					Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
+					Jobs: []pebblestore.TaskProgramJobSpec{
+						{ID: "api", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
+						{ID: "recoverable", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
+						{ID: "failed", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
+					},
+				},
+				ActiveStageID: "build", State: pebblestore.TaskProgramStateRunning, NextAction: "advance_stage", ParentHead: "parent-head",
+				Jobs: []pebblestore.TaskProgramJobRecord{
+					{
+						JobID: "api", StageID: "build", State: pebblestore.TaskProgramJobIntegrated,
+						ChildSessionID: "child-api", CurrentSessionID: "child-api", WorkspacePath: "/worktrees/child-api",
+						WorktreeBranch: "agent/api", ImmutableStageBase: "base", ChildHead: "head", IntegrationState: "integrated",
+					},
+					{JobID: "recoverable", StageID: "build", State: pebblestore.TaskProgramJobHandoffReady, WorkspacePath: "/worktrees/recoverable"},
+					{JobID: "failed", StageID: "build", State: pebblestore.TaskProgramJobFailed, WorkspacePath: "/worktrees/failed"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("create task program: %v", err)
+			}
+			scheduler := taskProgramScheduler{service: svc, parentSession: parent, record: record}
+			if err := scheduler.cleanupIntegratedStageWorktrees("build"); err != nil {
+				t.Fatalf("cleanup integrated stage: %v", err)
+			}
+			if len(stub.cleanupCalls) != 1 || stub.cleanupCalls[0] != "/worktrees/child-api" {
+				t.Fatalf("cleanup calls = %v", stub.cleanupCalls)
+			}
+			if scheduler.record.Jobs[0].State != pebblestore.TaskProgramJobIntegrated || scheduler.record.Jobs[0].IntegrationState != tc.wantIntegration {
+				t.Fatalf("cleanup job state = %#v", scheduler.record.Jobs[0])
+			}
+		})
+	}
+}
+
+type taskProgramCleanupWorktreeStub struct {
+	taskLaunchWorktreeStub
+}
+
+func (s *taskProgramCleanupWorktreeStub) PrepareTaskIntegration(_ string, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
+	return worktreeruntime.TaskIntegrationPlan{ParentHead: expectedParentHead}, nil
+}
+
+func (s *taskProgramCleanupWorktreeStub) ApplyTaskIntegration(_ string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error) {
+	return worktreeruntime.TaskIntegrationResult{TaskIntegrationPlan: plan, ResultingParentHead: plan.ParentHead}, nil
 }
 
 func TestTaskProgramSchedulerUnlocksOnlyIntegratedDependencies(t *testing.T) {

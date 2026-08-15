@@ -804,6 +804,8 @@ type taskLaunchWorktreeStub struct {
 	requestedBase     string
 	requestedBranch   string
 	requestedNameSeed string
+	cleanupCalls      []string
+	cleanupErr        error
 }
 
 func (s *taskLaunchWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
@@ -826,6 +828,11 @@ func (s *taskLaunchWorktreeStub) TaskCommitDescendsFrom(_, baseCommit, headCommi
 
 func (s *taskLaunchWorktreeStub) TaskCommitRangeIntegratedInto(_, baseCommit, headCommit, parentHead string) (bool, error) {
 	return strings.TrimSpace(baseCommit) != "" && strings.TrimSpace(headCommit) != "" && strings.TrimSpace(parentHead) != "" && baseCommit != headCommit, nil
+}
+
+func (s *taskLaunchWorktreeStub) RemoveIntegratedTaskWorkspace(_, childPath, _, _, _, _ string) error {
+	s.cleanupCalls = append(s.cleanupCalls, childPath)
+	return s.cleanupErr
 }
 
 func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {

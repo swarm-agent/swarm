@@ -16,6 +16,7 @@ import (
 type taskProgramIntegrationService interface {
 	PrepareTaskIntegration(parentPath, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
 	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
+	RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error
 }
 
 type taskProgramScheduler struct {
@@ -696,7 +697,60 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 	next := "advance_stage"
 	var err error
 	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate:%d", p.record.Revision), ParentHead: &parentHead, NextAction: &next, Jobs: updates})
-	return err
+	if err != nil || len(children) == 0 {
+		return err
+	}
+	return p.cleanupIntegratedStageWorktrees(stageID)
+}
+
+func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) error {
+	cleaner, ok := p.service.worktrees.(taskProgramIntegrationService)
+	if !ok {
+		return errors.New("worktree service does not support Task Program integrated-worktree cleanup")
+	}
+	updates := make([]pebblestore.TaskProgramJobTransition, 0)
+	cleanupFailures := 0
+	for _, job := range p.record.Jobs {
+		if job.StageID != stageID || job.State != pebblestore.TaskProgramJobIntegrated {
+			continue
+		}
+		definitionIndex := taskProgramDefinitionJobIndex(p.record, job.JobID)
+		if definitionIndex < 0 || !agentruntime.IsCoderAgentName(p.record.Definition.Jobs[definitionIndex].AgentType) {
+			continue
+		}
+		integrationState := "integrated_worktree_removed"
+		if cleanupErr := cleaner.RemoveIntegratedTaskWorkspace(
+			p.parentSession.WorkspacePath,
+			job.WorkspacePath,
+			firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID),
+			job.WorktreeBranch,
+			job.ImmutableStageBase,
+			job.ChildHead,
+		); cleanupErr != nil {
+			integrationState = "integrated_worktree_cleanup_failed"
+			cleanupFailures++
+		}
+		updates = append(updates, pebblestore.TaskProgramJobTransition{
+			JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobIntegrated,
+			State: pebblestore.TaskProgramJobIntegrated, IntegrationState: integrationState,
+		})
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	var err error
+	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{
+		ExpectedRevision: p.record.Revision,
+		MutationID:       fmt.Sprintf("cleanup-integrated-worktrees:%d", p.record.Revision),
+		Jobs:             updates,
+	})
+	if err != nil {
+		return err
+	}
+	if cleanupFailures > 0 {
+		p.emitProgramProgress("stage.cleanup_warning", fmt.Sprintf("Stage %s integrated, but %d child worktree cleanup operations failed", stageID, cleanupFailures))
+	}
+	return nil
 }
 
 func (p *taskProgramScheduler) advanceStage(stageIndex int) error {

@@ -185,6 +185,7 @@ type worktreeService interface {
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
 	TaskCommitRangeIntegratedInto(workspacePath, baseCommit, headCommit, parentHead string) (bool, error)
+	RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 }
