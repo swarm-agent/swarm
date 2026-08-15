@@ -152,7 +152,17 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
   const [transcriptionJob, setTranscriptionJob] = useState<VideoTranscriptionJob | null>(null)
   const [transcript, setTranscript] = useState<VideoTranscript | null>(null)
   const [transcriptionError, setTranscriptionError] = useState('')
+  const [transcriptCopyStatus, setTranscriptCopyStatus] = useState('')
   const focusNotesBytes = videoFocusNotesByteLength(focusNotes)
+
+  const copyTranscriptValue = async (value: string, successMessage: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setTranscriptCopyStatus(successMessage)
+    } catch {
+      setTranscriptCopyStatus('Copy failed.')
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -207,6 +217,7 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
       setTranscript(null)
       setTranscriptionJob(null)
       setTranscriptionError('')
+      setTranscriptCopyStatus('')
     },
   })
   const transcribeVideo = useMutation({
@@ -215,6 +226,7 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
       setTranscriptionError('')
       setTranscript(null)
       setTranscriptionJob(null)
+      setTranscriptCopyStatus('')
     },
     onSuccess: ({ session_id, job }) => {
       setTranscriptionSession(session_id)
@@ -323,7 +335,7 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
               {transcriptionJob && !isTerminalVideoTranscriptionStatus(transcriptionJob.status) ? <Button variant="outline" disabled={cancelTranscription.isPending} onClick={() => cancelTranscription.mutate()}>{cancelTranscription.isPending ? 'Cancelling…' : 'Cancel'}</Button> : null}
             </div>
             {transcriptionJob ? <div aria-live="polite" className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-sm text-[var(--app-text-muted)]">Job status: <span className="font-medium capitalize text-[var(--app-text)]">{transcriptionJob.status}</span>{transcriptionJob.status === 'queued' ? ' — waiting to upload securely.' : transcriptionJob.status === 'uploading' ? ' — uploading to the temporary provider workspace.' : transcriptionJob.status === 'processing' || transcriptionJob.status === 'partial' ? ' — analyzing audio and visuals.' : transcriptionJob.status === 'ready' ? ' — saved and ready for AI read-back.' : ''}</div> : null}
-            {transcript ? <div className="space-y-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4"><div className="flex items-center justify-between gap-3"><h4 className="font-semibold text-[var(--app-text)]">Saved transcript</h4><span className="text-xs text-[var(--app-success)]">{transcript.validation.state}</span></div>{transcript.details_truncated ? <p className="text-sm text-[var(--app-warning)]">This preview is bounded. The full transcript remains durably saved and available by its transcript reference.</p> : null}<pre className="max-h-96 overflow-auto whitespace-pre-wrap text-sm text-[var(--app-text)]">{transcript.text}</pre>{transcript.segments.length ? <div className="space-y-3"><h5 className="text-sm font-semibold text-[var(--app-text)]">Multimodal timeline</h5>{transcript.segments.map((segment, index) => <div key={`${segment.start_ms}-${segment.end_ms}-${index}`} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><div className="text-xs font-medium text-[var(--app-text-subtle)]">{formatTimelineRange(segment.start_ms, segment.end_ms)}</div><div className="mt-2 grid gap-1 text-sm text-[var(--app-text)]">{transcriptSegmentDetails(segment).map((detail) => <p key={detail.label}><strong>{detail.label}:</strong> {detail.value}</p>)}</div></div>)}</div> : null}</div> : null}
+            {transcript ? <div className="space-y-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h4 className="font-semibold text-[var(--app-text)]">Saved transcript</h4><p className="mt-1 break-all font-mono text-xs text-[var(--app-text-subtle)]">{transcript.ref}</p></div><span className="text-xs text-[var(--app-success)]">{transcript.validation.state}</span></div><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" onClick={() => { void copyTranscriptValue(transcript.text, 'Transcript copied.') }}>Copy transcript</Button><Button variant="outline" size="sm" onClick={() => { void copyTranscriptValue(transcript.ref, 'Transcript reference copied.') }}>Copy reference for AI</Button></div>{transcriptCopyStatus ? <p aria-live="polite" className="text-xs text-[var(--app-text-muted)]">{transcriptCopyStatus}</p> : null}{transcript.details_truncated ? <p className="text-sm text-[var(--app-warning)]">This preview is bounded. The full transcript remains durably saved and available by its transcript reference.</p> : null}<pre className="max-h-96 overflow-auto whitespace-pre-wrap text-sm text-[var(--app-text)]">{transcript.text}</pre>{transcript.segments.length ? <div className="space-y-3"><h5 className="text-sm font-semibold text-[var(--app-text)]">Multimodal timeline</h5>{transcript.segments.map((segment, index) => <div key={`${segment.start_ms}-${segment.end_ms}-${index}`} className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3"><div className="text-xs font-medium text-[var(--app-text-subtle)]">{formatTimelineRange(segment.start_ms, segment.end_ms)}</div><div className="mt-2 grid gap-1 text-sm text-[var(--app-text)]">{transcriptSegmentDetails(segment).map((detail) => <p key={detail.label}><strong>{detail.label}:</strong> {detail.value}</p>)}</div></div>)}</div> : null}</div> : null}
             {transcriptionError || browseVideos.error || transcribeVideo.error || cancelTranscription.error ? <div role="alert" className="text-sm text-[var(--app-danger)]">{transcriptionError || errorMessage(browseVideos.error || transcribeVideo.error || cancelTranscription.error, 'Video transcription is unavailable.')}</div> : null}
           </>}
         </section>
