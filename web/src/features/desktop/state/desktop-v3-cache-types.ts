@@ -113,6 +113,14 @@ export interface DesktopV3MediaCapability {
   capabilities: DesktopV3MediaCapabilityEntry[]
 }
 
+export interface DesktopV3VideoAttachmentReference {
+  ref: string
+  name: string
+  mime_type: string
+  size_bytes: number
+  source_fingerprint: string
+}
+
 export interface DesktopV3ArtifactSelectionReference {
   session_id: string
   collection_id: string
@@ -133,6 +141,7 @@ export interface MessageSnapshot {
   content: string
   metadata?: Record<string, unknown>
   media?: DesktopV3MediaReference[]
+  video_attachments?: DesktopV3VideoAttachmentReference[]
   artifact_selections?: DesktopV3ArtifactSelectionReference[]
   created_at: number
   execution_epoch?: V3ExecutionEpochRef

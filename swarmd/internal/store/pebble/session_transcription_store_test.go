@@ -1,0 +1,172 @@
+package pebblestore
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func setupTranscriptionContractTest(t *testing.T) (*Store, *SessionStore, SessionSnapshot, MessageSnapshot) {
+	t.Helper()
+	store, err := Open(filepath.Join(t.TempDir(), "transcription.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sessions := NewSessionStore(store)
+	session := SessionSnapshot{
+		ID: "transcription-session", UserID: "user", AccountScopeID: "account", WorkspacePath: "/workspace",
+		Metadata: map[string]any{"workspace_id": "workspace"},
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID,
+		ClientRequestID: "create", PayloadHash: "create", Kind: V3SessionMutationCreateSession, Session: &session,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "clip.mp4")
+	if err := os.WriteFile(path, []byte("synthetic-video-fixture"), 0o600); err != nil {
+		t.Fatalf("write video source: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat video source: %v", err)
+	}
+	source, err := sessions.PutVideoSourceRecord(VideoSourceRecord{
+		AccountScopeID: session.AccountScopeID, WorkspaceID: "workspace", RootPath: root, RelativePath: "clip.mp4",
+		DisplayName: "clip.mp4", MIMEType: "video/mp4", SizeBytes: info.Size(), ModifiedAt: info.ModTime().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("put video source: %v", err)
+	}
+	messageResult, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID,
+		ClientRequestID: "message", PayloadHash: "message", Kind: V3SessionMutationAppendMessage,
+		Message: &MessageSnapshot{ID: "message", Role: "user", Content: "transcribe this video", VideoAttachments: []SessionVideoAttachmentReference{{Ref: source.Ref}}},
+	})
+	if err != nil || messageResult.Message == nil {
+		t.Fatalf("append message: result=%+v err=%v", messageResult, err)
+	}
+	return store, sessions, session, *messageResult.Message
+}
+
+func TestTranscriptionContractBindsTrustedSourceAndFailsClosedAcrossScope(t *testing.T) {
+	_, sessions, session, message := setupTranscriptionContractTest(t)
+	attachment, replayed, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID,
+		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind",
+	})
+	if err != nil || replayed || attachment.WorkspaceID != "workspace" || attachment.MessageID != message.ID || attachment.SourceFingerprint == "" {
+		t.Fatalf("bind attachment=%+v replayed=%v err=%v", attachment, replayed, err)
+	}
+	if _, ok, err := sessions.GetTranscriptionAttachment("other-account", session.ID, attachment.Ref); err != nil || ok {
+		t.Fatalf("cross-account attachment lookup ok=%v err=%v", ok, err)
+	}
+	if _, _, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: "forged-message",
+		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "forged",
+	}); err == nil {
+		t.Fatal("expected forged message reference rejection")
+	}
+	if _, _, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID,
+		VideoThreadID: "registered-source", VideoClipID: "videosrc_" + videoSourceDigest("not-attached"), ClientRequestID: "not-attached",
+	}); err == nil {
+		t.Fatal("expected unlinked video source rejection")
+	}
+	job, replayed, err := sessions.CreateTranscriptionJob(CreateTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref,
+		ProviderID: "google", Model: "gemini", ModelSnapshot: "gemini-snapshot", MediaSettingsHash: "settings-v1",
+	})
+	if err != nil || replayed || job.Status != TranscriptionJobQueued || job.MessageID != message.ID {
+		t.Fatalf("create job=%+v replayed=%v err=%v", job, replayed, err)
+	}
+	if _, ok, err := sessions.GetTranscriptionJob(session.AccountScopeID, "other-session", job.Ref); err != nil || ok {
+		t.Fatalf("cross-session job lookup ok=%v err=%v", ok, err)
+	}
+}
+
+func TestTranscriptionReadyRequiresDurableValidatedReadBack(t *testing.T) {
+	_, sessions, session, message := setupTranscriptionContractTest(t)
+	attachment, _, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID,
+		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind",
+	})
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	job, _, err := sessions.CreateTranscriptionJob(CreateTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref,
+		ProviderID: "google", Model: "gemini", ModelSnapshot: "snapshot", MediaSettingsHash: "settings",
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, _, err := sessions.TransitionTranscriptionJob(TransitionTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
+		ExpectedStatus: TranscriptionJobQueued, Status: TranscriptionJobReady, ClientRequestID: "forged-ready",
+	}); err == nil {
+		t.Fatal("expected ready transition without durable transcript to fail")
+	}
+	processing, _, err := sessions.TransitionTranscriptionJob(TransitionTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
+		ExpectedStatus: TranscriptionJobQueued, Status: TranscriptionJobProcessing, ClientRequestID: "processing",
+	})
+	if err != nil || processing.Status != TranscriptionJobProcessing {
+		t.Fatalf("processing job=%+v err=%v", processing, err)
+	}
+	transcript, ready, _, err := sessions.CommitNormalizedTranscript(CommitNormalizedTranscriptInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
+		Text: "Model generated words.", Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Text: "Model generated words."}},
+		Language: "en", DurationMs: 1000, GeneratedAt: 100,
+	})
+	if err != nil || ready.Status != TranscriptionJobReady || !transcript.ModelGenerated || transcript.Validation.State != TranscriptValidationValidated {
+		t.Fatalf("commit transcript=%+v ready=%+v err=%v", transcript, ready, err)
+	}
+	loaded, ok, err := sessions.GetNormalizedTranscript(session.AccountScopeID, session.ID, transcript.Ref)
+	if err != nil || !ok || loaded.ContentDigest != transcript.ContentDigest {
+		t.Fatalf("read transcript=%+v ok=%v err=%v", loaded, ok, err)
+	}
+}
+
+func TestTranscriptionTerminalStatesNeverBecomeReadyAndSessionDeletePurgesRecords(t *testing.T) {
+	_, sessions, session, message := setupTranscriptionContractTest(t)
+	attachment, _, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID,
+		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind",
+	})
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	job, _, err := sessions.CreateTranscriptionJob(CreateTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref,
+		ProviderID: "google", Model: "gemini", ModelSnapshot: "snapshot", MediaSettingsHash: "settings",
+		ProviderCacheExpiresAt: 10,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	failed, _, err := sessions.TransitionTranscriptionJob(TransitionTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
+		ExpectedStatus: TranscriptionJobQueued, Status: TranscriptionJobFailed, FailureCode: "provider", FailureReason: "provider cache expired", ClientRequestID: "failed",
+	})
+	if err != nil || failed.Status != TranscriptionJobFailed {
+		t.Fatalf("failed job=%+v err=%v", failed, err)
+	}
+	if _, _, err := sessions.TransitionTranscriptionJob(TransitionTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
+		ExpectedStatus: TranscriptionJobFailed, Status: TranscriptionJobReady, ClientRequestID: "invalid-ready",
+	}); err == nil {
+		t.Fatal("expected failed-to-ready transition rejection")
+	}
+	if err := sessions.DeleteSession(session.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if _, ok, err := sessions.GetTranscriptionAttachment(session.AccountScopeID, session.ID, attachment.Ref); err != nil || ok {
+		t.Fatalf("deleted attachment ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := sessions.GetTranscriptionJob(session.AccountScopeID, session.ID, job.Ref); err != nil || ok {
+		t.Fatalf("deleted job ok=%v err=%v", ok, err)
+	}
+}

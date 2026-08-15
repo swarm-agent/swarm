@@ -100,6 +100,13 @@ func (s *Service) Store() *pebblestore.SessionStore {
 	return s.store
 }
 
+func (s *Service) GetV3MessageByID(sessionID, messageID string) (pebblestore.MessageSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.MessageSnapshot{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetV3MessageByID(sessionID, messageID)
+}
+
 func (s *Service) ListDueReviewAutoArchives(nowUnixMs int64, limit int) ([]pebblestore.SessionReviewAutoArchiveDue, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session service is not configured")

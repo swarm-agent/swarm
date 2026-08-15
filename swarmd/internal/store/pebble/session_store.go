@@ -122,6 +122,7 @@ type MessageSnapshot struct {
 	Content            string                              `json:"content"`
 	Metadata           map[string]any                      `json:"metadata,omitempty"`
 	Media              []SessionMediaReference             `json:"media,omitempty"`
+	VideoAttachments   []SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
 	ArtifactSelections []SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
 	CreatedAt          int64                               `json:"created_at"`
 }
@@ -893,6 +894,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		ExecutionEpochPrefix(session.ID), ExecutionEpochOrdinalPrefix(session.ID), ExecutionEpochBoundaryPrefix(session.ID), ExecutionProviderLifecycleStatePrefix(session.ID),
 		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
 		SessionMediaAssetPrefix(session.AccountScopeID, session.ID), SessionMediaBlobPrefix(session.AccountScopeID, session.ID),
+		TranscriptionAttachmentPrefix(session.AccountScopeID, session.ID), TranscriptionJobPrefix(session.AccountScopeID, session.ID), NormalizedTranscriptPrefix(session.AccountScopeID, session.ID),
 		SessionArtifactCollectionPrefix(session.AccountScopeID, session.ID), SessionArtifactCollectionStatusSessionPrefix(session.AccountScopeID, session.ID),
 		SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantStatusSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantDigestSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantLineageSessionPrefix(session.AccountScopeID, session.ID),
 	} {
@@ -2051,12 +2053,28 @@ func sanitizeMessageSnapshot(message MessageSnapshot) MessageSnapshot {
 	message.Content = privacy.SanitizeText(message.Content)
 	message.Metadata = sanitizeMessageMetadata(message.Metadata)
 	message.Media = normalizeSessionMediaReferences(message.Media)
+	message.VideoAttachments = normalizeSessionVideoAttachmentReferences(message.VideoAttachments)
 	message.ArtifactSelections = normalizeSessionArtifactSelectionReferences(message.ArtifactSelections)
 	return message
 }
 
 func sanitizeMessageMetadata(input map[string]any) map[string]any {
 	return privacy.SanitizeMap(input)
+}
+
+func normalizeSessionVideoAttachmentReferences(input []SessionVideoAttachmentReference) []SessionVideoAttachmentReference {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]SessionVideoAttachmentReference, 0, len(input))
+	for _, ref := range input {
+		ref.Ref = strings.TrimSpace(ref.Ref)
+		ref.Name = strings.TrimSpace(ref.Name)
+		ref.MIMEType = strings.ToLower(strings.TrimSpace(ref.MIMEType))
+		ref.SourceFingerprint = strings.ToLower(strings.TrimSpace(ref.SourceFingerprint))
+		out = append(out, ref)
+	}
+	return out
 }
 
 func normalizeSessionArtifactSelectionReferences(input []SessionArtifactSelectionReference) []SessionArtifactSelectionReference {

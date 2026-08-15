@@ -16,6 +16,7 @@ import {
   getMediaSettingsCatalog,
   getSourceMediaDirectories,
   removeSourceMediaDirectory,
+  sourceMediaDirectoriesQueryKey,
   type MediaCatalogModelOption,
 } from '../queries/get-media-settings'
 
@@ -155,7 +156,7 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
     return () => { cancelled = true }
   }, [workspaceSlug])
 
-  const sourceQueryKey = ['source-media-directories', workspacePath] as const
+  const sourceQueryKey = sourceMediaDirectoriesQueryKey(workspacePath)
   const sourceQuery = useQuery({
     queryKey: sourceQueryKey,
     queryFn: ({ signal }) => getSourceMediaDirectories(workspacePath, signal),

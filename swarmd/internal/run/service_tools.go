@@ -5229,6 +5229,8 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"plan-manage":    true,
 		"manage_actions": true,
 		"manage-actions": true,
+		"manage_video":   true,
+		"manage-video":   true,
 		"manage_todos":   true,
 		"manage-todos":   true,
 		"manage_agent":   true,
@@ -5315,6 +5317,8 @@ func canonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-video", "manage_video":
+		return "manage_video"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
@@ -5355,7 +5359,7 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return "manage_artifact_generate_image", true
 		}
 		return toolName, false
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "edit_pending_plan":
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_video", "manage_todos", "manage_theme", "edit_pending_plan":
 		return toolName, false
 	case "manage_sessions":
 		if permission.ShouldApproveManageSessionsDeploy(arguments) {

@@ -1491,7 +1491,7 @@ type DesktopV3ExistingConversationComposerProps = Omit<
   hasStoredOperation: boolean;
   canSubmitWithoutDraft: boolean;
   controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
-  onSubmit: (draft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) => void | Promise<void>;
+  onSubmit: ComponentProps<typeof DesktopV3AgenticComposer>['onSubmit'];
 };
 
 export function DesktopV3ExistingConversationComposer({
@@ -2547,7 +2547,7 @@ export function DesktopV3ExistingConversationPane({
     oldestLoadedSeq,
   ]);
 
-  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) {
+  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: import('../services/video-source-attachments').DesktopVideoSourceAttachment[]) {
     if (!normalizedSessionId || sending || compacting) return;
 
     setSending(true);
@@ -2564,7 +2564,8 @@ export function DesktopV3ExistingConversationPane({
         const sameMedia = JSON.stringify(retainedOperation.request.media ?? []) === JSON.stringify(attachments);
         const retainedArtifacts = retainedOperation.request.artifact_selections ?? [];
         const sameArtifacts = JSON.stringify(retainedArtifacts) === JSON.stringify(artifactSelections);
-        if (!sameDraft || !sameMedia || !sameArtifacts) {
+        const sameVideos = JSON.stringify(retainedOperation.request.video_attachments ?? []) === JSON.stringify(videoAttachments);
+        if (!sameDraft || !sameMedia || !sameArtifacts || !sameVideos) {
           throw new Error("Retry the retained message without changing its text or attachments");
         }
       }
@@ -2575,6 +2576,7 @@ export function DesktopV3ExistingConversationPane({
           prompt: submittedDraft,
           metadata,
           media: attachments,
+          videoAttachments,
           artifactSelections,
         });
       operationRef.current = operation;

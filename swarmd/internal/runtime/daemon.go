@@ -58,6 +58,7 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	update "swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
@@ -388,6 +389,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
+	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
+	toolRuntime.SetManageVideoService(videoTranscriptionSvc)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
 		cfg := tool.ExaRuntimeConfig{
 			SearchURL:   "https://api.exa.ai/search",

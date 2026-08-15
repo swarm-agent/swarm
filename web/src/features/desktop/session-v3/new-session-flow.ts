@@ -1,6 +1,7 @@
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import type { DesktopV3MediaReference } from '../state/desktop-v3-cache-types'
 import type { DesktopV3ArtifactMessageSelection } from './artifact-api'
+import type { DesktopVideoSourceAttachment } from '../chat/services/video-source-attachments'
 import type { ModelProfileChoice } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
@@ -479,6 +480,7 @@ export interface DesktopV3RoutedComposerSnapshot {
   prompt: string
   attachments: DesktopV3RoutedMediaInput[]
   artifactSelections: DesktopV3ArtifactMessageSelection[]
+  videoAttachments: DesktopVideoSourceAttachment[]
   selectedAction: unknown | null
   selectedSkill: unknown | null
   worktreePrimed: boolean
@@ -516,6 +518,7 @@ export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAut
   managed_worktree_requested: boolean
   plan_mode_requested: boolean
   media?: DesktopV3RoutedMediaInput[]
+  video_attachments?: DesktopVideoSourceAttachment[]
   artifact_selections?: DesktopV3ArtifactMessageSelection[]
 }
 
@@ -635,6 +638,7 @@ export function createDesktopV3RoutedComposerSnapshot(
   return {
     prompt: input.prompt,
     attachments: input.attachments?.map((attachment) => ({ ...attachment })) ?? [],
+    videoAttachments: input.videoAttachments?.map((attachment) => ({ ...attachment })) ?? [],
     artifactSelections: input.artifactSelections?.map((selection) => ({
       ...selection,
       session_id: selection.session_id.trim(),
@@ -686,10 +690,10 @@ export function createDesktopV3RoutedOperationIdentity(): DesktopV3RoutedOperati
 
 export function desktopV3RoutedRequestInput(snapshot: DesktopV3RoutedComposerSnapshot): string {
   const prompt = snapshot.prompt.trim()
-  if (!prompt && snapshot.attachments.length === 0 && snapshot.artifactSelections.length === 0) {
-    throw new Error('Routed Desktop start requires a prompt, media, or artifact selection')
+  if (!prompt && snapshot.attachments.length === 0 && snapshot.videoAttachments.length === 0 && snapshot.artifactSelections.length === 0) {
+    throw new Error('Routed Desktop start requires a prompt, media, video attachment, or artifact selection')
   }
-  return prompt || 'Please review the selected artifact(s).'
+  return prompt || (snapshot.videoAttachments.length > 0 ? 'Please review the attached video(s).' : 'Please review the selected artifact(s).')
 }
 
 export function createDesktopV3RoutedStartOperation(
@@ -704,6 +708,7 @@ export function createDesktopV3RoutedStartOperation(
   const snapshot = createDesktopV3RoutedComposerSnapshot(input.snapshot ?? {
     prompt: input.prompt ?? '',
     attachments: input.media,
+    videoAttachments: [],
     selectedAction: input.selectedAction,
     selectedSkill: input.selectedSkill,
     worktreePrimed: input.worktreePrimed,
@@ -737,6 +742,7 @@ export function createDesktopV3RoutedStartOperation(
       managed_worktree_requested: snapshot.worktreePrimed,
       plan_mode_requested: snapshot.planModeRequested,
       media: normalizedRoutedMedia(snapshot.attachments),
+      video_attachments: snapshot.videoAttachments.map((attachment) => ({ ...attachment })),
       artifact_selections: snapshot.artifactSelections.map((selection) => ({ ...selection })),
     },
   }
@@ -793,6 +799,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   }
   if (request.input !== expectedInput) return false
   if (JSON.stringify(request.media ?? []) !== JSON.stringify(normalizedRoutedMedia(snapshot.attachments) ?? [])) return false
+  if (JSON.stringify(request.video_attachments ?? []) !== JSON.stringify(snapshot.videoAttachments)) return false
   if (JSON.stringify(request.artifact_selections ?? []) !== JSON.stringify(snapshot.artifactSelections)) return false
   return true
 }
@@ -802,6 +809,7 @@ function isStoredDesktopV3RoutedComposerSnapshot(value: unknown): value is Deskt
   const snapshot = value as Partial<DesktopV3RoutedComposerSnapshot>
   if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean' || typeof snapshot.planModeRequested !== 'boolean') return false
   if (!Array.isArray(snapshot.attachments) || snapshot.attachments.some((item) => !item?.staging_id?.trim())) return false
+  if (!Array.isArray(snapshot.videoAttachments) || snapshot.videoAttachments.some((item) => !item?.ref?.trim() || !item?.name?.trim() || !item?.mime_type?.startsWith('video/') || !item?.source_fingerprint?.trim() || !item?.size_bytes)) return false
   if (!Array.isArray(snapshot.artifactSelections) || snapshot.artifactSelections.some((item) => !item?.session_id?.trim() || !item?.collection_id?.trim() || !item?.variant_id?.trim() || !item?.event_seq || !item?.label?.trim() || (item.action !== 'select' && item.action !== 'use'))) return false
   if (snapshot.selectedAction === undefined || snapshot.selectedSkill === undefined) return false
   return true

@@ -252,6 +252,7 @@ export function DesktopV3NewSessionPane({
     try {
       const prompt = snapshot.prompt.trim()
         || (snapshot.attachments.length > 0 ? 'Please review the attached file(s).' : '')
+        || (snapshot.videoAttachments.length > 0 ? 'Please review the attached video(s).' : '')
         || (snapshot.artifactSelections.length > 0 ? 'Please review the selected artifact(s).' : '')
       if (!prompt || routedState.phase === 'routing' || routedState.phase === 'resolved') {
         throw new Error('Routed Desktop start is not editable in its current state')

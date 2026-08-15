@@ -90,6 +90,7 @@ type sessionsV3MessageRequest struct {
 	Content            string                                          `json:"content"`
 	Metadata           map[string]any                                  `json:"metadata,omitempty"`
 	Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+	VideoAttachments   []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
 	ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
 	DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
 }
@@ -1337,6 +1338,7 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	message := pebblestore.MessageSnapshot{
 		ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content,
 		Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...),
+		VideoAttachments:   append([]pebblestore.SessionVideoAttachmentReference(nil), req.VideoAttachments...),
 		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), req.ArtifactSelections...),
 	}
 	if message.Role == "" {
@@ -1345,14 +1347,18 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if len(message.ArtifactSelections) > 0 && !strings.EqualFold(message.Role, "user") {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("artifact selections are allowed only on user messages")
 	}
-	if message.Content == "" && len(message.Media) == 0 && len(message.ArtifactSelections) == 0 {
-		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content, media, or artifact selection is required")
+	if message.Content == "" && len(message.Media) == 0 && len(message.VideoAttachments) == 0 && len(message.ArtifactSelections) == 0 {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content, media, video attachment, or artifact selection is required")
 	}
 	message.ArtifactSelections, err = s.sessions.ValidateSessionArtifactMessageSelections(principal.AccountScopeID, principal.UserID, message.ArtifactSelections)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	if err := s.validateSessionsV3MessageMedia(principal, session, message.Media); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	message.VideoAttachments, err = s.sessions.Store().ValidateSessionVideoAttachments(principal.AccountScopeID, session, message.VideoAttachments)
+	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	now := time.Now().UnixMilli()
@@ -3508,6 +3514,7 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 		Content            string                                          `json:"content"`
 		Metadata           map[string]any                                  `json:"metadata,omitempty"`
 		Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+		VideoAttachments   []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
 		ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
 		RunStatus          string                                          `json:"run_status"`
 		BlockedReason      string                                          `json:"blocked_reason"`
@@ -3522,6 +3529,7 @@ func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest
 		Content:            message.Content,
 		Metadata:           cloneSessionsV3Metadata(message.Metadata),
 		Media:              append([]pebblestore.SessionMediaReference(nil), message.Media...),
+		VideoAttachments:   append([]pebblestore.SessionVideoAttachmentReference(nil), message.VideoAttachments...),
 		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), message.ArtifactSelections...),
 		RunStatus:          runStatus,
 		BlockedReason:      blockedReason,

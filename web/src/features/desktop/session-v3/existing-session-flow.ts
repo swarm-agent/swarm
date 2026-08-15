@@ -23,13 +23,14 @@ export function createDesktopV3ExistingMessageOperation(input: {
   prompt: string
   metadata?: Record<string, unknown>
   media?: DesktopV3AppendMessageRequest['media']
+  videoAttachments?: DesktopV3AppendMessageRequest['video_attachments']
   artifactSelections?: DesktopV3AppendMessageRequest['artifact_selections']
 }): DesktopV3ExistingMessageOperation {
   const sessionId = input.sessionId.trim()
   const content = input.prompt.trim()
   if (!sessionId) throw new Error('Existing Desktop V3 message requires sessionId')
-  if (!content && !(input.media?.length) && !(input.artifactSelections?.length)) {
-    throw new Error('Existing Desktop V3 message requires prompt, media, or artifact selection')
+  if (!content && !(input.media?.length) && !(input.videoAttachments?.length) && !(input.artifactSelections?.length)) {
+    throw new Error('Existing Desktop V3 message requires prompt, media, video attachment, or artifact selection')
   }
 
   if (input.artifactSelections?.some((selection) => !selection.session_id.trim() || !selection.collection_id.trim() || !selection.variant_id.trim() || selection.event_seq <= 0 || !selection.label.trim() || (selection.action !== 'select' && selection.action !== 'use'))) {
@@ -50,6 +51,7 @@ export function createDesktopV3ExistingMessageOperation(input: {
       content,
       metadata: input.metadata,
       media: input.media,
+      video_attachments: input.videoAttachments,
       artifact_selections: input.artifactSelections?.map((selection) => ({
         ...selection,
         session_id: selection.session_id.trim(),
@@ -95,7 +97,7 @@ export function loadDesktopV3ExistingMessageOperation(
     if (!value.request?.message_id?.trim()) return null
     if (!value.request?.run_id?.trim()) return null
     if (value.request.role !== 'user') return null
-    if (!value.request.content?.trim() && !(value.request.media?.length) && !(value.request.artifact_selections?.length)) return null
+    if (!value.request.content?.trim() && !(value.request.media?.length) && !(value.request.video_attachments?.length) && !(value.request.artifact_selections?.length)) return null
     if (value.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use'))) return null
     return value
   } catch {

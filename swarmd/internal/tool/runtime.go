@@ -164,6 +164,7 @@ type Runtime struct {
 	artifacts            *artifact.Registry
 	artifactAuthority    ArtifactAuthority
 	imageGeneration      ManagedImageGenerationService
+	video                manageVideoService
 	searchCoordinator    *SearchCoordinator
 }
 
@@ -184,6 +185,7 @@ type WorkspaceScope struct {
 
 type manageSessionService interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
+	GetV3MessageByID(sessionID, messageID string) (pebblestore.MessageSnapshot, bool, error)
 	GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error)
 	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)
@@ -488,6 +490,12 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
 	if r != nil {
 		r.imageGeneration = service
+	}
+}
+
+func (r *Runtime) SetManageVideoService(service manageVideoService) {
+	if r != nil {
+		r.video = service
 	}
 }
 
@@ -1147,6 +1155,7 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		manageActionsDefinition(),
 		manageArtifactDefinition(),
+		manageVideoDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage_todos",
@@ -1687,6 +1696,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageActions(scope, args)
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
+	case "manage-video", "manage_video":
+		return r.executeManageVideo(ctx, scope, args)
 	case "manage-todos", "manage_todos":
 		return r.executeManageTodos(scope, args)
 	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":

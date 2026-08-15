@@ -648,6 +648,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						SessionID:   strings.TrimSpace(config.sessionID),
 					})
 					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
+					runtimeCtx = tool.WithVideoRunContext(runtimeCtx, tool.VideoRunContext{SessionID: config.sessionID, RunID: config.runID, MessageID: config.sourceMessageID})
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {
 							return

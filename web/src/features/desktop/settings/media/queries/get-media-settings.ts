@@ -27,6 +27,8 @@ export async function getMediaSettingsCatalog(signal?: AbortSignal): Promise<Med
   return requestJson<MediaSettingsCatalog>('/v1/media/settings/catalog', { signal })
 }
 
+export const sourceMediaDirectoriesQueryKey = (workspacePath: string) => ['source-media-directories', workspacePath] as const
+
 export async function getSourceMediaDirectories(workspacePath: string, signal?: AbortSignal): Promise<string[]> {
   const query = new URLSearchParams({ workspace_path: workspacePath })
   const response = await requestJson<SourceMediaDirectoriesResponse>(`/v1/workspace/source-media/directories?${query.toString()}`, { signal })

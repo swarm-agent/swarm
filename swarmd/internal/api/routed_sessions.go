@@ -49,6 +49,7 @@ type routedSessionStartRequest struct {
 	TargetRelationship       string                                          `json:"target_relationship"`
 	Media                    []routedSessionMediaRequest                     `json:"media,omitempty"`
 	StagingIDs               []string                                        `json:"staging_ids,omitempty"`
+	VideoAttachments         []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
 	ArtifactSelections       []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
 }
 
@@ -585,7 +586,12 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		materializedAssetIDs = append(materializedAssetIDs, asset.ID)
 		stagingBindings = append(stagingBindings, pebblestore.MediaStagingBinding{StagingID: binding.StagingID, AuthorityAssetID: asset.ID, DigestSHA256: asset.DigestSHA256})
 	}
-	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input, Media: mediaReferences, ArtifactSelections: artifactSelections}
+	videoAttachments, err := s.sessions.Store().ValidateSessionVideoAttachments(principal.AccountScopeID, candidate, req.VideoAttachments)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
+	}
+	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input, Media: mediaReferences, VideoAttachments: videoAttachments, ArtifactSelections: artifactSelections}
 	messageKey := "routed-message:" + clientRequestID
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, candidate, sessionsV3MessageRequest{})
 	runIntent := &pebblestore.V3SessionRunIntent{RunID: stableSessionsV3PrimaryRunID(sessionID, messageKey), Status: runStatus, BlockedReason: blockedReason}
@@ -761,8 +767,9 @@ func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3P
 		PlanModeRequested                                                 *bool
 		Metadata                                                          map[string]any
 		Media                                                             []routedSessionMediaRequest
+		VideoAttachments                                                  []pebblestore.SessionVideoAttachmentReference
 		ArtifactSelections                                                []pebblestore.SessionArtifactSelectionReference
-	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.ArtifactSelections})
+	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections})
 	if err != nil {
 		return "", err
 	}

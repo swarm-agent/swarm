@@ -736,6 +736,11 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 			if shouldDropSensitiveConversationMessage(message) {
 				continue
 			}
+			if len(message.VideoAttachments) > 0 {
+				if videoContext := attachedVideoReferencesForProvider(message.VideoAttachments); videoContext != "" {
+					content = strings.TrimSpace(content + "\n\n" + videoContext)
+				}
+			}
 			if len(message.ArtifactSelections) > 0 {
 				if artifactContext := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": message.ArtifactSelections}); artifactContext != "" {
 					content = strings.TrimSpace(content + "\n\n" + artifactContext)
@@ -753,6 +758,24 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 }
 
 const maxProviderArtifactSelections = 16
+
+func attachedVideoReferencesForProvider(references []pebblestore.SessionVideoAttachmentReference) string {
+	if len(references) == 0 || len(references) > pebblestore.SessionVideoAttachmentMaxCount {
+		return ""
+	}
+	lines := []string{"Attached videos (opaque references and bounded metadata only; no host paths or source bytes are embedded):"}
+	for _, reference := range references {
+		ref := strings.TrimSpace(reference.Ref)
+		name := strings.TrimSpace(reference.Name)
+		mimeType := strings.TrimSpace(reference.MIMEType)
+		fingerprint := strings.TrimSpace(reference.SourceFingerprint)
+		if ref == "" || name == "" || mimeType == "" || fingerprint == "" || reference.SizeBytes <= 0 {
+			return ""
+		}
+		lines = append(lines, fmt.Sprintf("- ref=%s name=%q mime=%s size_bytes=%d fingerprint=%s", ref, name, mimeType, reference.SizeBytes, fingerprint))
+	}
+	return strings.Join(lines, "\n")
+}
 
 // attachedArtifactSelectionsForProvider projects only bounded visible labels and
 // opaque references. Managed bytes and storage paths remain behind
