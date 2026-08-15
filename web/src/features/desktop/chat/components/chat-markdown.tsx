@@ -1501,7 +1501,12 @@ export function ManageArtifactCard({
   const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
 
   const matchedCatalogEntry = rawArtifact
-    ? artifactCatalog.find((entry) => entry.artifactId === rawArtifact.artifactId && (!rawArtifact.sessionId || entry.sessionId === rawArtifact.sessionId))
+    ? artifactCatalog.find((entry) => (
+        entry.artifactId === rawArtifact.artifactId
+        && entry.sessionId === rawArtifact.sessionId
+        && entry.collectionId === rawArtifact.collectionId
+        && entry.eventSeq === rawArtifact.eventSeq
+      ))
     : null;
   const artifact = matchedCatalogEntry ?? rawArtifact;
 
@@ -1528,40 +1533,22 @@ export function ManageArtifactCard({
     }
   };
 
-  const handleAddToChat = () => {
-    if (!artifact || !onArtifactSelections) return;
+  const artifactSelection = artifact ? (() => {
     try {
-      onArtifactSelections([desktopV3ArtifactMessageSelection(artifact, "select")]);
+      return desktopV3ArtifactMessageSelection(artifact, "select");
     } catch {
-      if (artifact.sessionId && artifact.artifactId) {
-        onArtifactSelections([{
-          session_id: artifact.sessionId,
-          collection_id: artifact.collectionId || "",
-          variant_id: artifact.artifactId,
-          event_seq: artifact.eventSeq || 1,
-          label: artifact.label,
-          action: "select",
-        }]);
-      }
+      return null;
     }
+  })() : null;
+
+  const handleAddToChat = () => {
+    if (!artifactSelection || !onArtifactSelections) return;
+    onArtifactSelections([artifactSelection]);
   };
 
   const handleUseDesign = () => {
-    if (!artifact || !onArtifactSelections) return;
-    try {
-      onArtifactSelections([desktopV3ArtifactMessageSelection(artifact, "use")]);
-    } catch {
-      if (artifact.sessionId && artifact.artifactId) {
-        onArtifactSelections([{
-          session_id: artifact.sessionId,
-          collection_id: artifact.collectionId || "",
-          variant_id: artifact.artifactId,
-          event_seq: artifact.eventSeq || 1,
-          label: artifact.label,
-          action: "use",
-        }]);
-      }
-    }
+    if (!artifactSelection || !onArtifactSelections) return;
+    onArtifactSelections([{ ...artifactSelection, action: "use" }]);
   };
 
   return (
@@ -1623,7 +1610,7 @@ export function ManageArtifactCard({
               </button>
             )}
 
-            {onArtifactSelections && status === "ready" ? (
+            {onArtifactSelections && artifactSelection && status === "ready" ? (
               <>
                 <button
                   type="button"

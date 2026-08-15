@@ -153,11 +153,12 @@ func TestFinalHandoffSectionsUseContentAwareSpacing(t *testing.T) {
 		text = append(text, strings.TrimSpace(strings.Trim(row.text, "│")))
 	}
 	for _, pair := range [][2]string{
-		{"FINAL HANDOFF  ·  ship", "Ready to review", "COPYABLE CODE", "Run this command", "swarm status"},
-		{"• Compact card", "RECOMMENDATION"},
+		{"FINAL HANDOFF  ·  ship", "Ready to review"},
+		{"• Compact card", "COPYABLE CODE"},
+		{"swarm status", "RECOMMENDATION"},
 		{"ship — review", "NEXT STEPS"},
 		{"1. Review", "EVIDENCE"},
-		{"▸ Validation (1)", "Tab focus  ·  ←/→ choose  ·  Enter execute/open"},
+		{"▸ Details  ·  report", "Tab focus  ·  ←/→ choose  ·  Enter execute/open"},
 	} {
 		before, after := -1, -1
 		for index, line := range text {

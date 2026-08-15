@@ -21,7 +21,8 @@ func TestManageArtifactListPresets(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["registry_version"] == "" || payload["reviewed_source"] == "" || payload["reviewed_date"] == "" || payload["count"].(float64) != 6 {
+	presets, ok := payload["presets"].([]any)
+	if payload["registry_version"] == "" || payload["reviewed_source"] == "" || payload["reviewed_date"] == "" || !ok || payload["count"].(float64) != float64(len(presets)) || len(presets) == 0 {
 		t.Fatalf("payload = %#v", payload)
 	}
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "presets-extra", Name: "manage_artifact", Arguments: `{"action":"list_presets","limit":1}`}); err == nil {
