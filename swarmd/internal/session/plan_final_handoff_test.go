@@ -161,3 +161,142 @@ func TestBuildPlanFinalHandoffAllowsLegacyCheckpointWithoutSourceFields(t *testi
 		t.Fatalf("legacy projection = %#v, err=%v", projection, err)
 	}
 }
+
+func TestProjectPlanFinalHandoffArtifactsManagedAndWorkspaceCoexistence(t *testing.T) {
+	artifacts := []pebblestore.SessionPlanArtifactReference{
+		{
+			SessionID:    "sess-1",
+			CollectionID: "col-1",
+			VariantID:    "var-html",
+			EventSeq:     10,
+			Label:        "Interactive Brainstorm Spec",
+			Description:  "HTML concept prototype",
+			MediaType:    "text/html; charset=utf-8",
+			Role:         "deliverable",
+		},
+		{
+			SessionID:    "sess-1",
+			CollectionID: "col-1",
+			VariantID:    "var-img",
+			EventSeq:     11,
+			Label:        "Design Image",
+			MediaType:    "image/png",
+		},
+		{
+			SessionID:    "sess-1",
+			CollectionID: "col-1",
+			VariantID:    "var-pkg",
+			EventSeq:     12,
+			Label:        "Interactive Package",
+			MediaType:    "application/zip",
+		},
+		{
+			SessionID:    "sess-1",
+			CollectionID: "col-1",
+			VariantID:    "var-input",
+			EventSeq:     13,
+			Label:        "Draft Notes",
+			Role:         "input",
+		},
+		{
+			Path:        "docs/summary.md",
+			Role:        "deliverable",
+			Description: "Workspace Markdown Summary",
+			MediaType:   "text/markdown",
+		},
+		{
+			SessionID:    "sess-1",
+			CollectionID: "col-1",
+			VariantID:    "var-html",
+			EventSeq:     10,
+			Label:        "Duplicate HTML",
+		},
+	}
+
+	projected := ProjectPlanFinalHandoffArtifacts("plan-1", "cp-1", artifacts)
+	if len(projected) != 4 {
+		t.Fatalf("projected count = %d, want 4; projected = %#v", len(projected), projected)
+	}
+
+	// 1. Managed HTML
+	if projected[0].ID != "var-html" || projected[0].Label != "Interactive Brainstorm Spec" || projected[0].Filename != "var-html" || projected[0].MediaType != "text/html" || projected[0].Kind != "html" || !projected[0].Previewable {
+		t.Fatalf("managed html descriptor mismatch: %#v", projected[0])
+	}
+	// 2. Managed PNG
+	if projected[1].ID != "var-img" || projected[1].Label != "Design Image" || projected[1].Filename != "var-img" || projected[1].MediaType != "image/png" || projected[1].Kind != "image" || !projected[1].Previewable {
+		t.Fatalf("managed image descriptor mismatch: %#v", projected[1])
+	}
+	// 3. Managed ZIP package
+	if projected[2].ID != "var-pkg" || projected[2].Label != "Interactive Package" || projected[2].MediaType != "application/zip" || projected[2].Kind != "package" || !projected[2].Previewable {
+		t.Fatalf("managed package descriptor mismatch: %#v", projected[2])
+	}
+	// 4. Workspace deliverable
+	if projected[3].ID == "" || projected[3].Filename != "summary.md" || projected[3].Label != "Workspace Markdown Summary" || projected[3].MediaType != "text/markdown" || projected[3].Kind != "markdown" || !projected[3].Previewable {
+		t.Fatalf("workspace deliverable descriptor mismatch: %#v", projected[3])
+	}
+}
+
+func TestValidatePlanCheckpointRecommendationPromptSemantics(t *testing.T) {
+	valid := pebblestore.SessionPlanCheckpointRecommendation{
+		Decision:    "ship",
+		Action:      "Review the interactive brainstorming spec and proceed with phase 2.",
+		Reason:      "All acceptance criteria and artifact checks passed cleanly.",
+		ActionState: "ready",
+	}
+	normalized := normalizePlanCheckpointRecommendation(valid)
+	if err := validatePlanCheckpointRecommendation(normalized); err != nil {
+		t.Fatalf("validate valid recommendation: %v", err)
+	}
+
+	invalidCases := []struct {
+		name    string
+		rec     pebblestore.SessionPlanCheckpointRecommendation
+		wantErr string
+	}{
+		{
+			name:    "unsupported decision",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ignore", Action: "review", Reason: "done", ActionState: "ready"},
+			wantErr: "decision \"ignore\" is not supported",
+		},
+		{
+			name:    "unsupported action_state",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review", Reason: "done", ActionState: "pending"},
+			wantErr: "action_state \"pending\" is not supported",
+		},
+		{
+			name:    "missing action",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Reason: "done", ActionState: "ready"},
+			wantErr: "requires action, reason, and action_state",
+		},
+		{
+			name:    "missing reason",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review", ActionState: "ready"},
+			wantErr: "requires action, reason, and action_state",
+		},
+		{
+			name:    "executable directive slash in action",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "/commit and push", Reason: "done", ActionState: "ready"},
+			wantErr: "must be display text or an ordinary chat prompt",
+		},
+		{
+			name:    "executable directive tool json in action",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: `{"tool":"bash","command":"git push"}`, Reason: "done", ActionState: "ready"},
+			wantErr: "must be display text or an ordinary chat prompt",
+		},
+		{
+			name:    "executable directive code block in reason",
+			rec:     pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review change", Reason: "```bash\nrm -rf /\n```", ActionState: "ready"},
+			wantErr: "must be display text or an ordinary chat prompt",
+		},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			norm := normalizePlanCheckpointRecommendation(tc.rec)
+			err := validatePlanCheckpointRecommendation(norm)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}

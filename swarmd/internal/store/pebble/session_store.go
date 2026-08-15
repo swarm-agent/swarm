@@ -219,14 +219,20 @@ type SessionPlanInfo struct {
 	ValidationStrategy string   `json:"validation_strategy,omitempty"`
 }
 
-// SessionPlanArtifactReference identifies a portable workspace artifact that a
-// checkpoint may selectively read or must deliver to the user. Contents are
-// never embedded in the durable plan document.
+// SessionPlanArtifactReference identifies a portable workspace artifact or an
+// existing immutable managed artifact that a checkpoint may selectively read
+// or deliver to the user in a terminal handoff. Contents are never embedded in
+// the durable plan document.
 type SessionPlanArtifactReference struct {
-	Path        string `json:"path"`
-	Role        string `json:"role,omitempty"`
-	Description string `json:"description,omitempty"`
-	MediaType   string `json:"media_type,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	CollectionID string `json:"collection_id,omitempty"`
+	VariantID    string `json:"variant_id,omitempty"`
+	EventSeq     uint64 `json:"event_seq,omitempty"`
+	Label        string `json:"label,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Role         string `json:"role,omitempty"`
+	Description  string `json:"description,omitempty"`
+	MediaType    string `json:"media_type,omitempty"`
 }
 
 type SessionPlanCheckpoint struct {
@@ -353,9 +359,9 @@ type PlanFinalHandoffArtifact struct {
 	ID          string `json:"id"`
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
-	Filename    string `json:"filename"`
-	MediaType   string `json:"media_type"`
-	Kind        string `json:"kind"`
+	Filename    string `json:"filename,omitempty"`
+	MediaType   string `json:"media_type,omitempty"`
+	Kind        string `json:"kind,omitempty"`
 	Previewable bool   `json:"previewable"`
 }
 
