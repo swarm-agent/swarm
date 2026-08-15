@@ -67,7 +67,7 @@ cd web
 node ./scripts/run-desktop-subagent-task-e2e.mjs https://example.invalid/swarm-go
 ```
 
-The script writes `summary.json`, `browser-events.json`, `network.json`, `browser-console.json`, `dom-snapshot.txt`, and a screenshot into a temp evidence directory printed in the test output. It fails unless Playwright observes `session.tool.started`, `session.tool.delta`, and two child session IDs in the task stream.
+The script writes `summary.json`, `browser-events.json`, `network.json`, `browser-console.json`, `dom-snapshot.txt`, and a screenshot into a temp evidence directory printed in the test output. The printed evidence directory is disposable and should not be copied into tracked repository paths. It fails unless Playwright observes `session.tool.started`, `session.tool.delta`, and two child session IDs in the task stream.
 
 ## Canonical Desktop launch suite
 
