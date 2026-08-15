@@ -603,18 +603,18 @@ func (s *Service) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID
 	}
 	defer integrationLock.Release()
 
-	state, err := s.VerifyTaskIntegrationWorkspace(parentRoot, actualPath, sessionID, branchName, baseCommit, headCommit)
+	state, err := s.VerifyTaskIntegrationWorkspace(parentPath, actualPath, sessionID, branchName, baseCommit, headCommit)
 	if err != nil {
 		return fmt.Errorf("verify integrated child worktree before cleanup: %w", err)
 	}
 	if !state.Clean {
 		return fmt.Errorf("integrated child worktree is dirty and remains recoverable:\n%s", state.Status)
 	}
-	parentState, err := s.InspectTaskWorkspace(parentRoot)
+	parentState, err := s.InspectTaskWorkspace(parentPath)
 	if err != nil {
 		return fmt.Errorf("inspect parent before integrated worktree cleanup: %w", err)
 	}
-	integrated, err := s.TaskCommitRangeIntegratedInto(parentRoot, baseCommit, headCommit, parentState.HeadCommit)
+	integrated, err := s.TaskCommitRangeIntegratedInto(parentPath, baseCommit, headCommit, parentState.HeadCommit)
 	if err != nil {
 		return fmt.Errorf("verify child integration before worktree cleanup: %w", err)
 	}
