@@ -31,7 +31,7 @@ type manageVideoService interface {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "List registered source-video folders, navigate bounded subdirectories, start transcription for selected opaque video references, inspect triggering-message attachments, check jobs, cancel one job, or read a durable transcript. Registered-root discovery, browsing, and selected-reference starts need trusted run plus account/workspace authority but no triggering-message attachment; attachment inspection and attachment-backed starts retain trusted triggering-message authority. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "List registered source-video folders, navigate bounded subdirectories, start transcription for selected opaque video references, inspect triggering-message attachments, check jobs, cancel one job, or read a durable transcript. Registered-root discovery, browsing, and selected-reference starts need trusted run plus account and workspace authority but no triggering-message attachment; attachment inspection and attachment-backed starts retain trusted triggering-message authority. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

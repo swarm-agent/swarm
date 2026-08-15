@@ -127,7 +127,7 @@ func TestWaitUntilActiveStopsAfterBoundedNotFoundWindowAndKeepsSafeDetails(t *te
 }
 
 func TestGoogleHTTPStatusErrorSanitizesCredentialLikeProviderMessage(t *testing.T) {
-	secret := "sk-1234567890abcdefghijklmnop"
+	secret := "synthetic-test-credential"
 	err := googleHTTPStatusError("google request failed", http.StatusBadRequest, googleRPCStatus{
 		Code: http.StatusBadRequest, Status: "INVALID_ARGUMENT", Message: "authorization: Bearer " + secret,
 	})
