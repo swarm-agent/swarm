@@ -270,7 +270,7 @@ func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusBadRequest, resolveErr)
 			return
 		}
-		record, found, sourceErr := s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, owned.WorkspaceID, clip.SourceRef)
+		record, found, sourceErr := s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, owned.Scope.WorkspaceID, clip.SourceRef)
 		if sourceErr != nil || !found {
 			writeError(w, http.StatusNotFound, errors.New("video source is no longer registered"))
 			return

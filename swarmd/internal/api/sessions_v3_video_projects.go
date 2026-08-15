@@ -370,7 +370,17 @@ func (s *Server) handleSessionV3VideoExport(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, errors.New("artifact registry is not configured"))
 		return
 	}
-	file, _, err := s.artifacts.Open(r.Context(), principal, job.OutputArtifact.CollectionID, job.OutputArtifact.VariantID)
+	variant, found, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, sessionID, job.OutputArtifact.CollectionID, job.OutputArtifact.VariantID)
+	if err != nil || !found || variant.EventSeq != job.OutputArtifact.EventSeq {
+		writeError(w, http.StatusBadRequest, errors.New("output artifact reference is no longer exact or available"))
+		return
+	}
+	artifactService, err := s.artifacts.ServiceForSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("resolve artifact service: %w", err))
+		return
+	}
+	file, _, err := artifactService.Open(r.Context(), variant)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("open output artifact: %w", err))
 		return

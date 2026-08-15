@@ -5,15 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -381,6 +378,14 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	if outputPreset == "" {
 		outputPreset = pebblestore.VideoPresetLandscape1080p
 	}
+	outputRequirements, err := artifact.ResolveOutputRequirements(&artifact.OutputRequirementsInput{
+		Width:  plan.Dimensions.Width,
+		Height: plan.Dimensions.Height,
+	})
+	if err != nil {
+		s.failJob(principal, sessionID, jobID, "artifact_requirements_error", err.Error())
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("resolve rendered artifact output requirements: %w", err)
+	}
 
 	artifactVariant, err := s.artifacts.CreateFromFile(renderCtx, artifactPrincipal, artifact.CreateFileInput{
 		CreateInput: artifact.CreateInput{
@@ -397,13 +402,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 				Width:       plan.Dimensions.Width,
 				Height:      plan.Dimensions.Height,
 			},
-			OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{
-				Preset:     outputPreset,
-				Width:      plan.Dimensions.Width,
-				Height:     plan.Dimensions.Height,
-				FPS:        plan.FPS,
-				DurationMs: plan.TotalDurationMs,
-			},
+			OutputRequirements: outputRequirements,
 		},
 		SourcePath: outputPath,
 	})
@@ -458,9 +457,9 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 		res, err := s.workspace.ListSourceMediaDirectoriesForPrincipal(principal, workspacePath)
 		if err == nil {
 			workspaceID = res.WorkspaceID
-			registeredRoots = make(map[string]struct{}, len(res.Roots))
-			for _, r := range res.Roots {
-				registeredRoots[filepath.Clean(r.Path)] = struct{}{}
+			registeredRoots = make(map[string]struct{}, len(res.SourceMediaDirectories))
+			for _, root := range res.SourceMediaDirectories {
+				registeredRoots[filepath.Clean(root)] = struct{}{}
 			}
 		}
 	}
@@ -471,16 +470,16 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 		}
 
 		input := MaterializedInput{
-			Index:       len(inputs),
-			ClipID:      clip.ID,
-			Volume:      clip.Volume,
-			Muted:       clip.Muted,
-			StartMs:     clip.SourceStartMs,
-			EndMs:       clip.SourceEndMs,
-			DurationMs:  clip.DurationMs,
-			Captions:    clip.Captions,
-			IsVideo:     true,
-			HasAudio:    true,
+			Index:      len(inputs),
+			ClipID:     clip.ID,
+			Volume:     clip.Volume,
+			Muted:      clip.Muted,
+			StartMs:    clip.SourceStartMs,
+			EndMs:      clip.SourceEndMs,
+			DurationMs: clip.DurationMs,
+			Captions:   clip.Captions,
+			IsVideo:    true,
+			HasAudio:   true,
 		}
 
 		switch clip.SourceKind {

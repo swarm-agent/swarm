@@ -499,11 +499,13 @@ async function createVideoThread(input: {
   folderPath?: string
   clips: VideoClip[]
 }): Promise<VideoThreadRecord> {
+  const preference = await fetchDraftModelPreference()
   const createdSession = await createSession({
     title: input.title,
     workspacePath: input.workspacePath,
     workspaceName: input.workspaceName,
     mode: 'auto',
+    preference: preference.preference,
     metadata: { launch_source: 'video_tool', lineage_kind: 'video_project' },
   })
   const response = await requestJson<{ thread?: VideoThreadWire }>('/v1/workspace/video/threads', {
