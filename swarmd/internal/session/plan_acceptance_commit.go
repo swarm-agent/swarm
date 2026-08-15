@@ -101,6 +101,11 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	document.Title = title
 	document.Status = "approved"
 	document.RevisionID = fmt.Sprintf("%s:v%d", planID, version)
+	if s.store != nil {
+		if err := s.authenticatePlanDocumentArtifacts(session.AccountScopeID, session.ID, document); err != nil {
+			return PlanAcceptanceCommitResult{}, err
+		}
+	}
 	plan := pebblestore.SessionPlanSnapshot{ID: planID, SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Title: title, Plan: planText, Status: "approved", ApprovalState: "approved", Active: true, CreatedAt: createdAt, UpdatedAt: now, UpdateSummary: "exit plan mode submission", UpdateScope: "plan", UpdateKind: "exit_plan_mode", RevisionKind: PlanRevisionKindDefinition, Version: version, Document: document}
 	if found {
 		plan.ParentRevision = existing.Version

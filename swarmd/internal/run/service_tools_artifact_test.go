@@ -53,3 +53,34 @@ func TestTaskDelegationTranscriptKeepsArtifactOnlyUserMessage(t *testing.T) {
 		t.Fatalf("artifact-only message was dropped: %q", got)
 	}
 }
+
+func TestManageArtifactToolOutputIsStructured(t *testing.T) {
+	output := `{"action":"create","artifact":{"collection_id":"col-1","event_seq":1,"filename":"concept.html","id":"var-1","media_type":"text/html","session_id":"sess-1","status":"ready"},"path_id":"run.manage-artifact.v1","reference":{"collection_id":"col-1","event_seq":1,"session_id":"sess-1","variant_id":"var-1"},"status":"ok","tool":"manage_artifact"}`
+	preview, ok := toolHistoryStructuredPayload("manage_artifact", output, `{"action":"create"}`)
+	if !ok || preview != output {
+		t.Fatalf("toolHistoryStructuredPayload = %q ok=%v, want %q", preview, ok, output)
+	}
+	previewAlias, ok := toolHistoryStructuredPayload("manage-artifact", output, `{"action":"create"}`)
+	if !ok || previewAlias != output {
+		t.Fatalf("toolHistoryStructuredPayload with alias = %q ok=%v", previewAlias, ok)
+	}
+}
+
+func TestBrainstormingArtifactPromptGuidance(t *testing.T) {
+	checkpointPrompt, err := checkpointRunPrompt(checkpointRunPromptPayload{
+		Checkpoint: pebblestore.SessionPlanCheckpoint{ID: "cp-1", Title: "Brainstorm"},
+		Artifacts:  []pebblestore.SessionPlanArtifactReference{{Path: "docs/spec.md", Role: "input"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"prefer self-contained readable HTML for rich visual deliverables and Markdown for simpler documents",
+		"managed artifacts remain in the session without repository writes",
+		"exact ready reference for managed artifacts",
+	} {
+		if !strings.Contains(checkpointPrompt, want) {
+			t.Fatalf("checkpoint prompt missing artifact guidance %q: %s", want, checkpointPrompt)
+		}
+	}
+}
