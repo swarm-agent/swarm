@@ -2831,7 +2831,7 @@ export function DesktopV3ExistingConversationPane({
     onDownloadConversation: () => { void handleTranscriptExport('download'); },
   } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
 
-  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, [], []), [stableSubmit]);
+  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, [], [], []), [stableSubmit]);
   const queueGalleryArtifactSelections = useCallback((selections: DesktopV3ArtifactMessageSelection[]) => {
     if (selections.length === 0) return;
     try {

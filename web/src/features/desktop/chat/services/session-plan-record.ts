@@ -1,4 +1,5 @@
 import type { DesktopPlanFinalHandoff, DesktopPlanFinalHandoffArtifact, DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanInfo, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { DesktopV3ArtifactCategory } from '../../session-v3/artifact-api'
 
 export interface DesktopSessionPlanWire {
   id?: string
@@ -314,7 +315,7 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
       const eventSeq = numberValue(artifact.eventSeq ?? artifact.event_seq)
       const kind = stringValue(artifact, 'kind')
       const rawCategory = stringValue(artifact, 'category')
-      const category = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : (
+      const category: DesktopV3ArtifactCategory = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : (
         mediaType === 'text/html' || mediaType === 'application/pdf' || mediaType.startsWith('image/') ? 'visual' : 'document'
       )
       const previewable = typeof artifact.previewable === 'boolean' ? artifact.previewable : true
