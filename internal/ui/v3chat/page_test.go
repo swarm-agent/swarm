@@ -268,7 +268,7 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	page.Draw(screen)
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	if !page.handoffFocus || page.handoffControl != 0 {
-		t.Fatalf("Tab did not focus the first handoff control: focus=%t control=%d", page.handoffFocus, page.handoffControl)
+		t.Fatalf("Tab did not focus the primary recommendation control: focus=%t control=%d", page.handoffFocus, page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	if page.handoffControl != 0 {
@@ -276,10 +276,14 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	if page.handoffControl != 1 {
-		t.Fatalf("Right did not move to the second suggested prompt: %d", page.handoffControl)
+		t.Fatalf("Right did not move to the first suggested prompt: %d", page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	if page.handoffControl != 2 {
+		t.Fatalf("Right did not move to the second suggested prompt: %d", page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if page.handoffControl != 3 {
 		t.Fatalf("Right did not move from AI suggestions to the first expandable object: %d", page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
@@ -293,7 +297,7 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	for index := 0; index < 3; index++ {
 		page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	}
-	if page.handoffControl != 5 {
+	if page.handoffControl != 6 {
 		t.Fatalf("Right did not move to the artifacts control: %d", page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
@@ -317,6 +321,7 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 		t.Fatal("Esc did not return focus to the composer")
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	deadline := time.Now().Add(time.Second)
 	for {

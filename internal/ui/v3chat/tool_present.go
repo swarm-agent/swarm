@@ -3,6 +3,7 @@ package v3chat
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +87,8 @@ func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
 		presentation = presentWebTool(name, arguments, output)
 	case "plan-manage":
 		presentation = presentPlanManageTool(tool, arguments, output)
+	case "manage-artifact":
+		presentation = presentManageArtifactTool(tool, arguments, output)
 	case "manage-sessions":
 		presentation = presentManageSessionsTool(tool, arguments, output)
 	case "task":
@@ -126,6 +129,8 @@ func activeToolSummary(name, fallback string) string {
 		return "editing…"
 	case "plan-manage", "exit-plan-mode":
 		return "planning…"
+	case "manage-artifact":
+		return "managing artifacts…"
 	case "task":
 		return "launching subagents…"
 	default:
@@ -302,6 +307,87 @@ func presentBashTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		lines = append(lines, toolPresentationLine{Text: "waiting for output…", Tone: "muted"})
 	}
 	return toolPresentation{Summary: appendToolFacts(summary, facts), Lines: lines}
+}
+
+func presentManageArtifactTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
+	payload := output
+	if payload == nil {
+		payload = arguments
+	}
+	action := firstNonEmptyToolRaw(toolString(payload, "action"), toolString(arguments, "action"))
+	summary := "manage-artifact"
+	if action != "" {
+		summary += " " + strings.ReplaceAll(action, "_", " ")
+	}
+	artifact := toolObject(payload, "artifact")
+	reference := toolObject(payload, "reference")
+
+	facts := make([]string, 0, 3)
+	if status := toolString(payload, "status"); status != "" && !strings.EqualFold(status, "ok") {
+		facts = append(facts, status)
+	}
+	mediaType := firstNonEmptyToolRaw(toolString(artifact, "media_type"), toolString(arguments, "media_type"))
+	if mediaType != "" {
+		facts = append(facts, mediaType)
+	}
+	artStatus := toolString(artifact, "status")
+	if artStatus != "" && !strings.EqualFold(artStatus, "ok") {
+		facts = append(facts, artStatus)
+	}
+	if len(facts) > 0 {
+		summary = appendToolFacts(summary, facts)
+	}
+
+	lines := make([]toolPresentationLine, 0, 6)
+	if artifact != nil || reference != nil {
+		title := firstNonEmptyToolRaw(
+			toolString(artifact, "title"),
+			toolString(artifact, "label"),
+			toolString(artifact, "filename"),
+			toolString(artifact, "id"),
+			toolString(reference, "variant_id"),
+			"artifact",
+		)
+		lines = append(lines, toolPresentationLine{Text: title, Tone: "label"})
+
+		sessionID := firstNonEmptyToolRaw(toolString(artifact, "session_id"), toolString(reference, "session_id"))
+		collectionID := firstNonEmptyToolRaw(toolString(artifact, "collection_id"), toolString(reference, "collection_id"))
+		variantID := firstNonEmptyToolRaw(toolString(artifact, "id"), toolString(artifact, "variant_id"), toolString(reference, "variant_id"))
+		eventSeq := toolInt(artifact, "event_seq")
+		if eventSeq <= 0 {
+			eventSeq = toolInt(reference, "event_seq")
+		}
+
+		identityParts := make([]string, 0, 4)
+		if sessionID != "" {
+			identityParts = append(identityParts, "session="+sessionID)
+		}
+		if collectionID != "" {
+			identityParts = append(identityParts, "collection="+collectionID)
+		}
+		if variantID != "" {
+			identityParts = append(identityParts, "variant="+variantID)
+		}
+		if eventSeq > 0 {
+			identityParts = append(identityParts, fmt.Sprintf("event_seq=%d", eventSeq))
+		}
+		if len(identityParts) > 0 {
+			lines = append(lines, toolPresentationLine{Text: strings.Join(identityParts, " · "), Tone: "path"})
+		}
+
+		if sessionID != "" && variantID != "" {
+			route := fmt.Sprintf("/v3/sessions/%s/artifacts/%s", url.PathEscape(sessionID), url.PathEscape(variantID))
+			lines = append(lines, toolPresentationLine{Text: "Route: " + route, Tone: "muted"})
+		}
+	} else if action == "generate_image" {
+		if prompt := toolString(arguments, "prompt"); prompt != "" {
+			lines = append(lines, toolPresentationLine{Text: "Prompt: " + clampToolRunes(prompt, 120), Tone: "muted"})
+		}
+	}
+	if tool.Error != "" {
+		lines = append(lines, toolPresentationLine{Text: tool.Error, Tone: "error"})
+	}
+	return toolPresentation{Summary: summary, Lines: lines}
 }
 
 func looksLikeTerminalBashPayload(payload map[string]any) bool {

@@ -1010,6 +1010,7 @@ func finalHandoffFromMetadata(metadata map[string]any) *client.PlanFinalHandoff 
 	handoff.CopyableCodeBlocks = cleanHandoffCodeBlocks(handoff.CopyableCodeBlocks, 3)
 	handoff.SuggestedPrompts = cleanHandoffPrompts(handoff.SuggestedPrompts, 3)
 	handoff.Artifacts = cleanHandoffArtifacts(handoff.Artifacts, 20)
+	handoff.Recommendation = cleanHandoffRecommendation(handoff.Recommendation)
 	handoff.Details.ChangedFiles = cleanStrings(handoff.Details.ChangedFiles, 0)
 	handoff.Details.Validation = cleanStrings(handoff.Details.Validation, 0)
 	return &handoff
@@ -1058,6 +1059,22 @@ func cleanHandoffPrompts(values []client.PlanFinalHandoffSuggestedPrompt, limit 
 	return out
 }
 
+func cleanHandoffRecommendation(value *client.SessionPlanCheckpointRecommendation) *client.SessionPlanCheckpointRecommendation {
+	if value == nil {
+		return nil
+	}
+	cleaned := *value
+	cleaned.Decision = strings.TrimSpace(cleaned.Decision)
+	cleaned.Action = strings.TrimSpace(cleaned.Action)
+	cleaned.Reason = strings.TrimSpace(cleaned.Reason)
+	cleaned.ActionState = strings.TrimSpace(cleaned.ActionState)
+	cleaned.Prompt = strings.TrimSpace(cleaned.Prompt)
+	if cleaned.Decision == "" && cleaned.Action == "" && cleaned.Reason == "" && cleaned.ActionState == "" && cleaned.Prompt == "" {
+		return nil
+	}
+	return &cleaned
+}
+
 func cleanHandoffArtifacts(values []client.PlanFinalHandoffArtifact, limit int) []client.PlanFinalHandoffArtifact {
 	out := make([]client.PlanFinalHandoffArtifact, 0, len(values))
 	for _, value := range values {
@@ -1065,12 +1082,19 @@ func cleanHandoffArtifacts(values []client.PlanFinalHandoffArtifact, limit int) 
 		value.ID = strings.TrimSpace(value.ID)
 		value.Label = strings.TrimSpace(value.Label)
 		value.Description = strings.TrimSpace(value.Description)
+		value.Filename = strings.TrimSpace(value.Filename)
 		value.MediaType = strings.TrimSpace(value.MediaType)
+		value.Kind = strings.TrimSpace(value.Kind)
+		value.Role = strings.TrimSpace(value.Role)
+		value.Status = strings.TrimSpace(value.Status)
+		value.SessionID = strings.TrimSpace(value.SessionID)
+		value.CollectionID = strings.TrimSpace(value.CollectionID)
+		value.VariantID = strings.TrimSpace(value.VariantID)
 		value.Path = strings.TrimSpace(value.Path)
 		value.RelativePath = strings.TrimSpace(value.RelativePath)
 		value.WorkspaceRelativePath = strings.TrimSpace(value.WorkspaceRelativePath)
 		value.PreviewURL = strings.TrimSpace(value.PreviewURL)
-		if value.ArtifactID == "" && value.ID == "" {
+		if value.ArtifactID == "" && value.ID == "" && value.VariantID == "" && value.WorkspaceRelativePath == "" && value.Path == "" {
 			continue
 		}
 		out = append(out, value)

@@ -1043,6 +1043,7 @@ type SessionPlanCheckpointRecommendation struct {
 	Action      string `json:"action,omitempty"`
 	Reason      string `json:"reason,omitempty"`
 	ActionState string `json:"action_state,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
 }
 
 // PlanFinalHandoff is the versioned compact projection carried in durable V3
@@ -1069,7 +1070,15 @@ type PlanFinalHandoffArtifact struct {
 	ID                    string `json:"id,omitempty"`
 	Label                 string `json:"label,omitempty"`
 	Description           string `json:"description,omitempty"`
+	Filename              string `json:"filename,omitempty"`
 	MediaType             string `json:"media_type,omitempty"`
+	Kind                  string `json:"kind,omitempty"`
+	Role                  string `json:"role,omitempty"`
+	Status                string `json:"status,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	CollectionID          string `json:"collection_id,omitempty"`
+	VariantID             string `json:"variant_id,omitempty"`
+	EventSeq              int64  `json:"event_seq,omitempty"`
 	Path                  string `json:"path,omitempty"`
 	RelativePath          string `json:"relative_path,omitempty"`
 	WorkspaceRelativePath string `json:"workspace_relative_path,omitempty"`
