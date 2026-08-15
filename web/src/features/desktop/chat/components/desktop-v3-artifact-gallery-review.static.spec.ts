@@ -38,10 +38,12 @@ test('gallery chat actions emit opaque references and persist use before callbac
   assert.match(gallery, /canonicalSelection = await useDesktopV3Artifact\(desktopV3ArtifactSelection\(selected\)\)/)
   assert.match(gallery, /await onUseThisDesign\(\{ label: selected\.label, selection: canonicalSelection \}\)/)
   assert.match(gallery, /data-artifact-selected-design/)
-  assert.match(gallery, /to chat<\/button>/)
+  assert.match(gallery, /Attach.*for changes<\/span>/)
+  assert.match(gallery, /Ask for changes to remix the exact selected image/)
   assert.match(gallery, /Use this design<\/button>/)
   assert.doesNotMatch(gallery, /arrayBuffer\(\)/)
   assert.doesNotMatch(gallery, /onAddToChat\(\{[^}]*content:/)
+  assert.doesNotMatch(gallery, /arrayBuffer\(\).*onAddToChat/)
 })
 
 test('mobile gallery reserves a stable middle generation viewport between selectors and actions', async () => {

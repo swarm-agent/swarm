@@ -21,7 +21,7 @@ func TestBuildInputProjectsAttachedArtifactSelectionsWithoutBytes(t *testing.T) 
 		t.Fatalf("input = %#v", input)
 	}
 	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
-	for _, want := range []string{"Compact navigation", "Reviewed option", "session_id=source-session", "collection_id=collection-1", "variant_id=variant-2", "event_seq=41", "manage_artifact get/read", "application/zip", "source_event_seq"} {
+	for _, want := range []string{"Compact navigation", "Reviewed option", "session_id=source-session", "collection_id=collection-1", "variant_id=variant-2", "event_seq=41", "manage_artifact get/read", "application/zip", "selected ready image can be remixed repeatedly", "image_capabilities", "generate_image", "source_event_seq", "do not re-prompt from scratch"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider content missing %q: %s", want, content)
 		}

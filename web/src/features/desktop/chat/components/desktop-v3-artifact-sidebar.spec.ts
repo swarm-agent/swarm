@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import type { DesktopV3ArtifactCatalogEntry } from '../../session-v3/artifact-api'
@@ -57,6 +58,13 @@ function artifact(sessionId: string, artifactId: string, parentSessionId = ''): 
     },
   }
 }
+
+test('sidebar labels ready images as exact chat remix inputs', async () => {
+  const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  assert.match(source, /Attach \$\{artifact\.label\} for chat changes/)
+  assert.match(source, /Attach to chat for remixing/)
+  assert.match(source, /onAddToChat\(\[artifact\]\)/)
+})
 
 test('session artifact sidebar includes native and delegated artifacts only for the active session', () => {
   const catalog = [
