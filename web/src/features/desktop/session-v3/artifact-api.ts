@@ -28,6 +28,7 @@ export interface DesktopV3ArtifactLineage {
   sourceSessionId: string
   sourceCollectionId: string
   sourceVariantId: string
+  sourceEventSeq?: number
   taskCallId: string
   programId: string
   programJobId: string
@@ -184,6 +185,7 @@ function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | nu
     sourceSessionId: artifactCatalogString(record.source_session_id),
     sourceCollectionId: artifactCatalogString(record.source_collection_id),
     sourceVariantId: artifactCatalogString(record.source_variant_id),
+    sourceEventSeq: artifactCatalogEventSeq(record.source_event_seq),
     taskCallId: artifactCatalogString(record.task_call_id),
     programId: artifactCatalogString(record.program_id),
     programJobId: artifactCatalogString(record.program_job_id),

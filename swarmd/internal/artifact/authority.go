@@ -121,7 +121,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	}
 	lineage := a.lineage(principal, input)
 	collectionLineage := lineage
-	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID = "", "", ""
+	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq = "", "", "", 0
 	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID = "", ""
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
 	if err := applyArtifactOutputRequirementsToPresentation(&input.Presentation, input.OutputRequirements); err != nil {
@@ -577,7 +577,7 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 	}
 	return pebblestore.SessionArtifactLineage{
 		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
-		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID),
+		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID), SourceEventSeq: input.SourceEventSeq,
 		TaskCallID: strings.TrimSpace(principal.TaskCallID), ProgramID: strings.TrimSpace(principal.ProgramID), ProgramJobID: strings.TrimSpace(principal.ProgramJobID),
 		ChildSessionID: childSessionID, IterationGroupID: strings.TrimSpace(principal.IterationGroupID), IterationGroup: strings.TrimSpace(principal.IterationGroup),
 		IterationID: strings.TrimSpace(principal.IterationID), IterationIndex: principal.IterationIndex, IterationLabel: strings.TrimSpace(principal.IterationLabel), IterationTheme: strings.TrimSpace(principal.IterationTheme),

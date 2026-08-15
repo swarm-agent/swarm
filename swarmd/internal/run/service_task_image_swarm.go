@@ -230,7 +230,7 @@ func (s *Service) executeDirectImageSwarm(ctx context.Context, sessionID, sessio
 			return "", fmt.Errorf("direct image swarm item %d cannot allocate a trusted artifact destination", i+1)
 		}
 		run.ChildSessionID = parent.ID
-		prepared[i] = taskLaunchPrepared{LaunchIndex: i + 1, RequestedSubagent: "image_model", AssignmentLabel: hydrated[i].Title, StreamKey: spec.StreamKey, SwarmMode: true, SwarmStrategy: spec.SwarmStrategy, OutputMode: taskOutputModeManaged, OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements), ArtifactRunContext: run, ChildSession: parent}
+		prepared[i] = taskLaunchPrepared{LaunchIndex: i + 1, RequestedSubagent: "image_model", AssignmentLabel: hydrated[i].Title, StreamKey: spec.StreamKey, SwarmMode: true, SwarmStrategy: spec.SwarmStrategy, OutputMode: taskOutputModeManaged, OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements), ArtifactRunContext: run, SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), ChildSession: parent}
 	}
 	if err := s.ensureManagedDesignerArtifactPlaceholders(parent, prepared, req.ApplySessionMutation); err != nil {
 		return "", err
@@ -255,7 +255,7 @@ func (s *Service) executeDirectImageSwarm(ctx context.Context, sessionID, sessio
 			emitDirectImageSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "generating", hydrated[i].Title, hydrated[i].Theme, "image_model", "Generating image", nil)
 			_, generateErr := s.tools.GenerateManagedImageArtifact(ctx, scope, fmt.Sprintf("%s:image:%d", callID, i+1), hydrated[i].Prompt, run, cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact))
 			if generateErr != nil {
-				s.markManagedDesignerArtifactFailed(parent, &run, parent.ID, "direct_image_generation_failed")
+				s.markManagedDesignerArtifactFailed(parent, &run, parent.ID, "direct_image_generation_failed", parsed.Swarm.SourceArtifact)
 				results[i].Err = generateErr
 				emitDirectImageSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "failed", hydrated[i].Title, hydrated[i].Theme, "image_model", boundedTaskLaunchReason(generateErr.Error()), nil)
 				return

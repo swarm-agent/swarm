@@ -364,6 +364,34 @@ func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t 
 	}
 }
 
+func TestManagedImageRemixPlaceholderPreservesExactSourceLineage(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	spec := taskLaunchSpec{RequestedSubagentType: "image", OutputMode: taskOutputModeManaged, AssignmentLabel: "Lighting remix", SourceArguments: map[string]any{"swarm_index": 1}, SwarmMode: true}
+	collectionID, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-remix", []taskLaunchSpec{spec}, nil)
+	if err != nil {
+		t.Fatalf("allocate remix collection: %v", err)
+	}
+	run := managedDesignerArtifactContext(parent, "call-remix", spec, 1)
+	run.ChildSessionID = parent.ID
+	source := &pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
+	launch := taskLaunchPrepared{LaunchIndex: 1, ChildSession: parent, ArtifactRunContext: run, SourceArtifact: source}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, []taskLaunchPrepared{launch}, nil); err != nil {
+		t.Fatalf("project remix placeholder: %v", err)
+	}
+	variant, ok, err := svc.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, collectionID, run.VariantID)
+	if err != nil || !ok {
+		t.Fatalf("load remix placeholder: ok=%v err=%v", ok, err)
+	}
+	if variant.Lineage.SourceSessionID != source.SessionID || variant.Lineage.SourceCollectionID != source.CollectionID || variant.Lineage.SourceVariantID != source.VariantID || variant.Lineage.SourceEventSeq != source.EventSeq {
+		t.Fatalf("remix placeholder lineage = %#v", variant.Lineage)
+	}
+}
+
 func TestManagedDesignerMissingOutputProjectsFailedVariant(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()

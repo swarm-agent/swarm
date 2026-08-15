@@ -36,6 +36,7 @@ type SessionArtifactLineage struct {
 	SourceSessionID    string `json:"source_session_id,omitempty"`
 	SourceCollectionID string `json:"source_collection_id,omitempty"`
 	SourceVariantID    string `json:"source_variant_id,omitempty"`
+	SourceEventSeq     uint64 `json:"source_event_seq,omitempty"`
 	TaskCallID         string `json:"task_call_id,omitempty"`
 	ProgramID          string `json:"program_id,omitempty"`
 	ProgramJobID       string `json:"program_job_id,omitempty"`

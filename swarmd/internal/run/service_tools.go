@@ -57,6 +57,7 @@ type taskLaunchPrepared struct {
 	IntegrationContract  string
 	IntegrationRequired  bool
 	ArtifactRunContext   *tool.ArtifactRunContext
+	SourceArtifact       *pebblestore.SessionArtifactSelectionReference
 	ContextWatcher       *taskContextWatcher
 	ContinuationBoundary RunContinuationBoundaryCallback
 	LogicalTaskID        string
@@ -389,6 +390,12 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex,
 			IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 		}
+		if source := launch.SourceArtifact; source != nil {
+			lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
+			lineage.SourceCollectionID = strings.TrimSpace(source.CollectionID)
+			lineage.SourceVariantID = strings.TrimSpace(source.VariantID)
+			lineage.SourceEventSeq = source.EventSeq
+		}
 		if existing, found, getErr := s.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, collection.ID, run.VariantID); getErr != nil {
 			return getErr
 		} else if found {
@@ -446,7 +453,7 @@ func disabledTaskToolNames(extra ...string) []string {
 // markManagedDesignerArtifactFailed is best-effort status projection. The task
 // result remains authoritative about a failed/missing managed output even if a
 // concurrent ready variant or a persistence failure prevents this marker.
-func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSnapshot, run *tool.ArtifactRunContext, childSessionID, code string) {
+func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSnapshot, run *tool.ArtifactRunContext, childSessionID, code string, sourceArtifacts ...*pebblestore.SessionArtifactSelectionReference) {
 	if s == nil || s.sessions == nil || run == nil {
 		return
 	}
@@ -462,14 +469,21 @@ func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSn
 	if err != nil || !ok || collection.SessionID != parent.ID || collection.AccountScopeID != parent.AccountScopeID {
 		return
 	}
+	lineage := pebblestore.SessionArtifactLineage{
+		ParentSessionID: parent.ID, SourceSessionID: childSessionID, TaskCallID: run.TaskCallID,
+		ProgramID: run.ProgramID, ProgramJobID: run.ProgramJobID, ChildSessionID: childSessionID,
+		IterationGroupID: run.IterationGroupID, IterationGroup: run.IterationGroup,
+		IterationID: run.IterationID, IterationIndex: run.IterationIndex, IterationLabel: run.IterationLabel, IterationTheme: run.IterationTheme,
+	}
+	if len(sourceArtifacts) > 0 && sourceArtifacts[0] != nil {
+		source := sourceArtifacts[0]
+		lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
+		lineage.SourceCollectionID = strings.TrimSpace(source.CollectionID)
+		lineage.SourceVariantID = strings.TrimSpace(source.VariantID)
+		lineage.SourceEventSeq = source.EventSeq
+	}
 	variant := pebblestore.SessionArtifactVariant{
-		ID: run.VariantID, CollectionID: collection.ID, Filename: "managed-output", MediaType: "application/octet-stream", FailureCode: code,
-		Lineage: pebblestore.SessionArtifactLineage{
-			ParentSessionID: parent.ID, SourceSessionID: childSessionID, TaskCallID: run.TaskCallID,
-			ProgramID: run.ProgramID, ProgramJobID: run.ProgramJobID, ChildSessionID: childSessionID,
-			IterationGroupID: run.IterationGroupID, IterationGroup: run.IterationGroup,
-			IterationID: run.IterationID, IterationIndex: run.IterationIndex, IterationLabel: run.IterationLabel, IterationTheme: run.IterationTheme,
-		},
+		ID: run.VariantID, CollectionID: collection.ID, Filename: "managed-output", MediaType: "application/octet-stream", FailureCode: code, Lineage: lineage,
 	}
 	requestID := "task-managed-missing:" + run.VariantID
 	staged := &variant

@@ -300,7 +300,7 @@ func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Lineage.SourceSessionID != "source-session" || created.Lineage.SourceCollectionID != "source-collection" || created.Lineage.SourceVariantID != "source-variant" {
+	if created.Lineage.SourceSessionID != "source-session" || created.Lineage.SourceCollectionID != "source-collection" || created.Lineage.SourceVariantID != "source-variant" || created.Lineage.SourceEventSeq != 41 {
 		t.Fatalf("derived lineage = %+v", created.Lineage)
 	}
 }

@@ -53,6 +53,7 @@ const managedCatalogWire = {
     source_session_id: 'child-1',
     source_collection_id: 'source-collection',
     source_variant_id: 'source-variant',
+    source_event_seq: 41,
     task_call_id: 'call-1',
     program_id: 'program-1',
     program_job_id: 'job-1',
@@ -93,7 +94,7 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
     progress: { total: 3, staging: 1, ready: 1, failed: 1, unavailable: 0 },
     lineage: {
       parentSessionId: 'session-1', sourceSessionId: 'child-1', sourceCollectionId: 'source-collection',
-      sourceVariantId: 'source-variant', taskCallId: 'call-1', programId: 'program-1', programJobId: 'job-1',
+      sourceVariantId: 'source-variant', sourceEventSeq: 41, taskCallId: 'call-1', programId: 'program-1', programJobId: 'job-1',
       childSessionId: '', iterationGroupId: '', iterationGroup: '', iterationId: '', iterationIndex: 2,
       iterationLabel: '', iterationTheme: '', runId: '', planId: '', checkpointId: '', attemptId: '',
     },
