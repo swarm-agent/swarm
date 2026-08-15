@@ -104,6 +104,9 @@ func (f *fakeSessionStore) UpdateVideoRenderJob(input pebblestore.UpdateVideoRen
 	if !ok {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("job not found")
 	}
+	if input.ExpectedStatus != "" && j.Status != input.ExpectedStatus {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("render job status conflict: expected %s, actual %s", input.ExpectedStatus, j.Status)
+	}
 	if input.Status != "" {
 		j.Status = input.Status
 	}
@@ -157,6 +160,19 @@ func (f *fakeSessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, 
 	key := fmt.Sprintf("%s/%s/%s/%s", accountScopeID, sessionID, collectionID, variantID)
 	v, ok := f.variants[key]
 	return v, ok, nil
+}
+
+func (f *fakeSessionStore) ListRecoverableVideoRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
+	var list []pebblestore.VideoRenderJobSnapshot
+	for _, job := range f.jobs {
+		if job.Status == pebblestore.VideoRenderJobStatusQueued || job.Status == pebblestore.VideoRenderJobStatusRendering {
+			list = append(list, job)
+			if len(list) == limit {
+				break
+			}
+		}
+	}
+	return list, nil
 }
 
 func (f *fakeSessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
@@ -213,6 +229,7 @@ func TestRenderJobSuccessfulFlow(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	principal := identity.Principal{
+		Type:           identity.PrincipalTypeUser,
 		AccountScopeID: "acc_1",
 		UserID:         "usr_1",
 	}
@@ -357,8 +374,8 @@ func TestRenderJobSuccessfulFlow(t *testing.T) {
 }
 
 func TestRenderJobSecurityAndRejections(t *testing.T) {
-	principal := identity.Principal{AccountScopeID: "acc_alpha", UserID: "usr_alpha"}
-	otherPrincipal := identity.Principal{AccountScopeID: "acc_beta", UserID: "usr_beta"}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_alpha", UserID: "usr_alpha"}
+	otherPrincipal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_beta", UserID: "usr_beta"}
 
 	store := newFakeSessionStore()
 	store.sessions["sess_alpha"] = pebblestore.SessionSnapshot{
@@ -411,7 +428,7 @@ func TestRenderJobSecurityAndRejections(t *testing.T) {
 }
 
 func TestRenderJobFailureHandling(t *testing.T) {
-	principal := identity.Principal{AccountScopeID: "acc_1", UserID: "usr_1"}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
 	sessionID := "sess_fail"
 	projectID := "proj_fail"
 	revID := "rev_fail"
@@ -482,6 +499,41 @@ func TestRenderJobFailureHandling(t *testing.T) {
 	}
 }
 
+func TestRecoverJobsResumesPinnedRevisionAndWorkspace(t *testing.T) {
+	store := newFakeSessionStore()
+	store.sessions["sess_1"] = pebblestore.SessionSnapshot{ID: "sess_1", AccountScopeID: "acc_1", UserID: "usr_1", WorkspacePath: "/trusted/workspace"}
+	store.projects["proj_1"] = pebblestore.VideoProjectSnapshot{ID: "proj_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1", CurrentRevisionID: "rev_new"}
+	store.revisions["rev_old"] = pebblestore.VideoProjectRevisionSnapshot{ID: "rev_old", ProjectID: "proj_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "clip", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, Visible: true}}}}
+	store.jobs["job_1"] = pebblestore.VideoRenderJobSnapshot{ID: "job_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1", ProjectID: "proj_1", RevisionID: "rev_old", Status: pebblestore.VideoRenderJobStatusRendering}
+	svc := NewService(Config{}, store, &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
+	count, err := svc.RecoverJobs(context.Background())
+	if err != nil || count != 1 { t.Fatalf("RecoverJobs() = %d, %v", count, err) }
+	job := store.jobs["job_1"]
+	if job.Status != pebblestore.VideoRenderJobStatusReady { t.Fatalf("status = %s, want ready", job.Status) }
+}
+
+func TestRecoverJobsPreservesExistingReadyArtifact(t *testing.T) {
+	store := newFakeSessionStore()
+	job := pebblestore.VideoRenderJobSnapshot{ID: "job_1", AccountScopeID: "acc_1", UserID: "usr_1", SessionID: "sess_1", ProjectID: "proj_1", RevisionID: "rev_1", Status: pebblestore.VideoRenderJobStatusRendering}
+	store.jobs[job.ID] = job
+	store.variants["acc_1/sess_1/vproj_proj_1/vrender_job_1"] = pebblestore.SessionArtifactVariant{ID: "vrender_job_1", CollectionID: "vproj_proj_1", SessionID: "sess_1", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 9, Size: 44}
+	runner := &fakeCommandRunner{}
+	svc := NewService(Config{}, store, nil, nil, nil, runner)
+	if count, err := svc.RecoverJobs(context.Background()); err != nil || count != 1 { t.Fatalf("RecoverJobs() = %d, %v", count, err) }
+	if store.jobs[job.ID].Status != pebblestore.VideoRenderJobStatusReady { t.Fatal("artifact recovery did not complete") }
+	if len(runner.calls) != 0 { t.Fatalf("ffmpeg calls = %d, want 0", len(runner.calls)) }
+	if store.jobs[job.ID].OutputArtifact == nil { t.Fatal("ready artifact reference was not restored") }
+}
+
+func TestRenderJobProcessAdmissionRejectsDuplicate(t *testing.T) {
+	svc := NewService(Config{}, newFakeSessionStore(), nil, nil, nil, nil)
+	if !svc.admit("job") { t.Fatal("first admission failed") }
+	if svc.admit("job") { t.Fatal("duplicate admission succeeded") }
+	svc.release("job")
+	if !svc.admit("job") { t.Fatal("admission after release failed") }
+	svc.release("job")
+}
+
 func TestReconcileInterruptedJobs(t *testing.T) {
 	store := newFakeSessionStore()
 	store.jobs["job_rendering_1"] = pebblestore.VideoRenderJobSnapshot{
@@ -509,8 +561,8 @@ func TestReconcileInterruptedJobs(t *testing.T) {
 	}
 
 	job1, _, _ := store.GetVideoRenderJob("acc_1", "sess_1", "job_rendering_1")
-	if job1.Status != pebblestore.VideoRenderJobStatusFailed || job1.FailureCode != "daemon_interrupted" {
-		t.Fatalf("expected job1 to be failed with daemon_interrupted, got status=%s code=%s", job1.Status, job1.FailureCode)
+	if job1.Status != pebblestore.VideoRenderJobStatusFailed || job1.FailureCode != "recovery_metadata_invalid" {
+		t.Fatalf("expected invalid legacy job to fail recovery, got status=%s code=%s", job1.Status, job1.FailureCode)
 	}
 
 	jobReady, _, _ := store.GetVideoRenderJob("acc_1", "sess_1", "job_ready_1")
@@ -520,7 +572,7 @@ func TestReconcileInterruptedJobs(t *testing.T) {
 }
 
 func TestCancelRenderJob(t *testing.T) {
-	principal := identity.Principal{AccountScopeID: "acc_1", UserID: "usr_1"}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
 	store := newFakeSessionStore()
 	store.jobs["job_cancel"] = pebblestore.VideoRenderJobSnapshot{
 		ID:             "job_cancel",

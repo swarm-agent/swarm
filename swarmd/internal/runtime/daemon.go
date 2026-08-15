@@ -525,6 +525,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	startV3SessionRetention(bgCtx, sessionSvc)
 	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
 	startArtifactMaintenance(bgCtx, artifactRegistry)
+	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
