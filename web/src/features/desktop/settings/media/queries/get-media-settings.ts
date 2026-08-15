@@ -52,11 +52,19 @@ export function removeSourceMediaDirectory(workspacePath: string, directoryPath:
   return mutateSourceMediaDirectory('remove', workspacePath, directoryPath)
 }
 
+export type VideoTranscriptionJobStatus = 'queued' | 'uploading' | 'processing' | 'partial' | 'ready' | 'failed' | 'cancelled' | 'stale'
+
 export interface VideoTranscriptionJob {
   ref: string
   transcript_ref: string
-  status: 'queued' | 'uploading' | 'processing' | 'partial' | 'ready' | 'failed' | 'cancelled' | 'stale'
+  status: VideoTranscriptionJobStatus
   failure_reason?: string
+}
+
+const terminalVideoTranscriptionStatuses = new Set<VideoTranscriptionJobStatus>(['ready', 'failed', 'cancelled', 'stale'])
+
+export function isTerminalVideoTranscriptionStatus(status: VideoTranscriptionJobStatus): boolean {
+  return terminalVideoTranscriptionStatuses.has(status)
 }
 
 export interface VideoTranscript {
@@ -75,8 +83,61 @@ export async function startVideoTranscription(workspacePath: string, videoRef: s
   })
 }
 
-export async function getVideoTranscriptionStatus(workspacePath: string, sessionID: string, jobRef: string): Promise<VideoTranscriptionJob> {
+export async function getVideoTranscriptionStatus(workspacePath: string, sessionID: string, jobRef: string, signal?: AbortSignal): Promise<VideoTranscriptionJob> {
   const response = await requestJson<{ job: VideoTranscriptionJob }>('/v1/workspace/video/transcribe/status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_path: workspacePath, session_id: sessionID, job_ref: jobRef }),
+    signal,
+  })
+  return response.job
+}
+
+function pollingDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('Video transcription polling was cancelled.'))
+      return
+    }
+    const timer = globalThis.setTimeout(resolve, milliseconds)
+    signal?.addEventListener('abort', () => {
+      globalThis.clearTimeout(timer)
+      reject(new Error('Video transcription polling was cancelled.'))
+    }, { once: true })
+  })
+}
+
+export async function pollVideoTranscriptionJob({
+  workspacePath,
+  sessionID,
+  jobRef,
+  signal,
+  maxAttempts = 300,
+  intervalMs = 2_000,
+  onUpdate,
+  wait = pollingDelay,
+}: {
+  workspacePath: string
+  sessionID: string
+  jobRef: string
+  signal?: AbortSignal
+  maxAttempts?: number
+  intervalMs?: number
+  onUpdate?: (job: VideoTranscriptionJob) => void
+  wait?: (milliseconds: number, signal?: AbortSignal) => Promise<void>
+}): Promise<VideoTranscriptionJob> {
+  const attempts = Math.max(1, Math.floor(maxAttempts))
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await wait(intervalMs, signal)
+    const job = await getVideoTranscriptionStatus(workspacePath, sessionID, jobRef, signal)
+    onUpdate?.(job)
+    if (isTerminalVideoTranscriptionStatus(job.status)) return job
+  }
+  throw new Error('Video transcription is still running after the bounded polling window. You can return later to check its durable status.')
+}
+
+export async function cancelVideoTranscription(workspacePath: string, sessionID: string, jobRef: string): Promise<VideoTranscriptionJob> {
+  const response = await requestJson<{ job: VideoTranscriptionJob }>('/v1/workspace/video/transcribe/cancel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ workspace_path: workspacePath, session_id: sessionID, job_ref: jobRef }),
