@@ -116,7 +116,7 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Before generating an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. To retrieve, read, materialize, or promote an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from its reference into the same call. Provider/model identifiers and private storage paths are never accepted or exposed.",
+		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. To remix an attached image, copy its exact ready source_session_id, source_collection_id, source_variant_id, and source_event_seq together; the authenticated artifact authority supplies bounded source bytes directly to a supported provider. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. To retrieve, read, materialize, or promote an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from its reference into the same call. Provider/model identifiers and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -139,10 +139,10 @@ func manageArtifactDefinition() Definition {
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
 				"presentation":           presentation,
 				"output_requirements":    artifact.OutputRequirementsToolSchema(),
-				"source_session_id":      map[string]any{"type": "string", "description": "Optional authenticated source session lineage from an attached artifact reference"},
-				"source_collection_id":   map[string]any{"type": "string", "description": "Optional opaque source collection lineage"},
-				"source_variant_id":      map[string]any{"type": "string", "description": "Optional opaque source variant lineage"},
-				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence of the source artifact lineage"},
+				"source_session_id":      map[string]any{"type": "string", "description": "For image remixing or lineage, copy the authenticated source session from the exact ready attached-artifact reference together with all other source_* fields"},
+				"source_collection_id":   map[string]any{"type": "string", "description": "For image remixing or lineage, copy the opaque source collection from the same exact ready reference"},
+				"source_variant_id":      map[string]any{"type": "string", "description": "For image remixing or lineage, copy the opaque source variant from the same exact ready reference"},
+				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For image remixing or lineage, copy the exact ready event sequence from the same source reference"},
 				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and variant_id from the same returned reference."},
 				"status":                 map[string]any{"type": "string", "description": "Optional list filter: staging|ready|failed|unavailable"},
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit},
@@ -499,7 +499,7 @@ func (r *Runtime) managedImageCapabilities(accountScopeID string) (imagegen.Mana
 func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
 	for key := range args {
 		switch key {
-		case "action", "prompt", "image_settings", "capability_token", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements":
+		case "action", "prompt", "image_settings", "capability_token", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
 		default:
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact generate_image contains unsupported field %q", key)
 		}
@@ -573,6 +573,37 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		delete(settings, "image_size")
 	}
 
+	var sourceRef *pebblestore.SessionArtifactSelectionReference
+	var source *imagegen.ManagedImageSource
+	sourceFields := 0
+	for _, key := range []string{"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq"} {
+		if _, supplied := args[key]; supplied {
+			sourceFields++
+		}
+	}
+	if sourceFields != 0 {
+		if sourceFields != 4 {
+			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact image remix requires source_session_id, source_collection_id, source_variant_id, and source_event_seq from the same exact ready reference")
+		}
+		sourceEventSeq := asInt(args["source_event_seq"], 0)
+		ref := pebblestore.SessionArtifactSelectionReference{
+			SessionID: strings.TrimSpace(asString(args["source_session_id"])), CollectionID: strings.TrimSpace(asString(args["source_collection_id"])),
+			VariantID: strings.TrimSpace(asString(args["source_variant_id"])), EventSeq: uint64(sourceEventSeq),
+		}
+		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq < 1 {
+			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact image remix requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
+		}
+		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, manageArtifactMaxImageReadBytes)
+		if readErr != nil {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("resolve image remix source: %w", readErr)
+		}
+		if len(body) == 0 || len(body) > manageArtifactMaxImageReadBytes || !managedArtifactImageMediaType(variant.MediaType) || !managedArtifactImageDataMatches(variant.MediaType, body) {
+			return pebblestore.SessionArtifactVariant{}, errors.New("image remix source is empty, oversized, or not a supported ready image")
+		}
+		sourceRef = &ref
+		source = &imagegen.ManagedImageSource{Bytes: append([]byte(nil), body...), MediaType: canonicalArtifactMediaType(variant.MediaType)}
+	}
+
 	ui, err := r.uiSettings.GetForAccount(principal.AccountScopeID)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("resolve configured image model: %w", err)
@@ -583,7 +614,7 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	}
 	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
 		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
-		CapabilityToken: strings.TrimSpace(asString(args["capability_token"])), Principal: scope.Principal,
+		CapabilityToken: strings.TrimSpace(asString(args["capability_token"])), Principal: scope.Principal, Source: source,
 	})
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("generate managed image: %w", err)
@@ -619,11 +650,15 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if filename == "" {
 		filename = "generated-image" + managedImageExtension(generated.MediaType)
 	}
-	return r.artifactAuthority.Create(ctx, principal, artifact.CreateInput{
+	create := artifact.CreateInput{
 		RequestID: requestID, CollectionID: collectionID, CollectionName: collectionName, CollectionDescription: collectionDescription,
 		VariantID: variantID, Filename: filename, MediaType: canonicalArtifactMediaType(generated.MediaType), Presentation: presentation,
 		OutputRequirements: requirements, Body: append([]byte(nil), generated.Bytes...),
-	})
+	}
+	if sourceRef != nil {
+		create.SourceSessionID, create.SourceCollectionID, create.SourceVariantID, create.SourceEventSeq = sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq
+	}
+	return r.artifactAuthority.Create(ctx, principal, create)
 }
 
 func applyImageOutputRequirements(settings map[string]any, size *string, requirements *pebblestore.SessionArtifactOutputRequirements) {

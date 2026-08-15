@@ -31,6 +31,7 @@ type GeminiImageGenerationRequest struct {
 	ImageSize   string
 	OutputIndex int
 	OnEvent     func(GenerateStreamEvent)
+	Source      *ManagedImageSource
 }
 
 type GeminiImageGenerationResult struct {
@@ -129,10 +130,25 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	}}
 	emitGenerateEvent(req.OnEvent, GenerateStreamEvent{Type: "generating", OutputIndex: req.OutputIndex, SequenceNumber: 1})
 
+	parts := []geminiRESTPart{{Text: prompt}}
+	if req.Source != nil {
+		mediaType := strings.ToLower(strings.TrimSpace(req.Source.MediaType))
+		if len(req.Source.Bytes) == 0 {
+			return GeminiImageGenerationResult{}, errors.New("Gemini image remix source is empty")
+		}
+		if len(req.Source.Bytes) > managedImageMaxBytes {
+			return GeminiImageGenerationResult{}, fmt.Errorf("Gemini image remix source exceeds %d bytes", managedImageMaxBytes)
+		}
+		if extensionFromMIME(mediaType) == "" {
+			return GeminiImageGenerationResult{}, fmt.Errorf("Gemini image remix source media type %q is unsupported", req.Source.MediaType)
+		}
+		parts = append(parts, geminiRESTPart{InlineData: &geminiRESTInlineData{MIMEType: mediaType, Data: base64.StdEncoding.EncodeToString(req.Source.Bytes)}})
+		result.ProviderResponse["source_image"] = true
+	}
 	requestBody := geminiGenerateContentRequest{
 		Contents: []geminiRESTContent{{
 			Role:  "user",
-			Parts: []geminiRESTPart{{Text: prompt}},
+			Parts: parts,
 		}},
 		GenerationConfig: geminiRESTGenerationConfig{
 			ResponseModalities: []string{"IMAGE"},

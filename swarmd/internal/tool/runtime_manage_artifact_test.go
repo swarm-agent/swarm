@@ -187,6 +187,34 @@ func TestManageArtifactGenerateImageUsesCanonicalSettingAndTrustedDestination(t 
 	}
 }
 
+func TestManageArtifactGenerateImageResolvesExactRemixSourceAndPublishesLineage(t *testing.T) {
+	imageBytes := testPNGImage()
+	authority := &fakeArtifactAuthority{readBody: imageBytes, variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png"}}
+	generator := &fakeManagedImageGenerator{image: imagegen.ManagedImage{Bytes: imageBytes, MediaType: "image/png"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetManagedImageGenerationService(generator)
+	runtime.SetManageThemeServices(&fakeImageUISettings{settings: uisettings.UISettings{Tools: uisettings.ToolSettings{Image: uisettings.ToolImageSettings{DefaultModel: "gemini-image"}}}}, nil)
+	ctx, scope := artifactToolContext()
+
+	_, err := runtime.executeManageArtifact(ctx, scope, "remix", map[string]any{
+		"action": "generate_image", "prompt": "make it warmer", "source_session_id": "source-session",
+		"source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": 9,
+	})
+	if err != nil {
+		t.Fatalf("generate image remix: %v", err)
+	}
+	if !authority.referenceRead || generator.req.Source == nil || string(generator.req.Source.Bytes) != string(imageBytes) || generator.req.Source.MediaType != "image/png" {
+		t.Fatalf("remix resolution reference=%#v request=%#v", authority.reference, generator.req)
+	}
+	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source-variant" || authority.created.SourceEventSeq != 9 {
+		t.Fatalf("published remix lineage = %#v", authority.created)
+	}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "partial-remix", map[string]any{"action": "generate_image", "prompt": "change it", "source_variant_id": "source-variant"}); err == nil || !strings.Contains(err.Error(), "source_session_id") {
+		t.Fatalf("partial remix error = %v", err)
+	}
+}
+
 func TestManageArtifactGenerateImageAcceptsPresentationAndProviderNeutralPixelAlias(t *testing.T) {
 	authority := &fakeArtifactAuthority{}
 	generator := &fakeManagedImageGenerator{image: imagegen.ManagedImage{Bytes: testPNGImage(), MediaType: "image/png"}}

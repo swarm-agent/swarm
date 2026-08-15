@@ -131,6 +131,15 @@ type ManagedGenerateRequest struct {
 	Settings        map[string]any
 	CapabilityToken string
 	Principal       identity.Principal
+	Source          *ManagedImageSource
+}
+
+// ManagedImageSource carries an authenticated, bounded source image across the
+// provider-neutral generation boundary. It intentionally contains no path or
+// storage identity; artifact lineage remains owned by the publishing caller.
+type ManagedImageSource struct {
+	Bytes     []byte
+	MediaType string
 }
 
 // ManagedImage is an in-memory provider result ready for direct publication by
@@ -567,6 +576,18 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 	if prompt == "" {
 		return ManagedImage{}, errors.New("prompt is required")
 	}
+	if req.Source != nil {
+		req.Source = cloneManagedImageSource(req.Source)
+		if len(req.Source.Bytes) == 0 {
+			return ManagedImage{}, errors.New("managed image remix source is empty")
+		}
+		if len(req.Source.Bytes) > managedImageMaxBytes {
+			return ManagedImage{}, fmt.Errorf("managed image remix source exceeds %d bytes", managedImageMaxBytes)
+		}
+		if extensionFromMIME(req.Source.MediaType) == "" {
+			return ManagedImage{}, fmt.Errorf("managed image remix source media type %q is unsupported", req.Source.MediaType)
+		}
+	}
 	if s.managedSlots != nil {
 		select {
 		case s.managedSlots <- struct{}{}:
@@ -589,6 +610,9 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 	}
 	switch selection.Provider {
 	case ProviderCodexOpenAI:
+		if req.Source != nil {
+			return ManagedImage{}, errors.New("configured Codex image provider does not support managed image remixing")
+		}
 		if s.codexClient == nil || s.authStore == nil {
 			return ManagedImage{}, errors.New("codex image provider is not configured")
 		}
@@ -623,7 +647,7 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		}
 		generated, err := s.geminiImageClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), GeminiImageGenerationRequest{
 			APIKey: record.APIKey, Model: selection.Model, Prompt: prompt,
-			AspectRatio: googleAspectRatio, ImageSize: googleImageSize,
+			AspectRatio: googleAspectRatio, ImageSize: googleImageSize, Source: cloneManagedImageSource(req.Source),
 		})
 		if err != nil {
 			return ManagedImage{}, err
@@ -636,6 +660,13 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 	default:
 		return ManagedImage{}, fmt.Errorf("unsupported image provider %q", selection.Provider)
 	}
+}
+
+func cloneManagedImageSource(source *ManagedImageSource) *ManagedImageSource {
+	if source == nil {
+		return nil
+	}
+	return &ManagedImageSource{Bytes: append([]byte(nil), source.Bytes...), MediaType: strings.TrimSpace(source.MediaType)}
 }
 
 func managedCodexImageSize(req ManagedGenerateRequest) string {
