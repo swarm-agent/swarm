@@ -1888,6 +1888,11 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 	}
 	if record.Document != nil {
 		record.Document.RevisionID = fmt.Sprintf("%s:v%d", planID, record.Version)
+		if s.store != nil {
+			if err := s.authenticatePlanDocumentArtifacts(record.AccountScopeID, sessionID, record.Document); err != nil {
+				return pebblestore.SessionPlanSnapshot{}, nil, err
+			}
+		}
 	}
 	if record.CreatedAt <= 0 {
 		record.CreatedAt = now

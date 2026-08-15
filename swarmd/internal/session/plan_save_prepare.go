@@ -140,6 +140,11 @@ func (s *Service) PreparePlanSaveWithMetadata(sessionID, planID, title, plan, st
 	}
 	if record.Document != nil {
 		record.Document.RevisionID = fmt.Sprintf("%s:v%d", planID, record.Version)
+		if s.store != nil {
+			if err := s.authenticatePlanDocumentArtifacts(record.AccountScopeID, sessionID, record.Document); err != nil {
+				return PreparedPlanSave{}, err
+			}
+		}
 	}
 	record.Active = activate
 	payload, err := json.Marshal(map[string]any{"session_id": sessionID, "plan_id": planID, "plan_title": record.Title, "plan_status": record.Status, "plan_approval_state": record.ApprovalState, "activate": activate, "has_active_plan": activate, "active_plan": record, "updated_at": now, "updated": found, "version": record.Version, "parent_revision": record.ParentRevision, "update_summary": record.UpdateSummary, "update_scope": record.UpdateScope, "update_kind": record.UpdateKind, "revision_kind": record.RevisionKind, "restored_from_version": record.RestoredFromVersion, "checkpoint": record.Checkpoint})
@@ -233,4 +238,89 @@ func (s *Service) PreparePlanPatch(sessionID string, options PlanPatchOptions) (
 		metadata.Document = options.Document
 	}
 	return s.PreparePlanSaveWithMetadata(sessionID, planID, title, patchedPlan, status, approval, activate, metadata)
+}
+
+func (s *Service) authenticatePlanDocumentArtifacts(accountScopeID, sessionID string, doc *pebblestore.SessionPlanDocument) error {
+	if s == nil || s.store == nil || doc == nil {
+		return nil
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	sessionID = strings.TrimSpace(sessionID)
+	if err := s.authenticatePlanArtifactList(accountScopeID, sessionID, "artifacts", doc.Artifacts); err != nil {
+		return err
+	}
+	for i := range doc.Checkpoints {
+		if err := s.authenticatePlanArtifactList(accountScopeID, sessionID, fmt.Sprintf("checkpoints[%d].artifacts", i), doc.Checkpoints[i].Artifacts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) authenticatePlanArtifactList(accountScopeID, sessionID, field string, artifacts []pebblestore.SessionPlanArtifactReference) error {
+	for i := range artifacts {
+		ref := &artifacts[i]
+		if !isManagedPlanArtifact(*ref) {
+			continue
+		}
+		prefix := fmt.Sprintf("%s[%d]", field, i)
+		artSessionID := strings.TrimSpace(ref.SessionID)
+		collectionID := strings.TrimSpace(ref.CollectionID)
+		variantID := strings.TrimSpace(ref.VariantID)
+		eventSeq := ref.EventSeq
+		if artSessionID == "" {
+			return fmt.Errorf("%s: managed artifact session_id is required", prefix)
+		}
+		if collectionID == "" {
+			return fmt.Errorf("%s: managed artifact collection_id is required", prefix)
+		}
+		if variantID == "" {
+			return fmt.Errorf("%s: managed artifact variant_id is required", prefix)
+		}
+		if eventSeq == 0 {
+			return fmt.Errorf("%s: managed artifact event_seq is required", prefix)
+		}
+		variant, found, err := s.store.GetSessionArtifactVariantByID(accountScopeID, artSessionID, variantID)
+		if err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		if !found {
+			variant, found, err = s.store.GetSessionArtifactVariant(accountScopeID, artSessionID, collectionID, variantID)
+			if err != nil {
+				return fmt.Errorf("%s: %w", prefix, err)
+			}
+		}
+		if !found {
+			return fmt.Errorf("%s: managed artifact variant %q not found in session %q", prefix, variantID, artSessionID)
+		}
+		if strings.TrimSpace(variant.CollectionID) != collectionID {
+			return fmt.Errorf("%s: managed artifact variant %q collection %q does not match store collection %q", prefix, variantID, collectionID, variant.CollectionID)
+		}
+		if strings.TrimSpace(variant.AccountScopeID) != "" && accountScopeID != "" && strings.TrimSpace(variant.AccountScopeID) != accountScopeID {
+			return fmt.Errorf("%s: managed artifact variant %q does not belong to account scope", prefix, variantID)
+		}
+		if artSessionID != sessionID && strings.TrimSpace(variant.Lineage.ParentSessionID) != sessionID && strings.TrimSpace(variant.SessionID) != sessionID {
+			return fmt.Errorf("%s: managed artifact variant %q session %q does not belong to session %q or its lineage", prefix, variantID, artSessionID, sessionID)
+		}
+		if variant.Status != pebblestore.SessionArtifactStatusReady {
+			return fmt.Errorf("%s: managed artifact variant %q is not ready (status: %s)", prefix, variantID, variant.Status)
+		}
+		if variant.EventSeq != eventSeq {
+			return fmt.Errorf("%s: managed artifact variant %q event sequence %d does not match ready variant event sequence %d", prefix, variantID, eventSeq, variant.EventSeq)
+		}
+		if ref.Label == "" {
+			if strings.TrimSpace(variant.Presentation.Label) != "" {
+				ref.Label = strings.TrimSpace(variant.Presentation.Label)
+			} else if strings.TrimSpace(variant.Filename) != "" {
+				ref.Label = strings.TrimSpace(variant.Filename)
+			}
+		}
+		if ref.Description == "" && strings.TrimSpace(variant.Presentation.Description) != "" {
+			ref.Description = strings.TrimSpace(variant.Presentation.Description)
+		}
+		if ref.MediaType == "" && strings.TrimSpace(variant.MediaType) != "" {
+			ref.MediaType = strings.TrimSpace(variant.MediaType)
+		}
+	}
+	return nil
 }

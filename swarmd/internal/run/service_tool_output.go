@@ -620,6 +620,15 @@ func toolHistoryStructuredPayload(name, output, arguments string) (string, bool)
 			return "", false
 		}
 		return string(encoded), true
+	case "manage_artifact", "manage-artifact":
+		if payload == nil {
+			return "", false
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
 	case "permission", "ask-user", "ask_user", "exit-plan-mode", "exit_plan_mode":
 		if payload == nil {
 			return "", false

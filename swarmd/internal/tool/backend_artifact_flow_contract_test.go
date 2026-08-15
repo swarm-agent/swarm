@@ -36,8 +36,11 @@ func TestManageArtifactBackendLifecycleAndPromotionContract(t *testing.T) {
 	created := execute("contract-create", `{"action":"create","collection_name":"Drafts","filename":"draft.txt","media_type":"text/plain","content":"managed body"}`)
 	reference := created["reference"].(map[string]any)
 	collectionID, variantID := reference["collection_id"].(string), reference["variant_id"].(string)
-	if collectionID == "" || variantID == "" || authority.created.RequestID == "" {
-		t.Fatalf("create did not produce opaque durable identities: %#v", created)
+	if collectionID == "" || variantID == "" || reference["session_id"] == "" || reference["event_seq"] == float64(0) || authority.created.RequestID == "" {
+		t.Fatalf("create did not produce exact durable reference: %#v", created)
+	}
+	if created["artifact"].(map[string]any)["session_id"] == "" {
+		t.Fatalf("artifact variant payload missing session_id: %#v", created)
 	}
 
 	authority.variant = pebblestore.SessionArtifactVariant{
