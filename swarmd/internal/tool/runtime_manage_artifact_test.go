@@ -213,6 +213,17 @@ func TestManageArtifactGenerateImageResolvesExactRemixSourceAndPublishesLineage(
 	if _, err := runtime.executeManageArtifact(ctx, scope, "partial-remix", map[string]any{"action": "generate_image", "prompt": "change it", "source_variant_id": "source-variant"}); err == nil || !strings.Contains(err.Error(), "source_session_id") {
 		t.Fatalf("partial remix error = %v", err)
 	}
+	for name, invalidEventSeq := range map[string]any{"fractional": 1.5, "too-large": float64(1<<53) + 2} {
+		t.Run(name+" event sequence", func(t *testing.T) {
+			_, err := runtime.executeManageArtifact(ctx, scope, "invalid-remix-"+name, map[string]any{
+				"action": "generate_image", "prompt": "change it", "source_session_id": "source-session",
+				"source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": invalidEventSeq,
+			})
+			if err == nil || !strings.Contains(err.Error(), "source_event_seq") {
+				t.Fatalf("invalid remix event sequence error = %v", err)
+			}
+		})
+	}
 }
 
 func TestManageArtifactGenerateImageAcceptsPresentationAndProviderNeutralPixelAlias(t *testing.T) {

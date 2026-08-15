@@ -585,12 +585,12 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		if sourceFields != 4 {
 			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact image remix requires source_session_id, source_collection_id, source_variant_id, and source_event_seq from the same exact ready reference")
 		}
-		sourceEventSeq := asInt(args["source_event_seq"], 0)
+		sourceEventSeq := asUint64(args["source_event_seq"])
 		ref := pebblestore.SessionArtifactSelectionReference{
 			SessionID: strings.TrimSpace(asString(args["source_session_id"])), CollectionID: strings.TrimSpace(asString(args["source_collection_id"])),
-			VariantID: strings.TrimSpace(asString(args["source_variant_id"])), EventSeq: uint64(sourceEventSeq),
+			VariantID: strings.TrimSpace(asString(args["source_variant_id"])), EventSeq: sourceEventSeq,
 		}
-		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq < 1 {
+		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq == 0 {
 			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact image remix requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
 		}
 		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, manageArtifactMaxImageReadBytes)
