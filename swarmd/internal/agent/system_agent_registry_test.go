@@ -169,6 +169,16 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if cfg := plan.ToolContract.Tools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
 		t.Fatal("Plan snapshot retained mutable bash permission")
 	}
+	for _, allowed := range []string{"read", "search", "find", "list", "websearch", "webfetch", "edit_pending_plan"} {
+		if cfg := plan.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Plan locked discovery tool %q unavailable: %+v", allowed, plan.ToolContract)
+		}
+	}
+	for _, want := range []string{"authoritative workspace scope", "active worktree", "project root", "list/find/search"} {
+		if !strings.Contains(plan.Prompt, want) {
+			t.Fatalf("Plan prompt missing worktree discovery guidance %q: %s", want, plan.Prompt)
+		}
+	}
 
 	ai, err := registry.ReconcileSnapshot(AISidechatAgentID, pebblestore.AgentProfile{
 		Name: AISidechatAgentID, Provider: "openai", Model: "auto-model", Thinking: "medium", AutoServiceTier: "fast",

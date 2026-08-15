@@ -415,6 +415,38 @@ func sessionsV3SystemSidechatMetadata(parentSessionID, kind string, profile pebb
 	}
 }
 
+func inheritSessionsV3SystemSidechatWorkspace(parent pebblestore.SessionSnapshot, sidechat *pebblestore.SessionSnapshot, metadata map[string]any) {
+	if sidechat == nil {
+		return
+	}
+	sidechat.WorkspacePath = strings.TrimSpace(parent.WorkspacePath)
+	sidechat.WorkspaceName = strings.TrimSpace(parent.WorkspaceName)
+	sidechat.TemporaryWorkspaceRoots = append([]string(nil), parent.TemporaryWorkspaceRoots...)
+	sidechat.WorktreeEnabled = parent.WorktreeEnabled
+	sidechat.WorktreeRootPath = strings.TrimSpace(parent.WorktreeRootPath)
+	sidechat.WorktreeBaseBranch = strings.TrimSpace(parent.WorktreeBaseBranch)
+	sidechat.WorktreeBranch = strings.TrimSpace(parent.WorktreeBranch)
+	for _, key := range []string{
+		"workspace_id",
+		"swarm_v3_workspace_binding_id",
+		"swarm_v3_source_workspace_id",
+		"swarm_v3_source_workspace_generation",
+		"swarm_v3_source_workspace_name",
+		"swarm_v3_source_workspace_path",
+		"swarm_v3_runtime_workspace_path",
+		"swarm_v3_runtime_swarm_id",
+		"swarm_v3_runtime_kind",
+		"swarm_v3_authority_host_swarm_id",
+		"swarm_v3_placement_generation",
+		"swarm_v3_binding_generation",
+		"local_workspace_binding_id",
+	} {
+		if value, ok := parent.Metadata[key]; ok && value != nil {
+			metadata[key] = value
+		}
+	}
+}
+
 func sessionsV3SystemSidechatID(parentSessionID, kind string) (string, string) {
 	binding := strings.TrimSpace(parentSessionID) + "\x00" + strings.ToLower(strings.TrimSpace(kind))
 	sum := sha256.Sum256([]byte(binding))
@@ -607,6 +639,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	} else if exists {
 		next := existing
+		inheritSessionsV3SystemSidechatWorkspace(parent, &next, metadata)
 		next.Metadata = metadata
 		next.Preference = preference
 		next.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(modelProfile)
@@ -635,7 +668,8 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": updateResult.Replayed})
 		return
 	}
-	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(modelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now}
+	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(modelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now}
+	inheritSessionsV3SystemSidechatWorkspace(parent, &sidecar, metadata)
 	payload, _ := json.Marshal(struct {
 		Parent, Permission, Plan string
 		Revision                 int64

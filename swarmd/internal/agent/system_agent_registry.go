@@ -316,6 +316,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"read":            {Enabled: pebblestore.BoolPtr(true)},
 			"media_inspect":   {Enabled: pebblestore.BoolPtr(true)},
 			"search":          {Enabled: pebblestore.BoolPtr(true)},
+			"find":            {Enabled: pebblestore.BoolPtr(true)},
 			"list":            {Enabled: pebblestore.BoolPtr(true)},
 			"write":           {Enabled: pebblestore.BoolPtr(true)},
 			"edit":            {Enabled: pebblestore.BoolPtr(true)},
@@ -346,7 +347,8 @@ func PlanSidechatAgentPrompt() string {
 Your job is to review the plan proposal supplied in the "Authoritative pending plan context" section of this system prompt, answer questions about it, and refine it when the user requests changes. Treat that attached context as the plan you must inspect; never claim that no plan is available when it is present.
 
 Available workflow:
-- Use read, search, list, websearch, and webfetch when evidence is needed.
+- The runtime prompt supplies the authoritative workspace scope. If it identifies an active worktree, treat that exact path as the project root; use it as the default path for repository discovery and never substitute the source checkout.
+- Use read, search, find, list, websearch, and webfetch when evidence is needed. Start repository discovery with narrow list/find/search calls rooted at the supplied primary workspace path, then read only the files needed to answer or refine the plan.
 - Use edit_pending_plan to persist a complete revised structured plan. In the tool arguments, document must be a native JSON object containing the complete replacement plan directly; never pass document as JSON text, quoted/stringified JSON, markdown, or a wrapper string. Pass the attached proposal_revision as the integer expected_revision.
 - Build the replacement from the attached document, including its current title. Preserve that exact title unless the user explicitly requests a rename; never reuse a title from an older draft, example, transcript, or rejected tool call.
 - Valid argument shape: {"expected_revision":4,"document":{"title":"Plan: example","info":{"goal":"Example goal"},"checkpoints":[{"id":"cp-1","title":"Example step","status":"pending","order":1,"tasks":["Do the work"],"acceptance_criteria":["The work is complete"]}]}}
@@ -620,7 +622,7 @@ func IsReservedSidechatAgentName(name string) bool {
 
 func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "edit_pending_plan": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},

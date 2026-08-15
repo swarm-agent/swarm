@@ -34,7 +34,7 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		return tool.WorkspaceScope{}, err
 	}
 	if session.WorktreeEnabled {
-		resolvedPath, err := normalizeRunScopePath(workspacePath)
+		resolvedPath, err := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, workspacePath))
 		if err != nil {
 			return tool.WorkspaceScope{}, err
 		}
@@ -52,10 +52,14 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			return tool.WorkspaceScope{}, err
 		}
 		return tool.WorkspaceScope{
-			PrimaryPath: resolvedPath,
-			Roots:       roots,
-			Principal:   principal,
-			SessionID:   strings.TrimSpace(session.ID),
+			PrimaryPath:         resolvedPath,
+			Roots:               roots,
+			Principal:           principal,
+			SessionID:           strings.TrimSpace(session.ID),
+			WorktreeEnabled:     true,
+			WorktreeRootPath:    resolvedPath,
+			WorktreeBranch:      strings.TrimSpace(session.WorktreeBranch),
+			SourceWorkspacePath: strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")),
 		}, nil
 	}
 	if s != nil && s.workspace != nil {
@@ -150,6 +154,35 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 		return block.String()
 	}
 	return base + "\n\n" + block.String()
+}
+
+func appendWorktreeRuntimeContext(base string, scope tool.WorkspaceScope) string {
+	if !scope.WorktreeEnabled {
+		return strings.TrimSpace(base)
+	}
+	worktreePath := strings.TrimSpace(scope.WorktreeRootPath)
+	if worktreePath == "" {
+		worktreePath = strings.TrimSpace(scope.PrimaryPath)
+	}
+	lines := []string{
+		"Managed worktree context (authoritative for this run):",
+		"- This session is operating inside an isolated Git worktree.",
+		"- active_worktree: " + worktreePath,
+		"- Treat active_worktree as the project root and default path for list, search, read, find, and all other workspace tools.",
+		"- Do not substitute the source workspace or another checkout when inspecting or planning changes.",
+	}
+	if branch := strings.TrimSpace(scope.WorktreeBranch); branch != "" {
+		lines = append(lines, "- worktree_branch: "+branch)
+	}
+	if source := strings.TrimSpace(scope.SourceWorkspacePath); source != "" && source != worktreePath {
+		lines = append(lines, "- source_workspace: "+source+" (reference identity only; the active worktree remains the project root)")
+	}
+	block := strings.Join(lines, "\n")
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return block
+	}
+	return base + "\n\n" + block
 }
 
 func mergeValidatedTemporaryWorkspaceRoots(baseRoots, temporaryRoots []string) ([]string, error) {

@@ -60,6 +60,58 @@ func TestRunWorkspaceScopeInjectsAccountScopedLinkedAgentsInstructions(t *testin
 	}
 }
 
+func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *testing.T) {
+	source := t.TempDir()
+	worktree := t.TempDir()
+	linked := t.TempDir()
+	writeTestFile(t, filepath.Join(worktree, "AGENTS.md"), "worktree_runtime_rule: yes")
+
+	principal := testRunPrincipal()
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	session := pebblestore.SessionSnapshot{
+		ID:                      "session-worktree-runtime",
+		UserID:                  principal.UserID,
+		AccountScopeID:          principal.AccountScopeID,
+		WorkspacePath:           source,
+		TemporaryWorkspaceRoots: []string{linked},
+		WorktreeEnabled:         true,
+		WorktreeRootPath:        worktree,
+		WorktreeBranch:          "agent/plan-worktree",
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_path":  source,
+			"swarm_v3_runtime_workspace_path": worktree,
+		},
+	}
+
+	scope, err := runSvc.resolveRunWorkspaceScope(session, principal)
+	if err != nil {
+		t.Fatalf("resolve managed worktree scope: %v", err)
+	}
+	if scope.PrimaryPath != worktree || !scope.WorktreeEnabled || scope.WorktreeRootPath != worktree || scope.WorktreeBranch != session.WorktreeBranch || scope.SourceWorkspacePath != source {
+		t.Fatalf("managed worktree scope = %+v", scope)
+	}
+	assertStringSliceContains(t, scope.Roots, worktree)
+	assertStringSliceContains(t, scope.Roots, linked)
+
+	instructions := runSvc.ComposeRuntimeInstructions(scope, sessionruntime.ModePlan, false, pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: "swarm", Mode: "primary", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true),
+	}), "")
+	for _, want := range []string{
+		"- primary_root: " + worktree,
+		"Tools run directly on the host workspace path: " + worktree,
+		"Managed worktree context (authoritative for this run):",
+		"- active_worktree: " + worktree,
+		"project root and default path for list, search, read, find",
+		"- worktree_branch: " + session.WorktreeBranch,
+		"- source_workspace: " + source + " (reference identity only",
+		"worktree_runtime_rule: yes",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("worktree instructions missing %q\n--- instructions ---\n%s", want, instructions)
+		}
+	}
+}
+
 func TestRunWorkspaceScopeIncludesFullAgentsInstructions(t *testing.T) {
 	primary := t.TempDir()
 	const tailRule = "tail_runtime_rule_after_four_kilobytes: must_load"

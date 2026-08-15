@@ -179,10 +179,14 @@ type ExaRuntimeConfig struct {
 }
 
 type WorkspaceScope struct {
-	PrimaryPath string
-	Roots       []string
-	SessionID   string
-	Principal   identity.Principal
+	PrimaryPath         string
+	Roots               []string
+	SessionID           string
+	Principal           identity.Principal
+	WorktreeEnabled     bool
+	WorktreeRootPath    string
+	WorktreeBranch      string
+	SourceWorkspacePath string
 }
 
 type manageSessionService interface {

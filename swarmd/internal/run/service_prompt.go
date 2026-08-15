@@ -304,6 +304,7 @@ func (s *Service) composeInstructions(workspacePath string, agentProfile pebbles
 func (s *Service) ComposeRuntimeInstructions(scope tool.WorkspaceScope, mode string, bypassPermissions bool, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	base := s.composeInstructionsForScope(scope, agentProfile, userInstructions)
 	base = appendHostRuntimeContext(base, scope.PrimaryPath, scope.Roots)
+	base = appendWorktreeRuntimeContext(base, scope)
 	return composeModeAwareInstructions(base, mode, bypassPermissions, agentProfile)
 }
 

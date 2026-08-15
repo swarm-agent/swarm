@@ -109,6 +109,15 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 	}
 	parentPreference := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "full"}
 	parent := createSessionsV3PrimaryTestSessionWithPreference(t, server, "system-sidechat-parent", "system sidechat parent", parentPreference)
+	sourceWorkspacePath := parent.WorkspacePath
+	parentWorktreePath := t.TempDir()
+	parent.WorkspacePath = parentWorktreePath
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parentWorktreePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.WorktreeBranch = "agent/plan-sidechat-worktree"
+	parent.Metadata["swarm_v3_source_workspace_path"] = sourceWorkspacePath
+	parent.Metadata["swarm_v3_runtime_workspace_path"] = parentWorktreePath
 	parent.ModelProfile = &pebblestore.SessionModelProfileSnapshot{
 		Source:             pebblestore.SessionModelProfileSourceSaved,
 		ActionFavoriteID:   "favorite-action",
@@ -190,6 +199,9 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 			if test.kind == "plan" && (stored.Mode != sessionruntime.ModeAuto || stored.ModelProfile == nil || stored.ModelProfile.ActionFavoriteID != "favorite-plan" || stored.ModelProfile.Action.Model != parentPreference.Model) {
 				t.Fatalf("reopened Plan sidechat current model authority=%+v", stored)
 			}
+			if stored.WorkspacePath != parentWorktreePath || !stored.WorktreeEnabled || stored.WorktreeRootPath != parentWorktreePath || stored.WorktreeBranch != parent.WorktreeBranch || sessionsV3MetadataString(stored.Metadata, "swarm_v3_source_workspace_path") != sourceWorkspacePath || sessionsV3MetadataString(stored.Metadata, "swarm_v3_runtime_workspace_path") != parentWorktreePath {
+				t.Fatalf("reopened %s sidechat lost parent worktree identity: %+v", test.kind, stored)
+			}
 			before := runner.callCount
 			postSessionsV3PrimaryTestMessage(t, restarted, test.sessionID, "system-sidechat-message-"+test.kind, "run "+test.kind+" sidechat")
 			waitForSessionsV3MessageCount(t, sessions, test.sessionID, 2)
@@ -200,12 +212,24 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 			if request.Model != test.model || !strings.Contains(request.Instructions, "- name: "+test.agentID) {
 				t.Fatalf("%s request model=%q instructions=%q", test.kind, request.Model, request.Instructions)
 			}
+			for _, want := range []string{"- primary_root: " + parentWorktreePath, "- active_worktree: " + parentWorktreePath, "- worktree_branch: " + parent.WorktreeBranch} {
+				if !strings.Contains(request.Instructions, want) {
+					t.Fatalf("%s request missing worktree instruction %q: %s", test.kind, want, request.Instructions)
+				}
+			}
 			if test.kind == "plan" && (request.Thinking != parentPreference.Thinking || request.ServiceTier != parentPreference.ServiceTier || request.ContextMode != parentPreference.ContextMode) {
 				t.Fatalf("Plan request did not preserve parent model setup: request=%+v parent=%+v", request, parentPreference)
 			}
 			tools := sessionsV3ProviderRequestToolNames(request.Tools)
 			if tools["edit_pending_plan"] != test.wantEditPendingPlan {
 				t.Fatalf("%s edit_pending_plan=%t tools=%v", test.kind, tools["edit_pending_plan"], tools)
+			}
+			if test.kind == "plan" {
+				for _, name := range []string{"read", "search", "find", "list"} {
+					if !tools[name] {
+						t.Fatalf("Plan sidechat missing discovery tool %q: %v", name, tools)
+					}
+				}
 			}
 			if tools["exit_plan_mode"] || tools["plan_manage"] {
 				t.Fatalf("%s received forbidden lifecycle tools: %v", test.kind, tools)
@@ -7329,13 +7353,13 @@ func TestSessionsV3RuntimeInstructionsIncludeDurableActivePlanContext(t *testing
 	}
 }
 
-func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testing.T) {
+func TestSessionsV3RuntimeInstructionsUseManagedWorktreeAndRuleContext(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	primary := t.TempDir()
 	worktreeRoot := t.TempDir()
 	linked := t.TempDir()
-	if err := os.WriteFile(filepath.Join(primary, "AGENTS.md"), []byte("# Primary rule\nRoot agent rule for V3 parity."), 0o644); err != nil {
-		t.Fatalf("write primary AGENTS.md: %v", err)
+	if err := os.WriteFile(filepath.Join(worktreeRoot, "AGENTS.md"), []byte("# Worktree rule\nWorktree agent rule for V3 parity."), 0o644); err != nil {
+		t.Fatalf("write worktree AGENTS.md: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(linked, "AGENTS.md"), []byte("# Linked rule\nLinked root instruction."), 0o644); err != nil {
 		t.Fatalf("write linked AGENTS.md: %v", err)
@@ -7360,10 +7384,12 @@ func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testin
 		Mode:                    sessionruntime.ModeAuto,
 		Preference:              pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
 		Metadata: map[string]any{
-			"agent_name":          "swarm",
-			"resolved_agent_name": "swarm",
-			"agent_mode":          "primary",
-			"runtime_mode":        pebblestore.AgentRuntimeModePlanAuto,
+			"agent_name":                      "swarm",
+			"resolved_agent_name":             "swarm",
+			"agent_mode":                      "primary",
+			"runtime_mode":                    pebblestore.AgentRuntimeModePlanAuto,
+			"swarm_v3_source_workspace_path":  primary,
+			"swarm_v3_runtime_workspace_path": worktreeRoot,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -7393,13 +7419,15 @@ func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testin
 	for _, want := range []string{
 		"Master harness prompt (applies to every agent run):",
 		"Workspace scope:",
-		"- primary_root: " + primary,
-		"- linked_root: " + worktreeRoot,
+		"- primary_root: " + worktreeRoot,
 		"- linked_root: " + linked,
 		"Workspace runtime policy:",
 		"Allowed workspace roots:",
+		"Managed worktree context (authoritative for this run):",
+		"- active_worktree: " + worktreeRoot,
+		"- source_workspace: " + primary + " (reference identity only",
 		"Loaded instruction sources:",
-		"Root agent rule for V3 parity.",
+		"Worktree agent rule for V3 parity.",
 		"Linked root instruction.",
 	} {
 		if !strings.Contains(resolved.Instructions, want) {
