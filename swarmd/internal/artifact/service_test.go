@@ -121,6 +121,17 @@ func TestStageAcceptsPreviewableSVGAndRejectsNonSVGXML(t *testing.T) {
 	if _, err := service.Stage(context.Background(), invalid, strings.NewReader(`<?xml version="1.0"?><html/>`)); err == nil {
 		t.Fatal("Stage accepted non-SVG XML as image/svg+xml")
 	}
+
+	malformed := testVariant("svg-malformed", "malformed.svg", "image/svg+xml", "image")
+	malformedPayload := `<svg xmlns="http://www.w3.org/2000/svg"><style>/* Precision Grid & Guides */</style></svg>`
+	if _, err := service.Stage(context.Background(), malformed, strings.NewReader(malformedPayload)); err == nil {
+		t.Fatal("Stage accepted malformed XML after the SVG root element")
+	}
+
+	unclosed := testVariant("svg-unclosed", "unclosed.svg", "image/svg+xml", "image")
+	if _, err := service.Stage(context.Background(), unclosed, strings.NewReader(`<svg xmlns="http://www.w3.org/2000/svg"><g>`)); err == nil {
+		t.Fatal("Stage accepted an unclosed SVG document")
+	}
 }
 
 func TestStorageSymlinkAndImportSymlinkRejected(t *testing.T) {

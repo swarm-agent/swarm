@@ -995,19 +995,45 @@ func validateSVGDocument(path string) error {
 	}
 	defer file.Close()
 	decoder := xml.NewDecoder(file)
+	seenRoot := false
+	finishedRoot := false
+	depth := 0
 	for {
 		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			if !seenRoot {
+				return errors.New("artifact SVG must have an svg root element")
+			}
+			if !finishedRoot || depth != 0 {
+				return errors.New("artifact SVG is not valid XML")
+			}
+			return nil
+		}
 		if err != nil {
 			return errors.New("artifact SVG is not valid XML")
 		}
-		start, ok := token.(xml.StartElement)
-		if !ok {
-			continue
+		switch current := token.(type) {
+		case xml.StartElement:
+			if finishedRoot {
+				return errors.New("artifact SVG is not valid XML")
+			}
+			if !seenRoot {
+				if current.Name.Local != "svg" || (current.Name.Space != "" && current.Name.Space != "http://www.w3.org/2000/svg") {
+					return errors.New("artifact SVG must have an svg root element")
+				}
+				seenRoot = true
+			}
+			depth++
+		case xml.EndElement:
+			depth--
+			if depth == 0 {
+				finishedRoot = true
+			}
+		case xml.CharData:
+			if depth == 0 && strings.TrimSpace(string(current)) != "" {
+				return errors.New("artifact SVG is not valid XML")
+			}
 		}
-		if start.Name.Local != "svg" || (start.Name.Space != "" && start.Name.Space != "http://www.w3.org/2000/svg") {
-			return errors.New("artifact SVG must have an svg root element")
-		}
-		return nil
 	}
 }
 
