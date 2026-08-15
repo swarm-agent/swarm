@@ -951,7 +951,7 @@ function structuredSearchReadMessage(item: DesktopV3RenderItem): StructuredToolM
       ? structuredLiveToolMessage(item.tool)
       : null;
   const toolName = toolMessage?.tool.trim().toLowerCase();
-  return toolName === "search" || toolName === "read" ? toolMessage : null;
+  return toolName === "search" || toolName === "find" || toolName === "read" ? toolMessage : null;
 }
 
 export function groupDesktopV3SearchReadActivity(

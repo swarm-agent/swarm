@@ -88,7 +88,7 @@ export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   if (normalized === "task" || normalized === "subagent" || normalized === "launch_subagent") {
     return { kind: "task", label: "Subagents", activeLabel: "Launching subagents" };
   }
-  if (normalized === "search" || normalized === "read") {
+  if (normalized === "search" || normalized === "find" || normalized === "read") {
     return { kind: "investigation", label: "Investigation", activeLabel: "Investigating" };
   }
   const label = normalized
@@ -507,6 +507,7 @@ function summarizeToolOutput(
         return summaryWithNotes(`websearch ${quotedSummary(query, 60)}`, notes);
       return summaryWithNotes("websearch", notes);
     }
+    case "find":
     case "search": {
       const mode = jsonStr(effective, "search_mode").toLowerCase();
       const root = jsonStr(effective, "path");
@@ -518,7 +519,7 @@ function summarizeToolOutput(
         jsonBool(effective, "details_truncated") ||
         jsonBool(effective, "truncated_queries");
       const timedOut = jsonBool(effective, "timed_out");
-      let s = "search";
+      let s = tool;
       const query = jsonStr(effective, "query");
       if (query && queryCount <= 1) s += ` ${quotedSummary(query, 60)}`;
       else if (queryCount > 1) s += ` (${queryCount} queries)`;
@@ -1310,6 +1311,7 @@ function pushPreviewLine(
 function extractSearchToolData(
   outputJson: Record<string, unknown> | null,
   argumentsJson: Record<string, unknown> | null,
+  pathDiscovery = false,
 ): SearchToolData | null {
   const effective = outputJson ?? argumentsJson;
   if (!effective) return null;
@@ -1335,7 +1337,7 @@ function extractSearchToolData(
     jsonBool(effective, "details_truncated") ||
     jsonBool(effective, "truncated_queries");
   const timedOut = jsonBool(effective, "timed_out");
-  const files = buildSearchFileGroups(outputJson, mode);
+  const files = buildSearchFileGroups(outputJson, mode, pathDiscovery);
 
   if (!files.length && !count && !totalMatched && !path) return null;
 
@@ -1355,9 +1357,10 @@ function extractSearchToolData(
 function buildSearchFileGroups(
   outputJson: Record<string, unknown> | null,
   mode: string,
+  pathDiscovery: boolean,
 ): SearchToolFileGroup[] {
   if (!outputJson) return [];
-  if (mode === "files") {
+  if (mode === "files" || pathDiscovery) {
     return buildSearchFileModeGroups(outputJson);
   }
   return buildSearchContentFileGroups(outputJson);
@@ -1573,6 +1576,7 @@ function extractPreviewLines(
       }
       return out;
     }
+    case "find":
     case "search": {
       return [];
     }
@@ -2355,8 +2359,8 @@ export function buildStructuredToolMessage(
   const editDiff =
     normalizedToolName === "edit" ? extractEditDiff(outputJson) : null;
   const searchData =
-    normalizedToolName === "search"
-      ? extractSearchToolData(outputJson, argumentsJson)
+    normalizedToolName === "search" || normalizedToolName === "find"
+      ? extractSearchToolData(outputJson, argumentsJson, normalizedToolName === "find")
       : null;
   const webSearchData = normalizedToolName === "websearch"
     ? extractWebSearchToolData(outputJson, argumentsJson)

@@ -614,6 +614,31 @@ function testSearchToolPreservesContentMatchText(): void {
   )
 }
 
+function testFindToolParsesPathDiscoveryResults(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'find',
+    callId: 'call_find_1',
+    argumentsText: JSON.stringify({ query: 'tool activity', path: 'web/src', mode: 'mixed' }),
+    outputText: JSON.stringify({
+      path_id: 'tool.find.v3',
+      search_mode: 'mixed',
+      path: 'web/src',
+      count: 2,
+      total_matched: 2,
+      results: [
+        { path: 'features/desktop/chat/services/tool-activity.ts', kind: 'file' },
+        { path: 'features/desktop/chat/components', kind: 'directory' },
+      ],
+    }),
+  })
+
+  assert(Boolean(message), 'expected structured find tool message')
+  assert(message?.searchData?.queries[0] === 'tool activity', `unexpected find query: ${message?.searchData?.queries[0]}`)
+  assert(message?.searchData?.files.length === 2, `unexpected find path count: ${message?.searchData?.files.length}`)
+  assert(message?.searchData?.files[1]?.path === 'features/desktop/chat/components', `missing find directory path: ${message?.searchData?.files[1]?.path}`)
+  assert(message?.summary.startsWith('find ') === true, `unexpected find summary: ${message?.summary}`)
+}
+
 function testSearchToolParsesCompactGroupedResults(): void {
   const message = buildStructuredToolMessage({
     tool: 'search',
@@ -1459,6 +1484,8 @@ function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('task').activeLabel === 'Launching subagents', 'task should expose launch label');
   assert(describeToolActivity('search').kind === 'investigation', 'search should use investigation semantics');
   assert(describeToolActivity('search').activeLabel === 'Investigating', 'search should expose a stable investigation label');
+  assert(describeToolActivity('find').kind === 'investigation', 'find should use investigation semantics');
+  assert(describeToolActivity('find').label === 'Investigation', 'find should keep the same label as grouped investigation activity');
   assert(describeToolActivity('read').kind === 'investigation', 'read should use investigation semantics');
   assert(describeToolActivity('read').label === 'Investigation', 'read should keep the same label as grouped investigation activity');
   assert(describeToolActivity('custom_tool').kind === 'generic', 'unknown tool should stay generic');
@@ -1487,6 +1514,7 @@ function main(): void {
   testLargePlainPreviewIsBoundedBeforeSplitting();
   testHugeJsonSkipsSummaryParsing();
   testSearchToolPreservesContentMatchText();
+  testFindToolParsesPathDiscoveryResults();
   testSearchToolParsesCompactGroupedResults();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();

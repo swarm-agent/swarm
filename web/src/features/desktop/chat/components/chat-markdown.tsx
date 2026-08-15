@@ -1273,7 +1273,7 @@ function searchReadPathSummaries(toolMessages: StructuredToolMessage[]): SearchR
       if (entry) entry.readCount += 1;
       continue;
     }
-    if (toolName !== "search") continue;
+    if (toolName !== "search" && toolName !== "find") continue;
     for (const file of message.searchData?.files ?? []) {
       const entry = ensurePath(file.path);
       if (!entry) continue;
@@ -2422,7 +2422,10 @@ function SearchToolView({
 
 export function SearchReadToolGroupView({ toolMessages }: { toolMessages: StructuredToolMessage[] }) {
   const paths = searchReadPathSummaries(toolMessages);
-  const searchCount = toolMessages.filter((message) => message.tool.trim().toLowerCase() === "search").length;
+  const searchCount = toolMessages.filter((message) => {
+    const toolName = message.tool.trim().toLowerCase();
+    return toolName === "search" || toolName === "find";
+  }).length;
   const readCount = toolMessages.length - searchCount;
   const runningCount = toolMessages.filter((message) => message.state === "running").length;
   const errorCount = toolMessages.filter((message) => message.state === "error").length;
@@ -2549,8 +2552,8 @@ export function ToolMessageView({
   const isManageWorktree = ["manage-worktree", "manage_worktree"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
   const isExitPlanMode = ["exit-plan-mode", "exit_plan_mode"].includes(normalizedTool);
-  const isSearch = normalizedTool === "search";
-  const isFileAction = ["read", "list", "search", "write", "edit"].includes(normalizedTool);
+  const isSearch = normalizedTool === "search" || normalizedTool === "find";
+  const isFileAction = ["read", "list", "search", "find", "write", "edit"].includes(normalizedTool);
   const fileSummary = isSearch
     ? ""
     : isFileAction && toolMessage.target

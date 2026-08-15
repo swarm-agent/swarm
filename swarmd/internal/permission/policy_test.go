@@ -12,6 +12,17 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestReadOnlyDiscoveryToolsDefaultAllow(t *testing.T) {
+	for _, toolName := range []string{"read", "search", "find", "list"} {
+		t.Run(toolName, func(t *testing.T) {
+			got := ExplainPolicy(sessionruntime.ModeAuto, toolName, `{}`, DefaultPolicy())
+			if got.Decision != PolicyDecisionAllow {
+				t.Fatalf("%s decision = %q source=%q reason=%q", toolName, got.Decision, got.Source, got.Reason)
+			}
+		})
+	}
+}
+
 func TestManageArtifactDefaultsToAutomaticPrivateAuthority(t *testing.T) {
 	for _, action := range []string{"create", "create_package", "list", "get", "read", "select", "delete", "materialize", "promote"} {
 		arguments := fmt.Sprintf(`{"action":%q}`, action)
