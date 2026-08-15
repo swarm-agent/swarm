@@ -169,7 +169,7 @@ import {
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
-import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
+import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
 import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
@@ -1870,6 +1870,7 @@ export function DesktopV3ExistingConversationPane({
   const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
   const [artifactComposerFocusSignal, setArtifactComposerFocusSignal] = useState(0);
   const dismissedArtifactViewerLocationKeyRef = useRef("");
+  const openedMobileVisualSwarmKeysRef = useRef(new Set<string>());
   const artifactSidebarSessionRef = useRef("");
   const priorSessionArtifactCountRef = useRef(0);
   const priorSessionHasPlanRef = useRef(false);
@@ -1912,6 +1913,7 @@ export function DesktopV3ExistingConversationPane({
     setArtifactGalleryOpen(false);
     setArtifactGalleryInitialKey("");
     dismissedArtifactViewerLocationKeyRef.current = "";
+    openedMobileVisualSwarmKeysRef.current.clear();
     void refreshSessionArtifacts();
   }, [normalizedSessionId, refreshSessionArtifacts]);
 
@@ -2051,6 +2053,7 @@ export function DesktopV3ExistingConversationPane({
   const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
   const showPlanSidebar = showPlanExecutionSidebar || Boolean(pendingPlanDocument);
   const hasSessionArtifacts = sessionArtifacts.length > 0;
+  const hasPendingVisualSwarm = desktopV3HasPendingVisualSwarm(sessionArtifacts);
   const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
   useEffect(() => {
     if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
@@ -2062,13 +2065,14 @@ export function DesktopV3ExistingConversationPane({
       artifactCount: sessionArtifacts.length,
       hasPlan: showPlanSidebar,
       prioritizePlan: Boolean(pendingPlanDocument) || (showPlanSidebar && !previousHasPlan),
+      hasPendingVisualSwarm,
     }));
     priorSessionArtifactCountRef.current = sessionArtifacts.length;
     priorSessionHasPlanRef.current = showPlanSidebar;
-  }, [normalizedSessionId, pendingPlanDocument, sessionArtifacts.length, showPlanSidebar]);
-  const activeSidebarView = pendingPlanDocument
+  }, [hasPendingVisualSwarm, normalizedSessionId, pendingPlanDocument, sessionArtifacts.length, showPlanSidebar]);
+  const activeSidebarView = pendingPlanDocument && !hasPendingVisualSwarm
     ? "plan"
-    : hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts")
+    : hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts" || hasPendingVisualSwarm)
       ? "artifacts"
       : "plan";
   const artifactViewerLocation = useMemo(
@@ -2140,6 +2144,24 @@ export function DesktopV3ExistingConversationPane({
     setArtifactGalleryOpen(true);
     if (artifactViewerEntry) setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifactViewerEntry));
   }, [artifactViewerEntry, artifactViewerLocation, artifactViewerLocationKey]);
+  useEffect(() => {
+    if (!hasPendingVisualSwarm) return;
+    const unopenedArtifact = desktopV3MobileVisualSwarmArtifactToOpen({
+      artifacts: sessionArtifacts,
+      sessionId: normalizedSessionId,
+      sidebarViewport: planSidebarViewport,
+      openedGroupKeys: openedMobileVisualSwarmKeysRef.current,
+    });
+    if (!unopenedArtifact) return;
+    const iterationGroupId = unopenedArtifact.lineage?.iterationGroupId.trim();
+    if (!iterationGroupId) return;
+    for (const artifact of desktopV3ArtifactsForSession(sessionArtifacts, normalizedSessionId)) {
+      const pendingGroupId = artifact.status === "staging" ? artifact.lineage?.iterationGroupId.trim() : "";
+      if (pendingGroupId) openedMobileVisualSwarmKeysRef.current.add(`${normalizedSessionId}:${pendingGroupId}`);
+    }
+    setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(unopenedArtifact));
+    setArtifactGalleryOpen(true);
+  }, [hasPendingVisualSwarm, normalizedSessionId, planSidebarViewport, sessionArtifacts]);
   const {
     scrollContainerRef,
     contentRef,

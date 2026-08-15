@@ -25,14 +25,40 @@ export function desktopV3ArtifactsForSession(
   )
 }
 
+export function desktopV3HasPendingVisualSwarm(
+  artifacts: readonly DesktopV3ArtifactCatalogEntry[],
+): boolean {
+  return artifacts.some((artifact) =>
+    artifact.status === 'staging' && Boolean(artifact.lineage?.iterationGroupId.trim())
+  )
+}
+
+export function desktopV3MobileVisualSwarmArtifactToOpen(input: {
+  artifacts: readonly DesktopV3ArtifactCatalogEntry[]
+  sessionId: string
+  sidebarViewport: boolean
+  openedGroupKeys: ReadonlySet<string>
+}): DesktopV3ArtifactCatalogEntry | undefined {
+  const sessionId = input.sessionId.trim()
+  if (!sessionId || input.sidebarViewport) return undefined
+  return [...desktopV3ArtifactsForSession(input.artifacts, sessionId)].reverse().find((artifact) => {
+    const iterationGroupId = artifact.lineage?.iterationGroupId.trim() ?? ''
+    if (artifact.status !== 'staging' || !iterationGroupId) return false
+    return !input.openedGroupKeys.has(`${sessionId}:${iterationGroupId}`)
+  })
+}
+
 export function desktopV3NextSessionSidebarView(input: {
   current: DesktopV3SessionSidebarView
   previousArtifactCount: number
   artifactCount: number
   hasPlan: boolean
   prioritizePlan?: boolean
+  hasPendingVisualSwarm?: boolean
 }): DesktopV3SessionSidebarView {
-  if (input.prioritizePlan || input.artifactCount === 0) return 'plan'
+  if (input.artifactCount === 0) return 'plan'
+  if (input.hasPendingVisualSwarm) return 'artifacts'
+  if (input.prioritizePlan) return 'plan'
   if (input.previousArtifactCount === 0 && !input.hasPlan) return 'artifacts'
   return input.current
 }

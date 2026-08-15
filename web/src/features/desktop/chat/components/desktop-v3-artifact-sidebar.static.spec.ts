@@ -16,7 +16,13 @@ test('conversation sidebar toggles plan and session artifacts only when artifact
   assert.match(pane, /activeSidebarView === "artifacts"/)
   assert.match(pane, /desktopV3NextSessionSidebarView/)
   assert.match(pane, /prioritizePlan: Boolean\(pendingPlanDocument\) \|\| \(showPlanSidebar && !previousHasPlan\)/)
-  assert.match(pane, /activeSidebarView = pendingPlanDocument[\s\S]*\? "plan"/)
+  assert.match(pane, /hasPendingVisualSwarm/)
+  assert.match(pane, /activeSidebarView = pendingPlanDocument && !hasPendingVisualSwarm[\s\S]*\? "plan"/)
+  assert.match(pane, /sidebarView === "artifacts" \|\| hasPendingVisualSwarm/)
+  assert.match(pane, /desktopV3MobileVisualSwarmArtifactToOpen/)
+  assert.match(pane, /sidebarViewport: planSidebarViewport/)
+  assert.match(pane, /setArtifactGalleryInitialKey\(desktopV3ArtifactCatalogEntryKey\(unopenedArtifact\)\)/)
+  assert.match(pane, /setArtifactGalleryOpen\(true\)/)
 })
 
 test('pending plan sidechat takes over the sidebar and opens as a mobile sheet', async () => {
