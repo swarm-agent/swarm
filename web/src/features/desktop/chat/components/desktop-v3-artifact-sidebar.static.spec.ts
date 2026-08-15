@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const paneURL = new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url)
 const sidebarURL = new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url)
+const previewThumbnailURL = new URL('./desktop-v3-artifact-preview-thumbnail.tsx', import.meta.url)
 const galleryURL = new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url)
 
 test('conversation sidebar toggles plan and session artifacts only when artifacts exist', async () => {
@@ -34,19 +35,31 @@ test('pending plan sidechat takes over the sidebar and opens as a mobile sheet',
 })
 
 test('artifact sidebar renders authorized thumbnail previews and opens full gallery selection', async () => {
-  const [pane, sidebar, gallery] = await Promise.all([
+  const [pane, sidebar, previewThumbnail, gallery] = await Promise.all([
     readFile(paneURL, 'utf8'),
     readFile(sidebarURL, 'utf8'),
+    readFile(previewThumbnailURL, 'utf8'),
     readFile(galleryURL, 'utf8'),
   ])
 
   assert.match(sidebar, /data-artifact-thumbnail-rail/)
+  assert.match(sidebar, /useDesktopV3ArtifactPreviewVisibility/)
+  assert.match(previewThumbnail, /IntersectionObserver/)
+  assert.match(previewThumbnail, /document\.visibilityState === 'visible'/)
+  assert.match(previewThumbnail, /visibilitychange/)
+  assert.match(previewThumbnail, /controller\.abort\(\)/)
+  assert.match(previewThumbnail, /URL\.revokeObjectURL\(objectURL\)/)
+  assert.match(sidebar, /data-artifact-live-preview/)
+  assert.match(sidebar, /setRequestedLivePreviewKey/)
+  assert.match(sidebar, /sidebarArtifactNeedsLivePreview/)
+  assert.match(sidebar, /motion-safe:animate-spin motion-reduce:animate-none/)
   assert.match(sidebar, /fetchDesktopV3ArtifactPreviewToken/)
   assert.match(sidebar, /sandbox="allow-scripts"/)
   assert.match(sidebar, /referrerPolicy="no-referrer"/)
   assert.match(sidebar, /absolute left-0 top-0 size-\[400%\] origin-top-left scale-25/)
   assert.match(sidebar, /className="size-full object-contain"/)
   assert.match(sidebar, /className="relative grid h-20 place-items-center overflow-hidden"/)
+  assert.match(sidebar, /live=\{sidebarArtifactPreviewKey\(artifact\) === livePreviewKey\}/)
   assert.doesNotMatch(sidebar, /aspect-\[16\/9\]/)
   assert.match(sidebar, /href=\{artifactHref\(artifact\)\}/)
   assert.match(sidebar, /desktopV3ArtifactSidebarGroups\(artifacts\)/)

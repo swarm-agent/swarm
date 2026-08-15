@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FileText, Loader2 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import {
@@ -14,6 +14,39 @@ interface DesktopV3ArtifactPreviewThumbnailProps {
   presentation?: 'thumbnail' | 'wide'
 }
 
+export function useDesktopV3ArtifactPreviewVisibility<T extends HTMLElement = HTMLDivElement>(enabled = true) {
+  const previewRef = useRef<T>(null)
+  const [intersecting, setIntersecting] = useState(false)
+  const [pageVisible, setPageVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible')
+
+  useEffect(() => {
+    const preview = previewRef.current
+    if (!enabled || !preview) {
+      setIntersecting(false)
+      return undefined
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      setIntersecting(true)
+      return undefined
+    }
+    const observer = new IntersectionObserver((entries) => {
+      setIntersecting(entries.some((entry) => entry.isIntersecting))
+    }, { threshold: 0.05 })
+    observer.observe(preview)
+    return () => observer.disconnect()
+  }, [enabled])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined
+    const updateVisibility = () => setPageVisible(document.visibilityState === 'visible')
+    updateVisibility()
+    document.addEventListener('visibilitychange', updateVisibility)
+    return () => document.removeEventListener('visibilitychange', updateVisibility)
+  }, [])
+
+  return { previewRef, previewVisible: enabled && intersecting && pageVisible }
+}
+
 export function DesktopV3ArtifactPreviewThumbnail({
   artifact,
   className,
@@ -23,12 +56,13 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const [previewText, setPreviewText] = useState('')
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
+  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility()
 
   useEffect(() => {
     setPreviewURL('')
     setPreviewText('')
     setFailed(false)
-    if (artifact.status !== 'ready' || !artifact.previewable) {
+    if (!previewVisible || artifact.status !== 'ready' || !artifact.previewable) {
       setLoading(false)
       return undefined
     }
@@ -78,13 +112,13 @@ export function DesktopV3ArtifactPreviewThumbnail({
       controller.abort()
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status])
+  }, [artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status, previewVisible])
 
-  const hasHTMLPreview = artifact.mediaType === 'text/html' && Boolean(previewText)
-  const hasImagePreview = artifact.mediaType.startsWith('image/') && Boolean(previewURL)
-  const hasVideoPreview = (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && Boolean(previewURL)
-  const hasPDFPreview = artifact.mediaType === 'application/pdf' && Boolean(previewURL)
-  const hasTextPreview = (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
+  const hasHTMLPreview = previewVisible && artifact.mediaType === 'text/html' && Boolean(previewText)
+  const hasImagePreview = previewVisible && artifact.mediaType.startsWith('image/') && Boolean(previewURL)
+  const hasVideoPreview = previewVisible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && Boolean(previewURL)
+  const hasPDFPreview = previewVisible && artifact.mediaType === 'application/pdf' && Boolean(previewURL)
+  const hasTextPreview = previewVisible && (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
 
   const isWide = presentation === 'wide' && (artifact.mediaType.startsWith('image/') || artifact.mediaType.startsWith('video/') || artifact.kind === 'video')
   const previewAspectRatio = isWide && artifact.outputRequirements
@@ -93,6 +127,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
 
   return (
     <div
+      ref={previewRef}
       className={cn(
         'relative aspect-video w-full overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]',
         isWide ? 'max-w-3xl' : 'max-w-sm',
@@ -102,10 +137,11 @@ export function DesktopV3ArtifactPreviewThumbnail({
       data-artifact-preview-thumbnail
       data-artifact-preview-presentation={isWide ? 'wide' : 'thumbnail'}
       data-artifact-preview-media-type={artifact.mediaType}
+      data-artifact-preview-visible={previewVisible || undefined}
     >
       {loading ? (
         <div className="grid size-full place-items-center text-[var(--app-text-muted)]">
-          <Loader2 className="size-5 animate-spin" aria-label="Loading artifact preview" />
+          <Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none" aria-label="Loading artifact preview" />
         </div>
       ) : null}
       {!loading && hasHTMLPreview ? (

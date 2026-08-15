@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
@@ -11,6 +11,7 @@ import {
   type DesktopV3ArtifactCollectionProgress,
 } from '../../session-v3/artifact-api'
 import type { DesktopSidebarDisplayMode } from './desktop-sidebar-display'
+import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
 
 export type DesktopV3SessionSidebarView = 'plan' | 'artifacts'
 
@@ -74,16 +75,31 @@ export interface DesktopV3ArtifactSidebarProps {
   onAddToChat?: (artifacts: DesktopV3ArtifactCatalogEntry[]) => void
 }
 
-function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactCatalogEntry }) {
+function sidebarArtifactPreviewKey(artifact: DesktopV3ArtifactCatalogEntry): string {
+  return `${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`
+}
+
+function sidebarArtifactNeedsLivePreview(artifact: DesktopV3ArtifactCatalogEntry): boolean {
+  return artifact.mediaType === 'image/svg+xml'
+    || artifact.mediaType === 'image/gif'
+    || artifact.mediaType === 'text/html'
+    || artifact.mediaType === 'application/pdf'
+    || artifact.mediaType.startsWith('video/')
+    || artifact.kind === 'video'
+}
+
+function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3ArtifactCatalogEntry; live: boolean }) {
   const [previewURL, setPreviewURL] = useState('')
   const [previewHTML, setPreviewHTML] = useState('')
   const [failed, setFailed] = useState(false)
+  const previewEnabled = live || !sidebarArtifactNeedsLivePreview(artifact)
+  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(previewEnabled)
 
   useEffect(() => {
     setPreviewURL('')
     setPreviewHTML('')
     setFailed(false)
-    if (!artifact.previewable || artifact.status !== 'ready') return undefined
+    if (!previewVisible || !artifact.previewable || artifact.status !== 'ready') return undefined
 
     const controller = new AbortController()
     let objectURL = ''
@@ -113,23 +129,17 @@ function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactC
       controller.abort()
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [artifact.artifactId, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status])
+  }, [artifact.artifactId, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status, previewVisible])
 
-  if (artifact.status === 'staging') return <Loader2 className="size-5 animate-spin text-[var(--app-primary)]" aria-label="Generating artifact" />
-  if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) return <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
-  if (artifact.mediaType.startsWith('image/') && previewURL) {
-    return <img src={previewURL} alt="" className="size-full object-contain" />
-  }
-  if ((artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) {
-    return <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" />
-  }
-  if (artifact.mediaType === 'text/html' && previewHTML) {
-    return <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
-  }
-  if (artifact.mediaType === 'application/pdf' && previewURL) {
-    return <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
-  }
-  return <FileText className="size-5 text-[var(--app-text-muted)]" aria-hidden="true" />
+  let thumbnail = <FileText className="size-5 text-[var(--app-text-muted)]" aria-hidden="true" />
+  if (artifact.status === 'staging') thumbnail = <Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Generating artifact" />
+  else if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) thumbnail = <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
+  else if (previewVisible && artifact.mediaType.startsWith('image/') && previewURL) thumbnail = <img src={previewURL} alt="" className="size-full object-contain" />
+  else if (previewVisible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" />
+  else if (previewVisible && artifact.mediaType === 'text/html' && previewHTML) thumbnail = <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
+  else if (previewVisible && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
+
+  return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={live || undefined} data-artifact-preview-visible={previewVisible || undefined}>{thumbnail}</span>
 }
 
 export interface DesktopV3ArtifactSidebarGroup {
@@ -204,7 +214,18 @@ export function DesktopV3ArtifactSidebar({
 }: DesktopV3ArtifactSidebarProps) {
   const thin = displayMode === 'thin'
   const compact = displayMode === 'compact'
-  const groups = desktopV3ArtifactSidebarGroups(artifacts)
+  const groups = useMemo(() => desktopV3ArtifactSidebarGroups(artifacts), [artifacts])
+  const defaultLivePreviewKey = useMemo(() => {
+    const liveArtifacts = groups.flatMap((group) => group.entries).filter((entry) => entry.status === 'ready' && sidebarArtifactNeedsLivePreview(entry))
+    const artifact = liveArtifacts.find((entry) => entry.selected) ?? liveArtifacts[0]
+    return artifact ? sidebarArtifactPreviewKey(artifact) : ''
+  }, [groups])
+  const [requestedLivePreviewKey, setRequestedLivePreviewKey] = useState('')
+  const requestedLivePreviewAvailable = groups.some((group) => group.entries.some((entry) => sidebarArtifactPreviewKey(entry) === requestedLivePreviewKey))
+  const livePreviewKey = requestedLivePreviewAvailable ? requestedLivePreviewKey : defaultLivePreviewKey
+  const requestLivePreview = (artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (sidebarArtifactNeedsLivePreview(artifact)) setRequestedLivePreviewKey(sidebarArtifactPreviewKey(artifact))
+  }
 
   return (
     <aside
@@ -226,7 +247,7 @@ export function DesktopV3ArtifactSidebar({
         </div>
       </header>
 
-      {loading && artifacts.length === 0 ? <div className="grid flex-1 place-items-center"><Loader2 className="size-5 animate-spin text-[var(--app-primary)]" aria-label="Loading session artifacts" /></div> : null}
+      {loading && artifacts.length === 0 ? <div className="grid flex-1 place-items-center"><Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Loading session artifacts" /></div> : null}
       {error && artifacts.length === 0 ? <p className={cn('text-xs text-[var(--app-danger)]', thin ? 'sr-only' : 'rounded-lg border border-[var(--app-danger)]/40 bg-[var(--app-danger-bg)] p-3')}>{error}</p> : null}
       {!loading && !error && artifacts.length === 0 ? <p className={cn('text-xs text-[var(--app-text-muted)]', thin ? 'sr-only' : 'p-3 text-center')}>Artifacts created in this session will appear here.</p> : null}
 
@@ -247,19 +268,20 @@ export function DesktopV3ArtifactSidebar({
             const grouped = Boolean(group.collectionId)
             const requirementLabel = formatDesktopV3ArtifactOutputRequirements(representative.outputRequirements)
             if (thin) {
-              return <a key={group.key} href={artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
+              const representativeKey = sidebarArtifactPreviewKey(representative)
+              return <a key={group.key} href={artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onPointerEnter={() => requestLivePreview(representative)} onFocus={() => requestLivePreview(representative)} onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} live={representativeKey === livePreviewKey} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
             }
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
                 <a href={artifactHref(representative)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }}>
                   <span className="min-w-0"><span className="block truncate text-xs font-semibold">{grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{grouped ? sidebarProgressLabel(group) : representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}</span>
-                  {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 animate-spin text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
+                  {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
                 <div className={cn('grid gap-1 p-2', grouped && 'grid-cols-2')} aria-label={grouped ? `${group.label} iterations` : undefined}>
                   {group.entries.map((artifact, index) => (
-                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
+                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]" onPointerEnter={() => requestLivePreview(artifact)} onFocusCapture={() => requestLivePreview(artifact)}>
                       <a href={artifactHref(artifact)} className="block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} aria-label={`Open ${artifact.label} in full artifact view`}>
-                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} /></span>
+                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} live={sidebarArtifactPreviewKey(artifact) === livePreviewKey} /></span>
                         <span className="block min-w-0 px-2 py-1.5"><span className="block truncate text-[10px] font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : grouped ? `Iteration ${artifact.lineage?.iterationIndex || index + 1}` : artifact.kind || artifact.mediaType}</span></span>
                       </a>
                       {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" aria-label={`Add ${artifact.label} to chat`} title="Add to chat" onClick={() => onAddToChat([artifact])}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}

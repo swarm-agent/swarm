@@ -1498,9 +1498,10 @@ export function ManageArtifactCard({
 }) {
   const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
-  const action = toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create";
+  const action = (toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create").trim().toLowerCase();
   const isImageCapabilities = action === "image_capabilities";
   const isImageGeneration = action === "generate_image";
+  const isInspection = ["get", "read", "list"].includes(action);
   const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
 
   const matchedCatalogEntry = rawArtifact
@@ -1515,6 +1516,18 @@ export function ManageArtifactCard({
 
   const isRunning = toolMessage.state === "running";
   const isError = toolMessage.state === "error" || Boolean(toolMessage.error);
+  if (isInspection) {
+    const inspectionLabel = action === "list" ? "Checked artifacts" : isRunning ? "Checking artifact…" : "Checked artifact";
+    const inspectionSummary = rawArtifact?.label || toolJsonString(args, "filename") || toolJsonString(args, "entry");
+    return (
+      <div className="mb-1 flex min-w-0 items-center gap-1.5 py-1 text-[11px] text-[var(--app-text-subtle)]" data-artifact-inspection-activity data-testid="desktop-artifact-inspection-card">
+        {isError ? <XCircle size={11} className="shrink-0 text-[var(--app-danger)]" aria-hidden="true" /> : isRunning ? <LoaderCircle size={11} className="shrink-0 motion-safe:animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <CheckCircle2 size={11} className="shrink-0" aria-hidden="true" />}
+        <span className="shrink-0 font-medium">{isError ? "Artifact check failed" : inspectionLabel}</span>
+        {inspectionSummary ? <span className="min-w-0 truncate">· {inspectionSummary}</span> : null}
+        {isError && toolMessage.error ? <span className="min-w-0 truncate text-[var(--app-danger)]">· {toolMessage.error}</span> : null}
+      </div>
+    );
+  }
   const label = artifact?.label
     || toolJsonString(args, "label")
     || toolJsonString(args, "filename")

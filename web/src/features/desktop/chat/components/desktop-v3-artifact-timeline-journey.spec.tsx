@@ -84,6 +84,50 @@ test('timeline parses successful manage_artifact tool message into typed artifac
   assert(markup.includes('/ws-1/sess-abc-123?artifactSession=sess-abc-123&amp;collection=col-brainstorm&amp;artifact=var-concept-1'), 'must link to exact viewer route')
 })
 
+test('artifact inspection reads stay compact and do not duplicate the artifact preview', () => {
+  const toolMessage = buildStructuredToolMessage({
+    tool: 'manage_artifact',
+    callId: 'call_art_read_1',
+    argumentsText: JSON.stringify({
+      action: 'read',
+      session_id: 'sess-abc-123',
+      collection_id: 'col-brainstorm',
+      variant_id: 'var-concept-1',
+      event_seq: 7,
+    }),
+    outputText: JSON.stringify({
+      action: 'read',
+      status: 'ok',
+      artifact: {
+        id: 'var-concept-1',
+        collection_id: 'col-brainstorm',
+        session_id: 'sess-abc-123',
+        event_seq: 7,
+        filename: 'prototype.html',
+        media_type: 'text/html',
+        label: 'Interactive Prototype',
+        status: 'ready',
+        previewable: true,
+      },
+      content: '<html>inspected</html>',
+    }),
+  })
+  assert(Boolean(toolMessage), 'toolMessage should be created')
+
+  const markup = renderToStaticMarkup(
+    <ToolMessageView
+      toolMessage={toolMessage!}
+      artifactHref={() => '/ws-1/sess-abc-123?artifact=var-concept-1'}
+    />,
+  )
+
+  assert(markup.includes('data-artifact-inspection-activity'), 'inspection should use a compact activity presentation')
+  assert(markup.includes('data-testid="desktop-artifact-inspection-card"'))
+  assert(!markup.includes('data-testid="desktop-artifact-tool-card"'), 'inspection must not render the publication card')
+  assert(!markup.includes('data-artifact-preview-thumbnail'), 'inspection must not mount another artifact preview')
+  assert(!markup.includes('Open in viewer'), 'inspection must not duplicate artifact actions')
+})
+
 test('timeline artifact actions fail closed when the exact ready identity is incomplete', () => {
   const outputJson = {
     tool: 'manage_artifact',
