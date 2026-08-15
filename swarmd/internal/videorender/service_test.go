@@ -1,0 +1,539 @@
+package videorender
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+type fakeCommandRunner struct {
+	lookPathErr error
+	runHook     func(ctx context.Context, name string, args ...string) ([]byte, error)
+	calls       [][]string
+}
+
+func (f *fakeCommandRunner) LookPath(file string) (string, error) {
+	if f.lookPathErr != nil {
+		return "", f.lookPathErr
+	}
+	return "/usr/bin/" + file, nil
+}
+
+func (f *fakeCommandRunner) RunCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	full := append([]string{name}, args...)
+	f.calls = append(f.calls, full)
+	if f.runHook != nil {
+		return f.runHook(ctx, name, args...)
+	}
+	// By default simulate ffmpeg creating output file if it's the last arg
+	if len(args) > 0 {
+		outPath := args[len(args)-1]
+		if strings.HasSuffix(outPath, ".mp4") {
+			_ = os.WriteFile(outPath, []byte("fake valid mp4 output"), 0o600)
+		}
+	}
+	return []byte("ok"), nil
+}
+
+type fakeSessionStore struct {
+	sessions      map[string]pebblestore.SessionSnapshot
+	projects      map[string]pebblestore.VideoProjectSnapshot
+	revisions     map[string]pebblestore.VideoProjectRevisionSnapshot
+	jobs          map[string]pebblestore.VideoRenderJobSnapshot
+	sources       map[string]pebblestore.VideoSourceRecord
+	variants      map[string]pebblestore.SessionArtifactVariant
+	updateJobHook func(input pebblestore.UpdateVideoRenderJobInput)
+}
+
+func newFakeSessionStore() *fakeSessionStore {
+	return &fakeSessionStore{
+		sessions:  make(map[string]pebblestore.SessionSnapshot),
+		projects:  make(map[string]pebblestore.VideoProjectSnapshot),
+		revisions: make(map[string]pebblestore.VideoProjectRevisionSnapshot),
+		jobs:      make(map[string]pebblestore.VideoRenderJobSnapshot),
+		sources:   make(map[string]pebblestore.VideoSourceRecord),
+		variants:  make(map[string]pebblestore.SessionArtifactVariant),
+	}
+}
+
+func (f *fakeSessionStore) GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error) {
+	s, ok := f.sessions[sessionID]
+	return s, ok, nil
+}
+
+func (f *fakeSessionStore) GetVideoProject(accountScopeID, sessionID, projectID string) (pebblestore.VideoProjectSnapshot, bool, error) {
+	p, ok := f.projects[projectID]
+	if !ok || p.AccountScopeID != accountScopeID || p.SessionID != sessionID {
+		return pebblestore.VideoProjectSnapshot{}, false, nil
+	}
+	return p, true, nil
+}
+
+func (f *fakeSessionStore) GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID string) (pebblestore.VideoProjectRevisionSnapshot, bool, error) {
+	r, ok := f.revisions[revisionID]
+	if !ok || r.AccountScopeID != accountScopeID || r.SessionID != sessionID || r.ProjectID != projectID {
+		return pebblestore.VideoProjectRevisionSnapshot{}, false, nil
+	}
+	return r, true, nil
+}
+
+func (f *fakeSessionStore) GetVideoRenderJob(accountScopeID, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error) {
+	j, ok := f.jobs[jobID]
+	if !ok || j.AccountScopeID != accountScopeID || j.SessionID != sessionID {
+		return pebblestore.VideoRenderJobSnapshot{}, false, nil
+	}
+	return j, true, nil
+}
+
+func (f *fakeSessionStore) UpdateVideoRenderJob(input pebblestore.UpdateVideoRenderJobInput) (pebblestore.VideoRenderJobSnapshot, error) {
+	if f.updateJobHook != nil {
+		f.updateJobHook(input)
+	}
+	j, ok := f.jobs[input.JobID]
+	if !ok {
+		return pebblestore.VideoRenderJobSnapshot{}, errors.New("job not found")
+	}
+	if input.Status != "" {
+		j.Status = input.Status
+	}
+	if input.Progress > 0 {
+		j.Progress = input.Progress
+	}
+	if input.FailureCode != "" {
+		j.FailureCode = input.FailureCode
+	}
+	if input.FailureReason != "" {
+		j.FailureReason = input.FailureReason
+	}
+	if input.OutputPreset != "" {
+		j.OutputPreset = input.OutputPreset
+	}
+	if input.OutputWidth > 0 {
+		j.OutputWidth = input.OutputWidth
+	}
+	if input.OutputHeight > 0 {
+		j.OutputHeight = input.OutputHeight
+	}
+	if input.OutputFPS > 0 {
+		j.OutputFPS = input.OutputFPS
+	}
+	if input.OutputDurationMs > 0 {
+		j.OutputDurationMs = input.OutputDurationMs
+	}
+	if input.OutputSizeBytes > 0 {
+		j.OutputSizeBytes = input.OutputSizeBytes
+	}
+	if input.OutputDigestSHA256 != "" {
+		j.OutputDigestSHA256 = input.OutputDigestSHA256
+	}
+	if input.OutputArtifact != nil {
+		j.OutputArtifact = input.OutputArtifact
+	}
+	j.UpdatedAt = input.NowUnixMs
+	f.jobs[input.JobID] = j
+	return j, nil
+}
+
+func (f *fakeSessionStore) GetVideoSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.VideoSourceRecord, bool, error) {
+	s, ok := f.sources[ref]
+	if !ok || s.AccountScopeID != accountScopeID {
+		return pebblestore.VideoSourceRecord{}, false, nil
+	}
+	return s, true, nil
+}
+
+func (f *fakeSessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error) {
+	key := fmt.Sprintf("%s/%s/%s/%s", accountScopeID, sessionID, collectionID, variantID)
+	v, ok := f.variants[key]
+	return v, ok, nil
+}
+
+func (f *fakeSessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
+	var list []pebblestore.VideoRenderJobSnapshot
+	for _, j := range f.jobs {
+		if j.AccountScopeID == accountScopeID && j.SessionID == sessionID && (projectID == "" || j.ProjectID == projectID) {
+			list = append(list, j)
+		}
+	}
+	return list, nil
+}
+
+type fakeArtifactAuthority struct {
+	createdVariants []pebblestore.SessionArtifactVariant
+	createErr       error
+}
+
+func (f *fakeArtifactAuthority) GetReference(principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error) {
+	return pebblestore.SessionArtifactVariant{
+		ID:           ref.VariantID,
+		CollectionID: ref.CollectionID,
+		Status:       pebblestore.SessionArtifactStatusReady,
+	}, nil
+}
+
+func (f *fakeArtifactAuthority) CreateFromFile(ctx context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
+	if f.createErr != nil {
+		return pebblestore.SessionArtifactVariant{}, f.createErr
+	}
+	v := pebblestore.SessionArtifactVariant{
+		ID:           input.VariantID,
+		CollectionID: input.CollectionID,
+		Filename:     input.Filename,
+		MediaType:    input.MediaType,
+		Status:       pebblestore.SessionArtifactStatusReady,
+		Presentation: input.Presentation,
+		EventSeq:     42,
+		Size:         1024,
+	}
+	f.createdVariants = append(f.createdVariants, v)
+	return v, nil
+}
+
+func testVideoFingerprint(root, relative string, size, modAt int64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d", root, relative, size, modAt)))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestRenderJobSuccessfulFlow(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "swarm-render-test-")
+	if err != nil {
+		t.Fatalf("temp dir err: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	principal := identity.Principal{
+		AccountScopeID: "acc_1",
+		UserID:         "usr_1",
+	}
+	sessionID := "sess_1"
+	projectID := "vproj_1"
+	revID := "vrev_1"
+	jobID := "vjob_1"
+
+	store := newFakeSessionStore()
+	store.sessions[sessionID] = pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		Metadata: map[string]any{
+			"workspace_id": "ws_1",
+		},
+	}
+	store.projects[projectID] = pebblestore.VideoProjectSnapshot{
+		ID:                projectID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		SessionID:         sessionID,
+		Title:             "Test Intro Video",
+		CurrentRevisionID: revID,
+	}
+
+	// Create a dummy video file in tempDir
+	srcFilePath := filepath.Join(tempDir, "source.mp4")
+	_ = os.WriteFile(srcFilePath, []byte("ftypisomfakevideodata"), 0o600)
+	srcStat, _ := os.Stat(srcFilePath)
+
+	srcRef := "videosrc_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	store.sources[srcRef] = pebblestore.VideoSourceRecord{
+		Ref:               srcRef,
+		AccountScopeID:    principal.AccountScopeID,
+		WorkspaceID:       "ws_1",
+		RootPath:          tempDir,
+		RelativePath:      "source.mp4",
+		DisplayName:       "source.mp4",
+		MIMEType:          "video/mp4",
+		SizeBytes:         srcStat.Size(),
+		ModifiedAt:        srcStat.ModTime().UnixMilli(),
+		SourceFingerprint: testVideoFingerprint(tempDir, "source.mp4", srcStat.Size(), srcStat.ModTime().UnixMilli()),
+	}
+
+	// Managed artifact variant
+	artVariantKey := fmt.Sprintf("%s/%s/col_intro/var_intro_1", principal.AccountScopeID, sessionID)
+	store.variants[artVariantKey] = pebblestore.SessionArtifactVariant{
+		ID:           "var_intro_1",
+		CollectionID: "col_intro",
+		Filename:     "intro_card.png",
+		MediaType:    "image/png",
+		Status:       pebblestore.SessionArtifactStatusReady,
+		Size:         500,
+	}
+
+	store.revisions[revID] = pebblestore.VideoProjectRevisionSnapshot{
+		ID:             revID,
+		ProjectID:      projectID,
+		RevisionNumber: 1,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		SessionID:      sessionID,
+		Timeline: pebblestore.VideoProjectTimeline{
+			OutputPreset: pebblestore.VideoPresetLandscape1080p,
+			FPS:          30,
+			Clips: []pebblestore.VideoTimelineClip{
+				{
+					ID:         "clip_art",
+					Sequence:   0,
+					SourceKind: pebblestore.VideoClipSourceKindManagedArtifact,
+					ArtifactRef: &pebblestore.SessionArtifactSelectionReference{
+						SessionID:    sessionID,
+						CollectionID: "col_intro",
+						VariantID:    "var_intro_1",
+					},
+					DurationMs: 2000,
+					Visible:    true,
+				},
+				{
+					ID:         "clip_src",
+					Sequence:   1,
+					SourceKind: pebblestore.VideoClipSourceKindSourceVideo,
+					SourceRef:  srcRef,
+					DurationMs: 4000,
+					Visible:    true,
+					Captions: []pebblestore.VideoTextOverlay{
+						{
+							Text:     "First chapter",
+							Position: "bottom",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	store.jobs[jobID] = pebblestore.VideoRenderJobSnapshot{
+		ID:             jobID,
+		ProjectID:      projectID,
+		RevisionID:     revID,
+		RevisionNumber: 1,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		SessionID:      sessionID,
+		Status:         pebblestore.VideoRenderJobStatusQueued,
+	}
+
+	runner := &fakeCommandRunner{}
+	artAuth := &fakeArtifactAuthority{}
+
+	svc := NewService(Config{}, store, artAuth, nil, nil, runner)
+
+	ctx := context.Background()
+	result, err := svc.RenderJob(ctx, principal, RenderJobRequest{
+		SessionID: sessionID,
+		ProjectID: projectID,
+		RevisionID: revID,
+		JobID:     jobID,
+	})
+	if err != nil {
+		t.Fatalf("render job failed: %v", err)
+	}
+
+	if result.Status != pebblestore.VideoRenderJobStatusReady {
+		t.Fatalf("expected job status ready, got: %s", result.Status)
+	}
+	if result.Progress != 1.0 {
+		t.Fatalf("expected progress 1.0, got: %f", result.Progress)
+	}
+	if result.OutputWidth != 1920 || result.OutputHeight != 1080 {
+		t.Fatalf("expected 1920x1080 output dimensions, got %dx%d", result.OutputWidth, result.OutputHeight)
+	}
+	if result.OutputArtifact == nil || result.OutputArtifact.VariantID == "" {
+		t.Fatalf("expected non-nil output artifact reference, got: %+v", result.OutputArtifact)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 ffmpeg call, got: %d", len(runner.calls))
+	}
+}
+
+func TestRenderJobSecurityAndRejections(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acc_alpha", UserID: "usr_alpha"}
+	otherPrincipal := identity.Principal{AccountScopeID: "acc_beta", UserID: "usr_beta"}
+
+	store := newFakeSessionStore()
+	store.sessions["sess_alpha"] = pebblestore.SessionSnapshot{
+		ID:             "sess_alpha",
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+	}
+	store.jobs["job_1"] = pebblestore.VideoRenderJobSnapshot{
+		ID:             "job_1",
+		AccountScopeID: principal.AccountScopeID,
+		SessionID:      "sess_alpha",
+		ProjectID:      "proj_1",
+		Status:         pebblestore.VideoRenderJobStatusQueued,
+	}
+
+	runner := &fakeCommandRunner{}
+	artAuth := &fakeArtifactAuthority{}
+	svc := NewService(Config{}, store, artAuth, nil, nil, runner)
+	ctx := context.Background()
+
+	// 1. Cross-account rejected
+	_, err := svc.RenderJob(ctx, otherPrincipal, RenderJobRequest{
+		SessionID: "sess_alpha",
+		ProjectID: "proj_1",
+		JobID:     "job_1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "ownership") {
+		t.Fatalf("expected ownership rejection for other principal, got: %v", err)
+	}
+
+	// 2. Missing principal
+	_, err = svc.RenderJob(ctx, identity.Principal{}, RenderJobRequest{
+		SessionID: "sess_alpha",
+		ProjectID: "proj_1",
+		JobID:     "job_1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "authenticated principal") {
+		t.Fatalf("expected authenticated principal required, got: %v", err)
+	}
+
+	// 3. Nonexistent job
+	_, err = svc.RenderJob(ctx, principal, RenderJobRequest{
+		SessionID: "sess_alpha",
+		ProjectID: "proj_1",
+		JobID:     "nonexistent_job",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found for nonexistent job, got: %v", err)
+	}
+}
+
+func TestRenderJobFailureHandling(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acc_1", UserID: "usr_1"}
+	sessionID := "sess_fail"
+	projectID := "proj_fail"
+	revID := "rev_fail"
+	jobID := "job_fail"
+
+	store := newFakeSessionStore()
+	store.sessions[sessionID] = pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+	}
+	store.projects[projectID] = pebblestore.VideoProjectSnapshot{
+		ID:                projectID,
+		AccountScopeID:    principal.AccountScopeID,
+		SessionID:         sessionID,
+		CurrentRevisionID: revID,
+	}
+	store.revisions[revID] = pebblestore.VideoProjectRevisionSnapshot{
+		ID:             revID,
+		ProjectID:      projectID,
+		AccountScopeID: principal.AccountScopeID,
+		SessionID:      sessionID,
+		Timeline: pebblestore.VideoProjectTimeline{
+			Clips: []pebblestore.VideoTimelineClip{
+				{
+					ID:         "c1",
+					SourceKind: pebblestore.VideoClipSourceKindColor,
+					DurationMs: 1000,
+					Visible:    true,
+				},
+			},
+		},
+	}
+	store.jobs[jobID] = pebblestore.VideoRenderJobSnapshot{
+		ID:             jobID,
+		ProjectID:      projectID,
+		RevisionID:     revID,
+		AccountScopeID: principal.AccountScopeID,
+		SessionID:      sessionID,
+		Status:         pebblestore.VideoRenderJobStatusQueued,
+	}
+
+	// Command runner fails
+	runner := &fakeCommandRunner{
+		runHook: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return nil, errors.New("simulated ffmpeg error: invalid codec")
+		},
+	}
+	artAuth := &fakeArtifactAuthority{}
+	svc := NewService(Config{}, store, artAuth, nil, nil, runner)
+
+	_, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{
+		SessionID: sessionID,
+		ProjectID: projectID,
+		RevisionID: revID,
+		JobID:     jobID,
+	})
+	if err == nil {
+		t.Fatalf("expected error from failed ffmpeg run")
+	}
+
+	updatedJob, _, _ := store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+	if updatedJob.Status != pebblestore.VideoRenderJobStatusFailed {
+		t.Fatalf("expected job status failed, got: %s", updatedJob.Status)
+	}
+	if updatedJob.FailureCode != "ffmpeg_execution_error" {
+		t.Fatalf("expected ffmpeg_execution_error failure code, got: %s", updatedJob.FailureCode)
+	}
+}
+
+func TestReconcileInterruptedJobs(t *testing.T) {
+	store := newFakeSessionStore()
+	store.jobs["job_rendering_1"] = pebblestore.VideoRenderJobSnapshot{
+		ID:             "job_rendering_1",
+		AccountScopeID: "acc_1",
+		SessionID:      "sess_1",
+		ProjectID:      "proj_1",
+		Status:         pebblestore.VideoRenderJobStatusRendering,
+	}
+	store.jobs["job_ready_1"] = pebblestore.VideoRenderJobSnapshot{
+		ID:             "job_ready_1",
+		AccountScopeID: "acc_1",
+		SessionID:      "sess_1",
+		ProjectID:      "proj_1",
+		Status:         pebblestore.VideoRenderJobStatusReady,
+	}
+
+	svc := NewService(Config{}, store, nil, nil, nil, nil)
+	reconciled, err := svc.ReconcileInterruptedJobs(context.Background(), "acc_1", "sess_1", "proj_1")
+	if err != nil {
+		t.Fatalf("reconcile err: %v", err)
+	}
+	if reconciled != 1 {
+		t.Fatalf("expected 1 reconciled job, got %d", reconciled)
+	}
+
+	job1, _, _ := store.GetVideoRenderJob("acc_1", "sess_1", "job_rendering_1")
+	if job1.Status != pebblestore.VideoRenderJobStatusFailed || job1.FailureCode != "daemon_interrupted" {
+		t.Fatalf("expected job1 to be failed with daemon_interrupted, got status=%s code=%s", job1.Status, job1.FailureCode)
+	}
+
+	jobReady, _, _ := store.GetVideoRenderJob("acc_1", "sess_1", "job_ready_1")
+	if jobReady.Status != pebblestore.VideoRenderJobStatusReady {
+		t.Fatalf("expected job_ready_1 to remain ready, got: %s", jobReady.Status)
+	}
+}
+
+func TestCancelRenderJob(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acc_1", UserID: "usr_1"}
+	store := newFakeSessionStore()
+	store.jobs["job_cancel"] = pebblestore.VideoRenderJobSnapshot{
+		ID:             "job_cancel",
+		AccountScopeID: principal.AccountScopeID,
+		SessionID:      "sess_1",
+		ProjectID:      "proj_1",
+		Status:         pebblestore.VideoRenderJobStatusRendering,
+	}
+
+	svc := NewService(Config{}, store, nil, nil, nil, nil)
+	job, err := svc.CancelRenderJob(context.Background(), principal, "sess_1", "job_cancel")
+	if err != nil {
+		t.Fatalf("cancel err: %v", err)
+	}
+	if job.Status != pebblestore.VideoRenderJobStatusCancelled {
+		t.Fatalf("expected cancelled status, got: %s", job.Status)
+	}
+}

@@ -177,6 +177,12 @@ func ValidateVideoSourceRecord(record VideoSourceRecord) error {
 	return file.Close()
 }
 
+// OpenValidatedVideoSource opens and validates a private source file.
+// Callers must close the returned file when finished.
+func OpenValidatedVideoSource(record VideoSourceRecord) (*os.File, error) {
+	return openValidatedVideoSource(record)
+}
+
 func openValidatedVideoSource(record VideoSourceRecord) (*os.File, error) {
 	root, err := os.OpenRoot(record.RootPath)
 	if err != nil {
