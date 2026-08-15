@@ -8,10 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videotranscription"
+)
+
+const (
+	directVideoRequestMaxBytes       = 8 << 10
+	directVideoTranscriptMaxBytes    = 512 << 10
+	directVideoTranscriptMaxSegments = 500
 )
 
 func (s *Server) resolveDirectVideoSession(principal identity.Principal, workspacePath, sessionID string) (pebblestore.SessionSnapshot, error) {
@@ -118,7 +125,7 @@ func (s *Server) handleWorkspaceVideoTranscribe(w http.ResponseWriter, r *http.R
 		VideoRef      string `json:"video_ref"`
 		FocusNotes    string `json:"focus_notes"`
 	}
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSONLimited(w, r, &req, directVideoRequestMaxBytes); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -260,11 +267,7 @@ func (s *Server) handleWorkspaceVideoTranscribeRead(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, errors.New("transcript is outside the direct transcription session scope"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "transcript": map[string]any{
-		"ref": transcript.Ref, "job_ref": transcript.JobRef, "schema_version": transcript.SchemaVersion,
-		"text": transcript.Text, "segments": transcript.Segments, "metadata": transcript.Metadata,
-		"validation": transcript.Validation, "content_digest": transcript.ContentDigest,
-	}})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "transcript": safeDirectVideoTranscript(transcript)})
 }
 
 func (s *Server) handleWorkspaceVideoTranscribeCancel(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +305,7 @@ func (s *Server) directVideoRequest(w http.ResponseWriter, r *http.Request, targ
 		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
-	if err := decodeJSON(r, target); err != nil {
+	if err := decodeJSONLimited(w, r, target, directVideoRequestMaxBytes); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return identity.Principal{}, pebblestore.SessionSnapshot{}, false
 	}
@@ -320,6 +323,37 @@ func safeDirectVideoJob(job pebblestore.TranscriptionJob) map[string]any {
 		"failure_code": job.FailureCode, "failure_reason": job.FailureReason,
 		"created_at": job.CreatedAt, "updated_at": job.UpdatedAt, "completed_at": job.CompletedAt,
 	}
+}
+
+func safeDirectVideoTranscript(transcript pebblestore.NormalizedTranscript) map[string]any {
+	text, textTruncated := boundedDirectVideoText(transcript.Text, directVideoTranscriptMaxBytes)
+	segments := transcript.Segments
+	segmentsTruncated := len(segments) > directVideoTranscriptMaxSegments
+	if segmentsTruncated {
+		segments = segments[:directVideoTranscriptMaxSegments]
+	}
+	return map[string]any{
+		"ref": transcript.Ref, "job_ref": transcript.JobRef, "schema_version": transcript.SchemaVersion,
+		"text": text, "segments": segments,
+		"metadata": map[string]any{
+			"language": transcript.Metadata.Language, "duration_ms": transcript.Metadata.DurationMs,
+			"summary": transcript.Metadata.Summary, "content_empty": transcript.Metadata.ContentEmpty,
+		},
+		"validation": transcript.Validation, "content_digest": transcript.ContentDigest,
+		"text_truncated": textTruncated, "segments_truncated": segmentsTruncated,
+		"details_truncated": textTruncated || segmentsTruncated,
+	}
+}
+
+func boundedDirectVideoText(value string, maxBytes int) (string, bool) {
+	if len(value) <= maxBytes {
+		return value, false
+	}
+	value = value[:maxBytes]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value, true
 }
 
 func transcriptionWorkspaceIDForAPI(session pebblestore.SessionSnapshot) string {

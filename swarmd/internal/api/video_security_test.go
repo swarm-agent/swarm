@@ -7,11 +7,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/session"
 	"swarm/packages/swarmd/internal/stream"
+	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -53,6 +57,76 @@ func TestVideoThreadHandlersRequireProductPrincipal(t *testing.T) {
 		if recorder.Code != http.StatusUnauthorized {
 			t.Fatalf("%s status = %d body = %s", request.URL.Path, recorder.Code, recorder.Body.String())
 		}
+	}
+}
+
+func TestDirectVideoTranscriptionRejectsOversizedRequestBody(t *testing.T) {
+	principal := accountTestPrincipal()
+	workspacePath := t.TempDir()
+	server, _ := newVideoWorkspaceSecurityServer(t, principal, workspacePath)
+	payload := `{"workspace_path":"` + workspacePath + `","video_ref":"videosrc_` + strings.Repeat("a", 64) + `","focus_notes":"` + strings.Repeat("x", directVideoRequestMaxBytes) + `"}`
+	req := requestWithTestPrincipal(httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe", strings.NewReader(payload)))
+	recorder := httptest.NewRecorder()
+	server.handleWorkspaceVideoTranscribe(recorder, req)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "request body exceeds") {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSafeDirectVideoTranscriptBoundsOutputAndOmitsProviderIdentity(t *testing.T) {
+	segments := make([]pebblestore.NormalizedTranscriptSegment, directVideoTranscriptMaxSegments+1)
+	for index := range segments {
+		segments[index] = pebblestore.NormalizedTranscriptSegment{StartMs: int64(index), EndMs: int64(index + 1), Visual: "frame", Text: "frame"}
+	}
+	transcript := pebblestore.NormalizedTranscript{
+		Ref: "transcript_ref", JobRef: "trjob_ref", SchemaVersion: pebblestore.NormalizedTranscriptSchemaVersion,
+		Text: strings.Repeat("é", directVideoTranscriptMaxBytes), Segments: segments,
+		Metadata: pebblestore.NormalizedTranscriptMetadata{ProviderID: "google", Model: "secret-model", ModelSnapshot: "private-snapshot", MediaSettingsHash: "private-hash"},
+	}
+	encoded, err := json.Marshal(safeDirectVideoTranscript(transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	if !strings.Contains(body, `"details_truncated":true`) || !strings.Contains(body, `"segments_truncated":true`) || !strings.Contains(body, `"text_truncated":true`) {
+		t.Fatalf("missing truncation markers: %s", body)
+	}
+	for _, private := range []string{"google", "secret-model", "private-snapshot", "private-hash"} {
+		if strings.Contains(body, private) {
+			t.Fatalf("response exposed private provider identity %q: %s", private, body)
+		}
+	}
+}
+
+func TestResolveDirectVideoSessionRejectsOtherUserSession(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "direct-video-session.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	principal := accountTestPrincipal()
+	workspacePath := t.TempDir()
+	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(db))
+	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
+		t.Fatal(err)
+	}
+	sessions := pebblestore.NewSessionStore(db)
+	sessionService := session.NewService(sessions, nil)
+	server := NewServer(nil, nil, nil, nil, sessionService, workspaceService, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	server.SetVideoTranscriptionService(&videotranscription.Service{})
+	now := time.Now().UnixMilli()
+	foreign := pebblestore.SessionSnapshot{
+		ID: "foreign-direct-session", UserID: "other-user", AccountScopeID: principal.AccountScopeID,
+		WorkspacePath: workspacePath, Metadata: map[string]any{"workspace_id": "wrong", "system_session": true, "navigation_hidden": true, "settings_locked": true}, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := sessions.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{
+		SessionID: foreign.ID, UserID: foreign.UserID, AccountScopeID: foreign.AccountScopeID,
+		ClientRequestID: "create-foreign", Kind: pebblestore.V3SessionMutationCreateSession, Session: &foreign,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.resolveDirectVideoSession(principal, workspacePath, foreign.ID); err == nil {
+		t.Fatal("expected cross-user direct transcription session rejection")
 	}
 }
 
