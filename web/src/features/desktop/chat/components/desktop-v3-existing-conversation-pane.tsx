@@ -3347,6 +3347,10 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
           message={item.message}
           thinkingTagsEnabled={thinkingTagsEnabled}
           taskChildActions={taskChildActions}
+          artifactCatalog={artifactCatalog}
+          artifactHref={artifactHref}
+          onArtifactNavigate={onArtifactNavigate}
+          onArtifactSelections={onArtifactSelections}
         />
       );
     case "pending-user":
@@ -3363,7 +3367,16 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
         />
       );
     case "live-tool":
-      return <DesktopV3LiveToolCall tool={item.tool} taskChildActions={taskChildActions} />;
+      return (
+        <DesktopV3LiveToolCall
+          tool={item.tool}
+          taskChildActions={taskChildActions}
+          artifactCatalog={artifactCatalog}
+          artifactHref={artifactHref}
+          onArtifactNavigate={onArtifactNavigate}
+          onArtifactSelections={onArtifactSelections}
+        />
+      );
     case "search-read-group":
       return <SearchReadToolGroupView toolMessages={item.toolMessages} />;
     case "live-working":
@@ -3806,8 +3819,23 @@ function DesktopV3StructuredFinalHandoff({
         {recommendation ? (
           <div className="mt-3 border-l-2 border-[var(--app-primary)] pl-3" data-final-handoff-recommendation>
             <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Recommendation</div>
-            <div className="mt-0.5 font-medium text-[var(--app-text)]">
-              {recommendation.decision.replace(/[-_]+/g, " ")} — {recommendation.action.replace(/[-_]+/g, " ")}
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <div className="font-medium text-[var(--app-text)]">
+                {recommendation.decision.replace(/[-_]+/g, " ")} — {recommendation.action.replace(/[-_]+/g, " ")}
+              </div>
+              {((recommendation.prompt || recommendation.action || "").trim()) ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border-active)] bg-[var(--app-primary)] px-2.5 py-1 text-xs font-medium text-[var(--app-primary-text)] transition hover:bg-[var(--app-primary-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!onSuggestedPrompt}
+                  title={(recommendation.prompt || recommendation.action || "").trim()}
+                  onClick={() => selectDesktopV3SuggestedPrompt((recommendation.prompt || recommendation.action || "").trim(), onSuggestedPrompt)}
+                  data-final-handoff-recommendation-action={(recommendation.prompt || recommendation.action || "").trim()}
+                  data-final-handoff-prompt={(recommendation.prompt || recommendation.action || "").trim()}
+                >
+                  {recommendation.action.replace(/[-_]+/g, " ")}
+                </button>
+              ) : null}
             </div>
             {recommendation.reason ? <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{recommendation.reason}</p> : null}
           </div>
@@ -4061,10 +4089,18 @@ function DesktopV3CommittedMessage({
   message,
   thinkingTagsEnabled,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   message: MessageSnapshot;
   thinkingTagsEnabled: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const role = message.role || "message";
   const toolMessage = message.toolMessage ?? null;
@@ -4075,6 +4111,10 @@ function DesktopV3CommittedMessage({
         toolMessage={toolMessage}
         thinkingTagsEnabled={thinkingTagsEnabled}
         taskChildActions={taskChildActions}
+        artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
+        onArtifactSelections={onArtifactSelections}
       />
     );
   }
@@ -4202,11 +4242,19 @@ function DesktopV3ToolMessage({
   toolMessage,
   thinkingTagsEnabled = true,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   content: string;
   toolMessage: StructuredToolMessage | null;
   thinkingTagsEnabled?: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const toolName = toolMessage?.tool.trim().toLowerCase();
   return (
@@ -4222,6 +4270,10 @@ function DesktopV3ToolMessage({
           toolMessage={toolMessage ?? undefined}
           thinkingTagsEnabled={thinkingTagsEnabled}
           taskChildActions={taskChildActions}
+          artifactCatalog={artifactCatalog}
+          artifactHref={artifactHref}
+          onArtifactNavigate={onArtifactNavigate}
+          onArtifactSelections={onArtifactSelections}
         />
       </div>
     </div>
@@ -4320,11 +4372,29 @@ function structuredLiveToolMessage(
 function DesktopV3LiveToolCall({
   tool,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   tool: LiveRunOverlay["toolCallsByCallId"][string];
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
-  return <DesktopV3ToolMessage content="" toolMessage={structuredLiveToolMessage(tool)} taskChildActions={taskChildActions} />;
+  return (
+    <DesktopV3ToolMessage
+      content=""
+      toolMessage={structuredLiveToolMessage(tool)}
+      taskChildActions={taskChildActions}
+      artifactCatalog={artifactCatalog}
+      artifactHref={artifactHref}
+      onArtifactNavigate={onArtifactNavigate}
+      onArtifactSelections={onArtifactSelections}
+    />
+  );
 }
 
 export function chatMessageToMessageSnapshot(

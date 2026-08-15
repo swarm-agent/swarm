@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, FileText, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -24,6 +24,7 @@ import { displayAgentName } from "../services/agent-display";
 import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
 import { ToolActivityShell } from "./tool-activity-shell";
+import { desktopV3ArtifactMessageSelection, normalizeDesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 
 interface ChatMarkdownProps {
   content: string;
@@ -31,6 +32,10 @@ interface ChatMarkdownProps {
   toolMessage?: StructuredToolMessage | null;
   thinkingTagsEnabled?: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }
 
 function resolveToolState(toolMessage: StructuredToolMessage): ToolState {
@@ -1477,6 +1482,174 @@ function ReviewWorktreeRow({ item }: { item: ManageSessionCardItem }) {
   );
 }
 
+export function ManageArtifactCard({
+  toolMessage,
+  artifactCatalog = [],
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
+}: {
+  toolMessage: StructuredToolMessage;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
+}) {
+  const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
+  const action = toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create";
+  const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
+
+  const matchedCatalogEntry = rawArtifact
+    ? artifactCatalog.find((entry) => entry.artifactId === rawArtifact.artifactId && (!rawArtifact.sessionId || entry.sessionId === rawArtifact.sessionId))
+    : null;
+  const artifact = matchedCatalogEntry ?? rawArtifact;
+
+  const isRunning = toolMessage.state === "running";
+  const isError = toolMessage.state === "error" || Boolean(toolMessage.error);
+  const label = artifact?.label || toolJsonString(args, "label") || toolJsonString(args, "filename") || "Artifact";
+  const description = artifact?.description || toolJsonString(args, "description");
+  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type") || (action === "generate_image" ? "image/png" : "text/html");
+  const filename = artifact?.filename || toolJsonString(args, "filename");
+  const status = artifact?.status || (isError ? "failed" : isRunning ? "staging" : "ready");
+
+  const actionTitle = action === "generate_image" ? "Image artifact" : action === "create_package" ? "Artifact package" : action === "list" ? "Artifact list" : action === "get" || action === "read" ? "Artifact read" : "Artifact";
+  const statusLabel = isRunning ? "Creating…" : isError ? "Failed" : status === "ready" ? "Ready" : status || "Created";
+
+  const href = artifact && artifactHref ? artifactHref(artifact) : undefined;
+
+  const handleOpenViewer = (event?: MouseEvent) => {
+    if (!artifact) return;
+    if (onArtifactNavigate && event && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) {
+      event.preventDefault();
+      onArtifactNavigate(artifact);
+    } else if (onArtifactNavigate && !event) {
+      onArtifactNavigate(artifact);
+    }
+  };
+
+  const handleAddToChat = () => {
+    if (!artifact || !onArtifactSelections) return;
+    try {
+      onArtifactSelections([desktopV3ArtifactMessageSelection(artifact, "select")]);
+    } catch {
+      if (artifact.sessionId && artifact.artifactId) {
+        onArtifactSelections([{
+          session_id: artifact.sessionId,
+          collection_id: artifact.collectionId || "",
+          variant_id: artifact.artifactId,
+          event_seq: artifact.eventSeq || 1,
+          label: artifact.label,
+          action: "select",
+        }]);
+      }
+    }
+  };
+
+  const handleUseDesign = () => {
+    if (!artifact || !onArtifactSelections) return;
+    try {
+      onArtifactSelections([desktopV3ArtifactMessageSelection(artifact, "use")]);
+    } catch {
+      if (artifact.sessionId && artifact.artifactId) {
+        onArtifactSelections([{
+          session_id: artifact.sessionId,
+          collection_id: artifact.collectionId || "",
+          variant_id: artifact.artifactId,
+          event_seq: artifact.eventSeq || 1,
+          label: artifact.label,
+          action: "use",
+        }]);
+      }
+    }
+  };
+
+  return (
+    <div className="mb-2 w-full min-w-0 py-1.5" data-testid="desktop-artifact-tool-card" data-timeline-artifact-card>
+      <div className="w-full min-w-0 rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-accent)_8%,var(--app-surface)),var(--app-surface)_45%)] p-3.5 shadow-sm">
+        <div className="flex min-w-0 items-center justify-between gap-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-accent)_15%,transparent)] text-[var(--app-accent)]">
+              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            </span>
+            <div className="min-w-0">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">{actionTitle}</span>
+              <h4 className="truncate text-sm font-semibold text-[var(--app-text)]" title={label}>{label}</h4>
+            </div>
+          </div>
+          <span className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize",
+            isError ? "bg-[var(--app-danger-bg)] text-[var(--app-danger)]" : isRunning ? "bg-[var(--app-primary-bg)] text-[var(--app-primary)]" : "bg-[var(--app-success-bg)] text-[var(--app-success)]"
+          )}>
+            {statusLabel}
+          </span>
+        </div>
+
+        {description ? (
+          <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)] line-clamp-2" title={description}>{description}</p>
+        ) : null}
+
+        <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-[var(--app-text-subtle)]">
+          {mediaType ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
+          {filename && filename !== label ? <span className="font-mono text-[10px] truncate max-w-48">{filename}</span> : null}
+          {artifact?.collectionId ? <span className="font-mono text-[10px] truncate max-w-36">col: {artifact.collectionId}</span> : null}
+        </div>
+
+        {isError && toolMessage.error ? (
+          <div className="mt-2.5 rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">
+            {toolMessage.error}
+          </div>
+        ) : null}
+
+        {artifact ? (
+          <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2 border-t border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] pt-2.5">
+            {href ? (
+              <a
+                href={href}
+                onClick={handleOpenViewer}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                data-testid="open-artifact-viewer-link"
+              >
+                Open in viewer <ExternalLink size={12} />
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleOpenViewer()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                data-testid="open-artifact-viewer-button"
+              >
+                Open in viewer <ExternalLink size={12} />
+              </button>
+            )}
+
+            {onArtifactSelections && status === "ready" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleAddToChat}
+                  className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                  data-testid="add-artifact-to-chat-button"
+                >
+                  Add to chat
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUseDesign}
+                  className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
+                  data-testid="use-artifact-design-button"
+                >
+                  Use design
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   if (!output) return null;
@@ -2241,11 +2414,19 @@ export function ToolMessageView({
   isGroupItem,
   thinkingTagsEnabled = true,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   toolMessage: StructuredToolMessage;
   isGroupItem?: boolean;
   thinkingTagsEnabled?: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
   const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
@@ -2313,6 +2494,7 @@ export function ToolMessageView({
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
+  const isManageArtifact = ["manage-artifact", "manage_artifact"].includes(normalizedTool);
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
   const isManageWorktree = ["manage-worktree", "manage_worktree"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
@@ -2328,6 +2510,17 @@ export function ToolMessageView({
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
   if (isManageWorktree) return <ManageWorktreeCard toolMessage={toolMessage} />;
+  if (isManageArtifact) {
+    return (
+      <ManageArtifactCard
+        toolMessage={toolMessage}
+        artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
+        onArtifactSelections={onArtifactSelections}
+      />
+    );
+  }
   const hasBody = Boolean(
     toolMessage.error
     || toolMessage.editDiff
@@ -2490,9 +2683,23 @@ function ChatMarkdownInner({
   toolMessage,
   thinkingTagsEnabled = true,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: ChatMarkdownProps) {
   if (toolMessage) {
-    return <ToolMessageView toolMessage={toolMessage} thinkingTagsEnabled={thinkingTagsEnabled} taskChildActions={taskChildActions} />;
+    return (
+      <ToolMessageView
+        toolMessage={toolMessage}
+        thinkingTagsEnabled={thinkingTagsEnabled}
+        taskChildActions={taskChildActions}
+        artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
+        onArtifactSelections={onArtifactSelections}
+      />
+    );
   }
 
   return (
