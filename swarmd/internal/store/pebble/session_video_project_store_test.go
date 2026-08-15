@@ -189,6 +189,37 @@ func TestVideoProjectCreationAndRevisions(t *testing.T) {
 	}
 }
 
+func TestPrimaryVideoToolProjectAndExactRestore(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "acc", "usr", "sess")
+
+	timeline := &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{{ID: "original", Track: 0, Sequence: 0, SourceKind: VideoClipSourceKindColor, TimelineStartMs: 0, TimelineEndMs: 1000, DurationMs: 1000, Visible: true}}}
+	project, rev1, err := store.CreateVideoProject(CreateVideoProjectInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "vproj_primary", Title: "Video Tool", ProjectKind: VideoProjectKindVideoTool, InitialTimeline: timeline, NowUnixMs: 100})
+	if err != nil {
+		t.Fatalf("create primary: %v", err)
+	}
+	primary, ok, err := store.GetPrimaryVideoToolProject("acc", "sess")
+	if err != nil || !ok || primary.ID != project.ID {
+		t.Fatalf("primary discovery = %+v, %v, %v", primary, ok, err)
+	}
+	if _, _, err := store.CreateVideoProject(CreateVideoProjectInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "other", Title: "Other", ProjectKind: VideoProjectKindVideoTool, NowUnixMs: 110}); err == nil {
+		t.Fatal("expected duplicate primary rejection")
+	}
+
+	rev2, _, err := store.CreateVideoProjectRevision(CreateVideoProjectRevisionInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, Timeline: VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{{ID: "changed", Track: 0, Sequence: 0, SourceKind: VideoClipSourceKindColor, TimelineStartMs: 0, TimelineEndMs: 2000, DurationMs: 2000, Visible: true}}}, NowUnixMs: 200})
+	if err != nil {
+		t.Fatalf("create changed revision: %v", err)
+	}
+	restored, updated, err := store.CreateVideoProjectRevision(CreateVideoProjectRevisionInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, Timeline: rev1.Timeline, RestoredFromRevisionID: rev1.ID, NowUnixMs: 300})
+	if err != nil {
+		t.Fatalf("restore revision: %v", err)
+	}
+	if restored.ParentRevisionID != rev2.ID || restored.RestoredFromRevisionID != rev1.ID || restored.Timeline.Clips[0].ID != "original" || updated.CurrentRevisionID != restored.ID {
+		t.Fatalf("unexpected restore lineage: restored=%+v updated=%+v", restored, updated)
+	}
+}
+
 func TestVideoRenderJobLifecycle(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()
@@ -259,6 +290,10 @@ func TestVideoRenderJobLifecycle(t *testing.T) {
 	}
 	if renderingJob.Status != VideoRenderJobStatusRendering || renderingJob.Progress != 0.45 || renderingJob.StartedAt != 1200 {
 		t.Fatalf("unexpected rendering job state: %+v", renderingJob)
+	}
+	recoverable, err := store.ListRecoverableVideoRenderJobs(10)
+	if err != nil || len(recoverable) != 1 || recoverable[0].ID != job.ID {
+		t.Fatalf("recoverable jobs = %+v, err=%v", recoverable, err)
 	}
 
 	// Complete render job

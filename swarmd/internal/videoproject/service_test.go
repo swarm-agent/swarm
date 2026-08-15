@@ -44,6 +44,7 @@ func (f *fakeSessionStore) CreateVideoProject(input pebblestore.CreateVideoProje
 		Title:                 input.Title,
 		Description:           input.Description,
 		OutputPreset:          input.OutputPreset,
+		ProjectKind:           input.ProjectKind,
 		CurrentRevisionID:     "vrev_1",
 		CurrentRevisionNumber: 1,
 		RevisionCount:         1,
@@ -81,6 +82,15 @@ func (f *fakeSessionStore) GetVideoProject(accountScopeID, sessionID, projectID 
 	return p, true, nil
 }
 
+func (f *fakeSessionStore) GetPrimaryVideoToolProject(accountScopeID, sessionID string) (pebblestore.VideoProjectSnapshot, bool, error) {
+	for _, p := range f.projects {
+		if p.AccountScopeID == accountScopeID && p.SessionID == sessionID && p.ProjectKind == pebblestore.VideoProjectKindVideoTool {
+			return p, true, nil
+		}
+	}
+	return pebblestore.VideoProjectSnapshot{}, false, nil
+}
+
 func (f *fakeSessionStore) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {
 	var list []pebblestore.VideoProjectSnapshot
 	for _, p := range f.projects {
@@ -106,7 +116,8 @@ func (f *fakeSessionStore) CreateVideoProjectRevision(input pebblestore.CreateVi
 		AccountScopeID:   input.AccountScopeID,
 		UserID:           input.UserID,
 		SessionID:        input.SessionID,
-		ParentRevisionID: p.CurrentRevisionID,
+		ParentRevisionID:       p.CurrentRevisionID,
+		RestoredFromRevisionID: input.RestoredFromRevisionID,
 		Description:      input.Description,
 		ChangeSummary:    input.ChangeSummary,
 		Timeline:         input.Timeline,
@@ -201,6 +212,19 @@ func (f *fakeSessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projec
 		if j.AccountScopeID == accountScopeID && j.SessionID == sessionID && (projectID == "" || j.ProjectID == projectID) {
 			list = append(list, j)
 		}
+	}
+	return list, nil
+}
+
+func (f *fakeSessionStore) ListRecoverableVideoRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
+	var list []pebblestore.VideoRenderJobSnapshot
+	for _, job := range f.jobs {
+		if job.Status == pebblestore.VideoRenderJobStatusQueued || job.Status == pebblestore.VideoRenderJobStatusRendering {
+			list = append(list, job)
+		}
+	}
+	if limit > 0 && len(list) > limit {
+		list = list[:limit]
 	}
 	return list, nil
 }
@@ -303,6 +327,16 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 	}
 	if rev2.RevisionNumber != 2 || rev2.ParentRevisionID != rev.ID || updatedProj.CurrentRevisionNumber != 2 {
 		t.Fatalf("revision 2 lineage mismatch: %+v", rev2)
+	}
+
+	restored, restoredProject, err := svc.RestoreRevision(ctx, principal, RestoreRevisionInput{
+		SessionID: sessionID, ProjectID: project.ID, SourceRevisionID: rev.ID, RevisionID: "vrev_restore", AuthorPrincipal: "user",
+	})
+	if err != nil {
+		t.Fatalf("restore revision failed: %v", err)
+	}
+	if restored.ParentRevisionID != rev2.ID || restored.RestoredFromRevisionID != rev.ID || restored.Timeline.Clips[0].Volume != rev.Timeline.Clips[0].Volume || restoredProject.CurrentRevisionID != restored.ID {
+		t.Fatalf("restore lineage mismatch: %+v", restored)
 	}
 
 	// 3. Start render job

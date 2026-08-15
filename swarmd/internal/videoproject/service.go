@@ -14,6 +14,7 @@ type SessionStore interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 	CreateVideoProject(input pebblestore.CreateVideoProjectInput) (pebblestore.VideoProjectSnapshot, *pebblestore.VideoProjectRevisionSnapshot, error)
 	GetVideoProject(accountScopeID, sessionID, projectID string) (pebblestore.VideoProjectSnapshot, bool, error)
+	GetPrimaryVideoToolProject(accountScopeID, sessionID string) (pebblestore.VideoProjectSnapshot, bool, error)
 	ListVideoProjects(accountScopeID, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error)
 	CreateVideoProjectRevision(input pebblestore.CreateVideoProjectRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error)
 	GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID string) (pebblestore.VideoProjectRevisionSnapshot, bool, error)
@@ -23,6 +24,7 @@ type SessionStore interface {
 	GetVideoRenderJob(accountScopeID, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error)
 	UpdateVideoRenderJob(input pebblestore.UpdateVideoRenderJobInput) (pebblestore.VideoRenderJobSnapshot, error)
 	ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
+	ListRecoverableVideoRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 	GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
 }
 
@@ -43,6 +45,7 @@ type CreateProjectInput struct {
 	OutputPreset    string
 	InitialTimeline *pebblestore.VideoProjectTimeline
 	Metadata        map[string]any
+	ProjectKind     string
 	NowUnixMs       int64
 }
 
@@ -55,6 +58,17 @@ type CreateRevisionInput struct {
 	Timeline        pebblestore.VideoProjectTimeline
 	AuthorPrincipal string
 	NowUnixMs       int64
+}
+
+type RestoreRevisionInput struct {
+	SessionID             string
+	ProjectID             string
+	SourceRevisionID      string
+	RevisionID            string
+	Description           string
+	ChangeSummary         string
+	AuthorPrincipal       string
+	NowUnixMs             int64
 }
 
 type StartRenderJobInput struct {
@@ -119,8 +133,32 @@ func (s *Service) CreateProject(ctx context.Context, principal identity.Principa
 		OutputPreset:    input.OutputPreset,
 		InitialTimeline: input.InitialTimeline,
 		Metadata:        input.Metadata,
+		ProjectKind:     input.ProjectKind,
 		NowUnixMs:       input.NowUnixMs,
 	})
+}
+
+func (s *Service) GetOrCreatePrimaryVideoToolProject(ctx context.Context, principal identity.Principal, input CreateProjectInput) (pebblestore.VideoProjectSnapshot, *pebblestore.VideoProjectRevisionSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("videoproject service is not configured")
+	}
+	if !principal.Valid() {
+		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("authenticated principal is required")
+	}
+	input.SessionID = strings.TrimSpace(input.SessionID)
+	if input.SessionID == "" {
+		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("session id is required")
+	}
+	if project, ok, err := s.sessions.GetPrimaryVideoToolProject(principal.AccountScopeID, input.SessionID); err != nil {
+		return pebblestore.VideoProjectSnapshot{}, nil, err
+	} else if ok {
+		if project.UserID != "" && project.UserID != principal.UserID {
+			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("video project ownership does not match authenticated principal")
+		}
+		return project, nil, nil
+	}
+	input.ProjectKind = pebblestore.VideoProjectKindVideoTool
+	return s.CreateProject(ctx, principal, input)
 }
 
 func (s *Service) CreateRevision(ctx context.Context, principal identity.Principal, input CreateRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error) {
@@ -151,6 +189,37 @@ func (s *Service) CreateRevision(ctx context.Context, principal identity.Princip
 		Timeline:        input.Timeline,
 		AuthorPrincipal: input.AuthorPrincipal,
 		NowUnixMs:       input.NowUnixMs,
+	})
+}
+
+func (s *Service) RestoreRevision(ctx context.Context, principal identity.Principal, input RestoreRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("videoproject service is not configured")
+	}
+	if !principal.Valid() {
+		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("authenticated principal is required")
+	}
+	input.SessionID = strings.TrimSpace(input.SessionID)
+	input.ProjectID = strings.TrimSpace(input.ProjectID)
+	input.SourceRevisionID = strings.TrimSpace(input.SourceRevisionID)
+	if input.SessionID == "" || input.ProjectID == "" || input.SourceRevisionID == "" {
+		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("session id, project id, and source revision id are required")
+	}
+	source, ok, err := s.sessions.GetVideoProjectRevision(principal.AccountScopeID, input.SessionID, input.ProjectID, input.SourceRevisionID)
+	if err != nil || !ok {
+		if err == nil {
+			err = fmt.Errorf("video project revision %q not found", input.SourceRevisionID)
+		}
+		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
+	}
+	if err := s.validateTimelineArtifacts(principal, input.SessionID, source.Timeline); err != nil {
+		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
+	}
+	return s.sessions.CreateVideoProjectRevision(pebblestore.CreateVideoProjectRevisionInput{
+		AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+		SessionID: input.SessionID, ProjectID: input.ProjectID, RevisionID: input.RevisionID,
+		Description: input.Description, ChangeSummary: input.ChangeSummary, Timeline: source.Timeline,
+		AuthorPrincipal: input.AuthorPrincipal, RestoredFromRevisionID: source.ID, NowUnixMs: input.NowUnixMs,
 	})
 }
 
@@ -286,6 +355,28 @@ func (s *Service) GetRenderJob(principal identity.Principal, sessionID, jobID st
 		return pebblestore.VideoRenderJobSnapshot{}, false, errors.New("videoproject service is not configured")
 	}
 	return s.sessions.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+}
+
+func (s *Service) ListRecoverableRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return nil, errors.New("videoproject service is not configured")
+	}
+	return s.sessions.ListRecoverableVideoRenderJobs(limit)
+}
+
+func (s *Service) TransitionRecoverableRenderJob(job pebblestore.VideoRenderJobSnapshot, expectedStatus, nextStatus, code, reason string, nowUnixMs int64) (pebblestore.VideoRenderJobSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videoproject service is not configured")
+	}
+	if job.AccountScopeID == "" || job.SessionID == "" || job.ID == "" || job.UserID == "" {
+		return pebblestore.VideoRenderJobSnapshot{}, errors.New("recoverable render job ownership is incomplete")
+	}
+	return s.sessions.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
+		AccountScopeID: job.AccountScopeID, UserID: job.UserID, SessionID: job.SessionID, JobID: job.ID,
+		Status: nextStatus, ExpectedStatus: expectedStatus, Progress: job.Progress,
+		FailureCode: code, FailureReason: reason,
+		ClientRequestID: fmt.Sprintf("recover_render_job:%s:%s:%s", job.ID, expectedStatus, nextStatus), NowUnixMs: nowUnixMs,
+	})
 }
 
 func (s *Service) ListRenderJobs(principal identity.Principal, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {

@@ -37,6 +37,8 @@ const (
 	VideoRenderJobStatusCancelled = "cancelled"
 	VideoRenderJobStatusStale     = "stale"
 
+	VideoProjectKindVideoTool = "video_tool"
+
 	VideoClipSourceKindSourceVideo     = "source_video"
 	VideoClipSourceKindManagedArtifact = "managed_artifact"
 	VideoClipSourceKindColor           = "color"
@@ -48,10 +50,11 @@ const (
 	V3SessionMutationCreateVideoRenderJob       = "video.render_job.create"
 	V3SessionMutationUpdateVideoRenderJob       = "video.render_job.update"
 
-	MaxVideoProjectsPerSession   = 32
-	MaxVideoProjectRevisions     = 100
-	MaxVideoRenderJobsPerProject = 50
-	MaxClipsPerTimeline          = 100
+	MaxVideoProjectsPerSession    = 32
+	MaxVideoProjectRevisions      = 100
+	MaxVideoRenderJobsPerProject  = 50
+	MaxRecoverableVideoRenderJobs = 500
+	MaxClipsPerTimeline           = 100
 	MaxCaptionsPerClip           = 50
 	MaxVideoTimelineDurationMs   = 3600000 // 1 hour
 	MaxTextOverlayLength         = 500
@@ -139,6 +142,7 @@ type VideoProjectSnapshot struct {
 	RevisionCount         int            `json:"revision_count"`
 	ActiveRenderJobID     string         `json:"active_render_job_id,omitempty"`
 	Metadata              map[string]any `json:"metadata,omitempty"`
+	ProjectKind           string         `json:"project_kind,omitempty"`
 	CreatedAt             int64          `json:"created_at"`
 	UpdatedAt             int64          `json:"updated_at"`
 	EventSeq              uint64         `json:"event_seq,omitempty"`
@@ -154,8 +158,9 @@ type VideoProjectRevisionSnapshot struct {
 	UserID           string               `json:"user_id,omitempty"`
 	WorkspaceID      string               `json:"workspace_id,omitempty"`
 	SessionID        string               `json:"session_id"`
-	ParentRevisionID string               `json:"parent_revision_id,omitempty"`
-	Description      string               `json:"description,omitempty"`
+	ParentRevisionID       string               `json:"parent_revision_id,omitempty"`
+	RestoredFromRevisionID string               `json:"restored_from_revision_id,omitempty"`
+	Description            string               `json:"description,omitempty"`
 	ChangeSummary    string               `json:"change_summary,omitempty"`
 	Timeline         VideoProjectTimeline `json:"timeline"`
 	AuthorPrincipal  string               `json:"author_principal,omitempty"`
@@ -227,6 +232,10 @@ func VideoProjectPrefix(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("v3/video_project/project/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
 }
 
+func KeyPrimaryVideoToolProject(accountScopeID, sessionID string) string {
+	return fmt.Sprintf("v3/video_project/primary_video_tool/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
+}
+
 func KeyVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID string) string {
 	return fmt.Sprintf("v3/video_project/revision/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(sessionID), keyPart(projectID), keyPart(revisionID))
 }
@@ -282,6 +291,7 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 		p.Title = strings.TrimSpace(p.Title)
 		p.Description = strings.TrimSpace(p.Description)
 		p.OutputPreset = normalizeVideoPreset(p.OutputPreset)
+		p.ProjectKind = strings.ToLower(strings.TrimSpace(p.ProjectKind))
 		p.CurrentRevisionID = strings.TrimSpace(p.CurrentRevisionID)
 		p.ActiveRenderJobID = strings.TrimSpace(p.ActiveRenderJobID)
 	}
@@ -294,6 +304,7 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 		r.WorkspaceID = strings.TrimSpace(r.WorkspaceID)
 		r.SessionID = strings.TrimSpace(r.SessionID)
 		r.ParentRevisionID = strings.TrimSpace(r.ParentRevisionID)
+		r.RestoredFromRevisionID = strings.TrimSpace(r.RestoredFromRevisionID)
 		r.Description = strings.TrimSpace(r.Description)
 		r.ChangeSummary = strings.TrimSpace(r.ChangeSummary)
 		r.AuthorPrincipal = strings.TrimSpace(r.AuthorPrincipal)
@@ -630,6 +641,17 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video project %q already exists", p.ID)
 		}
 
+		if p.ProjectKind != "" && p.ProjectKind != VideoProjectKindVideoTool {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("unsupported video project kind %q", p.ProjectKind)
+		}
+		if p.ProjectKind == VideoProjectKindVideoTool {
+			if existing, exists, err := s.GetPrimaryVideoToolProject(input.AccountScopeID, input.SessionID); err != nil {
+				return preparedV3VideoProjectMutation{}, err
+			} else if exists && existing.ID != p.ID {
+				return preparedV3VideoProjectMutation{}, errors.New("primary Video Tool project already exists for session")
+			}
+		}
+
 		projects, err := s.ListVideoProjects(input.AccountScopeID, input.SessionID, MaxVideoProjectsPerSession+1)
 		if err != nil {
 			return preparedV3VideoProjectMutation{}, err
@@ -865,7 +887,7 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 
 func isTerminalRenderJobStatus(status string) bool {
 	switch status {
-	case VideoRenderJobStatusReady, VideoRenderJobStatusFailed, VideoRenderJobStatusCancelled:
+	case VideoRenderJobStatusReady, VideoRenderJobStatusFailed, VideoRenderJobStatusCancelled, VideoRenderJobStatusStale:
 		return true
 	default:
 		return false
@@ -881,6 +903,11 @@ func setV3VideoProjectMutationInBatch(batch *pebble.Batch, prepared preparedV3Vi
 		}
 		if err := batch.Set([]byte(KeyVideoProject(p.AccountScopeID, p.SessionID, p.ID)), payload, nil); err != nil {
 			return err
+		}
+		if p.ProjectKind == VideoProjectKindVideoTool {
+			if err := batch.Set([]byte(KeyPrimaryVideoToolProject(p.AccountScopeID, p.SessionID)), payload, nil); err != nil {
+				return err
+			}
 		}
 	}
 	if prepared.Revision != nil {
@@ -931,6 +958,7 @@ type CreateVideoProjectInput struct {
 	OutputPreset    string
 	InitialTimeline *VideoProjectTimeline
 	Metadata        map[string]any
+	ProjectKind     string
 	ClientRequestID string
 	NowUnixMs       int64
 }
@@ -959,6 +987,7 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 		Description:    input.Description,
 		OutputPreset:   normalizeVideoPreset(input.OutputPreset),
 		Metadata:       input.Metadata,
+		ProjectKind:    strings.ToLower(strings.TrimSpace(input.ProjectKind)),
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -1046,6 +1075,23 @@ func (s *SessionStore) GetVideoProject(accountScopeID, sessionID, projectID stri
 	return project, true, nil
 }
 
+func (s *SessionStore) GetPrimaryVideoToolProject(accountScopeID, sessionID string) (VideoProjectSnapshot, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	sessionID = strings.TrimSpace(sessionID)
+	if accountScopeID == "" || sessionID == "" {
+		return VideoProjectSnapshot{}, false, errors.New("account scope and session id are required")
+	}
+	var project VideoProjectSnapshot
+	ok, err := s.store.GetJSON(KeyPrimaryVideoToolProject(accountScopeID, sessionID), &project)
+	if err != nil || !ok {
+		return VideoProjectSnapshot{}, ok, err
+	}
+	if project.ProjectKind != VideoProjectKindVideoTool {
+		return VideoProjectSnapshot{}, false, errors.New("primary Video Tool project index is invalid")
+	}
+	return project, true, nil
+}
+
 func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]VideoProjectSnapshot, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	sessionID = strings.TrimSpace(sessionID)
@@ -1086,8 +1132,9 @@ type CreateVideoProjectRevisionInput struct {
 	Description     string
 	ChangeSummary   string
 	Timeline        VideoProjectTimeline
-	AuthorPrincipal string
-	ClientRequestID string
+	AuthorPrincipal        string
+	RestoredFromRevisionID string
+	ClientRequestID        string
 	NowUnixMs       int64
 }
 
@@ -1116,7 +1163,8 @@ func (s *SessionStore) CreateVideoProjectRevision(input CreateVideoProjectRevisi
 		Description:     input.Description,
 		ChangeSummary:   input.ChangeSummary,
 		Timeline:        input.Timeline,
-		AuthorPrincipal: input.AuthorPrincipal,
+		AuthorPrincipal:        input.AuthorPrincipal,
+		RestoredFromRevisionID: strings.TrimSpace(input.RestoredFromRevisionID),
 		CreatedAt:       now,
 	}
 
@@ -1409,6 +1457,36 @@ func (s *SessionStore) GetVideoRenderJob(accountScopeID, sessionID, jobID string
 		return VideoRenderJobSnapshot{}, ok, err
 	}
 	return job, true, nil
+}
+
+func (s *SessionStore) ListRecoverableVideoRenderJobs(limit int) ([]VideoRenderJobSnapshot, error) {
+	if limit <= 0 || limit > MaxRecoverableVideoRenderJobs {
+		limit = MaxRecoverableVideoRenderJobs
+	}
+	jobs := make([]VideoRenderJobSnapshot, 0, limit)
+	err := s.store.IteratePrefix("v3/video_project/render_job/", 0, func(_ string, value []byte) error {
+		var job VideoRenderJobSnapshot
+		if err := json.Unmarshal(value, &job); err != nil {
+			return err
+		}
+		if job.Status == VideoRenderJobStatusQueued || job.Status == VideoRenderJobStatusRendering {
+			jobs = append(jobs, job)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].CreatedAt == jobs[j].CreatedAt {
+			return jobs[i].ID < jobs[j].ID
+		}
+		return jobs[i].CreatedAt < jobs[j].CreatedAt
+	})
+	if len(jobs) > limit {
+		jobs = jobs[:limit]
+	}
+	return jobs, nil
 }
 
 func (s *SessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]VideoRenderJobSnapshot, error) {
