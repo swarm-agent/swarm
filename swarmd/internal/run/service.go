@@ -49,6 +49,7 @@ const (
 	emptyStepRetryBase           = 250 * time.Millisecond
 	emptyStepRetryMax            = 2 * time.Second
 	emptyStepRetryLimit          = 2
+	designerToolFailureLimit     = 3
 
 	contextCompactionRetryLimit             = 2
 	memoryCompactionHeartbeatInterval       = 2 * time.Second
@@ -1222,6 +1223,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if activeAgent == "" {
 		activeAgent = "swarm"
 	}
+	isDesignerRun := agentruntime.IsDesignerAgentName(activeAgent)
+	designerFailures := designerToolFailureState{}
 
 	resolvedPreference, err := s.resolveMainSessionPreference(sessionID)
 	if err != nil {
@@ -2692,6 +2695,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return RunResult{}, err
 			}
 		}
+		if isDesignerRun {
+			if terminalFailure, stop := designerFailures.Observe(toolCalls, gatedResults); stop {
+				assistantFragments = append(assistantFragments, terminalFailure)
+				break
+			}
+		}
 		if guardCompactHandoff != "" {
 			resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 				sessionID,
@@ -2803,6 +2812,45 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		TargetKind:       targetKind,
 		TargetName:       targetName,
 	}, nil
+}
+
+type designerToolFailureState struct {
+	attempts int
+}
+
+func (s *designerToolFailureState) Observe(calls []tool.Call, results []tool.Result) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	for i := range calls {
+		if i >= len(results) {
+			break
+		}
+		detail := strings.TrimSpace(results[i].Error)
+		if detail == "" {
+			continue
+		}
+		s.attempts++
+		if designerManagedPublicationCall(calls[i]) {
+			return fmt.Sprintf("Designer failed to publish the managed artifact and stopped. Exact reason: %s", detail), true
+		}
+		if s.attempts >= designerToolFailureLimit {
+			return fmt.Sprintf("Designer stopped after %d failed tool attempts. Exact reason: %s", s.attempts, detail), true
+		}
+	}
+	return "", false
+}
+
+func designerManagedPublicationCall(call tool.Call) bool {
+	if canonicalToolName(call.Name) != "manage_artifact" {
+		return false
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &args); err != nil {
+		return false
+	}
+	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
+	return action == "create" || action == "create_package"
 }
 
 func (s *Service) persistRunFailure(sessionID string, runErr error, appendInput runAppendMessageInput) {

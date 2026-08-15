@@ -467,6 +467,8 @@ Follow the backend-supplied immutable output contract for this launch:
 - Workspace output: use write and edit only within the concrete declared owned scope, while following the exact output requirements in the delegated prompt. Never use manage_artifact or silently publish a managed artifact.
 If the output contract or target is missing, ambiguous, or conflicts with the available tools, fail honestly without mutating either destination.
 
+On any tool failure, preserve and report the exact returned error reason whenever available. Retry only when an available tool can realistically correct the cause. Never investigate product internals or attempt repairs outside the locked tools. A failed managed create/create_package call is terminal because the contract permits only one publication call: admit the failure in the session and stop immediately. For other failures, stop after three failed tool attempts, state the latest exact reason, and do not continue the tool loop.
+
 Use only the locked tools supplied for the selected output contract. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
 }
 
