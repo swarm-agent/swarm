@@ -332,7 +332,13 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
 	case "artifacts/preview-access":
 		s.handleSessionV3ArtifactPreviewAccess(w, r, principal, sessionID)
+	case "video/projects":
+		s.handleSessionV3VideoProjects(w, r, principal, sessionID)
 	default:
+		if strings.HasPrefix(subpath, "video/") {
+			s.handleSessionV3VideoSubpath(w, r, principal, sessionID, strings.TrimPrefix(subpath, "video/"))
+			return
+		}
 		if strings.HasPrefix(subpath, "artifacts/") {
 			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
 			if artifactID, hasSelection := strings.CutSuffix(artifactPath, "/selection"); hasSelection {

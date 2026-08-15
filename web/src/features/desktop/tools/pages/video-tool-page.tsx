@@ -25,6 +25,73 @@ export type VideoClip = {
   modifiedAt: number
 }
 
+export type VideoTimelineClipWire = {
+  id: string
+  name?: string
+  track?: number
+  sequence?: number
+  source_kind: string
+  source_ref?: string
+  source_start_ms?: number
+  source_end_ms?: number
+  timeline_start_ms?: number
+  timeline_end_ms?: number
+  duration_ms?: number
+  visible?: boolean
+  layer?: number
+  volume?: number
+  muted?: boolean
+}
+
+export type VideoProjectTimelineWire = {
+  schema_version?: number
+  output_preset?: string
+  width?: number
+  height?: number
+  fps?: number
+  total_duration_ms?: number
+  clips: VideoTimelineClipWire[]
+  metadata?: Record<string, unknown>
+}
+
+export type VideoProjectSnapshotWire = {
+  schema_version?: number
+  id: string
+  session_id: string
+  title: string
+  description?: string
+  output_preset?: string
+  current_revision_id?: string
+  current_revision_number?: number
+  revision_count?: number
+  active_render_job_id?: string
+  created_at: number
+  updated_at: number
+}
+
+export type VideoRenderJobSnapshotWire = {
+  schema_version?: number
+  id: string
+  project_id: string
+  revision_id: string
+  revision_number: number
+  session_id: string
+  status: 'queued' | 'rendering' | 'ready' | 'failed' | 'cancelled' | 'stale'
+  progress: number
+  failure_code?: string
+  failure_reason?: string
+  output_preset?: string
+  output_duration_ms?: number
+  output_size_bytes?: number
+  output_digest_sha256?: string
+  output_artifact?: {
+    collection_id: string
+    variant_id: string
+  }
+  created_at: number
+  updated_at: number
+}
+
 type VideoClipWire = {
   id?: string
   name?: string
@@ -479,6 +546,118 @@ async function updateVideoThreadTimeline(thread: VideoThreadRecord, segments: Ti
   })
 }
 
+export function timelineSegmentsToProjectTimeline(
+  segments: TimelineSegment[],
+  clips: VideoClip[],
+  outputPreset: string = 'landscape_1080p',
+): VideoProjectTimelineWire {
+  const layout = layoutTimelineSegments(segments)
+  const clipsById = new Map(clips.map((c) => [c.id, c]))
+  const timelineClips: VideoTimelineClipWire[] = segments.map((seg, idx) => {
+    const layoutSeg = layout.find((l) => l.id === seg.id)
+    const clip = clipsById.get(seg.clipId)
+    const dur = seg.duration > 0 ? seg.duration : (clip?.sizeBytes ? 5 : 0)
+    return {
+      id: seg.id,
+      name: clip?.name ?? seg.clipId,
+      track: 0,
+      sequence: idx,
+      source_kind: 'source_video',
+      source_ref: clip?.path ?? seg.clipId,
+      source_start_ms: Math.round(seg.sourceStart * 1000),
+      source_end_ms: Math.round((seg.sourceStart + dur) * 1000),
+      timeline_start_ms: layoutSeg ? Math.round(layoutSeg.timelineStart * 1000) : 0,
+      timeline_end_ms: layoutSeg ? Math.round(layoutSeg.timelineEnd * 1000) : 0,
+      duration_ms: Math.round(dur * 1000),
+      visible: seg.visible,
+      volume: 1.0,
+    }
+  })
+  return {
+    schema_version: 1,
+    output_preset: outputPreset,
+    clips: timelineClips,
+  }
+}
+
+export function projectTimelineToTimelineSegments(
+  timeline: VideoProjectTimelineWire,
+  clipDurations: Record<string, number>,
+): TimelineSegment[] {
+  if (!timeline || !Array.isArray(timeline.clips)) {
+    return []
+  }
+  return timeline.clips.map((clipWire) => {
+    const sourceStartSec = (clipWire.source_start_ms ?? 0) / 1000
+    const durationSec = (clipWire.duration_ms ?? 0) / 1000 || clipDuration(clipDurations, clipWire.id)
+    return {
+      id: clipWire.id,
+      type: 'video',
+      clipId: clipWire.id,
+      src: `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipWire.id)}`,
+      start: (clipWire.timeline_start_ms ?? 0) / 1000,
+      sourceStart: sourceStartSec,
+      duration: durationSec,
+      visible: clipWire.visible !== false,
+    }
+  })
+}
+
+export async function startVideoRender(sessionId: string, projectId: string, timeline?: VideoProjectTimelineWire): Promise<VideoRenderJobSnapshotWire> {
+  if (timeline) {
+    await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/revisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        timeline,
+        change_summary: 'Render revision from Video Tool',
+      }),
+    }).catch(() => null)
+  }
+  const response = await requestJson<{ ok?: boolean; render_job?: VideoRenderJobSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/render`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+  )
+  if (!response.render_job) {
+    throw new Error('Start video render returned no job')
+  }
+  return response.render_job
+}
+
+export async function getVideoRenderJob(sessionId: string, jobId: string): Promise<VideoRenderJobSnapshotWire> {
+  const response = await requestJson<{ ok?: boolean; render_job?: VideoRenderJobSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/render-jobs/${encodeURIComponent(jobId)}`,
+  )
+  if (!response.render_job) {
+    throw new Error('Get video render job returned no job')
+  }
+  return response.render_job
+}
+
+export async function exportRenderedVideo(
+  sessionId: string,
+  projectId: string,
+  destinationPath: string,
+  jobId?: string,
+): Promise<{ destination_path: string }> {
+  const response = await requestJson<{ ok?: boolean; destination_path?: string }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/export`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destination_path: destinationPath, job_id: jobId }),
+    },
+  )
+  if (!response.destination_path) {
+    throw new Error('Export video returned no destination path')
+  }
+  return { destination_path: response.destination_path }
+}
+
 function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
   if (fromIndex < 0 || toIndex < 0 || fromIndex >= items.length || toIndex >= items.length || fromIndex === toIndex) {
     return items
@@ -511,6 +690,10 @@ export function VideoToolPage() {
   const [reordering, setReordering] = useState(false)
   const [startingChat, setStartingChat] = useState(false)
   const [revealingStorage, setRevealingStorage] = useState(false)
+  const [rendering, setRendering] = useState(false)
+  const [renderJob, setRenderJob] = useState<VideoRenderJobSnapshotWire | null>(null)
+  const [renderProgress, setRenderProgress] = useState(0)
+  const [renderError, setRenderError] = useState<string | null>(null)
   const [blackModeEnabled, setBlackModeEnabled] = useState(() => {
     if (typeof window === 'undefined') {
       return false
@@ -810,6 +993,37 @@ export function VideoToolPage() {
       setRevealingStorage(false)
     }
   }, [selectedThread])
+
+  const handleStartRender = useCallback(async () => {
+    if (!selectedThread) return
+    setRendering(true)
+    setRenderError(null)
+    try {
+      const latestTimeline = timelineSegmentsToProjectTimeline(timelineSegments, selectedClips)
+      const job = await startVideoRender(selectedThread.id, selectedThread.id, latestTimeline)
+      setRenderJob(job)
+      const pollInterval = window.setInterval(async () => {
+        try {
+          const updated = await getVideoRenderJob(selectedThread.id, job.id)
+          setRenderJob(updated)
+          setRenderProgress(updated.progress)
+          if (updated.status === 'ready' || updated.status === 'failed' || updated.status === 'cancelled') {
+            window.clearInterval(pollInterval)
+            setRendering(false)
+            if (updated.status === 'failed') {
+              setRenderError(updated.failure_reason || updated.failure_code || 'Render failed')
+            }
+          }
+        } catch {
+          window.clearInterval(pollInterval)
+          setRendering(false)
+        }
+      }, 1000)
+    } catch (error) {
+      setRenderError(error instanceof Error ? error.message : String(error))
+      setRendering(false)
+    }
+  }, [selectedClips, selectedThread, timelineSegments])
 
   const handleOpenPicker = useCallback(() => {
     setCreateError(null)
@@ -1176,8 +1390,28 @@ export function VideoToolPage() {
                     <Button className="h-9 rounded-xl px-3" onClick={handleTogglePlayback} disabled={movieDuration <= 0}>{isPlaying ? <Pause size={15} /> : <Play size={15} />}{isPlaying ? 'Pause' : 'Play'}</Button>
                     <div className="text-xs tabular-nums text-[var(--app-text-muted)]">{formatTimelineTime(playhead)} / {formatTimelineTime(movieDuration)}</div>
                   </div>
-                  <span className="text-xs text-[var(--app-text-muted)]">{visibleTimelineLayout.length} included · {hiddenTimelineLayout.length} hidden</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-[var(--app-text-muted)]">{visibleTimelineLayout.length} included · {hiddenTimelineLayout.length} hidden</span>
+                    {rendering ? (
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" disabled>
+                        <Loader2 size={13} className="animate-spin" /> Rendering {Math.round(renderProgress * 100)}%
+                      </Button>
+                    ) : renderJob?.status === 'ready' ? (
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs text-green-500 hover:text-green-400" onClick={() => void handleStartChat()}>
+                        <Film size={13} /> Render Ready · Chat
+                      </Button>
+                    ) : (
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering}>
+                        <Sparkles size={13} /> Render Video
+                      </Button>
+                    )}
+                  </div>
                 </div>
+                {renderError ? (
+                  <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                    Render error: {renderError}
+                  </div>
+                ) : null}
 
                 <div className="border-y border-[var(--app-border)] py-4">
                   <div className="mb-3 flex justify-between text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]"><span>00:00</span><span>{formatTimelineTime(movieDuration)}</span></div>

@@ -51,6 +51,8 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videoproject"
+	"swarm/packages/swarmd/internal/videorender"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
 	"swarm/packages/swarmd/internal/webpush"
@@ -125,6 +127,8 @@ type Server struct {
 	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	videoThreads                *pebblestore.VideoThreadStore
+	videoProjects               *videoproject.Service
+	videoRender                 *videorender.Service
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
 	videoTranscription          *videotranscription.Service
@@ -487,6 +491,18 @@ func (s *Server) SetPlanLifecycleService(planLifecycle *sessionruntime.PlanLifec
 func (s *Server) SetVideoTranscriptionService(service *videotranscription.Service) {
 	if s != nil {
 		s.videoTranscription = service
+	}
+}
+
+func (s *Server) SetVideoProjectService(service *videoproject.Service) {
+	if s != nil {
+		s.videoProjects = service
+	}
+}
+
+func (s *Server) SetVideoRenderService(service *videorender.Service) {
+	if s != nil {
+		s.videoRender = service
 	}
 }
 
