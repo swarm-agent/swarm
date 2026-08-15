@@ -177,6 +177,24 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 		t.Fatalf("expected 2 revisions, got: %d", listRevsResp.Count)
 	}
 
+	// Restoring an exact immutable revision creates a new head and records its source.
+	restoreReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1/revisions/"+createResp.Revision.ID+"/restore", bytes.NewReader([]byte(`{"change_summary":"Restore original cut"}`)))
+	restoreRec := httptest.NewRecorder()
+	server.handleSessionV3PrimaryByID(restoreRec, restoreReq.WithContext(ContextWithPrincipal(restoreReq.Context(), principal)))
+	if restoreRec.Code != http.StatusCreated {
+		t.Fatalf("restore revision status = %d, want 201. body = %s", restoreRec.Code, restoreRec.Body.String())
+	}
+	var restoreResp struct {
+		Revision pebblestore.VideoProjectRevisionSnapshot `json:"revision"`
+		Project  pebblestore.VideoProjectSnapshot         `json:"project"`
+	}
+	if err := json.Unmarshal(restoreRec.Body.Bytes(), &restoreResp); err != nil {
+		t.Fatal(err)
+	}
+	if restoreResp.Revision.RestoredFromRevisionID != createResp.Revision.ID || restoreResp.Revision.ParentRevisionID != revResp.Revision.ID || restoreResp.Project.CurrentRevisionID != restoreResp.Revision.ID {
+		t.Fatalf("unexpected restored revision: %+v project=%+v", restoreResp.Revision, restoreResp.Project)
+	}
+
 	// 6. POST /v3/sessions/{id}/video/projects/{project_id}/render -> start render job
 	renderReqBody, _ := json.Marshal(sessionV3StartVideoRenderRequest{
 		JobID: "job-1",
@@ -206,6 +224,30 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 
 	if jobRec.Code != http.StatusOK {
 		t.Fatalf("get render job status = %d, want 200", jobRec.Code)
+	}
+}
+
+func TestSessionsV3PrimaryVideoProjectDiscovery(t *testing.T) {
+	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "clip.mp4", "")
+	store := sessionSvc.Store()
+	server.SetVideoProjectService(videoproject.NewService(store))
+	principal := testPrincipal()
+	created, err := store.CreateSession(pebblestore.CreateSessionInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Title: "Video Tool", WorkspacePath: "/workspace/test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := bytes.NewReader([]byte(`{"title":"Shared project","output_preset":"landscape_1080p"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/video/projects/primary", body)
+	createRec := httptest.NewRecorder()
+	server.handleSessionV3PrimaryByID(createRec, createReq.WithContext(ContextWithPrincipal(createReq.Context(), principal)))
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create primary status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+	getReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+created.ID+"/video/projects/primary", nil)
+	getRec := httptest.NewRecorder()
+	server.handleSessionV3PrimaryByID(getRec, getReq.WithContext(ContextWithPrincipal(getReq.Context(), principal)))
+	if getRec.Code != http.StatusOK || !bytes.Contains(getRec.Body.Bytes(), []byte(`"project_kind":"video_tool"`)) {
+		t.Fatalf("discover primary status=%d body=%s", getRec.Code, getRec.Body.String())
 	}
 }
 

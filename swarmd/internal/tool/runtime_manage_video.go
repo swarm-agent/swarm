@@ -32,7 +32,9 @@ type manageVideoService interface {
 
 type manageVideoProjectService interface {
 	CreateProject(ctx context.Context, principal identity.Principal, input videoproject.CreateProjectInput) (pebblestore.VideoProjectSnapshot, *pebblestore.VideoProjectRevisionSnapshot, error)
+	GetOrCreatePrimaryVideoToolProject(ctx context.Context, principal identity.Principal, input videoproject.CreateProjectInput) (pebblestore.VideoProjectSnapshot, *pebblestore.VideoProjectRevisionSnapshot, error)
 	CreateRevision(ctx context.Context, principal identity.Principal, input videoproject.CreateRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error)
+	RestoreRevision(ctx context.Context, principal identity.Principal, input videoproject.RestoreRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error)
 	StartRenderJob(ctx context.Context, principal identity.Principal, input videoproject.StartRenderJobInput) (pebblestore.VideoRenderJobSnapshot, error)
 	GetProject(principal identity.Principal, sessionID, projectID string) (pebblestore.VideoProjectSnapshot, bool, error)
 	GetRevision(principal identity.Principal, sessionID, projectID, revisionID string) (pebblestore.VideoProjectRevisionSnapshot, bool, error)
@@ -55,7 +57,7 @@ func manageVideoDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "create_project", "read_project", "get_project", "list_projects", "create_revision", "start_render", "render_status", "cancel_render"}},
+				"action":             map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "create_project", "read_project", "get_project", "list_projects", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}},
 				"source_root_ref":    map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
 				"relative_path":      map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
 				"video_refs":         map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque video references returned by browse_source. With start_transcription, these are transcribed without needing a message attachment."},
@@ -72,6 +74,7 @@ func manageVideoDefinition() Definition {
 				"index_only":         map[string]any{"type": "boolean", "description": "Return transcript authority metadata plus the compact index and bounded evidence without hydrating full transcript text or segments."},
 				"project_id":         map[string]any{"type": "string", "description": "Opaque video project identifier for reading, revising, or rendering a project."},
 				"revision_id":        map[string]any{"type": "string", "description": "Optional opaque project revision identifier."},
+				"source_revision_id": map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
 				"render_job_id":      map[string]any{"type": "string", "description": "Opaque render job identifier for checking status or cancelling a render."},
 				"title":              map[string]any{"type": "string", "description": "Human-readable video project title."},
 				"description":        map[string]any{"type": "string", "description": "Optional description for a video project or revision."},
@@ -327,8 +330,12 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 				break
 			}
 		}
-		project, revision, err := r.videoProjects.CreateProject(ctx, scope.Principal, videoproject.CreateProjectInput{
-			SessionID:       scope.SessionID,
+		projectSessionID, primaryProject, err := r.manageVideoProjectSession(scope.Principal, session)
+		if err != nil {
+			return "", err
+		}
+		createInput := videoproject.CreateProjectInput{
+			SessionID:       projectSessionID,
 			WorkspaceID:     workspaceID,
 			ProjectID:       projectID,
 			Title:           title,
@@ -336,7 +343,14 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			OutputPreset:    outputPreset,
 			InitialTimeline: initialTimeline,
 			Metadata:        meta,
-		})
+		}
+		var project pebblestore.VideoProjectSnapshot
+		var revision *pebblestore.VideoProjectRevisionSnapshot
+		if primaryProject {
+			project, revision, err = r.videoProjects.GetOrCreatePrimaryVideoToolProject(ctx, scope.Principal, createInput)
+		} else {
+			project, revision, err = r.videoProjects.CreateProject(ctx, scope.Principal, createInput)
+		}
 		if err != nil {
 			return "", err
 		}
@@ -351,16 +365,20 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if r.videoProjects == nil {
 			return "", errors.New("manage_video project service is not configured")
 		}
+		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
+		if err != nil {
+			return "", err
+		}
 		projectID := strings.TrimSpace(asString(args["project_id"]))
 		if projectID == "" {
-			projects, err := r.videoProjects.ListProjects(scope.Principal, scope.SessionID, 50)
+			projects, err := r.videoProjects.ListProjects(scope.Principal, projectSessionID, 50)
 			if err != nil {
 				return "", err
 			}
 			response["projects"] = safeVideoProjects(projects)
 			response["count"] = len(projects)
 		} else {
-			project, ok, err := r.videoProjects.GetProject(scope.Principal, scope.SessionID, projectID)
+			project, ok, err := r.videoProjects.GetProject(scope.Principal, projectSessionID, projectID)
 			if err != nil || !ok {
 				if err == nil {
 					err = fmt.Errorf("video project %q not found", projectID)
@@ -370,16 +388,16 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			response["project"] = safeVideoProject(project)
 			response["project_id"] = project.ID
 			if project.CurrentRevisionID != "" {
-				if rev, revOK, revErr := r.videoProjects.GetRevision(scope.Principal, scope.SessionID, projectID, project.CurrentRevisionID); revErr == nil && revOK {
+				if rev, revOK, revErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, projectID, project.CurrentRevisionID); revErr == nil && revOK {
 					response["current_revision"] = safeVideoProjectRevision(&rev)
 				}
 			}
 			if project.ActiveRenderJobID != "" {
-				if job, jobOK, jobErr := r.videoProjects.GetRenderJob(scope.Principal, scope.SessionID, project.ActiveRenderJobID); jobErr == nil && jobOK {
+				if job, jobOK, jobErr := r.videoProjects.GetRenderJob(scope.Principal, projectSessionID, project.ActiveRenderJobID); jobErr == nil && jobOK {
 					response["active_render_job"] = safeVideoRenderJob(job)
 				}
 			}
-			if revs, revsErr := r.videoProjects.ListRevisions(scope.Principal, scope.SessionID, projectID, 10); revsErr == nil {
+			if revs, revsErr := r.videoProjects.ListRevisions(scope.Principal, projectSessionID, projectID, 10); revsErr == nil {
 				response["revisions"] = safeVideoProjectRevisions(revs)
 			}
 		}
@@ -388,12 +406,43 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if r.videoProjects == nil {
 			return "", errors.New("manage_video project service is not configured")
 		}
-		projects, err := r.videoProjects.ListProjects(scope.Principal, scope.SessionID, 50)
+		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
+		if err != nil {
+			return "", err
+		}
+		projects, err := r.videoProjects.ListProjects(scope.Principal, projectSessionID, 50)
 		if err != nil {
 			return "", err
 		}
 		response["projects"] = safeVideoProjects(projects)
 		response["count"] = len(projects)
+
+	case "restore_revision":
+		if r.videoProjects == nil {
+			return "", errors.New("manage_video project service is not configured")
+		}
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		sourceRevisionID := strings.TrimSpace(asString(args["source_revision_id"]))
+		if projectID == "" || sourceRevisionID == "" {
+			return "", errors.New("restore_revision requires project_id and source_revision_id")
+		}
+		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
+		if err != nil {
+			return "", err
+		}
+		revision, project, err := r.videoProjects.RestoreRevision(ctx, scope.Principal, videoproject.RestoreRevisionInput{
+			SessionID: projectSessionID, ProjectID: projectID, SourceRevisionID: sourceRevisionID,
+			RevisionID: strings.TrimSpace(asString(args["revision_id"])), Description: strings.TrimSpace(asString(args["description"])),
+			ChangeSummary: strings.TrimSpace(asString(args["change_summary"])), AuthorPrincipal: scope.Principal.UserID,
+		})
+		if err != nil {
+			return "", err
+		}
+		response["project"] = safeVideoProject(project)
+		response["project_id"] = project.ID
+		response["revision"] = safeVideoProjectRevision(&revision)
+		response["revision_id"] = revision.ID
+		response["restored_from_revision_id"] = revision.RestoredFromRevisionID
 
 	case "create_revision":
 		if r.videoProjects == nil {
@@ -417,8 +466,12 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		revisionID := strings.TrimSpace(asString(args["revision_id"]))
 		description := strings.TrimSpace(asString(args["description"]))
 		changeSummary := strings.TrimSpace(asString(args["change_summary"]))
+		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
+		if err != nil {
+			return "", err
+		}
 		revision, project, err := r.videoProjects.CreateRevision(ctx, scope.Principal, videoproject.CreateRevisionInput{
-			SessionID:       scope.SessionID,
+			SessionID:       projectSessionID,
 			ProjectID:       projectID,
 			RevisionID:      revisionID,
 			Description:     description,
@@ -445,8 +498,12 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		revisionID := strings.TrimSpace(asString(args["revision_id"]))
 		jobID := strings.TrimSpace(firstNonEmptyString(asString(args["render_job_id"]), asString(args["job_id"])))
+		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
+		if err != nil {
+			return "", err
+		}
 		job, err := r.videoProjects.StartRenderJob(ctx, scope.Principal, videoproject.StartRenderJobInput{
-			SessionID:  scope.SessionID,
+			SessionID:  projectSessionID,
 			ProjectID:  projectID,
 			RevisionID: revisionID,
 			JobID:      jobID,
@@ -458,7 +515,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			workspacePath := manageVideoWorkspacePath(session)
 			go func(jID, rID string) {
 				_, _ = r.videoRender.RenderJob(context.Background(), scope.Principal, videorender.RenderJobRequest{
-					SessionID:     scope.SessionID,
+					SessionID:     projectSessionID,
 					ProjectID:     projectID,
 					RevisionID:    rID,
 					JobID:         jID,
@@ -479,8 +536,12 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		jobID := strings.TrimSpace(firstNonEmptyString(asString(args["render_job_id"]), asString(args["job_id"]), asString(args["job_ref"])))
 		projectID := strings.TrimSpace(asString(args["project_id"]))
+		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
+		if err != nil {
+			return "", err
+		}
 		if jobID != "" {
-			job, ok, err := r.videoProjects.GetRenderJob(scope.Principal, scope.SessionID, jobID)
+			job, ok, err := r.videoProjects.GetRenderJob(scope.Principal, projectSessionID, jobID)
 			if err != nil || !ok {
 				if err == nil {
 					err = fmt.Errorf("render job %q not found", jobID)
@@ -495,7 +556,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 				response["output_artifact"] = job.OutputArtifact
 			}
 		} else if projectID != "" {
-			jobs, err := r.videoProjects.ListRenderJobs(scope.Principal, scope.SessionID, projectID, 50)
+			jobs, err := r.videoProjects.ListRenderJobs(scope.Principal, projectSessionID, projectID, 50)
 			if err != nil {
 				return "", err
 			}
@@ -511,7 +572,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", errors.New("cancel_render requires render_job_id")
 		}
 		if r.videoRender != nil {
-			job, err := r.videoRender.CancelRenderJob(ctx, scope.Principal, scope.SessionID, jobID)
+			projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
+			if err != nil {
+				return "", err
+			}
+			job, err := r.videoRender.CancelRenderJob(ctx, scope.Principal, projectSessionID, jobID)
 			if err != nil {
 				return "", err
 			}
@@ -593,6 +658,7 @@ func safeVideoProjectRevision(rev *pebblestore.VideoProjectRevisionSnapshot) map
 		"revision_number":    rev.RevisionNumber,
 		"session_id":         rev.SessionID,
 		"parent_revision_id": rev.ParentRevisionID,
+		"restored_from_revision_id": rev.RestoredFromRevisionID,
 		"description":        rev.Description,
 		"change_summary":     rev.ChangeSummary,
 		"timeline":           rev.Timeline,
@@ -668,6 +734,27 @@ func actionRequiresVideoTriggeringMessage(action string, args map[string]any) bo
 	}
 	videoRefs, err := parseExactStringSlice(args["video_refs"], "video_refs")
 	return err == nil && len(videoRefs) == 0
+}
+
+func (r *Runtime) manageVideoProjectSession(principal identity.Principal, session pebblestore.SessionSnapshot) (string, bool, error) {
+	if strings.TrimSpace(asString(session.Metadata["lineage_kind"])) == "video_project" {
+		return session.ID, true, nil
+	}
+	parentID := strings.TrimSpace(asString(session.Metadata["parent_session_id"]))
+	if parentID == "" {
+		return session.ID, false, nil
+	}
+	parent, ok, err := r.sessions.GetSession(parentID)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok || parent.AccountScopeID != principal.AccountScopeID || (parent.UserID != "" && parent.UserID != principal.UserID) {
+		return "", false, errors.New("manage_video parent session ownership is invalid")
+	}
+	if strings.TrimSpace(asString(parent.Metadata["lineage_kind"])) != "video_project" {
+		return session.ID, false, nil
+	}
+	return parent.ID, true, nil
 }
 
 func manageVideoWorkspacePath(session pebblestore.SessionSnapshot) string {

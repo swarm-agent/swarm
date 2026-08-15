@@ -35,6 +35,14 @@ type sessionV3CreateVideoProjectRevisionRequest struct {
 	AuthorPrincipal string                           `json:"author_principal"`
 }
 
+type sessionV3RestoreVideoProjectRevisionRequest struct {
+	SourceRevisionID string `json:"source_revision_id"`
+	RevisionID       string `json:"revision_id"`
+	Description      string `json:"description"`
+	ChangeSummary    string `json:"change_summary"`
+	AuthorPrincipal  string `json:"author_principal"`
+}
+
 type sessionV3StartVideoRenderRequest struct {
 	RevisionID string `json:"revision_id"`
 	JobID      string `json:"job_id"`
@@ -113,6 +121,10 @@ func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Requ
 	subpath = strings.Trim(subpath, "/")
 	if subpath == "projects" {
 		s.handleSessionV3VideoProjects(w, r, principal, sessionID)
+		return
+	}
+	if subpath == "projects/primary" {
+		s.handleSessionV3PrimaryVideoProject(w, r, principal, sessionID)
 		return
 	}
 	if strings.HasPrefix(subpath, "projects/") {
@@ -277,6 +289,42 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 		}
 		s.handleSessionV3VideoExport(w, r, principal, sessionID, projectID, req)
 	default:
+		if strings.HasPrefix(rest, "revisions/") && strings.HasSuffix(rest, "/restore") {
+			revID := strings.TrimSuffix(strings.TrimPrefix(rest, "revisions/"), "/restore")
+			if revID == "" {
+				writeError(w, http.StatusBadRequest, errors.New("revision id is required"))
+				return
+			}
+			if r.Method != http.MethodPost {
+				methodNotAllowed(w)
+				return
+			}
+			var req sessionV3RestoreVideoProjectRevisionRequest
+			if r.Body != nil && r.ContentLength > 0 {
+				if err := decodeJSON(r, &req); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+			}
+			if strings.TrimSpace(req.SourceRevisionID) != "" && strings.TrimSpace(req.SourceRevisionID) != revID {
+				writeError(w, http.StatusBadRequest, errors.New("source_revision_id must match the revision in the request path"))
+				return
+			}
+			author := strings.TrimSpace(req.AuthorPrincipal)
+			if author == "" {
+				author = principal.UserID
+			}
+			revision, project, err := s.videoProjects.RestoreRevision(r.Context(), principal, videoproject.RestoreRevisionInput{
+				SessionID: sessionID, ProjectID: projectID, SourceRevisionID: revID, RevisionID: req.RevisionID,
+				Description: req.Description, ChangeSummary: req.ChangeSummary, AuthorPrincipal: author, NowUnixMs: time.Now().UnixMilli(),
+			})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "revision": revision, "project": project})
+			return
+		}
 		if strings.HasPrefix(rest, "revisions/") {
 			revID := strings.TrimPrefix(rest, "revisions/")
 			if revID == "" {
@@ -300,6 +348,69 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 		}
 		writeError(w, http.StatusNotFound, errors.New("invalid video project subpath"))
 	}
+}
+
+func (s *Server) handleSessionV3PrimaryVideoProject(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("session not found")
+		}
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) {
+		writeError(w, http.StatusNotFound, errors.New("session not found"))
+		return
+	}
+	projects, err := s.videoProjects.ListProjects(principal, sessionID, 50)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	for _, project := range projects {
+		if project.ProjectKind == pebblestore.VideoProjectKindVideoTool {
+			res := map[string]any{"ok": true, "project": project, "project_id": project.ID}
+			if project.CurrentRevisionID != "" {
+				if rev, found, getErr := s.videoProjects.GetRevision(principal, sessionID, project.ID, project.CurrentRevisionID); getErr == nil && found {
+					res["current_revision"] = rev
+				}
+			}
+			writeJSON(w, http.StatusOK, res)
+			return
+		}
+	}
+	if r.Method == http.MethodGet {
+		writeError(w, http.StatusNotFound, errors.New("primary video tool project not found"))
+		return
+	}
+	var req sessionV3CreateVideoProjectRequest
+	if r.Body != nil && r.ContentLength > 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	workspaceID := ""
+	if val, ok := session.Metadata["workspace_id"].(string); ok {
+		workspaceID = val
+	}
+	input := videoprojectCreateProjectInput(sessionID, workspaceID, req)
+	input.ProjectKind = pebblestore.VideoProjectKindVideoTool
+	project, revision, err := s.videoProjects.GetOrCreatePrimaryVideoToolProject(r.Context(), principal, input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	res := map[string]any{"ok": true, "project": project, "project_id": project.ID}
+	if revision != nil {
+		res["revision"] = revision
+	}
+	writeJSON(w, http.StatusCreated, res)
 }
 
 func (s *Server) handleSessionV3VideoExport(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, projectID string, req sessionV3ExportVideoRequest) {

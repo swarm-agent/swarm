@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"mime"
 	"net/http"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videosource"
+	"swarm/packages/swarmd/internal/videoproject"
 )
 
 type videoThreadCreateRequest struct {
@@ -62,6 +66,14 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		for i := range threads {
+			migrated, migrateErr := s.migrateLegacyVideoThreadProject(r.Context(), principal, threads[i])
+			if migrateErr != nil {
+				writeError(w, http.StatusBadRequest, migrateErr)
+				return
+			}
+			threads[i] = migrated
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "threads": threads})
 	case http.MethodPost:
 		var req videoThreadCreateRequest
@@ -99,6 +111,22 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		metadata := ensureManagedToolStorageMetadata(req.Metadata, storagePath)
+		delete(metadata, "timelineSegments")
+		if s.videoProjects != nil {
+			workspaceID := ""
+			if value, ok := boundSession.Metadata["workspace_id"].(string); ok {
+				workspaceID = strings.TrimSpace(value)
+			}
+			project, _, projectErr := s.videoProjects.GetOrCreatePrimaryVideoToolProject(r.Context(), principal, videoproject.CreateProjectInput{
+				SessionID: threadID, WorkspaceID: workspaceID, Title: strings.TrimSpace(req.Title),
+				OutputPreset: pebblestore.VideoPresetLandscape1080p, ProjectKind: pebblestore.VideoProjectKindVideoTool,
+			})
+			if projectErr != nil {
+				writeError(w, http.StatusBadRequest, projectErr)
+				return
+			}
+			metadata["video_project_id"] = project.ID
+		}
 		req.VideoClips = sanitizeVideoThreadSourceClips(req.VideoClips)
 		thread, err := s.videoThreads.CreateForAccount(principal.AccountScopeID, principal.UserID, pebblestore.VideoThreadSnapshot{
 			ID:             threadID,
@@ -150,6 +178,12 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusNotFound, errors.New("video thread not found"))
 			return
 		}
+		migrated, migrateErr := s.migrateLegacyVideoThreadProject(r.Context(), principal, thread)
+		if migrateErr != nil {
+			writeError(w, http.StatusBadRequest, migrateErr)
+			return
+		}
+		thread = migrated
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "thread": thread})
 	case http.MethodPost:
 		thread, ok, err := s.videoThreads.GetForAccount(principal.AccountScopeID, threadID)
@@ -182,7 +216,12 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 		}
 		if req.Metadata != nil {
 			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
+				projectID, _ := thread.Metadata["video_project_id"].(string)
 				thread.Metadata = ensureManagedToolStorageMetadata(req.Metadata, storagePath)
+				delete(thread.Metadata, "timelineSegments")
+				if strings.TrimSpace(projectID) != "" {
+					thread.Metadata["video_project_id"] = strings.TrimSpace(projectID)
+				}
 			}
 		}
 		thread, err = s.videoThreads.UpdateForAccount(principal.AccountScopeID, thread)
@@ -193,6 +232,77 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "thread": thread})
 	default:
 		methodNotAllowed(w)
+	}
+}
+
+func (s *Server) migrateLegacyVideoThreadProject(ctx context.Context, principal identity.Principal, thread pebblestore.VideoThreadSnapshot) (pebblestore.VideoThreadSnapshot, error) {
+	if s.videoProjects == nil || strings.TrimSpace(thread.ID) == "" {
+		return thread, nil
+	}
+	if projectID, _ := thread.Metadata["video_project_id"].(string); strings.TrimSpace(projectID) != "" {
+		return thread, nil
+	}
+	var timeline *pebblestore.VideoProjectTimeline
+	if entries, ok := thread.Metadata["timelineSegments"].([]any); ok && len(entries) > 0 {
+		converted := pebblestore.VideoProjectTimeline{SchemaVersion: pebblestore.VideoTimelineSchemaVersion, OutputPreset: pebblestore.VideoPresetLandscape1080p, Width: 1920, Height: 1080, FPS: 30}
+		for sequence, raw := range entries {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			clipID := strings.TrimSpace(fmt.Sprint(entry["clipId"]))
+			if clipID == "" || clipID == "<nil>" {
+				clipID = strings.TrimSpace(fmt.Sprint(entry["clip_id"]))
+			}
+			if clipID == "" || clipID == "<nil>" {
+				continue
+			}
+			sourceStartMs := int64(videoThreadMetadataNumber(entry["sourceStart"]) * 1000)
+			durationMs := int64(videoThreadMetadataNumber(entry["duration"]) * 1000)
+			timelineStartMs := int64(videoThreadMetadataNumber(entry["start"]) * 1000)
+			visible, hasVisible := entry["visible"].(bool)
+			if !hasVisible {
+				visible = true
+			}
+			converted.Clips = append(converted.Clips, pebblestore.VideoTimelineClip{ID: clipID, Track: 0, Sequence: sequence, SourceKind: pebblestore.VideoClipSourceKindSourceVideo, SourceRef: clipID, SourceStartMs: sourceStartMs, SourceEndMs: sourceStartMs + durationMs, TimelineStartMs: timelineStartMs, TimelineEndMs: timelineStartMs + durationMs, DurationMs: durationMs, Visible: visible, Volume: 1})
+			if visible && timelineStartMs+durationMs > converted.TotalDurationMs {
+				converted.TotalDurationMs = timelineStartMs + durationMs
+			}
+		}
+		if len(converted.Clips) > 0 {
+			timeline = &converted
+		}
+	}
+	project, _, err := s.videoProjects.GetOrCreatePrimaryVideoToolProject(ctx, principal, videoproject.CreateProjectInput{SessionID: thread.ID, Title: thread.Title, OutputPreset: pebblestore.VideoPresetLandscape1080p, InitialTimeline: timeline, ProjectKind: pebblestore.VideoProjectKindVideoTool})
+	if err != nil {
+		return thread, err
+	}
+	metadata := make(map[string]any, len(thread.Metadata)+1)
+	for key, value := range thread.Metadata {
+		if key != "timelineSegments" {
+			metadata[key] = value
+		}
+	}
+	metadata["video_project_id"] = project.ID
+	thread.Metadata = metadata
+	return s.videoThreads.UpdateForAccount(principal.AccountScopeID, thread)
+}
+
+func videoThreadMetadataNumber(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		parsed, _ := typed.Float64()
+		return parsed
+	default:
+		return 0
 	}
 }
 

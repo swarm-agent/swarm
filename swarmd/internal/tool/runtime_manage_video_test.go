@@ -209,12 +209,12 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_revision", "start_render", "render_status", "cancel_render"} {
+	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
 		if !strings.Contains(text, `"`+action+`"`) {
 			t.Fatalf("schema lacks video project/render action %q", action)
 		}
 	}
-	for _, param := range []string{"project_id", "revision_id", "render_job_id", "title", "description", "output_preset", "change_summary", "timeline", "initial_timeline", "metadata"} {
+	for _, param := range []string{"project_id", "revision_id", "source_revision_id", "render_job_id", "title", "description", "output_preset", "change_summary", "timeline", "initial_timeline", "metadata"} {
 		if !strings.Contains(text, `"`+param+`"`) {
 			t.Fatalf("schema lacks video project/render parameter %q", param)
 		}
@@ -355,6 +355,13 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 		t.Fatalf("unexpected create_revision response: %s", payload)
 	}
 
+	// Restore the exact first revision as a new immutable head.
+	restoreArgs, _ := json.Marshal(map[string]any{"action": "restore_revision", "project_id": projectID, "source_revision_id": createRes.RevisionID})
+	payload, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-restore", Name: "manage_video", Arguments: string(restoreArgs)})
+	if err != nil || !strings.Contains(payload, `"restored_from_revision_id":"`+createRes.RevisionID+`"`) {
+		t.Fatalf("restore_revision payload=%s err=%v", payload, err)
+	}
+
 	// 4. Start render
 	renderArgs, _ := json.Marshal(map[string]any{
 		"action":      "start_render",
@@ -398,6 +405,43 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(payload, "cancelled") {
 		t.Fatalf("unexpected cancel_render output: %s", payload)
+	}
+}
+
+func TestManageVideoChildSessionUsesParentVideoProject(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-parent.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "child", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "parent", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "child", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"parent_session_id": "parent", "lineage_kind": "system_sidechat"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "child", RunID: "run-1"})
+	scope := WorkspaceScope{SessionID: "child", Principal: principal}
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-create", Name: "manage_video", Arguments: `{"action":"create_project","title":"Shared"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Project struct {
+			SessionID string `json:"session_id"`
+		} `json:"project"`
+	}
+	if err := json.Unmarshal([]byte(payload), &response); err != nil || response.Project.SessionID != "parent" {
+		t.Fatalf("child project payload=%s err=%v", payload, err)
 	}
 }
 
