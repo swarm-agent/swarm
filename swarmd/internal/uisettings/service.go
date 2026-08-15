@@ -256,7 +256,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 				DefaultModel: strings.TrimSpace(record.Tools.Image.DefaultModel),
 			},
 		},
-		Media: MediaSettings{TranscriptionModel: strings.TrimSpace(record.Media.TranscriptionModel)},
+		Media:     MediaSettings{TranscriptionModel: strings.TrimSpace(record.Media.TranscriptionModel)},
 		UpdatedAt: record.UpdatedAt,
 	}
 	for _, item := range record.Theme.CustomThemes {
