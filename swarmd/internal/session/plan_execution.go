@@ -180,11 +180,12 @@ func normalizePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpoi
 	value.Action = strings.TrimSpace(value.Action)
 	value.Reason = strings.TrimSpace(value.Reason)
 	value.ActionState = strings.ToLower(strings.TrimSpace(value.ActionState))
+	value.Prompt = strings.TrimSpace(value.Prompt)
 	return value
 }
 
 func validatePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpointRecommendation) error {
-	if value.Decision == "" && value.Action == "" && value.Reason == "" && value.ActionState == "" {
+	if value.Decision == "" && value.Action == "" && value.Reason == "" && value.ActionState == "" && value.Prompt == "" {
 		return nil
 	}
 	if value.Decision != "ship" && value.Decision != "change" && value.Decision != "revert" && value.Decision != "defer" {
@@ -200,6 +201,9 @@ func validatePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpoin
 		return err
 	}
 	if err := validateFinalHandoffText("recommendation.reason", value.Reason, PlanFinalHandoffMaxOverviewRunes, true); err != nil {
+		return err
+	}
+	if err := validateFinalHandoffText("recommendation.prompt", value.Prompt, PlanFinalHandoffMaxSuggestedPromptRunes, false); err != nil {
 		return err
 	}
 	return nil
