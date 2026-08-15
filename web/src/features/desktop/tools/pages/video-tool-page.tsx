@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, Sparkles } from 'lucide-react'
+import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -65,8 +65,29 @@ export type VideoProjectSnapshotWire = {
   current_revision_number?: number
   revision_count?: number
   active_render_job_id?: string
+  project_kind?: string
   created_at: number
   updated_at: number
+}
+
+export type VideoProjectRevisionSnapshotWire = {
+  schema_version?: number
+  id: string
+  project_id: string
+  revision_number: number
+  session_id: string
+  parent_revision_id?: string
+  restored_from_revision_id?: string
+  description?: string
+  change_summary?: string
+  timeline: VideoProjectTimelineWire
+  author_principal?: string
+  created_at: number
+}
+
+export type VideoProjectDetailWire = {
+  project: VideoProjectSnapshotWire
+  current_revision?: VideoProjectRevisionSnapshotWire
 }
 
 export type VideoRenderJobSnapshotWire = {
@@ -114,7 +135,7 @@ type VideoClipRequest = {
   modified_at: number
 }
 
-type VideoThreadRecord = {
+export type VideoThreadRecord = {
   id: string
   title: string
   workspacePath: string
@@ -315,10 +336,6 @@ function finiteNonNegative(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback
 }
 
-function roundTimelineTime(value: number): number {
-  return Number.isFinite(value) && value > 0 ? Math.round(value * 1000) / 1000 : 0
-}
-
 function clipDuration(clipDurations: Record<string, number>, clipId: string): number {
   const duration = clipDurations[clipId]
   return Number.isFinite(duration) && duration > 0 ? duration : 0
@@ -425,48 +442,6 @@ function activeTimelineSegment(layout: TimelineLayoutSegment[], playhead: number
   return visible.find((segment) => playhead >= segment.timelineStart && playhead < segment.timelineEnd) ?? visible[visible.length - 1] ?? null
 }
 
-function serializeTimelineSegments(segments: TimelineSegment[]): TimelineSegment[] {
-  let start = 0
-  return segments.map((segment) => {
-    const serialized = {
-      id: segment.id,
-      type: 'video' as const,
-      clipId: segment.clipId,
-      src: segment.src,
-      start: roundTimelineTime(start),
-      sourceStart: roundTimelineTime(segment.sourceStart),
-      duration: roundTimelineTime(segment.duration),
-      visible: segment.visible,
-    }
-    if (segment.visible) {
-      start += segment.duration
-    }
-    return serialized
-  })
-}
-
-function timelineMetadataMatches(thread: VideoThreadRecord, segments: TimelineSegment[]): boolean {
-  const existing = Array.isArray(thread.metadata?.[TIMELINE_METADATA_KEY])
-    ? thread.metadata?.[TIMELINE_METADATA_KEY] as unknown[]
-    : []
-  const next = serializeTimelineSegments(segments)
-  if (existing.length !== next.length) {
-    return false
-  }
-  return next.every((segment, index) => {
-    const current = existing[index]
-    if (!isRecord(current)) {
-      return false
-    }
-    return String(current.id ?? '').trim() === segment.id
-      && String(current.clipId ?? current.clip_id ?? '').trim() === segment.clipId
-      && Math.abs(finiteNonNegative(current.start, -1) - segment.start) < 0.001
-      && Math.abs(finiteNonNegative(current.sourceStart, -1) - segment.sourceStart) < 0.001
-      && Math.abs(finiteNonNegative(current.duration, -1) - segment.duration) < 0.001
-      && (current.visible !== false) === segment.visible
-  })
-}
-
 async function scanVideoFolder(workspacePath: string, folderPath: string): Promise<{ folderPath: string; clips: VideoClip[] }> {
   const response = await requestJson<VideoScanResponse>('/v1/workspace/video/scan', {
     method: 'POST',
@@ -547,17 +522,6 @@ async function updateVideoThread(input: VideoThreadRecord): Promise<VideoThreadR
   return thread
 }
 
-async function updateVideoThreadTimeline(thread: VideoThreadRecord, segments: TimelineSegment[]): Promise<VideoThreadRecord> {
-  return updateVideoThread({
-    ...thread,
-    videoClipOrder: segments.map((segment) => segment.clipId),
-    metadata: {
-      ...(thread.metadata ?? {}),
-      [TIMELINE_METADATA_KEY]: serializeTimelineSegments(segments),
-    },
-  })
-}
-
 export function timelineSegmentsToProjectTimeline(
   segments: TimelineSegment[],
   clips: VideoClip[],
@@ -600,18 +564,24 @@ export function timelineSegmentsToProjectTimeline(
 export function projectTimelineToTimelineSegments(
   timeline: VideoProjectTimelineWire,
   clipDurations: Record<string, number>,
+  clips: VideoClip[] = [],
+  threadId = '',
 ): TimelineSegment[] {
   if (!timeline || !Array.isArray(timeline.clips)) {
     return []
   }
+  const clipsBySourceRef = new Map(clips.map((clip) => [clip.sourceRef, clip]))
+  const clipsById = new Map(clips.map((clip) => [clip.id, clip]))
   return timeline.clips.map((clipWire) => {
+    const sourceClip = clipsBySourceRef.get(String(clipWire.source_ref ?? '')) ?? clipsById.get(clipWire.id)
+    const clipId = sourceClip?.id ?? clipWire.id
     const sourceStartSec = (clipWire.source_start_ms ?? 0) / 1000
-    const durationSec = (clipWire.duration_ms ?? 0) / 1000 || clipDuration(clipDurations, clipWire.id)
+    const durationSec = (clipWire.duration_ms ?? 0) / 1000 || clipDuration(clipDurations, clipId)
     return {
       id: clipWire.id,
       type: 'video',
-      clipId: clipWire.id,
-      src: `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipWire.id)}`,
+      clipId,
+      src: threadId ? clipMediaUrl(threadId, clipId) : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`,
       start: (clipWire.timeline_start_ms ?? 0) / 1000,
       sourceStart: sourceStartSec,
       duration: durationSec,
@@ -620,34 +590,84 @@ export function projectTimelineToTimelineSegments(
   })
 }
 
-export async function startVideoRender(sessionId: string, projectId: string, timeline?: VideoProjectTimelineWire): Promise<VideoRenderJobSnapshotWire> {
-  if (timeline) {
-    let projectExists = true
-    try {
-      await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}`)
-    } catch {
-      projectExists = false
-    }
-    if (projectExists) {
-      await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/revisions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeline, change_summary: 'Render revision from Video Tool' }),
-      })
-    } else {
-      await requestJson(`/v3/sessions/${encodeURIComponent(sessionId)}/video/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: projectId, title: 'Video Tool project', output_preset: timeline.output_preset, initial_timeline: timeline }),
-      })
-    }
+export async function fetchPrimaryVideoProject(sessionId: string): Promise<VideoProjectDetailWire> {
+  const response = await requestJson<{ project?: VideoProjectSnapshotWire; current_revision?: VideoProjectRevisionSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/primary`,
+  )
+  if (!response.project) throw new Error('Primary video project response returned no project')
+  return { project: response.project, current_revision: response.current_revision }
+}
+
+export async function ensurePrimaryVideoProject(sessionId: string, title: string, initialTimeline?: VideoProjectTimelineWire): Promise<VideoProjectDetailWire> {
+  const response = await requestJson<{ project?: VideoProjectSnapshotWire; revision?: VideoProjectRevisionSnapshotWire; current_revision?: VideoProjectRevisionSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/primary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, output_preset: initialTimeline?.output_preset ?? 'landscape_1080p', initial_timeline: initialTimeline }),
+    },
+  )
+  if (!response.project) throw new Error('Primary video project create returned no project')
+  return { project: response.project, current_revision: response.current_revision ?? response.revision }
+}
+
+export async function createVideoProjectRevision(sessionId: string, projectId: string, timeline: VideoProjectTimelineWire, changeSummary: string): Promise<VideoProjectDetailWire> {
+  const response = await requestJson<{ project?: VideoProjectSnapshotWire; revision?: VideoProjectRevisionSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/revisions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timeline, change_summary: changeSummary }),
+    },
+  )
+  if (!response.project || !response.revision) throw new Error('Video revision create returned incomplete state')
+  return { project: response.project, current_revision: response.revision }
+}
+
+export async function listVideoProjectRevisions(sessionId: string, projectId: string): Promise<VideoProjectRevisionSnapshotWire[]> {
+  const response = await requestJson<{ revisions?: VideoProjectRevisionSnapshotWire[] }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/revisions?limit=100`,
+  )
+  return Array.isArray(response.revisions) ? response.revisions : []
+}
+
+export async function restoreVideoProjectRevision(sessionId: string, projectId: string, revisionId: string): Promise<VideoProjectDetailWire> {
+  const response = await requestJson<{ project?: VideoProjectSnapshotWire; revision?: VideoProjectRevisionSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/revisions/${encodeURIComponent(revisionId)}/restore`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ change_summary: 'Restored from Video Tool history' }),
+    },
+  )
+  if (!response.project || !response.revision) throw new Error('Video revision restore returned incomplete state')
+  return { project: response.project, current_revision: response.revision }
+}
+
+export function videoChildSessionMetadata(input: {
+  thread: VideoThreadRecord
+  projectId: string
+  revisionId: string
+  folderPath: string
+  clips: VideoClip[]
+}): Record<string, unknown> {
+  return {
+    parent_video_thread_id: input.thread.id,
+    parent_session_id: input.thread.id,
+    parent_video_project_id: input.projectId,
+    parent_video_revision_id: input.revisionId,
+    parent_title: input.thread.title,
+    parent_folder_path: input.folderPath,
+    video_thread_id: input.thread.id,
+    video_folder_path: input.folderPath,
+    video_clip_order: input.clips.map((clip) => clip.id),
+    video_clip_count: input.clips.length,
+    lineage_kind: 'video_child',
+    launch_source: 'video_tool',
   }
+}
+
+export async function startVideoRender(sessionId: string, projectId: string, revisionId: string): Promise<VideoRenderJobSnapshotWire> {
   const response = await requestJson<{ ok?: boolean; render_job?: VideoRenderJobSnapshotWire }>(
     `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/render`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ revision_id: revisionId }),
     },
   )
   if (!response.render_job) {
@@ -716,6 +736,11 @@ export function VideoToolPage() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
+  const [videoProject, setVideoProject] = useState<VideoProjectSnapshotWire | null>(null)
+  const [currentRevision, setCurrentRevision] = useState<VideoProjectRevisionSnapshotWire | null>(null)
+  const [projectRevisions, setProjectRevisions] = useState<VideoProjectRevisionSnapshotWire[]>([])
+  const [projectLoading, setProjectLoading] = useState(false)
+  const [restoringRevisionId, setRestoringRevisionId] = useState<string | null>(null)
   const [startingChat, setStartingChat] = useState(false)
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [rendering, setRendering] = useState(false)
@@ -784,7 +809,10 @@ export function VideoToolPage() {
 
   const selectedClips = useMemo(() => orderedClips(selectedThread), [selectedThread])
   const selectedFolderPath = threadFolderPath(selectedThread)
-  const timelineSegments = useMemo(() => buildTimelineSegments(selectedThread, selectedClips, clipDurations), [clipDurations, selectedClips, selectedThread])
+  const legacyTimelineSegments = useMemo(() => buildTimelineSegments(selectedThread, selectedClips, clipDurations), [clipDurations, selectedClips, selectedThread])
+  const timelineSegments = useMemo(() => currentRevision
+    ? projectTimelineToTimelineSegments(currentRevision.timeline, clipDurations, selectedClips, selectedThread?.id ?? '')
+    : legacyTimelineSegments, [clipDurations, currentRevision, legacyTimelineSegments, selectedClips, selectedThread?.id])
   const timelineLayout = useMemo(() => layoutTimelineSegments(timelineSegments), [timelineSegments])
   const timelineLayoutByClipId = useMemo(() => new Map(timelineLayout.map((segment) => [segment.clipId, segment])), [timelineLayout])
   const visibleTimelineLayout = useMemo(() => timelineLayout.filter((segment) => segment.visible && segment.duration > 0), [timelineLayout])
@@ -804,6 +832,42 @@ export function VideoToolPage() {
     }
     applyWorkspaceTheme(blackModeEnabled ? 'black' : userThemeId)
   }, [blackModeEnabled, routeWorkspaceSlug, selectedWorkspace, userThemeId, workspacesQuery.isLoading])
+
+  useEffect(() => {
+    let cancelled = false
+    setVideoProject(null)
+    setCurrentRevision(null)
+    setProjectRevisions([])
+    setRenderJob(null)
+    if (!selectedThread) return
+    setProjectLoading(true)
+    void (async () => {
+      try {
+        let detail: VideoProjectDetailWire
+        try {
+          detail = await fetchPrimaryVideoProject(selectedThread.id)
+        } catch {
+          detail = await ensurePrimaryVideoProject(selectedThread.id, selectedThread.title || 'Video Tool project')
+        }
+        if (cancelled) return
+        let currentRevision = detail.current_revision ?? null
+        if (!currentRevision && detail.project.current_revision_id) {
+          const current = await requestJson<{ revision?: VideoProjectRevisionSnapshotWire }>(
+            `/v3/sessions/${encodeURIComponent(selectedThread.id)}/video/projects/${encodeURIComponent(detail.project.id)}/revisions/${encodeURIComponent(detail.project.current_revision_id)}`,
+          )
+          currentRevision = current.revision ?? null
+        }
+        setVideoProject(detail.project)
+        setCurrentRevision(currentRevision)
+        setProjectRevisions(await listVideoProjectRevisions(selectedThread.id, detail.project.id))
+      } catch (error) {
+        if (!cancelled) setCreateError(error instanceof Error ? error.message : String(error))
+      } finally {
+        if (!cancelled) setProjectLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [selectedThread?.id])
 
   useEffect(() => {
     if (!selectedThread) {
@@ -1027,8 +1091,8 @@ export function VideoToolPage() {
     setRendering(true)
     setRenderError(null)
     try {
-      const latestTimeline = timelineSegmentsToProjectTimeline(timelineSegments, selectedClips)
-      const job = await startVideoRender(selectedThread.id, selectedThread.id, latestTimeline)
+      if (!videoProject?.current_revision_id) throw new Error('Save a timeline revision before rendering')
+      const job = await startVideoRender(selectedThread.id, videoProject.id, videoProject.current_revision_id)
       setRenderJob(job)
       const pollInterval = window.setInterval(async () => {
         try {
@@ -1051,7 +1115,7 @@ export function VideoToolPage() {
       setRenderError(error instanceof Error ? error.message : String(error))
       setRendering(false)
     }
-  }, [selectedClips, selectedThread, timelineSegments])
+  }, [selectedThread, videoProject])
 
   const handleOpenPicker = useCallback(() => {
     setCreateError(null)
@@ -1152,39 +1216,50 @@ export function VideoToolPage() {
     }
   }, [queryClient, selectedThread, selectedWorkspaceName, selectedWorkspacePath])
 
-  const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { silent?: boolean }) => {
-    if (!selectedThread) {
-      return
-    }
-    if (!options?.silent) {
-      setReordering(true)
-    }
+  const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { migration?: boolean }) => {
+    if (!selectedThread) return
+    setReordering(true)
     try {
-      const updatedThread = await updateVideoThreadTimeline(selectedThread, segments)
-      queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => current.map((thread) => thread.id === updatedThread.id ? updatedThread : thread))
-      setSelectedThreadId(updatedThread.id)
-      await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
+      let project = videoProject
+      let revision = currentRevision
+      const timeline = timelineSegmentsToProjectTimeline(segments, selectedClips, project?.output_preset)
+      if (!project) {
+        const created = await ensurePrimaryVideoProject(selectedThread.id, selectedThread.title || 'Video Tool project', timeline)
+        project = created.project
+        revision = created.current_revision ?? null
+      } else {
+        const updated = await createVideoProjectRevision(selectedThread.id, project.id, timeline, options?.migration ? 'Migrated legacy Video Tool timeline' : 'Edited in Video Tool')
+        project = updated.project
+        revision = updated.current_revision ?? null
+      }
+      setVideoProject(project)
+      setCurrentRevision(revision)
+      setProjectRevisions(await listVideoProjectRevisions(selectedThread.id, project.id))
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : String(error))
     } finally {
-      if (!options?.silent) {
-        setReordering(false)
-      }
+      setReordering(false)
     }
-  }, [queryClient, selectedThread, selectedWorkspacePath])
+  }, [currentRevision, selectedClips, selectedThread, videoProject])
 
   useEffect(() => {
-    if (!selectedThread || timelineSegments.length === 0) {
-      return
-    }
-    if (selectedClips.some((clip) => clipDuration(clipDurations, clip.id) <= 0)) {
-      return
-    }
-    if (timelineMetadataMatches(selectedThread, timelineSegments)) {
-      return
-    }
-    void persistTimelineSegments(timelineSegments, { silent: true })
-  }, [clipDurations, persistTimelineSegments, selectedClips, selectedThread, timelineSegments])
+    if (!selectedThread || projectLoading || currentRevision || legacyTimelineSegments.length === 0) return
+    if (selectedClips.some((clip) => clipDuration(clipDurations, clip.id) <= 0)) return
+    void persistTimelineSegments(legacyTimelineSegments, { migration: true })
+  }, [clipDurations, currentRevision, legacyTimelineSegments, persistTimelineSegments, projectLoading, selectedClips, selectedThread])
+
+  useEffect(() => {
+    if (!selectedThread || projectLoading || !currentRevision || selectedClips.length === 0) return
+    const timelineClipIds = new Set(timelineSegments.map((segment) => segment.clipId))
+    const addedClips = selectedClips.filter((clip) => !timelineClipIds.has(clip.id))
+    if (addedClips.length === 0 || addedClips.some((clip) => clipDuration(clipDurations, clip.id) <= 0)) return
+    const appended = [...timelineSegments, ...addedClips.map((clip) => ({
+      id: timelineSegmentId(clip.id), type: 'video' as const, clipId: clip.id,
+      src: clipMediaUrl(selectedThread.id, clip.id), start: 0, sourceStart: 0,
+      duration: clipDuration(clipDurations, clip.id), visible: true,
+    }))]
+    void persistTimelineSegments(appended)
+  }, [clipDurations, currentRevision, persistTimelineSegments, projectLoading, selectedClips, selectedThread, timelineSegments])
 
   const handleMoveClip = useCallback(async (direction: -1 | 1, clipId: string) => {
     const index = timelineSegments.findIndex((segment) => segment.clipId === clipId)
@@ -1200,6 +1275,23 @@ export function VideoToolPage() {
     const next = timelineSegments.map((segment) => segment.clipId === clipId ? { ...segment, visible: !segment.visible } : segment)
     await persistTimelineSegments(next)
   }, [persistTimelineSegments, timelineSegments])
+
+  const handleRestoreRevision = useCallback(async (revisionId: string) => {
+    if (!selectedThread || !videoProject || revisionId === currentRevision?.id) return
+    setRestoringRevisionId(revisionId)
+    setCreateError(null)
+    try {
+      const restored = await restoreVideoProjectRevision(selectedThread.id, videoProject.id, revisionId)
+      setVideoProject(restored.project)
+      setCurrentRevision(restored.current_revision ?? null)
+      setProjectRevisions(await listVideoProjectRevisions(selectedThread.id, videoProject.id))
+      setPlayhead(0)
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRestoringRevisionId(null)
+    }
+  }, [currentRevision?.id, selectedThread, videoProject])
 
   const handleTogglePlayback = useCallback(() => {
     if (movieDuration <= 0) {
@@ -1265,17 +1357,13 @@ export function VideoToolPage() {
         workspaceName: selectedThread.workspaceName || selectedWorkspaceName,
         mode: 'auto',
         preference: preference.preference,
-        metadata: {
-          parent_video_thread_id: selectedThread.id,
-          parent_title: selectedThread.title,
-          parent_folder_path: selectedFolderPath,
-          video_thread_id: selectedThread.id,
-          video_folder_path: selectedFolderPath,
-          video_clip_order: selectedClips.map((clip) => clip.id),
-          video_clip_count: selectedClips.length,
-          lineage_kind: 'video_child',
-          launch_source: 'video_tool',
-        },
+        metadata: videoChildSessionMetadata({
+          thread: selectedThread,
+          projectId: videoProject?.id ?? '',
+          revisionId: currentRevision?.id ?? '',
+          folderPath: selectedFolderPath,
+          clips: selectedClips,
+        }),
       })
       void navigate({
         to: '/$workspaceSlug/$sessionId',
@@ -1286,7 +1374,7 @@ export function VideoToolPage() {
     } finally {
       setStartingChat(false)
     }
-  }, [navigate, routeWorkspaceSlug, selectedClips, selectedFolderPath, selectedThread, selectedWorkspaceName])
+  }, [currentRevision?.id, navigate, routeWorkspaceSlug, selectedClips, selectedFolderPath, selectedThread, selectedWorkspaceName, videoProject?.id])
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
       <div className="flex min-h-dvh flex-col px-5 pt-[calc(var(--app-safe-area-top)+24px)] pb-[calc(var(--app-safe-area-bottom)+24px)] lg:hidden">
@@ -1355,12 +1443,31 @@ export function VideoToolPage() {
                     <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedFolderPath || 'No source folder yet'}</p>
                     <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Length</div><div className="mt-1 tabular-nums text-[var(--app-text)]">{formatTimelineTime(movieDuration)}</div></div>
-                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Clips</div><div className="mt-1 text-[var(--app-text)]">{visibleTimelineLayout.length}/{timelineSegments.length}</div></div>
+                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Revision</div><div className="mt-1 text-[var(--app-text)]">{projectLoading ? 'Loading…' : currentRevision ? `r${currentRevision.revision_number}` : 'Unsaved'}</div></div>
                     </div>
                     <Button variant="outline" className="mt-3 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealVideoStorage()} disabled={revealingStorage}>
                       <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Show stored files'}
                     </Button>
                   </div>
+
+                  {projectRevisions.length > 0 ? (
+                    <>
+                      <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Revision history</p>
+                      <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+                        {projectRevisions.map((revision) => {
+                          const active = revision.id === currentRevision?.id
+                          return (
+                            <button key={revision.id} type="button" onClick={() => void handleRestoreRevision(revision.id)} disabled={active || Boolean(restoringRevisionId)} className={`flex items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-[var(--app-surface-hover)] disabled:cursor-default ${active ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)]'}`}>
+                              {restoringRevisionId === revision.id ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+                              <span className="min-w-0 flex-1 truncate">r{revision.revision_number} · {revision.change_summary || 'Timeline revision'}</span>
+                              {active ? <span className="text-[10px] text-[var(--app-primary)]">current</span> : null}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {currentRevision?.restored_from_revision_id ? <p className="mt-2 px-2 text-[10px] text-[var(--app-primary)]">Rollback active · restored from an earlier revision</p> : null}
+                    </>
+                  ) : null}
 
                   <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
                   <div className="flex flex-col gap-1">
@@ -1429,7 +1536,7 @@ export function VideoToolPage() {
                         <Film size={13} /> Render Ready · Chat
                       </Button>
                     ) : (
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering}>
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering || projectLoading || !currentRevision}>
                         <Sparkles size={13} /> Render Video
                       </Button>
                     )}

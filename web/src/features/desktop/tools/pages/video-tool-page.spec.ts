@@ -5,6 +5,7 @@ import {
   projectTimelineToTimelineSegments,
   serializeVideoClipForRequest,
   timelineSegmentsToProjectTimeline,
+  videoChildSessionMetadata,
   type VideoClip,
   type VideoProjectTimelineWire,
 } from './video-tool-page'
@@ -147,4 +148,49 @@ test('projectTimelineToTimelineSegments reconstructs timeline segments from V3 p
   assert.equal(segments[0].sourceStart, 2.0)
   assert.equal(segments[0].duration, 5.0)
   assert.equal(segments[0].visible, true)
+})
+
+test('projectTimelineToTimelineSegments resolves durable source refs back to VideoThread clip media', () => {
+  const timeline: VideoProjectTimelineWire = {
+    schema_version: 1,
+    clips: [{
+      id: 'segment-intro',
+      source_kind: 'source_video',
+      source_ref: 'videosrc_intro',
+      duration_ms: 3000,
+      visible: true,
+    }],
+  }
+  const clips: VideoClip[] = [{
+    id: 'clip-local-id',
+    name: 'intro.mp4',
+    sourceRef: 'videosrc_intro',
+    extension: '.mp4',
+    sizeBytes: 100,
+    modifiedAt: 1,
+  }]
+
+  const [segment] = projectTimelineToTimelineSegments(timeline, {}, clips, 'session-1')
+
+  assert.equal(segment.id, 'segment-intro')
+  assert.equal(segment.clipId, 'clip-local-id')
+  assert.equal(segment.src, '/v1/workspace/video/threads/session-1/clips/media?clip_id=clip-local-id')
+})
+
+test('videoChildSessionMetadata carries canonical project and revision identity', () => {
+  const metadata = videoChildSessionMetadata({
+    thread: {
+      id: 'session-parent', title: 'Launch video', workspacePath: '/workspace', workspaceName: 'workspace',
+      videoFolders: ['/workspace/video'], videoClips: [], videoClipOrder: [], createdAt: 1, updatedAt: 1,
+    },
+    projectId: 'project-primary',
+    revisionId: 'revision-current',
+    folderPath: '/workspace/video',
+    clips: [],
+  })
+
+  assert.equal(metadata.parent_session_id, 'session-parent')
+  assert.equal(metadata.parent_video_project_id, 'project-primary')
+  assert.equal(metadata.parent_video_revision_id, 'revision-current')
+  assert.equal(metadata.lineage_kind, 'video_child')
 })
