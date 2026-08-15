@@ -23,6 +23,13 @@ type ArtifactProjection = pebblestore.V3ArtifactProjection
 type ArtifactCollection = pebblestore.SessionArtifactCollection
 type ArtifactVariant = pebblestore.SessionArtifactVariant
 type ArtifactSelectionReference = pebblestore.SessionArtifactSelectionReference
+type VideoProjectSnapshot = pebblestore.VideoProjectSnapshot
+type VideoProjectRevisionSnapshot = pebblestore.VideoProjectRevisionSnapshot
+type VideoRenderJobSnapshot = pebblestore.VideoRenderJobSnapshot
+type VideoProjectTimeline = pebblestore.VideoProjectTimeline
+type VideoTimelineClip = pebblestore.VideoTimelineClip
+type VideoProjectMutation = pebblestore.V3VideoProjectMutation
+type VideoProjectProjection = pebblestore.V3VideoProjectProjection
 
 type SessionIdempotencyRecord = pebblestore.V3SessionIdempotencyRecord
 
@@ -51,6 +58,11 @@ const (
 	SessionMutationSelectArtifact           = pebblestore.V3SessionMutationSelectArtifact
 	SessionMutationDeleteArtifactVariant    = pebblestore.V3SessionMutationDeleteArtifactVariant
 	SessionMutationDeleteArtifactCollection = pebblestore.V3SessionMutationDeleteArtifactCollection
+	SessionMutationCreateVideoProject         = pebblestore.V3SessionMutationCreateVideoProject
+	SessionMutationUpdateVideoProject         = pebblestore.V3SessionMutationUpdateVideoProject
+	SessionMutationCreateVideoProjectRevision = pebblestore.V3SessionMutationCreateVideoProjectRevision
+	SessionMutationCreateVideoRenderJob       = pebblestore.V3SessionMutationCreateVideoRenderJob
+	SessionMutationUpdateVideoRenderJob       = pebblestore.V3SessionMutationUpdateVideoRenderJob
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
 	RunIntentRunning         = pebblestore.V3RunIntentRunning
@@ -97,6 +109,76 @@ func (s *Service) ValidateSessionArtifactMessageSelections(accountScopeID, userI
 		return nil, errors.New("session store is not configured")
 	}
 	return s.store.ValidateSessionArtifactMessageSelections(accountScopeID, userID, selections)
+}
+
+func (s *Service) GetVideoProject(accountScopeID, sessionID, projectID string) (VideoProjectSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectSnapshot{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetVideoProject(accountScopeID, sessionID, projectID)
+}
+
+func (s *Service) CreateVideoProject(input pebblestore.CreateVideoProjectInput) (VideoProjectSnapshot, *VideoProjectRevisionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectSnapshot{}, nil, errors.New("session store is not configured")
+	}
+	return s.store.CreateVideoProject(input)
+}
+
+func (s *Service) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]VideoProjectSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListVideoProjects(accountScopeID, sessionID, limit)
+}
+
+func (s *Service) CreateVideoProjectRevision(input pebblestore.CreateVideoProjectRevisionInput) (VideoProjectRevisionSnapshot, VideoProjectSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectRevisionSnapshot{}, VideoProjectSnapshot{}, errors.New("session store is not configured")
+	}
+	return s.store.CreateVideoProjectRevision(input)
+}
+
+func (s *Service) GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID string) (VideoProjectRevisionSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectRevisionSnapshot{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID)
+}
+
+func (s *Service) ListVideoProjectRevisions(accountScopeID, sessionID, projectID string, limit int) ([]VideoProjectRevisionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListVideoProjectRevisions(accountScopeID, sessionID, projectID, limit)
+}
+
+func (s *Service) CreateVideoRenderJob(input pebblestore.CreateVideoRenderJobInput) (VideoRenderJobSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoRenderJobSnapshot{}, errors.New("session store is not configured")
+	}
+	return s.store.CreateVideoRenderJob(input)
+}
+
+func (s *Service) GetVideoRenderJob(accountScopeID, sessionID, jobID string) (VideoRenderJobSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return VideoRenderJobSnapshot{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetVideoRenderJob(accountScopeID, sessionID, jobID)
+}
+
+func (s *Service) UpdateVideoRenderJob(input pebblestore.UpdateVideoRenderJobInput) (VideoRenderJobSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoRenderJobSnapshot{}, errors.New("session store is not configured")
+	}
+	return s.store.UpdateVideoRenderJob(input)
+}
+
+func (s *Service) ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]VideoRenderJobSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListVideoRenderJobs(accountScopeID, sessionID, projectID, limit)
 }
 
 func (s *Service) ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]ArtifactCollection, error) {
