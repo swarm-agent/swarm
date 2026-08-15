@@ -109,6 +109,8 @@ done
 require_cmd bash
 require_cmd git
 require_cmd curl
+require_cmd ffmpeg
+require_cmd ffprobe
 require_go
 
 cd "${ROOT_DIR}"

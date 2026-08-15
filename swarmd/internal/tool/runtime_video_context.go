@@ -28,5 +28,5 @@ func VideoRunContextFromContext(ctx context.Context) (VideoRunContext, bool) {
 		return VideoRunContext{}, false
 	}
 	run, ok := ctx.Value(videoRunContextKey{}).(VideoRunContext)
-	return run, ok && run.SessionID != "" && run.RunID != "" && run.MessageID != ""
+	return run, ok && run.SessionID != "" && run.RunID != ""
 }

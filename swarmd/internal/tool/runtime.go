@@ -38,6 +38,7 @@ import (
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
+	"swarm/packages/swarmd/internal/videosource"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -165,6 +166,7 @@ type Runtime struct {
 	artifactAuthority    ArtifactAuthority
 	imageGeneration      ManagedImageGenerationService
 	video                manageVideoService
+	videoSources         *videosource.Service
 	searchCoordinator    *SearchCoordinator
 }
 
@@ -493,10 +495,16 @@ func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGeneratio
 	}
 }
 
-func (r *Runtime) SetManageVideoService(service manageVideoService) {
+func (r *Runtime) SetManageVideoServices(service manageVideoService, sources *videosource.Service) {
 	if r != nil {
 		r.video = service
+		r.videoSources = sources
 	}
+}
+
+// SetManageVideoService remains for focused tests and compatibility wiring.
+func (r *Runtime) SetManageVideoService(service manageVideoService) {
+	r.SetManageVideoServices(service, nil)
 }
 
 func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntimeConfig, error)) {

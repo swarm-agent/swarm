@@ -825,7 +825,8 @@ export function DesktopV3AgenticComposer({
         clear: clearComposerForSubmit,
         attachments,
         selections: artifactSelections,
-        onSubmit: (nextDraft, nextAttachments, nextSelections) => onSubmit(nextDraft, nextAttachments, nextSelections, videoAttachments),
+        videoAttachments,
+        onSubmit,
         onStop,
         onSlashCommand,
       })
@@ -870,6 +871,7 @@ export function DesktopV3AgenticComposer({
       clear: clearComposerForSubmit,
       attachments,
       selections: artifactSelections,
+      videoAttachments,
       onSubmit,
       onStop,
       onSlashCommand,

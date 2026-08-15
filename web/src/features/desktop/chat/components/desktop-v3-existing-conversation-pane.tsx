@@ -128,6 +128,7 @@ import {
 } from "../../session-v3/api";
 import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from "../../session-v3/write-api";
 import { admitComposerFile } from "../services/composer-attachments";
+import type { DesktopVideoSourceAttachment } from "../services/video-source-attachments";
 import {
   clearDesktopV3ExistingMessageOperation,
   continueDesktopV3Conversation,
@@ -2547,7 +2548,7 @@ export function DesktopV3ExistingConversationPane({
     oldestLoadedSeq,
   ]);
 
-  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: import('../services/video-source-attachments').DesktopVideoSourceAttachment[]) {
+  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: DesktopVideoSourceAttachment[]) {
     if (!normalizedSessionId || sending || compacting) return;
 
     setSending(true);
@@ -2767,7 +2768,7 @@ export function DesktopV3ExistingConversationPane({
   const submitRef = useRef(handleSubmit);
   submitRef.current = handleSubmit;
   const stableSubmit = useCallback(
-    (submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[]) => submitRef.current(submittedDraft, attachments, artifactSelections),
+    (submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: DesktopVideoSourceAttachment[]) => submitRef.current(submittedDraft, attachments, artifactSelections, videoAttachments),
     [],
   );
 
@@ -2831,7 +2832,7 @@ export function DesktopV3ExistingConversationPane({
     onDownloadConversation: () => { void handleTranscriptExport('download'); },
   } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
 
-  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, [], []), [stableSubmit]);
+  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, [], [], []), [stableSubmit]);
   const queueGalleryArtifactSelections = useCallback((selections: DesktopV3ArtifactMessageSelection[]) => {
     if (selections.length === 0) return;
     try {

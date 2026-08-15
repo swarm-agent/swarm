@@ -56,10 +56,17 @@ func TestTranscriptionContractBindsTrustedSourceAndFailsClosedAcrossScope(t *tes
 	_, sessions, session, message := setupTranscriptionContractTest(t)
 	attachment, replayed, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
 		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID,
-		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind",
+		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind", NowUnixMs: 100,
 	})
 	if err != nil || replayed || attachment.WorkspaceID != "workspace" || attachment.MessageID != message.ID || attachment.SourceFingerprint == "" {
 		t.Fatalf("bind attachment=%+v replayed=%v err=%v", attachment, replayed, err)
+	}
+	rebound, replayed, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID,
+		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind-retry", NowUnixMs: 200,
+	})
+	if err != nil || !replayed || rebound.Ref != attachment.Ref {
+		t.Fatalf("rebind attachment=%+v replayed=%v err=%v", rebound, replayed, err)
 	}
 	if _, ok, err := sessions.GetTranscriptionAttachment("other-account", session.ID, attachment.Ref); err != nil || ok {
 		t.Fatalf("cross-account attachment lookup ok=%v err=%v", ok, err)
@@ -141,14 +148,14 @@ func TestTranscriptionReadyRequiresDurableValidatedReadBack(t *testing.T) {
 func TestLegacySpeechTranscriptRemainsReadable(t *testing.T) {
 	store, sessions, session, _ := setupTranscriptionContractTest(t)
 	legacy := NormalizedTranscript{
-		SchemaVersion: NormalizedTranscriptLegacyVersion,
-		Ref: "transcript_" + transcriptionDigest("legacy-transcript"),
-		JobRef: "trjob_" + transcriptionDigest("legacy-job"),
+		SchemaVersion:  NormalizedTranscriptLegacyVersion,
+		Ref:            "transcript_" + transcriptionDigest("legacy-transcript"),
+		JobRef:         "trjob_" + transcriptionDigest("legacy-job"),
 		AccountScopeID: session.AccountScopeID, WorkspaceID: "workspace", SessionID: session.ID,
 		MessageID: "message", AttachmentRef: "vatt_" + transcriptionDigest("legacy-attachment"),
 		SourceFingerprint: transcriptionDigest("legacy-source"), ModelGenerated: true,
 		Text: "Legacy spoken words.", Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Text: "Legacy spoken words."}},
-		Metadata: NormalizedTranscriptMetadata{ProviderID: "google", Model: "gemini", ModelSnapshot: "legacy", MediaSettingsHash: "legacy", GeneratedAt: 100},
+		Metadata:   NormalizedTranscriptMetadata{ProviderID: "google", Model: "gemini", ModelSnapshot: "legacy", MediaSettingsHash: "legacy", GeneratedAt: 100},
 		Validation: TranscriptValidation{State: TranscriptValidationValidated, ValidatedAt: 100}, CreatedAt: 100,
 	}
 	legacy, err := normalizeAndValidateTranscript(legacy)
@@ -188,7 +195,7 @@ func TestTranscriptionReadyAcceptsVisualOnlyTimeline(t *testing.T) {
 	}
 	transcript, ready, _, err := sessions.CommitNormalizedTranscript(CommitNormalizedTranscriptInput{
 		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
-		Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 2000, Visual: "A cursor opens Settings.", Text: "Visual: A cursor opens Settings."}},
+		Segments:   []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 2000, Visual: "A cursor opens Settings.", Text: "Visual: A cursor opens Settings."}},
 		DurationMs: 2000, Summary: "A silent settings demonstration.", GeneratedAt: 100,
 	})
 	if err != nil || ready.Status != TranscriptionJobReady || transcript.Metadata.Summary == "" || transcript.Segments[0].Speech != "" || !strings.Contains(transcript.Text, "A silent settings demonstration") {

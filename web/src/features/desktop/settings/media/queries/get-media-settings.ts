@@ -97,12 +97,14 @@ export interface VideoTranscript {
   details_truncated?: boolean
 }
 
-export async function startVideoTranscription(workspacePath: string, videoRef: string, focusNotes: string): Promise<{ session_id: string; job: VideoTranscriptionJob }> {
-  return requestJson<{ session_id: string; job: VideoTranscriptionJob }>('/v1/workspace/video/transcribe', {
+export async function startVideoTranscription(workspacePath: string, videoRefs: string[], focusNotes: string): Promise<{ session_id: string; jobs: VideoTranscriptionJob[] }> {
+  const response = await requestJson<{ session_id: string; jobs?: VideoTranscriptionJob[]; job?: VideoTranscriptionJob }>('/v1/workspace/video/transcribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace_path: workspacePath, video_ref: videoRef, focus_notes: focusNotes }),
+    body: JSON.stringify({ workspace_path: workspacePath, video_refs: videoRefs, focus_notes: focusNotes }),
   })
+  const jobs = Array.isArray(response.jobs) ? response.jobs : response.job ? [response.job] : []
+  return { session_id: response.session_id, jobs }
 }
 
 export async function getVideoTranscriptionStatus(workspacePath: string, sessionID: string, jobRef: string, signal?: AbortSignal): Promise<VideoTranscriptionJob> {

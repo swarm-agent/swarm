@@ -11,6 +11,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videosource"
 )
 
 type videoThreadCreateRequest struct {
@@ -274,7 +275,7 @@ func resolveVideoClipFilePath(clipPath string) (string, error) {
 	}
 	clipPath = filepath.Clean(absClipPath)
 	ext := strings.ToLower(filepath.Ext(clipPath))
-	if _, ok := acceptedVideoExtensions[ext]; !ok {
+	if !videosource.IsAcceptedVideoExtension(ext) {
 		return "", errors.New("video clip extension is not accepted")
 	}
 	return clipPath, nil

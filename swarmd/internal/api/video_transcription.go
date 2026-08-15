@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videosource"
 	"swarm/packages/swarmd/internal/videotranscription"
 )
 
@@ -121,9 +123,10 @@ func (s *Server) handleWorkspaceVideoTranscribe(w http.ResponseWriter, r *http.R
 		return
 	}
 	var req struct {
-		WorkspacePath string `json:"workspace_path"`
-		VideoRef      string `json:"video_ref"`
-		FocusNotes    string `json:"focus_notes"`
+		WorkspacePath string   `json:"workspace_path"`
+		VideoRef      string   `json:"video_ref"`
+		VideoRefs     []string `json:"video_refs"`
+		FocusNotes    string   `json:"focus_notes"`
 	}
 	if err := decodeJSONLimited(w, r, &req, directVideoRequestMaxBytes); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -134,9 +137,21 @@ func (s *Server) handleWorkspaceVideoTranscribe(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	videoRef := strings.TrimSpace(req.VideoRef)
-	if videoRef == "" {
-		writeError(w, http.StatusBadRequest, errors.New("video_ref is required"))
+	videoRefs := make([]string, 0, len(req.VideoRefs)+1)
+	seenVideoRefs := make(map[string]struct{}, len(req.VideoRefs)+1)
+	for _, candidate := range append([]string{req.VideoRef}, req.VideoRefs...) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, duplicate := seenVideoRefs[candidate]; duplicate {
+			continue
+		}
+		seenVideoRefs[candidate] = struct{}{}
+		videoRefs = append(videoRefs, candidate)
+	}
+	if len(videoRefs) == 0 || len(videoRefs) > pebblestore.SessionVideoAttachmentMaxCount {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("video_refs requires between 1 and %d unique video references", pebblestore.SessionVideoAttachmentMaxCount))
 		return
 	}
 	session, err := s.resolveDirectVideoSession(principal, req.WorkspacePath, "")
@@ -146,64 +161,86 @@ func (s *Server) handleWorkspaceVideoTranscribe(w http.ResponseWriter, r *http.R
 	}
 
 	workspaceID := transcriptionWorkspaceIDForAPI(session)
-	record, ok, err := s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, workspaceID, videoRef)
-	if err != nil || !ok {
-		if err == nil {
-			err = errors.New("video reference is not registered in the authenticated workspace")
+	records := make([]pebblestore.VideoSourceRecord, 0, len(videoRefs))
+	for _, videoRef := range videoRefs {
+		record, found, readErr := s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, workspaceID, videoRef)
+		if readErr != nil || !found {
+			if readErr == nil {
+				readErr = errors.New("video reference is not registered in the authenticated workspace")
+			}
+			writeError(w, http.StatusBadRequest, readErr)
+			return
 		}
-		writeError(w, http.StatusBadRequest, err)
-		return
+		records = append(records, record)
 	}
 	resolution, err := s.workspace.ListSourceMediaDirectoriesForPrincipal(principal, req.WorkspacePath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	registeredRoot := false
+	registeredRoots := make(map[string]struct{}, len(resolution.SourceMediaDirectories))
 	for _, root := range resolution.SourceMediaDirectories {
-		resolvedRoot, resolveErr := resolveVideoFolderPath(root)
-		if resolveErr == nil && resolvedRoot == record.RootPath {
-			registeredRoot = true
-			break
+		if resolvedRoot, resolveErr := videosource.ResolveRootPath(root); resolveErr == nil {
+			registeredRoots[resolvedRoot] = struct{}{}
 		}
 	}
-	if !registeredRoot {
-		writeError(w, http.StatusBadRequest, errors.New("video reference no longer belongs to a registered source-media root"))
-		return
+	for _, record := range records {
+		if _, registered := registeredRoots[record.RootPath]; !registered {
+			writeError(w, http.StatusBadRequest, errors.New("video reference no longer belongs to a registered source-media root"))
+			return
+		}
 	}
 
-	messageID := "media-transcription-" + record.SourceFingerprint
+	fingerprints := make([]string, 0, len(records))
+	for _, record := range records {
+		fingerprints = append(fingerprints, record.SourceFingerprint)
+	}
+	messageDigest := sha256.Sum256([]byte(strings.Join(fingerprints, "\x00")))
+	messagePayloadHash := hex.EncodeToString(messageDigest[:])
+	messageID := "media-transcription-" + messagePayloadHash
+	if len(records) == 1 {
+		messagePayloadHash = records[0].SourceFingerprint
+		messageID = "media-transcription-" + messagePayloadHash
+	}
 	if message, exists, readErr := s.sessions.Store().GetV3MessageByID(session.ID, messageID); readErr != nil {
 		writeError(w, http.StatusBadRequest, readErr)
 		return
 	} else if exists {
-		if message.Role != "user" || message.AccountScopeID != principal.AccountScopeID || message.UserID != principal.UserID ||
-			len(message.VideoAttachments) != 1 || message.VideoAttachments[0].Ref != record.Ref ||
-			message.VideoAttachments[0].SourceFingerprint != record.SourceFingerprint {
+		if message.Role != "user" || message.AccountScopeID != principal.AccountScopeID || message.UserID != principal.UserID || len(message.VideoAttachments) != len(records) {
 			writeError(w, http.StatusConflict, errors.New("direct transcription message authority is inconsistent"))
 			return
 		}
+		for index, record := range records {
+			if message.VideoAttachments[index].Ref != record.Ref || message.VideoAttachments[index].SourceFingerprint != record.SourceFingerprint {
+				writeError(w, http.StatusConflict, errors.New("direct transcription message authority is inconsistent"))
+				return
+			}
+		}
 	} else {
+		attachments := make([]pebblestore.SessionVideoAttachmentReference, 0, len(records))
+		for _, record := range records {
+			attachments = append(attachments, pebblestore.SessionVideoAttachmentReference{
+				Ref: record.Ref, Name: record.DisplayName, MIMEType: record.MIMEType,
+				SizeBytes: record.SizeBytes, SourceFingerprint: record.SourceFingerprint,
+			})
+		}
 		_, err = s.sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{
 			SessionID:       session.ID,
 			UserID:          principal.UserID,
 			AccountScopeID:  principal.AccountScopeID,
 			ClientRequestID: messageID,
 			IdempotencyKey:  messageID,
-			PayloadHash:     record.SourceFingerprint,
-			RequestHash:     record.SourceFingerprint,
+			PayloadHash:     messagePayloadHash,
+			RequestHash:     messagePayloadHash,
 			Kind:            pebblestore.V3SessionMutationAppendMessage,
 			Message: &pebblestore.MessageSnapshot{
-				ID:             messageID,
-				SessionID:      session.ID,
-				UserID:         principal.UserID,
-				AccountScopeID: principal.AccountScopeID,
-				Role:           "user",
-				Content:        "Direct media transcription",
-				VideoAttachments: []pebblestore.SessionVideoAttachmentReference{{
-					Ref: record.Ref, Name: record.DisplayName, MIMEType: record.MIMEType,
-					SizeBytes: record.SizeBytes, SourceFingerprint: record.SourceFingerprint,
-				}},
+				ID:               messageID,
+				SessionID:        session.ID,
+				UserID:           principal.UserID,
+				AccountScopeID:   principal.AccountScopeID,
+				Role:             "user",
+				Content:          "Direct media transcription",
+				VideoAttachments: attachments,
 			},
 		})
 		if err != nil {
@@ -217,13 +254,19 @@ func (s *Server) handleWorkspaceVideoTranscribe(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if len(started.Jobs) != 1 {
-		writeError(w, http.StatusInternalServerError, errors.New("direct transcription did not create exactly one job"))
+	if len(started.Jobs) != len(records) {
+		writeError(w, http.StatusInternalServerError, errors.New("direct transcription did not create one job per selected video"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "session_id": session.ID, "job": safeDirectVideoJob(started.Jobs[0]),
-	})
+	safeJobs := make([]map[string]any, 0, len(started.Jobs))
+	for _, job := range started.Jobs {
+		safeJobs = append(safeJobs, safeDirectVideoJob(job))
+	}
+	response := map[string]any{"ok": true, "session_id": session.ID, "jobs": safeJobs}
+	if len(safeJobs) == 1 {
+		response["job"] = safeJobs[0]
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleWorkspaceVideoTranscribeStatus(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +310,19 @@ func (s *Server) handleWorkspaceVideoTranscribeRead(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, errors.New("transcript is outside the direct transcription session scope"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "transcript": safeDirectVideoTranscript(transcript)})
+	response := map[string]any{"ok": true, "transcript": safeDirectVideoTranscript(transcript)}
+	if req.IncludeIndex {
+		index, manifest, indexErr := videotranscription.BuildVideoSectionIndex(transcript)
+		if indexErr != nil {
+			writeError(w, http.StatusBadRequest, indexErr)
+			return
+		}
+		evidence, _ := videotranscription.BuildVideoEvidence(transcript, req.StartMs, req.EndMs)
+		response["section_index"] = index
+		response["evidence"] = evidence
+		response["splice_manifest"] = manifest
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleWorkspaceVideoTranscribeCancel(w http.ResponseWriter, r *http.Request) {
@@ -291,8 +346,11 @@ func (s *Server) handleWorkspaceVideoTranscribeCancel(w http.ResponseWriter, r *
 type directVideoJobRequest struct {
 	WorkspacePath string `json:"workspace_path"`
 	SessionID     string `json:"session_id"`
-	JobRef         string `json:"job_ref"`
-	TranscriptRef  string `json:"transcript_ref"`
+	JobRef        string `json:"job_ref"`
+	TranscriptRef string `json:"transcript_ref"`
+	StartMs       int64  `json:"start_ms"`
+	EndMs         int64  `json:"end_ms"`
+	IncludeIndex  bool   `json:"include_index"`
 }
 
 func (s *Server) directVideoRequest(w http.ResponseWriter, r *http.Request, target *directVideoJobRequest) (identity.Principal, pebblestore.SessionSnapshot, bool) {

@@ -265,6 +265,14 @@ func (s *SessionStore) BindVideoTranscriptionAttachment(input BindVideoTranscrip
 	if err != nil {
 		return TranscriptionAttachmentRecord{}, false, err
 	}
+	if stored, exists, readErr := s.GetTranscriptionAttachment(input.AccountScopeID, input.SessionID, record.Ref); readErr != nil {
+		return TranscriptionAttachmentRecord{}, false, readErr
+	} else if exists {
+		if !sameTranscriptionAttachmentSource(stored, record) {
+			return TranscriptionAttachmentRecord{}, false, errors.New("transcription attachment authority is inconsistent")
+		}
+		return stored, true, nil
+	}
 	if input.ClientRequestID == "" {
 		input.ClientRequestID = "bind:" + record.Ref
 	}
@@ -517,6 +525,51 @@ func (s *SessionStore) FindNormalizedTranscriptByRef(accountScopeID, userID, wor
 			return errors.New("transcript reference collision across workspace records")
 		}
 		found = candidate
+		return nil
+	})
+	if err != nil || found.Ref == "" {
+		return NormalizedTranscript{}, false, err
+	}
+	originalDigest := found.ContentDigest
+	normalized, err := normalizeAndValidateTranscript(found)
+	if err != nil || normalized.ContentDigest != originalDigest {
+		if err == nil {
+			err = errors.New("transcript content digest mismatch")
+		}
+		return NormalizedTranscript{}, false, err
+	}
+	return normalized, true, nil
+}
+
+func (s *SessionStore) FindNormalizedTranscriptBySourceFingerprint(accountScopeID, userID, workspaceID, sourceFingerprint string) (NormalizedTranscript, bool, error) {
+	accountScopeID, userID, workspaceID, sourceFingerprint = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), strings.TrimSpace(workspaceID), strings.ToLower(strings.TrimSpace(sourceFingerprint))
+	if accountScopeID == "" || userID == "" || workspaceID == "" || !validFingerprint(sourceFingerprint) {
+		return NormalizedTranscript{}, false, errors.New("valid account, user, workspace, and source fingerprint are required")
+	}
+	var found NormalizedTranscript
+	var scanned int
+	err := s.store.IteratePrefix(fmt.Sprintf("v3/transcription/transcript/%s/", keyPart(accountScopeID)), 10_001, func(_ string, value []byte) error {
+		scanned++
+		if scanned > 10_000 {
+			return errors.New("source transcript lookup exceeded the bounded record limit")
+		}
+		var candidate NormalizedTranscript
+		if err := json.Unmarshal(value, &candidate); err != nil {
+			return err
+		}
+		if candidate.AccountScopeID != accountScopeID || candidate.WorkspaceID != workspaceID || candidate.SourceFingerprint != sourceFingerprint {
+			return nil
+		}
+		job, ok, err := s.GetTranscriptionJob(accountScopeID, candidate.SessionID, candidate.JobRef)
+		if err != nil {
+			return err
+		}
+		if !ok || job.UserID != userID || job.WorkspaceID != workspaceID || job.Status != TranscriptionJobReady {
+			return nil
+		}
+		if found.Ref == "" || candidate.CreatedAt > found.CreatedAt {
+			found = candidate
+		}
 		return nil
 	})
 	if err != nil || found.Ref == "" {
@@ -1088,6 +1141,21 @@ func transcriptionWorkspaceID(session SessionSnapshot) string {
 		}
 	}
 	return "workspace_" + transcriptionDigest(filepath.Clean(strings.TrimSpace(session.WorkspacePath)))
+}
+
+func sameTranscriptionAttachmentSource(left, right TranscriptionAttachmentRecord) bool {
+	return left.Ref == right.Ref &&
+		left.AccountScopeID == right.AccountScopeID &&
+		left.UserID == right.UserID &&
+		left.WorkspaceID == right.WorkspaceID &&
+		left.SessionID == right.SessionID &&
+		left.MessageID == right.MessageID &&
+		left.SourceRecordRef == right.SourceRecordRef &&
+		left.SourceThreadID == right.SourceThreadID &&
+		left.SourceClipID == right.SourceClipID &&
+		left.SourceFingerprint == right.SourceFingerprint &&
+		left.MIMEType == right.MIMEType &&
+		left.SizeBytes == right.SizeBytes
 }
 
 func transcriptionMutationHash(kind string, mutation *V3TranscriptionMutation) string {

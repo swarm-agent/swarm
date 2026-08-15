@@ -8,6 +8,7 @@ export interface DesktopVideoSourceAttachment {
   mime_type: string
   size_bytes: number
   source_fingerprint: string
+  transcript_ref?: string
 }
 
 export interface DesktopVideoSourceDirectory {
@@ -25,6 +26,7 @@ interface VideoSourceBrowseResponse {
     mime_type?: string
     size_bytes?: number
     source_fingerprint?: string
+    transcript_ref?: string
   }>
 }
 
@@ -65,8 +67,9 @@ export async function browseDesktopVideoSource(
       const mimeType = String(entry?.mime_type ?? '').trim()
       const fingerprint = String(entry?.source_fingerprint ?? '').trim()
       const size = typeof entry?.size_bytes === 'number' ? entry.size_bytes : 0
+      const transcriptRef = String(entry?.transcript_ref ?? '').trim()
       return ref && name && mimeType.startsWith('video/') && fingerprint && size > 0
-        ? [{ ref, name, mime_type: mimeType, size_bytes: size, source_fingerprint: fingerprint }]
+        ? [{ ref, name, mime_type: mimeType, size_bytes: size, source_fingerprint: fingerprint, transcript_ref: transcriptRef || undefined }]
         : []
     }),
   }

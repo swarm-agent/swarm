@@ -32,12 +32,12 @@ test('direct video transcription clients send only workspace and opaque authorit
     return Response.json({ session_id: 'session_1', job: { ref: 'trjob_1', transcript_ref: 'transcript_1', status: 'queued' } })
   }) as typeof fetch
 
-  await startVideoTranscription('/workspace', 'videosrc_1', 'Watch the cursor')
+  await startVideoTranscription('/workspace', ['videosrc_1', 'videosrc_2'], 'Watch the cursor')
   await cancelVideoTranscription('/workspace', 'session_1', 'trjob_1')
   await readVideoTranscript('/workspace', 'session_1', 'transcript_1')
 
   assert.deepEqual(requests.map((request) => request.path), ['/v1/workspace/video/transcribe', '/v1/workspace/video/transcribe/cancel', '/v1/workspace/video/transcribe/read'])
-  assert.deepEqual(requests[0].body, { workspace_path: '/workspace', video_ref: 'videosrc_1', focus_notes: 'Watch the cursor' })
+  assert.deepEqual(requests[0].body, { workspace_path: '/workspace', video_refs: ['videosrc_1', 'videosrc_2'], focus_notes: 'Watch the cursor' })
   assert.deepEqual(requests[1].body, { workspace_path: '/workspace', session_id: 'session_1', job_ref: 'trjob_1' })
   assert.deepEqual(requests[2].body, { workspace_path: '/workspace', session_id: 'session_1', transcript_ref: 'transcript_1' })
   assert.equal(JSON.stringify(requests).includes('file_uri'), false)

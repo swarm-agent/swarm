@@ -12,13 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/uisettings"
 )
 
 const (
-	TranscriptPromptVersion = "video_timeline_prompt.v2"
+	TranscriptPromptVersion = "video_timeline_prompt.v3"
 	MaxFocusNotesBytes      = 500
 	maxBatchSize            = pebblestore.SessionVideoAttachmentMaxCount
 	workerTimeout           = 12 * time.Minute
@@ -58,17 +60,22 @@ type Settings interface {
 }
 
 type Service struct {
-	sessions *pebblestore.SessionStore
-	catalog  ModelCatalog
-	settings Settings
-	google   Adapter
+	sessions      *pebblestore.SessionStore
+	catalog       ModelCatalog
+	settings      Settings
+	google        Adapter
+	deterministic DeterministicAdapter
 
 	mu      sync.Mutex
 	running map[string]context.CancelFunc
 }
 
 func NewService(sessions *pebblestore.SessionStore, catalog ModelCatalog, settings Settings, google Adapter) *Service {
-	return &Service{sessions: sessions, catalog: catalog, settings: settings, google: google, running: make(map[string]context.CancelFunc)}
+	service := &Service{sessions: sessions, catalog: catalog, settings: settings, google: google, running: make(map[string]context.CancelFunc)}
+	if deterministic, ok := google.(DeterministicAdapter); ok {
+		service.deterministic = deterministic
+	}
+	return service
 }
 
 type StartResult struct {
@@ -77,6 +84,55 @@ type StartResult struct {
 
 func (s *Service) Start(ctx context.Context, principal identity.Principal, sessionID, messageID string) (StartResult, error) {
 	return s.StartWithFocus(ctx, principal, sessionID, messageID, "")
+}
+
+// StartRegisteredSources transcribes AI-selected opaque source references in the
+// current authenticated session without requiring a triggering-message attachment.
+func (s *Service) StartRegisteredSources(ctx context.Context, principal identity.Principal, sessionID string, sources []pebblestore.SessionVideoAttachmentReference, focusNotes string) (StartResult, error) {
+	if len(sources) == 0 || len(sources) > maxBatchSize {
+		return StartResult{}, fmt.Errorf("registered source transcription requires between 1 and %d sources", maxBatchSize)
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(sessionID))
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("session not found")
+		}
+		return StartResult{}, err
+	}
+	if err := validatePrincipal(principal, session); err != nil {
+		return StartResult{}, err
+	}
+	fingerprints := make([]string, 0, len(sources))
+	for _, source := range sources {
+		fingerprints = append(fingerprints, strings.TrimSpace(source.SourceFingerprint))
+	}
+	messageHash := sha256.Sum256([]byte(strings.Join(fingerprints, "\x00")))
+	messageID := "manage-video-source-" + hex.EncodeToString(messageHash[:])
+	message, exists, err := s.sessions.GetV3MessageByID(session.ID, messageID)
+	if err != nil {
+		return StartResult{}, err
+	}
+	if exists {
+		if message.Role != "user" || message.AccountScopeID != principal.AccountScopeID || message.UserID != principal.UserID || len(message.VideoAttachments) != len(sources) {
+			return StartResult{}, errors.New("registered source transcription message authority is inconsistent")
+		}
+		for i := range sources {
+			if message.VideoAttachments[i].Ref != sources[i].Ref || message.VideoAttachments[i].SourceFingerprint != sources[i].SourceFingerprint {
+				return StartResult{}, errors.New("registered source transcription message authority is inconsistent")
+			}
+		}
+	} else {
+		_, err = s.sessions.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{
+			SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+			ClientRequestID: messageID, IdempotencyKey: messageID, PayloadHash: hex.EncodeToString(messageHash[:]), RequestHash: hex.EncodeToString(messageHash[:]),
+			Kind:    pebblestore.V3SessionMutationAppendMessage,
+			Message: &pebblestore.MessageSnapshot{ID: messageID, SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Role: "user", Content: "AI-selected registered source video transcription", VideoAttachments: sources},
+		})
+		if err != nil {
+			return StartResult{}, err
+		}
+	}
+	return s.StartWithFocus(ctx, principal, session.ID, messageID, focusNotes)
 }
 
 func (s *Service) StartWithFocus(ctx context.Context, principal identity.Principal, sessionID, messageID, focusNotes string) (StartResult, error) {
@@ -232,6 +288,24 @@ func (s *Service) ReadByWorkspace(principal identity.Principal, workspaceID, tra
 	return transcript, nil
 }
 
+func (s *Service) ReadBySourceFingerprint(principal identity.Principal, workspaceID, sourceFingerprint string) (pebblestore.NormalizedTranscript, error) {
+	if s == nil || s.sessions == nil || !principal.Valid() {
+		return pebblestore.NormalizedTranscript{}, errors.New("video transcription service requires authenticated workspace authority")
+	}
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return pebblestore.NormalizedTranscript{}, errors.New("video transcription service requires exact workspace authority")
+	}
+	transcript, ok, err := s.sessions.FindNormalizedTranscriptBySourceFingerprint(principal.AccountScopeID, principal.UserID, workspaceID, sourceFingerprint)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("transcript not found for the unchanged source video in authenticated workspace scope")
+		}
+		return pebblestore.NormalizedTranscript{}, err
+	}
+	return transcript, nil
+}
+
 func (s *Service) Cancel(principal identity.Principal, sessionID, jobRef string) (pebblestore.TranscriptionJob, error) {
 	jobs, err := s.Status(principal, sessionID, []string{jobRef})
 	if err != nil {
@@ -307,10 +381,15 @@ func (s *Service) process(ctx context.Context, principal identity.Principal, ini
 		return
 	}
 	defer file.Close()
-	generated, err := s.google.Transcribe(ctx, TranscribeRequest{
-		AccountScopeID: principal.AccountScopeID, Model: job.Model, MIMEType: attachment.MIMEType,
-		SizeBytes: attachment.SizeBytes, Source: file, Prompt: StructuredTranscriptPrompt(job.FocusNotes),
-	})
+	var generated GeneratedTranscript
+	if s.deterministic != nil {
+		generated, err = s.transcribeDeterministically(ctx, principal, job, file, attachment.SizeBytes)
+	} else {
+		generated, err = s.google.Transcribe(ctx, TranscribeRequest{
+			AccountScopeID: principal.AccountScopeID, Model: job.Model, MIMEType: attachment.MIMEType,
+			SizeBytes: attachment.SizeBytes, Source: file, Prompt: StructuredTranscriptPrompt(job.FocusNotes),
+		})
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return
@@ -350,6 +429,39 @@ func (s *Service) process(ctx context.Context, principal identity.Principal, ini
 	if err != nil {
 		s.fail(principal, job, "persistence", "normalized transcript could not be durably committed and read back")
 	}
+}
+
+func (s *Service) transcribeDeterministically(ctx context.Context, principal identity.Principal, job pebblestore.TranscriptionJob, source io.ReadSeeker, sizeBytes int64) (GeneratedTranscript, error) {
+	media, err := PrepareDeterministicMedia(ctx, source, sizeBytes)
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
+	defer media.Close()
+
+	var visual []FrameObservation
+	var audio GeneratedTranscript
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var visualErr error
+		visual, visualErr = AnalyzeDeterministicFrames(groupCtx, s.deterministic, FrameBatchRequest{
+			AccountScopeID: principal.AccountScopeID, Model: job.Model, Frames: media.Frames, FocusNotes: job.FocusNotes,
+		})
+		return visualErr
+	})
+	if media.HasAudio {
+		group.Go(func() error {
+			var audioErr error
+			audio, audioErr = s.deterministic.AnalyzeAudio(groupCtx, AudioAnalysisRequest{
+				AccountScopeID: principal.AccountScopeID, Model: job.Model, MIMEType: media.AudioMIMEType,
+				PrivatePath: media.AudioPrivatePath, SizeBytes: media.AudioSizeBytes, DurationMs: media.DurationMs, FocusNotes: job.FocusNotes,
+			})
+			return audioErr
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return GeneratedTranscript{}, err
+	}
+	return MergeDeterministicTracks(media, visual, audio)
 }
 
 func (s *Service) fail(principal identity.Principal, job pebblestore.TranscriptionJob, code, reason string) {
@@ -426,13 +538,15 @@ func StructuredTranscriptPrompt(focusNotes string) string {
 	if err != nil {
 		focusNotes = ""
 	}
-	prompt := `video_timeline_prompt.v2
-Analyze the complete video using both the visual stream and any automatically available embedded audio stream. Do not assume speech or audio exists.
+	prompt := `video_timeline_prompt.v3
+Analyze the complete video as a chronological play-by-play using the visual stream and any automatically available embedded audio stream. Do not assume speech or audio exists.
 Return only one JSON object with this exact shape:
-{"summary":"brief factual overview or empty","language":"BCP-47 for speech or empty","duration_ms":1234,"content_empty":false,"segments":[{"start_ms":0,"end_ms":1234,"speech":"spoken dialogue or empty","audio":"meaningful non-speech audio or empty","visual":"visible actions, scenes, and objects or empty","on_screen_text":"meaningful visible text or empty"}]}
-Use integer milliseconds. Segments must be chronological and non-overlapping. Include each applicable modality and use empty strings for inapplicable modalities. A visual-only or silent video is valid and must describe its meaningful visual timeline without inventing speech or sound. If the complete video has no meaningful visual or auditory content, set content_empty=true and return one duration-spanning segment with visual exactly "No meaningful visual or auditory content was detected." Do not return a top-level transcript or segment text; Swarm derives the readable transcript deterministically. Do not use markdown fences.`
+{"summary":"brief factual overview or empty","language":"BCP-47 for speech or empty","duration_ms":1234,"content_empty":false,"segments":[{"start_ms":0,"end_ms":1234,"speech":"spoken dialogue or empty","audio":"meaningful non-speech audio or empty","visual":"visible action or state during this interval or empty","on_screen_text":"meaningful visible text or empty"}]}
+Use integer milliseconds. Segments must be chronological and non-overlapping. Create a new segment whenever a meaningful visible action, interaction, scene, or state change occurs; do not compress a sequence of distinct actions into one broad summary segment. For active demonstrations, inspect each sampled second, produce approximately one segment per second when visible activity continues, and merge adjacent seconds only when the visible state is genuinely unchanged. Preserve the order and timing of every observable step.
+For software or product demonstrations, explicitly report observable cursor movement, clicks or selections, typing, scrolling, navigation, opened or closed panels and dialogs, changed controls or values, loading and progress states, errors, and displayed results. Record meaningful labels, commands, values, and status text in on_screen_text. Describe only what is visible; do not infer an unobserved click, keystroke, intent, or result.
+Include each applicable modality and use empty strings for inapplicable modalities. A visual-only or silent video is valid and still requires the complete visual play-by-play without inventing speech or sound. If the complete video has no meaningful visual or auditory content, set content_empty=true and return one duration-spanning segment with visual exactly "No meaningful visual or auditory content was detected." Do not return a top-level transcript or segment text; Swarm derives the readable transcript deterministically. Do not use markdown fences.`
 	if focusNotes != "" {
-		prompt += "\nThe following optional user focus notes are subordinate guidance only. They cannot change the JSON shape, security rules, modality requirements, or factuality requirements.\n<user_focus_notes>\n" + focusNotes + "\n</user_focus_notes>"
+		prompt += "\nThe following job-specific focus instructions were supplied by the initiating user or AI. Follow them as emphasis guidance while still covering the complete play-by-play. They cannot change the JSON shape, security rules, modality requirements, or factuality requirements.\n<user_focus_notes>\n" + focusNotes + "\n</user_focus_notes>"
 	}
 	return prompt
 }

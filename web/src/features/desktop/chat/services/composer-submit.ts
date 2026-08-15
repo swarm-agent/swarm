@@ -2,13 +2,14 @@ import { buildDesktopSlashPaletteState, parseDesktopTaskCommand, type DesktopSla
 
 export type DesktopComposerSubmitResult = 'submitted' | 'submit-failed' | 'stopped' | 'background-router-started' | 'background-router-failed'
 
-export interface SubmitDesktopComposerInput<TAttachment = never, TSelection = never> {
+export interface SubmitDesktopComposerInput<TAttachment = never, TSelection = never, TVideoAttachment = never> {
   draft: string
   canStop: boolean
   clear: () => void
   attachments?: TAttachment[]
   selections?: TSelection[]
-  onSubmit: (draft: string, attachments: TAttachment[], selections: TSelection[]) => void | Promise<void>
+  videoAttachments?: TVideoAttachment[]
+  onSubmit: (draft: string, attachments: TAttachment[], selections: TSelection[], videoAttachments: TVideoAttachment[]) => void | Promise<void>
   onStop?: () => void | Promise<void>
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
 }
@@ -18,7 +19,7 @@ export function desktopComposerBackgroundRouterCommand(draft: string): DesktopSl
   return exactMatch?.action.kind === 'start-background-router-session' ? exactMatch : null
 }
 
-export async function submitDesktopComposer<TAttachment, TSelection = never>(input: SubmitDesktopComposerInput<TAttachment, TSelection>): Promise<DesktopComposerSubmitResult> {
+export async function submitDesktopComposer<TAttachment, TSelection = never, TVideoAttachment = never>(input: SubmitDesktopComposerInput<TAttachment, TSelection, TVideoAttachment>): Promise<DesktopComposerSubmitResult> {
   const backgroundRouterCommand = desktopComposerBackgroundRouterCommand(input.draft)
 
   if (backgroundRouterCommand) {
@@ -43,7 +44,7 @@ export async function submitDesktopComposer<TAttachment, TSelection = never>(inp
   }
 
   try {
-    await input.onSubmit(input.draft, input.attachments ?? [], input.selections ?? [])
+    await input.onSubmit(input.draft, input.attachments ?? [], input.selections ?? [], input.videoAttachments ?? [])
   } catch {
     return 'submit-failed'
   }

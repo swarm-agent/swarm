@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/workspace"
@@ -243,7 +243,8 @@ func newVideoWorkspaceSecurityServer(t *testing.T, principal identity.Principal,
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
-	server := NewServer(nil, nil, nil, nil, nil, workspaceService, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
+	sessionService := session.NewService(pebblestore.NewSessionStore(db), nil)
+	server := NewServer(nil, nil, nil, nil, sessionService, workspaceService, nil, nil, nil, nil, nil, nil, stream.NewHub(nil))
 	videoStore := pebblestore.NewVideoThreadStore(db)
 	server.SetVideoThreadStore(videoStore)
 	return server, videoStore

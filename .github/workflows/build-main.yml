@@ -46,6 +46,11 @@ jobs:
       - name: Check for committed secrets
         run: ./scripts/check-secrets.sh
 
+      - name: Install deterministic video runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:

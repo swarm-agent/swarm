@@ -167,6 +167,16 @@ func sessionVideoWorkspaceIDs(session SessionSnapshot) []string {
 	return ids
 }
 
+// ValidateVideoSourceRecord revalidates one private source record without
+// exposing its path or file handle to callers.
+func ValidateVideoSourceRecord(record VideoSourceRecord) error {
+	file, err := openValidatedVideoSource(record)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
 func openValidatedVideoSource(record VideoSourceRecord) (*os.File, error) {
 	root, err := os.OpenRoot(record.RootPath)
 	if err != nil {
