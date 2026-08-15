@@ -22,13 +22,14 @@ type manageVideoService interface {
 	Start(ctx context.Context, principal identity.Principal, sessionID, messageID string) (videotranscription.StartResult, error)
 	Status(principal identity.Principal, sessionID string, refs []string) ([]pebblestore.TranscriptionJob, error)
 	Read(principal identity.Principal, sessionID, transcriptRef string) (pebblestore.NormalizedTranscript, error)
+	ReadByWorkspace(principal identity.Principal, workspaceID, transcriptRef string) (pebblestore.NormalizedTranscript, error)
 	Cancel(principal identity.Principal, sessionID, jobRef string) (pebblestore.TranscriptionJob, error)
 }
 
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect video attachments on the trusted triggering user message, start a bounded transcription batch, check exact job references, cancel one job, or read one durably stored transcript by exact opaque reference. Session, account, workspace, message, and source authority come only from trusted run context; paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect video attachments on the trusted triggering user message, start a bounded transcription batch, check exact job references, cancel one job, or read one durably stored workspace transcript by exact opaque reference. Starts remain restricted to the triggering user message; transcript reuse also requires authenticated account, user, and workspace authority. Paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -109,7 +110,20 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	case "read_transcript":
 		transcript, err := r.video.Read(scope.Principal, scope.SessionID, strings.TrimSpace(asString(args["transcript_ref"])))
 		if err != nil {
-			return "", err
+			workspaceID := ""
+			for _, key := range []string{"workspace_id", "swarm_v3_source_workspace_id"} {
+				if value, ok := session.Metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+					workspaceID = strings.TrimSpace(value)
+					break
+				}
+			}
+			if workspaceID == "" {
+				return "", err
+			}
+			transcript, err = r.video.ReadByWorkspace(scope.Principal, workspaceID, strings.TrimSpace(asString(args["transcript_ref"])))
+			if err != nil {
+				return "", err
+			}
 		}
 		maxBytes := asInt(args["max_bytes"], 0)
 		if maxBytes <= 0 || maxBytes > manageVideoMaxTranscriptBytes {
@@ -130,6 +144,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			"attachment_ref": transcript.AttachmentRef, "source_fingerprint": transcript.SourceFingerprint,
 			"schema_version": transcript.SchemaVersion, "model_generated": transcript.ModelGenerated,
 			"text": text, "segments": segments, "language": transcript.Metadata.Language, "duration_ms": transcript.Metadata.DurationMs,
+			"summary": transcript.Metadata.Summary, "content_empty": transcript.Metadata.ContentEmpty,
 			"validation": transcript.Validation.State, "content_digest": transcript.ContentDigest,
 			"text_truncated": textTruncated, "segments_truncated": segmentsTruncated,
 		}

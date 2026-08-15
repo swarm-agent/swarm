@@ -27,6 +27,10 @@ func TestVideoThreadHandlersRequireProductPrincipal(t *testing.T) {
 	for _, request := range []*http.Request{
 		httptest.NewRequest(http.MethodGet, "/v1/workspace/video/threads?workspace_path=/workspace", nil),
 		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/scan", bytes.NewReader([]byte(`{"workspace_path":"/workspace","folder_path":"/workspace"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe", bytes.NewReader([]byte(`{"workspace_path":"/workspace","video_ref":"videosrc_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe/status", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","job_ref":"trjob_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe/read", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","transcript_ref":"transcript_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe/cancel", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","job_ref":"trjob_test"}`))),
 		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/storage/reveal?thread_id=thread", nil),
 	} {
 		recorder := httptest.NewRecorder()
@@ -35,6 +39,14 @@ func TestVideoThreadHandlersRequireProductPrincipal(t *testing.T) {
 			server.handleWorkspaceVideoThreads(recorder, request)
 		case "/v1/workspace/video/scan":
 			server.handleWorkspaceVideoScan(recorder, request)
+		case "/v1/workspace/video/transcribe":
+			server.handleWorkspaceVideoTranscribe(recorder, request)
+		case "/v1/workspace/video/transcribe/status":
+			server.handleWorkspaceVideoTranscribeStatus(recorder, request)
+		case "/v1/workspace/video/transcribe/read":
+			server.handleWorkspaceVideoTranscribeRead(recorder, request)
+		case "/v1/workspace/video/transcribe/cancel":
+			server.handleWorkspaceVideoTranscribeCancel(recorder, request)
 		default:
 			server.handleVideoStorageReveal(recorder, request)
 		}

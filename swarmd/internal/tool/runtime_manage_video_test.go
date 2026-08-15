@@ -67,6 +67,9 @@ func (fakeManageVideoService) Status(identity.Principal, string, []string) ([]pe
 func (fakeManageVideoService) Read(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
 	return pebblestore.NormalizedTranscript{}, nil
 }
+func (fakeManageVideoService) ReadByWorkspace(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
+	return pebblestore.NormalizedTranscript{}, nil
+}
 func (fakeManageVideoService) Cancel(identity.Principal, string, string) (pebblestore.TranscriptionJob, error) {
 	return pebblestore.TranscriptionJob{}, nil
 }

@@ -51,3 +51,44 @@ export function addSourceMediaDirectory(workspacePath: string, directoryPath: st
 export function removeSourceMediaDirectory(workspacePath: string, directoryPath: string): Promise<string[]> {
   return mutateSourceMediaDirectory('remove', workspacePath, directoryPath)
 }
+
+export interface VideoTranscriptionJob {
+  ref: string
+  transcript_ref: string
+  status: 'queued' | 'uploading' | 'processing' | 'partial' | 'ready' | 'failed' | 'cancelled' | 'stale'
+  failure_reason?: string
+}
+
+export interface VideoTranscript {
+  ref: string
+  text: string
+  segments: Array<{ start_ms: number; end_ms: number; speech?: string; audio?: string; visual?: string; on_screen_text?: string; text: string }>
+  metadata: { language?: string; duration_ms?: number; summary?: string; content_empty?: boolean }
+  validation: { state: string }
+}
+
+export async function startVideoTranscription(workspacePath: string, videoRef: string, focusNotes: string): Promise<{ session_id: string; job: VideoTranscriptionJob }> {
+  return requestJson<{ session_id: string; job: VideoTranscriptionJob }>('/v1/workspace/video/transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_path: workspacePath, video_ref: videoRef, focus_notes: focusNotes }),
+  })
+}
+
+export async function getVideoTranscriptionStatus(workspacePath: string, sessionID: string, jobRef: string): Promise<VideoTranscriptionJob> {
+  const response = await requestJson<{ job: VideoTranscriptionJob }>('/v1/workspace/video/transcribe/status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_path: workspacePath, session_id: sessionID, job_ref: jobRef }),
+  })
+  return response.job
+}
+
+export async function readVideoTranscript(workspacePath: string, sessionID: string, transcriptRef: string): Promise<VideoTranscript> {
+  const response = await requestJson<{ transcript: VideoTranscript }>('/v1/workspace/video/transcribe/read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace_path: workspacePath, session_id: sessionID, transcript_ref: transcriptRef }),
+  })
+  return response.transcript
+}

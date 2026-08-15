@@ -3,6 +3,7 @@ package pebblestore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +86,13 @@ func TestTranscriptionContractBindsTrustedSourceAndFailsClosedAcrossScope(t *tes
 	if _, ok, err := sessions.GetTranscriptionJob(session.AccountScopeID, "other-session", job.Ref); err != nil || ok {
 		t.Fatalf("cross-session job lookup ok=%v err=%v", ok, err)
 	}
+	focused, _, err := sessions.CreateTranscriptionJob(CreateTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref,
+		ProviderID: "google", Model: "gemini", ModelSnapshot: "gemini-snapshot", MediaSettingsHash: "settings-v1", FocusNotes: "Watch the title card",
+	})
+	if err != nil || focused.Ref == job.Ref || focused.MediaSettingsHash != job.MediaSettingsHash {
+		t.Fatalf("focused job=%+v base=%+v err=%v", focused, job, err)
+	}
 }
 
 func TestTranscriptionReadyRequiresDurableValidatedReadBack(t *testing.T) {
@@ -118,15 +126,99 @@ func TestTranscriptionReadyRequiresDurableValidatedReadBack(t *testing.T) {
 	}
 	transcript, ready, _, err := sessions.CommitNormalizedTranscript(CommitNormalizedTranscriptInput{
 		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
-		Text: "Model generated words.", Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Text: "Model generated words."}},
+		Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Speech: "Model generated words.", Text: "forged model text"}},
 		Language: "en", DurationMs: 1000, GeneratedAt: 100,
 	})
-	if err != nil || ready.Status != TranscriptionJobReady || !transcript.ModelGenerated || transcript.Validation.State != TranscriptValidationValidated {
+	if err != nil || ready.Status != TranscriptionJobReady || !transcript.ModelGenerated || transcript.Validation.State != TranscriptValidationValidated || !strings.Contains(transcript.Text, "Speech: Model generated words.") || strings.Contains(transcript.Text, "forged model text") {
 		t.Fatalf("commit transcript=%+v ready=%+v err=%v", transcript, ready, err)
 	}
 	loaded, ok, err := sessions.GetNormalizedTranscript(session.AccountScopeID, session.ID, transcript.Ref)
-	if err != nil || !ok || loaded.ContentDigest != transcript.ContentDigest {
+	if err != nil || !ok || loaded.ContentDigest != transcript.ContentDigest || loaded.Text != transcript.Text {
 		t.Fatalf("read transcript=%+v ok=%v err=%v", loaded, ok, err)
+	}
+}
+
+func TestLegacySpeechTranscriptRemainsReadable(t *testing.T) {
+	store, sessions, session, _ := setupTranscriptionContractTest(t)
+	legacy := NormalizedTranscript{
+		SchemaVersion: NormalizedTranscriptLegacyVersion,
+		Ref: "transcript_" + transcriptionDigest("legacy-transcript"),
+		JobRef: "trjob_" + transcriptionDigest("legacy-job"),
+		AccountScopeID: session.AccountScopeID, WorkspaceID: "workspace", SessionID: session.ID,
+		MessageID: "message", AttachmentRef: "vatt_" + transcriptionDigest("legacy-attachment"),
+		SourceFingerprint: transcriptionDigest("legacy-source"), ModelGenerated: true,
+		Text: "Legacy spoken words.", Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Text: "Legacy spoken words."}},
+		Metadata: NormalizedTranscriptMetadata{ProviderID: "google", Model: "gemini", ModelSnapshot: "legacy", MediaSettingsHash: "legacy", GeneratedAt: 100},
+		Validation: TranscriptValidation{State: TranscriptValidationValidated, ValidatedAt: 100}, CreatedAt: 100,
+	}
+	legacy, err := normalizeAndValidateTranscript(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutJSON(KeyNormalizedTranscript(session.AccountScopeID, session.ID, legacy.Ref), legacy); err != nil {
+		t.Fatal(err)
+	}
+	loaded, ok, err := sessions.GetNormalizedTranscript(session.AccountScopeID, session.ID, legacy.Ref)
+	if err != nil || !ok || loaded.SchemaVersion != NormalizedTranscriptLegacyVersion || loaded.Text != legacy.Text {
+		t.Fatalf("legacy transcript=%+v ok=%v err=%v", loaded, ok, err)
+	}
+}
+
+func TestTranscriptionReadyAcceptsVisualOnlyTimeline(t *testing.T) {
+	_, sessions, session, message := setupTranscriptionContractTest(t)
+	attachment, _, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID,
+		VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind-visual",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := sessions.CreateTranscriptionJob(CreateTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref,
+		ProviderID: "google", Model: "gemini", ModelSnapshot: "snapshot", MediaSettingsHash: "settings-v2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = sessions.TransitionTranscriptionJob(TransitionTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
+		ExpectedStatus: TranscriptionJobQueued, Status: TranscriptionJobProcessing, ClientRequestID: "processing-visual",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	transcript, ready, _, err := sessions.CommitNormalizedTranscript(CommitNormalizedTranscriptInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref,
+		Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 2000, Visual: "A cursor opens Settings.", Text: "Visual: A cursor opens Settings."}},
+		DurationMs: 2000, Summary: "A silent settings demonstration.", GeneratedAt: 100,
+	})
+	if err != nil || ready.Status != TranscriptionJobReady || transcript.Metadata.Summary == "" || transcript.Segments[0].Speech != "" || !strings.Contains(transcript.Text, "A silent settings demonstration") {
+		t.Fatalf("transcript=%+v ready=%+v err=%v", transcript, ready, err)
+	}
+}
+
+func TestTranscriptLookupByWorkspaceSupportsDurableCrossSessionRead(t *testing.T) {
+	_, sessions, session, message := setupTranscriptionContractTest(t)
+	attachment, _, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID, VideoThreadID: "registered-source", VideoClipID: message.VideoAttachments[0].Ref, ClientRequestID: "bind-lookup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := sessions.CreateTranscriptionJob(CreateTranscriptionJobInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref, ProviderID: "google", Model: "gemini", ModelSnapshot: "snapshot", MediaSettingsHash: "settings-lookup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = sessions.TransitionTranscriptionJob(TransitionTranscriptionJobInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref, ExpectedStatus: TranscriptionJobQueued, Status: TranscriptionJobProcessing, ClientRequestID: "processing-lookup"}); err != nil {
+		t.Fatal(err)
+	}
+	transcript, _, _, err := sessions.CommitNormalizedTranscript(CommitNormalizedTranscriptInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, JobRef: job.Ref, Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Visual: "A title card.", Text: "Visual: A title card."}}, DurationMs: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, ok, err := sessions.FindNormalizedTranscriptByRef(session.AccountScopeID, session.UserID, "workspace", transcript.Ref)
+	if err != nil || !ok || found.SessionID != session.ID {
+		t.Fatalf("found=%+v ok=%v err=%v", found, ok, err)
+	}
+	if _, ok, err := sessions.FindNormalizedTranscriptByRef(session.AccountScopeID, session.UserID, "other-workspace", transcript.Ref); err != nil || ok {
+		t.Fatalf("cross-workspace lookup ok=%v err=%v", ok, err)
 	}
 }
 

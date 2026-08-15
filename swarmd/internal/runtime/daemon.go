@@ -496,6 +496,7 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
+	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetArtifactRegistry(artifactRegistry)
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)

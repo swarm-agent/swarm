@@ -51,6 +51,7 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
@@ -126,6 +127,7 @@ type Server struct {
 	videoThreads                *pebblestore.VideoThreadStore
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
+	videoTranscription          *videotranscription.Service
 	integrations                *integrationruntime.Service
 	dataDir                     string
 	startupConfigPath           string
@@ -480,6 +482,12 @@ func (s *Server) SetPlanLifecycleService(planLifecycle *sessionruntime.PlanLifec
 		return
 	}
 	s.planLifecycle = planLifecycle
+}
+
+func (s *Server) SetVideoTranscriptionService(service *videotranscription.Service) {
+	if s != nil {
+		s.videoTranscription = service
+	}
 }
 
 func (s *Server) SetUISettingsService(uiSettingsSvc *uisettings.Service) {

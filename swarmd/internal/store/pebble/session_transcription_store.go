@@ -16,8 +16,10 @@ import (
 
 const (
 	TranscriptionAttachmentSchemaVersion = 1
-	TranscriptionJobSchemaVersion        = 1
-	NormalizedTranscriptSchemaVersion    = "normalized_transcript.v1"
+	TranscriptionJobSchemaVersion        = 2
+	NormalizedTranscriptSchemaVersion    = "normalized_transcript.v2"
+	NormalizedTranscriptLegacyVersion    = "normalized_transcript.v1"
+	ContentEmptyVideoDescription         = "No meaningful visual or auditory content was detected."
 
 	TranscriptionJobQueued     = "queued"
 	TranscriptionJobUploading  = "uploading"
@@ -81,6 +83,7 @@ type TranscriptionJob struct {
 	Model                  string `json:"model"`
 	ModelSnapshot          string `json:"model_snapshot"`
 	MediaSettingsHash      string `json:"media_settings_hash"`
+	FocusNotes             string `json:"focus_notes,omitempty"`
 	TranscriptSchema       string `json:"transcript_schema"`
 	IdempotencyFingerprint string `json:"idempotency_fingerprint"`
 	Status                 string `json:"status"`
@@ -95,14 +98,20 @@ type TranscriptionJob struct {
 }
 
 type NormalizedTranscriptSegment struct {
-	StartMs int64  `json:"start_ms"`
-	EndMs   int64  `json:"end_ms"`
-	Text    string `json:"text"`
+	StartMs      int64  `json:"start_ms"`
+	EndMs        int64  `json:"end_ms"`
+	Speech       string `json:"speech,omitempty"`
+	Audio        string `json:"audio,omitempty"`
+	Visual       string `json:"visual,omitempty"`
+	OnScreenText string `json:"on_screen_text,omitempty"`
+	Text         string `json:"text"`
 }
 
 type NormalizedTranscriptMetadata struct {
 	Language          string `json:"language,omitempty"`
 	DurationMs        int64  `json:"duration_ms,omitempty"`
+	Summary           string `json:"summary,omitempty"`
+	ContentEmpty      bool   `json:"content_empty,omitempty"`
 	ProviderID        string `json:"provider_id"`
 	Model             string `json:"model"`
 	ModelSnapshot     string `json:"model_snapshot"`
@@ -171,6 +180,7 @@ type CreateTranscriptionJobInput struct {
 	Model                  string
 	ModelSnapshot          string
 	MediaSettingsHash      string
+	FocusNotes             string
 	TranscriptSchema       string
 	ProviderCacheExpiresAt int64
 	Retention              time.Duration
@@ -195,10 +205,11 @@ type CommitNormalizedTranscriptInput struct {
 	UserID         string
 	SessionID      string
 	JobRef         string
-	Text           string
 	Segments       []NormalizedTranscriptSegment
 	Language       string
 	DurationMs     int64
+	Summary        string
+	ContentEmpty   bool
 	GeneratedAt    int64
 	NowUnixMs      int64
 }
@@ -287,9 +298,16 @@ func (s *SessionStore) CreateTranscriptionJob(input CreateTranscriptionJobInput)
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
+	input.FocusNotes = strings.TrimSpace(input.FocusNotes)
+	if len(input.FocusNotes) > 500 {
+		return TranscriptionJob{}, false, errors.New("transcription focus notes exceed the bounded limit")
+	}
 	input.TranscriptSchema = strings.TrimSpace(input.TranscriptSchema)
 	if input.TranscriptSchema == "" {
 		input.TranscriptSchema = NormalizedTranscriptSchemaVersion
+	}
+	if input.TranscriptSchema != NormalizedTranscriptSchemaVersion {
+		return TranscriptionJob{}, false, errors.New("new transcription jobs require the current normalized transcript schema")
 	}
 	retention := input.Retention
 	if retention <= 0 {
@@ -299,7 +317,7 @@ func (s *SessionStore) CreateTranscriptionJob(input CreateTranscriptionJobInput)
 		retention = maxTranscriptRetention
 	}
 	identity := transcriptionDigest(strings.Join([]string{
-		attachment.SourceFingerprint, strings.TrimSpace(input.ModelSnapshot), strings.TrimSpace(input.MediaSettingsHash), input.TranscriptSchema,
+		attachment.SourceFingerprint, strings.TrimSpace(input.ModelSnapshot), strings.TrimSpace(input.MediaSettingsHash), input.FocusNotes, input.TranscriptSchema,
 	}, "\x00"))
 	jobRef := "trjob_" + identity
 	job := TranscriptionJob{
@@ -308,7 +326,7 @@ func (s *SessionStore) CreateTranscriptionJob(input CreateTranscriptionJobInput)
 		SessionID: attachment.SessionID, MessageID: attachment.MessageID, AttachmentRef: attachment.Ref,
 		SourceFingerprint: attachment.SourceFingerprint, ProviderID: strings.ToLower(strings.TrimSpace(input.ProviderID)),
 		Model: strings.TrimSpace(input.Model), ModelSnapshot: strings.TrimSpace(input.ModelSnapshot), MediaSettingsHash: strings.TrimSpace(input.MediaSettingsHash),
-		TranscriptSchema: input.TranscriptSchema, IdempotencyFingerprint: identity, Status: TranscriptionJobQueued,
+		FocusNotes: input.FocusNotes, TranscriptSchema: input.TranscriptSchema, IdempotencyFingerprint: identity, Status: TranscriptionJobQueued,
 		ProviderCacheExpiresAt: input.ProviderCacheExpiresAt, RetentionExpiresAt: now + retention.Milliseconds(), CreatedAt: now, UpdatedAt: now,
 	}
 	mutation := V3SessionMutationInput{
@@ -391,6 +409,9 @@ func (s *SessionStore) CommitNormalizedTranscript(input CommitNormalizedTranscri
 	if job.UserID != input.UserID {
 		return NormalizedTranscript{}, TranscriptionJob{}, false, errors.New("transcription job user ownership mismatch")
 	}
+	if job.TranscriptSchema != NormalizedTranscriptSchemaVersion {
+		return NormalizedTranscript{}, TranscriptionJob{}, false, errors.New("new transcript commits require the current normalized transcript schema")
+	}
 	if job.Status != TranscriptionJobProcessing && job.Status != TranscriptionJobPartial {
 		return NormalizedTranscript{}, TranscriptionJob{}, false, fmt.Errorf("transcription content cannot be committed while job is %s", job.Status)
 	}
@@ -401,8 +422,8 @@ func (s *SessionStore) CommitNormalizedTranscript(input CommitNormalizedTranscri
 	transcript := NormalizedTranscript{
 		SchemaVersion: job.TranscriptSchema, Ref: job.TranscriptRef, JobRef: job.Ref, AccountScopeID: job.AccountScopeID,
 		WorkspaceID: job.WorkspaceID, SessionID: job.SessionID, MessageID: job.MessageID, AttachmentRef: job.AttachmentRef,
-		SourceFingerprint: job.SourceFingerprint, ModelGenerated: true, Text: input.Text, Segments: append([]NormalizedTranscriptSegment(nil), input.Segments...),
-		Metadata:   NormalizedTranscriptMetadata{Language: input.Language, DurationMs: input.DurationMs, ProviderID: job.ProviderID, Model: job.Model, ModelSnapshot: job.ModelSnapshot, MediaSettingsHash: job.MediaSettingsHash, GeneratedAt: input.GeneratedAt},
+		SourceFingerprint: job.SourceFingerprint, ModelGenerated: true, Segments: append([]NormalizedTranscriptSegment(nil), input.Segments...),
+		Metadata:   NormalizedTranscriptMetadata{Language: input.Language, DurationMs: input.DurationMs, Summary: input.Summary, ContentEmpty: input.ContentEmpty, ProviderID: job.ProviderID, Model: job.Model, ModelSnapshot: job.ModelSnapshot, MediaSettingsHash: job.MediaSettingsHash, GeneratedAt: input.GeneratedAt},
 		Validation: TranscriptValidation{State: TranscriptValidationValidated, ValidatedAt: now}, CreatedAt: now,
 	}
 	transcript, err = normalizeAndValidateTranscript(transcript)
@@ -466,6 +487,52 @@ func (s *SessionStore) GetTranscriptionJob(accountScopeID, sessionID, ref string
 	return job, true, nil
 }
 
+func (s *SessionStore) FindNormalizedTranscriptByRef(accountScopeID, userID, workspaceID, ref string) (NormalizedTranscript, bool, error) {
+	accountScopeID, userID, workspaceID, ref = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), strings.TrimSpace(workspaceID), strings.TrimSpace(ref)
+	if accountScopeID == "" || userID == "" || workspaceID == "" || !validOpaqueTranscriptionRef(ref, "transcript_") {
+		return NormalizedTranscript{}, false, errors.New("valid account, user, workspace, and transcript references are required")
+	}
+	var found NormalizedTranscript
+	var scanned int
+	err := s.store.IteratePrefix(fmt.Sprintf("v3/transcription/transcript/%s/", keyPart(accountScopeID)), 10_001, func(_ string, value []byte) error {
+		scanned++
+		if scanned > 10_000 {
+			return errors.New("transcript workspace lookup exceeded the bounded record limit")
+		}
+		var candidate NormalizedTranscript
+		if err := json.Unmarshal(value, &candidate); err != nil {
+			return err
+		}
+		if candidate.Ref != ref || candidate.AccountScopeID != accountScopeID || candidate.WorkspaceID != workspaceID {
+			return nil
+		}
+		job, ok, err := s.GetTranscriptionJob(accountScopeID, candidate.SessionID, candidate.JobRef)
+		if err != nil {
+			return err
+		}
+		if !ok || job.UserID != userID || job.WorkspaceID != workspaceID || job.Status != TranscriptionJobReady {
+			return nil
+		}
+		if found.Ref != "" && found.ContentDigest != candidate.ContentDigest {
+			return errors.New("transcript reference collision across workspace records")
+		}
+		found = candidate
+		return nil
+	})
+	if err != nil || found.Ref == "" {
+		return NormalizedTranscript{}, false, err
+	}
+	originalDigest := found.ContentDigest
+	normalized, err := normalizeAndValidateTranscript(found)
+	if err != nil || normalized.ContentDigest != originalDigest {
+		if err == nil {
+			err = errors.New("transcript content digest mismatch")
+		}
+		return NormalizedTranscript{}, false, err
+	}
+	return normalized, true, nil
+}
+
 func (s *SessionStore) GetNormalizedTranscript(accountScopeID, sessionID, ref string) (NormalizedTranscript, bool, error) {
 	var transcript NormalizedTranscript
 	accountScopeID, sessionID, ref = strings.TrimSpace(accountScopeID), strings.TrimSpace(sessionID), strings.TrimSpace(ref)
@@ -479,14 +546,15 @@ func (s *SessionStore) GetNormalizedTranscript(accountScopeID, sessionID, ref st
 	if transcript.AccountScopeID != accountScopeID || transcript.SessionID != sessionID || transcript.Ref != ref {
 		return NormalizedTranscript{}, false, errors.New("transcript ownership metadata is inconsistent")
 	}
+	originalDigest := transcript.ContentDigest
 	normalized, err := normalizeAndValidateTranscript(transcript)
-	if err != nil || normalized.ContentDigest != transcript.ContentDigest {
+	if err != nil || normalized.ContentDigest != originalDigest {
 		if err == nil {
 			err = errors.New("transcript content digest mismatch")
 		}
 		return NormalizedTranscript{}, false, err
 	}
-	return transcript, true, nil
+	return normalized, true, nil
 }
 
 func (s *SessionStore) buildVideoTranscriptionAttachment(session SessionSnapshot, messageID, threadID, clipID string, now int64) (TranscriptionAttachmentRecord, error) {
@@ -676,8 +744,8 @@ func (s *SessionStore) prepareV3TranscriptionMutation(input V3SessionMutationInp
 		if err := validateJobMatchesAttachment(job, attachment); err != nil {
 			return preparedV3TranscriptionMutation{}, err
 		}
-		if job.Status != TranscriptionJobQueued || job.ProviderID == "" || job.Model == "" || job.ModelSnapshot == "" || job.MediaSettingsHash == "" {
-			return preparedV3TranscriptionMutation{}, errors.New("new transcription job requires queued status and complete model identity")
+		if job.SchemaVersion != TranscriptionJobSchemaVersion || job.TranscriptSchema != NormalizedTranscriptSchemaVersion || job.Status != TranscriptionJobQueued || job.ProviderID == "" || job.Model == "" || job.ModelSnapshot == "" || job.MediaSettingsHash == "" {
+			return preparedV3TranscriptionMutation{}, errors.New("new transcription job requires the current schema, queued status, and complete model identity")
 		}
 		if existing, ok, err := s.GetTranscriptionJob(input.AccountScopeID, input.SessionID, job.Ref); err != nil {
 			return preparedV3TranscriptionMutation{}, err
@@ -773,13 +841,20 @@ func (s *SessionStore) putNormalizedTranscriptIfAbsent(transcript NormalizedTran
 func normalizeAndValidateTranscript(transcript NormalizedTranscript) (NormalizedTranscript, error) {
 	transcript.SchemaVersion = strings.TrimSpace(transcript.SchemaVersion)
 	transcript.Text = strings.TrimSpace(transcript.Text)
-	transcript.Metadata.Language = boundedTranscriptionField(transcript.Metadata.Language, 64)
+	transcript.Metadata.Language = strings.TrimSpace(transcript.Metadata.Language)
+	if len(transcript.Metadata.Language) > 64 {
+		return NormalizedTranscript{}, errors.New("normalized transcript language exceeds the bounded limit")
+	}
+	transcript.Metadata.Summary = strings.TrimSpace(transcript.Metadata.Summary)
+	if len(transcript.Metadata.Summary) > maxTranscriptSegmentBytes {
+		return NormalizedTranscript{}, errors.New("normalized transcript summary exceeds the bounded limit")
+	}
 	transcript.Validation.State = strings.ToLower(strings.TrimSpace(transcript.Validation.State))
 	transcript.Validation.Reason = boundedTranscriptionField(transcript.Validation.Reason, 512)
-	if transcript.SchemaVersion != NormalizedTranscriptSchemaVersion || !transcript.ModelGenerated {
+	if (transcript.SchemaVersion != NormalizedTranscriptSchemaVersion && transcript.SchemaVersion != NormalizedTranscriptLegacyVersion) || !transcript.ModelGenerated {
 		return NormalizedTranscript{}, errors.New("normalized transcript schema and model-generated marker are required")
 	}
-	if len(transcript.Text) == 0 || len(transcript.Text) > maxTranscriptTextBytes {
+	if transcript.SchemaVersion == NormalizedTranscriptLegacyVersion && (len(transcript.Text) == 0 || len(transcript.Text) > maxTranscriptTextBytes) {
 		return NormalizedTranscript{}, errors.New("normalized transcript text is empty or exceeds the bounded limit")
 	}
 	if len(transcript.Segments) == 0 || len(transcript.Segments) > maxTranscriptSegments {
@@ -788,14 +863,50 @@ func normalizeAndValidateTranscript(transcript NormalizedTranscript) (Normalized
 	previousEnd := int64(0)
 	for index := range transcript.Segments {
 		segment := &transcript.Segments[index]
+		segment.Speech = strings.TrimSpace(segment.Speech)
+		segment.Audio = strings.TrimSpace(segment.Audio)
+		segment.Visual = strings.TrimSpace(segment.Visual)
+		segment.OnScreenText = strings.TrimSpace(segment.OnScreenText)
+		if len(segment.Speech) > maxTranscriptSegmentBytes || len(segment.Audio) > maxTranscriptSegmentBytes || len(segment.Visual) > maxTranscriptSegmentBytes || len(segment.OnScreenText) > maxTranscriptSegmentBytes {
+			return NormalizedTranscript{}, fmt.Errorf("normalized transcript segment %d modality exceeds the bounded limit", index)
+		}
 		segment.Text = strings.TrimSpace(segment.Text)
+		if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion {
+			if segment.Speech == "" && segment.Audio == "" && segment.Visual == "" && segment.OnScreenText == "" {
+				return NormalizedTranscript{}, fmt.Errorf("normalized transcript segment %d has no multimodal content", index)
+			}
+			segment.Text = ReadableVideoSegmentText(*segment)
+		}
 		if segment.StartMs < 0 || segment.EndMs <= segment.StartMs || segment.StartMs < previousEnd || len(segment.Text) == 0 || len(segment.Text) > maxTranscriptSegmentBytes {
 			return NormalizedTranscript{}, fmt.Errorf("normalized transcript segment %d is invalid", index)
 		}
 		previousEnd = segment.EndMs
 	}
+	if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion {
+		for _, segment := range transcript.Segments {
+			if len(ReadableVideoSegmentText(segment)) > maxTranscriptSegmentBytes {
+				return NormalizedTranscript{}, errors.New("normalized transcript derived segment text exceeds the bounded limit")
+			}
+		}
+		transcript.Text = BuildReadableVideoTranscript(transcript.Metadata.Summary, transcript.Segments)
+		if len(transcript.Text) == 0 || len(transcript.Text) > maxTranscriptTextBytes {
+			return NormalizedTranscript{}, errors.New("normalized transcript text is empty or exceeds the bounded limit")
+		}
+	}
+	if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion && transcript.Metadata.DurationMs <= 0 {
+		return NormalizedTranscript{}, errors.New("normalized multimodal transcript requires a positive duration")
+	}
 	if transcript.Metadata.DurationMs > 0 && previousEnd > transcript.Metadata.DurationMs+1000 {
 		return NormalizedTranscript{}, errors.New("normalized transcript segments exceed declared duration")
+	}
+	if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion && transcript.Metadata.ContentEmpty {
+		if len(transcript.Segments) != 1 {
+			return NormalizedTranscript{}, errors.New("content-empty transcript must contain exactly one timeline segment")
+		}
+		segment := transcript.Segments[0]
+		if transcript.Metadata.Summary != "" || transcript.Metadata.Language != "" || segment.Speech != "" || segment.Audio != "" || segment.OnScreenText != "" || segment.Visual != ContentEmptyVideoDescription || segment.StartMs != 0 || segment.EndMs < transcript.Metadata.DurationMs-1000 || segment.EndMs > transcript.Metadata.DurationMs+1000 {
+			return NormalizedTranscript{}, errors.New("content-empty transcript must contain the canonical duration-spanning visual placeholder without fabricated summary, language, audio, or speech")
+		}
 	}
 	if transcript.Validation.State != TranscriptValidationValidated || transcript.Validation.ValidatedAt == 0 {
 		return NormalizedTranscript{}, errors.New("normalized transcript must be validated before durable commit")
@@ -812,6 +923,36 @@ func normalizeAndValidateTranscript(transcript NormalizedTranscript) (Normalized
 	}
 	transcript.ContentDigest = transcriptionDigest(string(payload))
 	return transcript, nil
+}
+
+func ReadableVideoSegmentText(segment NormalizedTranscriptSegment) string {
+	parts := make([]string, 0, 4)
+	if segment.Speech != "" {
+		parts = append(parts, "Speech: "+segment.Speech)
+	}
+	if segment.Audio != "" {
+		parts = append(parts, "Audio: "+segment.Audio)
+	}
+	if segment.Visual != "" {
+		parts = append(parts, "Visual: "+segment.Visual)
+	}
+	if segment.OnScreenText != "" {
+		parts = append(parts, "On-screen text: "+segment.OnScreenText)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func BuildReadableVideoTranscript(summary string, segments []NormalizedTranscriptSegment) string {
+	lines := make([]string, 0, len(segments)+3)
+	if summary = strings.TrimSpace(summary); summary != "" {
+		lines = append(lines, "Summary: "+summary, "")
+	}
+	lines = append(lines, "Timeline:")
+	for _, segment := range segments {
+		totalStart, totalEnd := segment.StartMs/1000, segment.EndMs/1000
+		lines = append(lines, fmt.Sprintf("- [%02d:%02d - %02d:%02d] %s", totalStart/60, totalStart%60, totalEnd/60, totalEnd%60, ReadableVideoSegmentText(segment)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func normalizeV3TranscriptionMutation(input *V3SessionMutationInput) {
@@ -848,6 +989,7 @@ func normalizeV3TranscriptionMutation(input *V3SessionMutationInput) {
 		job.Model = strings.TrimSpace(job.Model)
 		job.ModelSnapshot = strings.TrimSpace(job.ModelSnapshot)
 		job.MediaSettingsHash = strings.TrimSpace(job.MediaSettingsHash)
+		job.FocusNotes = strings.TrimSpace(job.FocusNotes)
 		job.TranscriptSchema = strings.TrimSpace(job.TranscriptSchema)
 		job.IdempotencyFingerprint = strings.ToLower(strings.TrimSpace(job.IdempotencyFingerprint))
 		job.Status = strings.ToLower(strings.TrimSpace(job.Status))
@@ -877,8 +1019,8 @@ func validateV3TranscriptionMutationInput(input V3SessionMutationInput) error {
 		if err := validateV3MutationEmbeddedOwnership(input, "transcription job", job.SessionID, job.UserID, job.AccountScopeID); err != nil {
 			return err
 		}
-		if !validOpaqueTranscriptionRef(job.Ref, "trjob_") || !validOpaqueTranscriptionRef(job.TranscriptRef, "transcript_") || !validOpaqueTranscriptionRef(job.AttachmentRef, "vatt_") || !validFingerprint(job.SourceFingerprint) || job.WorkspaceID == "" || job.MessageID == "" {
-			return errors.New("transcription job has invalid durable identity")
+		if !validOpaqueTranscriptionRef(job.Ref, "trjob_") || !validOpaqueTranscriptionRef(job.TranscriptRef, "transcript_") || !validOpaqueTranscriptionRef(job.AttachmentRef, "vatt_") || !validFingerprint(job.SourceFingerprint) || job.WorkspaceID == "" || job.MessageID == "" || len(job.FocusNotes) > 500 {
+			return errors.New("transcription job has invalid durable identity or focus notes")
 		}
 	}
 	return nil

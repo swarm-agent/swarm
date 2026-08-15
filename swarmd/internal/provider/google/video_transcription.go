@@ -283,26 +283,37 @@ func parseGoogleTranscript(payload []byte) (videotranscription.GeneratedTranscri
 	text = strings.TrimPrefix(text, "```")
 	text = strings.TrimSuffix(strings.TrimSpace(text), "```")
 	var structured struct {
-		Text       string                                    `json:"text"`
-		Language   string                                    `json:"language"`
-		DurationMs int64                                     `json:"duration_ms"`
-		Segments   []pebblestore.NormalizedTranscriptSegment `json:"segments"`
+		Summary      string `json:"summary"`
+		Language     string `json:"language"`
+		DurationMs   int64  `json:"duration_ms"`
+		ContentEmpty bool   `json:"content_empty"`
+		Segments     []struct {
+			StartMs      int64  `json:"start_ms"`
+			EndMs        int64  `json:"end_ms"`
+			Speech       string `json:"speech"`
+			Audio        string `json:"audio"`
+			Visual       string `json:"visual"`
+			OnScreenText string `json:"on_screen_text"`
+		} `json:"segments"`
 	}
-	if err := json.Unmarshal([]byte(text), &structured); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&structured); err != nil {
 		return videotranscription.GeneratedTranscript{}, errors.New("google video transcription output did not match the structured schema")
 	}
-	structured.Text = strings.TrimSpace(structured.Text)
-	if structured.Text == "" {
-		return videotranscription.GeneratedTranscript{}, errors.New("google video transcription output contained no transcript text")
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return videotranscription.GeneratedTranscript{}, errors.New("google video transcription output contained trailing structured data")
 	}
-	partial := len(structured.Segments) == 0
-	previousEnd := int64(0)
-	for _, segment := range structured.Segments {
-		if segment.StartMs < previousEnd || segment.EndMs <= segment.StartMs || strings.TrimSpace(segment.Text) == "" {
-			partial = true
-			break
+	segments := make([]pebblestore.NormalizedTranscriptSegment, len(structured.Segments))
+	for index, segment := range structured.Segments {
+		segments[index] = pebblestore.NormalizedTranscriptSegment{
+			StartMs: segment.StartMs, EndMs: segment.EndMs, Speech: segment.Speech,
+			Audio: segment.Audio, Visual: segment.Visual, OnScreenText: segment.OnScreenText,
 		}
-		previousEnd = segment.EndMs
 	}
-	return videotranscription.GeneratedTranscript{Text: structured.Text, Segments: structured.Segments, Language: strings.TrimSpace(structured.Language), DurationMs: structured.DurationMs, Partial: partial}, nil
+	return videotranscription.NormalizeGeneratedTranscript(videotranscription.GeneratedTranscript{
+		Segments: segments, Language: structured.Language, DurationMs: structured.DurationMs,
+		Summary: structured.Summary, ContentEmpty: structured.ContentEmpty,
+	})
 }

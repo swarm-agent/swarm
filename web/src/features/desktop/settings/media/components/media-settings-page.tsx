@@ -5,8 +5,10 @@ import { Button } from '../../../../../components/ui/button'
 import { Card } from '../../../../../components/ui/card'
 import { Input } from '../../../../../components/ui/input'
 import { Select } from '../../../../../components/ui/select'
+import { Textarea } from '../../../../../components/ui/textarea'
 import { listWorkspaces } from '../../../../workspaces/launcher/queries/list-workspaces'
 import { resolveWorkspaceBySlug } from '../../../../workspaces/launcher/services/workspace-route'
+import { browseDesktopVideoSource } from '../../../chat/services/video-source-attachments'
 import { saveImageDefaultModel } from '../../swarm/mutations/save-image-default-model'
 import { saveMediaTranscriptionModel } from '../../swarm/mutations/save-media-transcription-model'
 import { getUISettings } from '../../swarm/queries/get-ui-settings'
@@ -14,10 +16,15 @@ import { normalizeImageDefaultModel, normalizeMediaTranscriptionModel, type UISe
 import {
   addSourceMediaDirectory,
   getMediaSettingsCatalog,
+  getVideoTranscriptionStatus,
   getSourceMediaDirectories,
+  readVideoTranscript,
   removeSourceMediaDirectory,
   sourceMediaDirectoriesQueryKey,
+  startVideoTranscription,
   type MediaCatalogModelOption,
+  type VideoTranscript,
+  type VideoTranscriptionJob,
 } from '../queries/get-media-settings'
 
 const uiSettingsQueryKey = ['ui-settings'] as const
@@ -131,6 +138,14 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
   const [workspaceLoading, setWorkspaceLoading] = useState(Boolean(workspaceSlug))
   const [workspaceError, setWorkspaceError] = useState('')
   const [folderDraft, setFolderDraft] = useState('')
+  const [transcriptionRoot, setTranscriptionRoot] = useState('')
+  const [videoRef, setVideoRef] = useState('')
+  const [videoOptions, setVideoOptions] = useState<Array<{ ref: string; name: string }>>([])
+  const [focusNotes, setFocusNotes] = useState('')
+  const [transcriptionSession, setTranscriptionSession] = useState('')
+  const [transcriptionJob, setTranscriptionJob] = useState<VideoTranscriptionJob | null>(null)
+  const [transcript, setTranscript] = useState<VideoTranscript | null>(null)
+  const [transcriptionError, setTranscriptionError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -177,6 +192,28 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
       setFolderDraft('')
     },
   })
+  const browseVideos = useMutation({
+    mutationFn: (rootPath: string) => browseDesktopVideoSource(workspacePath, rootPath),
+    onSuccess: (result) => {
+      setVideoOptions(result.clips.map((clip) => ({ ref: clip.ref, name: clip.name })))
+      setVideoRef('')
+      setTranscript(null)
+      setTranscriptionJob(null)
+      setTranscriptionError('')
+    },
+  })
+  const transcribeVideo = useMutation({
+    mutationFn: () => startVideoTranscription(workspacePath, videoRef, focusNotes),
+    onMutate: () => {
+      setTranscriptionError('')
+      setTranscript(null)
+      setTranscriptionJob(null)
+    },
+    onSuccess: ({ session_id, job }) => {
+      setTranscriptionSession(session_id)
+      setTranscriptionJob(job)
+    },
+  })
   const removeFolder = useMutation({
     mutationFn: (directoryPath: string) => removeSourceMediaDirectory(workspacePath, directoryPath),
     onSuccess: (directories) => queryClient.setQueryData(sourceQueryKey, directories),
@@ -193,6 +230,37 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
   const selectedTranscriptionOption = transcriptionModels.find((model) => model.id === selectedTranscription)
   const settingsError = imageSave.error || transcriptionSave.error || settingsQuery.error || catalogQuery.error
   const folders = sourceQuery.data ?? []
+
+  useEffect(() => {
+    if (!transcriptionJob || !transcriptionSession) return
+    let cancelled = false
+    let timer = 0
+    const readSavedTranscript = async (job: VideoTranscriptionJob) => {
+      try {
+        const savedTranscript = await readVideoTranscript(workspacePath, transcriptionSession, job.transcript_ref)
+        if (!cancelled) setTranscript(savedTranscript)
+      } catch (error) {
+        if (!cancelled) setTranscriptionError(errorMessage(error, 'The saved transcript could not be read.'))
+      }
+    }
+    if (transcriptionJob.status === 'ready') {
+      if (!transcript) void readSavedTranscript(transcriptionJob)
+      return () => { cancelled = true }
+    }
+    if (['failed', 'cancelled', 'stale'].includes(transcriptionJob.status)) return () => { cancelled = true }
+    const poll = async () => {
+      try {
+        const job = await getVideoTranscriptionStatus(workspacePath, transcriptionSession, transcriptionJob.ref)
+        if (cancelled) return
+        setTranscriptionJob(job)
+        if (job.status === 'failed') setTranscriptionError(job.failure_reason || 'Video transcription failed.')
+      } catch (error) {
+        if (!cancelled) setTranscriptionError(errorMessage(error, 'Transcription status is unavailable.'))
+      }
+    }
+    timer = window.setTimeout(() => { void poll() }, 1500)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [transcript, transcriptionJob, transcriptionSession, workspacePath])
   const folderError = addFolder.error || removeFolder.error || sourceQuery.error || (workspaceError ? new Error(workspaceError) : null)
 
   return (
@@ -219,16 +287,31 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
 
         <Card className="p-5">
           <section aria-labelledby="transcription-model-title" className="space-y-4">
-            <div className="flex items-start gap-3"><FileAudio size={18} className="mt-1 text-[var(--app-text-muted)]" /><div><h3 id="transcription-model-title" className="text-lg font-semibold text-[var(--app-text)]">Video understanding model</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">Choose the Google model Swarm will eventually use to understand a video’s visuals and audio and produce timestamped transcription and timeline text.</p></div></div>
+            <div className="flex items-start gap-3"><FileAudio size={18} className="mt-1 text-[var(--app-text-muted)]" /><div><h3 id="transcription-model-title" className="text-lg font-semibold text-[var(--app-text)]">Video understanding model</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">Choose the Google model Swarm uses to analyze a video’s visuals and embedded audio and produce one timestamped multimodal transcript.</p></div></div>
             {catalogQuery.isPending ? <p className="text-sm text-[var(--app-text-muted)]">Loading qualified Google models…</p> : transcriptionModels.length ? (
               <label className="block space-y-2"><span className="text-sm font-medium text-[var(--app-text)]">Transcription model</span><ModelSelect models={transcriptionModels} value={selectedTranscription} disabled={transcriptionSave.isPending} onChange={(value) => transcriptionSave.mutate(value)} /></label>
             ) : <p className="text-sm text-[var(--app-text-muted)]">No catalog models currently qualify for video-to-text understanding.</p>}
             {selectedTranscriptionOption && !selectedTranscriptionOption.ready ? <p className="text-sm text-[var(--app-warning)]">{selectedTranscriptionOption.reason || 'Google authentication is required before this model can be used.'}</p> : null}
             {transcriptionSave.isSuccess ? <p className="text-sm text-[var(--app-success)]">Transcription model saved.</p> : null}
-            <p className="text-xs text-[var(--app-text-subtle)]">Selection is saved now; explicit video analysis runtime is not available yet.</p>
+            <p className="text-xs text-[var(--app-text-subtle)]">The same durable pipeline serves agent-triggered and direct transcription.</p>
           </section>
         </Card>
       </div>
+
+      <Card className="p-5">
+        <section aria-labelledby="transcribe-video-title" className="space-y-4">
+          <div className="flex items-start gap-3"><FileAudio size={18} className="mt-1 text-[var(--app-text-muted)]" /><div><h3 id="transcribe-video-title" className="text-lg font-semibold text-[var(--app-text)]">Transcribe video</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">Test the durable audio/visual transcript pipeline without starting an AI session.</p></div></div>
+          {!workspacePath ? <p className="text-sm text-[var(--app-text-muted)]">Open a workspace to select a registered source video.</p> : !selectedTranscription || selectedTranscriptionOption?.ready !== true ? <p className="text-sm text-[var(--app-warning)]">Choose a ready transcription model above before starting.</p> : <>
+            <label className="block space-y-2"><span className="text-sm font-medium text-[var(--app-text)]">Source folder</span><Select value={transcriptionRoot} onChange={(event) => { const root = event.target.value; setTranscriptionRoot(root); setVideoRef(''); setVideoOptions([]); if (root) browseVideos.mutate(root) }}><option value="">Choose a registered folder</option>{folders.map((folder) => <option key={folder} value={folder}>{folder}</option>)}</Select></label>
+            {browseVideos.isPending ? <p className="text-sm text-[var(--app-text-muted)]">Scanning videos…</p> : transcriptionRoot ? <label className="block space-y-2"><span className="text-sm font-medium text-[var(--app-text)]">Video</span><Select value={videoRef} onChange={(event) => setVideoRef(event.target.value)}><option value="">Choose a video</option>{videoOptions.map((video) => <option key={video.ref} value={video.ref}>{video.name}</option>)}</Select></label> : null}
+            <label className="block space-y-2"><span className="text-sm font-medium text-[var(--app-text)]">Optional focus notes</span><Textarea value={focusNotes} maxLength={500} rows={3} onChange={(event) => setFocusNotes(event.target.value)} placeholder="For example: pay special attention to the steps shown in the settings panel." /><span className="text-xs text-[var(--app-text-subtle)]">{focusNotes.length}/500. Notes guide emphasis only; they cannot change the transcript format.</span></label>
+            <Button disabled={!videoRef || transcribeVideo.isPending || Boolean(transcriptionJob && !['ready', 'failed', 'cancelled', 'stale'].includes(transcriptionJob.status))} onClick={() => transcribeVideo.mutate()}>{transcribeVideo.isPending ? 'Starting…' : 'Transcribe video'}</Button>
+            {transcriptionJob ? <p className="text-sm text-[var(--app-text-muted)]">Job status: <span className="font-medium text-[var(--app-text)]">{transcriptionJob.status}</span></p> : null}
+            {transcript ? <div className="space-y-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4"><div className="flex items-center justify-between gap-3"><h4 className="font-semibold text-[var(--app-text)]">Saved transcript</h4><span className="text-xs text-[var(--app-success)]">{transcript.validation.state}</span></div><pre className="max-h-96 overflow-auto whitespace-pre-wrap text-sm text-[var(--app-text)]">{transcript.text}</pre></div> : null}
+            {transcriptionError || browseVideos.error || transcribeVideo.error ? <div role="alert" className="text-sm text-[var(--app-danger)]">{transcriptionError || errorMessage(browseVideos.error || transcribeVideo.error, 'Video transcription is unavailable.')}</div> : null}
+          </>}
+        </section>
+      </Card>
 
       <Card className="overflow-hidden p-5">
         <section aria-labelledby="video-generation-title" className="flex items-start justify-between gap-4">
