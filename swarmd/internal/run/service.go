@@ -2831,7 +2831,7 @@ func (s *designerToolFailureState) Observe(calls []tool.Call, results []tool.Res
 			continue
 		}
 		s.attempts++
-		if designerManagedPublicationCall(calls[i]) {
+		if designerManagedPublicationCall(calls[i]) && !designerManagedPublicationRetryablePreflightError(detail) {
 			return fmt.Sprintf("Designer failed to publish the managed artifact and stopped. Exact reason: %s", detail), true
 		}
 		if s.attempts >= designerToolFailureLimit {
@@ -2851,6 +2851,13 @@ func designerManagedPublicationCall(call tool.Call) bool {
 	}
 	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
 	return action == "create" || action == "create_package"
+}
+
+func designerManagedPublicationRetryablePreflightError(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	return detail == "create requires filename" ||
+		detail == "create requires non-empty content" ||
+		detail == "create_package requires non-empty entries"
 }
 
 func (s *Service) persistRunFailure(sessionID string, runErr error, appendInput runAppendMessageInput) {

@@ -42,6 +42,48 @@ func TestSessionV3ArtifactRequiresBundleOnlyForPackages(t *testing.T) {
 	}
 }
 
+func TestSessionV3ArtifactPresentationInfersReadyHTMLPreview(t *testing.T) {
+	tests := []struct {
+		name            string
+		variant         pebblestore.SessionArtifactVariant
+		wantKind        string
+		wantPreviewable bool
+	}{
+		{
+			name: "ready html repairs omitted previewable flag",
+			variant: pebblestore.SessionArtifactVariant{
+				Status:    pebblestore.SessionArtifactStatusReady,
+				MediaType: "text/html",
+				Presentation: pebblestore.SessionArtifactPresentation{
+					Kind: "html",
+				},
+			},
+			wantKind:        "html",
+			wantPreviewable: true,
+		},
+		{
+			name: "staging html preserves declared presentation",
+			variant: pebblestore.SessionArtifactVariant{
+				Status:    pebblestore.SessionArtifactStatusStaging,
+				MediaType: "text/html",
+				Presentation: pebblestore.SessionArtifactPresentation{
+					Kind: "html",
+				},
+			},
+			wantKind:        "html",
+			wantPreviewable: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			kind, previewable := sessionsV3ArtifactPresentation(test.variant)
+			if kind != test.wantKind || previewable != test.wantPreviewable {
+				t.Fatalf("presentation = (%q, %t), want (%q, %t)", kind, previewable, test.wantKind, test.wantPreviewable)
+			}
+		})
+	}
+}
+
 func TestOpenSessionV3ArtifactFileRejectsSymlinkAndEscape(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "gallery"), 0o755); err != nil {

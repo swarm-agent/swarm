@@ -26,6 +26,28 @@ func TestDesignerToolFailureStateStopsManagedPublicationImmediatelyWithExactReas
 	}
 }
 
+func TestDesignerToolFailureStateAllowsCorrectionOfRejectedManagedPublicationPreflight(t *testing.T) {
+	state := designerToolFailureState{}
+	message, stop := state.Observe(
+		[]tool.Call{{Name: "manage_artifact", Arguments: `{"action":"create"}`}},
+		[]tool.Result{{Error: "create requires filename"}},
+	)
+	if stop || message != "" {
+		t.Fatalf("correctable preflight rejection stopped Designer: stop=%v message=%q", stop, message)
+	}
+	if state.attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", state.attempts)
+	}
+
+	message, stop = state.Observe(
+		[]tool.Call{{Name: "manage_artifact", Arguments: `{"action":"create","filename":"concept.html"}`}},
+		[]tool.Result{{Output: "ready"}},
+	)
+	if stop || message != "" || state.attempts != 1 {
+		t.Fatalf("corrected publication changed failure state: stop=%v message=%q attempts=%d", stop, message, state.attempts)
+	}
+}
+
 func TestDesignerToolFailureStateStopsAfterThreeFailuresWithLatestExactReason(t *testing.T) {
 	state := designerToolFailureState{}
 	for attempt, reason := range []string{"first exact error", "second exact error"} {

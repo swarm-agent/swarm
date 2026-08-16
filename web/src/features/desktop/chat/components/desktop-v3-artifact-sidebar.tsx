@@ -75,10 +75,6 @@ export interface DesktopV3ArtifactSidebarProps {
   onAddToChat?: (artifacts: DesktopV3ArtifactCatalogEntry[]) => void
 }
 
-function sidebarArtifactPreviewKey(artifact: DesktopV3ArtifactCatalogEntry): string {
-  return `${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`
-}
-
 function sidebarArtifactNeedsLivePreview(artifact: DesktopV3ArtifactCatalogEntry): boolean {
   return artifact.mediaType === 'image/svg+xml'
     || artifact.mediaType === 'image/gif'
@@ -135,7 +131,7 @@ function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3Art
   if (artifact.status === 'staging') thumbnail = <Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Generating artifact" />
   else if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) thumbnail = <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
   else if (previewVisible && artifact.mediaType.startsWith('image/') && previewURL) thumbnail = <img src={previewURL} alt="" className="size-full object-contain" />
-  else if (previewVisible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" />
+  else if (previewVisible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} autoPlay loop muted playsInline preload="metadata" className="size-full object-contain bg-black" />
   else if (previewVisible && artifact.mediaType === 'text/html' && previewHTML) thumbnail = <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
   else if (previewVisible && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
 
@@ -215,17 +211,6 @@ export function DesktopV3ArtifactSidebar({
   const thin = displayMode === 'thin'
   const compact = displayMode === 'compact'
   const groups = useMemo(() => desktopV3ArtifactSidebarGroups(artifacts), [artifacts])
-  const defaultLivePreviewKey = useMemo(() => {
-    const liveArtifacts = groups.flatMap((group) => group.entries).filter((entry) => entry.status === 'ready' && sidebarArtifactNeedsLivePreview(entry))
-    const artifact = liveArtifacts.find((entry) => entry.selected) ?? liveArtifacts[0]
-    return artifact ? sidebarArtifactPreviewKey(artifact) : ''
-  }, [groups])
-  const [requestedLivePreviewKey, setRequestedLivePreviewKey] = useState('')
-  const requestedLivePreviewAvailable = groups.some((group) => group.entries.some((entry) => sidebarArtifactPreviewKey(entry) === requestedLivePreviewKey))
-  const livePreviewKey = requestedLivePreviewAvailable ? requestedLivePreviewKey : defaultLivePreviewKey
-  const requestLivePreview = (artifact: DesktopV3ArtifactCatalogEntry) => {
-    if (sidebarArtifactNeedsLivePreview(artifact)) setRequestedLivePreviewKey(sidebarArtifactPreviewKey(artifact))
-  }
 
   return (
     <aside
@@ -268,8 +253,7 @@ export function DesktopV3ArtifactSidebar({
             const grouped = Boolean(group.collectionId)
             const requirementLabel = formatDesktopV3ArtifactOutputRequirements(representative.outputRequirements)
             if (thin) {
-              const representativeKey = sidebarArtifactPreviewKey(representative)
-              return <a key={group.key} href={artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onPointerEnter={() => requestLivePreview(representative)} onFocus={() => requestLivePreview(representative)} onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} live={representativeKey === livePreviewKey} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
+              return <a key={group.key} href={artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} live />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
             }
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
@@ -279,9 +263,9 @@ export function DesktopV3ArtifactSidebar({
                 </a>
                 <div className={cn('grid gap-1 p-2', grouped && 'grid-cols-2')} aria-label={grouped ? `${group.label} iterations` : undefined}>
                   {group.entries.map((artifact, index) => (
-                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]" onPointerEnter={() => requestLivePreview(artifact)} onFocusCapture={() => requestLivePreview(artifact)}>
+                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
                       <a href={artifactHref(artifact)} className="block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} aria-label={`Open ${artifact.label} in full artifact view`}>
-                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} live={sidebarArtifactPreviewKey(artifact) === livePreviewKey} /></span>
+                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} live /></span>
                         <span className="block min-w-0 px-2 py-1.5"><span className="block truncate text-[10px] font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : grouped ? `Iteration ${artifact.lineage?.iterationIndex || index + 1}` : artifact.kind || artifact.mediaType}</span></span>
                       </a>
                       {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" aria-label={`Attach ${artifact.label} for chat changes`} title={artifact.mediaType.startsWith('image/') ? 'Attach to chat for remixing' : 'Attach to chat'} onClick={() => onAddToChat([artifact])}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}

@@ -316,10 +316,14 @@ func sessionsV3ArtifactPresentation(variant pebblestore.SessionArtifactVariant) 
 	if variant.Status != pebblestore.SessionArtifactStatusReady {
 		return kind, previewable
 	}
-	if strings.EqualFold(strings.TrimSpace(variant.MediaType), "image/svg+xml") {
+	mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
+	if mediaType == "image/svg+xml" {
 		return "image", true
 	}
-	if kind == "package" && variant.MediaType == "application/zip" {
+	if mediaType == "text/html" && (kind == "" || kind == "html") {
+		return "html", true
+	}
+	if kind == "package" && mediaType == "application/zip" {
 		return "html", true
 	}
 	if strings.EqualFold(strings.TrimSpace(variant.MediaType), "video/mp4") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(variant.MediaType)), "video/") {

@@ -66,6 +66,15 @@ test('sidebar labels ready images as exact chat remix inputs', async () => {
   assert.match(source, /onAddToChat\(\[artifact\]\)/)
 })
 
+test('visible sidebar artifact thumbnails keep live animation enabled', async () => {
+  const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  assert.match(source, /<DesktopV3ArtifactThumbnail artifact=\{representative\} live \/>/)
+  assert.match(source, /<DesktopV3ArtifactThumbnail artifact=\{artifact\} live \/>/)
+  assert.doesNotMatch(source, /requestLivePreview/)
+  assert.match(source, /<video src=\{previewURL\} autoPlay loop muted playsInline/)
+  assert.match(source, /useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>\(previewEnabled\)/)
+})
+
 test('session artifact sidebar includes native and delegated artifacts only for the active session', () => {
   const catalog = [
     artifact('session-a', 'native'),
