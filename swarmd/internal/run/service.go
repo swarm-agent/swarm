@@ -1266,15 +1266,27 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if targetKind == RunTargetKindSubagent || strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModeSubagent) {
 		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{"task": true})
 	}
-	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile); scopeErr != nil {
-		return RunResult{}, scopeErr
+	var (
+		agentPolicy   *permission.Policy
+		agentDisabled map[string]bool
+		scopeErr      error
+	)
+	if options.TrustedAgentProfile != nil {
+		// Delegated compiled agents carry an immutable, launch-specific snapshot.
+		// Compile that exact contract so workspace Designer write/edit authority is
+		// not replaced by the same named agent's fail-closed managed default.
+		_, agentPolicy, agentDisabled, scopeErr = s.compileResolvedAgentToolContract(options.Principal.AccountScopeID, agentProfile)
 	} else {
-		if agentPolicy != nil {
-			merged := mergePermissionPolicies(agentPolicy, compiledPolicy)
-			compiledPolicy = &merged
-		}
-		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, agentDisabled)
+		agentPolicy, agentDisabled, scopeErr = s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile)
 	}
+	if scopeErr != nil {
+		return RunResult{}, scopeErr
+	}
+	if agentPolicy != nil {
+		merged := mergePermissionPolicies(agentPolicy, compiledPolicy)
+		compiledPolicy = &merged
+	}
+	effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, agentDisabled)
 	if options.ToolScope != nil {
 		if targetKind == RunTargetKindSubagent || targetKind == RunTargetKindBackground {
 			return RunResult{}, errors.New("request-time tool_scope is not supported for targeted agent runs; update the saved agent profile instead")

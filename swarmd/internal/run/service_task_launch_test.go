@@ -1128,6 +1128,23 @@ func TestTaskLaunchedWorkspaceDesignerUsesLockedToolProfile(t *testing.T) {
 	if got := taskResult["task_call_id"]; got != "call-designer-media" {
 		t.Fatalf("task_call_id = %#v, want durable lineage identifier", got)
 	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("workspace Designer provider requests = %d, want 1", len(runner.requests))
+	}
+	providerTools := make(map[string]bool, len(runner.requests[0].Tools))
+	for _, definition := range runner.requests[0].Tools {
+		providerTools[definition.Name] = true
+	}
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if !providerTools[allowed] {
+			t.Fatalf("workspace Designer provider tools missing %q: %#v", allowed, providerTools)
+		}
+	}
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if providerTools[denied] {
+			t.Fatalf("workspace Designer provider tools authorized %q: %#v", denied, providerTools)
+		}
+	}
 	childID, _ := taskResult["session_id"].(string)
 	child, ok, err := svc.sessions.GetSession(childID)
 	if err != nil || !ok {
