@@ -18,6 +18,11 @@ export function useDesktopV3ArtifactPreviewVisibility<T extends HTMLElement = HT
   const previewRef = useRef<T>(null)
   const [intersecting, setIntersecting] = useState(false)
   const [pageVisible, setPageVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible')
+  const [reducedMotion, setReducedMotion] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false
+  ))
 
   useEffect(() => {
     const preview = previewRef.current
@@ -44,7 +49,20 @@ export function useDesktopV3ArtifactPreviewVisibility<T extends HTMLElement = HT
     return () => document.removeEventListener('visibilitychange', updateVisibility)
   }, [])
 
-  return { previewRef, previewVisible: enabled && intersecting && pageVisible }
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const updateMotionPreference = () => setReducedMotion(media.matches)
+    updateMotionPreference()
+    media.addEventListener('change', updateMotionPreference)
+    return () => media.removeEventListener('change', updateMotionPreference)
+  }, [])
+
+  return {
+    previewRef,
+    previewVisible: enabled && intersecting && pageVisible,
+    previewMotionAllowed: !reducedMotion,
+  }
 }
 
 export function DesktopV3ArtifactPreviewThumbnail({
