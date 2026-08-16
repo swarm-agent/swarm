@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { readdir, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -8,6 +9,62 @@ import tailwindcss from '@tailwindcss/vite'
 const backendTarget = process.env.SWARM_BACKEND_URL || 'http://127.0.0.1:7781'
 const desktopPort = Number(process.env.SWARM_DESKTOP_PORT || '5555')
 const serviceWorkerBuildIDToken = '__SWARM_PWA_BUILD_ID__'
+
+const packageRequire = createRequire(import.meta.url)
+function packageRoot(entrypoint: string, packageName: string): string {
+  const marker = `${path.sep}node_modules${path.sep}${packageName.split('/').join(path.sep)}${path.sep}`
+  const markerIndex = entrypoint.lastIndexOf(marker)
+  if (markerIndex < 0) throw new Error(`Cannot resolve reviewed animation runtime package root for ${packageName}`)
+  return entrypoint.slice(0, markerIndex + marker.length - 1)
+}
+
+function animationRuntimeAssets() {
+  const pixiRoot = packageRoot(packageRequire.resolve('pixi.js'), 'pixi.js')
+  const threeRoot = packageRoot(packageRequire.resolve('three'), 'three')
+  const dotLottieRoot = packageRoot(packageRequire.resolve('@lottiefiles/dotlottie-web'), '@lottiefiles/dotlottie-web')
+  const riveRoot = packageRoot(packageRequire.resolve('@rive-app/canvas'), '@rive-app/canvas')
+  return [
+    [path.join(pixiRoot, 'dist', 'pixi.mjs'), 'pixi.mjs'],
+    [path.join(threeRoot, 'build', 'three.module.js'), 'three.module.js'],
+    [path.join(threeRoot, 'build', 'three.core.js'), 'three.core.js'],
+    [path.join(dotLottieRoot, 'dist', 'index.js'), 'dotlottie.js'],
+    [path.join(dotLottieRoot, 'dist', 'dotlottie-player.wasm'), 'dotlottie-player.wasm'],
+    [path.join(riveRoot, 'rive.js'), 'rive.js'],
+    [path.join(riveRoot, 'rive.wasm'), 'rive.wasm'],
+    [path.join(riveRoot, 'rive_fallback.wasm'), 'rive_fallback.wasm'],
+  ] as const
+}
+
+function bundleAnimationRuntimes(): Plugin {
+  let outputDirectory = ''
+  return {
+    name: 'bundle-animation-runtimes',
+    configResolved(config) {
+      outputDirectory = path.resolve(config.root, config.build.outDir, 'swarm-animation-runtime')
+    },
+    async writeBundle() {
+      await mkdir(outputDirectory, { recursive: true })
+      await Promise.all([
+        ...animationRuntimeAssets().map(([source, target]) => copyFile(source, path.join(outputDirectory, target))),
+        copyFile(path.resolve(import.meta.dirname, '..', 'THIRD_PARTY_NOTICES.md'), path.join(outputDirectory, 'THIRD_PARTY_NOTICES.md')),
+      ])
+    },
+    configureServer(server) {
+      server.middlewares.use('/swarm-animation-runtime', (request, response, next) => {
+        const requestPath = request.url?.split('?', 1)[0] ?? ''
+        if (requestPath !== `/${path.posix.basename(requestPath)}`) return next()
+        const filename = path.posix.basename(requestPath)
+        const asset = animationRuntimeAssets().find(([, target]) => target === filename)
+        if (!asset) return next()
+        response.setHeader('Cache-Control', 'no-store')
+        response.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+        response.setHeader('X-Content-Type-Options', 'nosniff')
+        response.setHeader('Content-Type', filename.endsWith('.wasm') ? 'application/wasm' : 'text/javascript; charset=utf-8')
+        void readFile(asset[0]).then((bytes) => response.end(bytes), next)
+      })
+    },
+  }
+}
 
 function versionBuiltServiceWorker(): Plugin {
   let outputDirectory = 'dist'
@@ -57,7 +114,7 @@ async function listOutputFiles(directory: string): Promise<string[]> {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), versionBuiltServiceWorker()],
+  plugins: [react(), tailwindcss(), bundleAnimationRuntimes(), versionBuiltServiceWorker()],
   build: {
     rolldownOptions: {
       output: {

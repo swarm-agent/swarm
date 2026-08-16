@@ -1,4 +1,5 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
+import type { DesktopV3ArtifactLocalRuntimeAssets } from './artifact-animation-runtime-assets'
 
 export type DesktopV3ArtifactCategory = 'plan' | 'visual' | 'document'
 export type DesktopV3ArtifactStatus = '' | 'staging' | 'ready' | 'failed' | 'unavailable'
@@ -13,6 +14,36 @@ export interface DesktopV3ArtifactOutputRequirements {
   orientation: DesktopV3ArtifactOutputOrientation
   resolutionSource: string
   registryVersion: string
+}
+
+export type DesktopV3ArtifactAnimationProfileID = 'motion_ui' | 'generative_2d' | 'spatial_3d' | 'vector_playback' | 'final_render'
+
+export interface DesktopV3ArtifactAnimationBudgets {
+  maxSimultaneousLivePreviews: number
+  maxWebGLContexts: number
+  maxDevicePixelRatio: number
+  maxCanvasPixels: number
+  maxParticles: number
+  maxDrawCallsPerFrame: number
+  pauseWhenOffscreen: true
+  stopWhenDocumentHidden: true
+  reducedMotionBehavior: 'static_first_frame'
+  networkAllowed: false
+}
+
+/** Immutable execution contract resolved by the server from the closed profile registry. */
+export interface DesktopV3ArtifactAnimationProfile {
+  profileId: DesktopV3ArtifactAnimationProfileID
+  registryVersion: string
+  runtimeKind: string
+  runtimePackage: string
+  runtimeVersion: string
+  secondaryRuntimePackage: string
+  secondaryRuntimeVersion: string
+  heavy: boolean
+  importedPlaybackOnly: boolean
+  editableSourceRequired: boolean
+  budgets: DesktopV3ArtifactAnimationBudgets
 }
 
 export interface DesktopV3ArtifactCollectionProgress {
@@ -90,6 +121,7 @@ export interface DesktopV3ArtifactCatalogEntry {
   progress?: DesktopV3ArtifactCollectionProgress | null
   lineage?: DesktopV3ArtifactLineage | null
   outputRequirements?: DesktopV3ArtifactOutputRequirements
+  animationProfile?: DesktopV3ArtifactAnimationProfile
   content?: string
 }
 
@@ -130,6 +162,14 @@ function artifactCatalogPositiveInteger(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0
 }
 
+function artifactCatalogNonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : -1
+}
+
+function artifactCatalogPositiveNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
 function artifactCatalogGreatestCommonDivisor(left: number, right: number): number {
   let a = left
   let b = right
@@ -157,6 +197,63 @@ export function normalizeDesktopV3ArtifactOutputRequirements(value: unknown): De
   const normalizedRatio = `${width / divisor}:${height / divisor}`
   if (aspectRatio !== normalizedRatio) return null
   return { presetId, width, height, aspectRatio, orientation, resolutionSource, registryVersion }
+}
+
+const desktopV3ArtifactAnimationRuntimeContract: Record<DesktopV3ArtifactAnimationProfileID, {
+  runtimeKind: string
+  runtimePackage: string
+  runtimeVersion: string
+  secondaryRuntimePackage: string
+  secondaryRuntimeVersion: string
+  heavy: boolean
+  importedPlaybackOnly: boolean
+  editableSourceRequired: boolean
+}> = {
+  motion_ui: { runtimeKind: 'native_css_waapi_svg', runtimePackage: '', runtimeVersion: '', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: false, importedPlaybackOnly: false, editableSourceRequired: false },
+  generative_2d: { runtimeKind: 'canvas_2d_pixi', runtimePackage: 'pixi.js', runtimeVersion: '8.19.0', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: false, importedPlaybackOnly: false, editableSourceRequired: false },
+  spatial_3d: { runtimeKind: 'three_webgl', runtimePackage: 'three', runtimeVersion: '0.185.1', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: true, importedPlaybackOnly: false, editableSourceRequired: false },
+  vector_playback: { runtimeKind: 'imported_vector_playback', runtimePackage: '@lottiefiles/dotlottie-web', runtimeVersion: '0.79.0', secondaryRuntimePackage: '@rive-app/canvas', secondaryRuntimeVersion: '2.39.2', heavy: false, importedPlaybackOnly: true, editableSourceRequired: false },
+  final_render: { runtimeKind: 'mp4_playback', runtimePackage: '', runtimeVersion: '', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: false, importedPlaybackOnly: false, editableSourceRequired: true },
+}
+
+export function normalizeDesktopV3ArtifactAnimationProfile(value: unknown): DesktopV3ArtifactAnimationProfile | null {
+  const record = artifactCatalogRecord(value)
+  const budgetsRecord = artifactCatalogRecord(record?.budgets)
+  if (!record || !budgetsRecord) return null
+  const profileId = artifactCatalogString(record.profile_id) as DesktopV3ArtifactAnimationProfileID
+  const contract = desktopV3ArtifactAnimationRuntimeContract[profileId]
+  const registryVersion = artifactCatalogString(record.registry_version)
+  if (!contract || !registryVersion) return null
+  const runtimePackage = artifactCatalogString(record.runtime_package)
+  const runtimeVersion = artifactCatalogString(record.runtime_version)
+  const secondaryRuntimePackage = artifactCatalogString(record.secondary_runtime_package)
+  const secondaryRuntimeVersion = artifactCatalogString(record.secondary_runtime_version)
+  if (artifactCatalogString(record.runtime_kind) !== contract.runtimeKind
+    || runtimePackage !== contract.runtimePackage
+    || runtimeVersion !== contract.runtimeVersion
+    || secondaryRuntimePackage !== contract.secondaryRuntimePackage
+    || secondaryRuntimeVersion !== contract.secondaryRuntimeVersion
+    || (record.heavy === true) !== contract.heavy
+    || (record.imported_playback_only === true) !== contract.importedPlaybackOnly
+    || (record.editable_source_required === true) !== contract.editableSourceRequired) return null
+  const maxSimultaneousLivePreviews = artifactCatalogPositiveInteger(budgetsRecord.max_simultaneous_live_previews)
+  const maxWebGLContexts = artifactCatalogNonNegativeInteger(budgetsRecord.max_webgl_contexts)
+  const maxDevicePixelRatio = artifactCatalogPositiveNumber(budgetsRecord.max_device_pixel_ratio)
+  const maxCanvasPixels = artifactCatalogPositiveInteger(budgetsRecord.max_canvas_pixels)
+  const maxParticles = artifactCatalogNonNegativeInteger(budgetsRecord.max_particles)
+  const maxDrawCallsPerFrame = artifactCatalogNonNegativeInteger(budgetsRecord.max_draw_calls_per_frame)
+  if (!maxSimultaneousLivePreviews || maxWebGLContexts < 0 || !maxDevicePixelRatio || !maxCanvasPixels || maxParticles < 0 || maxDrawCallsPerFrame < 0
+    || budgetsRecord.pause_when_offscreen !== true || budgetsRecord.stop_when_document_hidden !== true
+    || budgetsRecord.reduced_motion_behavior !== 'static_first_frame' || budgetsRecord.network_allowed !== false) return null
+  return {
+    profileId, registryVersion, ...contract,
+    budgets: { maxSimultaneousLivePreviews, maxWebGLContexts, maxDevicePixelRatio, maxCanvasPixels, maxParticles, maxDrawCallsPerFrame, pauseWhenOffscreen: true, stopWhenDocumentHidden: true, reducedMotionBehavior: 'static_first_frame', networkAllowed: false },
+  }
+}
+
+export function formatDesktopV3ArtifactAnimationProfile(profile?: DesktopV3ArtifactAnimationProfile | null): string {
+  if (!profile) return ''
+  return ({ motion_ui: 'CSS / WAAPI', generative_2d: 'PixiJS 2D', spatial_3d: 'Three.js 3D', vector_playback: 'Vector playback', final_render: 'MP4 playback' } satisfies Record<DesktopV3ArtifactAnimationProfileID, string>)[profile.profileId]
 }
 
 function artifactOutputPresetLabel(presetId: string): string {
@@ -222,6 +319,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
       ? Date.parse(rawUpdatedAt)
       : 0
   const outputRequirements = normalizeDesktopV3ArtifactOutputRequirements(record.output_requirements)
+  const animationProfile = normalizeDesktopV3ArtifactAnimationProfile(record.animation_profile)
   return {
     artifactId,
     collectionId: artifactCatalogString(record.collection_id),
@@ -250,6 +348,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     progress: normalizeArtifactProgress(record.progress),
     lineage: normalizeArtifactLineage(record.lineage),
     ...(outputRequirements ? { outputRequirements } : {}),
+    ...(animationProfile ? { animationProfile } : {}),
     ...(typeof record.content === 'string' ? { content: record.content } : {}),
   }
 }
@@ -607,30 +706,88 @@ export function desktopV3ArtifactPackageEntryEndpoint(sessionId: string, artifac
   return `${desktopV3ArtifactPackageBaseEndpoint(sessionId, artifactId, previewToken)}${desktopV3ArtifactPackageEntryPath}`
 }
 
-export function buildDesktopV3ArtifactSandboxDocument(source: string, sessionId: string, artifactId: string, previewToken: string): string {
+function desktopV3ArtifactSameOriginURL(value: string): string {
+  try {
+    const url = new URL(value, window.location.origin)
+    return url.origin === window.location.origin ? url.toString() : ''
+  } catch {
+    return ''
+  }
+}
+
+export function buildDesktopV3ArtifactSandboxDocument(
+  source: string,
+  sessionId: string,
+  artifactId: string,
+  previewToken: string,
+  runtimeAssets?: DesktopV3ArtifactLocalRuntimeAssets,
+): string {
   const packageBase = new URL(desktopV3ArtifactPackageBaseEndpoint(sessionId, artifactId, previewToken), window.location.origin)
   const packageEntry = new URL(desktopV3ArtifactPackageEntryEndpoint(sessionId, artifactId, previewToken), window.location.origin)
   const document = new DOMParser().parseFromString(source, 'text/html')
   const packageSource = packageBase.toString()
+  const runtimeAssetPaths = new Set([...(runtimeAssets?.scripts ?? []), ...Object.values(runtimeAssets?.modules ?? {}), ...Object.values(runtimeAssets?.wasm ?? {})])
+  const reviewedRuntimePath = '/swarm-animation-runtime/'
+  if ([...runtimeAssetPaths].some((value) => {
+    try {
+      const url = new URL(value, window.location.origin)
+      const runtimeFilename = url.pathname.slice(reviewedRuntimePath.length)
+      return url.origin !== window.location.origin
+        || !url.pathname.startsWith(reviewedRuntimePath)
+        || !runtimeFilename
+        || runtimeFilename.includes('/')
+        || url.username !== ''
+        || url.password !== ''
+        || url.search !== ''
+        || url.hash !== ''
+    } catch {
+      return true
+    }
+  })) throw new Error('Animation runtime assets must use the reviewed local runtime path')
+  const runtimeScripts = (runtimeAssets?.scripts ?? []).map(desktopV3ArtifactSameOriginURL).filter(Boolean)
+  const runtimeModules = Object.fromEntries(Object.entries(runtimeAssets?.modules ?? {}).map(([name, value]) => [name, desktopV3ArtifactSameOriginURL(value)]).filter((entry): entry is [string, string] => Boolean(entry[1])))
+  const runtimeWasm = Object.fromEntries(Object.entries(runtimeAssets?.wasm ?? {}).map(([name, value]) => [name, desktopV3ArtifactSameOriginURL(value)]).filter((entry): entry is [string, string] => Boolean(entry[1])))
+  const scriptNonce = globalThis.crypto?.randomUUID?.()
+  if (!scriptNonce) throw new Error('Secure animation preview nonce generation is unavailable')
+  if (runtimeScripts.length !== (runtimeAssets?.scripts.length ?? 0) || Object.keys(runtimeModules).length !== Object.keys(runtimeAssets?.modules ?? {}).length || Object.keys(runtimeWasm).length !== Object.keys(runtimeAssets?.wasm ?? {}).length) {
+    throw new Error('Animation runtime assets must be same-install URLs')
+  }
+  const runtimeSourcePolicy = runtimeScripts.length || Object.keys(runtimeModules).length || Object.keys(runtimeWasm).length ? window.location.origin : ''
   const policy = document.createElement('meta')
   policy.httpEquiv = 'Content-Security-Policy'
   policy.content = [
     "default-src 'none'",
-    "script-src 'unsafe-inline' blob:",
+    `script-src 'nonce-${scriptNonce}' blob:${runtimeSourcePolicy ? ` ${runtimeSourcePolicy}` : ''}`,
     `style-src 'unsafe-inline' ${packageSource}`,
     `img-src ${packageSource} data: blob:`,
     `font-src ${packageSource} data:`,
-    `media-src ${packageSource} data: blob:`,
+    `media-src ${packageSource}${runtimeSourcePolicy ? ` ${runtimeSourcePolicy}` : ''} data: blob:`,
     `frame-src ${packageSource}`,
+    `child-src ${runtimeSourcePolicy || "'none'"} blob:`,
     "connect-src 'none'",
-    "worker-src blob:",
+    `worker-src ${runtimeSourcePolicy || "'none'"} blob:`,
     "object-src 'none'",
     `base-uri ${packageEntry.toString()}`,
     "form-action 'none'",
   ].join('; ')
   const base = document.createElement('base')
   base.href = packageEntry.toString()
-  document.head.prepend(policy, base)
+  const runtimeConfig = document.createElement('script')
+  runtimeConfig.nonce = scriptNonce
+  runtimeConfig.textContent = `globalThis.__SWARM_ANIMATION_RUNTIME__=${JSON.stringify({ modules: runtimeModules, wasm: runtimeWasm }).replace(/</g, '\\u003c')};`
+  const importMap = document.createElement('script')
+  importMap.nonce = scriptNonce
+  importMap.type = 'importmap'
+  importMap.textContent = JSON.stringify({ imports: runtimeModules }).replace(/</g, '\\u003c')
+  const scripts = runtimeScripts.map((src) => {
+    const script = document.createElement('script')
+    script.src = src
+    script.nonce = scriptNonce
+    script.defer = false
+    return script
+  })
+  document.head.prepend(policy, base, runtimeConfig, importMap, ...scripts)
+  for (const script of document.querySelectorAll('script:not([nonce])')) script.setAttribute('nonce', scriptNonce)
   return `<!doctype html>\n${document.documentElement.outerHTML}`
 }
 

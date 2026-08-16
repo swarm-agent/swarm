@@ -853,7 +853,7 @@ func validateArtifactAnimationProfile(profile *SessionArtifactAnimationProfile) 
 		}
 	case "vector_playback":
 		expectedBudgets = canonicalArtifactAnimationBudgets(3, 0, 2, 4_194_304, 0, 300)
-		if profile.RuntimeKind != "imported_vector_playback" || profile.RuntimePackage != "@lottiefiles/dotlottie-web" || profile.RuntimeVersion != "0.79.1" || profile.SecondaryRuntimePackage != "@rive-app/canvas" || profile.SecondaryRuntimeVersion != "2.40.0" || profile.Heavy || !profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
+		if profile.RuntimeKind != "imported_vector_playback" || profile.RuntimePackage != "@lottiefiles/dotlottie-web" || profile.RuntimeVersion != "0.79.0" || profile.SecondaryRuntimePackage != "@rive-app/canvas" || profile.SecondaryRuntimeVersion != "2.39.2" || profile.Heavy || !profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
 			return errors.New("artifact animation profile runtime does not match profile")
 		}
 	case "final_render":

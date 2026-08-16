@@ -167,6 +167,8 @@ if [[ -d "${WEB_ARTIFACT_DIR}" ]]; then
   cp -R "${WEB_ARTIFACT_DIR}" "${RELEASE_STAGE_DIR}/${archive_basename}/web"
 fi
 cp "${OUTPUT_DIR}/build-info.txt" "${RELEASE_STAGE_DIR}/${archive_basename}/build-info.txt"
+cp "${ROOT_DIR}/LICENSE" "${RELEASE_STAGE_DIR}/${archive_basename}/LICENSE"
+cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${RELEASE_STAGE_DIR}/${archive_basename}/THIRD_PARTY_NOTICES.md"
 cp "${ROOT_DIR}/install.sh" "${RELEASE_STAGE_DIR}/${archive_basename}/install.sh"
 chmod 755 "${RELEASE_STAGE_DIR}/${archive_basename}/install.sh"
 (

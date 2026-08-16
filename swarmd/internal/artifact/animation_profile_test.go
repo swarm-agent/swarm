@@ -27,7 +27,7 @@ func TestResolveAnimationProfilesClosedRegistry(t *testing.T) {
 		t.Fatalf("unexpected Three runtime: %+v", three)
 	}
 	vectors, _ := ResolveAnimationProfile(&AnimationProfileInput{Profile: "vector_playback"})
-	if vectors.RuntimeVersion != "0.79.1" || vectors.SecondaryRuntimeVersion != "2.40.0" || !vectors.ImportedPlaybackOnly {
+	if vectors.RuntimeVersion != "0.79.0" || vectors.SecondaryRuntimeVersion != "2.39.2" || !vectors.ImportedPlaybackOnly {
 		t.Fatalf("unexpected vector runtimes: %+v", vectors)
 	}
 	final, _ := ResolveAnimationProfile(&AnimationProfileInput{Profile: "final_render"})

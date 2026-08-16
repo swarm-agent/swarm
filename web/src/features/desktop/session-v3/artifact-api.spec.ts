@@ -17,7 +17,9 @@ import {
   desktopV3ArtifactViewerSearch,
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactSelection,
+  formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
+  normalizeDesktopV3ArtifactAnimationProfile,
   normalizeDesktopV3ArtifactOutputRequirements,
   removeDesktopV3ArtifactMessageSelection,
   normalizeDesktopV3ArtifactCatalogEntry,
@@ -40,6 +42,25 @@ const managedCatalogWire = {
   category: 'visual',
   updated_at: 100,
   event_seq: 42,
+  animation_profile: {
+    profile_id: 'generative_2d',
+    registry_version: '2026-08-16.v1',
+    runtime_kind: 'canvas_2d_pixi',
+    runtime_package: 'pixi.js',
+    runtime_version: '8.19.0',
+    budgets: {
+      max_simultaneous_live_previews: 2,
+      max_webgl_contexts: 1,
+      max_device_pixel_ratio: 2,
+      max_canvas_pixels: 4194304,
+      max_particles: 5000,
+      max_draw_calls_per_frame: 500,
+      pause_when_offscreen: true,
+      stop_when_document_hidden: true,
+      reduced_motion_behavior: 'static_first_frame',
+      network_allowed: false,
+    },
+  },
   output_requirements: {
     preset_id: 'twitter_header',
     width: 1500,
@@ -93,6 +114,12 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
       presetId: 'twitter_header', width: 1500, height: 500, aspectRatio: '3:1', orientation: 'landscape',
       resolutionSource: 'preset', registryVersion: '2026-08-01',
     },
+    animationProfile: {
+      profileId: 'generative_2d', registryVersion: '2026-08-16.v1', runtimeKind: 'canvas_2d_pixi',
+      runtimePackage: 'pixi.js', runtimeVersion: '8.19.0', secondaryRuntimePackage: '', secondaryRuntimeVersion: '',
+      heavy: false, importedPlaybackOnly: false, editableSourceRequired: false,
+      budgets: { maxSimultaneousLivePreviews: 2, maxWebGLContexts: 1, maxDevicePixelRatio: 2, maxCanvasPixels: 4194304, maxParticles: 5000, maxDrawCallsPerFrame: 500, pauseWhenOffscreen: true, stopWhenDocumentHidden: true, reducedMotionBehavior: 'static_first_frame', networkAllowed: false },
+    },
     progress: { total: 3, staging: 1, ready: 1, failed: 1, unavailable: 0 },
     lineage: {
       parentSessionId: 'session-1', sourceSessionId: 'child-1', sourceCollectionId: 'source-collection',
@@ -101,6 +128,20 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
       iterationLabel: '', iterationTheme: '', runId: '', planId: '', checkpointId: '', attemptId: '',
     },
   })
+})
+
+test('artifact animation profiles preserve only the exact server-owned runtime contract', () => {
+  const profile = normalizeDesktopV3ArtifactAnimationProfile(managedCatalogWire.animation_profile)
+  assert.ok(profile)
+  assert.equal(profile.profileId, 'generative_2d')
+  assert.equal(profile.runtimePackage, 'pixi.js')
+  assert.equal(profile.runtimeVersion, '8.19.0')
+  assert.equal(profile.budgets.networkAllowed, false)
+  assert.equal(formatDesktopV3ArtifactAnimationProfile(profile), 'PixiJS 2D')
+  assert.equal(normalizeDesktopV3ArtifactAnimationProfile({ ...managedCatalogWire.animation_profile, runtime_version: 'latest' }), null)
+  assert.equal(normalizeDesktopV3ArtifactAnimationProfile({ ...managedCatalogWire.animation_profile, budgets: { ...managedCatalogWire.animation_profile.budgets, network_allowed: true } }), null)
+  assert.equal(normalizeDesktopV3ArtifactAnimationProfile({ ...managedCatalogWire.animation_profile, budgets: { ...managedCatalogWire.animation_profile.budgets, max_simultaneous_live_previews: 0 } }), null)
+  assert.equal(normalizeDesktopV3ArtifactAnimationProfile({ ...managedCatalogWire.animation_profile, budgets: { ...managedCatalogWire.animation_profile.budgets, max_webgl_contexts: -1 } }), null)
 })
 
 test('artifact output requirements normalize and format the canonical requested target', () => {

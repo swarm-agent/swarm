@@ -43,8 +43,8 @@ var animationProfileDefinitions = []animationProfileDefinition{
 	},
 	{
 		id: "vector_playback", runtimeKind: "imported_vector_playback",
-		runtimePackage: "@lottiefiles/dotlottie-web", runtimeVersion: "0.79.1",
-		secondaryRuntimePackage: "@rive-app/canvas", secondaryRuntimeVersion: "2.40.0", importedPlaybackOnly: true,
+		runtimePackage: "@lottiefiles/dotlottie-web", runtimeVersion: "0.79.0",
+		secondaryRuntimePackage: "@rive-app/canvas", secondaryRuntimeVersion: "2.39.2", importedPlaybackOnly: true,
 		budgets: animationBudgets(3, 0, 2, 4_194_304, 0, 300),
 	},
 	{
@@ -56,15 +56,15 @@ var animationProfileDefinitions = []animationProfileDefinition{
 func animationBudgets(live, webgl int, dpr float64, pixels, particles, drawCalls int) pebblestore.SessionArtifactAnimationBudgets {
 	return pebblestore.SessionArtifactAnimationBudgets{
 		MaxSimultaneousLivePreviews: live,
-		MaxWebGLContexts: webgl,
-		MaxDevicePixelRatio: dpr,
-		MaxCanvasPixels: pixels,
-		MaxParticles: particles,
-		MaxDrawCallsPerFrame: drawCalls,
-		PauseWhenOffscreen: true,
-		StopWhenDocumentHidden: true,
-		ReducedMotionBehavior: "static_first_frame",
-		NetworkAllowed: false,
+		MaxWebGLContexts:            webgl,
+		MaxDevicePixelRatio:         dpr,
+		MaxCanvasPixels:             pixels,
+		MaxParticles:                particles,
+		MaxDrawCallsPerFrame:        drawCalls,
+		PauseWhenOffscreen:          true,
+		StopWhenDocumentHidden:      true,
+		ReducedMotionBehavior:       "static_first_frame",
+		NetworkAllowed:              false,
 	}
 }
 
@@ -85,17 +85,17 @@ func ResolveAnimationProfile(input *AnimationProfileInput) (*pebblestore.Session
 	for _, definition := range animationProfileDefinitions {
 		if definition.id == profileID {
 			return &pebblestore.SessionArtifactAnimationProfile{
-				ProfileID: definition.id,
-				RegistryVersion: AnimationProfileRegistryVersion,
-				RuntimeKind: definition.runtimeKind,
-				RuntimePackage: definition.runtimePackage,
-				RuntimeVersion: definition.runtimeVersion,
+				ProfileID:               definition.id,
+				RegistryVersion:         AnimationProfileRegistryVersion,
+				RuntimeKind:             definition.runtimeKind,
+				RuntimePackage:          definition.runtimePackage,
+				RuntimeVersion:          definition.runtimeVersion,
 				SecondaryRuntimePackage: definition.secondaryRuntimePackage,
 				SecondaryRuntimeVersion: definition.secondaryRuntimeVersion,
-				Heavy: definition.heavy,
-				ImportedPlaybackOnly: definition.importedPlaybackOnly,
-				EditableSourceRequired: definition.editableSourceRequired,
-				Budgets: definition.budgets,
+				Heavy:                   definition.heavy,
+				ImportedPlaybackOnly:    definition.importedPlaybackOnly,
+				EditableSourceRequired:  definition.editableSourceRequired,
+				Budgets:                 definition.budgets,
 			}, nil
 		}
 	}
@@ -126,7 +126,7 @@ func ParseAnimationProfile(raw any) (*pebblestore.SessionArtifactAnimationProfil
 
 func AnimationProfileToolSchema() map[string]any {
 	return map[string]any{
-		"type": "object",
+		"type":        "object",
 		"description": "Closed, server-resolved animation execution profile. Runtimes are exact local packages; network and runtime overrides are prohibited.",
 		"properties": map[string]any{
 			"profile": map[string]any{
@@ -134,7 +134,7 @@ func AnimationProfileToolSchema() map[string]any {
 				"enum": []string{"motion_ui", "generative_2d", "spatial_3d", "vector_playback", "final_render"},
 			},
 		},
-		"required": []string{"profile"},
+		"required":             []string{"profile"},
 		"additionalProperties": false,
 	}
 }

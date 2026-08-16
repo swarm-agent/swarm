@@ -253,7 +253,20 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 		}
 	}
 
-	program, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "animate", "program": map[string]any{"id": "motion_program", "stages": []any{map[string]any{"id": "variants", "dependency_evidence": "ready"}}, "jobs": []any{map[string]any{"id": "motion", "stage_id": "variants", "agent_type": "designer", "meta_prompt": "create", "title": "Motion", "deliverable": "animation", "acceptance_criteria": []any{"ready"}, "dependency_evidence": "ready", "animation_profile": map[string]any{"profile": "generative_2d"}}}}))
+	program, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "animate",
+		"program": map[string]any{
+			"id": "motion_program",
+			"stages": []any{map[string]any{
+				"id": "variants", "dependency_evidence": "ready",
+			}},
+			"jobs": []any{map[string]any{
+				"id": "motion", "stage_id": "variants", "agent_type": "designer", "meta_prompt": "create",
+				"title": "Motion", "deliverable": "animation", "acceptance_criteria": []any{"ready"},
+				"dependency_evidence": "ready", "animation_profile": map[string]any{"profile": "generative_2d"},
+			}},
+		},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +283,7 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 	}
 	assertGenerative2DProfile(t, context.AnimationProfile)
 	delegated := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "motion", Prompt: "create", RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: context.AnimationProfile, ArtifactRunContext: context})
-	for _, expected := range []string{"pixi.js", "8.19.0", "animation_profile", "no CDN", "clean up"} {
+	for _, expected := range []string{"pixi.js", "8.19.0", "animation_profile", "never CDN", "clean up"} {
 		if !strings.Contains(delegated, expected) {
 			t.Fatalf("delegated animation prompt missing %q: %s", expected, delegated)
 		}

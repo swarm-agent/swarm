@@ -585,7 +585,9 @@ validate_artifact_root() {
   for rel in \
     swarmd/libfff_c.so \
     ../web/index.html \
-    ../build-info.txt
+    ../build-info.txt \
+    ../LICENSE \
+    ../THIRD_PARTY_NOTICES.md
   do
     if [ ! -f "$platform_dir/$rel" ]; then
       echo "artifact root is missing file: $platform_dir/$rel" >&2

@@ -66,13 +66,17 @@ test('sidebar labels ready images as exact chat remix inputs', async () => {
   assert.match(source, /onAddToChat\(\[artifact\]\)/)
 })
 
-test('visible sidebar artifact thumbnails keep live animation enabled', async () => {
+test('sidebar governs heavyweight animation previews to one visible live artifact', async () => {
   const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
-  assert.match(source, /<DesktopV3ArtifactThumbnail artifact=\{representative\} live \/>/)
-  assert.match(source, /<DesktopV3ArtifactThumbnail artifact=\{artifact\} live \/>/)
-  assert.doesNotMatch(source, /requestLivePreview/)
+  assert.match(source, /const livePreviewKey = selectedLivePreviewKey/)
+  assert.match(source, /\|\| \(requestedArtifact\?\.status === 'ready'/)
+  assert.match(source, /requestLivePreview/)
+  assert.match(source, /sidebarArtifactPreviewKey\(artifact\) === livePreviewKey/)
+  assert.match(source, /desktopV3ArtifactLocalRuntimeAssets\(artifact\.animationProfile\)/)
+  assert.match(source, /formatDesktopV3ArtifactAnimationProfile\(representative\.animationProfile\)/)
+  assert.match(source, /previewMotionAllowed \|\| finalRender/)
   assert.match(source, /<video src=\{previewURL\} autoPlay loop muted playsInline/)
-  assert.match(source, /useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>\(previewEnabled\)/)
+  assert.match(source, /useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>/)
 })
 
 test('session artifact sidebar includes native and delegated artifacts only for the active session', () => {

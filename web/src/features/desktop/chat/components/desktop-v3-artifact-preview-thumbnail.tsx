@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileText, Loader2 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
+import { desktopV3ArtifactLocalRuntimeAssets } from '../../session-v3/artifact-animation-runtime-assets'
 import {
   buildDesktopV3ArtifactSandboxDocument,
   fetchDesktopV3Artifact,
@@ -74,13 +75,19 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const [previewText, setPreviewText] = useState('')
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
-  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility()
+  const { previewRef, previewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility()
+  const animationExecutionAllowed = !artifact.animationProfile
+    || artifact.animationProfile.profileId === 'final_render'
+    || previewMotionAllowed
+  const animationCanvasStyle = artifact.animationProfile
+    ? { maxWidth: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels), maxHeight: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels) }
+    : undefined
 
   useEffect(() => {
     setPreviewURL('')
     setPreviewText('')
     setFailed(false)
-    if (!previewVisible || artifact.status !== 'ready' || !artifact.previewable) {
+    if (!previewVisible || !animationExecutionAllowed || artifact.status !== 'ready' || !artifact.previewable) {
       setLoading(false)
       return undefined
     }
@@ -107,6 +114,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
               artifact.sessionId,
               artifact.artifactId,
               previewToken,
+              desktopV3ArtifactLocalRuntimeAssets(artifact.animationProfile),
             ))
           }
           return
@@ -130,13 +138,15 @@ export function DesktopV3ArtifactPreviewThumbnail({
       controller.abort()
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status, previewVisible])
+  }, [animationExecutionAllowed, artifact.animationProfile, artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status, previewVisible])
 
-  const hasHTMLPreview = previewVisible && artifact.mediaType === 'text/html' && Boolean(previewText)
-  const hasImagePreview = previewVisible && artifact.mediaType.startsWith('image/') && Boolean(previewURL)
-  const hasVideoPreview = previewVisible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && Boolean(previewURL)
-  const hasPDFPreview = previewVisible && artifact.mediaType === 'application/pdf' && Boolean(previewURL)
-  const hasTextPreview = previewVisible && (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
+  const previewActive = previewVisible && animationExecutionAllowed
+  const hasHTMLPreview = previewActive && artifact.mediaType === 'text/html' && Boolean(previewText)
+  const hasImagePreview = previewActive && artifact.mediaType.startsWith('image/') && Boolean(previewURL)
+  const videoProfileCompatible = !artifact.animationProfile || artifact.animationProfile.profileId === 'final_render'
+  const hasVideoPreview = previewActive && videoProfileCompatible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && Boolean(previewURL)
+  const hasPDFPreview = previewActive && artifact.mediaType === 'application/pdf' && Boolean(previewURL)
+  const hasTextPreview = previewActive && (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
 
   const isWide = presentation === 'wide' && (artifact.mediaType.startsWith('image/') || artifact.mediaType.startsWith('video/') || artifact.kind === 'video')
   const previewAspectRatio = isWide && artifact.outputRequirements
@@ -151,11 +161,16 @@ export function DesktopV3ArtifactPreviewThumbnail({
         isWide ? 'max-w-3xl' : 'max-w-sm',
         className,
       )}
-      style={previewAspectRatio ? { aspectRatio: previewAspectRatio } : undefined}
+      style={{ ...(previewAspectRatio ? { aspectRatio: previewAspectRatio } : {}), ...animationCanvasStyle }}
       data-artifact-preview-thumbnail
       data-artifact-preview-presentation={isWide ? 'wide' : 'thumbnail'}
       data-artifact-preview-media-type={artifact.mediaType}
       data-artifact-preview-visible={previewVisible || undefined}
+      data-artifact-animation-profile={artifact.animationProfile?.profileId}
+      data-artifact-animation-active={previewActive || undefined}
+      data-artifact-animation-max-dpr={artifact.animationProfile?.budgets.maxDevicePixelRatio}
+      data-artifact-animation-max-canvas-pixels={artifact.animationProfile?.budgets.maxCanvasPixels}
+      data-artifact-animation-max-webgl={artifact.animationProfile?.budgets.maxWebGLContexts}
     >
       {loading ? (
         <div className="grid size-full place-items-center text-[var(--app-text-muted)]">

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
+import { desktopV3ArtifactLocalRuntimeAssets } from '../../session-v3/artifact-animation-runtime-assets'
 import {
   buildDesktopV3ArtifactSandboxDocument,
   DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
@@ -32,6 +33,7 @@ import {
   fetchDesktopV3ArtifactDownload,
   fetchDesktopV3ArtifactCatalog,
   fetchDesktopV3ArtifactPreviewToken,
+  formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
   useDesktopV3Artifact,
   type DesktopV3ArtifactCatalogEntry,
@@ -39,6 +41,7 @@ import {
   type DesktopV3ArtifactSelection,
 } from '../../session-v3/artifact-api'
 import { useDesktopV3OpenArtifactCatalogRefresh } from '../../session-v3/use-artifact-catalog-refresh'
+import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
 
 export type DesktopV3ArtifactGalleryEntry = DesktopV3ArtifactCatalogEntry
 
@@ -185,8 +188,9 @@ export function DesktopV3ArtifactGallery({
   const galleryButtonRef = useRef<HTMLButtonElement>(null)
   const backButtonRef = useRef<HTMLButtonElement>(null)
   const previewSurfaceRef = useRef<HTMLDivElement>(null)
-  const [previewFullscreen, setPreviewFullscreen] = useState(false)
   const open = controlledOpen ?? internalOpen
+  const { previewRef: animationPreviewRef, previewVisible: animationPreviewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility(open)
+  const [previewFullscreen, setPreviewFullscreen] = useState(false)
   const setOpen = (next: boolean) => {
     if (controlledOpen === undefined) setInternalOpen(next)
     onOpenChange?.(next)
@@ -202,6 +206,7 @@ export function DesktopV3ArtifactGallery({
       artifact.mediaType,
       artifact.kind,
       formatDesktopV3ArtifactOutputRequirements(artifact.outputRequirements),
+      formatDesktopV3ArtifactAnimationProfile(artifact.animationProfile),
       artifact.sessionTitle,
       artifact.workspaceName,
       artifact.workspacePath,
@@ -225,6 +230,11 @@ export function DesktopV3ArtifactGallery({
   const selectedCanAttach = selected?.status === 'ready' && Boolean(selected.collectionId) && (selected.eventSeq ?? 0) > 0
   const selectedIsQueuedForChat = Boolean(selected && chatSelectedIds.includes(artifactSelectionKey(selected)))
   const selectedRequirementLabel = formatDesktopV3ArtifactOutputRequirements(selected?.outputRequirements)
+  const selectedAnimationLabel = formatDesktopV3ArtifactAnimationProfile(selected?.animationProfile)
+  const selectedAnimationActive = !selected?.animationProfile
+    || selected.animationProfile.profileId === 'final_render'
+    || (animationPreviewVisible && previewMotionAllowed)
+  const selectedVideoProfileCompatible = !selected?.animationProfile || selected.animationProfile.profileId === 'final_render'
   const attachableSelectedArtifacts = artifacts.filter((artifact) => chatSelectedIds.includes(artifactSelectionKey(artifact))
     && artifact.status === 'ready'
     && Boolean(artifact.collectionId)
@@ -294,7 +304,7 @@ export function DesktopV3ArtifactGallery({
   }, [open])
 
   useEffect(() => {
-    if (!open || !selected) return undefined
+    if (!open || !selected || !selectedAnimationActive) return undefined
     setPreviewURL('')
     setPreviewText('')
     setPreviewError('')
@@ -320,7 +330,7 @@ export function DesktopV3ArtifactGallery({
             fetchDesktopV3ArtifactPreviewToken(selected.sessionId, selected.artifactId, controller.signal),
           ])
           if (!controller.signal.aborted) {
-            setPreviewText(buildDesktopV3ArtifactSandboxDocument(source, selected.sessionId, selected.artifactId, previewToken))
+            setPreviewText(buildDesktopV3ArtifactSandboxDocument(source, selected.sessionId, selected.artifactId, previewToken, desktopV3ArtifactLocalRuntimeAssets(selected.animationProfile)))
           }
           return
         }
@@ -342,7 +352,7 @@ export function DesktopV3ArtifactGallery({
       controller.abort()
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [open, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.status])
+  }, [open, selectedAnimationActive, selected?.animationProfile, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.status])
 
   const selectArtifact = (artifact: DesktopV3ArtifactGalleryEntry) => {
     setSelectedId(artifactSelectionKey(artifact))
@@ -572,11 +582,14 @@ export function DesktopV3ArtifactGallery({
                   </div>
                 </div>
                 <div className="hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4 md:flex">
-                  <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{selected.label}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}</div>
+                  <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{selected.label}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
                   <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
                 </div>
                 <div
-                  ref={previewSurfaceRef}
+                  ref={(node) => {
+                    previewSurfaceRef.current = node
+                    animationPreviewRef.current = node
+                  }}
                   className={cn(
                     'relative h-full min-h-0 min-w-0',
                     selected.mediaType.startsWith('image/') || selected.mediaType.startsWith('video/') || selected.kind === 'video' || selected.mediaType === 'text/html' || selected.mediaType === 'application/pdf' ? 'overflow-hidden' : 'overflow-auto',
@@ -584,6 +597,7 @@ export function DesktopV3ArtifactGallery({
                     previewFullscreen && 'h-[100dvh] w-[100dvw] flex-none bg-[var(--app-bg-alt)]',
                   )}
                   data-artifact-preview-surface
+                  data-artifact-animation-active={selectedAnimationActive || undefined}
                 >
                   {previewFullscreen ? <button type="button" className="absolute right-3 top-3 z-20 grid size-9 place-items-center rounded-full border border-white/20 bg-black/60 text-white shadow-lg hover:bg-black/75" aria-label="Exit fullscreen artifact preview" onClick={() => void togglePreviewFullscreen()}><Minimize2 size={16} /></button> : null}
                   {previewLoading ? <div className="grid h-full min-h-40 place-items-center text-sm text-[var(--app-text-muted)]"><span><Loader2 className="mr-2 inline size-4 animate-spin" />Loading preview…</span></div> : null}
@@ -592,7 +606,7 @@ export function DesktopV3ArtifactGallery({
                   {!previewLoading && !previewError && (selected.status === 'failed' || selected.status === 'unavailable') ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-danger)]"><div><AlertTriangle className="mx-auto mb-3 size-6" /><p>This variant could not be generated.</p>{selected.failureCode ? <p className="mt-1 font-mono text-xs text-[var(--app-text-muted)]">{selected.failureCode}</p> : null}</div></div> : null}
                   {!previewLoading && !previewError && !selected.previewable && selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
                   {!previewLoading && !previewError && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" /></div> : null}
-                  {!previewLoading && !previewError && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player /></div> : null}
+                  {!previewLoading && !previewError && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player /></div> : null}
                   {!previewLoading && !previewError && selected.mediaType === 'text/html' && previewText ? <iframe title={selected.label} srcDoc={previewText} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
                   {!previewLoading && !previewError && selected.mediaType === 'application/pdf' && previewURL ? <iframe title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
                   {!previewLoading && !previewError && selected.mediaType === 'text/markdown' && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
