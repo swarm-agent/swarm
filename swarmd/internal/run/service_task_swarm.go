@@ -370,6 +370,12 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			b.Write(encoded)
 			b.WriteString("\n")
 			b.WriteString("- animation runtime contract: use only the pinned local runtime(s); no CDN, remote imports, arbitrary package execution, or network access. Honor lifecycle and resource budgets, pause offscreen, stop when hidden, provide a static first frame for reduced motion, and clean up tickers, listeners, workers, textures, and WebGL contexts. Use CSS/WAAPI/SVG for motion_ui, PixiJS for generative_2d, optional Three.js only for spatial_3d, dotLottie/Rive only for imported vector_playback, and MP4 playback for final_render. Import only assets the user owns or has licensed for the intended commercial use and redistribution; never source marketplace/community assets by default.\n")
+			switch request.AnimationProfile.ProfileID {
+			case "generative_2d":
+				b.WriteString("- PixiJS authoring contract: the pinned PixiJS 8 runtime is an ES module supplied through Swarm's trusted import map. Use a nonce-preserved `<script type=\"module\">` and `import * as PIXI from 'pixi.js'`. Never use `<script src=\"pixi.js\">`, `window.PIXI`, a CDN URL, or a remote import.\n")
+			case "spatial_3d":
+				b.WriteString("- Three.js authoring contract: the pinned Three.js runtime is an ES module supplied through Swarm's trusted import map. Use a nonce-preserved `<script type=\"module\">` and import from the bare specifier `three`; never use a CDN URL or remote import.\n")
+			}
 		}
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {

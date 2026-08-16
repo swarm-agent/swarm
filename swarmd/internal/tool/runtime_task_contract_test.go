@@ -25,7 +25,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if _, ok := properties["allow_bash"]; ok {
 		t.Fatal("task schema must not expose launch-time allow_bash")
 	}
-	for _, key := range []string{"mode", "agent_type", "count", "themes", "groups", "output_contract", "owned_scope_template"} {
+	for _, key := range []string{"mode", "agent_type", "count", "themes", "groups", "output_contract", "owned_scope_template", "animation_profile"} {
 		if _, ok := properties[key]; !ok {
 			t.Fatalf("task schema missing swarm-mode field %q", key)
 		}
@@ -87,7 +87,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !ok {
 		t.Fatalf("task launches item schema missing: %#v", launches)
 	}
-	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role"} {
+	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role", "animation_profile"} {
 		property, ok := itemsProperty(items, key)
 		if !ok {
 			t.Fatalf("task launches item missing property %q", key)
@@ -95,6 +95,29 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 		if key == "subagent_type" || key == "agent" || key == "purpose" {
 			assertTaskSubagentEnum(t, property, "launches."+key)
 		}
+	}
+	animationProfile, ok := properties["animation_profile"].(map[string]any)
+	if !ok || !containsInAny(animationProfile, "generative_2d") {
+		t.Fatalf("task animation_profile schema does not expose the closed profile registry: %#v", properties["animation_profile"])
+	}
+	program, ok := properties["program"].(map[string]any)
+	if !ok {
+		t.Fatalf("task program schema missing: %#v", properties["program"])
+	}
+	jobs, ok := itemsProperty(program, "jobs")
+	if !ok {
+		t.Fatalf("task program jobs schema missing: %#v", program)
+	}
+	jobArray, ok := jobs.(map[string]any)
+	if !ok {
+		t.Fatalf("task program jobs schema = %#v, want object", jobs)
+	}
+	jobItems, ok := jobArray["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("task program job item schema missing: %#v", jobArray)
+	}
+	if _, ok := itemsProperty(jobItems, "animation_profile"); !ok {
+		t.Fatalf("task program job schema missing animation_profile: %#v", jobItems)
 	}
 	if !definitionTextContains(taskDefinition, "ideally three words") || !definitionTextContains(taskDefinition, "full instructive") {
 		t.Fatalf("task definition must separate concise cosmetic titles from full child instructions: %#v", taskDefinition)

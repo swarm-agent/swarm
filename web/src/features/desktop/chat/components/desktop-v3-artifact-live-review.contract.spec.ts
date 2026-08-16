@@ -61,6 +61,8 @@ test('animation previews use immutable local runtimes and keep network access di
   assert.match(runtimeAssets, /dotlottie-player\.wasm/)
   assert.match(runtimeAssets, /rive\.wasm/)
   assert.match(viteConfig, /THIRD_PARTY_NOTICES\.md/)
+  assert.match(viteConfig, /Access-Control-Allow-Origin/)
+  assert.match(viteConfig, /Cross-Origin-Resource-Policy', 'cross-origin'/)
   for (const runtime of ['@lottiefiles/dotlottie-web', '@rive-app/canvas', 'pixi.js', 'three']) {
     assert.match(thirdPartyNotices, new RegExp(runtime.replaceAll('.', '\\.')))
   }

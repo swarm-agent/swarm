@@ -247,7 +247,7 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"pixi.js", "8.19.0", "no CDN", "pause offscreen", "clean up"} {
+	for _, expected := range []string{"pixi.js", "8.19.0", "no CDN", "pause offscreen", "clean up", `<script type="module">`, "import * as PIXI from 'pixi.js'", `script src="pixi.js"`, "window.PIXI"} {
 		if !strings.Contains(childPrompt, expected) {
 			t.Fatalf("animation child prompt missing %q: %s", expected, childPrompt)
 		}
@@ -283,7 +283,7 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 	}
 	assertGenerative2DProfile(t, context.AnimationProfile)
 	delegated := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "motion", Prompt: "create", RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: context.AnimationProfile, ArtifactRunContext: context})
-	for _, expected := range []string{"pixi.js", "8.19.0", "animation_profile", "never CDN", "clean up"} {
+	for _, expected := range []string{"pixi.js", "8.19.0", "animation_profile", "never CDN", "clean up", `<script type="module">`, "import * as PIXI from 'pixi.js'", `script src="pixi.js"`, "window.PIXI"} {
 		if !strings.Contains(delegated, expected) {
 			t.Fatalf("delegated animation prompt missing %q: %s", expected, delegated)
 		}

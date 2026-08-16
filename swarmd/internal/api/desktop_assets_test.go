@@ -129,6 +129,41 @@ func TestServeDesktopAssetSetsServiceWorkerScopeHeaders(t *testing.T) {
 	}
 }
 
+func TestServeDesktopAnimationRuntimePermitsOnlySandboxedLocalRuntimeFetch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>ok</html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "swarm-animation-runtime"), 0o755); err != nil {
+		t.Fatalf("mkdir runtime: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "swarm-animation-runtime", "pixi.mjs"), []byte("export const VERSION = '8.19.0'"), 0o644); err != nil {
+		t.Fatalf("write runtime: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/swarm-animation-runtime/pixi.mjs", nil)
+	rec := httptest.NewRecorder()
+	serveDesktopAsset(rec, req, dir, os.DirFS(dir), http.FileServer(http.Dir(dir)))
+
+	resp := rec.Result()
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if got := resp.Header.Get("Cross-Origin-Resource-Policy"); got != "cross-origin" {
+		t.Fatalf("Cross-Origin-Resource-Policy = %q, want cross-origin", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "text/javascript; charset=utf-8" {
+		t.Fatalf("Content-Type = %q, want text/javascript; charset=utf-8", got)
+	}
+	if isDesktopAnimationRuntime("assets/index.js") || isDesktopAnimationRuntime("swarm-animation-runtime/nested/pixi.mjs") || !isDesktopAnimationRuntime("swarm-animation-runtime/pixi.mjs") {
+		t.Fatal("animation runtime path allowlist is not exact")
+	}
+}
+
 func TestServeDesktopAssetSetsManifestContentType(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>ok</html>"), 0o644); err != nil {

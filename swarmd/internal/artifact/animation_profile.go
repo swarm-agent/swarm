@@ -127,7 +127,7 @@ func ParseAnimationProfile(raw any) (*pebblestore.SessionArtifactAnimationProfil
 func AnimationProfileToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "Closed, server-resolved animation execution profile. Runtimes are exact local packages; network and runtime overrides are prohibited.",
+		"description": "Closed, server-resolved animation execution profile. Select motion_ui for CSS/WAAPI/SVG, generative_2d for the pinned local PixiJS ES module, spatial_3d for the pinned local Three.js ES module, vector_playback for licensed dotLottie/Rive imports, or final_render for MP4 playback. Network and runtime overrides are prohibited.",
 		"properties": map[string]any{
 			"profile": map[string]any{
 				"type": "string",
