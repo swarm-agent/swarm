@@ -79,6 +79,7 @@ test('timeline parses successful manage_artifact tool message into typed artifac
   assert(markup.includes('text/html'), 'must display media type')
   assert(markup.includes('col: col-brainstorm'), 'must display collection info')
   assert(markup.includes('Open in viewer'), 'must provide viewer open affordance')
+  assert(markup.includes('data-testid="download-artifact-button"'), 'must provide a download affordance')
   assert(markup.includes('data-testid="artifact-preview-link"'), 'must expose an immediately clickable artifact preview')
   assert(markup.includes('data-artifact-preview-thumbnail'), 'must render the artifact thumbnail surface')
   assert(markup.includes('/ws-1/sess-abc-123?artifactSession=sess-abc-123&amp;collection=col-brainstorm&amp;artifact=var-concept-1'), 'must link to exact viewer route')
@@ -154,8 +155,7 @@ test('timeline artifact actions fail closed when the exact ready identity is inc
       onArtifactSelections={() => assert.fail('incomplete artifact identity must not be sent to chat')}
     />,
   )
-  assert(!markup.includes('data-testid="add-artifact-to-chat-button"'))
-  assert(!markup.includes('data-testid="use-artifact-design-button"'))
+  assert(!markup.includes('data-testid="select-artifact-button"'))
   assert(markup.includes('data-artifact-preview-thumbnail'), 'display-only artifact metadata still renders a preview surface')
   assert(!markup.includes('data-testid="artifact-preview-button"'), 'a preview without a concrete route must not render an inert button')
 })
@@ -202,11 +202,19 @@ test('ready generated images use a wide clickable timeline preview', () => {
   assert(Boolean(toolMessage), 'toolMessage should be created')
 
   const markup = renderToStaticMarkup(
-    <ToolMessageView toolMessage={toolMessage!} artifactHref={() => '/ws/sess-image-1?artifact=var-image-1'} />,
+    <ToolMessageView
+      toolMessage={toolMessage!}
+      artifactHref={() => '/ws/sess-image-1?artifact=var-image-1'}
+      onArtifactSelections={() => undefined}
+    />,
   )
   assert(markup.includes('Image ready'), 'must communicate successful image generation')
   assert(markup.includes('data-artifact-preview-presentation="wide"'), 'must use the wide image presentation')
   assert(markup.includes('data-testid="artifact-preview-link"'), 'must keep the full preview clickable')
+  assert(markup.includes('data-testid="download-artifact-button"'), 'must download the native artifact')
+  assert(markup.includes('data-testid="select-artifact-button"'), 'must expose a neutral selection action')
+  assert(!markup.includes('Add to chat'), 'must not use obsolete add-to-chat copy')
+  assert(!markup.includes('Use design'), 'must not use obsolete design-specific copy')
 })
 
 test('image capability lookup uses meaningful metadata without a fake artifact type', () => {

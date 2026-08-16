@@ -23,6 +23,25 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestSessionV3ArtifactRequiresBundleOnlyForPackages(t *testing.T) {
+	tests := []struct {
+		name     string
+		artifact sessionsV3ResolvedArtifact
+		want     bool
+	}{
+		{name: "native image", artifact: sessionsV3ResolvedArtifact{Descriptor: pebblestore.PlanFinalHandoffArtifact{MediaType: "image/png", Kind: "image"}}, want: false},
+		{name: "native video", artifact: sessionsV3ResolvedArtifact{Descriptor: pebblestore.PlanFinalHandoffArtifact{MediaType: "video/mp4", Kind: "video"}}, want: false},
+		{name: "zip package", artifact: sessionsV3ResolvedArtifact{Managed: &pebblestore.SessionArtifactVariant{MediaType: "application/zip", Presentation: pebblestore.SessionArtifactPresentation{Kind: "package"}}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sessionV3ArtifactRequiresBundle(tt.artifact); got != tt.want {
+				t.Fatalf("sessionV3ArtifactRequiresBundle() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenSessionV3ArtifactFileRejectsSymlinkAndEscape(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "gallery"), 0o755); err != nil {

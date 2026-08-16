@@ -669,6 +669,13 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 	http.ServeContent(w, r, artifact.Descriptor.Filename, info.ModTime(), file)
 }
 
+func sessionV3ArtifactRequiresBundle(artifact sessionsV3ResolvedArtifact) bool {
+	if artifact.Managed != nil {
+		return strings.EqualFold(strings.TrimSpace(artifact.Managed.MediaType), "application/zip") || strings.EqualFold(strings.TrimSpace(artifact.Managed.Presentation.Kind), "package")
+	}
+	return strings.EqualFold(strings.TrimSpace(artifact.Descriptor.MediaType), "application/zip") || strings.EqualFold(strings.TrimSpace(artifact.Descriptor.Kind), "package")
+}
+
 func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, artifactID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w)
@@ -699,6 +706,21 @@ func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Re
 		return
 	}
 	defer file.Close()
+	if !sessionV3ArtifactRequiresBundle(artifact) {
+		disposition := mime.FormatMediaType("attachment", map[string]string{"filename": artifact.Descriptor.Filename})
+		if disposition == "" {
+			disposition = "attachment"
+		}
+		w.Header().Set("Content-Type", artifact.Descriptor.MediaType)
+		w.Header().Set("Content-Disposition", disposition)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		http.ServeContent(w, r, artifact.Descriptor.Filename, info.ModTime(), file)
+		return
+	}
+
 	bundleName := sessionV3ArtifactBundleFilename(artifact.Descriptor.Filename)
 	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": bundleName})
 	if disposition == "" {

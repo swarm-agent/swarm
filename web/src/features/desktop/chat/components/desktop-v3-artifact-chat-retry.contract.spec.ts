@@ -8,7 +8,7 @@ const paneURL = new URL('./desktop-v3-existing-conversation-pane.tsx', import.me
 const routedPaneURL = new URL('./desktop-v3-new-session-pane.tsx', import.meta.url)
 const apiURL = new URL('../../session-v3/artifact-api.ts', import.meta.url)
 
-test('Add to chat and Use this design attach opaque references without artifact bytes', async () => {
+test('artifact gallery selection actions attach opaque references without artifact bytes', async () => {
   const [gallery, composer, api] = await Promise.all([
     readFile(galleryURL, 'utf8'),
     readFile(composerURL, 'utf8'),
@@ -20,7 +20,6 @@ test('Add to chat and Use this design attach opaque references without artifact 
   assert.match(composer, /appendDesktopV3ArtifactMessageSelections\(current, artifacts\.map/)
   assert.match(composer, /appendDesktopV3ArtifactMessageSelections\(current, artifactSelectionRequests\)/)
   assert.match(composer, /artifacts\.map\(\(\{ label, selection \}\) => \(\{ \.\.\.selection, label, action: 'select' \}\)\)/)
-  assert.match(composer, /\{ \.\.\.selection, label, action: 'use' \}/)
   assert.match(composer, /selections: artifactSelections/)
   assert.match(api, /session_id: entry\.sessionId/)
   assert.match(api, /collection_id: entry\.collectionId/)

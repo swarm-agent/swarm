@@ -549,6 +549,46 @@ export function desktopV3ArtifactBundleEndpoint(sessionId: string, artifactId: s
   return `${desktopV3ArtifactEndpoint(sessionId, artifactId)}/bundle`
 }
 
+export function desktopV3ArtifactRequiresBundle(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'kind' | 'mediaType'>,
+): boolean {
+  const mediaType = artifact.mediaType.split(';', 1)[0]?.trim().toLowerCase()
+  return artifact.kind.trim().toLowerCase() === 'package' || mediaType === 'application/zip'
+}
+
+function desktopV3ArtifactFilenameExtension(mediaType: string): string {
+  switch (mediaType.split(';', 1)[0]?.trim().toLowerCase()) {
+    case 'image/gif': return '.gif'
+    case 'image/jpeg': return '.jpg'
+    case 'image/png': return '.png'
+    case 'image/svg+xml': return '.svg'
+    case 'image/webp': return '.webp'
+    case 'video/mp4': return '.mp4'
+    case 'video/quicktime': return '.mov'
+    case 'video/webm': return '.webm'
+    default: return ''
+  }
+}
+
+function desktopV3ArtifactSafeFilename(value: string): string {
+  return value.trim().split(/[\\/]/).pop()?.trim().replace(/[<>:"|?*]+/g, '-') ?? ''
+}
+
+export function desktopV3ArtifactDownloadName(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'filename' | 'kind' | 'label' | 'mediaType'>,
+): string {
+  const filename = desktopV3ArtifactSafeFilename(artifact.filename)
+  if (desktopV3ArtifactRequiresBundle(artifact)) {
+    if (/\.zip$/i.test(filename)) return filename
+    const label = desktopV3ArtifactSafeFilename(artifact.label).replace(/\.[a-z0-9]{1,8}$/i, '')
+    return `${label || 'artifact'}.zip`
+  }
+  if (filename) return filename
+  const label = desktopV3ArtifactSafeFilename(artifact.label) || 'artifact'
+  const extension = desktopV3ArtifactFilenameExtension(artifact.mediaType)
+  return extension && !label.toLowerCase().endsWith(extension) ? `${label}${extension}` : label
+}
+
 export function desktopV3ArtifactPreviewAccessEndpoint(sessionId: string): string {
   const normalizedSessionId = sessionId.trim()
   if (!normalizedSessionId) throw new Error('Artifact preview access requires a session ID')
@@ -617,6 +657,16 @@ export async function fetchDesktopV3ArtifactBundle(sessionId: string, artifactId
     throw new Error(await readErrorMessage(response))
   }
   return response.blob()
+}
+
+export async function fetchDesktopV3ArtifactDownload(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'kind' | 'mediaType' | 'sessionId'>,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  if (desktopV3ArtifactRequiresBundle(artifact)) {
+    return fetchDesktopV3ArtifactBundle(artifact.sessionId, artifact.artifactId, signal)
+  }
+  return fetchDesktopV3Artifact(artifact.sessionId, artifact.artifactId, signal)
 }
 
 export async function fetchDesktopV3Artifact(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<Blob> {

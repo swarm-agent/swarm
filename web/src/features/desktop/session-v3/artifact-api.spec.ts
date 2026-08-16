@@ -10,6 +10,8 @@ import {
   desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactCollectionViewerHref,
   desktopV3ArtifactCollectionViewerSearch,
+  desktopV3ArtifactDownloadName,
+  desktopV3ArtifactRequiresBundle,
   desktopV3ArtifactViewerHref,
   desktopV3ArtifactViewerLocation,
   desktopV3ArtifactViewerSearch,
@@ -162,6 +164,41 @@ test('historical artifacts omit requirements and malformed nested requirements f
 
 test('artifact selection actions target the canonical variant selection route', () => {
   assert.equal(desktopV3ArtifactSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/selection')
+})
+
+test('artifact downloads preserve native image and video files and bundle only packages', () => {
+  const image = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    artifact_id: 'image-var-1',
+    filename: 'campaign.png',
+    media_type: 'image/png',
+    kind: 'image',
+  })
+  const video = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    artifact_id: 'video-var-1',
+    filename: 'launch.mp4',
+    media_type: 'video/mp4',
+    kind: 'video',
+  })
+  const artifactPackage = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    artifact_id: 'package-var-1',
+    filename: 'site.html',
+    label: 'Interactive site',
+    media_type: 'application/zip',
+    kind: 'html',
+  })
+  assert.ok(image)
+  assert.ok(video)
+  assert.ok(artifactPackage)
+  assert.equal(desktopV3ArtifactRequiresBundle(image), false)
+  assert.equal(desktopV3ArtifactRequiresBundle(video), false)
+  assert.equal(desktopV3ArtifactRequiresBundle(artifactPackage), true)
+  assert.equal(desktopV3ArtifactDownloadName(image), 'campaign.png')
+  assert.equal(desktopV3ArtifactDownloadName(video), 'launch.mp4')
+  assert.equal(desktopV3ArtifactDownloadName(artifactPackage), 'Interactive site.zip')
+  assert.equal(desktopV3ArtifactDownloadName({ ...image, filename: '', label: 'Campaign hero' }), 'Campaign hero.png')
 })
 
 test('artifact catalog normalizes video mp4 entry with visual category and video kind', () => {

@@ -25,7 +25,7 @@ import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
 import { ToolActivityShell } from "./tool-activity-shell";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
-import { desktopV3ArtifactMessageSelection, normalizeDesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 
 interface ChatMarkdownProps {
   content: string;
@@ -1513,6 +1513,7 @@ export function ManageArtifactCard({
       ))
     : null;
   const artifact = matchedCatalogEntry ?? rawArtifact;
+  const [artifactActionError, setArtifactActionError] = useState("");
 
   const isRunning = toolMessage.state === "running";
   const isError = toolMessage.state === "error" || Boolean(toolMessage.error);
@@ -1568,14 +1569,26 @@ export function ManageArtifactCard({
     }
   })() : null;
 
-  const handleAddToChat = () => {
-    if (!artifactSelection || !onArtifactSelections) return;
-    onArtifactSelections([artifactSelection]);
+  const handleDownload = async () => {
+    if (!artifact) return;
+    try {
+      setArtifactActionError("");
+      const blob = await fetchDesktopV3ArtifactDownload(artifact);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = desktopV3ArtifactDownloadName(artifact);
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      setArtifactActionError(error instanceof Error ? error.message : "Artifact download failed");
+    }
   };
 
-  const handleUseDesign = () => {
+  const handleSelect = () => {
     if (!artifactSelection || !onArtifactSelections) return;
-    onArtifactSelections([{ ...artifactSelection, action: "use" }]);
+    setArtifactActionError("");
+    onArtifactSelections([artifactSelection]);
   };
 
   const isMediaWide = artifact?.mediaType.startsWith("image/") || artifact?.mediaType.startsWith("video/") || artifact?.kind === "video";
@@ -1663,6 +1676,12 @@ export function ManageArtifactCard({
           </div>
         ) : null}
 
+        {artifactActionError ? (
+          <div className="mt-2.5 rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">
+            {artifactActionError}
+          </div>
+        ) : null}
+
         {artifact ? (
           <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2 border-t border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] pt-2.5">
             {href ? (
@@ -1685,25 +1704,26 @@ export function ManageArtifactCard({
               </button>
             ) : null}
 
+            {status === "ready" ? (
+              <button
+                type="button"
+                onClick={() => void handleDownload()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                data-testid="download-artifact-button"
+              >
+                <Download size={12} aria-hidden="true" /> Download
+              </button>
+            ) : null}
+
             {onArtifactSelections && artifactSelection && status === "ready" ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleAddToChat}
-                  className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
-                  data-testid="add-artifact-to-chat-button"
-                >
-                  Add to chat
-                </button>
-                <button
-                  type="button"
-                  onClick={handleUseDesign}
-                  className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]"
-                  data-testid="use-artifact-design-button"
-                >
-                  Use design
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={handleSelect}
+                className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                data-testid="select-artifact-button"
+              >
+                Select
+              </button>
             ) : null}
           </div>
         ) : null}
