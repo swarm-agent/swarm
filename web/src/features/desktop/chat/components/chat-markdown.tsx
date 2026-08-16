@@ -1592,6 +1592,7 @@ export function ManageArtifactCard({
   };
 
   const isMediaWide = artifact?.mediaType.startsWith("image/") || artifact?.mediaType.startsWith("video/") || artifact?.kind === "video";
+  const artifactActionClassName = "inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]";
 
   return (
     <div className="mb-2 w-full min-w-0 py-1.5" data-testid="desktop-artifact-tool-card" data-timeline-artifact-card>
@@ -1688,7 +1689,7 @@ export function ManageArtifactCard({
               <a
                 href={href}
                 onClick={handleOpenViewer}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                className={artifactActionClassName}
                 data-testid="open-artifact-viewer-link"
               >
                 Open in viewer <ExternalLink size={12} />
@@ -1697,7 +1698,7 @@ export function ManageArtifactCard({
               <button
                 type="button"
                 onClick={() => handleOpenViewer()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                className={artifactActionClassName}
                 data-testid="open-artifact-viewer-button"
               >
                 Open in viewer <ExternalLink size={12} />
@@ -1708,7 +1709,7 @@ export function ManageArtifactCard({
               <button
                 type="button"
                 onClick={() => void handleDownload()}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                className={artifactActionClassName}
                 data-testid="download-artifact-button"
               >
                 <Download size={12} aria-hidden="true" /> Download
@@ -1719,7 +1720,7 @@ export function ManageArtifactCard({
               <button
                 type="button"
                 onClick={handleSelect}
-                className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                className={artifactActionClassName}
                 data-testid="select-artifact-button"
               >
                 Select
