@@ -301,6 +301,7 @@ func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunCo
 	}
 	cloned := *input
 	cloned.OutputRequirements = cloneTaskOutputRequirements(input.OutputRequirements)
+	cloned.AnimationProfile = cloneTaskAnimationProfile(input.AnimationProfile)
 	return &cloned
 }
 
@@ -320,6 +321,7 @@ func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerCo
 		run.CollectionID = strings.TrimSpace(run.CollectionID)
 		run.VariantID = strings.TrimSpace(run.VariantID)
 		run.OutputRequirements = cloneTaskOutputRequirements(run.OutputRequirements)
+		run.AnimationProfile = cloneTaskAnimationProfile(run.AnimationProfile)
 		if run.SessionID == "" || run.ChildSessionID == "" || run.ChildSessionID != strings.TrimSpace(config.sessionID) || run.TaskCallID == "" || run.CollectionID == "" || run.VariantID == "" {
 			// Preserve a managed destination marker while forcing ownership checks to
 			// fail closed; never degrade a malformed trusted target into an ordinary

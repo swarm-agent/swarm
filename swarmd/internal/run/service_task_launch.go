@@ -1272,6 +1272,14 @@ func cloneTaskOutputRequirements(input *pebblestore.SessionArtifactOutputRequire
 	return &cloned
 }
 
+func cloneTaskAnimationProfile(input *pebblestore.SessionArtifactAnimationProfile) *pebblestore.SessionArtifactAnimationProfile {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
 func applyTaskOutputRequirements(launch *taskLaunchSpec, raw any, label string) error {
 	if launch == nil {
 		return errors.New("task launch is required")

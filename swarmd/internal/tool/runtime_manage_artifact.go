@@ -80,6 +80,7 @@ type ArtifactRunContext struct {
 	CollectionID       string
 	VariantID          string
 	OutputRequirements *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile
 }
 
 type artifactRunContextKey struct{}
@@ -139,6 +140,7 @@ func manageArtifactDefinition() Definition {
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
 				"presentation":           presentation,
 				"output_requirements":    artifact.OutputRequirementsToolSchema(),
+				"animation_profile":      artifact.AnimationProfileToolSchema(),
 				"source_session_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the authenticated source session from the reusable exact ready attached-artifact reference together with all other source_* fields"},
 				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source collection from the same reusable exact ready reference"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
@@ -192,6 +194,11 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact output_requirements is valid only for generate_image, create, or create_package")
 		}
 	}
+	if actionName != "create" && actionName != "create_package" {
+		if _, supplied := args["animation_profile"]; supplied {
+			return "", errors.New("manage_artifact animation_profile is valid only for create or create_package")
+		}
+	}
 	if actionName != "list_presets" && actionName != "image_capabilities" && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
@@ -215,6 +222,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			if _, supplied := args["output_requirements"]; supplied {
 				return "", errors.New("manage_artifact managed create must omit output_requirements; trusted orchestration injects the immutable target")
 			}
+			if _, supplied := args["animation_profile"]; supplied {
+				return "", errors.New("manage_artifact managed create must omit animation_profile; trusted orchestration injects the immutable target")
+			}
 		}
 		input, entries, err := parseArtifactCreate(args, principal.SessionID, callID, actionName == "create_package")
 		if err != nil {
@@ -234,6 +244,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 				}
 				input.CollectionID, input.VariantID = trustedCollectionID, trustedVariantID
 				input.OutputRequirements = cloneArtifactOutputRequirements(run.OutputRequirements)
+				input.AnimationProfile = cloneArtifactAnimationProfile(run.AnimationProfile)
 				if err := enforceArtifactPresentationRequirements(&input.Presentation, input.OutputRequirements); err != nil {
 					return "", err
 				}
@@ -241,6 +252,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 				// metadata must neither conflict with nor replace that trusted target.
 				input.CollectionName, input.CollectionDescription = "", ""
 			}
+		}
+		if err := validateArtifactAnimationMedia(input.AnimationProfile, actionName == "create_package", input.Filename, input.MediaType); err != nil {
+			return "", err
 		}
 		input.RequestID = requestID
 		var variant pebblestore.SessionArtifactVariant
@@ -831,10 +845,20 @@ func parseArtifactCreate(args map[string]any, sessionID, callID string, packageA
 			return artifact.CreateInput{}, nil, err
 		}
 	}
+	var animationProfile *pebblestore.SessionArtifactAnimationProfile
+	if rawProfile, exists := args["animation_profile"]; exists {
+		animationProfile, err = artifact.ParseAnimationProfile(rawProfile)
+		if err != nil {
+			return artifact.CreateInput{}, nil, err
+		}
+	}
+	if err := validateArtifactAnimationMedia(animationProfile, packageArtifact, filename, strings.TrimSpace(asString(args["media_type"]))); err != nil {
+		return artifact.CreateInput{}, nil, err
+	}
 	if err := enforceArtifactPresentationRequirements(&presentation, requirements); err != nil {
 		return artifact.CreateInput{}, nil, err
 	}
-	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, OutputRequirements: requirements, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
+	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, OutputRequirements: requirements, AnimationProfile: animationProfile, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
 	if !packageArtifact {
 		content, ok := args["content"].(string)
 		if !ok || content == "" {
@@ -981,7 +1005,7 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 }
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
-	return map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	return map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
 }
 
 func cloneArtifactOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
@@ -990,6 +1014,24 @@ func cloneArtifactOutputRequirements(input *pebblestore.SessionArtifactOutputReq
 	}
 	cloned := *input
 	return &cloned
+}
+
+func cloneArtifactAnimationProfile(input *pebblestore.SessionArtifactAnimationProfile) *pebblestore.SessionArtifactAnimationProfile {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func validateArtifactAnimationMedia(profile *pebblestore.SessionArtifactAnimationProfile, packageArtifact bool, filename, mediaType string) error {
+	if profile == nil || profile.ProfileID != "final_render" {
+		return nil
+	}
+	if packageArtifact || canonicalArtifactMediaType(mediaType) != "video/mp4" || !strings.HasSuffix(strings.ToLower(strings.TrimSpace(filename)), ".mp4") {
+		return errors.New("animation_profile final_render requires a non-package .mp4 artifact with media_type video/mp4")
+	}
+	return nil
 }
 
 func enforceArtifactPresentationRequirements(presentation *pebblestore.SessionArtifactPresentation, requirements *pebblestore.SessionArtifactOutputRequirements) error {

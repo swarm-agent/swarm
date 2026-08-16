@@ -42,6 +42,26 @@ func TestSessionV3ArtifactRequiresBundleOnlyForPackages(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ArtifactCatalogItemPreservesAnimationProfile(t *testing.T) {
+	profile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "generative_2d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned := cloneSessionsV3ArtifactAnimationProfile(profile)
+	profile.ProfileID = "mutated"
+	if cloned == nil || cloned.ProfileID != "generative_2d" || cloned.RuntimePackage != "pixi.js" || cloned.Budgets.NetworkAllowed {
+		t.Fatalf("cloned animation profile = %#v", cloned)
+	}
+	item := sessionsV3ArtifactCatalogItem{AnimationProfile: cloned}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"animation_profile"`) || !strings.Contains(string(encoded), `"registry_version"`) {
+		t.Fatalf("catalog item = %s", encoded)
+	}
+}
+
 func TestSessionV3ArtifactPresentationInfersReadyHTMLPreview(t *testing.T) {
 	tests := []struct {
 		name            string

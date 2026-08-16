@@ -74,12 +74,12 @@ type fakeArtifactAuthority struct {
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.created = principal, input
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreatePackage(_ context.Context, principal artifact.Principal, input artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.packaged = principal, input
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: "application/zip", Size: 1, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: "application/zip", Size: 1, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) List(principal artifact.Principal, _ string, _ int) ([]pebblestore.SessionArtifactCollection, error) {
@@ -431,6 +431,56 @@ func TestManageArtifactCreatePinsTrustedManagedDestinationAndLineage(t *testing.
 	principal, err := artifactPrincipal(ctx, WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}})
 	if err != nil || principal.SessionID != "parent-1" || principal.ChildSessionID != "child-1" || principal.TaskCallID != "call-1" || principal.ProgramJobID != "job-1" || principal.IterationIndex != 1 {
 		t.Fatalf("trusted managed principal = %#v err=%v", principal, err)
+	}
+}
+
+func TestManageArtifactAnimationProfileCreateContract(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "motion", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"generative_2d"}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "generative_2d" || authority.created.AnimationProfile.RuntimePackage != "pixi.js" || authority.created.AnimationProfile.Budgets.NetworkAllowed || !strings.Contains(output, `"animation_profile"`) {
+		t.Fatalf("created=%#v output=%s", authority.created, output)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "override", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"generative_2d","runtime_version":"latest"}}`}); err == nil || !strings.Contains(err.Error(), "must contain only profile") {
+		t.Fatalf("animation override error = %v", err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "unknown", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"unknown"}}`}); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("unknown animation profile error = %v", err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "bad-final", Name: "manage_artifact", Arguments: `{"action":"create","filename":"render.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"final_render"}}`}); err == nil || !strings.Contains(err.Error(), "video/mp4") {
+		t.Fatalf("final render media error = %v", err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "final", Name: "manage_artifact", Arguments: `{"action":"create","filename":"render.mp4","media_type":"video/mp4","content":"mp4","animation_profile":{"profile":"final_render"}}`}); err != nil {
+		t.Fatalf("final render: %v", err)
+	}
+}
+
+func TestManagedArtifactAnimationProfileIsInjectedAndOverrideRejected(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	scope := WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}}
+	profile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "motion_ui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "parent-1", ChildSessionID: "child-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: profile})
+	if _, err := runtime.executeManageArtifact(ctx, scope, "override", map[string]any{"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated", "animation_profile": map[string]any{"profile": "spatial_3d"}}); err == nil || !strings.Contains(err.Error(), "must omit animation_profile") {
+		t.Fatalf("managed override error = %v", err)
+	}
+	output, err := runtime.executeManageArtifact(ctx, scope, "valid", map[string]any{"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.ProfileID = "mutated"
+	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "motion_ui" || !strings.Contains(output, `"animation_profile"`) {
+		t.Fatalf("created=%#v output=%s", authority.created, output)
 	}
 }
 
