@@ -202,6 +202,9 @@ func (*fakeManageVideoService) ReadBySourceFingerprint(identity.Principal, strin
 func (*fakeManageVideoService) Cancel(identity.Principal, string, string) (pebblestore.TranscriptionJob, error) {
 	return pebblestore.TranscriptionJob{}, nil
 }
+func (*fakeManageVideoService) SourceName(identity.Principal, string, string) (string, error) {
+	return "", nil
+}
 
 func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 	definition := manageVideoDefinition()

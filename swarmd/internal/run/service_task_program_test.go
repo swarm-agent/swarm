@@ -623,6 +623,98 @@ func TestTaskProgramErrorCodesAreActionable(t *testing.T) {
 	}
 }
 
+func TestTaskProgramStatusExposesBlockedChildLineageAndDirtyRecoveryDetails(t *testing.T) {
+	record := pebblestore.TaskProgramRecord{
+		ParentSessionID: "parent", ProgramID: "blocked-program", Revision: 3, State: pebblestore.TaskProgramStateBlocked,
+		ActiveStageID: "build", NextAction: "resolve_named_blocker_then_author_new_program_for_unfinished_work",
+		Jobs: []pebblestore.TaskProgramJobRecord{{
+			JobID: "implement", StageID: "build", State: pebblestore.TaskProgramJobBlocked, AttemptNumber: 1,
+			ChildSessionID: "child-1", CurrentSessionID: "child-1", CurrentRunID: "run-1", WorkspacePath: "/workspace/child",
+			WorktreeBranch: "agent/child", ParentBranch: "dev", ImmutableStageBase: "base", ChildHead: "head", IntegrationState: "blocked",
+			Blocker: &pebblestore.TaskProgramBlocker{Code: "required_input", Message: "schema token required", Evidence: []string{"API returned 401"}, CompletedScope: []string{"parser implemented"}, ResolutionRequirement: "provide a scoped schema token", Dirty: true, ChangedFiles: []string{"parser.go"}, NextAction: "author_new_program_for_remaining_work"},
+		}},
+		Blocker: &pebblestore.TaskProgramBlocker{Code: "required_input", Message: "schema token required", ResolutionRequirement: "provide a scoped schema token", Dirty: true, ChangedFiles: []string{"parser.go"}, PreservedChildren: []pebblestore.TaskProgramPreservedChild{{JobID: "implement", State: pebblestore.TaskProgramJobBlocked, ChildSessionID: "child-1", RunID: "run-1", WorkspacePath: "/workspace/child", WorktreeBranch: "agent/child", Dirty: true, ChangedFiles: []string{"parser.go"}}}},
+	}
+	payload := taskProgramStatusPayload(record, false)
+	jobs := payload["jobs"].([]map[string]any)
+	if len(jobs) != 1 || jobs[0]["current_session_id"] != "child-1" || jobs[0]["current_run_id"] != "run-1" || jobs[0]["workspace_path"] != "/workspace/child" {
+		t.Fatalf("blocked child lineage status = %#v", jobs)
+	}
+	jobBlocker, ok := jobs[0]["blocker"].(*pebblestore.TaskProgramBlocker)
+	if !ok || !jobBlocker.Dirty || len(jobBlocker.ChangedFiles) != 1 || jobBlocker.ChangedFiles[0] != "parser.go" || jobBlocker.ResolutionRequirement == "" {
+		t.Fatalf("blocked child recovery status = %#v", jobs[0]["blocker"])
+	}
+	programBlocker, ok := payload["blocker"].(*pebblestore.TaskProgramBlocker)
+	if !ok || len(programBlocker.PreservedChildren) != 1 || !programBlocker.PreservedChildren[0].Dirty || programBlocker.PreservedChildren[0].RunID != "run-1" || len(programBlocker.PreservedChildren[0].ChangedFiles) != 1 {
+		t.Fatalf("parent-visible preserved child = %#v", payload["blocker"])
+	}
+}
+
+func TestTaskProgramBlockedChildPreservesStructuredRecoveryEvidence(t *testing.T) {
+	job := taskProgramJob{ID: "implement", StageID: "build", RequestedSubagentType: "coder"}
+	outcome := taskLaunchOutcome{
+		ChildSessionID: "child-1", ChildRunID: "run-1", WorkspacePath: "/workspace/child", WorktreeBranch: "agent/child",
+		ParentBranch: "dev", BaseCommit: "base", HeadCommit: "head", Phase: "blocked", BlockerCode: "required_input",
+		Reason: "schema token required", BlockerEvidence: []string{"API returned 401"}, CompletedScope: []string{"parser implemented"},
+		ResolutionRequired: "provide a scoped schema token", WorktreeClean: false, ChangedFiles: []string{"parser.go"},
+	}
+	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: []taskProgramJob{job}}, []taskLaunchOutcome{outcome}, []error{taskChildBlockedError{code: "required_input", message: outcome.Reason}})
+	if len(updates) != 1 || updates[0].State != pebblestore.TaskProgramJobBlocked || updates[0].CurrentRunID != "run-1" || updates[0].Blocker == nil {
+		t.Fatalf("blocked child transition = %#v", updates)
+	}
+	blocker := updates[0].Blocker
+	if blocker.Code != "required_input" || blocker.ResolutionRequirement != "provide a scoped schema token" || !blocker.Dirty || len(blocker.ChangedFiles) != 1 || len(blocker.Evidence) != 1 || len(blocker.CompletedScope) != 1 {
+		t.Fatalf("structured blocker evidence = %#v", blocker)
+	}
+}
+
+func TestTaskProgramBlockedOutcomePayloadRoundTripsRecoveryFields(t *testing.T) {
+	payload := map[string]any{"launches": []any{map[string]any{
+		"child_session_id": "child-1", "child_run_id": "run-1", "workspace_path": "/workspace/child", "phase": "blocked",
+		"blocker_code": "required_input", "blocker_evidence": []any{"API returned 401"}, "completed_scope": []any{"parser implemented"},
+		"resolution_requirement": "provide a scoped schema token", "worktree_clean": false, "changed_files": []any{"parser.go"},
+	}}}
+	outcomes := taskProgramOutcomesFromPayload(payload, 1)
+	if len(outcomes) != 1 || outcomes[0].ChildRunID != "run-1" || outcomes[0].BlockerCode != "required_input" || outcomes[0].WorktreeClean || len(outcomes[0].BlockerEvidence) != 1 || len(outcomes[0].CompletedScope) != 1 || len(outcomes[0].ChangedFiles) != 1 {
+		t.Fatalf("blocked outcome payload = %#v", outcomes)
+	}
+}
+
+func TestTaskChildBlockedReportRequiresExplicitMarker(t *testing.T) {
+	var outcome taskLaunchOutcome
+	if err := parseTaskChildBlockedReport("ordinary failure", &outcome); err != nil {
+		t.Fatalf("ordinary failure classified blocked: %v", err)
+	}
+	report := "BLOCKED:\n- blocker code: external_dependency\n- blocker message: registry unavailable\n- authoritative evidence: registry returned 503\n- completed scope: local package built\n- resolution requirement: restore registry"
+	if err := parseTaskChildBlockedReport(report, &outcome); err == nil || outcome.BlockerCode != "external_dependency" || outcome.ResolutionRequired != "restore registry" || len(outcome.BlockerEvidence) != 1 || len(outcome.CompletedScope) != 1 {
+		t.Fatalf("explicit blocked report = outcome %#v err %v", outcome, err)
+	}
+}
+
+func TestTaskChangedFilesFromGitStatusNormalizesDirtyRecoveryPaths(t *testing.T) {
+	status := " M parser.go\n?? schema.json\nR  old.go -> new.go\n M parser.go"
+	files := taskChangedFilesFromGitStatus(status)
+	if strings.Join(files, ",") != "parser.go,schema.json,new.go" {
+		t.Fatalf("changed files = %v", files)
+	}
+}
+
+func TestTaskProgramBlockedJobIsTerminalAndNeverRescheduled(t *testing.T) {
+	record := pebblestore.TaskProgramRecord{
+		ActiveStageID: "build",
+		Definition:    pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "build"}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "blocked", StageID: "build"}, {ID: "pending", StageID: "build"}}},
+		Jobs:          []pebblestore.TaskProgramJobRecord{{JobID: "blocked", StageID: "build", State: pebblestore.TaskProgramJobBlocked, AttemptNumber: 1}, {JobID: "pending", StageID: "build", State: pebblestore.TaskProgramJobDeclared}},
+	}
+	ready := taskProgramReadyJobIndexes(record, 0)
+	if len(ready) != 1 || ready[0] != 1 {
+		t.Fatalf("blocked child was rescheduled: %v", ready)
+	}
+	record.Jobs[1].State = pebblestore.TaskProgramJobCompleted
+	if taskProgramStageHasRunningOrDeclared(record, 0) {
+		t.Fatal("terminal blocked child kept the stage schedulable")
+	}
+}
+
 func TestTaskProgramManagedDesignerOutcomeRequiresReadyArtifact(t *testing.T) {
 	job := taskProgramJob{ID: "design", StageID: "variants", RequestedSubagentType: "designer"}
 	ready := &taskArtifactReference{SessionID: "parent", CollectionID: "collection", VariantID: "variant", Status: pebblestore.SessionArtifactStatusReady}
@@ -717,7 +809,7 @@ func TestTaskProgramFinderHandoffLookupFailsClosedForMissingV3Message(t *testing
 
 func TestTaskProgramCoderPromptRequiresFinderVerification(t *testing.T) {
 	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "implement", Prompt: "change the scoped file", RequestedSubagent: "coder"})
-	for _, required := range []string{"Treat Finder handoffs", "Agents can make mistakes", "independently verify every relevant claim against the current workspace before editing files"} {
+	for _, required := range []string{"Treat Finder handoffs", "Agents can make mistakes", "independently verify every relevant claim against the current workspace before editing files", "at most two materially distinct safe recovery paths", "BLOCKED:", "Never auto-commit dirty blocked work"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("Coder delegation prompt missing %q: %s", required, prompt)
 		}

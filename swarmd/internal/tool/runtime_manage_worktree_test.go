@@ -269,6 +269,50 @@ func TestManageWorktreeIntegrateSelectsCompleteLargeWaveByTaskCall(t *testing.T)
 	}
 }
 
+func TestManageWorktreeRecallExposesDirtyRecoverableChangedFilesAndBlocker(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderWaveRuntime(t, 2)
+	dirtyPath := "/worktrees/" + childIDs[1]
+	dirty := worktrees.states[dirtyPath]
+	dirty.Clean = false
+	dirty.Status = " M parser.go\n?? schema.json"
+	worktrees.states[dirtyPath] = dirty
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	entry := sessions.parent.Metadata["task_launches"].(map[string]any)["call-wave"].(map[string]any)
+	row := entry["launches"].([]any)[1].(map[string]any)
+	row["phase"] = "blocked"
+	row["reason"] = "schema token required"
+	row["blocker_code"] = "required_input"
+	row["blocker_evidence"] = []any{"API returned 401"}
+	row["completed_scope"] = []any{"parser implemented"}
+	row["resolution_requirement"] = "provide a scoped schema token"
+	row["changed_files"] = []any{"parser.go", "schema.json"}
+
+	output, err := runtime.manageWorktreeRecall(scope, map[string]any{"task_call_id": "call-wave"})
+	if err != nil {
+		t.Fatalf("recall blocked Coder wave: %v", err)
+	}
+	var response struct {
+		Children []struct {
+			SessionID             string   `json:"child_session_id"`
+			State                 string   `json:"child_state"`
+			Phase                 string   `json:"phase"`
+			BlockerCode           string   `json:"blocker_code"`
+			BlockerEvidence       []string `json:"blocker_evidence"`
+			CompletedScope        []string `json:"completed_scope"`
+			ResolutionRequirement string   `json:"resolution_requirement"`
+			ChangedFiles          []string `json:"changed_files"`
+			GitStatus             string   `json:"git_status"`
+		} `json:"children"`
+		StateCounts map[string]int `json:"state_counts"`
+	}
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatalf("decode blocked recall response: %v", err)
+	}
+	if len(response.Children) != 2 || response.Children[1].SessionID != childIDs[1] || response.Children[1].State != "dirty-recoverable" || response.Children[1].Phase != "blocked" || response.Children[1].BlockerCode != "required_input" || len(response.Children[1].BlockerEvidence) != 1 || len(response.Children[1].CompletedScope) != 1 || response.Children[1].ResolutionRequirement == "" || len(response.Children[1].ChangedFiles) != 2 || !strings.Contains(response.Children[1].GitStatus, "parser.go") || response.StateCounts["dirty-recoverable"] != 1 {
+		t.Fatalf("dirty-recoverable recall = %s", output)
+	}
+}
+
 func TestManageWorktreeIntegrateLargeWavePropagatesDirtyChildWithoutApply(t *testing.T) {
 	runtime, scope, worktrees, childIDs := newCoderWaveRuntime(t, 100)
 	dirtyPath := "/worktrees/" + childIDs[73]

@@ -155,6 +155,46 @@ func TestTaskProgramStoreBlockedContextPreservesIntegratedJobs(t *testing.T) {
 	}
 }
 
+func TestTaskProgramStoreReconstructsBlockedDirtyRecoveryAfterReopen(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "pebble")
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := NewSessionStore(store)
+	record, _, err := sessions.CreateTaskProgram(taskProgramStoreFixture("parent", "blocked-recovery", "hash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedState, blockedNext := TaskProgramStateBlocked, "resolve_named_blocker_then_author_new_program_for_unfinished_work"
+	jobBlocker := TaskProgramBlocker{Code: "required_input", Message: "schema token required", Evidence: []string{"API returned 401"}, CompletedScope: []string{"parser implemented"}, ResolutionRequirement: "provide a scoped schema token", Dirty: true, ChangedFiles: []string{"parser.go"}, NextAction: blockedNext}
+	programBlocker := jobBlocker
+	programBlocker.ProgramID = record.ProgramID
+	programBlocker.ProgramRevision = record.Revision + 1
+	programBlocker.StageID = "build"
+	programBlocker.JobID = "api"
+	programBlocker.PreservedChildren = []TaskProgramPreservedChild{{JobID: "api", State: TaskProgramJobBlocked, AttemptNumber: 1, ChildSessionID: "child", RunID: "run-1", WorkspacePath: "worktree", WorktreeBranch: "agent/api", ImmutableStageBase: "base", ChildHead: "head", IntegrationState: "blocked", Dirty: true, ChangedFiles: []string{"parser.go"}}}
+	_, _, err = sessions.TransitionTaskProgram("parent", "blocked-recovery", TaskProgramTransition{
+		ExpectedRevision: record.Revision, MutationID: "block-child", State: &blockedState, NextAction: &blockedNext, Blocker: &programBlocker,
+		Jobs: []TaskProgramJobTransition{{JobID: "api", ExpectedState: TaskProgramJobDeclared, State: TaskProgramJobBlocked, AttemptNumber: 1, ChildSessionID: "child", CurrentSessionID: "child", CurrentRunID: "run-1", WorkspacePath: "worktree", WorktreeBranch: "agent/api", ImmutableStageBase: "base", ChildHead: "head", IntegrationState: "blocked", Blocker: &jobBlocker}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	reconstructed, ok, err := NewSessionStore(store).GetTaskProgram("parent", "blocked-recovery")
+	if err != nil || !ok || reconstructed.State != TaskProgramStateBlocked || reconstructed.Jobs[0].State != TaskProgramJobBlocked || reconstructed.Jobs[0].CurrentRunID != "run-1" || reconstructed.Jobs[0].Blocker == nil || !reconstructed.Jobs[0].Blocker.Dirty || len(reconstructed.Jobs[0].Blocker.ChangedFiles) != 1 || reconstructed.Blocker == nil || len(reconstructed.Blocker.PreservedChildren) != 1 || !reconstructed.Blocker.PreservedChildren[0].Dirty {
+		t.Fatalf("reconstructed blocked recovery=%#v ok=%v err=%v", reconstructed, ok, err)
+	}
+}
+
 func TestTaskProgramStoreReconstructsBoundedHandoffAfterReopen(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "pebble")
 	store, err := Open(root)

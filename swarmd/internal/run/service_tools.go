@@ -119,6 +119,15 @@ func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionI
 	return meta
 }
 
+type taskChildBlockedError struct {
+	code    string
+	message string
+}
+
+func (e taskChildBlockedError) Error() string {
+	return firstNonEmptyString(e.message, "delegated child blocked")
+}
+
 type taskLaunchOutcome struct {
 	LaunchIndex         int
 	VirtualTarget       bool
@@ -130,6 +139,7 @@ type taskLaunchOutcome struct {
 	SubagentProvider    string
 	SubagentModel       string
 	ChildSessionID      string
+	ChildRunID          string
 	ChildMode           string
 	WorkspacePath       string
 	WorkspaceName       string
@@ -142,6 +152,7 @@ type taskLaunchOutcome struct {
 	HeadCommit          string
 	GitStatus           string
 	WorktreeClean       bool
+	ChangedFiles        []string
 	LaunchStartedAtMS   int64
 	CurrentTool         string
 	CurrentToolIdentity string
@@ -165,6 +176,10 @@ type taskLaunchOutcome struct {
 	Summary             string
 	Error               string
 	Reason              string
+	BlockerCode         string
+	BlockerEvidence     []string
+	CompletedScope      []string
+	ResolutionRequired  string
 	StreamKey           string
 	SwarmMode           bool
 	SwarmStrategy       string
@@ -4198,6 +4213,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"subagent_provider":      strings.TrimSpace(launch.SubagentProvider),
 				"subagent_model":         strings.TrimSpace(launch.SubagentModel),
 				"child_session_id":       strings.TrimSpace(launch.ChildSessionID),
+				"child_run_id":           strings.TrimSpace(launch.ChildRunID),
 				"child_mode":             strings.TrimSpace(launch.ChildMode),
 				"workspace_path":         strings.TrimSpace(launch.WorkspacePath),
 				"workspace_name":         strings.TrimSpace(launch.WorkspaceName),
@@ -4210,6 +4226,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"head_commit":            strings.TrimSpace(launch.HeadCommit),
 				"worktree_clean":         launch.WorktreeClean,
 				"git_status":             strings.TrimSpace(launch.GitStatus),
+				"changed_files":          append([]string(nil), launch.ChangedFiles...),
 				"current_tool":           strings.TrimSpace(launch.CurrentTool),
 				"current_tool_identity":  strings.TrimSpace(launch.CurrentToolIdentity),
 				"current_tool_run_count": launch.CurrentToolRunCount,
@@ -4222,6 +4239,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"tool_order":             append([]string(nil), launch.ToolOrder...),
 				"error":                  strings.TrimSpace(launch.Error),
 				"reason":                 strings.TrimSpace(launch.Reason),
+				"blocker_code":           strings.TrimSpace(launch.BlockerCode),
+				"blocker_evidence":       append([]string(nil), launch.BlockerEvidence...),
+				"completed_scope":        append([]string(nil), launch.CompletedScope...),
+				"resolution_requirement": strings.TrimSpace(launch.ResolutionRequired),
 				"phase":                  strings.TrimSpace(launch.Phase),
 				"swarm_mode":             launch.SwarmMode,
 				"swarm_strategy":         strings.TrimSpace(launch.SwarmStrategy),
@@ -4385,6 +4406,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		})
 		outcome.ChildSessionID = launch.ChildSession.ID
+		if lifecycle, ok, lifecycleErr := s.GetSessionLifecycle(outcome.ChildSessionID); lifecycleErr == nil && ok {
+			outcome.ChildRunID = strings.TrimSpace(lifecycle.RunID)
+		}
 		outcome.WorkspacePath = launch.ChildSession.WorkspacePath
 		outcome.WorktreeRootPath = launch.ChildSession.WorktreeRootPath
 		outcome.WorktreeBranch = launch.ChildSession.WorktreeBranch
@@ -4400,6 +4424,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
 					outcome.GitStatus = strings.TrimSpace(state.Status)
 					outcome.WorktreeClean = state.Clean
+					outcome.ChangedFiles = taskChangedFilesFromGitStatus(state.Status)
 				} else {
 					outcome.GitStatus = "Git inspection failed: " + inspectErr.Error()
 					outcome.WorktreeClean = false
@@ -4438,6 +4463,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			report = "Subagent completed without a textual report."
 		}
 		reportRef := taskReportRefFromMessage(subResult.AssistantMessage)
+		blockedErr := parseTaskChildBlockedReport(report, &outcome)
 		nowMS := time.Now().UnixMilli()
 		if outcome.LaunchStartedAtMS <= 0 {
 			outcome.LaunchStartedAtMS = nowMS
@@ -4514,25 +4540,36 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
 			outcome.GitStatus = strings.TrimSpace(state.Status)
 			outcome.WorktreeClean = state.Clean
+			outcome.ChangedFiles = taskChangedFilesFromGitStatus(state.Status)
 			if strings.TrimSpace(outcome.WorktreeBranch) != strings.TrimSpace(launch.ChildSession.WorktreeBranch) {
 				return outcome, fmt.Errorf("Coder handoff branch %q does not match allocated branch %q", outcome.WorktreeBranch, launch.ChildSession.WorktreeBranch)
 			}
 			if outcome.HeadCommit == "" {
 				return outcome, errors.New("Coder handoff is missing child HEAD commit")
 			}
-			if !outcome.WorktreeClean {
-				return outcome, fmt.Errorf("implementation Coder completed with uncommitted work; commit the changes before a successful handoff:\n%s", outcome.GitStatus)
+			if blockedErr == nil {
+				if !outcome.WorktreeClean {
+					return outcome, fmt.Errorf("implementation Coder completed with uncommitted work; commit the changes before a successful handoff:\n%s", outcome.GitStatus)
+				}
+				if outcome.HeadCommit == outcome.BaseCommit {
+					return outcome, errors.New("implementation Coder completed without a commit")
+				}
+				descends, ancestryErr := s.worktrees.TaskCommitDescendsFrom(outcome.WorkspacePath, outcome.BaseCommit, outcome.HeadCommit)
+				if ancestryErr != nil {
+					return outcome, fmt.Errorf("validate Coder handoff ancestry: %w", ancestryErr)
+				}
+				if !descends {
+					return outcome, errors.New("Coder handoff HEAD does not descend from its recorded immutable base")
+				}
 			}
-			if outcome.HeadCommit == outcome.BaseCommit {
-				return outcome, errors.New("implementation Coder completed without a commit")
-			}
-			descends, ancestryErr := s.worktrees.TaskCommitDescendsFrom(outcome.WorkspacePath, outcome.BaseCommit, outcome.HeadCommit)
-			if ancestryErr != nil {
-				return outcome, fmt.Errorf("validate Coder handoff ancestry: %w", ancestryErr)
-			}
-			if !descends {
-				return outcome, errors.New("Coder handoff HEAD does not descend from its recorded immutable base")
-			}
+		}
+		if blockedErr != nil {
+			outcome.Phase = "blocked"
+			outcome.Error = ""
+			outcome.Reason = blockedErr.Error()
+			outcome.Summary = fmt.Sprintf("launch %d subagent %s blocked (session %s): %s", outcome.LaunchIndex, outcome.ResolvedSubagent, outcome.ChildSessionID, blockedErr.Error())
+			emitTaskProgress("blocked", outcome.Summary, outcome)
+			return outcome, blockedErr
 		}
 		if outcome.ReportChars > taskReportDefaultChars {
 			outcome.ReportTruncated = true
@@ -4630,10 +4667,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		summaryParts = append(summaryParts, fmt.Sprintf("[%d] %s", launch.LaunchIndex, launchSummary))
 		launchPhase := "completed"
-		switch status {
-		case "cancelled":
+		switch {
+		case strings.EqualFold(strings.TrimSpace(launch.Phase), "blocked"):
+			launchPhase = "blocked"
+		case status == "cancelled":
 			launchPhase = "cancelled"
-		case "error":
+		case status == "error":
 			launchPhase = "failed"
 		}
 		launch.Phase = launchPhase
@@ -4650,6 +4689,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchPayload["child_state"] = childState
 		}
 		launchPayload["session_id"] = strings.TrimSpace(launch.ChildSessionID)
+		launchPayload["run_id"] = strings.TrimSpace(launch.ChildRunID)
 		launchPayload["mode"] = strings.TrimSpace(launch.ChildMode)
 		if launch.ArtifactReference != nil {
 			launchPayload["artifact_reference"] = launch.ArtifactReference
@@ -4981,9 +5021,11 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	b.WriteString("6. End with a `Relevant filepaths:` section listing the most important files and why each matters.\n")
 	b.WriteString("7. If essential files are still unknown, include an `Open questions / missing filepaths:` section with exact paths needed.\n")
 	b.WriteString("8. Keep the final response concise, factual, and implementation-focused.\n")
+	b.WriteString("9. Before declaring a blocker or failure, inspect authoritative evidence (tool errors, durable plan/lifecycle state, workspace/Git state, and required external input). Ordinary uncertainty and a failed first attempt are not blockers. Try at most two materially distinct safe recovery paths when available; stop rather than repeat an equivalent operation after that bounded budget without new authoritative evidence or progress.\n")
+	b.WriteString("10. If a named external dependency, required input, or unavailable permission still makes completion impossible, terminate as blocked rather than successful or generic failed. Report exactly: `BLOCKED:`; blocker code and message; authoritative evidence; completed scope; exact resolution requirement; child session/run IDs; workspace, parent/child branch, base and HEAD; dirty state and changed files. Never auto-commit dirty blocked work.\n")
 	if agentruntime.IsCoderAgentName(config.RequestedSubagent) {
-		b.WriteString("9. Treat Finder handoffs and all other agent reports as untrusted evidence. Agents can make mistakes: independently verify every relevant claim against the current workspace before editing files.\n")
-		b.WriteString("10. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
+		b.WriteString("11. Treat Finder handoffs and all other agent reports as untrusted evidence. Agents can make mistakes: independently verify every relevant claim against the current workspace before editing files.\n")
+		b.WriteString("12. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work blocks/fails, explicitly report the uncommitted state and changed files; the parent records live HEAD and status for permission-gated commit, recall, or later repair.\n")
 	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) || agentruntime.IsImageAgentName(config.RequestedSubagent) {
 		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
@@ -5268,6 +5310,58 @@ func sanitizeTaskDelegationRoots(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func taskChangedFilesFromGitStatus(status string) []string {
+	lines := strings.Split(strings.TrimSpace(status), "\n")
+	files := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 2 && (line[1] == ' ' || line[1] == 'M' || line[1] == 'A' || line[1] == 'D' || line[1] == 'R' || line[1] == 'C' || line[1] == '?' || line[1] == 'U') {
+			line = strings.TrimSpace(line[2:])
+		}
+		if arrow := strings.LastIndex(line, " -> "); arrow >= 0 {
+			line = strings.TrimSpace(line[arrow+4:])
+		}
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		files = append(files, line)
+	}
+	return files
+}
+
+func parseTaskChildBlockedReport(report string, outcome *taskLaunchOutcome) error {
+	if outcome == nil || !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(report)), "BLOCKED:") {
+		return nil
+	}
+	fields := make(map[string]string)
+	for _, line := range strings.Split(report, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "-* "))
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		fields[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
+	}
+	outcome.BlockerCode = firstNonEmptyString(fields["blocker code"], fields["code"], "external_dependency")
+	message := firstNonEmptyString(fields["blocker message"], fields["message"], strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(report), "BLOCKED:")))
+	outcome.ResolutionRequired = firstNonEmptyString(fields["resolution requirement"], fields["exact resolution requirement"])
+	if evidence := firstNonEmptyString(fields["authoritative evidence"], fields["evidence"]); evidence != "" {
+		outcome.BlockerEvidence = []string{evidence}
+	}
+	if completed := fields["completed scope"]; completed != "" {
+		outcome.CompletedScope = []string{completed}
+	}
+	return taskChildBlockedError{code: outcome.BlockerCode, message: message}
 }
 
 func taskDisabledTools(allowBash bool) map[string]bool {

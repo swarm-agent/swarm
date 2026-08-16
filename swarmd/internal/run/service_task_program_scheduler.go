@@ -321,10 +321,21 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: jobs}, outcomes, runErrs)
 	state, next = pebblestore.TaskProgramStateRunning, "launch_ready_jobs"
 	var blocker *pebblestore.TaskProgramBlocker
+	blockedOutcome := false
+	for _, update := range updates {
+		if update.State == pebblestore.TaskProgramJobBlocked {
+			blockedOutcome = true
+			break
+		}
+	}
 	if runErr != nil {
 		blockerCode := taskProgramErrorCode(runErr)
 		_, next = taskProgramBlockerActions(blockerCode)
-		state = pebblestore.TaskProgramStateBlocked
+		if blockedOutcome {
+			state = pebblestore.TaskProgramStateBlocked
+		} else {
+			state = pebblestore.TaskProgramStateFailed
+		}
 		failedJobID := ""
 		for _, update := range updates {
 			if update.State == pebblestore.TaskProgramJobFailed || update.State == pebblestore.TaskProgramJobCancelled || update.State == pebblestore.TaskProgramJobBlocked {
@@ -342,12 +353,17 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 			job.State = update.State
 			job.ChildSessionID = firstNonEmptyString(update.ChildSessionID, job.ChildSessionID)
 			job.CurrentSessionID = firstNonEmptyString(update.CurrentSessionID, job.CurrentSessionID, job.ChildSessionID)
+			job.CurrentRunID = firstNonEmptyString(update.CurrentRunID, job.CurrentRunID)
 			job.WorkspacePath = firstNonEmptyString(update.WorkspacePath, job.WorkspacePath)
 			job.WorktreeBranch = firstNonEmptyString(update.WorktreeBranch, job.WorktreeBranch)
 			job.ParentBranch = firstNonEmptyString(update.ParentBranch, job.ParentBranch)
 			job.ImmutableStageBase = firstNonEmptyString(update.ImmutableStageBase, job.ImmutableStageBase)
 			job.ChildHead = firstNonEmptyString(update.ChildHead, job.ChildHead)
 			job.IntegrationState = firstNonEmptyString(update.IntegrationState, job.IntegrationState)
+			if update.Blocker != nil {
+				copy := *update.Blocker
+				job.Blocker = &copy
+			}
 		}
 		originalRecord := p.record
 		p.record = blockerRecord
@@ -456,6 +472,8 @@ func taskProgramPresentationJobState(phase string) string {
 	switch strings.ToLower(strings.TrimSpace(phase)) {
 	case "completed":
 		return pebblestore.TaskProgramJobCompleted
+	case "blocked":
+		return pebblestore.TaskProgramJobBlocked
 	case "failed", "tool.failed":
 		return pebblestore.TaskProgramJobFailed
 	case "cancelled":
@@ -503,11 +521,12 @@ func taskProgramOutcomesFromPayload(payload map[string]any, count int) []taskLau
 	for i := 0; i < count && i < len(rows); i++ {
 		row := rows[i]
 		out[i] = taskLaunchOutcome{
-			ChildSessionID: mapString(row, "child_session_id"), WorkspacePath: mapString(row, "workspace_path"),
+			ChildSessionID: mapString(row, "child_session_id"), ChildRunID: firstNonEmptyString(mapString(row, "child_run_id"), mapString(row, "run_id")), WorkspacePath: mapString(row, "workspace_path"),
 			WorktreeBranch: mapString(row, "worktree_branch"), ParentBranch: mapString(row, "parent_branch"),
 			BaseCommit: mapString(row, "base_commit"), HeadCommit: mapString(row, "head_commit"),
-			Phase: mapString(row, "phase"), Error: mapString(row, "error"), Reason: mapString(row, "reason"),
-			WorktreeClean: mapBool(row, "worktree_clean"), ArtifactReference: taskProgramArtifactReferenceFromRow(row), ReportRef: taskProgramReportRefFromRow(row),
+			Phase: mapString(row, "phase"), Error: mapString(row, "error"), Reason: mapString(row, "reason"), BlockerCode: mapString(row, "blocker_code"),
+			BlockerEvidence: mapStringSlice(row, "blocker_evidence"), CompletedScope: mapStringSlice(row, "completed_scope"), ResolutionRequired: mapString(row, "resolution_requirement"),
+			WorktreeClean: mapBool(row, "worktree_clean"), ChangedFiles: mapStringSlice(row, "changed_files"), ArtifactReference: taskProgramArtifactReferenceFromRow(row), ReportRef: taskProgramReportRefFromRow(row),
 		}
 	}
 	return out
@@ -818,6 +837,10 @@ func (p *taskProgramScheduler) finishBlocked(blockErr error) (string, error) {
 }
 
 func taskProgramErrorCode(err error) string {
+	var blocked taskChildBlockedError
+	if errors.As(err, &blocked) {
+		return firstNonEmptyString(blocked.code, "external_dependency")
+	}
 	message := strings.ToLower(strings.TrimSpace(err.Error()))
 	switch {
 	case strings.Contains(message, "dirty"), strings.Contains(message, "uncommitted"):
@@ -842,10 +865,14 @@ func taskProgramErrorCode(err error) string {
 }
 
 func taskProgramBlockerActions(code string) (repairAction, nextAction string) {
-	if code == "integration_conflict" {
+	switch code {
+	case "integration_conflict":
 		return "resolve_integration_conflict", "resolve_integration_conflict_then_author_new_program_for_remaining_work"
+	case "external_dependency", "required_input", "permission_denied":
+		return "resolve_named_blocker", "resolve_named_blocker_then_author_new_program_for_unfinished_work"
+	default:
+		return "author_new_program_for_remaining_work", "author_new_program_for_remaining_work"
 	}
-	return "author_new_program_for_remaining_work", "author_new_program_for_remaining_work"
 }
 
 func (p *taskProgramScheduler) structuredBlocker(code string, cause error, nextAction, jobID string) pebblestore.TaskProgramBlocker {
@@ -858,10 +885,18 @@ func (p *taskProgramScheduler) structuredBlocker(code string, cause error, nextA
 		if firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID) == "" && job.WorkspacePath == "" && job.ChildHead == "" {
 			continue
 		}
-		blocker.PreservedChildren = append(blocker.PreservedChildren, pebblestore.TaskProgramPreservedChild{JobID: job.JobID, State: job.State, AttemptNumber: job.AttemptNumber, ChildSessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), WorkspacePath: job.WorkspacePath, WorktreeBranch: job.WorktreeBranch, ParentBranch: job.ParentBranch, ImmutableStageBase: job.ImmutableStageBase, ChildHead: job.ChildHead, IntegrationState: job.IntegrationState})
+		blocker.PreservedChildren = append(blocker.PreservedChildren, pebblestore.TaskProgramPreservedChild{JobID: job.JobID, State: job.State, AttemptNumber: job.AttemptNumber, ChildSessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), RunID: job.CurrentRunID, WorkspacePath: job.WorkspacePath, WorktreeBranch: job.WorktreeBranch, ParentBranch: job.ParentBranch, ImmutableStageBase: job.ImmutableStageBase, ChildHead: job.ChildHead, IntegrationState: job.IntegrationState, Dirty: job.Blocker != nil && job.Blocker.Dirty, ChangedFiles: taskProgramJobChangedFiles(job)})
 	}
 	if index := taskProgramJobIndex(p.record, jobID); index >= 0 {
-		blocker.AttemptNumber = p.record.Jobs[index].AttemptNumber
+		job := p.record.Jobs[index]
+		blocker.AttemptNumber = job.AttemptNumber
+		if job.Blocker != nil {
+			blocker.Evidence = append([]string(nil), job.Blocker.Evidence...)
+			blocker.CompletedScope = append([]string(nil), job.Blocker.CompletedScope...)
+			blocker.ResolutionRequirement = job.Blocker.ResolutionRequirement
+			blocker.Dirty = job.Blocker.Dirty
+			blocker.ChangedFiles = append([]string(nil), job.Blocker.ChangedFiles...)
+		}
 	}
 	return blocker
 }

@@ -96,6 +96,7 @@ type TaskProgramJobRecord struct {
 	AttemptNumber      int                        `json:"attempt_number"`
 	ChildSessionID     string                     `json:"child_session_id,omitempty"`
 	CurrentSessionID   string                     `json:"current_session_id,omitempty"`
+	CurrentRunID       string                     `json:"current_run_id,omitempty"`
 	CurrentGeneration  int                        `json:"current_generation,omitempty"`
 	GenerationHistory  []TaskProgramJobGeneration `json:"generation_history,omitempty"`
 	WorkspacePath      string                     `json:"workspace_path,omitempty"`
@@ -127,30 +128,38 @@ type TaskProgramJobGeneration struct {
 }
 
 type TaskProgramBlocker struct {
-	Code               string                      `json:"code"`
-	Message            string                      `json:"message"`
-	NextAction         string                      `json:"next_action"`
-	RepairAction       string                      `json:"repair_action,omitempty"`
-	ProgramID          string                      `json:"program_id,omitempty"`
-	ProgramRevision    int                         `json:"program_revision,omitempty"`
-	StageID            string                      `json:"stage_id,omitempty"`
-	JobID              string                      `json:"job_id,omitempty"`
-	AttemptNumber      int                         `json:"attempt_number,omitempty"`
-	ExpectedParentHead string                      `json:"expected_parent_head,omitempty"`
-	PreservedChildren  []TaskProgramPreservedChild `json:"preserved_children,omitempty"`
+	Code                  string                      `json:"code"`
+	Message               string                      `json:"message"`
+	Evidence              []string                    `json:"evidence,omitempty"`
+	CompletedScope        []string                    `json:"completed_scope,omitempty"`
+	ResolutionRequirement string                      `json:"resolution_requirement,omitempty"`
+	Dirty                 bool                        `json:"dirty,omitempty"`
+	ChangedFiles          []string                    `json:"changed_files,omitempty"`
+	NextAction            string                      `json:"next_action"`
+	RepairAction          string                      `json:"repair_action,omitempty"`
+	ProgramID             string                      `json:"program_id,omitempty"`
+	ProgramRevision       int                         `json:"program_revision,omitempty"`
+	StageID               string                      `json:"stage_id,omitempty"`
+	JobID                 string                      `json:"job_id,omitempty"`
+	AttemptNumber         int                         `json:"attempt_number,omitempty"`
+	ExpectedParentHead    string                      `json:"expected_parent_head,omitempty"`
+	PreservedChildren     []TaskProgramPreservedChild `json:"preserved_children,omitempty"`
 }
 
 type TaskProgramPreservedChild struct {
-	JobID              string `json:"job_id"`
-	State              string `json:"state"`
-	AttemptNumber      int    `json:"attempt_number"`
-	ChildSessionID     string `json:"child_session_id,omitempty"`
-	WorkspacePath      string `json:"workspace_path,omitempty"`
-	WorktreeBranch     string `json:"worktree_branch,omitempty"`
-	ParentBranch       string `json:"parent_branch,omitempty"`
-	ImmutableStageBase string `json:"immutable_stage_base,omitempty"`
-	ChildHead          string `json:"child_head,omitempty"`
-	IntegrationState   string `json:"integration_state,omitempty"`
+	JobID              string   `json:"job_id"`
+	State              string   `json:"state"`
+	AttemptNumber      int      `json:"attempt_number"`
+	ChildSessionID     string   `json:"child_session_id,omitempty"`
+	RunID              string   `json:"run_id,omitempty"`
+	WorkspacePath      string   `json:"workspace_path,omitempty"`
+	WorktreeBranch     string   `json:"worktree_branch,omitempty"`
+	ParentBranch       string   `json:"parent_branch,omitempty"`
+	ImmutableStageBase string   `json:"immutable_stage_base,omitempty"`
+	ChildHead          string   `json:"child_head,omitempty"`
+	IntegrationState   string   `json:"integration_state,omitempty"`
+	Dirty              bool     `json:"dirty,omitempty"`
+	ChangedFiles       []string `json:"changed_files,omitempty"`
 }
 
 type TaskProgramTransition struct {
@@ -172,6 +181,7 @@ type TaskProgramJobTransition struct {
 	AttemptNumber      int
 	ChildSessionID     string
 	CurrentSessionID   string
+	CurrentRunID       string
 	CurrentGeneration  int
 	GenerationHistory  []TaskProgramJobGeneration
 	WorkspacePath      string
@@ -345,6 +355,9 @@ func applyTaskProgramJobTransition(job *TaskProgramJobRecord, update TaskProgram
 	if value := strings.TrimSpace(update.CurrentSessionID); value != "" {
 		job.CurrentSessionID = value
 	}
+	if value := strings.TrimSpace(update.CurrentRunID); value != "" {
+		job.CurrentRunID = value
+	}
 	if update.CurrentGeneration > 0 {
 		job.CurrentGeneration = update.CurrentGeneration
 	}
@@ -450,6 +463,10 @@ func normalizedTaskProgramHandoffRef(ref TaskProgramHandoffRef) TaskProgramHando
 func normalizedTaskProgramBlocker(blocker TaskProgramBlocker) TaskProgramBlocker {
 	blocker.Code = boundedTaskProgramText(blocker.Code)
 	blocker.Message = boundedTaskProgramText(blocker.Message)
+	blocker.Evidence = boundedTaskProgramStrings(blocker.Evidence)
+	blocker.CompletedScope = boundedTaskProgramStrings(blocker.CompletedScope)
+	blocker.ResolutionRequirement = boundedTaskProgramText(blocker.ResolutionRequirement)
+	blocker.ChangedFiles = boundedTaskProgramStrings(blocker.ChangedFiles)
 	blocker.NextAction = boundedTaskProgramText(blocker.NextAction)
 	blocker.RepairAction = boundedTaskProgramText(blocker.RepairAction)
 	blocker.ProgramID = boundedTaskProgramText(blocker.ProgramID)
@@ -464,14 +481,29 @@ func normalizedTaskProgramBlocker(blocker TaskProgramBlocker) TaskProgramBlocker
 		child.JobID = boundedTaskProgramText(child.JobID)
 		child.State = boundedTaskProgramText(child.State)
 		child.ChildSessionID = boundedTaskProgramText(child.ChildSessionID)
+		child.RunID = boundedTaskProgramText(child.RunID)
 		child.WorkspacePath = boundedTaskProgramText(child.WorkspacePath)
 		child.WorktreeBranch = boundedTaskProgramText(child.WorktreeBranch)
 		child.ParentBranch = boundedTaskProgramText(child.ParentBranch)
 		child.ImmutableStageBase = boundedTaskProgramText(child.ImmutableStageBase)
 		child.ChildHead = boundedTaskProgramText(child.ChildHead)
 		child.IntegrationState = boundedTaskProgramText(child.IntegrationState)
+		child.ChangedFiles = boundedTaskProgramStrings(child.ChangedFiles)
 	}
 	return blocker
+}
+
+func boundedTaskProgramStrings(values []string) []string {
+	if len(values) > maxTaskProgramScopeRows {
+		values = values[:maxTaskProgramScopeRows]
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = boundedTaskProgramText(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func boundedTaskProgramText(value string) string {

@@ -113,6 +113,9 @@ func taskProgramPresentationPayload(record pebblestore.TaskProgramRecord) map[st
 			row["current_session_id"] = strings.TrimSpace(job.CurrentSessionID)
 			row["current_generation"] = job.CurrentGeneration
 		}
+		if job.CurrentRunID != "" {
+			row["current_run_id"] = strings.TrimSpace(job.CurrentRunID)
+		}
 		if definitionFound {
 			if reference := taskProgramReadyArtifactReference(record, definition, job); reference != nil {
 				row["artifact_reference"] = reference
@@ -226,6 +229,9 @@ func taskProgramStreamMetadata(record pebblestore.TaskProgramRecord) (map[string
 			row["current_session_id"] = strings.TrimSpace(job.CurrentSessionID)
 			row["current_generation"] = job.CurrentGeneration
 		}
+		if job.CurrentRunID != "" {
+			row["current_run_id"] = strings.TrimSpace(job.CurrentRunID)
+		}
 		if definitionIndex := taskProgramDefinitionJobIndex(record, job.JobID); definitionIndex >= 0 {
 			if reference := taskProgramReadyArtifactReference(record, record.Definition.Jobs[definitionIndex], job); reference != nil {
 				row["artifact_reference"] = reference
@@ -272,6 +278,12 @@ func taskProgramStatusPayload(record pebblestore.TaskProgramRecord, created bool
 		}
 		if job.ChildSessionID != "" {
 			row["child_session_id"] = job.ChildSessionID
+		}
+		if job.CurrentSessionID != "" {
+			row["current_session_id"] = job.CurrentSessionID
+		}
+		if job.CurrentRunID != "" {
+			row["current_run_id"] = job.CurrentRunID
 		}
 		if job.WorkspacePath != "" {
 			row["workspace_path"] = job.WorkspacePath
@@ -405,13 +417,15 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 			state = pebblestore.TaskProgramJobFailed
 			if strings.EqualFold(strings.TrimSpace(outcome.Phase), "cancelled") {
 				state = pebblestore.TaskProgramJobCancelled
+			} else if strings.EqualFold(strings.TrimSpace(outcome.Phase), "blocked") {
+				state = pebblestore.TaskProgramJobBlocked
 			}
 			integration = "blocked"
-			code := "child_handoff_failed"
+			code := firstNonEmptyString(outcome.BlockerCode, "child_handoff_failed")
 			if taskProgramSpecUsesManagedDesigner(spec.Jobs[i]) && !strings.EqualFold(strings.TrimSpace(outcome.Phase), "cancelled") {
 				code, integration = "managed_artifact_invalid", "artifact_invalid"
 			}
-			blocker = &pebblestore.TaskProgramBlocker{Code: code, Message: firstNonEmptyString(outcome.Reason, outcome.Error, runErrs[i].Error()), NextAction: "author_new_program_for_remaining_work"}
+			blocker = &pebblestore.TaskProgramBlocker{Code: code, Message: firstNonEmptyString(outcome.Reason, outcome.Error, runErrs[i].Error()), Evidence: append([]string(nil), outcome.BlockerEvidence...), CompletedScope: append([]string(nil), outcome.CompletedScope...), ResolutionRequirement: outcome.ResolutionRequired, Dirty: !outcome.WorktreeClean && strings.TrimSpace(outcome.WorkspacePath) != "", ChangedFiles: append([]string(nil), outcome.ChangedFiles...), NextAction: "author_new_program_for_remaining_work"}
 		} else if agentruntime.IsCoderAgentName(spec.Jobs[i].RequestedSubagentType) {
 			state, integration = pebblestore.TaskProgramJobHandoffReady, "pending"
 		} else if agentruntime.IsFinderAgentName(spec.Jobs[i].RequestedSubagentType) && taskProgramDurableHandoffRef(outcome.ReportRef) == nil {
@@ -431,12 +445,19 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 		}
 		updates = append(updates, pebblestore.TaskProgramJobTransition{
 			JobID: spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobRunning, State: state,
-			ChildSessionID: outcome.ChildSessionID, CurrentSessionID: outcome.ChildSessionID, WorkspacePath: outcome.WorkspacePath, WorktreeBranch: outcome.WorktreeBranch,
+			ChildSessionID: outcome.ChildSessionID, CurrentSessionID: outcome.ChildSessionID, CurrentRunID: outcome.ChildRunID, WorkspacePath: outcome.WorkspacePath, WorktreeBranch: outcome.WorktreeBranch,
 			ParentBranch: outcome.ParentBranch, ImmutableStageBase: outcome.BaseCommit, ChildHead: outcome.HeadCommit,
 			IntegrationState: integration, HandoffRef: handoffRef, Blocker: blocker,
 		})
 	}
 	return updates
+}
+
+func taskProgramJobChangedFiles(job pebblestore.TaskProgramJobRecord) []string {
+	if job.Blocker == nil {
+		return nil
+	}
+	return append([]string(nil), job.Blocker.ChangedFiles...)
 }
 
 func taskProgramDurableHandoffRef(ref *taskReportRef) *pebblestore.TaskProgramHandoffRef {
