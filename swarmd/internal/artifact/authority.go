@@ -58,6 +58,7 @@ type CreateInput struct {
 	MediaType             string
 	Presentation          pebblestore.SessionArtifactPresentation
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
 	SourceSessionID       string
 	SourceCollectionID    string
 	SourceVariantID       string
@@ -128,7 +129,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), Lineage: lineage}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Lineage: lineage}
 	existingStaging := false
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
@@ -147,19 +148,27 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 			if existing.OutputRequirements != nil && variant.OutputRequirements == nil {
 				readyRequirementsCompatible = true
 			}
-			if !lineageCompatible || !readyRequirementsCompatible || !presentationCompatible {
+			readyAnimationCompatible := equalAnimationProfile(existing.AnimationProfile, variant.AnimationProfile)
+			if existing.AnimationProfile != nil && variant.AnimationProfile == nil {
+				readyAnimationCompatible = true
+			}
+			if !lineageCompatible || !readyRequirementsCompatible || !readyAnimationCompatible || !presentationCompatible {
 				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible metadata, lineage, requirements, or presentation", variant.ID)
 			}
 			return existing, nil
 		}
 		metadataCompatible := (existing.Filename == "" && existing.MediaType == "") || (existing.Filename == variant.Filename && existing.MediaType == variant.MediaType)
 		requirementsCompatible := equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements)
+		animationCompatible := equalAnimationProfile(existing.AnimationProfile, variant.AnimationProfile)
 		// Managed preallocation is the durable requirement authority. A caller may
-		// omit the trusted snapshot only when finalizing that same staging row.
+		// omit a trusted snapshot only when finalizing that same staging row.
 		if existing.OutputRequirements != nil && variant.OutputRequirements == nil {
 			requirementsCompatible = true
 		}
-		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !lineageCompatible || !requirementsCompatible || !presentationCompatible {
+		if existing.AnimationProfile != nil && variant.AnimationProfile == nil {
+			animationCompatible = true
+		}
+		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !lineageCompatible || !requirementsCompatible || !animationCompatible || !presentationCompatible {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, or lineage, or with incompatible requirements or presentation", variant.ID)
 		}
 		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)
@@ -187,6 +196,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 			collection.Lineage = collectionLineage
 		}
 		variant.OutputRequirements = cloneOutputRequirements(existing.OutputRequirements)
+		variant.AnimationProfile = cloneAnimationProfile(existing.AnimationProfile)
 	}
 	if !existingStaging {
 		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil {
@@ -529,6 +539,21 @@ func cloneOutputRequirements(input *pebblestore.SessionArtifactOutputRequirement
 }
 
 func equalOutputRequirements(left, right *pebblestore.SessionArtifactOutputRequirements) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func cloneAnimationProfile(input *pebblestore.SessionArtifactAnimationProfile) *pebblestore.SessionArtifactAnimationProfile {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func equalAnimationProfile(left, right *pebblestore.SessionArtifactAnimationProfile) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}

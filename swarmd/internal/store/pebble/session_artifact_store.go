@@ -76,6 +76,36 @@ type SessionArtifactOutputRequirements struct {
 	RegistryVersion  string `json:"registry_version"`
 }
 
+// SessionArtifactAnimationProfile is the immutable, server-resolved animation
+// execution contract. Model-authored input selects only ProfileID; runtimes and
+// budgets are copied from the closed server registry.
+type SessionArtifactAnimationProfile struct {
+	ProfileID               string                          `json:"profile_id"`
+	RegistryVersion         string                          `json:"registry_version"`
+	RuntimeKind             string                          `json:"runtime_kind"`
+	RuntimePackage          string                          `json:"runtime_package,omitempty"`
+	RuntimeVersion          string                          `json:"runtime_version,omitempty"`
+	SecondaryRuntimePackage string                          `json:"secondary_runtime_package,omitempty"`
+	SecondaryRuntimeVersion string                          `json:"secondary_runtime_version,omitempty"`
+	Heavy                   bool                            `json:"heavy,omitempty"`
+	ImportedPlaybackOnly    bool                            `json:"imported_playback_only,omitempty"`
+	EditableSourceRequired  bool                            `json:"editable_source_required,omitempty"`
+	Budgets                 SessionArtifactAnimationBudgets `json:"budgets"`
+}
+
+type SessionArtifactAnimationBudgets struct {
+	MaxSimultaneousLivePreviews int     `json:"max_simultaneous_live_previews"`
+	MaxWebGLContexts            int     `json:"max_webgl_contexts"`
+	MaxDevicePixelRatio         float64 `json:"max_device_pixel_ratio"`
+	MaxCanvasPixels             int     `json:"max_canvas_pixels"`
+	MaxParticles                int     `json:"max_particles"`
+	MaxDrawCallsPerFrame        int     `json:"max_draw_calls_per_frame"`
+	PauseWhenOffscreen          bool    `json:"pause_when_offscreen"`
+	StopWhenDocumentHidden      bool    `json:"stop_when_document_hidden"`
+	ReducedMotionBehavior       string  `json:"reduced_motion_behavior"`
+	NetworkAllowed              bool    `json:"network_allowed"`
+}
+
 type SessionArtifactVariant struct {
 	Version            int                                `json:"version"`
 	ID                 string                             `json:"id"`
@@ -91,6 +121,7 @@ type SessionArtifactVariant struct {
 	Lineage            SessionArtifactLineage             `json:"lineage,omitempty"`
 	Presentation       SessionArtifactPresentation        `json:"presentation,omitempty"`
 	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	CreatedAt          int64                              `json:"created_at"`
 	UpdatedAt          int64                              `json:"updated_at"`
 	EventSeq           uint64                             `json:"event_seq"`
@@ -674,6 +705,9 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if err := validateArtifactOutputRequirements(variant.OutputRequirements); err != nil {
 			return err
 		}
+		if err := validateArtifactAnimationProfile(variant.AnimationProfile); err != nil {
+			return err
+		}
 	}
 	switch input.Kind {
 	case V3SessionMutationCreateArtifact:
@@ -790,6 +824,61 @@ func validateArtifactOutputRequirements(requirements *SessionArtifactOutputRequi
 	return nil
 }
 
+func validateArtifactAnimationProfile(profile *SessionArtifactAnimationProfile) error {
+	if profile == nil {
+		return nil
+	}
+	if len(profile.ProfileID) > 64 || len(profile.RegistryVersion) > 128 || len(profile.RuntimeKind) > 64 || len(profile.RuntimePackage) > 128 || len(profile.RuntimeVersion) > 64 || len(profile.SecondaryRuntimePackage) > 128 || len(profile.SecondaryRuntimeVersion) > 64 {
+		return errors.New("artifact animation profile metadata exceeds bounds")
+	}
+	if profile.ProfileID == "" || profile.RegistryVersion != "2026-08-16.v1" || profile.RuntimeKind == "" || (profile.RuntimePackage == "") != (profile.RuntimeVersion == "") || (profile.SecondaryRuntimePackage == "") != (profile.SecondaryRuntimeVersion == "") {
+		return errors.New("artifact animation profile is incomplete")
+	}
+	var expectedBudgets SessionArtifactAnimationBudgets
+	switch profile.ProfileID {
+	case "motion_ui":
+		expectedBudgets = canonicalArtifactAnimationBudgets(3, 0, 2, 4_194_304, 0, 400)
+		if profile.RuntimeKind != "native_css_waapi_svg" || profile.RuntimePackage != "" || profile.Heavy || profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
+			return errors.New("artifact animation profile runtime does not match profile")
+		}
+	case "generative_2d":
+		expectedBudgets = canonicalArtifactAnimationBudgets(2, 1, 2, 4_194_304, 5_000, 500)
+		if profile.RuntimeKind != "canvas_2d_pixi" || profile.RuntimePackage != "pixi.js" || profile.RuntimeVersion != "8.19.0" || profile.Heavy || profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
+			return errors.New("artifact animation profile runtime does not match profile")
+		}
+	case "spatial_3d":
+		expectedBudgets = canonicalArtifactAnimationBudgets(1, 1, 1.5, 2_073_600, 2_000, 200)
+		if profile.RuntimeKind != "three_webgl" || profile.RuntimePackage != "three" || profile.RuntimeVersion != "0.185.1" || !profile.Heavy || profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
+			return errors.New("artifact animation profile runtime does not match profile")
+		}
+	case "vector_playback":
+		expectedBudgets = canonicalArtifactAnimationBudgets(3, 0, 2, 4_194_304, 0, 300)
+		if profile.RuntimeKind != "imported_vector_playback" || profile.RuntimePackage != "@lottiefiles/dotlottie-web" || profile.RuntimeVersion != "0.79.1" || profile.SecondaryRuntimePackage != "@rive-app/canvas" || profile.SecondaryRuntimeVersion != "2.40.0" || profile.Heavy || !profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
+			return errors.New("artifact animation profile runtime does not match profile")
+		}
+	case "final_render":
+		expectedBudgets = canonicalArtifactAnimationBudgets(3, 0, 2, 8_294_400, 0, 0)
+		if profile.RuntimeKind != "mp4_playback" || profile.RuntimePackage != "" || profile.Heavy || profile.ImportedPlaybackOnly || !profile.EditableSourceRequired {
+			return errors.New("artifact animation profile runtime does not match profile")
+		}
+	default:
+		return errors.New("artifact animation profile is unknown")
+	}
+	if profile.Budgets != expectedBudgets {
+		return errors.New("artifact animation profile budgets do not match registry")
+	}
+	return nil
+}
+
+func canonicalArtifactAnimationBudgets(live, webgl int, dpr float64, pixels, particles, drawCalls int) SessionArtifactAnimationBudgets {
+	return SessionArtifactAnimationBudgets{
+		MaxSimultaneousLivePreviews: live, MaxWebGLContexts: webgl, MaxDevicePixelRatio: dpr,
+		MaxCanvasPixels: pixels, MaxParticles: particles, MaxDrawCallsPerFrame: drawCalls,
+		PauseWhenOffscreen: true, StopWhenDocumentHidden: true,
+		ReducedMotionBehavior: "static_first_frame", NetworkAllowed: false,
+	}
+}
+
 func artifactDimensionGCD(left, right int) int {
 	for right != 0 {
 		left, right = right, left%right
@@ -808,6 +897,21 @@ func equalArtifactOutputRequirements(left, right *SessionArtifactOutputRequireme
 }
 
 func cloneSessionArtifactOutputRequirements(input *SessionArtifactOutputRequirements) *SessionArtifactOutputRequirements {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func equalArtifactAnimationProfile(left, right *SessionArtifactAnimationProfile) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func cloneSessionArtifactAnimationProfile(input *SessionArtifactAnimationProfile) *SessionArtifactAnimationProfile {
 	if input == nil {
 		return nil
 	}
@@ -934,8 +1038,14 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				return preparedV3ArtifactMutation{}, errors.New("artifact output requirements are immutable")
 			}
 		}
+		if variantOK && !equalArtifactAnimationProfile(current.AnimationProfile, incoming.Variant.AnimationProfile) {
+			if current.AnimationProfile == nil || incoming.Variant.AnimationProfile != nil {
+				return preparedV3ArtifactMutation{}, errors.New("artifact animation profile is immutable")
+			}
+		}
 		if variantOK {
 			incoming.Variant.OutputRequirements = cloneSessionArtifactOutputRequirements(current.OutputRequirements)
+			incoming.Variant.AnimationProfile = cloneSessionArtifactAnimationProfile(current.AnimationProfile)
 			if current.OutputRequirements != nil {
 				if (incoming.Variant.Presentation.Width != 0 && incoming.Variant.Presentation.Width != current.OutputRequirements.Width) || (incoming.Variant.Presentation.Height != 0 && incoming.Variant.Presentation.Height != current.OutputRequirements.Height) {
 					return preparedV3ArtifactMutation{}, errors.New("artifact presentation dimensions conflict with immutable output requirements")
