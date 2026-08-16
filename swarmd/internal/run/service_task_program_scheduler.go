@@ -207,6 +207,14 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	executionLaunches := make(map[int]taskLaunchSpec, len(indexes))
 	for _, index := range indexes {
 		launch := p.parsed.Launches[index]
+		definition := p.record.Definition.Jobs[index]
+		launch.AnimationProfile = cloneTaskAnimationProfile(definition.AnimationProfile)
+		if launch.SourceArguments == nil {
+			launch.SourceArguments = map[string]any{}
+		}
+		if launch.AnimationProfile != nil {
+			launch.SourceArguments["animation_profile"] = cloneTaskAnimationProfile(launch.AnimationProfile)
+		}
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
 			handoffBlock, err := p.finderHandoffsForJob(index)
 			if err != nil {

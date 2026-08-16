@@ -37,6 +37,7 @@ type taskLaunchPrepared struct {
 	OwnedScope           []string
 	OutputMode           string
 	OutputRequirements   *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile     *pebblestore.SessionArtifactAnimationProfile
 	SubagentProvider     string
 	SubagentModel        string
 	SubagentProfile      pebblestore.AgentProfile
@@ -84,6 +85,10 @@ func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionI
 			launch.OutputRequirements = cloneTaskOutputRequirements(meta.ArtifactRunContext.OutputRequirements)
 		}
 		meta.ArtifactRunContext.OutputRequirements = cloneTaskOutputRequirements(launch.OutputRequirements)
+		if launch.AnimationProfile == nil && meta.ArtifactRunContext.AnimationProfile != nil {
+			launch.AnimationProfile = cloneTaskAnimationProfile(meta.ArtifactRunContext.AnimationProfile)
+		}
+		meta.ArtifactRunContext.AnimationProfile = cloneTaskAnimationProfile(launch.AnimationProfile)
 	}
 	if launch.ContinuationBoundary != nil {
 		meta.ContinuationBoundary = launch.ContinuationBoundary
@@ -168,6 +173,7 @@ type taskLaunchOutcome struct {
 	IntegrationRequired bool
 	OutputMode          string
 	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
 	ArtifactReference   *taskArtifactReference
 }
 
@@ -236,6 +242,7 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		IterationGroupID: iterationGroupID, IterationGroup: strings.TrimSpace(iterationGroup), IterationID: iterationID, IterationIndex: iterationIndex,
 		IterationLabel: iterationLabel, IterationTheme: iterationTheme, CollectionID: collectionID, VariantID: variantID,
 		OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements),
+		AnimationProfile:   cloneTaskAnimationProfile(spec.AnimationProfile),
 	}
 }
 
@@ -400,8 +407,9 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			return getErr
 		} else if found {
 			requirementsMatch := reflect.DeepEqual(existing.OutputRequirements, run.OutputRequirements)
+			animationProfileMatch := reflect.DeepEqual(existing.AnimationProfile, run.AnimationProfile)
 			dimensionsMatch := run.OutputRequirements == nil || (existing.Presentation.Width == run.OutputRequirements.Width && existing.Presentation.Height == run.OutputRequirements.Height)
-			if existing.CollectionID != collection.ID || existing.Lineage != lineage || !requirementsMatch || !dimensionsMatch {
+			if existing.CollectionID != collection.ID || existing.Lineage != lineage || !requirementsMatch || !animationProfileMatch || !dimensionsMatch {
 				return fmt.Errorf("managed Designer artifact placeholder %q has inconsistent lineage, requirements, or presentation", run.VariantID)
 			}
 			if existing.Status != pebblestore.SessionArtifactStatusStaging && existing.Status != pebblestore.SessionArtifactStatusReady {
@@ -419,7 +427,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 		}
 		variant := pebblestore.SessionArtifactVariant{
 			ID: run.VariantID, CollectionID: collection.ID, Lineage: lineage,
-			Presentation: presentation, OutputRequirements: cloneTaskOutputRequirements(run.OutputRequirements),
+			Presentation: presentation, OutputRequirements: cloneTaskOutputRequirements(run.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(run.AnimationProfile),
 		}
 		payload, err := json.Marshal(variant)
 		if err != nil {
@@ -435,7 +443,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 		if err != nil {
 			return fmt.Errorf("allocate managed Designer artifact placeholder %q: %w", run.VariantID, err)
 		}
-		if result.Artifact == nil || result.Artifact.Variant == nil || result.Artifact.Variant.ID != run.VariantID || result.Artifact.Variant.Status != pebblestore.SessionArtifactStatusStaging || result.Artifact.Variant.Lineage != lineage || !reflect.DeepEqual(result.Artifact.Variant.OutputRequirements, run.OutputRequirements) || (run.OutputRequirements != nil && (result.Artifact.Variant.Presentation.Width != run.OutputRequirements.Width || result.Artifact.Variant.Presentation.Height != run.OutputRequirements.Height)) {
+		if result.Artifact == nil || result.Artifact.Variant == nil || result.Artifact.Variant.ID != run.VariantID || result.Artifact.Variant.Status != pebblestore.SessionArtifactStatusStaging || result.Artifact.Variant.Lineage != lineage || !reflect.DeepEqual(result.Artifact.Variant.OutputRequirements, run.OutputRequirements) || !reflect.DeepEqual(result.Artifact.Variant.AnimationProfile, run.AnimationProfile) || (run.OutputRequirements != nil && (result.Artifact.Variant.Presentation.Width != run.OutputRequirements.Width || result.Artifact.Variant.Presentation.Height != run.OutputRequirements.Height)) {
 			return fmt.Errorf("managed Designer artifact placeholder %q returned an inconsistent projection", run.VariantID)
 		}
 	}
@@ -546,6 +554,7 @@ type taskArtifactReference struct {
 	Status             string                                         `json:"status"`
 	FailureCode        string                                         `json:"failure_code,omitempty"`
 	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 }
 
 type taskReportRef struct {
@@ -588,6 +597,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		IntegrationRequired: launch.IntegrationRequired,
 		OutputMode:          strings.TrimSpace(launch.OutputMode),
 		OutputRequirements:  cloneTaskOutputRequirements(launch.OutputRequirements),
+		AnimationProfile:    cloneTaskAnimationProfile(launch.AnimationProfile),
 	}
 	if launch.ArtifactRunContext != nil {
 		outcome.ArtifactReference = &taskArtifactReference{
@@ -596,6 +606,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 			VariantID:          strings.TrimSpace(launch.ArtifactRunContext.VariantID),
 			Status:             "pending",
 			OutputRequirements: cloneTaskOutputRequirements(launch.ArtifactRunContext.OutputRequirements),
+			AnimationProfile:   cloneTaskAnimationProfile(launch.ArtifactRunContext.AnimationProfile),
 		}
 	}
 	if launch.TaskBase != nil {
@@ -754,6 +765,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"integration_required":       launch.IntegrationRequired,
 		"output_mode":                strings.TrimSpace(launch.OutputMode),
 		"output_requirements":        launch.OutputRequirements,
+		"animation_profile":          launch.AnimationProfile,
 	}
 	if launch.ArtifactReference != nil {
 		row["artifact_reference"] = launch.ArtifactReference
@@ -867,6 +879,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"integration_required":       launch.IntegrationRequired,
 		"output_mode":                strings.TrimSpace(launch.OutputMode),
 		"output_requirements":        launch.OutputRequirements,
+		"animation_profile":          launch.AnimationProfile,
 	}
 	if launch.ArtifactReference != nil {
 		patch["artifact_reference"] = launch.ArtifactReference
@@ -4078,6 +4091,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			OwnedScope:           append([]string(nil), spec.OwnedScope...),
 			OutputMode:           strings.TrimSpace(spec.OutputMode),
 			OutputRequirements:   cloneTaskOutputRequirements(spec.OutputRequirements),
+			AnimationProfile:     cloneTaskAnimationProfile(spec.AnimationProfile),
 			StreamKey:            strings.TrimSpace(spec.StreamKey),
 			SwarmMode:            spec.SwarmMode,
 			SwarmStrategy:        strings.TrimSpace(spec.SwarmStrategy),
@@ -4216,6 +4230,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"integration_required":   launch.IntegrationRequired,
 				"output_mode":            strings.TrimSpace(launch.OutputMode),
 				"output_requirements":    launch.OutputRequirements,
+				"animation_profile":      launch.AnimationProfile,
 			}
 			if launch.ArtifactReference != nil {
 				launchRow["artifact_reference"] = launch.ArtifactReference
@@ -4291,6 +4306,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				OwnedScope:           append([]string(nil), launch.OwnedScope...),
 				OutputMode:           strings.TrimSpace(launch.OutputMode),
 				OutputRequirements:   cloneTaskOutputRequirements(launch.OutputRequirements),
+				AnimationProfile:     cloneTaskAnimationProfile(launch.AnimationProfile),
 				ArtifactRunContext:   launch.ArtifactRunContext,
 			})
 		}
@@ -4462,7 +4478,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				markMissing("managed_output_missing")
 				return outcome, fmt.Errorf("managed Designer completed without its required artifact: %w", artifactErr)
 			}
-			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements)}
+			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(variant.AnimationProfile)}
 			lineage := variant.Lineage
 			lineageSourceMatches := lineage.SourceSessionID == launch.ChildSession.ID ||
 				(lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
@@ -4475,7 +4491,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.ProgramJobID == launch.ArtifactRunContext.ProgramJobID &&
 				lineage.IterationID == launch.ArtifactRunContext.IterationID &&
 				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex
-			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) {
+			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) || !reflect.DeepEqual(variant.AnimationProfile, launch.ArtifactRunContext.AnimationProfile) {
 				if variant.Status == pebblestore.SessionArtifactStatusStaging {
 					markMissing("managed_output_invalid")
 				} else {
@@ -4866,6 +4882,7 @@ type taskDelegationPromptConfig struct {
 	OwnedScope           []string
 	OutputMode           string
 	OutputRequirements   *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile     *pebblestore.SessionArtifactAnimationProfile
 	ArtifactRunContext   *tool.ArtifactRunContext
 }
 
@@ -4894,12 +4911,19 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.Write(encoded)
 			b.WriteString("\n")
 		}
+		if config.AnimationProfile != nil {
+			encoded, _ := json.Marshal(config.AnimationProfile)
+			b.WriteString("- exact animation profile (backend supplied; immutable; worker may not rewrite): ")
+			b.Write(encoded)
+			b.WriteString("\n")
+			b.WriteString("- animation contract: use only pinned local runtimes and never CDN, remote imports, arbitrary packages, or network access; honor all CPU/GPU lifecycle budgets, pause offscreen, stop when hidden, provide a static reduced-motion first frame, and clean up tickers, listeners, workers, textures, and WebGL contexts. Use CSS/WAAPI/SVG for motion_ui, PixiJS for generative_2d, optional Three.js only for spatial_3d, dotLottie/Rive only for imported vector_playback, and MP4 for final_render.\n")
+		}
 		switch strings.ToLower(strings.TrimSpace(config.OutputMode)) {
 		case taskOutputModeManaged:
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("- output mode: managed image; publish exactly one durable ready image with one manage_artifact generate_image call; omit provider, model, collection_id, variant_id, and output_requirements; do not inspect, write, or edit the workspace checkout\n")
 			} else {
-				b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; omit output_requirements because trusted orchestration injects the immutable snapshot; do not write or edit the workspace checkout\n")
+				b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; omit output_requirements and animation_profile because trusted orchestration injects the immutable snapshots; do not write or edit the workspace checkout\n")
 			}
 			if config.ArtifactRunContext == nil {
 				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")
@@ -4914,7 +4938,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("\n- artifact contract: make one manage_artifact generate_image call and omit provider/model/collection_id/variant_id/output_requirements; trusted orchestration resolves the account image model, injects the immutable requirements, and atomically finalizes the preallocated destination. Completion without the returned exact ready reference is a failed handoff. Do not inspect or mutate the workspace\n")
 			} else {
-				b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements; trusted orchestration injects the immutable requirements and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
+				b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements/animation_profile; trusted orchestration injects the immutable requirements and animation profile and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
 			}
 		case taskOutputModeWorkspace:
 			b.WriteString("- output mode: workspace\n")

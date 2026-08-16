@@ -80,6 +80,7 @@ type taskProgramJob struct {
 	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
 	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	AcceptanceCriteria    []string                                       `json:"acceptance_criteria"`
 	DependencyEvidence    string                                         `json:"dependency_evidence"`
 }
@@ -113,6 +114,7 @@ type taskSwarmSpec struct {
 	OutputContract      string
 	OutputMode          string
 	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
 	OwnedScopeTemplate  string
 	AssemblyParts       []taskSwarmAssemblyPart
@@ -128,6 +130,7 @@ type taskLaunchSpec struct {
 	OwnedScope            []string
 	OutputMode            string
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
 	DependencyEvidence    string
 	StreamKey             string
 	SwarmMode             bool
@@ -260,6 +263,7 @@ type taskLaunchManifestRow struct {
 	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
 	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	DependencyEvidence    string                                         `json:"dependency_evidence,omitempty"`
 	SubagentProvider      string                                         `json:"subagent_provider,omitempty"`
 	SubagentModel         string                                         `json:"subagent_model,omitempty"`
@@ -431,6 +435,14 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				return taskLaunchSpec{}, err
 			}
 		}
+		if rawProfile, exists := raw["animation_profile"]; exists {
+			if rawProfile == nil {
+				return taskLaunchSpec{}, fmt.Errorf("%s animation_profile must be an object", label)
+			}
+			if err := applyTaskAnimationProfile(&launch, rawProfile, label); err != nil {
+				return taskLaunchSpec{}, err
+			}
+		}
 		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
 	}
@@ -488,6 +500,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if _, exists := args["output_requirements"]; exists {
 			return taskCallArguments{}, errors.New("task regular launches must declare output_requirements on each Designer launch, not at top level")
 		}
+		if _, exists := args["animation_profile"]; exists {
+			return taskCallArguments{}, errors.New("task regular launches must declare animation_profile on each Designer launch, not at top level")
+		}
 		typed, ok := rawLaunches.([]any)
 		if !ok {
 			return taskCallArguments{}, fmt.Errorf("task launches must be an array")
@@ -504,6 +519,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			if launch.OutputRequirements != nil {
 				entry["output_requirements"] = cloneTaskOutputRequirements(launch.OutputRequirements)
 			}
+			if launch.AnimationProfile != nil {
+				entry["animation_profile"] = cloneTaskAnimationProfile(launch.AnimationProfile)
+			}
 			launch.SourceArguments = cloneGenericMap(entry)
 			launches = append(launches, launch)
 		}
@@ -519,6 +537,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		if launch.OutputRequirements != nil {
 			args["output_requirements"] = cloneTaskOutputRequirements(launch.OutputRequirements)
+		}
+		if launch.AnimationProfile != nil {
+			args["animation_profile"] = cloneTaskAnimationProfile(launch.AnimationProfile)
 		}
 		launch.SourceArguments = cloneGenericMap(args)
 		launches = append(launches, launch)
@@ -632,7 +653,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "output_mode", "output_requirements", "acceptance_criteria", "dependency_evidence":
+			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "output_mode", "output_requirements", "animation_profile", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
 			}
@@ -697,6 +718,18 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if job.OutputRequirements != nil {
 			row["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
 		}
+		if rawProfile, exists := row["animation_profile"]; exists {
+			if rawProfile == nil {
+				return nil, nil, fmt.Errorf("task program jobs[%d] animation_profile must be an object", i)
+			}
+			if err := applyTaskAnimationProfile(&launch, rawProfile, fmt.Sprintf("task program jobs[%d]", i)); err != nil {
+				return nil, nil, err
+			}
+		}
+		job.AnimationProfile = cloneTaskAnimationProfile(launch.AnimationProfile)
+		if job.AnimationProfile != nil {
+			row["animation_profile"] = cloneTaskAnimationProfile(job.AnimationProfile)
+		}
 		if job.RequestedSubagentType == "designer" {
 			job.OutputMode = launch.OutputMode
 		} else if len(ownedScope) == 0 {
@@ -729,9 +762,12 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if job.OutputRequirements != nil {
 			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
 		}
+		if job.AnimationProfile != nil {
+			sourceArguments["animation_profile"] = cloneTaskAnimationProfile(job.AnimationProfile)
+		}
 		launches = append(launches, taskLaunchSpec{
 			RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
-			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), DependencyEvidence: job.DependencyEvidence,
+			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), DependencyEvidence: job.DependencyEvidence,
 			SourceArguments: sourceArguments,
 		})
 	}
@@ -820,7 +856,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
 		"themes": true, "groups": true, "output_contract": true, "output_mode": true, "owned_scope_template": true, "assembly_parts": true,
-		"integration_contract": true, "output_requirements": true, "launches": true,
+		"integration_contract": true, "output_requirements": true, "animation_profile": true, "launches": true,
 	}
 	for key := range args {
 		if !allowed[key] {
@@ -918,6 +954,21 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if ownedScopeTemplate != "" && strings.Count(ownedScopeTemplate, "{index}") != 1 {
 		return nil, nil, errors.New("task swarm owned_scope_template must contain exactly one {index} placeholder")
 	}
+	_, animationProfileProvided := args["animation_profile"]
+	if animationProfileProvided && agentType != "designer" {
+		return nil, nil, errors.New("task swarm animation_profile is supported only for Designer")
+	}
+	if animationProfileProvided && args["animation_profile"] == nil {
+		return nil, nil, errors.New("task swarm animation_profile must be an object")
+	}
+	var animationProfile *pebblestore.SessionArtifactAnimationProfile
+	if animationProfileProvided {
+		animationProfile, err = artifactruntime.ParseAnimationProfile(args["animation_profile"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("task swarm animation_profile: %w", err)
+		}
+		args["animation_profile"] = cloneTaskAnimationProfile(animationProfile)
+	}
 	_, outputRequirementsProvided := args["output_requirements"]
 	if outputRequirementsProvided && agentType != "designer" && agentType != "image" {
 		return nil, nil, errors.New("task swarm output_requirements is supported only for Designer or image")
@@ -945,17 +996,20 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if err != nil {
 		return nil, nil, err
 	}
+	if outputMode != taskOutputModeManaged && animationProfile != nil {
+		return nil, nil, errors.New("task Designer swarm animation_profile requires managed output")
+	}
 	if sourceArtifact != nil && agentType != "image" {
 		return nil, nil, errors.New("task source_artifact is supported only for direct image swarms")
 	}
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
-	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "" || outputRequirements != nil) {
+	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "" || outputRequirements != nil || animationProfile != nil) {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), OwnedScopeTemplate: ownedScopeTemplate}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), OwnedScopeTemplate: ownedScopeTemplate}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -979,12 +1033,15 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if outputRequirements != nil {
 			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
 		}
+		if animationProfile != nil {
+			sourceArguments["animation_profile"] = cloneTaskAnimationProfile(animationProfile)
+		}
 		if sourceArtifact != nil {
 			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
-			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements),
+			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
 			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
 			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
 			SourceArguments: sourceArguments,
@@ -1308,6 +1365,27 @@ func applyTaskOutputRequirements(launch *taskLaunchSpec, raw any, label string) 
 		} else {
 			launch.SourceArguments["output_requirements"] = cloneTaskOutputRequirements(resolved)
 		}
+	}
+	return nil
+}
+
+func applyTaskAnimationProfile(launch *taskLaunchSpec, raw any, label string) error {
+	if launch == nil {
+		return errors.New("task launch is required")
+	}
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) {
+		return fmt.Errorf("%s animation_profile is supported only for Designer", label)
+	}
+	if launch.OutputMode != taskOutputModeManaged {
+		return fmt.Errorf("%s animation_profile requires managed Designer output", label)
+	}
+	resolved, err := artifactruntime.ParseAnimationProfile(raw)
+	if err != nil {
+		return fmt.Errorf("%s animation_profile: %w", label, err)
+	}
+	launch.AnimationProfile = cloneTaskAnimationProfile(resolved)
+	if launch.SourceArguments != nil {
+		launch.SourceArguments["animation_profile"] = cloneTaskAnimationProfile(resolved)
 	}
 	return nil
 }
@@ -2783,10 +2861,16 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if !reflect.DeepEqual(row.OutputRequirements, launchSpecs[i].OutputRequirements) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output requirements mismatch", i)
 		}
+		if !reflect.DeepEqual(row.AnimationProfile, launchSpecs[i].AnimationProfile) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d animation profile mismatch", i)
+		}
 		if row.SourceArguments != nil {
 			row.SourceArguments = cloneGenericMap(row.SourceArguments)
 			if launchSpecs[i].OutputRequirements != nil {
 				row.SourceArguments["output_requirements"] = cloneTaskOutputRequirements(launchSpecs[i].OutputRequirements)
+			}
+			if launchSpecs[i].AnimationProfile != nil {
+				row.SourceArguments["animation_profile"] = cloneTaskAnimationProfile(launchSpecs[i].AnimationProfile)
 			}
 		}
 		approvedLaunches[i] = row
@@ -2984,6 +3068,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			OwnedScope:            append([]string(nil), launch.OwnedScope...),
 			OutputMode:            strings.TrimSpace(launch.OutputMode),
 			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),
+			AnimationProfile:      cloneTaskAnimationProfile(launch.AnimationProfile),
 			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),

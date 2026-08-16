@@ -225,6 +225,108 @@ func TestTaskOutputRequirementsRejectNonDesigner(t *testing.T) {
 	}
 }
 
+func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
+	regular, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "animate", "subagent_type": "designer", "meta_prompt": "create motion", "animation_profile": map[string]any{"profile": "generative_2d"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGenerative2DProfile(t, regular.Launches[0].AnimationProfile)
+	assertGenerative2DProfile(t, taskAnimationProfileFromAny(t, regular.SourceArguments["animation_profile"]))
+
+	swarm, err := parseTaskCallArguments(mustJSON(t, map[string]any{"mode": "swarm", "prompt": "animate", "agent_type": "designer", "count": 2, "animation_profile": map[string]any{"profile": "generative_2d"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGenerative2DProfile(t, swarm.Swarm.AnimationProfile)
+	request, err := buildTaskSwarmHydrationRequest(swarm, swarm.Launches)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGenerative2DProfile(t, request.AnimationProfile)
+	childPrompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Particles", Theme: "dense", Role: "motion designer", Deliverable: "animated preview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"pixi.js", "8.19.0", "no CDN", "pause offscreen", "clean up"} {
+		if !strings.Contains(childPrompt, expected) {
+			t.Fatalf("animation child prompt missing %q: %s", expected, childPrompt)
+		}
+	}
+
+	program, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "animate", "program": map[string]any{"id": "motion_program", "stages": []any{map[string]any{"id": "variants", "dependency_evidence": "ready"}}, "jobs": []any{map[string]any{"id": "motion", "stage_id": "variants", "agent_type": "designer", "meta_prompt": "create", "title": "Motion", "deliverable": "animation", "acceptance_criteria": []any{"ready"}, "dependency_evidence": "ready", "animation_profile": map[string]any{"profile": "generative_2d"}}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, _, err := taskProgramDefinitionFromSpec(program.Program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGenerative2DProfile(t, definition.Jobs[0].AnimationProfile)
+	assertGenerative2DProfile(t, program.Launches[0].AnimationProfile)
+
+	context := managedDesignerArtifactContext(pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: "account", UserID: "user"}, "call", regular.Launches[0], 1)
+	if context == nil {
+		t.Fatal("managed animation context missing")
+	}
+	assertGenerative2DProfile(t, context.AnimationProfile)
+	delegated := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "motion", Prompt: "create", RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: context.AnimationProfile, ArtifactRunContext: context})
+	for _, expected := range []string{"pixi.js", "8.19.0", "animation_profile", "no CDN", "clean up"} {
+		if !strings.Contains(delegated, expected) {
+			t.Fatalf("delegated animation prompt missing %q: %s", expected, delegated)
+		}
+	}
+}
+
+func TestTaskAnimationProfileSnapshotsAreImmutable(t *testing.T) {
+	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "generative_2d", RegistryVersion: "2026-08-16.v1", RuntimeKind: "canvas_2d_pixi", RuntimePackage: "pixi.js", RuntimeVersion: "8.19.0", Budgets: pebblestore.SessionArtifactAnimationBudgets{MaxSimultaneousLivePreviews: 2, MaxWebGLContexts: 1, MaxDevicePixelRatio: 2, MaxCanvasPixels: 4194304, MaxParticles: 5000, MaxDrawCallsPerFrame: 500, PauseWhenOffscreen: true, StopWhenDocumentHidden: true, ReducedMotionBehavior: "static_first_frame"}}
+	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: cloneTaskAnimationProfile(profile)}
+	manifest := taskLaunchManifest{Launches: []taskLaunchManifestRow{{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: cloneTaskAnimationProfile(profile), ProfileSnapshot: &pebblestore.AgentProfile{}, ResolvedTools: &taskLaunchResolvedToolSummary{AllowedTools: []string{"manage_artifact"}, DisabledTools: []string{"write", "edit"}}, DisabledTools: []string{"write", "edit"}}}}
+	digest, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.ManifestHash = digest
+	raw, err := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseApprovedTaskLaunchManifest(string(raw), []taskLaunchSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	spec.AnimationProfile.RuntimeVersion = "latest"
+	if _, err := parseApprovedTaskLaunchManifest(string(raw), []taskLaunchSpec{spec}); err == nil || !strings.Contains(err.Error(), "animation profile mismatch") {
+		t.Fatalf("animation profile mutation err = %v", err)
+	}
+}
+
+func TestTaskAnimationProfileRejectsUnsupportedAgentsAndOverrides(t *testing.T) {
+	for _, args := range []map[string]any{
+		{"prompt": "work", "subagent_type": "coder", "meta_prompt": "work", "animation_profile": map[string]any{"profile": "motion_ui"}},
+		{"mode": "swarm", "prompt": "images", "agent_type": "image", "count": 1, "animation_profile": map[string]any{"profile": "motion_ui"}},
+		{"prompt": "animate", "subagent_type": "designer", "meta_prompt": "work", "animation_profile": map[string]any{"profile": "generative_2d", "runtime_version": "latest"}},
+	} {
+		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil {
+			t.Fatalf("expected animation profile rejection for %#v", args)
+		}
+	}
+}
+
+func taskAnimationProfileFromAny(t *testing.T, value any) *pebblestore.SessionArtifactAnimationProfile {
+	t.Helper()
+	profile, ok := value.(*pebblestore.SessionArtifactAnimationProfile)
+	if !ok {
+		t.Fatalf("animation profile value = %#v", value)
+	}
+	return profile
+}
+
+func assertGenerative2DProfile(t *testing.T, profile *pebblestore.SessionArtifactAnimationProfile) {
+	t.Helper()
+	if profile == nil || profile.ProfileID != "generative_2d" || profile.RuntimePackage != "pixi.js" || profile.RuntimeVersion != "8.19.0" || profile.Budgets.NetworkAllowed || !profile.Budgets.PauseWhenOffscreen {
+		t.Fatalf("animation profile = %#v", profile)
+	}
+}
+
 func assertXHeaderRequirements(t *testing.T, requirements *pebblestore.SessionArtifactOutputRequirements) {
 	t.Helper()
 	if requirements == nil || requirements.PresetID != "x_header" || requirements.Width != 1500 || requirements.Height != 500 || requirements.AspectRatio != "3:1" || requirements.Orientation != "landscape" {

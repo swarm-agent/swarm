@@ -1305,6 +1305,8 @@ func cloneGenericValue(value any) any {
 		return out
 	case *pebblestore.SessionArtifactOutputRequirements:
 		return cloneTaskOutputRequirements(typed)
+	case *pebblestore.SessionArtifactAnimationProfile:
+		return cloneTaskAnimationProfile(typed)
 	default:
 		return value
 	}

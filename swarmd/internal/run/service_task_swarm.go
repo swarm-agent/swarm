@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type taskSwarmHydrationRequest struct {
 	OutputContract      string                                         `json:"output_contract,omitempty"`
 	OutputMode          string                                         `json:"output_mode,omitempty"`
 	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
 	Items               []taskSwarmHydrationItem                       `json:"items"`
 }
@@ -245,7 +247,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	groupIndex, groupRemaining := 0, 0
@@ -259,6 +261,12 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 			}
 			if !equalTaskOutputRequirements(launch.OutputRequirements, request.OutputRequirements) {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration Designer launch %d output requirements mismatch", i+1)
+			}
+			if !reflect.DeepEqual(launch.AnimationProfile, request.AnimationProfile) {
+				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration Designer launch %d animation profile mismatch", i+1)
+			}
+			if request.AnimationProfile != nil && request.AgentType != "designer" {
+				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration launch %d cannot attach an animation profile to %s", i+1, request.AgentType)
 			}
 			if request.OutputMode == taskOutputModeWorkspace && len(launch.OwnedScope) == 0 {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration workspace Designer launch %d requires an owned scope", i+1)
@@ -356,11 +364,18 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			b.Write(encoded)
 			b.WriteString("\n")
 		}
+		if request.AnimationProfile != nil {
+			encoded, _ := json.Marshal(request.AnimationProfile)
+			b.WriteString("- exact animation profile (immutable; Router and worker may not rewrite): ")
+			b.Write(encoded)
+			b.WriteString("\n")
+			b.WriteString("- animation runtime contract: use only the pinned local runtime(s); no CDN, remote imports, arbitrary package execution, or network access. Honor lifecycle and resource budgets, pause offscreen, stop when hidden, provide a static first frame for reduced motion, and clean up tickers, listeners, workers, textures, and WebGL contexts. Use CSS/WAAPI/SVG for motion_ui, PixiJS for generative_2d, optional Three.js only for spatial_3d, dotLottie/Rive only for imported vector_playback, and MP4 playback for final_render.\n")
+		}
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
 			} else {
-				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements and animation_profile. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
 			}
 		} else {
 			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")

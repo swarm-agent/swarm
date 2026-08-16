@@ -84,6 +84,7 @@ type TaskProgramJobSpec struct {
 	OwnedScope         []string                           `json:"owned_scope,omitempty"`
 	OutputMode         string                             `json:"output_mode,omitempty"`
 	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	AcceptanceCriteria []string                           `json:"acceptance_criteria"`
 	DependencyEvidence string                             `json:"dependency_evidence"`
 }
@@ -424,6 +425,9 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 			return fmt.Errorf("task program job %q has invalid output mode", job.ID)
 		}
 		if strings.EqualFold(strings.TrimSpace(job.AgentType), "designer") {
+			if err := validateArtifactAnimationProfile(job.AnimationProfile); err != nil {
+				return fmt.Errorf("task program Designer job %q animation profile is invalid: %w", job.ID, err)
+			}
 			if mode == "managed" && len(job.OwnedScope) != 0 {
 				return fmt.Errorf("task program managed Designer job %q must omit owned scope", job.ID)
 			}
