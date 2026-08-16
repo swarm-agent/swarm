@@ -63,6 +63,13 @@ function displayCheckpointId(value: string, fallback: number): string {
     : trimmed;
 }
 
+function displayCurrentCheckpointNumber(value: string, fallback: number): string {
+  const trimmed = value.trim();
+  if (!trimmed) return String(fallback + 1);
+  const match = trimmed.match(/^cp[-_ ]?(\d+)$/i);
+  return match ? match[1] : trimmed;
+}
+
 function statusTone(status: string, active = false): Tone {
   const normalized = status.trim().toLowerCase();
   if (
@@ -404,7 +411,7 @@ function ActiveCheckpointSection({
   const activePosition = activeIndex >= 0 ? activeIndex : -1;
   const checkpointFallbackIndex = activeIndex >= 0 ? activeIndex : 0;
   const checkpointId = checkpoint
-    ? displayCheckpointId(checkpoint.id, checkpointFallbackIndex)
+    ? displayCurrentCheckpointNumber(checkpoint.id, checkpointFallbackIndex)
     : "None";
   const title = checkpoint?.title || "No active checkpoint";
   const activeTitle = checkpoint ? `${checkpointId} ${title}` : title;

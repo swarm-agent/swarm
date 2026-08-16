@@ -572,7 +572,8 @@ test("the status row stays above the fixed console checkpoint", () => {
   assert.ok(titleIndex > statusIndex, "expected checkpoint title beneath the row");
   assert.match(markup, /Current checkpoint/i);
   assert.match(markup, /In Progress/);
-  assert.match(markup, /Build UI/);
+  assert.match(markup, />1<\/span><span class="inline text-\[13px\]">Build UI/);
+  assert.doesNotMatch(markup, /CP-1/);
 });
 
 test("active plan status is plain text without a left badge", () => {
