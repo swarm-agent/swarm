@@ -1435,6 +1435,72 @@ function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
   assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
 }
 
+function testManageVideoToolMessageParsesUserMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_video",
+    callId: "call_video_1",
+    argumentsText: JSON.stringify({ action: "render_status", render_job_id: "vren_1" }),
+    outputText: JSON.stringify({
+      tool: "manage_video",
+      action: "render_status",
+      status: "rendering",
+      progress: 0.42,
+      project_id: "vproj_1",
+      revision_id: "vrev_2",
+      job_id: "vren_1",
+      presentation: {
+        kind: "video",
+        title: "Render status updated",
+        activity_label: "Checking render progress",
+        subject: "Launch film",
+      },
+      render_job: {
+        id: "vren_1",
+        status: "rendering",
+        progress: 0.42,
+        output_preset: "landscape_1080p",
+        output_width: 1920,
+        output_height: 1080,
+        output_duration_ms: 65000,
+        output_size_bytes: 5242880,
+        revision_number: 2,
+      },
+    }),
+  });
+  assert(Boolean(message), "expected structured manage_video tool message");
+  assert(message?.summary.includes("Render status updated") === true, `unexpected video summary: ${message?.summary}`);
+  assert(message?.summary.includes("Launch film") === true, `missing video subject: ${message?.summary}`);
+  assert(message?.videoData?.progress === 42, `unexpected video progress: ${message?.videoData?.progress}`);
+  assert(message?.videoData?.width === 1920 && message.videoData.height === 1080, "expected output dimensions");
+  assert(message?.videoData?.durationMs === 65000, `unexpected video duration: ${message?.videoData?.durationMs}`);
+  assert(message?.videoData?.jobId === "vren_1", `unexpected render job: ${message?.videoData?.jobId}`);
+  assert(message?.outputJson?.presentation && typeof message.outputJson.presentation === "object", "manage_video metadata must remain structured for the card");
+  assert(message?.previewLines.length === 0, "manage_video should not render raw JSON preview lines");
+}
+
+function testManageVideoToolMessageParsesSourceIdentity(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_video",
+    state: "done",
+    argumentsText: JSON.stringify({ action: "read_transcript", transcript_ref: "transcript_1" }),
+    outputText: JSON.stringify({
+      action: "read_transcript",
+      status: "ok",
+      source_names: ["ycfinalwithaudio.mp4"],
+      presentation: {
+        kind: "video",
+        title: "Transcript ready",
+        activity_label: "Reading video transcript",
+        subject: "ycfinalwithaudio.mp4",
+        source_names: ["ycfinalwithaudio.mp4"],
+      },
+      transcript: { duration_ms: 184000, language: "en", validation: "validated" },
+    }),
+  });
+  assert(message?.videoData?.subject === "ycfinalwithaudio.mp4", `unexpected source subject: ${message?.videoData?.subject}`);
+  assert(message?.videoData?.sourceNames[0] === "ycfinalwithaudio.mp4", `missing source name: ${message?.videoData?.sourceNames}`);
+}
+
 function testManageArtifactToolMessageParsesArtifactData(): void {
   const message = buildStructuredToolMessage({
     tool: "manage_artifact",
@@ -1488,12 +1554,16 @@ function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('find').label === 'Investigation', 'find should keep the same label as grouped investigation activity');
   assert(describeToolActivity('read').kind === 'investigation', 'read should use investigation semantics');
   assert(describeToolActivity('read').label === 'Investigation', 'read should keep the same label as grouped investigation activity');
+  assert(describeToolActivity('manage_video').kind === 'video', 'manage_video should use video semantics');
+  assert(describeToolActivity('manage_video').activeLabel === 'Working on video', 'manage_video should expose video activity copy');
   assert(describeToolActivity('custom_tool').kind === 'generic', 'unknown tool should stay generic');
   assert(describeToolActivity('custom_tool').activeLabel === 'Running Custom Tool', 'generic label should be presentation ready');
 }
 
 function main(): void {
   testProviderNeutralToolActivityDescriptors();
+  testManageVideoToolMessageParsesUserMetadata();
+  testManageVideoToolMessageParsesSourceIdentity();
   testManageArtifactToolMessageParsesArtifactData();
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();

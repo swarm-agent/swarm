@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videoproject"
 	"swarm/packages/swarmd/internal/videorender"
+	"swarm/packages/swarmd/internal/videosource"
 	"swarm/packages/swarmd/internal/videotranscription"
 )
 
@@ -28,6 +30,7 @@ type manageVideoService interface {
 	ReadByWorkspace(principal identity.Principal, workspaceID, transcriptRef string) (pebblestore.NormalizedTranscript, error)
 	ReadBySourceFingerprint(principal identity.Principal, workspaceID, sourceFingerprint string) (pebblestore.NormalizedTranscript, error)
 	Cancel(principal identity.Principal, sessionID, jobRef string) (pebblestore.TranscriptionJob, error)
+	SourceName(principal identity.Principal, sessionID, attachmentRef string) (string, error)
 }
 
 type manageVideoProjectService interface {
@@ -76,6 +79,7 @@ func manageVideoDefinition() Definition {
 				"revision_id":        map[string]any{"type": "string", "description": "Optional opaque project revision identifier."},
 				"source_revision_id": map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
 				"render_job_id":      map[string]any{"type": "string", "description": "Opaque render job identifier for checking status or cancelling a render."},
+				"queue_grace_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": int(videorender.MaxQueueGracePeriod.Milliseconds()), "description": "Optional bounded delay before a new render leaves queued status, allowing deterministic immediate cancellation without weakening terminal-state rules."},
 				"title":              map[string]any{"type": "string", "description": "Human-readable video project title."},
 				"description":        map[string]any{"type": "string", "description": "Optional description for a video project or revision."},
 				"output_preset":      map[string]any{"type": "string", "description": "Target video format preset (e.g. landscape_1080p, landscape_720p, portrait_1080p, portrait_720p, square_1080p, landscape_video, portrait_video, x_header)."},
@@ -191,6 +195,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		response["jobs"], response["count"] = safeVideoJobs(started.Jobs), len(started.Jobs)
+		if names := r.manageVideoSourceNames(scope.Principal, scope.SessionID, started.Jobs); len(names) > 0 {
+			response["source_names"] = names
+		}
 	case "status":
 		if r.video == nil {
 			return "", errors.New("manage_video transcription service is not configured")
@@ -204,6 +211,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		response["jobs"], response["count"] = safeVideoJobs(jobs), len(jobs)
+		if names := r.manageVideoSourceNames(scope.Principal, scope.SessionID, jobs); len(names) > 0 {
+			response["source_names"] = names
+		}
 	case "cancel":
 		if r.video == nil {
 			return "", errors.New("manage_video transcription service is not configured")
@@ -213,6 +223,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		response["job"] = safeVideoJob(job)
+		if names := r.manageVideoSourceNames(scope.Principal, scope.SessionID, []pebblestore.TranscriptionJob{job}); len(names) > 0 {
+			response["source_names"] = names
+		}
 	case "read_transcript":
 		if r.video == nil {
 			return "", errors.New("manage_video transcription service is not configured")
@@ -265,6 +278,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if indexOnly {
 			text, segments = "", []pebblestore.NormalizedTranscriptSegment{}
 			textTruncated, segmentsTruncated = false, false
+		}
+		if sourceName, sourceErr := r.video.SourceName(scope.Principal, transcript.SessionID, transcript.AttachmentRef); sourceErr == nil && strings.TrimSpace(sourceName) != "" {
+			response["source_names"] = []string{strings.TrimSpace(sourceName)}
 		}
 		response["transcript"] = map[string]any{
 			"ref": transcript.Ref, "job_ref": transcript.JobRef, "message_id": transcript.MessageID,
@@ -320,8 +336,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			initialTimeline = tl
 		}
 		var meta map[string]any
-		if rawMeta, ok := args["metadata"].(map[string]any); ok {
-			meta = rawMeta
+		if rawMeta, ok := args["metadata"]; ok && rawMeta != nil {
+			meta, err = parseJSONEncodedObject(rawMeta, "metadata")
+			if err != nil {
+				return "", err
+			}
 		}
 		workspaceID := ""
 		for _, key := range []string{"workspace_id", "swarm_v3_source_workspace_id"} {
@@ -512,12 +531,14 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		if r.videoRender != nil {
+			queueGrace := time.Duration(asInt(args["queue_grace_ms"], 0)) * time.Millisecond
 			r.videoRender.StartRenderJob(scope.Principal, videorender.RenderJobRequest{
 				SessionID:     projectSessionID,
 				ProjectID:     projectID,
 				RevisionID:    job.RevisionID,
 				JobID:         job.ID,
 				WorkspacePath: manageVideoWorkspacePath(session),
+				QueueGrace:    queueGrace,
 			})
 		}
 		response["render_job"] = safeVideoRenderJob(job)
@@ -587,15 +608,135 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	default:
 		return "", fmt.Errorf("unsupported manage_video action %q", action)
 	}
+	response["presentation"] = manageVideoPresentation(action, args, response)
 	encoded, err := json.Marshal(response)
 	return string(encoded), err
+}
+
+func manageVideoPresentation(action string, args, response map[string]any) map[string]any {
+	copyByAction := map[string][2]string{
+		"list_source_roots":   {"Video sources ready", "Finding video sources"},
+		"browse_source":       {"Video source opened", "Browsing video sources"},
+		"inspect_attachments": {"Video attachments checked", "Checking video attachments"},
+		"start_transcription": {"Transcription started", "Starting video transcription"},
+		"status":              {"Transcription status checked", "Checking transcription progress"},
+		"cancel":              {"Transcription cancelled", "Cancelling video transcription"},
+		"read_transcript":     {"Transcript ready", "Reading video transcript"},
+		"create_project":      {"Video project ready", "Setting up video project"},
+		"read_project":        {"Video project loaded", "Loading video project"},
+		"get_project":         {"Video project loaded", "Loading video project"},
+		"list_projects":       {"Video projects loaded", "Loading video projects"},
+		"create_revision":     {"Video edit saved", "Saving video edit"},
+		"restore_revision":    {"Video version restored", "Restoring video version"},
+		"start_render":        {"Video render started", "Starting video render"},
+		"render_status":       {"Render status updated", "Checking render progress"},
+		"cancel_render":       {"Video render cancelled", "Cancelling video render"},
+	}
+	copy := copyByAction[action]
+	if copy[0] == "" {
+		copy = [2]string{"Video task complete", "Working on video"}
+	}
+	presentation := map[string]any{
+		"kind":           "video",
+		"title":          copy[0],
+		"activity_label": copy[1],
+		"action":         action,
+		"status":         strings.TrimSpace(asString(response["status"])),
+	}
+	project, _ := response["project"].(map[string]any)
+	sourceNames := manageVideoSourceNameSlice(response)
+	subject := strings.TrimSpace(firstNonEmptyString(asString(project["title"]), asString(args["title"]), singleManageVideoSourceName(sourceNames), asString(response["relative_path"]), asString(args["output_preset"])))
+	if subject != "" {
+		presentation["subject"] = subject
+	}
+	if len(sourceNames) > 0 {
+		presentation["source_names"] = sourceNames
+	}
+	for _, key := range []string{"project_id", "revision_id", "job_id", "progress", "count"} {
+		if value, ok := response[key]; ok {
+			presentation[key] = value
+		}
+	}
+	if renderJob, ok := response["render_job"].(map[string]any); ok {
+		for _, key := range []string{"output_preset", "output_width", "output_height", "output_duration_ms", "output_size_bytes"} {
+			if value, exists := renderJob[key]; exists {
+				presentation[key] = value
+			}
+		}
+	}
+	return presentation
+}
+
+func (r *Runtime) manageVideoSourceNames(principal identity.Principal, sessionID string, jobs []pebblestore.TranscriptionJob) []string {
+	if r == nil || r.video == nil {
+		return nil
+	}
+	names := make([]string, 0, len(jobs))
+	seen := make(map[string]struct{}, len(jobs))
+	for _, job := range jobs {
+		name, err := r.video.SourceName(principal, sessionID, job.AttachmentRef)
+		name = strings.TrimSpace(name)
+		if err != nil || name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
+func manageVideoSourceNameSlice(response map[string]any) []string {
+	if raw, ok := response["source_names"].([]string); ok {
+		return raw
+	}
+	var names []string
+	for _, key := range []string{"videos", "attachments"} {
+		switch items := response[key].(type) {
+		case []map[string]any:
+			for _, item := range items {
+				if name := strings.TrimSpace(asString(item["name"])); name != "" {
+					names = append(names, name)
+				}
+			}
+		case []pebblestore.SessionVideoAttachmentReference:
+			for _, item := range items {
+				if name := strings.TrimSpace(item.Name); name != "" {
+					names = append(names, name)
+				}
+			}
+		case []videosource.Clip:
+			for _, item := range items {
+				if name := strings.TrimSpace(item.Name); name != "" {
+					names = append(names, name)
+				}
+			}
+		}
+	}
+	if len(names) > 8 {
+		names = names[:8]
+	}
+	return names
+}
+
+func singleManageVideoSourceName(names []string) string {
+	if len(names) == 1 {
+		return names[0]
+	}
+	return ""
 }
 
 func parseTimeline(raw any) (*pebblestore.VideoProjectTimeline, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	bytes, err := json.Marshal(raw)
+	object, err := parseJSONEncodedObject(raw, "timeline")
+	if err != nil {
+		return nil, err
+	}
+	bytes, err := json.Marshal(object)
 	if err != nil {
 		return nil, fmt.Errorf("marshal timeline: %w", err)
 	}
@@ -607,6 +748,35 @@ func parseTimeline(raw any) (*pebblestore.VideoProjectTimeline, error) {
 		timeline.SchemaVersion = pebblestore.VideoTimelineSchemaVersion
 	}
 	return &timeline, nil
+}
+
+func parseJSONEncodedObject(raw any, field string) (map[string]any, error) {
+	if encoded, ok := raw.(string); ok {
+		encoded = strings.TrimSpace(encoded)
+		if encoded == "" {
+			return nil, fmt.Errorf("%s requires a non-empty JSON object", field)
+		}
+		var object map[string]any
+		if err := json.Unmarshal([]byte(encoded), &object); err != nil {
+			return nil, fmt.Errorf("invalid %s payload: %w", field, err)
+		}
+		if object == nil {
+			return nil, fmt.Errorf("invalid %s payload: expected JSON object", field)
+		}
+		return object, nil
+	}
+	bytes, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", field, err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(bytes, &object); err != nil {
+		return nil, fmt.Errorf("invalid %s payload: expected JSON object: %w", field, err)
+	}
+	if object == nil {
+		return nil, fmt.Errorf("invalid %s payload: expected JSON object", field)
+	}
+	return object, nil
 }
 
 func safeVideoProjects(projects []pebblestore.VideoProjectSnapshot) []map[string]any {

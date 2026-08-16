@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -2474,6 +2474,128 @@ export function SearchReadToolGroupView({ toolMessages }: { toolMessages: Struct
   );
 }
 
+function humanizeVideoValue(value: string): string {
+  return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function videoDurationLabel(ms: number): string {
+  if (ms <= 0) return "";
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))} sec`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return seconds > 0 ? `${minutes} min ${seconds} sec` : `${minutes} min`;
+}
+
+function videoSizeLabel(bytes: number): string {
+  if (bytes <= 0) return "";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function VideoToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToolMessage; isGroupItem?: boolean }) {
+  const data = toolMessage.videoData;
+  if (!data) return null;
+  const running = toolMessage.state === "running";
+  const failed = toolMessage.state === "error";
+  const cancelled = data.status === "cancelled" || data.status === "canceled";
+  const title = failed ? "Video task needs attention" : running ? data.activeTitle : data.title;
+  const description = running ? toolActivityStartSummary(toolMessage) : data.subject;
+  const StateIcon = failed ? XCircle : cancelled ? CircleStop : CheckCircle2;
+  const stateLabel = failed ? "Failed" : cancelled ? "Cancelled" : running ? "In progress" : data.status && data.status !== "ok" ? humanizeVideoValue(data.status) : "Done";
+  const detailChips = [
+    data.outputPreset ? { label: "Format", value: humanizeVideoValue(data.outputPreset) } : null,
+    data.revisionNumber > 0 ? { label: "Version", value: String(data.revisionNumber) } : null,
+    data.width > 0 && data.height > 0 ? { label: "Size", value: `${data.width} × ${data.height}` } : null,
+    data.durationMs > 0 ? { label: "Length", value: videoDurationLabel(data.durationMs) } : null,
+    data.sizeBytes > 0 ? { label: "File", value: videoSizeLabel(data.sizeBytes) } : null,
+    data.language ? { label: "Language", value: data.language.toUpperCase() } : null,
+    data.validation ? { label: "Transcript", value: humanizeVideoValue(data.validation) } : null,
+    data.sourceNames.length > 0 ? { label: data.sourceNames.length === 1 ? "Source video" : "Source videos", value: data.sourceNames.join(", ") } : null,
+    data.count > 0 ? { label: "Found", value: `${data.count} ${data.count === 1 ? "item" : "items"}` } : null,
+  ].filter((chip): chip is { label: string; value: string } => Boolean(chip));
+  const references = [
+    data.projectId ? { label: "Project", value: data.projectId } : null,
+    data.revisionId ? { label: "Version ID", value: data.revisionId } : null,
+    data.jobId ? { label: "Job", value: data.jobId } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+  const showProgress = data.progress !== null && !failed && !cancelled;
+
+  return (
+    <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", "w-full")}>
+      <section
+        className={cn(
+          "relative min-w-0 overflow-hidden rounded-2xl border bg-[linear-gradient(135deg,color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface)),var(--app-surface-subtle)_62%,var(--app-surface))] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-text)_7%,transparent)]",
+          failed ? "border-[color-mix(in_srgb,var(--app-danger)_42%,var(--app-border))]" : "border-[color-mix(in_srgb,var(--app-primary)_28%,var(--app-border))]",
+        )}
+        data-manage-video-card
+        data-video-action={data.action}
+        aria-busy={running || undefined}
+      >
+        <div className="pointer-events-none absolute -right-12 -top-16 size-36 rounded-full bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] blur-2xl" />
+        <header className="relative flex min-w-0 items-start gap-3 px-4 pb-3 pt-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_22%,transparent)] bg-[color-mix(in_srgb,var(--app-primary)_14%,transparent)] text-[var(--app-primary)] shadow-sm">
+            <Clapperboard size={17} aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 className="min-w-0 truncate text-[13px] font-semibold leading-5 text-[var(--app-text)]" title={title}>{title}</h3>
+              <span className="rounded-full bg-[color-mix(in_srgb,var(--app-primary)_11%,transparent)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">Video</span>
+            </div>
+            {description ? <p className="mt-0.5 min-w-0 break-words text-[11px] leading-4 text-[var(--app-text-muted)]">{description}</p> : null}
+          </div>
+          <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold", failed ? "bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] text-[var(--app-danger)]" : "bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] text-[var(--app-primary)]")}>
+            {running ? (
+              <span className="relative grid size-3 place-items-center" aria-hidden="true">
+                <span className="absolute size-2.5 rounded-sm border border-current motion-safe:animate-[pulse_1.8s_ease-in-out_infinite] motion-reduce:animate-none" />
+                <span className="size-1 rounded-full bg-current motion-safe:animate-[pulse_1.8s_ease-in-out_infinite] motion-reduce:animate-none" />
+              </span>
+            ) : <StateIcon size={12} aria-hidden="true" />}
+            {stateLabel}
+          </span>
+        </header>
+
+        {showProgress ? (
+          <div className="relative px-4 pb-3">
+            <div className="mb-1.5 flex items-center justify-between text-[10px] font-medium text-[var(--app-text-muted)]">
+              <span>{data.status === "rendering" ? "Rendering frames" : "Progress"}</span>
+              <span className="tabular-nums text-[var(--app-text)]">{data.progress}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--app-border)_70%,transparent)]">
+              <div className="h-full rounded-full bg-[linear-gradient(90deg,var(--app-primary),var(--app-accent))] transition-[width] duration-500" style={{ width: `${data.progress}%` }} />
+            </div>
+          </div>
+        ) : null}
+
+        {detailChips.length > 0 || references.length > 0 || toolMessage.error ? (
+          <div className="relative border-t border-[color-mix(in_srgb,var(--app-border)_78%,transparent)] bg-[color-mix(in_srgb,var(--app-surface)_68%,transparent)] px-4 py-3">
+            {detailChips.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {detailChips.map((chip) => (
+                  <div key={`${chip.label}:${chip.value}`} className="rounded-lg border border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] bg-[color-mix(in_srgb,var(--app-surface)_82%,transparent)] px-2.5 py-1.5">
+                    <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">{chip.label}</div>
+                    <div className="mt-0.5 text-[11px] font-medium text-[var(--app-text)]">{chip.value}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {references.length > 0 ? (
+              <div className={cn("grid gap-1.5", detailChips.length > 0 && "mt-3")}>
+                {references.map((item) => (
+                  <div key={item.label} className="flex min-w-0 items-center gap-2 text-[10px] text-[var(--app-text-muted)]">
+                    <span className="w-14 shrink-0 font-medium">{item.label}</span>
+                    <code className="min-w-0 truncate rounded bg-[color-mix(in_srgb,var(--app-code-background)_82%,transparent)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text)]" title={item.value}>{item.value}</code>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {toolMessage.error ? <p className="mt-2 break-words text-[11px] leading-4 text-[var(--app-danger)]">{toolMessage.error}</p> : null}
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
 export function ToolMessageView({
   toolMessage,
   isGroupItem,
@@ -2495,6 +2617,7 @@ export function ToolMessageView({
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
   const isManageArtifactActivity = ["manage-artifact", "manage_artifact"].includes(normalizedToolName);
+  const isManageVideoActivity = ["manage-video", "manage_video"].includes(normalizedToolName);
   const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
   const hasStructuredTaskRows = normalizedToolName === "task" && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram));
   const activityOnly = toolMessage.state === "running"
@@ -2510,7 +2633,10 @@ export function ToolMessageView({
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
-  if ((activityOnly || terminalWithoutResult) && !isManageArtifactActivity) {
+  if (isManageVideoActivity && toolMessage.videoData) {
+    return <VideoToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
+  }
+  if ((activityOnly || terminalWithoutResult) && !isManageArtifactActivity && !isManageVideoActivity) {
     const errorBody = toolMessage.error.trim();
     return (
       <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", "w-full")}>

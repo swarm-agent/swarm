@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
@@ -617,6 +618,45 @@ func TestReconcileInterruptedJobs(t *testing.T) {
 	}
 }
 
+func TestStartRenderJobQueueGraceAllowsImmediateCancellation(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
+	store := newFakeSessionStore()
+	store.jobs["job_cancel"] = pebblestore.VideoRenderJobSnapshot{
+		ID:             "job_cancel",
+		AccountScopeID: principal.AccountScopeID,
+		SessionID:      "sess_1",
+		ProjectID:      "proj_1",
+		Status:         pebblestore.VideoRenderJobStatusQueued,
+	}
+	runner := &fakeCommandRunner{}
+	svc := NewService(Config{}, store, nil, nil, nil, runner)
+
+	svc.StartRenderJob(principal, RenderJobRequest{
+		SessionID:  "sess_1",
+		ProjectID:  "proj_1",
+		JobID:      "job_cancel",
+		QueueGrace: time.Second,
+	})
+	job, err := svc.CancelRenderJob(context.Background(), principal, "sess_1", "job_cancel")
+	if err != nil {
+		t.Fatalf("CancelRenderJob() error = %v", err)
+	}
+	if job.Status != pebblestore.VideoRenderJobStatusCancelled {
+		t.Fatalf("CancelRenderJob() status = %s, want cancelled", job.Status)
+	}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := svc.WaitForIdle(waitCtx); err != nil {
+		t.Fatalf("WaitForIdle() error = %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("render command calls = %d, want 0", len(runner.calls))
+	}
+	if got := store.jobs["job_cancel"].Status; got != pebblestore.VideoRenderJobStatusCancelled {
+		t.Fatalf("durable status = %s, want cancelled", got)
+	}
+}
+
 func TestCancelRenderJob(t *testing.T) {
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
 	store := newFakeSessionStore()
@@ -635,5 +675,32 @@ func TestCancelRenderJob(t *testing.T) {
 	}
 	if job.Status != pebblestore.VideoRenderJobStatusCancelled {
 		t.Fatalf("expected cancelled status, got: %s", job.Status)
+	}
+}
+
+func TestCancelRenderJobRejectsTerminalStates(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
+	for _, status := range []string{
+		pebblestore.VideoRenderJobStatusReady,
+		pebblestore.VideoRenderJobStatusFailed,
+	} {
+		t.Run(status, func(t *testing.T) {
+			store := newFakeSessionStore()
+			store.jobs["job_terminal"] = pebblestore.VideoRenderJobSnapshot{
+				ID:             "job_terminal",
+				AccountScopeID: principal.AccountScopeID,
+				SessionID:      "sess_1",
+				ProjectID:      "proj_1",
+				Status:         status,
+			}
+			svc := NewService(Config{}, store, nil, nil, nil, nil)
+
+			if _, err := svc.CancelRenderJob(context.Background(), principal, "sess_1", "job_terminal"); err == nil || !strings.Contains(err.Error(), "cannot cancel terminal render job") {
+				t.Fatalf("CancelRenderJob() error = %v, want terminal-state rejection", err)
+			}
+			if got := store.jobs["job_terminal"].Status; got != status {
+				t.Fatalf("durable status = %s, want %s", got, status)
+			}
+		})
 	}
 }

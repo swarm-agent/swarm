@@ -200,6 +200,29 @@ export interface ArtifactToolData {
   count?: number;
 }
 
+export interface VideoToolData {
+  action: string;
+  status: string;
+  title: string;
+  activeTitle: string;
+  summary: string;
+  subject: string;
+  sourceNames: string[];
+  progress: number | null;
+  projectId: string;
+  revisionId: string;
+  jobId: string;
+  outputPreset: string;
+  revisionNumber: number;
+  count: number;
+  durationMs: number;
+  sizeBytes: number;
+  width: number;
+  height: number;
+  language: string;
+  validation: string;
+}
+
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;
@@ -226,6 +249,7 @@ export interface StructuredToolMessage {
   todoData?: TodoToolData | null;
   bashData?: BashToolData | null;
   artifactData?: ArtifactToolData | null;
+  videoData?: VideoToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
   taskProgram?: TaskProgram | null;

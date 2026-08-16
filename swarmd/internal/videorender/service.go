@@ -28,6 +28,7 @@ const (
 	DefaultRenderTimeout     = 10 * time.Minute
 	DefaultCommandErrorLimit = 16 << 10
 	DefaultRecoveryLimit     = 50
+	MaxQueueGracePeriod      = 30 * time.Second
 )
 
 type Config struct {
@@ -121,18 +122,19 @@ type WorkspaceAuthority interface {
 }
 
 type Service struct {
-	cfg       Config
-	store     SessionStore
-	artifacts ArtifactAuthority
-	opener    ArtifactFileOpener
-	workspace WorkspaceAuthority
-	runner    CommandRunner
-	mu        sync.Mutex
-	cancels   map[string]context.CancelFunc
-	workers   sync.WaitGroup
-	workerMu  sync.Mutex
-	workerN   int
-	idle      chan struct{}
+	cfg           Config
+	store         SessionStore
+	artifacts     ArtifactAuthority
+	opener        ArtifactFileOpener
+	workspace     WorkspaceAuthority
+	runner        CommandRunner
+	mu            sync.Mutex
+	cancels       map[string]context.CancelFunc
+	pendingStarts map[string]context.CancelFunc
+	workers       sync.WaitGroup
+	workerMu      sync.Mutex
+	workerN       int
+	idle          chan struct{}
 }
 
 func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, opener ArtifactFileOpener, workspace WorkspaceAuthority, runner CommandRunner) *Service {
@@ -155,13 +157,14 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ope
 		runner = &osCommandRunner{}
 	}
 	return &Service{
-		cfg:       cfg,
-		store:     store,
-		artifacts: artifacts,
-		opener:    opener,
-		workspace: workspace,
-		runner:    runner,
-		cancels:   make(map[string]context.CancelFunc),
+		cfg:           cfg,
+		store:         store,
+		artifacts:     artifacts,
+		opener:        opener,
+		workspace:     workspace,
+		runner:        runner,
+		cancels:       make(map[string]context.CancelFunc),
+		pendingStarts: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -172,6 +175,7 @@ type RenderJobRequest struct {
 	JobID         string
 	WorkspacePath string
 	Timeout       time.Duration
+	QueueGrace    time.Duration
 }
 
 func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, req RenderJobRequest) (result pebblestore.VideoRenderJobSnapshot, retErr error) {
@@ -665,6 +669,27 @@ func (s *Service) StartRenderJob(principal identity.Principal, req RenderJobRequ
 	if s == nil {
 		return
 	}
+	queueGrace := req.QueueGrace
+	if queueGrace < 0 {
+		queueGrace = 0
+	}
+	if queueGrace > MaxQueueGracePeriod {
+		queueGrace = MaxQueueGracePeriod
+	}
+	startCtx, cancelStart := context.WithCancel(context.Background())
+	s.mu.Lock()
+	if _, pending := s.pendingStarts[req.JobID]; pending {
+		s.mu.Unlock()
+		cancelStart()
+		return
+	}
+	if _, rendering := s.cancels[req.JobID]; rendering {
+		s.mu.Unlock()
+		cancelStart()
+		return
+	}
+	s.pendingStarts[req.JobID] = cancelStart
+	s.mu.Unlock()
 	s.workerMu.Lock()
 	if s.workerN == 0 {
 		s.idle = make(chan struct{})
@@ -674,6 +699,10 @@ func (s *Service) StartRenderJob(principal identity.Principal, req RenderJobRequ
 	s.workerMu.Unlock()
 	go func() {
 		defer func() {
+			cancelStart()
+			s.mu.Lock()
+			delete(s.pendingStarts, req.JobID)
+			s.mu.Unlock()
 			s.workers.Done()
 			s.workerMu.Lock()
 			s.workerN--
@@ -682,7 +711,16 @@ func (s *Service) StartRenderJob(principal identity.Principal, req RenderJobRequ
 			}
 			s.workerMu.Unlock()
 		}()
-		_, _ = s.RenderJob(context.Background(), principal, req)
+		if queueGrace > 0 {
+			timer := time.NewTimer(queueGrace)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-startCtx.Done():
+				return
+			}
+		}
+		_, _ = s.RenderJob(startCtx, principal, req)
 	}()
 }
 
@@ -710,9 +748,32 @@ func (s *Service) CancelRenderJob(ctx context.Context, principal identity.Princi
 	if s == nil || s.store == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videorender service is not configured")
 	}
+	if !principal.Valid() {
+		return pebblestore.VideoRenderJobSnapshot{}, errors.New("authenticated principal is required")
+	}
+	job, ok, err := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+	if err != nil || !ok {
+		if err == nil {
+			err = fmt.Errorf("render job %q not found", jobID)
+		}
+		return pebblestore.VideoRenderJobSnapshot{}, err
+	}
+	if job.UserID != "" && job.UserID != principal.UserID {
+		return pebblestore.VideoRenderJobSnapshot{}, errors.New("render job ownership does not match authenticated principal")
+	}
+	if job.Status == pebblestore.VideoRenderJobStatusCancelled {
+		return job, nil
+	}
+	if job.Status == pebblestore.VideoRenderJobStatusReady || job.Status == pebblestore.VideoRenderJobStatusFailed {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("cannot cancel terminal render job in status %s", job.Status)
+	}
 	s.mu.Lock()
+	cancelPending := s.pendingStarts[jobID]
 	cancel := s.cancels[jobID]
 	s.mu.Unlock()
+	if cancelPending != nil {
+		cancelPending()
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -726,6 +787,9 @@ func (s *Service) CancelRenderJob(ctx context.Context, principal identity.Princi
 		}
 		if job.Status == pebblestore.VideoRenderJobStatusCancelled {
 			return job, nil
+		}
+		if job.Status == pebblestore.VideoRenderJobStatusReady || job.Status == pebblestore.VideoRenderJobStatusFailed {
+			return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("cannot cancel terminal render job in status %s", job.Status)
 		}
 		updated, err := s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
 			AccountScopeID: principal.AccountScopeID,

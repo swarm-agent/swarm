@@ -215,7 +215,7 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 			t.Fatalf("schema lacks video project/render action %q", action)
 		}
 	}
-	for _, param := range []string{"project_id", "revision_id", "source_revision_id", "render_job_id", "title", "description", "output_preset", "change_summary", "timeline", "initial_timeline", "metadata"} {
+	for _, param := range []string{"project_id", "revision_id", "source_revision_id", "render_job_id", "queue_grace_ms", "title", "description", "output_preset", "change_summary", "timeline", "initial_timeline", "metadata"} {
 		if !strings.Contains(text, `"`+param+`"`) {
 			t.Fatalf("schema lacks video project/render parameter %q", param)
 		}
@@ -223,6 +223,28 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 	for _, forbidden := range []string{"workspace_path", "root_path", "file_path", "provider_uri", "provider", "model", "command"} {
 		if strings.Contains(text, `"`+forbidden+`"`) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestManageVideoJSONEncodedObjectParsing(t *testing.T) {
+	timeline, err := parseTimeline(`{"output_preset":"landscape_720p","total_duration_ms":1000}`)
+	if err != nil {
+		t.Fatalf("parse JSON-encoded timeline: %v", err)
+	}
+	if timeline.OutputPreset != pebblestore.VideoPresetLandscape720p || timeline.TotalDurationMs != 1000 {
+		t.Fatalf("unexpected timeline: %#v", timeline)
+	}
+	if _, err := parseTimeline(map[string]any{"output_preset": pebblestore.VideoPresetLandscape1080p}); err != nil {
+		t.Fatalf("parse native object timeline: %v", err)
+	}
+	metadata, err := parseJSONEncodedObject(`{"campaign":"launch"}`, "metadata")
+	if err != nil || metadata["campaign"] != "launch" {
+		t.Fatalf("parse JSON-encoded metadata: metadata=%v err=%v", metadata, err)
+	}
+	for _, raw := range []any{"not-json", `[]`, ``} {
+		if _, err := parseJSONEncodedObject(raw, "metadata"); err == nil {
+			t.Fatalf("expected invalid metadata %q to fail", raw)
 		}
 	}
 }
@@ -261,28 +283,30 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "session-1", RunID: "run-1"})
 	scope := WorkspaceScope{SessionID: "session-1", Principal: principal}
 
-	// 1. Create project with initial timeline
-	createArgs, _ := json.Marshal(map[string]any{
-		"action":        "create_project",
-		"title":         "Product Intro",
-		"description":   "Showcase key features",
-		"output_preset": pebblestore.VideoPresetLandscape1080p,
-		"initial_timeline": map[string]any{
-			"output_preset":     pebblestore.VideoPresetLandscape1080p,
-			"total_duration_ms": 5000,
-			"clips": []map[string]any{
-				{
-					"id":                "clip_1",
-					"track":             0,
-					"sequence":          0,
-					"source_kind":       pebblestore.VideoClipSourceKindColor,
-					"duration_ms":       5000,
-					"timeline_start_ms": 0,
-					"timeline_end_ms":   5000,
-					"visible":           true,
-				},
+	// 1. Create project with the JSON-encoded object strings exposed by the Codex tool adapter.
+	initialTimeline, _ := json.Marshal(map[string]any{
+		"output_preset":     pebblestore.VideoPresetLandscape1080p,
+		"total_duration_ms": 5000,
+		"clips": []map[string]any{
+			{
+				"id":                "clip_1",
+				"track":             0,
+				"sequence":          0,
+				"source_kind":       pebblestore.VideoClipSourceKindColor,
+				"duration_ms":       5000,
+				"timeline_start_ms": 0,
+				"timeline_end_ms":   5000,
+				"visible":           true,
 			},
 		},
+	})
+	createArgs, _ := json.Marshal(map[string]any{
+		"action":           "create_project",
+		"title":            "Product Intro",
+		"description":      "Showcase key features",
+		"output_preset":    pebblestore.VideoPresetLandscape1080p,
+		"initial_timeline": string(initialTimeline),
+		"metadata":         `{"campaign":"launch"}`,
 	})
 	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-1", Name: "manage_video", Arguments: string(createArgs)})
 	if err != nil {
@@ -299,6 +323,29 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 		t.Fatalf("failed to parse create_project response: %s (err=%v)", payload, err)
 	}
 	projectID := createRes.ProjectID
+	var createPayload map[string]any
+	if err := json.Unmarshal([]byte(payload), &createPayload); err != nil {
+		t.Fatalf("parse create_project presentation: %v", err)
+	}
+	presentation, ok := createPayload["presentation"].(map[string]any)
+	if !ok || presentation["kind"] != "video" || presentation["title"] != "Video project ready" || presentation["activity_label"] != "Setting up video project" || presentation["subject"] != "Product Intro" || presentation["project_id"] != projectID {
+		t.Fatalf("unexpected create_project presentation: %#v", createPayload["presentation"])
+	}
+	browsePresentation := manageVideoPresentation("browse_source", map[string]any{}, map[string]any{
+		"status": "ok",
+		"videos": []videosource.Clip{{Name: "source-one.mp4"}, {Name: "source-two.mp4"}},
+	})
+	sourceNames, ok := browsePresentation["source_names"].([]string)
+	if !ok || len(sourceNames) != 2 || sourceNames[0] != "source-one.mp4" || sourceNames[1] != "source-two.mp4" {
+		t.Fatalf("unexpected browse source presentation: %#v", browsePresentation)
+	}
+	singleSourcePresentation := manageVideoPresentation("read_transcript", map[string]any{}, map[string]any{
+		"status":       "ok",
+		"source_names": []string{"ycfinalwithaudio.mp4"},
+	})
+	if singleSourcePresentation["subject"] != "ycfinalwithaudio.mp4" {
+		t.Fatalf("unexpected transcript source presentation: %#v", singleSourcePresentation)
+	}
 
 	// 2. Read project
 	readArgs, _ := json.Marshal(map[string]any{
@@ -309,38 +356,39 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read_project failed: %v", err)
 	}
-	if !strings.Contains(payload, projectID) || !strings.Contains(payload, "Product Intro") {
+	if !strings.Contains(payload, projectID) || !strings.Contains(payload, "Product Intro") || !strings.Contains(payload, `"campaign":"launch"`) {
 		t.Fatalf("unexpected read_project output: %s", payload)
 	}
 
-	// 3. Create revision
-	revArgs, _ := json.Marshal(map[string]any{
-		"action":         "create_revision",
-		"project_id":     projectID,
-		"change_summary": "Added captions",
-		"timeline": map[string]any{
-			"output_preset":     pebblestore.VideoPresetLandscape1080p,
-			"total_duration_ms": 6000,
-			"clips": []map[string]any{
-				{
-					"id":                "clip_1",
-					"track":             0,
-					"sequence":          0,
-					"source_kind":       pebblestore.VideoClipSourceKindColor,
-					"duration_ms":       6000,
-					"timeline_start_ms": 0,
-					"timeline_end_ms":   6000,
-					"visible":           true,
-					"captions": []map[string]any{
-						{
-							"text":     "Welcome to Swarm",
-							"start_ms": 500,
-							"end_ms":   3000,
-						},
+	// 3. Create revision with the JSON-encoded timeline shape exposed to Codex.
+	revisionTimeline, _ := json.Marshal(map[string]any{
+		"output_preset":     pebblestore.VideoPresetLandscape1080p,
+		"total_duration_ms": 6000,
+		"clips": []map[string]any{
+			{
+				"id":                "clip_1",
+				"track":             0,
+				"sequence":          0,
+				"source_kind":       pebblestore.VideoClipSourceKindColor,
+				"duration_ms":       6000,
+				"timeline_start_ms": 0,
+				"timeline_end_ms":   6000,
+				"visible":           true,
+				"captions": []map[string]any{
+					{
+						"text":     "Welcome to Swarm",
+						"start_ms": 500,
+						"end_ms":   3000,
 					},
 				},
 			},
 		},
+	})
+	revArgs, _ := json.Marshal(map[string]any{
+		"action":         "create_revision",
+		"project_id":     projectID,
+		"change_summary": "Added captions",
+		"timeline":       string(revisionTimeline),
 	})
 	payload, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-3", Name: "manage_video", Arguments: string(revArgs)})
 	if err != nil {
@@ -363,9 +411,10 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 
 	// 4. Start render
 	renderArgs, _ := json.Marshal(map[string]any{
-		"action":      "start_render",
-		"project_id":  projectID,
-		"revision_id": revRes.RevisionID,
+		"action":         "start_render",
+		"project_id":     projectID,
+		"revision_id":    revRes.RevisionID,
+		"queue_grace_ms": 5000,
 	})
 	payload, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-4", Name: "manage_video", Arguments: string(renderArgs)})
 	if err != nil {
@@ -405,7 +454,7 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 	if !strings.Contains(payload, "cancelled") {
 		t.Fatalf("unexpected cancel_render output: %s", payload)
 	}
-	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelWait()
 	if err := videoRender.WaitForIdle(waitCtx); err != nil {
 		t.Fatalf("render goroutine did not stop before test cleanup: %v", err)

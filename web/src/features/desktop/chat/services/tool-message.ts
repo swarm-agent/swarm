@@ -1,6 +1,7 @@
 import type {
   ArtifactToolData,
   EditDiffPreview,
+  VideoToolData,
   SearchToolData,
   SearchToolFileGroup,
   SearchToolLineGroup,
@@ -66,7 +67,7 @@ interface StructuredToolMessageInput {
 const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
 const MAX_PREVIEW_LINES = 12;
 
-export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "artifact" | "generic";
+export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "artifact" | "video" | "generic";
 
 export interface ToolActivityDescriptor {
   kind: ToolActivitySemanticKind;
@@ -78,6 +79,9 @@ export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   const normalized = String(toolName ?? "").trim().toLowerCase().replace(/-/g, "_");
   if (normalized === "manage_artifact") {
     return { kind: "artifact", label: "Artifact", activeLabel: "Creating artifact" };
+  }
+  if (normalized === "manage_video") {
+    return { kind: "video", label: "Video", activeLabel: "Working on video" };
   }
   if (normalized === "edit" || normalized === "write") {
     return { kind: "edit", label: "Edit", activeLabel: "Editing" };
@@ -350,6 +354,158 @@ function resolveToolTarget(
   return null;
 }
 
+function videoRecord(payload: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  return jsonRecord(payload?.[key]);
+}
+
+function videoString(
+  output: Record<string, unknown> | null,
+  args: Record<string, unknown> | null,
+  key: string,
+  ...records: Array<Record<string, unknown> | null>
+): string {
+  return firstNonEmpty(jsonStr(output, key), ...records.map((record) => jsonStr(record, key)), jsonStr(args, key));
+}
+
+function videoNumber(
+  output: Record<string, unknown> | null,
+  args: Record<string, unknown> | null,
+  key: string,
+  ...records: Array<Record<string, unknown> | null>
+): number {
+  for (const record of [output, ...records, args]) {
+    if (hasJsonKey(record, key)) return jsonNum(record, key);
+  }
+  return 0;
+}
+
+function formatVideoDuration(ms: number): string {
+  if (ms <= 0) return "";
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function formatVideoBytes(bytes: number): string {
+  if (bytes <= 0) return "";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function videoActionCopy(action: string): { title: string; activeTitle: string } {
+  switch (action) {
+    case "list_source_roots": return { title: "Video sources ready", activeTitle: "Finding video sources…" };
+    case "browse_source": return { title: "Video source opened", activeTitle: "Browsing video sources…" };
+    case "inspect_attachments": return { title: "Video attachments checked", activeTitle: "Checking video attachments…" };
+    case "start_transcription": return { title: "Transcription started", activeTitle: "Starting video transcription…" };
+    case "status": return { title: "Transcription status checked", activeTitle: "Checking transcription progress…" };
+    case "cancel": return { title: "Transcription cancelled", activeTitle: "Cancelling transcription…" };
+    case "read_transcript": return { title: "Transcript ready", activeTitle: "Reading video transcript…" };
+    case "create_project": return { title: "Video project ready", activeTitle: "Setting up video project…" };
+    case "read_project":
+    case "get_project": return { title: "Video project loaded", activeTitle: "Loading video project…" };
+    case "list_projects": return { title: "Video projects loaded", activeTitle: "Loading video projects…" };
+    case "create_revision": return { title: "Video edit saved", activeTitle: "Saving video edit…" };
+    case "restore_revision": return { title: "Video version restored", activeTitle: "Restoring video version…" };
+    case "start_render": return { title: "Video render started", activeTitle: "Starting video render…" };
+    case "render_status": return { title: "Render status updated", activeTitle: "Checking render progress…" };
+    case "cancel_render": return { title: "Video render cancelled", activeTitle: "Cancelling video render…" };
+    default: return { title: "Video task complete", activeTitle: "Working on video…" };
+  }
+}
+
+function extractVideoToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): VideoToolData | null {
+  const effective = outputJson ?? argumentsJson;
+  if (!effective) return null;
+  const action = firstNonEmpty(jsonStr(outputJson, "action"), jsonStr(argumentsJson, "action")).toLowerCase();
+  if (!action) return null;
+
+  const presentation = videoRecord(outputJson, "presentation");
+  const project = videoRecord(outputJson, "project");
+  const revision = videoRecord(outputJson, "revision") ?? videoRecord(outputJson, "current_revision");
+  const renderJob = videoRecord(outputJson, "render_job") ?? videoRecord(outputJson, "active_render_job");
+  const transcript = videoRecord(outputJson, "transcript");
+  const job = videoRecord(outputJson, "job") ?? jsonObjectSlice(outputJson, "jobs")[0] ?? null;
+  const fallbackCopy = videoActionCopy(action);
+  const copy = {
+    title: jsonStr(presentation, "title") || fallbackCopy.title,
+    activeTitle: jsonStr(presentation, "activity_label") || fallbackCopy.activeTitle,
+  };
+  const status = videoString(outputJson, argumentsJson, "status", presentation, renderJob, job).toLowerCase();
+  const projectTitle = videoString(outputJson, argumentsJson, "title", project);
+  const projectId = videoString(outputJson, argumentsJson, "project_id", presentation, project, revision, renderJob);
+  const revisionId = videoString(outputJson, argumentsJson, "revision_id", presentation, revision, renderJob);
+  const jobId = firstNonEmpty(
+    videoString(outputJson, argumentsJson, "job_id", presentation, renderJob),
+    videoString(outputJson, argumentsJson, "render_job_id", renderJob),
+    videoString(outputJson, argumentsJson, "job_ref", job),
+  );
+  const outputPreset = videoString(outputJson, argumentsJson, "output_preset", presentation, project, renderJob, transcript);
+  const revisionNumber = videoNumber(outputJson, argumentsJson, "revision_number", revision, renderJob);
+  const count = videoNumber(outputJson, argumentsJson, "count");
+  const durationMs = videoNumber(outputJson, argumentsJson, "duration_ms", transcript)
+    || videoNumber(outputJson, argumentsJson, "output_duration_ms", renderJob);
+  const sizeBytes = videoNumber(outputJson, argumentsJson, "output_size_bytes", renderJob);
+  const width = videoNumber(outputJson, argumentsJson, "output_width", renderJob);
+  const height = videoNumber(outputJson, argumentsJson, "output_height", renderJob);
+  const progressValue = hasJsonKey(outputJson, "progress") || hasJsonKey(renderJob, "progress")
+    ? videoNumber(outputJson, argumentsJson, "progress", renderJob)
+    : null;
+  const progress = progressValue === null ? null : Math.max(0, Math.min(100, progressValue <= 1 ? Math.round(progressValue * 100) : Math.round(progressValue)));
+  const language = videoString(outputJson, argumentsJson, "language", transcript);
+  const validation = videoString(outputJson, argumentsJson, "validation", transcript);
+  const sourceNames = [
+    ...jsonObjectSlice(outputJson, "videos"),
+    ...jsonObjectSlice(outputJson, "attachments"),
+  ].map((item) => jsonStr(item, "name")).filter(Boolean);
+  const presentationSourceNames = Array.isArray(presentation?.source_names)
+    ? presentation.source_names.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim())
+    : [];
+  const argumentSourceNames = Array.isArray(argumentsJson?.source_names)
+    ? argumentsJson.source_names.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim())
+    : [];
+  const uniqueSourceNames = Array.from(new Set([...presentationSourceNames, ...sourceNames, ...argumentSourceNames])).slice(0, 8);
+  const subject = firstNonEmpty(jsonStr(presentation, "subject"), uniqueSourceNames.length === 1 ? uniqueSourceNames[0] : "", projectTitle, videoString(outputJson, argumentsJson, "relative_path"), outputPreset);
+  const notes: string[] = [];
+  if (subject) notes.push(subject);
+  if (status && status !== "ok") notes.push(status.replace(/_/g, " "));
+  if (progress !== null && status !== "ready" && status !== "cancelled") notes.push(`${progress}%`);
+  if (revisionNumber > 0) notes.push(`Version ${revisionNumber}`);
+  if (width > 0 && height > 0) notes.push(`${width}×${height}`);
+  const duration = formatVideoDuration(durationMs);
+  if (duration) notes.push(duration);
+  const size = formatVideoBytes(sizeBytes);
+  if (size) notes.push(size);
+  if (count > 0 && !subject) notes.push(`${count} ${count === 1 ? "item" : "items"}`);
+
+  return {
+    action,
+    status,
+    title: copy.title,
+    activeTitle: copy.activeTitle,
+    summary: notes.length > 0 ? `${copy.title} · ${notes.join(" · ")}` : copy.title,
+    subject,
+    sourceNames: uniqueSourceNames,
+    progress,
+    projectId,
+    revisionId,
+    jobId,
+    outputPreset,
+    revisionNumber,
+    count,
+    durationMs,
+    sizeBytes,
+    width,
+    height,
+    language,
+    validation,
+  };
+}
+
 function summarizeToolOutput(
   toolName: string,
   outputJson: Record<string, unknown> | null,
@@ -596,6 +752,10 @@ function summarizeToolOutput(
     case "manage_artifact":
     case "manage-artifact": {
       return summarizeManageArtifactToolOutput(outputJson, argumentsJson);
+    }
+    case "manage_video":
+    case "manage-video": {
+      return extractVideoToolData(outputJson, argumentsJson)?.summary || "video";
     }
     case "manage_worktree":
     case "manage-worktree": {
@@ -1650,6 +1810,10 @@ function extractPreviewLines(
     case "manage-artifact": {
       return extractManageArtifactPreviewLines(outputJson, argumentsJson, 6);
     }
+    case "manage_video":
+    case "manage-video": {
+      return [];
+    }
     case "manage_worktree":
     case "manage-worktree": {
       return buildManageWorktreePreviewLines(effective, 8);
@@ -2380,6 +2544,10 @@ export function buildStructuredToolMessage(
     normalizedToolName === "manage_artifact" || normalizedToolName === "manage-artifact"
       ? extractArtifactToolData(outputJson, argumentsJson)
       : null;
+  const videoData =
+    normalizedToolName === "manage_video" || normalizedToolName === "manage-video"
+      ? extractVideoToolData(outputJson, argumentsJson)
+      : null;
   const previewLines = searchData || webSearchData || webFetchData
     ? []
     : extractPreviewLines(
@@ -2425,6 +2593,8 @@ export function buildStructuredToolMessage(
     "exit_plan_mode",
     "manage-artifact",
     "manage_artifact",
+    "manage-video",
+    "manage_video",
   ].includes(normalizedToolName);
   const outputWasStructured = outputJson !== null;
 
@@ -2457,6 +2627,7 @@ export function buildStructuredToolMessage(
     todoData,
     bashData,
     artifactData,
+    videoData,
     previewLines,
     taskRows,
     taskProgram,

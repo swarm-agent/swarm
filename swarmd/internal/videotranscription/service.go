@@ -306,6 +306,29 @@ func (s *Service) ReadBySourceFingerprint(principal identity.Principal, workspac
 	return transcript, nil
 }
 
+// SourceName resolves the bounded display name for one authenticated transcription source.
+// Private source paths and fingerprints never cross this boundary.
+func (s *Service) SourceName(principal identity.Principal, sessionID, attachmentRef string) (string, error) {
+	if s == nil || s.sessions == nil || !principal.Valid() {
+		return "", errors.New("video transcription service requires authenticated workspace authority")
+	}
+	attachment, ok, err := s.sessions.GetTranscriptionAttachment(principal.AccountScopeID, strings.TrimSpace(sessionID), strings.TrimSpace(attachmentRef))
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("video transcription attachment not found")
+		}
+		return "", err
+	}
+	record, ok, err := s.sessions.GetVideoSourceRecord(principal.AccountScopeID, attachment.WorkspaceID, attachment.SourceRecordRef)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("video transcription source not found")
+		}
+		return "", err
+	}
+	return strings.TrimSpace(record.DisplayName), nil
+}
+
 func (s *Service) Cancel(principal identity.Principal, sessionID, jobRef string) (pebblestore.TranscriptionJob, error) {
 	jobs, err := s.Status(principal, sessionID, []string{jobRef})
 	if err != nil {
