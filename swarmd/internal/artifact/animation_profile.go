@@ -33,11 +33,6 @@ var animationProfileDefinitions = []animationProfileDefinition{
 		budgets: animationBudgets(3, 0, 2, 4_194_304, 0, 400),
 	},
 	{
-		id: "generative_2d", runtimeKind: "canvas_2d_pixi",
-		runtimePackage: "pixi.js", runtimeVersion: "8.19.0",
-		budgets: animationBudgets(2, 1, 2, 4_194_304, 5_000, 500),
-	},
-	{
 		id: "spatial_3d", runtimeKind: "three_webgl", runtimePackage: "three", runtimeVersion: "0.185.1", heavy: true,
 		budgets: animationBudgets(1, 1, 1.5, 2_073_600, 2_000, 200),
 	},
@@ -127,11 +122,11 @@ func ParseAnimationProfile(raw any) (*pebblestore.SessionArtifactAnimationProfil
 func AnimationProfileToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
-		"description": "Closed, server-resolved animation execution profile. Select motion_ui for CSS/WAAPI/SVG, generative_2d for the pinned local PixiJS ES module, spatial_3d for the pinned local Three.js ES module, vector_playback for licensed dotLottie/Rive imports, or final_render for MP4 playback. Network and runtime overrides are prohibited.",
+		"description": "Closed, server-resolved animation execution profile. Select motion_ui for CSS/WAAPI/SVG, spatial_3d for the pinned local Three.js ES module, vector_playback for licensed dotLottie/Rive imports, or final_render for MP4 playback. Network and runtime overrides are prohibited.",
 		"properties": map[string]any{
 			"profile": map[string]any{
 				"type": "string",
-				"enum": []string{"motion_ui", "generative_2d", "spatial_3d", "vector_playback", "final_render"},
+				"enum": []string{"motion_ui", "spatial_3d", "vector_playback", "final_render"},
 			},
 		},
 		"required":             []string{"profile"},
@@ -140,8 +135,8 @@ func AnimationProfileToolSchema() map[string]any {
 }
 
 func validateAnimationProfileRegistry(definitions []animationProfileDefinition) error {
-	if len(definitions) != 5 {
-		return errors.New("animation profile registry must contain exactly five launch profiles")
+	if len(definitions) != 4 {
+		return errors.New("animation profile registry must contain exactly four launch profiles")
 	}
 	seen := map[string]struct{}{}
 	for _, definition := range definitions {

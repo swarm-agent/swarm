@@ -15,8 +15,6 @@ export function desktopV3ArtifactLocalRuntimeAssets(
   profile?: DesktopV3ArtifactAnimationProfile | null,
 ): DesktopV3ArtifactLocalRuntimeAssets {
   switch (profile?.profileId) {
-    case 'generative_2d':
-      return { scripts: [], modules: { 'pixi.js': runtime('pixi.mjs') }, wasm: {} }
     case 'spatial_3d':
       return { scripts: [], modules: { three: runtime('three.module.js') }, wasm: {} }
     case 'vector_playback':

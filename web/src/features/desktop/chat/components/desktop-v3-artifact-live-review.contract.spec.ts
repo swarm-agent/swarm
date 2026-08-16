@@ -58,14 +58,13 @@ test('animation previews use immutable local runtimes and keep network access di
   assert.match(artifactAPI, /querySelectorAll\('script'\).*script\.setAttribute\('nonce', scriptNonce\)/)
   assert.doesNotMatch(artifactAPI, /querySelectorAll\('script:not\(\[nonce\]\)'\)/)
   assert.match(runtimeAssets, /swarm-animation-runtime/)
-  assert.match(runtimeAssets, /pixi\.mjs/)
   assert.match(runtimeAssets, /three\.module\.js/)
   assert.match(runtimeAssets, /dotlottie-player\.wasm/)
   assert.match(runtimeAssets, /rive\.wasm/)
   assert.match(viteConfig, /THIRD_PARTY_NOTICES\.md/)
   assert.match(viteConfig, /Access-Control-Allow-Origin/)
   assert.match(viteConfig, /Cross-Origin-Resource-Policy', 'cross-origin'/)
-  for (const runtime of ['@lottiefiles/dotlottie-web', '@rive-app/canvas', 'pixi.js', 'three']) {
+  for (const runtime of ['@lottiefiles/dotlottie-web', '@rive-app/canvas', 'three']) {
     assert.match(thirdPartyNotices, new RegExp(runtime.replaceAll('.', '\\.')))
   }
   assert.match(thirdPartyNotices, /Assets must be\s+created by the user, owned by the user, or supplied under terms/)

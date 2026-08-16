@@ -440,14 +440,14 @@ func TestManageArtifactAnimationProfileCreateContract(t *testing.T) {
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
 
-	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "motion", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"generative_2d"}}`})
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "motion", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"motion_ui"}}`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "generative_2d" || authority.created.AnimationProfile.RuntimePackage != "pixi.js" || authority.created.AnimationProfile.Budgets.NetworkAllowed || !strings.Contains(output, `"animation_profile"`) {
+	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "motion_ui" || authority.created.AnimationProfile.RuntimeKind != "native_css_waapi_svg" || authority.created.AnimationProfile.RuntimePackage != "" || authority.created.AnimationProfile.Budgets.NetworkAllowed || !strings.Contains(output, `"animation_profile"`) {
 		t.Fatalf("created=%#v output=%s", authority.created, output)
 	}
-	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "override", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"generative_2d","runtime_version":"latest"}}`}); err == nil || !strings.Contains(err.Error(), "must contain only profile") {
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "override", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"motion_ui","runtime_version":"latest"}}`}); err == nil || !strings.Contains(err.Error(), "must contain only profile") {
 		t.Fatalf("animation override error = %v", err)
 	}
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "unknown", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"unknown"}}`}); err == nil || !strings.Contains(err.Error(), "unknown") {

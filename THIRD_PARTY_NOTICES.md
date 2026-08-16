@@ -10,7 +10,6 @@ This notice covers the animation runtimes copied into Swarm's Desktop release.
 | --- | ---: | --- | --- |
 | `@lottiefiles/dotlottie-web` | 0.79.0 | MIT | https://github.com/LottieFiles/dotlottie-web |
 | `@rive-app/canvas` | 2.39.2 | MIT | https://github.com/rive-app/rive-wasm |
-| `pixi.js` | 8.19.0 | MIT | https://github.com/pixijs/pixijs |
 | `three` | 0.185.1 | MIT | https://github.com/mrdoob/three.js |
 
 The package licenses permit commercial use, modification, and redistribution.
@@ -24,7 +23,7 @@ intended commercial use and redistribution. In particular, Rive runtime export
 is an authoring-service feature with its own plan terms, and LottieFiles
 marketplace/service assets have licenses separate from the MIT player runtime.
 
-Rive, LottieFiles, PixiJS, Three.js, and related names and logos may be
+Rive, LottieFiles, Three.js, and related names and logos may be
 trademarks. Their licenses do not grant endorsement or branding rights.
 
 ## MIT-licensed software
@@ -37,11 +36,6 @@ reviewed runtime files:
 - ThorVG: Copyright (c) 2020-2026 ThorVG Project
 - Rive WebAssembly/JavaScript runtime: Copyright (c) 2020-2021 Rive
 - Rive C++ runtime: Copyright (c) 2020 Rive
-- PixiJS: Copyright (c) 2013-2023 Mathew Groves, Chad Engler
-- EventEmitter3: Copyright (c) 2014 Arnout Kazemier
-- Colord: Copyright (c) 2020 Vlad Shilov
-- isMobile: Copyright (c) 2019 Kai Mallea
-- parse-svg-path: Copyright (c) 2013 Jake Rosoman
 - Three.js: Copyright (c) 2010-2026 Three.js authors
 - Yoga: Copyright (c) Meta Platforms, Inc. and affiliates
 - Luau: Copyright (c) 2019-2025 Roblox Corporation; Copyright (c) 1994-2019 Lua.org, PUC-Rio
@@ -281,7 +275,6 @@ THE FONT SOFTWARE OR FROM OTHER DEALINGS IN THE FONT SOFTWARE.
 - https://github.com/thorvg/thorvg/blob/main/LICENSE
 - https://github.com/rive-app/rive-wasm/blob/master/LICENSE
 - https://github.com/rive-app/rive-runtime/blob/main/LICENSE
-- https://github.com/pixijs/pixijs/blob/dev/LICENSE
 - https://github.com/mrdoob/three.js/blob/dev/LICENSE
 - https://github.com/harfbuzz/harfbuzz/blob/main/COPYING
 - https://github.com/Tehreer/SheenBidi/blob/v2.6/LICENSE

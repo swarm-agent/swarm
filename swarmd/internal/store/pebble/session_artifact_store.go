@@ -841,11 +841,6 @@ func validateArtifactAnimationProfile(profile *SessionArtifactAnimationProfile) 
 		if profile.RuntimeKind != "native_css_waapi_svg" || profile.RuntimePackage != "" || profile.Heavy || profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
 			return errors.New("artifact animation profile runtime does not match profile")
 		}
-	case "generative_2d":
-		expectedBudgets = canonicalArtifactAnimationBudgets(2, 1, 2, 4_194_304, 5_000, 500)
-		if profile.RuntimeKind != "canvas_2d_pixi" || profile.RuntimePackage != "pixi.js" || profile.RuntimeVersion != "8.19.0" || profile.Heavy || profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
-			return errors.New("artifact animation profile runtime does not match profile")
-		}
 	case "spatial_3d":
 		expectedBudgets = canonicalArtifactAnimationBudgets(1, 1, 1.5, 2_073_600, 2_000, 200)
 		if profile.RuntimeKind != "three_webgl" || profile.RuntimePackage != "three" || profile.RuntimeVersion != "0.185.1" || !profile.Heavy || profile.ImportedPlaybackOnly || profile.EditableSourceRequired {

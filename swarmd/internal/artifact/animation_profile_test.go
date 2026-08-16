@@ -7,7 +7,7 @@ import (
 )
 
 func TestResolveAnimationProfilesClosedRegistry(t *testing.T) {
-	expected := []string{"motion_ui", "generative_2d", "spatial_3d", "vector_playback", "final_render"}
+	expected := []string{"motion_ui", "spatial_3d", "vector_playback", "final_render"}
 	for _, id := range expected {
 		resolved, err := ResolveAnimationProfile(&AnimationProfileInput{Profile: id})
 		if err != nil {
@@ -18,10 +18,6 @@ func TestResolveAnimationProfilesClosedRegistry(t *testing.T) {
 		}
 	}
 
-	pixi, _ := ResolveAnimationProfile(&AnimationProfileInput{Profile: "generative_2d"})
-	if pixi.RuntimePackage != "pixi.js" || pixi.RuntimeVersion != "8.19.0" {
-		t.Fatalf("unexpected Pixi runtime: %+v", pixi)
-	}
 	three, _ := ResolveAnimationProfile(&AnimationProfileInput{Profile: "spatial_3d"})
 	if three.RuntimePackage != "three" || three.RuntimeVersion != "0.185.1" || !three.Heavy {
 		t.Fatalf("unexpected Three runtime: %+v", three)
@@ -40,7 +36,7 @@ func TestParseAnimationProfileRejectsOverridesAndUnknowns(t *testing.T) {
 	cases := []map[string]any{
 		{},
 		{"profile": "unknown"},
-		{"profile": "generative_2d", "runtime": "evil"},
+		{"profile": "motion_ui", "runtime": "evil"},
 		{"profile": "motion_ui", "packages": []any{"https://cdn.example/x.js"}},
 		{"profile": "spatial_3d", "network_allowed": true},
 	}
@@ -61,7 +57,7 @@ func TestAnimationProfileToolSchemaIsStrict(t *testing.T) {
 	}
 	properties := schema["properties"].(map[string]any)
 	profile := properties["profile"].(map[string]any)
-	if !reflect.DeepEqual(profile["enum"], []string{"motion_ui", "generative_2d", "spatial_3d", "vector_playback", "final_render"}) {
+	if !reflect.DeepEqual(profile["enum"], []string{"motion_ui", "spatial_3d", "vector_playback", "final_render"}) {
 		t.Fatalf("unexpected enum: %#v", profile["enum"])
 	}
 	if strings.Contains(strings.ToLower(schema["description"].(string)), "cdn") {

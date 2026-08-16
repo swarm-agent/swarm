@@ -137,11 +137,11 @@ func TestServeDesktopAnimationRuntimePermitsOnlySandboxedLocalRuntimeFetch(t *te
 	if err := os.MkdirAll(filepath.Join(dir, "swarm-animation-runtime"), 0o755); err != nil {
 		t.Fatalf("mkdir runtime: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "swarm-animation-runtime", "pixi.mjs"), []byte("export const VERSION = '8.19.0'"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "swarm-animation-runtime", "three.module.js"), []byte("export const REVISION = '185'"), 0o644); err != nil {
 		t.Fatalf("write runtime: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/swarm-animation-runtime/pixi.mjs", nil)
+	req := httptest.NewRequest(http.MethodGet, "/swarm-animation-runtime/three.module.js", nil)
 	rec := httptest.NewRecorder()
 	serveDesktopAsset(rec, req, dir, os.DirFS(dir), http.FileServer(http.Dir(dir)))
 
@@ -159,7 +159,7 @@ func TestServeDesktopAnimationRuntimePermitsOnlySandboxedLocalRuntimeFetch(t *te
 	if got := resp.Header.Get("Content-Type"); got != "text/javascript; charset=utf-8" {
 		t.Fatalf("Content-Type = %q, want text/javascript; charset=utf-8", got)
 	}
-	if isDesktopAnimationRuntime("assets/index.js") || isDesktopAnimationRuntime("swarm-animation-runtime/nested/pixi.mjs") || !isDesktopAnimationRuntime("swarm-animation-runtime/pixi.mjs") {
+	if isDesktopAnimationRuntime("assets/index.js") || isDesktopAnimationRuntime("swarm-animation-runtime/nested/three.module.js") || !isDesktopAnimationRuntime("swarm-animation-runtime/three.module.js") {
 		t.Fatal("animation runtime path allowlist is not exact")
 	}
 }

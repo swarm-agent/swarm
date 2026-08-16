@@ -19,12 +19,10 @@ function packageRoot(entrypoint: string, packageName: string): string {
 }
 
 function animationRuntimeAssets() {
-  const pixiRoot = packageRoot(packageRequire.resolve('pixi.js'), 'pixi.js')
   const threeRoot = packageRoot(packageRequire.resolve('three'), 'three')
   const dotLottieRoot = packageRoot(packageRequire.resolve('@lottiefiles/dotlottie-web'), '@lottiefiles/dotlottie-web')
   const riveRoot = packageRoot(packageRequire.resolve('@rive-app/canvas'), '@rive-app/canvas')
   return [
-    [path.join(pixiRoot, 'dist', 'pixi.mjs'), 'pixi.mjs'],
     [path.join(threeRoot, 'build', 'three.module.js'), 'three.module.js'],
     [path.join(threeRoot, 'build', 'three.core.js'), 'three.core.js'],
     [path.join(dotLottieRoot, 'dist', 'index.js'), 'dotlottie.js'],

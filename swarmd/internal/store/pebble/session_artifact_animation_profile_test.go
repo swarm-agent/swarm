@@ -4,11 +4,11 @@ import "testing"
 
 func validStoredAnimationProfile() *SessionArtifactAnimationProfile {
 	return &SessionArtifactAnimationProfile{
-		ProfileID: "generative_2d", RegistryVersion: "2026-08-16.v1", RuntimeKind: "canvas_2d_pixi",
-		RuntimePackage: "pixi.js", RuntimeVersion: "8.19.0",
+		ProfileID: "spatial_3d", RegistryVersion: "2026-08-16.v1", RuntimeKind: "three_webgl",
+		RuntimePackage: "three", RuntimeVersion: "0.185.1", Heavy: true,
 		Budgets: SessionArtifactAnimationBudgets{
-			MaxSimultaneousLivePreviews: 2, MaxWebGLContexts: 1, MaxDevicePixelRatio: 2,
-			MaxCanvasPixels: 4_194_304, MaxParticles: 5_000, MaxDrawCallsPerFrame: 500,
+			MaxSimultaneousLivePreviews: 1, MaxWebGLContexts: 1, MaxDevicePixelRatio: 1.5,
+			MaxCanvasPixels: 2_073_600, MaxParticles: 2_000, MaxDrawCallsPerFrame: 200,
 			PauseWhenOffscreen: true, StopWhenDocumentHidden: true,
 			ReducedMotionBehavior: "static_first_frame", NetworkAllowed: false,
 		},
@@ -20,11 +20,31 @@ func TestValidateArtifactAnimationProfileRejectsUnsafeSnapshots(t *testing.T) {
 		t.Fatalf("valid snapshot rejected: %v", err)
 	}
 	cases := []*SessionArtifactAnimationProfile{
-		func() *SessionArtifactAnimationProfile { p := validStoredAnimationProfile(); p.RuntimeVersion = "latest"; return p }(),
-		func() *SessionArtifactAnimationProfile { p := validStoredAnimationProfile(); p.RuntimePackage = "https://cdn.example/pixi.js"; return p }(),
-		func() *SessionArtifactAnimationProfile { p := validStoredAnimationProfile(); p.Budgets.NetworkAllowed = true; return p }(),
-		func() *SessionArtifactAnimationProfile { p := validStoredAnimationProfile(); p.Budgets.MaxWebGLContexts = 2; return p }(),
-		func() *SessionArtifactAnimationProfile { p := validStoredAnimationProfile(); p.ProfileID = "custom"; return p }(),
+		func() *SessionArtifactAnimationProfile {
+			p := validStoredAnimationProfile()
+			p.RuntimeVersion = "latest"
+			return p
+		}(),
+		func() *SessionArtifactAnimationProfile {
+			p := validStoredAnimationProfile()
+			p.RuntimePackage = "https://cdn.example/three.js"
+			return p
+		}(),
+		func() *SessionArtifactAnimationProfile {
+			p := validStoredAnimationProfile()
+			p.Budgets.NetworkAllowed = true
+			return p
+		}(),
+		func() *SessionArtifactAnimationProfile {
+			p := validStoredAnimationProfile()
+			p.Budgets.MaxWebGLContexts = 2
+			return p
+		}(),
+		func() *SessionArtifactAnimationProfile {
+			p := validStoredAnimationProfile()
+			p.ProfileID = "custom"
+			return p
+		}(),
 	}
 	for _, profile := range cases {
 		if err := validateArtifactAnimationProfile(profile); err == nil {

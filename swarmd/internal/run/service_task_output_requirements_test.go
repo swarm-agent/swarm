@@ -226,28 +226,28 @@ func TestTaskOutputRequirementsRejectNonDesigner(t *testing.T) {
 }
 
 func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
-	regular, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "animate", "subagent_type": "designer", "meta_prompt": "create motion", "animation_profile": map[string]any{"profile": "generative_2d"}}))
+	regular, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "animate", "subagent_type": "designer", "meta_prompt": "create motion", "animation_profile": map[string]any{"profile": "spatial_3d"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertGenerative2DProfile(t, regular.Launches[0].AnimationProfile)
-	assertGenerative2DProfile(t, taskAnimationProfileFromAny(t, regular.SourceArguments["animation_profile"]))
+	assertSpatial3DProfile(t, regular.Launches[0].AnimationProfile)
+	assertSpatial3DProfile(t, taskAnimationProfileFromAny(t, regular.SourceArguments["animation_profile"]))
 
-	swarm, err := parseTaskCallArguments(mustJSON(t, map[string]any{"mode": "swarm", "prompt": "animate", "agent_type": "designer", "count": 2, "animation_profile": map[string]any{"profile": "generative_2d"}}))
+	swarm, err := parseTaskCallArguments(mustJSON(t, map[string]any{"mode": "swarm", "prompt": "animate", "agent_type": "designer", "count": 2, "animation_profile": map[string]any{"profile": "spatial_3d"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertGenerative2DProfile(t, swarm.Swarm.AnimationProfile)
+	assertSpatial3DProfile(t, swarm.Swarm.AnimationProfile)
 	request, err := buildTaskSwarmHydrationRequest(swarm, swarm.Launches)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertGenerative2DProfile(t, request.AnimationProfile)
+	assertSpatial3DProfile(t, request.AnimationProfile)
 	childPrompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Particles", Theme: "dense", Role: "motion designer", Deliverable: "animated preview"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"pixi.js", "8.19.0", "no CDN", "pause offscreen", "clean up", `<script type="module">`, "import * as PIXI from 'pixi.js'", `script src="pixi.js"`, "window.PIXI"} {
+	for _, expected := range []string{"three", "0.185.1", "no CDN", "pause offscreen", "clean up", `<script type="module">`, "bare specifier `three`"} {
 		if !strings.Contains(childPrompt, expected) {
 			t.Fatalf("animation child prompt missing %q: %s", expected, childPrompt)
 		}
@@ -263,7 +263,7 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 			"jobs": []any{map[string]any{
 				"id": "motion", "stage_id": "variants", "agent_type": "designer", "meta_prompt": "create",
 				"title": "Motion", "deliverable": "animation", "acceptance_criteria": []any{"ready"},
-				"dependency_evidence": "ready", "animation_profile": map[string]any{"profile": "generative_2d"},
+				"dependency_evidence": "ready", "animation_profile": map[string]any{"profile": "spatial_3d"},
 			}},
 		},
 	}))
@@ -274,16 +274,16 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertGenerative2DProfile(t, definition.Jobs[0].AnimationProfile)
-	assertGenerative2DProfile(t, program.Launches[0].AnimationProfile)
+	assertSpatial3DProfile(t, definition.Jobs[0].AnimationProfile)
+	assertSpatial3DProfile(t, program.Launches[0].AnimationProfile)
 
 	context := managedDesignerArtifactContext(pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: "account", UserID: "user"}, "call", regular.Launches[0], 1)
 	if context == nil {
 		t.Fatal("managed animation context missing")
 	}
-	assertGenerative2DProfile(t, context.AnimationProfile)
+	assertSpatial3DProfile(t, context.AnimationProfile)
 	delegated := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "motion", Prompt: "create", RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: context.AnimationProfile, ArtifactRunContext: context})
-	for _, expected := range []string{"pixi.js", "8.19.0", "animation_profile", "never CDN", "clean up", `<script type="module">`, "import * as PIXI from 'pixi.js'", `script src="pixi.js"`, "window.PIXI"} {
+	for _, expected := range []string{"three", "0.185.1", "animation_profile", "never CDN", "clean up", `<script type="module">`, "bare specifier `three`"} {
 		if !strings.Contains(delegated, expected) {
 			t.Fatalf("delegated animation prompt missing %q: %s", expected, delegated)
 		}
@@ -291,7 +291,7 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 }
 
 func TestTaskAnimationProfileSnapshotsAreImmutable(t *testing.T) {
-	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "generative_2d", RegistryVersion: "2026-08-16.v1", RuntimeKind: "canvas_2d_pixi", RuntimePackage: "pixi.js", RuntimeVersion: "8.19.0", Budgets: pebblestore.SessionArtifactAnimationBudgets{MaxSimultaneousLivePreviews: 2, MaxWebGLContexts: 1, MaxDevicePixelRatio: 2, MaxCanvasPixels: 4194304, MaxParticles: 5000, MaxDrawCallsPerFrame: 500, PauseWhenOffscreen: true, StopWhenDocumentHidden: true, ReducedMotionBehavior: "static_first_frame"}}
+	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "spatial_3d", RegistryVersion: "2026-08-16.v1", RuntimeKind: "three_webgl", RuntimePackage: "three", RuntimeVersion: "0.185.1", Heavy: true, Budgets: pebblestore.SessionArtifactAnimationBudgets{MaxSimultaneousLivePreviews: 1, MaxWebGLContexts: 1, MaxDevicePixelRatio: 1.5, MaxCanvasPixels: 2073600, MaxParticles: 2000, MaxDrawCallsPerFrame: 200, PauseWhenOffscreen: true, StopWhenDocumentHidden: true, ReducedMotionBehavior: "static_first_frame"}}
 	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: cloneTaskAnimationProfile(profile)}
 	manifest := taskLaunchManifest{Launches: []taskLaunchManifestRow{{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: cloneTaskAnimationProfile(profile), ProfileSnapshot: &pebblestore.AgentProfile{}, ResolvedTools: &taskLaunchResolvedToolSummary{AllowedTools: []string{"manage_artifact"}, DisabledTools: []string{"write", "edit"}}, DisabledTools: []string{"write", "edit"}}}}
 	digest, err := taskLaunchManifestDigest(manifest)
@@ -316,7 +316,7 @@ func TestTaskAnimationProfileRejectsUnsupportedAgentsAndOverrides(t *testing.T) 
 	for _, args := range []map[string]any{
 		{"prompt": "work", "subagent_type": "coder", "meta_prompt": "work", "animation_profile": map[string]any{"profile": "motion_ui"}},
 		{"mode": "swarm", "prompt": "images", "agent_type": "image", "count": 1, "animation_profile": map[string]any{"profile": "motion_ui"}},
-		{"prompt": "animate", "subagent_type": "designer", "meta_prompt": "work", "animation_profile": map[string]any{"profile": "generative_2d", "runtime_version": "latest"}},
+		{"prompt": "animate", "subagent_type": "designer", "meta_prompt": "work", "animation_profile": map[string]any{"profile": "spatial_3d", "runtime_version": "latest"}},
 	} {
 		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil {
 			t.Fatalf("expected animation profile rejection for %#v", args)
@@ -333,9 +333,9 @@ func taskAnimationProfileFromAny(t *testing.T, value any) *pebblestore.SessionAr
 	return profile
 }
 
-func assertGenerative2DProfile(t *testing.T, profile *pebblestore.SessionArtifactAnimationProfile) {
+func assertSpatial3DProfile(t *testing.T, profile *pebblestore.SessionArtifactAnimationProfile) {
 	t.Helper()
-	if profile == nil || profile.ProfileID != "generative_2d" || profile.RuntimePackage != "pixi.js" || profile.RuntimeVersion != "8.19.0" || profile.Budgets.NetworkAllowed || !profile.Budgets.PauseWhenOffscreen {
+	if profile == nil || profile.ProfileID != "spatial_3d" || profile.RuntimePackage != "three" || profile.RuntimeVersion != "0.185.1" || !profile.Heavy || profile.Budgets.NetworkAllowed || !profile.Budgets.PauseWhenOffscreen {
 		t.Fatalf("animation profile = %#v", profile)
 	}
 }

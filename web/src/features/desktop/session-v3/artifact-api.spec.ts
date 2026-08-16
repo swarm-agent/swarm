@@ -43,18 +43,19 @@ const managedCatalogWire = {
   updated_at: 100,
   event_seq: 42,
   animation_profile: {
-    profile_id: 'generative_2d',
+    profile_id: 'spatial_3d',
     registry_version: '2026-08-16.v1',
-    runtime_kind: 'canvas_2d_pixi',
-    runtime_package: 'pixi.js',
-    runtime_version: '8.19.0',
+    runtime_kind: 'three_webgl',
+    runtime_package: 'three',
+    runtime_version: '0.185.1',
+    heavy: true,
     budgets: {
-      max_simultaneous_live_previews: 2,
+      max_simultaneous_live_previews: 1,
       max_webgl_contexts: 1,
-      max_device_pixel_ratio: 2,
-      max_canvas_pixels: 4194304,
-      max_particles: 5000,
-      max_draw_calls_per_frame: 500,
+      max_device_pixel_ratio: 1.5,
+      max_canvas_pixels: 2073600,
+      max_particles: 2000,
+      max_draw_calls_per_frame: 200,
       pause_when_offscreen: true,
       stop_when_document_hidden: true,
       reduced_motion_behavior: 'static_first_frame',
@@ -115,10 +116,10 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
       resolutionSource: 'preset', registryVersion: '2026-08-01',
     },
     animationProfile: {
-      profileId: 'generative_2d', registryVersion: '2026-08-16.v1', runtimeKind: 'canvas_2d_pixi',
-      runtimePackage: 'pixi.js', runtimeVersion: '8.19.0', secondaryRuntimePackage: '', secondaryRuntimeVersion: '',
-      heavy: false, importedPlaybackOnly: false, editableSourceRequired: false,
-      budgets: { maxSimultaneousLivePreviews: 2, maxWebGLContexts: 1, maxDevicePixelRatio: 2, maxCanvasPixels: 4194304, maxParticles: 5000, maxDrawCallsPerFrame: 500, pauseWhenOffscreen: true, stopWhenDocumentHidden: true, reducedMotionBehavior: 'static_first_frame', networkAllowed: false },
+      profileId: 'spatial_3d', registryVersion: '2026-08-16.v1', runtimeKind: 'three_webgl',
+      runtimePackage: 'three', runtimeVersion: '0.185.1', secondaryRuntimePackage: '', secondaryRuntimeVersion: '',
+      heavy: true, importedPlaybackOnly: false, editableSourceRequired: false,
+      budgets: { maxSimultaneousLivePreviews: 1, maxWebGLContexts: 1, maxDevicePixelRatio: 1.5, maxCanvasPixels: 2073600, maxParticles: 2000, maxDrawCallsPerFrame: 200, pauseWhenOffscreen: true, stopWhenDocumentHidden: true, reducedMotionBehavior: 'static_first_frame', networkAllowed: false },
     },
     progress: { total: 3, staging: 1, ready: 1, failed: 1, unavailable: 0 },
     lineage: {
@@ -133,11 +134,11 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
 test('artifact animation profiles preserve only the exact server-owned runtime contract', () => {
   const profile = normalizeDesktopV3ArtifactAnimationProfile(managedCatalogWire.animation_profile)
   assert.ok(profile)
-  assert.equal(profile.profileId, 'generative_2d')
-  assert.equal(profile.runtimePackage, 'pixi.js')
-  assert.equal(profile.runtimeVersion, '8.19.0')
+  assert.equal(profile.profileId, 'spatial_3d')
+  assert.equal(profile.runtimePackage, 'three')
+  assert.equal(profile.runtimeVersion, '0.185.1')
   assert.equal(profile.budgets.networkAllowed, false)
-  assert.equal(formatDesktopV3ArtifactAnimationProfile(profile), 'PixiJS 2D')
+  assert.equal(formatDesktopV3ArtifactAnimationProfile(profile), 'Three.js 3D')
   assert.equal(normalizeDesktopV3ArtifactAnimationProfile({ ...managedCatalogWire.animation_profile, runtime_version: 'latest' }), null)
   assert.equal(normalizeDesktopV3ArtifactAnimationProfile({ ...managedCatalogWire.animation_profile, budgets: { ...managedCatalogWire.animation_profile.budgets, network_allowed: true } }), null)
   assert.equal(normalizeDesktopV3ArtifactAnimationProfile({ ...managedCatalogWire.animation_profile, budgets: { ...managedCatalogWire.animation_profile.budgets, max_simultaneous_live_previews: 0 } }), null)

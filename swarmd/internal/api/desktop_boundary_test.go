@@ -216,7 +216,7 @@ func TestDesktopBoundaryAllowsOnlyExactOpaqueAnimationRuntimeImports(t *testing.
 		return req
 	}
 
-	admitted := request("/swarm-animation-runtime/pixi.mjs")
+	admitted := request("/swarm-animation-runtime/three.module.js")
 	if !shouldAdmitOpaqueDesktopAnimationRuntime(admitted) {
 		t.Fatal("exact opaque animation runtime import was not admitted")
 	}
@@ -228,11 +228,11 @@ func TestDesktopBoundaryAllowsOnlyExactOpaqueAnimationRuntimeImports(t *testing.
 
 	cases := map[string]*http.Request{
 		"other asset":       request("/assets/index.js"),
-		"nested runtime":    request("/swarm-animation-runtime/nested/pixi.mjs"),
-		"wrong origin":      request("/swarm-animation-runtime/pixi.mjs"),
-		"wrong referer":     request("/swarm-animation-runtime/pixi.mjs"),
-		"wrong destination": request("/swarm-animation-runtime/pixi.mjs"),
-		"remote source":     request("/swarm-animation-runtime/pixi.mjs"),
+		"nested runtime":    request("/swarm-animation-runtime/nested/three.module.js"),
+		"wrong origin":      request("/swarm-animation-runtime/three.module.js"),
+		"wrong referer":     request("/swarm-animation-runtime/three.module.js"),
+		"wrong destination": request("/swarm-animation-runtime/three.module.js"),
+		"remote source":     request("/swarm-animation-runtime/three.module.js"),
 	}
 	cases["wrong origin"].Header.Set("Origin", "http://attacker.example")
 	cases["wrong referer"].Header.Set("Referer", "http://attacker.example/")

@@ -16,7 +16,7 @@ export interface DesktopV3ArtifactOutputRequirements {
   registryVersion: string
 }
 
-export type DesktopV3ArtifactAnimationProfileID = 'motion_ui' | 'generative_2d' | 'spatial_3d' | 'vector_playback' | 'final_render'
+export type DesktopV3ArtifactAnimationProfileID = 'motion_ui' | 'spatial_3d' | 'vector_playback' | 'final_render'
 
 export interface DesktopV3ArtifactAnimationBudgets {
   maxSimultaneousLivePreviews: number
@@ -210,7 +210,6 @@ const desktopV3ArtifactAnimationRuntimeContract: Record<DesktopV3ArtifactAnimati
   editableSourceRequired: boolean
 }> = {
   motion_ui: { runtimeKind: 'native_css_waapi_svg', runtimePackage: '', runtimeVersion: '', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: false, importedPlaybackOnly: false, editableSourceRequired: false },
-  generative_2d: { runtimeKind: 'canvas_2d_pixi', runtimePackage: 'pixi.js', runtimeVersion: '8.19.0', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: false, importedPlaybackOnly: false, editableSourceRequired: false },
   spatial_3d: { runtimeKind: 'three_webgl', runtimePackage: 'three', runtimeVersion: '0.185.1', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: true, importedPlaybackOnly: false, editableSourceRequired: false },
   vector_playback: { runtimeKind: 'imported_vector_playback', runtimePackage: '@lottiefiles/dotlottie-web', runtimeVersion: '0.79.0', secondaryRuntimePackage: '@rive-app/canvas', secondaryRuntimeVersion: '2.39.2', heavy: false, importedPlaybackOnly: true, editableSourceRequired: false },
   final_render: { runtimeKind: 'mp4_playback', runtimePackage: '', runtimeVersion: '', secondaryRuntimePackage: '', secondaryRuntimeVersion: '', heavy: false, importedPlaybackOnly: false, editableSourceRequired: true },
@@ -253,7 +252,7 @@ export function normalizeDesktopV3ArtifactAnimationProfile(value: unknown): Desk
 
 export function formatDesktopV3ArtifactAnimationProfile(profile?: DesktopV3ArtifactAnimationProfile | null): string {
   if (!profile) return ''
-  return ({ motion_ui: 'CSS / WAAPI', generative_2d: 'PixiJS 2D', spatial_3d: 'Three.js 3D', vector_playback: 'Vector playback', final_render: 'MP4 playback' } satisfies Record<DesktopV3ArtifactAnimationProfileID, string>)[profile.profileId]
+  return ({ motion_ui: 'CSS / WAAPI', spatial_3d: 'Three.js 3D', vector_playback: 'Vector playback', final_render: 'MP4 playback' } satisfies Record<DesktopV3ArtifactAnimationProfileID, string>)[profile.profileId]
 }
 
 function artifactOutputPresetLabel(presetId: string): string {

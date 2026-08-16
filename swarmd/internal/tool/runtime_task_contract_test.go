@@ -97,7 +97,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 		}
 	}
 	animationProfile, ok := properties["animation_profile"].(map[string]any)
-	if !ok || !containsInAny(animationProfile, "generative_2d") {
+	if !ok || !containsInAny(animationProfile, "spatial_3d") {
 		t.Fatalf("task animation_profile schema does not expose the closed profile registry: %#v", properties["animation_profile"])
 	}
 	program, ok := properties["program"].(map[string]any)

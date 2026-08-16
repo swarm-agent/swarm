@@ -43,13 +43,13 @@ func TestSessionV3ArtifactRequiresBundleOnlyForPackages(t *testing.T) {
 }
 
 func TestSessionsV3ArtifactCatalogItemPreservesAnimationProfile(t *testing.T) {
-	profile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "generative_2d"})
+	profile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "motion_ui"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cloned := cloneSessionsV3ArtifactAnimationProfile(profile)
 	profile.ProfileID = "mutated"
-	if cloned == nil || cloned.ProfileID != "generative_2d" || cloned.RuntimePackage != "pixi.js" || cloned.Budgets.NetworkAllowed {
+	if cloned == nil || cloned.ProfileID != "motion_ui" || cloned.RuntimeKind != "native_css_waapi_svg" || cloned.RuntimePackage != "" || cloned.Budgets.NetworkAllowed {
 		t.Fatalf("cloned animation profile = %#v", cloned)
 	}
 	item := sessionsV3ArtifactCatalogItem{AnimationProfile: cloned}
