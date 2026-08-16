@@ -33,6 +33,10 @@ type desktopAdmission struct {
 
 func (s *Server) withDesktopBoundary(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if shouldAdmitOpaqueDesktopAnimationRuntime(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		admission, err := s.admitDesktopRequest(r)
 		if err != nil {
 			if errors.Is(err, errTailscaleDesktopOriginNotApproved) && shouldAllowPendingTailscaleDesktopRequest(r) {
@@ -218,6 +222,32 @@ func exactSingleHeaderValue(header http.Header, name, expected string) bool {
 func nonEmptySingleHeader(header http.Header, name string) bool {
 	values := header.Values(name)
 	return len(values) == 1 && strings.TrimSpace(values[0]) != ""
+}
+
+func shouldAdmitOpaqueDesktopAnimationRuntime(r *http.Request) bool {
+	if r == nil || !shouldServeDesktopAsset(r) || !isDesktopAnimationRuntime(r.URL.Path) || strings.TrimSpace(r.Header.Get("Origin")) != "null" {
+		return false
+	}
+	rawAuthority := requestHost(r)
+	if !forwardedHostMatchesRequestAuthority(r, rawAuthority) {
+		return false
+	}
+	host, err := normalizeRequestAuthority(rawAuthority)
+	if err != nil || !isCanonicalLocalDesktopHost(host) || !isLocalDesktopBrowserRequest(r) {
+		return false
+	}
+	referer := strings.TrimSpace(r.Header.Get("Referer"))
+	parsed, err := url.Parse(referer)
+	if err != nil || parsed == nil || parsed.Opaque != "" || parsed.User != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	refererOrigin, err := normalizeAbsoluteOrigin(parsed)
+	if err != nil || refererOrigin != localDesktopRequestOrigin(r, host) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")), "script") &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Mode")), "cors") &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site")
 }
 
 func browserHeadersMatchAdmittedOrigin(r *http.Request, admittedOrigin string) bool {

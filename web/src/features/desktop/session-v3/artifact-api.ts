@@ -787,7 +787,7 @@ export function buildDesktopV3ArtifactSandboxDocument(
     return script
   })
   document.head.prepend(policy, base, runtimeConfig, importMap, ...scripts)
-  for (const script of document.querySelectorAll('script:not([nonce])')) script.setAttribute('nonce', scriptNonce)
+  for (const script of document.querySelectorAll('script')) script.setAttribute('nonce', scriptNonce)
   return `<!doctype html>\n${document.documentElement.outerHTML}`
 }
 

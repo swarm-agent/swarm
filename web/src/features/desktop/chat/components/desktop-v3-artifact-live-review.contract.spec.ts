@@ -55,6 +55,8 @@ test('animation previews use immutable local runtimes and keep network access di
   assert.match(artifactAPI, /Animation runtime assets must use the reviewed local runtime path/)
   assert.match(artifactAPI, /Animation runtime assets must be same-install URLs/)
   assert.match(artifactAPI, /Secure animation preview nonce generation is unavailable/)
+  assert.match(artifactAPI, /querySelectorAll\('script'\).*script\.setAttribute\('nonce', scriptNonce\)/)
+  assert.doesNotMatch(artifactAPI, /querySelectorAll\('script:not\(\[nonce\]\)'\)/)
   assert.match(runtimeAssets, /swarm-animation-runtime/)
   assert.match(runtimeAssets, /pixi\.mjs/)
   assert.match(runtimeAssets, /three\.module\.js/)
