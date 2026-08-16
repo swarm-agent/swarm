@@ -4476,11 +4476,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.IterationID == launch.ArtifactRunContext.IterationID &&
 				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex
 			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) {
-				if outcome.ArtifactReference.Status == "" || outcome.ArtifactReference.Status == pebblestore.SessionArtifactStatusStaging {
-					outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
-				}
-				if outcome.ArtifactReference.FailureCode == "" {
-					outcome.ArtifactReference.FailureCode = "managed_output_invalid"
+				if variant.Status == pebblestore.SessionArtifactStatusStaging {
+					markMissing("managed_output_invalid")
+				} else {
+					if outcome.ArtifactReference.Status == "" {
+						outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
+					}
+					if outcome.ArtifactReference.FailureCode == "" {
+						outcome.ArtifactReference.FailureCode = "managed_output_invalid"
+					}
 				}
 				return outcome, fmt.Errorf("managed Designer artifact %q is %q or has invalid trusted lineage; want ready at collection %q", variant.ID, variant.Status, launch.ArtifactRunContext.CollectionID)
 			}

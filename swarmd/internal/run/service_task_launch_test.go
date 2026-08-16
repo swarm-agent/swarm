@@ -405,6 +405,10 @@ func TestManagedDesignerMissingOutputProjectsFailedVariant(t *testing.T) {
 	}
 	run := managedDesignerArtifactContext(parent, "call-failed", spec, 1)
 	run.ChildSessionID = "child-failed"
+	launch := taskLaunchPrepared{LaunchIndex: 1, ChildSession: pebblestore.SessionSnapshot{ID: run.ChildSessionID}, ArtifactRunContext: run}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, []taskLaunchPrepared{launch}, nil); err != nil {
+		t.Fatalf("project managed placeholder: %v", err)
+	}
 	svc.markManagedDesignerArtifactFailed(parent, run, run.ChildSessionID, "managed_output_missing")
 	variant, ok, err := svc.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, run.CollectionID, run.VariantID)
 	if err != nil || !ok {

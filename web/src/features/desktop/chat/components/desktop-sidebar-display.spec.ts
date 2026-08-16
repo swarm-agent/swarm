@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY,
+  desktopV3ActiveSessionSidebarView,
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
   normalizeDesktopSidebarDisplayMode,
@@ -23,6 +24,13 @@ test("responsive sidebar mode downgrades without changing the preference", () =>
   assert.equal(preferred, "full");
   assert.equal(effectiveDesktopSidebarDisplayMode("compact", 1440), "compact");
   assert.equal(effectiveDesktopSidebarDisplayMode("thin", 1440), "thin");
+});
+
+test("artifact generation does not lock the user out of the plan sidebar", () => {
+  assert.equal(desktopV3ActiveSessionSidebarView({ selected: "plan", hasPlan: true, hasArtifacts: true }), "plan");
+  assert.equal(desktopV3ActiveSessionSidebarView({ selected: "artifacts", hasPlan: true, hasArtifacts: true }), "artifacts");
+  assert.equal(desktopV3ActiveSessionSidebarView({ selected: "plan", hasPlan: false, hasArtifacts: true }), "artifacts");
+  assert.equal(desktopV3ActiveSessionSidebarView({ selected: "artifacts", hasPlan: true, hasArtifacts: false }), "plan");
 });
 
 test("sidebar display mode removes a legacy client-local preference and defaults to full", () => {

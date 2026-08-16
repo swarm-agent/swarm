@@ -169,14 +169,16 @@ import {
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
-import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView, type DesktopV3SessionSidebarView } from "./desktop-v3-artifact-sidebar";
+import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from "./desktop-v3-artifact-sidebar";
 import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
+  desktopV3ActiveSessionSidebarView,
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
   type DesktopSidebarDisplayMode,
+  type DesktopV3SessionSidebarView,
 } from "./desktop-sidebar-display";
 
 const PLAN_SIDEBAR_MEDIA_QUERY = "(min-width: 1300px)";
@@ -2070,11 +2072,11 @@ export function DesktopV3ExistingConversationPane({
     priorSessionArtifactCountRef.current = sessionArtifacts.length;
     priorSessionHasPlanRef.current = showPlanSidebar;
   }, [hasPendingVisualSwarm, normalizedSessionId, pendingPlanDocument, sessionArtifacts.length, showPlanSidebar]);
-  const activeSidebarView = pendingPlanDocument && !hasPendingVisualSwarm
-    ? "plan"
-    : hasSessionArtifacts && (!showPlanSidebar || sidebarView === "artifacts" || hasPendingVisualSwarm)
-      ? "artifacts"
-      : "plan";
+  const activeSidebarView = desktopV3ActiveSessionSidebarView({
+    selected: sidebarView,
+    hasPlan: showPlanSidebar,
+    hasArtifacts: hasSessionArtifacts,
+  });
   const artifactViewerLocation = useMemo(
     () => desktopV3ArtifactViewerLocation(normalizedSessionId, artifactRouteSearch),
     [
@@ -3249,7 +3251,7 @@ export function DesktopV3ExistingConversationPane({
             data-session-sidebar-column
             data-plan-sidebar-column={showPlanSidebar ? true : undefined}
           >
-            {showPlanSidebar && hasSessionArtifacts && !pendingPlanDocument ? (
+            {showPlanSidebar && hasSessionArtifacts ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan sidebar" title="Plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? "Plan" : null}</button>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifacts.length}` : null}</button>

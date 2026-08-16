@@ -10,10 +10,8 @@ import {
   type DesktopV3ArtifactCatalogEntry,
   type DesktopV3ArtifactCollectionProgress,
 } from '../../session-v3/artifact-api'
-import type { DesktopSidebarDisplayMode } from './desktop-sidebar-display'
+import type { DesktopSidebarDisplayMode, DesktopV3SessionSidebarView } from './desktop-sidebar-display'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
-
-export type DesktopV3SessionSidebarView = 'plan' | 'artifacts'
 
 export function desktopV3ArtifactsForSession(
   artifacts: readonly DesktopV3ArtifactCatalogEntry[],

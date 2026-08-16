@@ -43,6 +43,8 @@ test('session sidebar and final handoff galleries feed the active existing compo
   assert.match(pane, /setArtifactComposerFocusSignal\(\(current\) => current \+ 1\)/)
   assert.match(pane, /focusSignal=\{composerFocusSignal \+ artifactComposerFocusSignal\}/)
   assert.match(pane, /onSelectionPersisted=\{refreshSessionArtifacts\}/)
+  assert.match(pane, /showPlanSidebar && hasSessionArtifacts \? \(/)
+  assert.doesNotMatch(pane, /showPlanSidebar && hasSessionArtifacts && !pendingPlanDocument \? \(/)
   assert.match(pane, /artifactCatalog=\{sessionArtifacts\}/)
   assert.match(pane, /entry\.artifactId === artifact\.artifactId/)
   assert.match(pane, /onAddToChat=\{\(artifacts\) => queueGalleryArtifactSelections/)

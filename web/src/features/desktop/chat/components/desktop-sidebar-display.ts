@@ -1,4 +1,13 @@
 export type DesktopSidebarDisplayMode = "full" | "compact" | "thin";
+export type DesktopV3SessionSidebarView = "plan" | "artifacts";
+
+export function desktopV3ActiveSessionSidebarView(input: {
+  selected: DesktopV3SessionSidebarView;
+  hasPlan: boolean;
+  hasArtifacts: boolean;
+}): DesktopV3SessionSidebarView {
+  return input.hasArtifacts && (!input.hasPlan || input.selected === "artifacts") ? "artifacts" : "plan";
+}
 
 export const DESKTOP_SIDEBAR_DISPLAY_STORAGE_KEY = "swarm.web.desktop.sidebar.display-mode";
 
