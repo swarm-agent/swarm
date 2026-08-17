@@ -473,7 +473,7 @@ func TestManagedDesignerPreparationRequiresTrustedDestination(t *testing.T) {
 
 func TestMasterHarnessDescribesManagedDesignerRouting(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
-	for _, want := range []string{"Managed is the default Designer output mode", "unique variant in one parent-owned artifact collection", "Managed Designer variants omit owned_scope", "explicit managed Designer wave", "omit owned_scope_template for the managed default"} {
+	for _, want := range []string{"Managed is the default Designer output mode", "unique variant in one parent-owned artifact collection", "Managed Designer variants omit owned_scope", "explicit managed Designer wave", "Designer Iteration Swarms are managed-artifact only", "do not use swarm mode; use regular Designer launches"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master harness missing managed Designer guidance %q", want)
 		}

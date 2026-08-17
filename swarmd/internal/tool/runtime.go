@@ -1352,7 +1352,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder and Designer swarms launch Router-hydrated workers. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder swarms launch Router-hydrated workers. Designer swarms launch Router-hydrated workers into managed parent-owned artifacts only; repository Designer work uses regular launches. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1381,8 +1381,7 @@ func (r *Runtime) Definitions() []Definition {
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
 					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed image reference for direct image swarm remixing. The trusted generation boundary resolves its authenticated bounded bytes; Router receives text only."},
-					"output_mode":          map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer and image output contract. Image is always managed. Designer defaults to managed; workspace Designer swarms require one non-overlapping owned_scope_template. Managed launches never supply destination IDs."},
-					"owned_scope_template": map[string]any{"type": "string", "description": "Workspace-mode Iteration Swarm target containing exactly one {index}. Required only for output_mode=workspace Designer swarms; forbidden for managed Designer/image swarms and omitted for Idea swarms."},
+					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"description": map[string]any{
 						"type":        "string",
 						"description": "Short overall task label shown in UI.",

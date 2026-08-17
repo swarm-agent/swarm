@@ -3905,7 +3905,7 @@ function DesktopV3StructuredFinalHandoff({
     ));
     if (exactCatalogEntry) return [exactCatalogEntry];
     if (isManagedArtifact && (!artifact.sessionId || !artifact.collectionId || !artifact.eventSeq)) return [];
-    return [{
+    const fallbackArtifact: DesktopV3ArtifactGalleryEntry = {
       ...artifact,
       sourceRef: artifact.sourceRef || "",
       sessionId: artifact.sessionId || item.message.session_id,
@@ -3925,7 +3925,8 @@ function DesktopV3StructuredFinalHandoff({
       category: artifact.category || (artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") || artifact.mediaType.startsWith("video/") || artifact.kind === "video" ? "visual" : "document"),
       status: "ready",
       updatedAt: 0,
-    }];
+    };
+    return [fallbackArtifact];
   });
   return (
     <div className="flex w-full min-w-0 justify-start py-1" data-testid="desktop-v3-plan-final-handoff">
@@ -3979,8 +3980,9 @@ function DesktopV3StructuredFinalHandoff({
                 : "";
               const href = videoSourceHref || artifactHref?.(artifact);
               if (!href) return null;
+              const catalogedArtifact = artifactCatalog.some((entry) => desktopV3ArtifactCatalogEntryKey(entry) === desktopV3ArtifactCatalogEntryKey(artifact));
               const openArtifact = (event: ReactMouseEvent<HTMLAnchorElement>) => {
-                if (videoSourceHref || !onArtifactNavigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                if (videoSourceHref || !onArtifactNavigate || !catalogedArtifact || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
                 event.preventDefault();
                 onArtifactNavigate(artifact);
               };

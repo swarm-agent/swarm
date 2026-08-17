@@ -18,10 +18,10 @@ import (
 )
 
 func TestBackendArtifactCatalogRequiresAuthenticationAndHidesManagedStorage(t *testing.T) {
-	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "legacy.txt", "legacy")
+	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "workspace.txt", "workspace")
 	principal := testPrincipal()
 	authority := artifact.NewAuthority(registry, sessionSvc)
-	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "api-contract-create", CollectionID: "api-contract-collection", CollectionName: "Alternatives",
 		VariantID: "api-contract-variant", Filename: "design.txt", MediaType: "text/plain",
 		Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Selected design", Previewable: true}, Body: []byte("private bytes"),
@@ -67,10 +67,10 @@ func TestBackendArtifactCatalogRequiresAuthenticationAndHidesManagedStorage(t *t
 }
 
 func TestBackendArtifactSelectionEndpointEnforcesOwnershipAndExactReadyEvent(t *testing.T) {
-	server, sessionSvc, registry, _, _, _, _ := newLegacyArtifactImportFixture(t, "legacy.txt", "legacy")
+	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "workspace.txt", "workspace")
 	principal := testPrincipal()
 	authority := artifact.NewAuthority(registry, sessionSvc)
-	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "legacy-artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "selection-contract-create", CollectionID: "selection-contract-collection", CollectionName: "Alternatives",
 		VariantID: "selection-contract-variant", Filename: "design.txt", MediaType: "text/plain", Body: []byte("ready"),
 	})
@@ -101,23 +101,30 @@ func TestBackendArtifactSelectionEndpointEnforcesOwnershipAndExactReadyEvent(t *
 	}
 }
 
-func TestBackendLegacyPlanArtifactRemainsImportableAndViewable(t *testing.T) {
-	server, _, _, plan, checkpoint, _, descriptor := newLegacyArtifactImportFixture(t, "legacy-note.txt", "legacy handoff")
+func TestBackendWorkspacePlanArtifactIsDirectlyViewableWithoutManagedImport(t *testing.T) {
+	server, sessionSvc, _, plan, checkpoint, _, descriptor := newArtifactSessionFixture(t, "workspace-note.txt", "workspace handoff")
 	principal := testPrincipal()
-	collectionID, managedID := sessionsV3LegacyManagedArtifactIDs(plan.SessionID, plan.ID, checkpoint.ID, descriptor.ID)
-
-	resolved, found, err := server.resolveSessionV3Artifact(context.Background(), principal, plan.SessionID, managedID)
-	if err != nil || !found || resolved.Managed == nil || resolved.Managed.Status != pebblestore.SessionArtifactStatusReady || resolved.Managed.CollectionID != collectionID {
-		t.Fatalf("legacy resolve = found=%t resolved=%#v err=%v", found, resolved, err)
+	doc := &pebblestore.SessionPlanDocument{ID: plan.ID, Title: "Workspace handoff", Checkpoints: []pebblestore.SessionPlanCheckpoint{checkpoint}}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(plan.SessionID, plan.ID, doc.Title, "", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatal(err)
 	}
-	file, _, err := server.openManagedSessionV3Artifact(context.Background(), mustSession(t, server, plan.SessionID), resolved)
+
+	resolved, found, err := server.resolveSessionV3Artifact(context.Background(), principal, plan.SessionID, descriptor.ID)
+	if err != nil || !found || resolved.Managed != nil || resolved.Descriptor.ID != descriptor.ID {
+		t.Fatalf("workspace resolve = found=%t resolved=%#v err=%v", found, resolved, err)
+	}
+	file, _, err := server.openSessionV3Artifact(context.Background(), mustSession(t, server, plan.SessionID), resolved)
 	if err != nil {
 		t.Fatal(err)
 	}
 	content, readErr := io.ReadAll(file)
 	closeErr := file.Close()
-	if readErr != nil || closeErr != nil || string(content) != "legacy handoff" {
-		t.Fatalf("legacy managed bytes = %q read=%v close=%v", content, readErr, closeErr)
+	if readErr != nil || closeErr != nil || string(content) != "workspace handoff" {
+		t.Fatalf("workspace handoff bytes = %q read=%v close=%v", content, readErr, closeErr)
+	}
+	collections, err := sessionSvc.ListSessionArtifactCollections(principal.AccountScopeID, plan.SessionID, "", pebblestore.SessionArtifactMaxCollections)
+	if err != nil || len(collections) != 0 {
+		t.Fatalf("workspace handoff read created managed collections: count=%d err=%v", len(collections), err)
 	}
 }
 

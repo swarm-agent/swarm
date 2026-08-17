@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -123,7 +122,6 @@ type taskSwarmSpec struct {
 	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
 	IterationControls   *taskSwarmIterationControls
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
-	OwnedScopeTemplate  string
 	AssemblyParts       []taskSwarmAssemblyPart
 	IntegrationContract string
 }
@@ -862,7 +860,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	allowed := map[string]bool{
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
-		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "owned_scope_template": true, "assembly_parts": true,
+		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "assembly_parts": true,
 		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "launches": true,
 		// concurrency_reason is a regular-launch field. Accept and discard it here as a
 		// compatibility no-op so one misplaced advisory hint cannot abort a swarm wave.
@@ -954,8 +952,8 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if outputMode == "" {
 			outputMode = taskOutputModeManaged
 		}
-		if outputMode != taskOutputModeManaged && outputMode != taskOutputModeWorkspace {
-			return nil, nil, errors.New("task Designer swarm output_mode must be managed or workspace")
+		if outputMode != taskOutputModeManaged {
+			return nil, nil, errors.New("task Designer Iteration Swarm output_mode must be managed; use regular task launches for workspace repository output")
 		}
 	} else if agentType == "image" {
 		if outputMode != "" && outputMode != taskOutputModeManaged {
@@ -964,16 +962,6 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		outputMode = taskOutputModeManaged
 	} else if outputModeProvided {
 		return nil, nil, errors.New("task swarm output_mode is supported only for Designer or image")
-	}
-	ownedScopeTemplate := strings.TrimSpace(mapString(args, "owned_scope_template"))
-	if agentType == "designer" && outputMode == taskOutputModeWorkspace && ownedScopeTemplate == "" {
-		return nil, nil, errors.New("task workspace Designer swarm requires owned_scope_template with exactly one {index} placeholder")
-	}
-	if (agentType == "designer" && outputMode == taskOutputModeManaged || agentType == "image") && ownedScopeTemplate != "" {
-		return nil, nil, fmt.Errorf("task managed %s swarm must omit owned_scope_template", taskSwarmAgentLabel(agentType))
-	}
-	if ownedScopeTemplate != "" && strings.Count(ownedScopeTemplate, "{index}") != 1 {
-		return nil, nil, errors.New("task swarm owned_scope_template must contain exactly one {index} placeholder")
 	}
 	_, animationProfileProvided := args["animation_profile"]
 	if animationProfileProvided && agentType != "designer" {
@@ -1026,22 +1014,14 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
-	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || iterationControls != nil || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "" || outputRequirements != nil || animationProfile != nil) {
+	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || iterationControls != nil || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || outputRequirements != nil || animationProfile != nil) {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), OwnedScopeTemplate: ownedScopeTemplate}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact)}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
-		ownedScope := []string(nil)
-		if ownedScopeTemplate != "" {
-			target := strings.Replace(ownedScopeTemplate, "{index}", strconv.Itoa(index), 1)
-			if err := validateTaskSwarmOwnedScope(target); err != nil {
-				return nil, nil, fmt.Errorf("task swarm owned scope %d: %w", index, err)
-			}
-			ownedScope = []string{filepath.ToSlash(filepath.Clean(target))}
-		}
 		metaPrompt := prompt
 		if agentType != "idea" {
 			metaPrompt = fmt.Sprintf("Pending Router hydration for swarm item %d.", index)
@@ -1065,7 +1045,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
-			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OwnedScope: ownedScope, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
+			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
 			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
 			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
 			SourceArguments: sourceArguments,

@@ -13,7 +13,7 @@ import (
 )
 
 func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
-	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "fixture")
+	server, sessionSvc, _, _, _, _, _ := newArtifactSessionFixture(t, "note.txt", "fixture")
 	store := sessionSvc.Store()
 	videoProjectSvc := videoproject.NewService(store)
 	server.SetVideoProjectService(videoProjectSvc)
@@ -229,7 +229,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 }
 
 func TestSessionsV3PrimaryVideoProjectDiscovery(t *testing.T) {
-	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "fixture")
+	server, sessionSvc, _, _, _, _, _ := newArtifactSessionFixture(t, "note.txt", "fixture")
 	store := sessionSvc.Store()
 	server.SetVideoProjectService(videoproject.NewService(store))
 	principal := testPrincipal()
@@ -253,7 +253,7 @@ func TestSessionsV3PrimaryVideoProjectDiscovery(t *testing.T) {
 }
 
 func TestSessionsV3VideoProjectSecurityAndValidation(t *testing.T) {
-	server, sessionSvc, _, _, _, _, _ := newLegacyArtifactImportFixture(t, "note.txt", "fixture")
+	server, sessionSvc, _, _, _, _, _ := newArtifactSessionFixture(t, "note.txt", "fixture")
 	store := sessionSvc.Store()
 	videoProjectSvc := videoproject.NewService(store)
 	server.SetVideoProjectService(videoProjectSvc)

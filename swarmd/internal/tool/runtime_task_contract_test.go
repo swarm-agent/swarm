@@ -25,7 +25,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if _, ok := properties["allow_bash"]; ok {
 		t.Fatal("task schema must not expose launch-time allow_bash")
 	}
-	for _, key := range []string{"mode", "agent_type", "count", "themes", "groups", "output_contract", "owned_scope_template", "animation_profile"} {
+	for _, key := range []string{"mode", "agent_type", "count", "themes", "groups", "output_contract", "output_mode", "animation_profile"} {
 		if _, ok := properties[key]; !ok {
 			t.Fatalf("task schema missing swarm-mode field %q", key)
 		}
@@ -34,6 +34,12 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 		if !definitionTextContains(taskDefinition, want) {
 			t.Fatalf("task schema missing regular/swarm field boundary %q: %#v", want, taskDefinition)
 		}
+	}
+	if _, ok := properties["owned_scope_template"]; ok {
+		t.Fatal("task schema must not expose workspace target templates for Iteration Swarms")
+	}
+	if !definitionTextContains(taskDefinition, "Designer and image Iteration Swarms are always managed") || !definitionTextContains(taskDefinition, "Workspace is available only for regular Designer launches") {
+		t.Fatalf("task schema missing managed-only Designer Iteration Swarm contract: %#v", taskDefinition)
 	}
 	for _, key := range []string{"swarm_strategy", "assembly_parts", "integration_contract"} {
 		if _, ok := properties[key]; ok {

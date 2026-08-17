@@ -287,8 +287,8 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 			if request.AnimationProfile != nil && request.AgentType != "designer" {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration launch %d cannot attach an animation profile to %s", i+1, request.AgentType)
 			}
-			if request.OutputMode == taskOutputModeWorkspace && len(launch.OwnedScope) == 0 {
-				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration workspace Designer launch %d requires an owned scope", i+1)
+			if request.SwarmStrategy == taskSwarmStrategyExplore && request.AgentType == "designer" && request.OutputMode != taskOutputModeManaged {
+				return taskSwarmHydrationRequest{}, fmt.Errorf("task Designer Iteration Swarm launch %d must use managed output", i+1)
 			}
 			if request.OutputMode == taskOutputModeManaged && len(launch.OwnedScope) != 0 {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration managed Designer launch %d must omit owned scope", i+1)

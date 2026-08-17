@@ -49,12 +49,12 @@ func TestBackendDesignerRegularAndIterationRoutingContract(t *testing.T) {
 			t.Fatalf("managed swarm launch %d = %#v", i, launch)
 		}
 	}
-	workspaceIteration, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+	_, err = parseTaskCallArguments(mustJSON(t, map[string]any{
 		"mode": "swarm", "description": "workspace iteration", "prompt": "create alternatives", "agent_type": "designer", "count": 2,
-		"output_mode": "workspace", "owned_scope_template": "web/src/variants/iteration-{index}.tsx",
+		"output_mode": "workspace",
 	}))
-	if err != nil || len(workspaceIteration.Launches) != 2 || workspaceIteration.Launches[0].OwnedScope[0] != "web/src/variants/iteration-1.tsx" || workspaceIteration.Launches[1].OwnedScope[0] != "web/src/variants/iteration-2.tsx" {
-		t.Fatalf("workspace swarm routing = %#v err=%v", workspaceIteration.Launches, err)
+	if err == nil || !strings.Contains(err.Error(), "regular task launches") {
+		t.Fatalf("workspace Designer Iteration Swarm error = %v", err)
 	}
 }
 

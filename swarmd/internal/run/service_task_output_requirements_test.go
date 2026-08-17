@@ -87,14 +87,11 @@ func TestTaskOutputRequirementsAllDesignerModes(t *testing.T) {
 		assertXHeaderRequirements(t, launch.OutputRequirements)
 		assertXHeaderRequirements(t, taskOutputRequirementsFromAny(t, launch.SourceArguments["output_requirements"]))
 	}
-	swarmWorkspace, err := parseTaskCallArguments(mustJSON(t, map[string]any{
-		"mode": "swarm", "prompt": "design", "agent_type": "designer", "count": 2, "output_mode": "workspace", "owned_scope_template": "design/variant-{index}.svg", "output_requirements": map[string]any{"preset": "twitter_header"},
+	_, err = parseTaskCallArguments(mustJSON(t, map[string]any{
+		"mode": "swarm", "prompt": "design", "agent_type": "designer", "count": 2, "output_mode": "workspace", "output_requirements": map[string]any{"preset": "twitter_header"},
 	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, launch := range swarmWorkspace.Launches {
-		assertXHeaderRequirements(t, launch.OutputRequirements)
+	if err == nil || !strings.Contains(err.Error(), "regular task launches") {
+		t.Fatalf("workspace Designer Iteration Swarm error = %v", err)
 	}
 
 	program, err := parseTaskCallArguments(mustJSON(t, map[string]any{
