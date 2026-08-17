@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func TestSourceMediaDirectoriesRemainOutsideWorkspaceScope(t *testing.T) {
@@ -63,6 +65,47 @@ func TestSourceMediaDirectoriesRemainOutsideWorkspaceScope(t *testing.T) {
 	}
 	if len(removed.SourceMediaDirectories) != 0 {
 		t.Fatalf("source media directories after remove = %v", removed.SourceMediaDirectories)
+	}
+}
+
+func TestSourceMediaDirectoriesSurviveStoreReopen(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "workspace.pebble")
+	workspacePath := filepath.Join(root, "workspace")
+	sourcePath := filepath.Join(root, "source")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := os.MkdirAll(sourcePath, 0o755); err != nil {
+		t.Fatalf("create source directory: %v", err)
+	}
+	store, err := pebblestore.Open(storePath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	principal := testPrincipal()
+	service := NewService(pebblestore.NewWorkspaceStore(store))
+	if _, err := service.AddForPrincipal(principal, workspacePath, "Workspace", "", false); err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	if _, err := service.AddSourceMediaDirectoryForPrincipal(principal, workspacePath, sourcePath); err != nil {
+		t.Fatalf("add source media directory: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	reopened, err := pebblestore.Open(storePath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+	resolution, err := NewService(pebblestore.NewWorkspaceStore(reopened)).ListSourceMediaDirectoriesForPrincipal(principal, workspacePath)
+	if err != nil {
+		t.Fatalf("list source media directories after reopen: %v", err)
+	}
+	if !reflect.DeepEqual(resolution.SourceMediaDirectories, []string{sourcePath}) {
+		t.Fatalf("source media directories after reopen = %v, want %q", resolution.SourceMediaDirectories, sourcePath)
 	}
 }
 

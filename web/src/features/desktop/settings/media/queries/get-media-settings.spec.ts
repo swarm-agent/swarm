@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  addSourceMediaDirectory,
   cancelVideoTranscription,
+  getSourceMediaDirectories,
   pollVideoTranscriptionJob,
   readVideoTranscript,
   startVideoTranscription,
@@ -15,6 +17,35 @@ const originalFetch = globalThis.fetch
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
+})
+
+test('source media folder registration is backend-authoritative across refreshes', async () => {
+  const persisted = ['/videos/chosen']
+  const requests: Array<{ method: string; path: string; search: string; body: unknown }> = []
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init)
+    const url = new URL(request.url)
+    const body = request.method === 'POST' ? JSON.parse(await request.text()) : null
+    requests.push({ method: request.method, path: url.pathname, search: url.search, body })
+    return Response.json({ ok: true, source_media_directories: persisted })
+  }) as typeof fetch
+
+  assert.deepEqual(await addSourceMediaDirectory('/workspace', '/videos/chosen'), persisted)
+  assert.deepEqual(await getSourceMediaDirectories('/workspace'), persisted)
+  assert.deepEqual(requests, [
+    {
+      method: 'POST',
+      path: '/v1/workspace/source-media/directories/add',
+      search: '',
+      body: { workspace_path: '/workspace', directory_path: '/videos/chosen' },
+    },
+    {
+      method: 'GET',
+      path: '/v1/workspace/source-media/directories',
+      search: '?workspace_path=%2Fworkspace',
+      body: null,
+    },
+  ])
 })
 
 test('direct video transcription clients send only workspace and opaque authority', async () => {

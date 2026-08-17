@@ -4,7 +4,7 @@ export type DesktopSlashCommandState = 'ready' | 'coming-soon'
 
 export type DesktopSlashCommandAction =
   | { kind: 'open-settings'; tab: SettingsTabID | 'agents' }
-  | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'permissions' | 'themes' | 'worktrees'> }
+  | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'media' | 'permissions' | 'themes' | 'worktrees'> }
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
@@ -215,6 +215,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/thinking', 'Turn off to hide thinking summary', 'Toggle thinking summaries without opening Agent Setup'],
     state: 'ready',
     action: { kind: 'toggle-thinking' },
+  },
+  {
+    id: 'media',
+    command: '/media',
+    aliases: [],
+    hint: 'Open media quick settings',
+    actionLabel: 'Open Media Quick Settings',
+    tips: ['/media', 'Change source video folders and media models without leaving chat'],
+    state: 'ready',
+    action: { kind: 'open-quick-settings', tab: 'media' },
   },
   {
     id: 'models',

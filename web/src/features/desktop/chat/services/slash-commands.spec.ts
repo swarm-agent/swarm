@@ -29,6 +29,19 @@ function testCodexOpensUsageWithoutChangingModels(): void {
   assert((models?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-model-picker', 'expected /models to keep opening model picker')
 }
 
+function testMediaCommandOpensQuickSettings(): void {
+  const media = getDesktopSlashCommands().find((command) => command.command === '/media')
+  assert(Boolean(media), 'expected /media command to exist')
+  assert(media?.state === 'ready', 'expected /media command to be ready')
+  assert(media?.action.kind === 'open-quick-settings', 'expected /media to open quick settings')
+  if (media?.action.kind === 'open-quick-settings') {
+    assert(media.action.tab === 'media', 'expected /media to target media quick settings')
+  }
+  const palette = buildDesktopSlashPaletteState('/media')
+  assert(palette.exactMatch?.id === 'media', 'expected /media to resolve exactly')
+  assert(palette.matches[0]?.id === 'media', 'expected /media to lead palette matches')
+}
+
 function testAICommitCommandTriggersCanonicalWorkflow(): void {
   const commands = getDesktopSlashCommands()
   const aiCommit = commands.find((command) => command.command === '/commit ai')
@@ -216,6 +229,7 @@ function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
+  testMediaCommandOpensQuickSettings()
   testAICommitCommandTriggersCanonicalWorkflow()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()

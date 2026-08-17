@@ -1,4 +1,4 @@
-import { ExternalLink, GitBranch, Palette, Shield, type LucideIcon } from 'lucide-react'
+import { ExternalLink, Film, GitBranch, Palette, Shield, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -6,9 +6,10 @@ import { cn } from '../../../../lib/cn'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
 import { ThemesSettingsPage } from '../themes/components/themes-settings-page'
 import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-page'
+import { MediaSettingsPage } from '../media/components/media-settings-page'
 import type { SettingsTabID } from '../types/settings-tabs'
 
-export type QuickSettingsTabID = Extract<SettingsTabID, 'permissions' | 'themes' | 'worktrees'>
+export type QuickSettingsTabID = Extract<SettingsTabID, 'media' | 'permissions' | 'themes' | 'worktrees'>
 
 interface QuickSettingsConfig {
   title: string
@@ -18,6 +19,12 @@ interface QuickSettingsConfig {
 }
 
 const quickSettingsConfig: Record<QuickSettingsTabID, QuickSettingsConfig> = {
+  media: {
+    title: 'Media',
+    description: 'Quick access to source video folders and media model controls.',
+    settingsLabel: 'Open full media settings',
+    icon: Film,
+  },
   permissions: {
     title: 'Permissions',
     description: 'Quick access to the same permission policy controls from Settings.',
@@ -40,6 +47,8 @@ const quickSettingsConfig: Record<QuickSettingsTabID, QuickSettingsConfig> = {
 
 function QuickSettingsContent({ tab, activeWorkspacePath }: { tab: QuickSettingsTabID; activeWorkspacePath?: string | null }) {
   switch (tab) {
+    case 'media':
+      return <MediaSettingsPage workspacePath={activeWorkspacePath ?? ''} />
     case 'permissions':
       return <PermissionsSettingsPage />
     case 'themes':

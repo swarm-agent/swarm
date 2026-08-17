@@ -145,7 +145,7 @@ function ModelSelect({ models, value, disabled, onChange }: { models: MediaCatal
   )
 }
 
-export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: string }) {
+export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requestedWorkspacePath = '' }: { workspaceSlug?: string; workspacePath?: string }) {
   const queryClient = useQueryClient()
   const settingsQuery = useQuery({ queryKey: uiSettingsQueryKey, queryFn: getUISettings, staleTime: 30_000 })
   const catalogQuery = useQuery({ queryKey: mediaCatalogQueryKey, queryFn: ({ signal }) => getMediaSettingsCatalog(signal), staleTime: 30_000 })
@@ -181,6 +181,14 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
 
   useEffect(() => {
     let cancelled = false
+    const directWorkspacePath = requestedWorkspacePath.trim()
+    if (directWorkspacePath) {
+      setWorkspacePath(directWorkspacePath)
+      setWorkspaceName(directWorkspacePath)
+      setWorkspaceLoading(false)
+      setWorkspaceError('')
+      return () => { cancelled = true }
+    }
     if (!workspaceSlug) {
       setWorkspacePath('')
       setWorkspaceName('')
@@ -201,7 +209,7 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
       if (!cancelled) setWorkspaceLoading(false)
     })
     return () => { cancelled = true }
-  }, [workspaceSlug])
+  }, [requestedWorkspacePath, workspaceSlug])
 
   const sourceQueryKey = sourceMediaDirectoriesQueryKey(workspacePath)
   const sourceQuery = useQuery({
@@ -329,10 +337,10 @@ export function MediaSettingsPage({ workspaceSlug = '' }: { workspaceSlug?: stri
       <Card className="p-5">
         <section aria-labelledby="source-media-title" className="space-y-4">
           <div className="flex items-start gap-3"><FolderOpen size={18} className="mt-1 text-[var(--app-text-muted)]" /><div><h3 id="source-media-title" className="text-lg font-semibold text-[var(--app-text)]">Source media folder</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">Designate one or more folders where you put source videos for {workspaceName || 'this workspace'}. AI can view and transcribe supported videos through the media tools, but source access is read-only: Swarm never edits, moves, renames, or deletes these files, so they remain unmodified.</p></div></div>
-          {!workspaceSlug ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning)]">Source media folders are workspace-scoped. Open a workspace, then choose Settings → Media.</div> : workspaceLoading ? <p className="text-sm text-[var(--app-text-muted)]">Loading workspace…</p> : workspacePath ? <>
+          {!workspaceSlug && !requestedWorkspacePath.trim() ? <div className="rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-4 text-sm text-[var(--app-warning)]">Source media folders are workspace-scoped. Open a workspace, then choose Settings → Media.</div> : workspaceLoading ? <p className="text-sm text-[var(--app-text-muted)]">Loading workspace…</p> : workspacePath ? <>
             {sourceQuery.isPending ? <p className="text-sm text-[var(--app-text-muted)]">Loading designated folders…</p> : folders.length ? <div className="grid gap-2">{folders.map((folder) => <div key={folder} className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2"><span className="min-w-0 truncate font-mono text-xs text-[var(--app-text)]" title={folder}>{folder}</span><Button variant="ghost" size="sm" disabled={removeFolder.isPending} onClick={() => removeFolder.mutate(folder)}>Remove</Button></div>)}</div> : <p className="text-sm text-[var(--app-text-muted)]">No source media folder has been designated yet.</p>}
             <form className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]" onSubmit={(event) => { event.preventDefault(); const path = folderDraft.trim(); if (path) addFolder.mutate(path) }}><Input value={folderDraft} onChange={(event) => setFolderDraft(event.target.value)} placeholder="Choose or enter a folder" aria-label="Source media folder path" /><Button type="button" variant="outline" onClick={() => { setFolderPickerOpen(true); folderBrowse.mutate(folderDraft.trim() || workspacePath) }}>Browse</Button><Button type="submit" variant="outline" disabled={!folderDraft.trim() || addFolder.isPending}>{addFolder.isPending ? 'Adding…' : 'Add folder'}</Button></form>
-            {folderPickerOpen ? <div className="space-y-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3"><div className="flex items-center justify-between gap-2"><span className="min-w-0 truncate font-mono text-xs text-[var(--app-text)]" title={folderBrowser?.resolvedPath}>{folderBrowser?.resolvedPath || 'Loading folders…'}</span><div className="flex gap-2"><Button type="button" variant="ghost" size="sm" disabled={!folderBrowser?.parentPath || folderBrowse.isPending} onClick={() => folderBrowser?.parentPath && folderBrowse.mutate(folderBrowser.parentPath)}><ArrowUp size={14} /> Up</Button><Button type="button" variant="ghost" size="sm" onClick={() => setFolderPickerOpen(false)}>Close</Button></div></div>{folderBrowseError ? <p className="text-sm text-[var(--app-danger)]">{folderBrowseError}</p> : null}<div className="grid max-h-64 gap-1 overflow-auto">{folderBrowser?.entries.filter((entry) => entry.isDirectory).map((entry) => <div key={entry.path} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1 hover:bg-[var(--app-surface-hover)]"><button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-[var(--app-text)]" onClick={() => folderBrowse.mutate(entry.path)}><Folder size={14} /><span className="truncate">{entry.name}</span></button><Button type="button" variant="ghost" size="sm" onClick={() => { setFolderDraft(entry.path); setFolderPickerOpen(false) }}>Choose</Button></div>)}</div>{folderBrowser?.resolvedPath ? <Button type="button" size="sm" onClick={() => { setFolderDraft(folderBrowser.resolvedPath); setFolderPickerOpen(false) }}>Choose this folder</Button> : null}</div> : null}
+            {folderPickerOpen ? <div className="space-y-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3"><div className="flex items-center justify-between gap-2"><span className="min-w-0 truncate font-mono text-xs text-[var(--app-text)]" title={folderBrowser?.resolvedPath}>{folderBrowser?.resolvedPath || 'Loading folders…'}</span><div className="flex gap-2"><Button type="button" variant="ghost" size="sm" disabled={!folderBrowser?.parentPath || folderBrowse.isPending} onClick={() => folderBrowser?.parentPath && folderBrowse.mutate(folderBrowser.parentPath)}><ArrowUp size={14} /> Up</Button><Button type="button" variant="ghost" size="sm" onClick={() => setFolderPickerOpen(false)}>Close</Button></div></div>{folderBrowseError ? <p className="text-sm text-[var(--app-danger)]">{folderBrowseError}</p> : null}<div className="grid max-h-64 gap-1 overflow-auto">{folderBrowser?.entries.filter((entry) => entry.isDirectory).map((entry) => <div key={entry.path} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1 hover:bg-[var(--app-surface-hover)]"><button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-[var(--app-text)]" onClick={() => folderBrowse.mutate(entry.path)}><Folder size={14} /><span className="truncate">{entry.name}</span></button><Button type="button" variant="ghost" size="sm" disabled={addFolder.isPending} onClick={() => { setFolderDraft(entry.path); setFolderPickerOpen(false); addFolder.mutate(entry.path) }}>Choose & save</Button></div>)}</div>{folderBrowser?.resolvedPath ? <Button type="button" size="sm" disabled={addFolder.isPending} onClick={() => { setFolderDraft(folderBrowser.resolvedPath); setFolderPickerOpen(false); addFolder.mutate(folderBrowser.resolvedPath) }}>Choose & save this folder</Button> : null}</div> : null}
           </> : null}
           {folderError ? <div role="alert" className="text-sm text-[var(--app-danger)]">{errorMessage(folderError, 'Source media folders are unavailable.')}</div> : null}
         </section>
