@@ -19,6 +19,24 @@ func TestMasterHarnessExplainsArtifactOutputRequirementInference(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessReliesOnBuiltInArtifactPresentation(t *testing.T) {
+	prompt := masterHarnessPromptWithScope(tool.WorkspaceScope{})
+	for _, expected := range []string{
+		"automatically shown by the Desktop artifact sidebar and gallery",
+		"do not call get/read, materialize, duplicate into the workspace, create an iteration form or HTML index",
+		"ask the user to review or choose in the built-in artifact UI",
+		"Inspect/read only when the agent needs artifact contents for verification or further work",
+		"exact ready reference in a terminal structured handoff",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("master harness missing artifact-presentation rule %q", expected)
+		}
+	}
+	if strings.Contains(prompt, "present managed collection previews or wire a nearby workspace preview/selector") {
+		t.Fatal("master harness still directs the agent to duplicate built-in artifact presentation")
+	}
+}
+
 func TestTaskOutputRequirementsAllDesignerModes(t *testing.T) {
 	regular, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "design", "subagent_type": "designer", "meta_prompt": "create it", "output_requirements": map[string]any{"preset": "twitter_header"},
