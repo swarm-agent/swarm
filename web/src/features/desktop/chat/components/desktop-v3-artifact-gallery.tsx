@@ -27,6 +27,7 @@ import {
   desktopV3ArtifactCatalogEntryForKey,
   desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactDownloadName,
+  desktopV3ArtifactMessageSelection,
   desktopV3ArtifactRequiresBundle,
   desktopV3ArtifactSelection,
   fetchDesktopV3Artifact,
@@ -48,6 +49,7 @@ export type DesktopV3ArtifactGalleryEntry = DesktopV3ArtifactCatalogEntry
 /** A visible label paired with the opaque authority reference sent to chat. */
 export interface DesktopV3ArtifactChatSelection {
   label: string
+  description?: string
   selection: DesktopV3ArtifactSelection
 }
 
@@ -63,6 +65,7 @@ export interface DesktopV3ArtifactGalleryProps {
   error?: string
   title?: string
   initialArtifactKey?: string
+  initialCollectionId?: string
   artifactHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   collectionHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   onArtifactNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
@@ -126,10 +129,17 @@ function collectionDisplayLabel(group: ArtifactCollectionGroup): string {
   return first.sessionTitle ? `${first.sessionTitle} designs` : 'Design collection'
 }
 
-function iterationDisplayLabel(artifact: DesktopV3ArtifactGalleryEntry, index: number): string {
-  const progression = artifact.lineage?.iterationIndex || index + 1
+function variantDisplayLabel(artifact: DesktopV3ArtifactGalleryEntry, index: number): string {
   const specialized = artifact.lineage?.iterationLabel || artifact.lineage?.iterationTheme
-  return specialized ? `${progression}. ${specialized}` : `${progression}. ${artifact.label}`
+  if (specialized) return specialized
+  const artifactLabel = artifact.label.trim()
+  const collectionLabel = artifact.collectionName.trim()
+  if (artifactLabel && artifactLabel !== collectionLabel) return artifactLabel
+  return `Variant ${artifact.lineage?.iterationIndex || index + 1}`
+}
+
+function iterationDisplayLabel(artifact: DesktopV3ArtifactGalleryEntry, index: number): string {
+  return variantDisplayLabel(artifact, index)
 }
 
 function artifactStatusLabel(artifact: DesktopV3ArtifactGalleryEntry): string {
@@ -167,6 +177,7 @@ export function DesktopV3ArtifactGallery({
   error: catalogError = '',
   title = 'Artifact review',
   initialArtifactKey = '',
+  initialCollectionId = '',
   artifactHref,
   collectionHref,
   onArtifactNavigate,
@@ -175,6 +186,7 @@ export function DesktopV3ArtifactGallery({
 }: DesktopV3ArtifactGalleryProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(artifacts[0] ? artifactSelectionKey(artifacts[0]) : '')
+  const [overviewCollectionKey, setOverviewCollectionKey] = useState('')
   const [chatSelectedIds, setChatSelectedIds] = useState<string[]>([])
   const [durableSelectedId, setDurableSelectedId] = useState('')
   const [previewURL, setPreviewURL] = useState('')
@@ -217,9 +229,12 @@ export function DesktopV3ArtifactGallery({
   }, [artifacts, query])
 
   const groups = useMemo(() => collectionGroups(visibleArtifacts), [visibleArtifacts])
-  const selected = visibleArtifacts.find((artifact) => artifactSelectionKey(artifact) === selectedId) ?? visibleArtifacts[0]
-  const selectedGroupKey = selected ? artifactCollectionKey(selected) : ''
-  const selectedGroup = groups.find((group) => group.key === selectedGroupKey)
+  const overviewGroup = groups.find((group) => group.key === overviewCollectionKey)
+  const selected = overviewGroup
+    ? undefined
+    : visibleArtifacts.find((artifact) => artifactSelectionKey(artifact) === selectedId) ?? visibleArtifacts[0]
+  const selectedGroupKey = overviewGroup?.key ?? (selected ? artifactCollectionKey(selected) : '')
+  const selectedGroup = overviewGroup ?? groups.find((group) => group.key === selectedGroupKey)
   const selectedVariants = selectedGroup?.entries ?? []
   const selectedVariantIndex = selected
     ? selectedVariants.findIndex((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected))
@@ -253,14 +268,27 @@ export function DesktopV3ArtifactGallery({
   useEffect(() => {
     if (open) return
     setChatSelectedIds([])
+    setOverviewCollectionKey('')
     setActionError('')
   }, [open])
 
   useEffect(() => {
     if (!open || !initialArtifactKey) return
     const requested = desktopV3ArtifactCatalogEntryForKey(artifacts, initialArtifactKey)
-    if (requested) setSelectedId(artifactSelectionKey(requested))
+    if (requested) {
+      setOverviewCollectionKey('')
+      setSelectedId(artifactSelectionKey(requested))
+    }
   }, [artifacts, initialArtifactKey, open])
+
+  useEffect(() => {
+    if (!open || !initialCollectionId || initialArtifactKey) return
+    const requested = groups.find((group) => group.entries.some((artifact) => artifact.collectionId === initialCollectionId))
+    if (requested) {
+      setSelectedId('')
+      setOverviewCollectionKey(requested.key)
+    }
+  }, [groups, initialArtifactKey, initialCollectionId, open])
 
   useEffect(() => {
     if (!open) return undefined
@@ -355,6 +383,7 @@ export function DesktopV3ArtifactGallery({
   }, [open, selectedAnimationActive, selected?.animationProfile, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.status])
 
   const selectArtifact = (artifact: DesktopV3ArtifactGalleryEntry) => {
+    setOverviewCollectionKey('')
     setSelectedId(artifactSelectionKey(artifact))
     onArtifactNavigate?.(artifact)
   }
@@ -367,10 +396,11 @@ export function DesktopV3ArtifactGallery({
   }
 
   const selectCollection = (group: ArtifactCollectionGroup) => {
-    const next = collectionLandingArtifact(group)
-    if (!next) return
-    setSelectedId(artifactSelectionKey(next))
-    onCollectionNavigate?.(next)
+    const target = collectionLandingArtifact(group)
+    if (!target) return
+    setSelectedId('')
+    setOverviewCollectionKey(group.key)
+    onCollectionNavigate?.(target)
   }
 
   const openArtifactLink = (event: MouseEvent<HTMLAnchorElement>, artifact: DesktopV3ArtifactGalleryEntry) => {
@@ -431,10 +461,14 @@ export function DesktopV3ArtifactGallery({
     try {
       setActionPending('add')
       setActionError('')
-      await onAddToChat(pendingChatArtifacts.map((artifact) => ({
-        label: artifact.label,
-        selection: desktopV3ArtifactSelection(artifact),
-      })))
+      await onAddToChat(pendingChatArtifacts.map((artifact) => {
+        const messageSelection = desktopV3ArtifactMessageSelection(artifact, 'select')
+        return {
+          label: messageSelection.label,
+          description: messageSelection.description,
+          selection: desktopV3ArtifactSelection(artifact),
+        }
+      }))
       setChatSelectedIds([])
       setOpen(false)
       return true
@@ -454,7 +488,8 @@ export function DesktopV3ArtifactGallery({
       const canonicalSelection = await useDesktopV3Artifact(desktopV3ArtifactSelection(selected))
       setDurableSelectedId(artifactSelectionKey(selected))
       await onSelectionPersisted?.()
-      await onUseThisDesign({ label: selected.label, selection: canonicalSelection })
+      const messageSelection = desktopV3ArtifactMessageSelection(selected, 'use')
+      await onUseThisDesign({ label: messageSelection.label, description: messageSelection.description, selection: canonicalSelection })
       setOpen(false)
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not use this design')
@@ -566,7 +601,31 @@ export function DesktopV3ArtifactGallery({
               </div>
             </aside>
             <main className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] bg-[var(--app-bg-alt)]" data-mobile-artifact-three-zone-layout>
-              {selected ? <>
+              {overviewGroup ? (
+                <div className="row-span-3 min-h-0 overflow-y-auto p-4 sm:p-6" data-artifact-collection-overview>
+                  <div className="mx-auto max-w-6xl">
+                    <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2"><GalleryHorizontal className="size-5 text-[var(--app-primary)]" aria-hidden="true" /><h1 className="text-lg font-semibold">{collectionDisplayLabel(overviewGroup)}</h1></div>
+                        {overviewGroup.entries[0]?.collectionDescription ? <p className="mt-1 text-sm text-[var(--app-text-muted)]">{overviewGroup.entries[0].collectionDescription}</p> : null}
+                        <p className="mt-1 text-xs text-[var(--app-text-subtle)]">{overviewGroup.progress.total} variant{overviewGroup.progress.total === 1 ? '' : 's'} · {overviewGroup.progress.ready} ready</p>
+                      </div>
+                      {formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements) ? <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">{formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements)}</span> : null}
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-label="Collection variants">
+                      {overviewGroup.entries.map((artifact, index) => {
+                        const canonical = artifactSelectionKey(artifact) === canonicalSelectedId
+                        return <button key={artifactSelectionKey(artifact)} type="button" className="group min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => selectArtifact(artifact)}>
+                          <div className="flex items-start justify-between gap-3"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--app-primary-soft)] text-xs font-semibold text-[var(--app-primary)]">{artifact.lineage?.iterationIndex || index + 1}</span><span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', artifact.status === 'failed' || artifact.status === 'unavailable' ? 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]' : artifact.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-success-bg)] text-[var(--app-success)]')}>{artifactStatusLabel(artifact)}</span></div>
+                          <div className="mt-3 truncate text-sm font-semibold">{variantDisplayLabel(artifact, index)}</div>
+                          {artifact.description && artifact.description !== artifact.collectionDescription && artifact.description !== artifact.label ? <p className="mt-1 line-clamp-2 text-xs text-[var(--app-text-muted)]">{artifact.description}</p> : null}
+                          <div className="mt-3 flex items-center justify-between gap-2 text-[10px] text-[var(--app-text-subtle)]"><span>{artifactTypeLabel(artifact)}</span>{canonical ? <span className="inline-flex items-center gap-1 text-[var(--app-success)]"><Check className="size-3" />Selected design</span> : <span className="text-[var(--app-primary)]">Open variant</span>}</div>
+                        </button>
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : selected ? <>
                 <div className="min-w-0 shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] md:hidden" data-mobile-generation-selector>
                   {groups.length > 1 ? <div className="flex h-9 min-w-0 items-center gap-1 overflow-x-auto border-b border-[var(--app-border)] px-2" aria-label="Select artifact collection">
                     {groups.map((group) => {
@@ -577,12 +636,12 @@ export function DesktopV3ArtifactGallery({
                   <div className="flex h-11 min-w-0 items-center gap-1.5 overflow-x-auto px-2" aria-label="Select generation">
                     {selectedVariants.map((artifact, index) => {
                       const active = artifactSelectionKey(artifact) === artifactSelectionKey(selected)
-                      return <button key={artifactSelectionKey(artifact)} type="button" className={cn('inline-flex h-8 max-w-[13rem] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]')} aria-current={active ? 'true' : undefined} onClick={() => selectArtifact(artifact)}><span className="grid size-4 shrink-0 place-items-center rounded bg-[var(--app-surface)] text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span><span className="truncate">{artifact.lineage?.iterationTheme || artifact.label}</span></button>
+                      return <button key={artifactSelectionKey(artifact)} type="button" className={cn('inline-flex h-8 max-w-[13rem] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]')} aria-current={active ? 'true' : undefined} onClick={() => selectArtifact(artifact)}><span className="grid size-4 shrink-0 place-items-center rounded bg-[var(--app-surface)] text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span><span className="truncate">{variantDisplayLabel(artifact, index)}</span></button>
                     })}
                   </div>
                 </div>
                 <div className="hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4 md:flex">
-                  <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{selected.label}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
+                  <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{variantDisplayLabel(selected, Math.max(selectedVariantIndex, 0))}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label && selected.description !== selected.collectionDescription ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
                   <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
                 </div>
                 <div

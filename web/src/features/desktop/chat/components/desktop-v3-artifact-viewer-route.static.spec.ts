@@ -8,6 +8,7 @@ test('artifact viewer route remains authoritative for modal visibility and sessi
   const pane = await readFile(paneURL, 'utf8')
 
   assert.match(pane, /if \(!artifactViewerLocation\) \{\s+dismissedArtifactViewerLocationKeyRef\.current = "";\s+setArtifactGalleryOpen\(false\);/)
-  assert.match(pane, /setSessionArtifacts\(\[\]\);\s+setSidebarView\("plan"\);\s+setArtifactGalleryOpen\(false\);\s+setArtifactGalleryInitialKey\(""\);/)
-  assert.match(pane, /artifactHref=\{artifactViewerHref\}\s+onArtifactNavigate=\{navigateArtifactViewer\}/)
+  assert.match(pane, /setSessionArtifacts\(\[\]\);\s+setSidebarView\("plan"\);\s+setArtifactGalleryOpen\(false\);\s+setArtifactGalleryInitialKey\(""\);\s+setArtifactGalleryInitialCollectionId\(""\);/)
+  assert.match(pane, /initialCollectionId=\{artifactGalleryInitialCollectionId\}\s+artifactHref=\{artifactViewerHref\}\s+collectionHref=\{artifactCollectionViewerHref\}\s+onArtifactNavigate=\{navigateArtifactViewer\}\s+onCollectionNavigate=\{navigateArtifactCollectionViewer\}/)
+  assert.match(pane, /artifactViewerLocation\.collectionId && !artifactViewerLocation\.artifactId/)
 })

@@ -1235,11 +1235,11 @@ export function DesktopV3AgenticComposer({
         open={artifactViewerOpen}
         onOpenChange={setArtifactViewerOpen}
         onAddToChat={(artifacts) => {
-          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, artifacts.map(({ label, selection }) => ({ ...selection, label, action: 'select' }))))
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: 'select' }))))
           setArtifactViewerOpen(false)
         }}
-        onUseThisDesign={({ label, selection }) => {
-          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, [{ ...selection, label, action: 'use' }]))
+        onUseThisDesign={({ label, description, selection }) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, [{ ...selection, label, description, action: 'use' }]))
           if (!draft.trim()) onDraftChange('Use this design.')
           setArtifactViewerOpen(false)
         }}

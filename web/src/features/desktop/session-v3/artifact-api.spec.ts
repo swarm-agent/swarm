@@ -270,11 +270,21 @@ test('artifact catalog normalizes video mp4 entry with visual category and video
   assert.equal(formatDesktopV3ArtifactOutputRequirements(entry.outputRequirements), 'Landscape video · 1920 × 1080 · 16:9')
 })
 
-test('artifact chips dedupe by opaque identity, update intent, and remove without touching bytes', () => {
-  const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+test('artifact chips preserve exact iteration identity and describe the selected variant', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    label: 'Managed iteration group',
+    description: 'Iteration Swarm group · 3 iterations',
+    collection_name: 'Managed iteration group',
+    collection_description: 'Iteration Swarm group · 3 iterations',
+    lineage: { ...managedCatalogWire.lineage, iteration_label: 'Motion Study', iteration_theme: 'motion' },
+  })
   assert.ok(entry)
   const select = desktopV3ArtifactMessageSelection(entry, 'select')
   const use = desktopV3ArtifactMessageSelection(entry, 'use')
+  assert.equal(select.variant_id, 'variant-1')
+  assert.equal(select.label, 'Iteration 2: Motion Study')
+  assert.equal(select.description, 'Managed iteration group · Iteration 2 of 3')
   assert.deepEqual(appendDesktopV3ArtifactMessageSelection([select], use), [use])
   assert.deepEqual(removeDesktopV3ArtifactMessageSelection([use], use), [])
   assert.equal(JSON.stringify(use).includes('content'), false)
@@ -350,7 +360,7 @@ test('artifact viewer URLs encode exact session, collection, and variant identit
   assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([entry], location), entry)
 })
 
-test('artifact collection URLs round trip to a canonical landing variant', () => {
+test('artifact collection URLs preserve collection-level viewer state', () => {
   const first = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, selected: false, status: 'staging' })
   const selected = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, artifact_id: 'variant-2', selected: true })
   assert.ok(first)
@@ -364,7 +374,7 @@ test('artifact collection URLs round trip to a canonical landing variant', () =>
   )
   const location = desktopV3ArtifactViewerLocation('session-1', desktopV3ArtifactCollectionViewerSearch(target))
   assert.deepEqual(location, { sessionId: 'session-1', collectionId: 'collection-1' })
-  assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([first, selected], location), selected)
+  assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([first, selected], location), undefined)
 })
 
 test('artifact viewer resolves delegated entries against parent-session URLs', () => {

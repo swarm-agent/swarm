@@ -373,14 +373,45 @@ export function desktopV3ArtifactSelection(entry: DesktopV3ArtifactCatalogEntry)
   return selection
 }
 
+export function desktopV3ArtifactVariantLabel(entry: DesktopV3ArtifactCatalogEntry): string {
+  const iterationIndex = entry.lineage?.iterationIndex ?? 0
+  const iterationLabel = entry.lineage?.iterationLabel?.trim() || entry.lineage?.iterationTheme?.trim() || ''
+  const artifactLabel = entry.label.trim()
+  const collectionLabel = entry.collectionName.trim()
+  const distinctArtifactLabel = artifactLabel && artifactLabel !== collectionLabel ? artifactLabel : ''
+  const label = iterationLabel || distinctArtifactLabel || entry.filename.trim()
+  if (iterationIndex > 0) {
+    const positionLabel = `Iteration ${iterationIndex}`
+    return label && label.toLowerCase() !== positionLabel.toLowerCase() ? `${positionLabel}: ${label}` : positionLabel
+  }
+  return label || 'Artifact variant'
+}
+
+export function desktopV3ArtifactVariantDescription(entry: DesktopV3ArtifactCatalogEntry): string | undefined {
+  const collectionLabel = entry.collectionName.trim() || entry.lineage?.iterationGroup?.trim() || ''
+  const iterationIndex = entry.lineage?.iterationIndex ?? 0
+  const total = entry.progress?.total ?? 0
+  const iterationPosition = iterationIndex > 0
+    ? `Iteration ${iterationIndex}${total > 0 ? ` of ${total}` : ''}`
+    : ''
+  const variantDescription = entry.description.trim()
+  const distinctDescription = variantDescription
+    && variantDescription !== entry.collectionDescription.trim()
+    && variantDescription !== entry.label.trim()
+    ? variantDescription
+    : ''
+  const description = [collectionLabel, iterationPosition, distinctDescription].filter(Boolean).join(' · ')
+  return description || undefined
+}
+
 export function desktopV3ArtifactMessageSelection(
   entry: DesktopV3ArtifactCatalogEntry,
   action: 'select' | 'use' = 'select',
 ): DesktopV3ArtifactMessageSelection {
   return {
     ...desktopV3ArtifactSelection(entry),
-    label: entry.label.trim() || entry.filename.trim() || 'Artifact',
-    description: entry.description.trim() || undefined,
+    label: desktopV3ArtifactVariantLabel(entry),
+    description: desktopV3ArtifactVariantDescription(entry),
     action,
   }
 }
@@ -499,22 +530,16 @@ export function desktopV3ArtifactViewerLocation(
   }
 }
 
-/** Resolves an exact iteration, or the canonical landing variant for a collection-base URL. */
+/** Resolves only an exact iteration. Collection-base URLs remain collection-level viewer state. */
 export function desktopV3ArtifactCatalogEntryForViewerLocation(
   artifacts: readonly DesktopV3ArtifactCatalogEntry[],
   location: DesktopV3ArtifactViewerLocation,
 ): DesktopV3ArtifactCatalogEntry | undefined {
+  if (!location.artifactId) return undefined
   const sessionArtifacts = artifacts.filter((artifact) => artifact.sessionId === location.sessionId
     || artifact.lineage?.parentSessionId === location.sessionId)
-  if (location.artifactId) {
-    return sessionArtifacts.find((artifact) => artifact.artifactId === location.artifactId
-      && (!location.collectionId || artifact.collectionId === location.collectionId))
-  }
-  if (!location.collectionId) return undefined
-  const collectionArtifacts = sessionArtifacts.filter((artifact) => artifact.collectionId === location.collectionId)
-  return collectionArtifacts.find((artifact) => artifact.selected)
-    ?? collectionArtifacts.find((artifact) => artifact.status === 'ready')
-    ?? collectionArtifacts[0]
+  return sessionArtifacts.find((artifact) => artifact.artifactId === location.artifactId
+    && (!location.collectionId || artifact.collectionId === location.collectionId))
 }
 
 export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): DesktopV3ArtifactMessageSelection | null {
