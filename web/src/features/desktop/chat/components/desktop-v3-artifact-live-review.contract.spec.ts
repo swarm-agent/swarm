@@ -71,7 +71,9 @@ test('animation previews use immutable local runtimes and keep network access di
   assert.match(gallery, /desktopV3ArtifactLocalRuntimeAssets\(selected\.animationProfile\)/)
   assert.match(gallery, /formatDesktopV3ArtifactAnimationProfile\(selected\?\.animationProfile\)/)
   assert.match(gallery, /selected\.animationProfile\.profileId === 'final_render'/)
-  assert.match(gallery, /\|\| \(animationPreviewVisible && previewMotionAllowed\)/)
+  assert.match(gallery, /const selectedAnimationActive = animationPreviewVisible && \(/)
+  assert.match(gallery, /\|\| previewMotionAllowed/)
+  assert.match(gallery, /selectedAnimationActive && selected\.mediaType === 'text\/html'/)
   assert.match(gallery, /selectedVideoProfileCompatible = !selected\?\.animationProfile \|\| selected\.animationProfile\.profileId === 'final_render'/)
 })
 
@@ -82,6 +84,7 @@ test('artifact previews fit the available viewport and offer explicit fullscreen
   assert.match(gallery, /selected\.mediaType\.startsWith\('image\/'\).*\? 'overflow-hidden' : 'overflow-auto'/s)
   assert.match(gallery, /className="grid size-full min-h-0 place-items-center"/)
   assert.match(gallery, /className="size-full rounded-lg border.*object-contain shadow-sm"/)
+  assert.match(gallery, /selected\.sourceRef[\s\S]*fetchDesktopV3ArtifactDownload\(selected, controller\.signal\)/)
   assert.match(gallery, /previewSurface\.requestFullscreen\(\)/)
   assert.match(gallery, /document\.exitFullscreen\(\)/)
   assert.match(gallery, /aria-label="View artifact fullscreen"/)

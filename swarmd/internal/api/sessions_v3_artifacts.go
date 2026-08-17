@@ -159,6 +159,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, errors.New("artifact limit cannot exceed 2000"))
 		return
 	}
+	requestedSessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 
 	sessions, err := s.sessions.ListSessionsForAccountUser(principal.AccountScopeID, principal.UserID, sessionsV3ArtifactCatalogSessionLimit)
 	if err != nil {
@@ -168,7 +169,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 	artifacts := make([]sessionsV3ArtifactCatalogItem, 0, limit)
 	seen := make(map[string]struct{})
 	for _, session := range sessions {
-		if sessionsV3SystemSidechat(session) {
+		if sessionsV3SystemSidechat(session) || !sessionsV3ArtifactCatalogIncludesSession(session, requestedSessionID) {
 			continue
 		}
 		workspacePath, workspaceName := sessionsV3ArtifactCatalogWorkspace(session)
@@ -313,6 +314,13 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 		artifacts = artifacts[:limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artifacts": artifacts})
+}
+
+func sessionsV3ArtifactCatalogIncludesSession(session pebblestore.SessionSnapshot, requestedSessionID string) bool {
+	if requestedSessionID == "" || session.ID == requestedSessionID {
+		return true
+	}
+	return strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "parent_session_id")) == requestedSessionID
 }
 
 func sessionsV3NativeHandoffKey(planID, checkpointID, runID, attemptID, filename, mediaType, kind string) string {

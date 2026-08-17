@@ -333,6 +333,30 @@ func TestManagedArtifactCatalogShowsPrivateReadyArtifactWithoutRepositoryOutput(
 	}
 }
 
+func TestArtifactCatalogSessionFilterIncludesDirectChildren(t *testing.T) {
+	requested := "artifact-parent"
+	for _, test := range []struct {
+		name    string
+		session pebblestore.SessionSnapshot
+		want    bool
+	}{
+		{name: "unfiltered", session: pebblestore.SessionSnapshot{ID: "other"}, want: true},
+		{name: "exact", session: pebblestore.SessionSnapshot{ID: requested}, want: true},
+		{name: "direct child", session: pebblestore.SessionSnapshot{ID: "child", Metadata: map[string]any{"parent_session_id": requested}}, want: true},
+		{name: "unrelated", session: pebblestore.SessionSnapshot{ID: "other", Metadata: map[string]any{"parent_session_id": "different"}}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			filter := requested
+			if test.name == "unfiltered" {
+				filter = ""
+			}
+			if got := sessionsV3ArtifactCatalogIncludesSession(test.session, filter); got != test.want {
+				t.Fatalf("sessionsV3ArtifactCatalogIncludesSession() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestManagedArtifactCatalogProjectsStagingIterationGroupProgress(t *testing.T) {
 	server, sessionSvc, _, _, _, _, _ := newArtifactSessionFixture(t, "unused.txt", "unused")
 	principal := testPrincipal()

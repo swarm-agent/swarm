@@ -354,8 +354,10 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   }
 }
 
-export async function fetchDesktopV3ArtifactCatalog(signal?: AbortSignal): Promise<DesktopV3ArtifactCatalogEntry[]> {
-  const response = await apiFetch('/v3/artifacts?limit=2000', { method: 'GET', signal })
+export async function fetchDesktopV3ArtifactCatalog(signal?: AbortSignal, sessionId = ''): Promise<DesktopV3ArtifactCatalogEntry[]> {
+  const search = new URLSearchParams({ limit: '2000' })
+  if (sessionId.trim()) search.set('session_id', sessionId.trim())
+  const response = await apiFetch(`/v3/artifacts?${search.toString()}`, { method: 'GET', signal })
   if (!response.ok) throw new Error(await readErrorMessage(response))
   const payload = await response.json() as DesktopV3ArtifactCatalogResponse
   if (payload.ok !== true || !Array.isArray(payload.artifacts)) throw new Error('Artifact catalog returned an invalid response')

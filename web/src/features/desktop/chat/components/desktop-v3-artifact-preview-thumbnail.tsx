@@ -16,6 +16,77 @@ interface DesktopV3ArtifactPreviewThumbnailProps {
   presentation?: 'thumbnail' | 'wide'
 }
 
+type ArtifactPreviewIntersectionListener = (intersecting: boolean) => void
+
+const artifactPreviewIntersectionListeners = new Map<Element, ArtifactPreviewIntersectionListener>()
+let artifactPreviewIntersectionObserver: IntersectionObserver | undefined
+
+function observeArtifactPreview(element: Element, listener: ArtifactPreviewIntersectionListener): () => void {
+  if (typeof IntersectionObserver === 'undefined') {
+    listener(true)
+    return () => undefined
+  }
+  artifactPreviewIntersectionObserver ??= new IntersectionObserver((entries) => {
+    for (const entry of entries) artifactPreviewIntersectionListeners.get(entry.target)?.(entry.isIntersecting)
+  }, { threshold: 0.05 })
+  artifactPreviewIntersectionListeners.set(element, listener)
+  artifactPreviewIntersectionObserver.observe(element)
+  return () => {
+    artifactPreviewIntersectionListeners.delete(element)
+    artifactPreviewIntersectionObserver?.unobserve(element)
+    if (artifactPreviewIntersectionListeners.size === 0) {
+      artifactPreviewIntersectionObserver?.disconnect()
+      artifactPreviewIntersectionObserver = undefined
+    }
+  }
+}
+
+const artifactPreviewPageVisibilityListeners = new Set<(visible: boolean) => void>()
+let artifactPreviewPageVisibilityListening = false
+const notifyArtifactPreviewPageVisibility = () => {
+  const visible = document.visibilityState === 'visible'
+  for (const listener of artifactPreviewPageVisibilityListeners) listener(visible)
+}
+
+function subscribeArtifactPreviewPageVisibility(listener: (visible: boolean) => void): () => void {
+  if (typeof document === 'undefined') return () => undefined
+  artifactPreviewPageVisibilityListeners.add(listener)
+  listener(document.visibilityState === 'visible')
+  if (!artifactPreviewPageVisibilityListening) {
+    document.addEventListener('visibilitychange', notifyArtifactPreviewPageVisibility)
+    artifactPreviewPageVisibilityListening = true
+  }
+  return () => {
+    artifactPreviewPageVisibilityListeners.delete(listener)
+    if (artifactPreviewPageVisibilityListening && artifactPreviewPageVisibilityListeners.size === 0) {
+      document.removeEventListener('visibilitychange', notifyArtifactPreviewPageVisibility)
+      artifactPreviewPageVisibilityListening = false
+    }
+  }
+}
+
+const artifactPreviewMotionListeners = new Set<(reduced: boolean) => void>()
+let artifactPreviewMotionMedia: MediaQueryList | undefined
+const notifyArtifactPreviewMotion = () => {
+  const reduced = artifactPreviewMotionMedia?.matches ?? false
+  for (const listener of artifactPreviewMotionListeners) listener(reduced)
+}
+
+function subscribeArtifactPreviewMotion(listener: (reduced: boolean) => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => undefined
+  artifactPreviewMotionMedia ??= window.matchMedia('(prefers-reduced-motion: reduce)')
+  artifactPreviewMotionListeners.add(listener)
+  listener(artifactPreviewMotionMedia.matches)
+  if (artifactPreviewMotionListeners.size === 1) artifactPreviewMotionMedia.addEventListener('change', notifyArtifactPreviewMotion)
+  return () => {
+    artifactPreviewMotionListeners.delete(listener)
+    if (artifactPreviewMotionListeners.size === 0) {
+      artifactPreviewMotionMedia?.removeEventListener('change', notifyArtifactPreviewMotion)
+      artifactPreviewMotionMedia = undefined
+    }
+  }
+}
+
 export function useDesktopV3ArtifactPreviewVisibility<T extends HTMLElement = HTMLDivElement>(enabled = true) {
   const previewRef = useRef<T>(null)
   const [intersecting, setIntersecting] = useState(false)
@@ -32,33 +103,11 @@ export function useDesktopV3ArtifactPreviewVisibility<T extends HTMLElement = HT
       setIntersecting(false)
       return undefined
     }
-    if (typeof IntersectionObserver === 'undefined') {
-      setIntersecting(true)
-      return undefined
-    }
-    const observer = new IntersectionObserver((entries) => {
-      setIntersecting(entries.some((entry) => entry.isIntersecting))
-    }, { threshold: 0.05 })
-    observer.observe(preview)
-    return () => observer.disconnect()
+    return observeArtifactPreview(preview, setIntersecting)
   }, [enabled])
 
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined
-    const updateVisibility = () => setPageVisible(document.visibilityState === 'visible')
-    updateVisibility()
-    document.addEventListener('visibilitychange', updateVisibility)
-    return () => document.removeEventListener('visibilitychange', updateVisibility)
-  }, [])
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
-    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const updateMotionPreference = () => setReducedMotion(media.matches)
-    updateMotionPreference()
-    media.addEventListener('change', updateMotionPreference)
-    return () => media.removeEventListener('change', updateMotionPreference)
-  }, [])
+  useEffect(() => subscribeArtifactPreviewPageVisibility(setPageVisible), [])
+  useEffect(() => subscribeArtifactPreviewMotion(setReducedMotion), [])
 
   return {
     previewRef,
@@ -76,7 +125,17 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const [previewText, setPreviewText] = useState('')
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
-  const { previewRef, previewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility()
+  const [interactivePreviewRequested, setInteractivePreviewRequested] = useState(false)
+  const { previewRef, previewVisible: previewInViewport, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility()
+  const interactivePreview = Boolean(artifact.animationProfile)
+    || artifact.mediaType === 'text/html'
+    || artifact.mediaType === 'application/pdf'
+    || artifact.mediaType === 'image/gif'
+    || artifact.mediaType === 'image/svg+xml'
+    || artifact.mediaType.startsWith('video/')
+    || artifact.kind === 'video'
+  // Rich thumbnails are demand-driven so long transcripts do not run a wall of iframes, GIFs, or videos.
+  const previewVisible = previewInViewport && (!interactivePreview || interactivePreviewRequested)
   const animationExecutionAllowed = !artifact.animationProfile
     || artifact.animationProfile.profileId === 'final_render'
     || previewMotionAllowed
@@ -166,7 +225,12 @@ export function DesktopV3ArtifactPreviewThumbnail({
         className,
       )}
       style={{ ...(previewAspectRatio ? { aspectRatio: previewAspectRatio } : {}), ...animationCanvasStyle }}
+      onMouseEnter={() => setInteractivePreviewRequested(true)}
+      onMouseLeave={() => setInteractivePreviewRequested(false)}
+      onFocusCapture={() => setInteractivePreviewRequested(true)}
+      onBlurCapture={() => setInteractivePreviewRequested(false)}
       data-artifact-preview-thumbnail
+      data-artifact-preview-interactive={interactivePreview || undefined}
       data-artifact-preview-presentation={isWide ? 'wide' : 'thumbnail'}
       data-artifact-preview-media-type={artifact.mediaType}
       data-artifact-preview-visible={previewVisible || undefined}

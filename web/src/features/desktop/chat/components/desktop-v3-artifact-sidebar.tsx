@@ -147,11 +147,9 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   const [previewHTML, setPreviewHTML] = useState('')
   const [failed, setFailed] = useState(false)
   const exclusive = sidebarArtifactNeedsExclusiveLivePreview(artifact)
-  const { previewRef, previewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(
-    !exclusive || live,
-  )
-  const previewEnabled = previewVisible
-    && (!exclusive || live)
+  const { previewRef, previewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(live)
+  const previewEnabled = live
+    && previewVisible
     && (!sidebarArtifactNeedsMotionPermission(artifact) || previewMotionAllowed)
 
   useEffect(() => {
@@ -194,7 +192,7 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   if (artifact.status === 'staging') thumbnail = <Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Generating artifact" />
   else if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) thumbnail = <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
   else if (previewEnabled && artifact.mediaType.startsWith('image/') && previewURL) thumbnail = <img src={previewURL} alt="" className="size-full object-contain" />
-  else if (previewEnabled && (!artifact.animationProfile || artifact.animationProfile.profileId === 'final_render') && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} autoPlay loop muted playsInline preload="none" className="size-full object-contain bg-black" />
+  else if (previewEnabled && (!artifact.animationProfile || artifact.animationProfile.profileId === 'final_render') && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" />
   else if (previewEnabled && artifact.mediaType === 'text/html' && previewHTML) thumbnail = <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
   else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
 
@@ -276,7 +274,7 @@ export function DesktopV3ArtifactSidebar({
   const groups = useMemo(() => desktopV3ArtifactSidebarGroups(artifacts), [artifacts])
   const [requestedLivePreviewKey, setRequestedLivePreviewKey] = useState('')
   const selectedLivePreviewKey = useMemo(() => {
-    const selected = artifacts.find((artifact) => artifact.selected && artifact.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(artifact))
+    const selected = artifacts.find((artifact) => artifact.selected && artifact.status === 'ready' && artifact.previewable)
     return selected ? sidebarArtifactPreviewKey(selected) : ''
   }, [artifacts])
   const fallbackLivePreviewKey = useMemo(() => {
@@ -284,18 +282,19 @@ export function DesktopV3ArtifactSidebar({
       const representative = group.entries.find((entry) => entry.selected)
         ?? group.entries.find((entry) => entry.status === 'ready')
         ?? group.entries[0]
-      if (representative?.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(representative)) {
+      if (representative?.status === 'ready' && representative.previewable) {
         return sidebarArtifactPreviewKey(representative)
       }
     }
     return ''
   }, [groups])
   const requestedArtifact = artifacts.find((artifact) => sidebarArtifactPreviewKey(artifact) === requestedLivePreviewKey)
-  const livePreviewKey = selectedLivePreviewKey
-    || (requestedArtifact?.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(requestedArtifact) ? requestedLivePreviewKey : '')
+  // Keep one authorized preview alive at a time; pointer or focus demand takes precedence over the default.
+  const livePreviewKey = (requestedArtifact?.status === 'ready' && requestedArtifact.previewable ? requestedLivePreviewKey : '')
+    || selectedLivePreviewKey
     || fallbackLivePreviewKey
   const requestLivePreview = (artifact: DesktopV3ArtifactCatalogEntry) => {
-    if (artifact.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(artifact)) {
+    if (artifact.status === 'ready' && artifact.previewable) {
       setRequestedLivePreviewKey(sidebarArtifactPreviewKey(artifact))
     }
   }

@@ -1897,7 +1897,7 @@ export function DesktopV3ExistingConversationPane({
     setSessionArtifactsLoading(true);
     setSessionArtifactsError("");
     try {
-      const catalog = await fetchDesktopV3ArtifactCatalog();
+      const catalog = await fetchDesktopV3ArtifactCatalog(undefined, normalizedSessionId);
       if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
       setSessionArtifacts(desktopV3ArtifactsForSession(catalog, normalizedSessionId));
     } catch (error) {

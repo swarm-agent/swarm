@@ -246,9 +246,11 @@ export function DesktopV3ArtifactGallery({
   const selectedIsQueuedForChat = Boolean(selected && chatSelectedIds.includes(artifactSelectionKey(selected)))
   const selectedRequirementLabel = formatDesktopV3ArtifactOutputRequirements(selected?.outputRequirements)
   const selectedAnimationLabel = formatDesktopV3ArtifactAnimationProfile(selected?.animationProfile)
-  const selectedAnimationActive = !selected?.animationProfile
+  const selectedAnimationActive = animationPreviewVisible && (
+    !selected?.animationProfile
     || selected.animationProfile.profileId === 'final_render'
-    || (animationPreviewVisible && previewMotionAllowed)
+    || previewMotionAllowed
+  )
   const selectedVideoProfileCompatible = !selected?.animationProfile || selected.animationProfile.profileId === 'final_render'
   const attachableSelectedArtifacts = artifacts.filter((artifact) => chatSelectedIds.includes(artifactSelectionKey(artifact))
     && artifact.status === 'ready'
@@ -349,7 +351,10 @@ export function DesktopV3ArtifactGallery({
     const controller = new AbortController()
     let objectURL = ''
     setPreviewLoading(true)
-    void fetchDesktopV3Artifact(selected.sessionId, selected.artifactId, controller.signal)
+    const fetchPreview = selected.sourceRef
+      ? fetchDesktopV3ArtifactDownload(selected, controller.signal)
+      : fetchDesktopV3Artifact(selected.sessionId, selected.artifactId, controller.signal)
+    void fetchPreview
       .then(async (blob) => {
         if (controller.signal.aborted) return
         if (selected.mediaType === 'text/html') {
@@ -380,7 +385,7 @@ export function DesktopV3ArtifactGallery({
       controller.abort()
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [open, selectedAnimationActive, selected?.animationProfile, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.status])
+  }, [open, selectedAnimationActive, selected?.animationProfile, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.sourceRef, selected?.status])
 
   const selectArtifact = (artifact: DesktopV3ArtifactGalleryEntry) => {
     setOverviewCollectionKey('')
@@ -664,12 +669,12 @@ export function DesktopV3ArtifactGallery({
                   {!previewLoading && !previewError && selected.status === 'staging' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><Loader2 className="mx-auto mb-3 size-6 animate-spin text-[var(--app-primary)]" /><p>This variant is still generating.</p><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The live review surface will refresh when it is ready.</p></div></div> : null}
                   {!previewLoading && !previewError && (selected.status === 'failed' || selected.status === 'unavailable') ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-danger)]"><div><AlertTriangle className="mx-auto mb-3 size-6" /><p>This variant could not be generated.</p>{selected.failureCode ? <p className="mt-1 font-mono text-xs text-[var(--app-text-muted)]">{selected.failureCode}</p> : null}</div></div> : null}
                   {!previewLoading && !previewError && !selected.previewable && selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
-                  {!previewLoading && !previewError && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" /></div> : null}
-                  {!previewLoading && !previewError && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player /></div> : null}
-                  {!previewLoading && !previewError && selected.mediaType === 'text/html' && previewText ? <iframe title={selected.label} srcDoc={previewText} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
-                  {!previewLoading && !previewError && selected.mediaType === 'application/pdf' && previewURL ? <iframe title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
-                  {!previewLoading && !previewError && selected.mediaType === 'text/markdown' && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
-                  {!previewLoading && !previewError && selected.mediaType === 'text/plain' && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" /></div> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player /></div> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewText ? <iframe title={selected.label} srcDoc={previewText} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'application/pdf' && previewURL ? <iframe title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/markdown' && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/plain' && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}
                 </div>
                 <footer className="grid shrink-0 grid-cols-3 gap-1.5 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 md:flex md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3" aria-live="polite" data-mobile-generation-actions>
                   <div className="hidden min-w-0 flex-1 text-xs md:block">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : chatSelectedIds.length > 0 ? <span className="text-[var(--app-text-subtle)]">{chatSelectedIds.length} ready variant{chatSelectedIds.length === 1 ? '' : 's'} selected for chat. {pendingChatArtifacts.some((artifact) => artifact.mediaType.startsWith('image/')) ? 'Ask for changes to remix the exact selected image.' : 'This does not change the durable selected design.'}</span> : selectedIsCanonical ? <span className="inline-flex items-center gap-1.5 text-[var(--app-success)]"><Check className="size-3.5" />This is the durable selected design for the collection.</span> : <span className="text-[var(--app-text-subtle)]">Attach a reference for changes without changing the selected design, or select and use it.</span>}</div>
