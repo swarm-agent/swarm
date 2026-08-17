@@ -51,6 +51,7 @@ type taskSwarmHydrationRequest struct {
 	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	IterationControls   *taskSwarmIterationControls                    `json:"iteration_controls,omitempty"`
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
+	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 	Items               []taskSwarmHydrationItem                       `json:"items"`
 }
 
@@ -266,7 +267,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	groupIndex, groupRemaining := 0, 0
@@ -398,6 +399,12 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		b.WriteString("- owned scope: entire isolated worktree\n")
 	}
 	if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" {
+		if request.SourceArtifact != nil {
+			b.WriteString("- exact source artifact reference (immutable; use this existing ready artifact as the input for the requested iteration): ")
+			encoded, _ := json.Marshal(request.SourceArtifact)
+			b.Write(encoded)
+			b.WriteString("\n")
+		}
 		if request.OutputRequirements != nil {
 			encoded, _ := json.Marshal(request.OutputRequirements)
 			b.WriteString("- exact output requirements (immutable; Router and worker may not rewrite): ")

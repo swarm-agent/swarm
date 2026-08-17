@@ -188,6 +188,13 @@ func (s *Service) ListSessionArtifactCollections(accountScopeID, sessionID, stat
 	return s.store.ListSessionArtifactCollections(accountScopeID, sessionID, status, limit)
 }
 
+func (s *Service) ListAllSessionArtifactCollections(accountScopeID, sessionID, status string) ([]ArtifactCollection, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListAllSessionArtifactCollections(accountScopeID, sessionID, status)
+}
+
 func (s *Service) ListSessionArtifactVariants(accountScopeID, sessionID, collectionID string, limit int) ([]ArtifactVariant, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")

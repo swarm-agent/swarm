@@ -3,6 +3,7 @@ package run
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/tool"
@@ -66,6 +67,9 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	sourceProperties, _ := source["properties"].(map[string]any)
 	if !reflect.DeepEqual(source["required"], []string{"session_id", "collection_id", "variant_id", "event_seq"}) || sourceProperties["event_seq"] == nil {
 		t.Fatalf("task source_artifact schema = %#v", source)
+	}
+	if description, _ := source["description"].(string); !strings.Contains(description, "Designer or direct image Iteration Swarms") || !strings.Contains(description, "passes the opaque reference to each worker") {
+		t.Fatalf("task source_artifact description = %q", description)
 	}
 	controls, ok := properties["iteration_controls"].(map[string]any)
 	if !ok || !reflect.DeepEqual(controls["required"], []string{"change"}) || controls["additionalProperties"] != false {

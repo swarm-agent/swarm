@@ -3976,6 +3976,20 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
+	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
+	if parsed.Swarm != nil {
+		sourceArtifact = cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact)
+	}
+	if sourceArtifact != nil {
+		if s.tools == nil || s.tools.ArtifactAuthority() == nil {
+			return "", errors.New("task source_artifact requires the authenticated artifact authority")
+		}
+		principal := artifact.Principal{SessionID: parentSession.ID, AccountScopeID: parentSession.AccountScopeID, UserID: parentSession.UserID}
+		if _, sourceErr := s.tools.ArtifactAuthority().GetReference(principal, *sourceArtifact); sourceErr != nil {
+			return "", fmt.Errorf("task source_artifact is unavailable: %w", sourceErr)
+		}
+	}
+
 	launchSpecs, err = s.hydrateTaskSwarm(ctx, parentSession, parsed, launchSpecs, step, taskCallID, emit, req.Principal)
 	if err != nil {
 		return "", err
@@ -4114,6 +4128,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			IntegrationContract:  strings.TrimSpace(spec.IntegrationContract),
 			IntegrationRequired:  strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
 			ArtifactRunContext:   managedArtifactContext,
+			SourceArtifact:       cloneTaskImageSourceArtifact(sourceArtifact),
 			LogicalTaskID:        taskCallID + ":" + fmt.Sprint(i+1),
 			TaskCallID:           taskCallID,
 			ParentRunID:          req.RunID,
@@ -4329,6 +4344,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				OutputRequirements:   cloneTaskOutputRequirements(launch.OutputRequirements),
 				AnimationProfile:     cloneTaskAnimationProfile(launch.AnimationProfile),
 				ArtifactRunContext:   launch.ArtifactRunContext,
+				SourceArtifact:       cloneTaskImageSourceArtifact(launch.SourceArtifact),
 			})
 		}
 		var subResult RunResult
@@ -4416,7 +4432,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if outcome.ArtifactReference != nil && outcome.ArtifactReference.Status == "pending" {
 				outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
 				outcome.ArtifactReference.FailureCode = "child_run_failed"
-				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, "child_run_failed")
+				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, "child_run_failed", launch.SourceArtifact)
 			}
 			if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
 				if state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath); inspectErr == nil {
@@ -4478,7 +4494,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			markMissing := func(code string) {
 				outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
 				outcome.ArtifactReference.FailureCode = code
-				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, code)
+				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, code, launch.SourceArtifact)
 			}
 			artifactPrincipal := artifact.Principal{
 				SessionID:        launch.ArtifactRunContext.SessionID,
@@ -4506,8 +4522,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(variant.AnimationProfile)}
 			lineage := variant.Lineage
-			lineageSourceMatches := lineage.SourceSessionID == launch.ChildSession.ID ||
-				(lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
+			lineageSourceMatches := lineage.SourceSessionID == launch.ChildSession.ID
+			if source := launch.SourceArtifact; source != nil {
+				lineageSourceMatches = lineage.SourceSessionID == strings.TrimSpace(source.SessionID) &&
+					lineage.SourceCollectionID == strings.TrimSpace(source.CollectionID) &&
+					lineage.SourceVariantID == strings.TrimSpace(source.VariantID) &&
+					lineage.SourceEventSeq == source.EventSeq
+			}
 			lineageMatches := variant.AccountScopeID == parentSession.AccountScopeID && variant.SessionID == parentSession.ID &&
 				lineage.ParentSessionID == parentSession.ID &&
 				lineageSourceMatches &&
@@ -4924,6 +4945,7 @@ type taskDelegationPromptConfig struct {
 	OutputRequirements   *pebblestore.SessionArtifactOutputRequirements
 	AnimationProfile     *pebblestore.SessionArtifactAnimationProfile
 	ArtifactRunContext   *tool.ArtifactRunContext
+	SourceArtifact       *pebblestore.SessionArtifactSelectionReference
 }
 
 func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
@@ -4964,6 +4986,12 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 				b.WriteString("- output mode: managed image; publish exactly one durable ready image with one manage_artifact generate_image call; omit provider, model, collection_id, variant_id, and output_requirements; do not inspect, write, or edit the workspace checkout\n")
 			} else {
 				b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; omit output_requirements and animation_profile because trusted orchestration injects the immutable snapshots; do not write or edit the workspace checkout\n")
+			}
+			if config.SourceArtifact != nil {
+				b.WriteString("- exact source artifact (backend supplied; immutable): ")
+				encoded, _ := json.Marshal(config.SourceArtifact)
+				b.Write(encoded)
+				b.WriteString("\n- source artifact contract: inspect or derive from this exact authenticated ready reference; never substitute a preview, download, or guessed workspace path. When publishing the derived managed output, copy it as source_session_id/source_collection_id/source_variant_id/source_event_seq so lineage remains exact.\n")
 			}
 			if config.ArtifactRunContext == nil {
 				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")

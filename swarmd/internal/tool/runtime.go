@@ -1380,7 +1380,7 @@ func (r *Runtime) Definitions() []Definition {
 					"source_artifact": map[string]any{"type": "object", "properties": map[string]any{
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
-					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed image reference for direct image swarm remixing. The trusted generation boundary resolves its authenticated bounded bytes; Router receives text only."},
+					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed artifact reference for Designer or direct image Iteration Swarms. The backend authenticates the exact ready event and passes the opaque reference to each worker; managed output preserves source lineage. Direct image swarms resolve bounded image bytes only at the trusted generation boundary."},
 					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"description": map[string]any{
 						"type":        "string",

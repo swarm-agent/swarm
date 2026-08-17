@@ -129,9 +129,24 @@ func TestDirectImageSwarmParsesAndApprovesExactSourceArtifact(t *testing.T) {
 	if err := validateApprovedDirectImageSwarm(string(tampered), parsed); err == nil {
 		t.Fatal("approved image remix manifest accepted changed source event")
 	}
+	designer, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"refine the selected design","agent_type":"designer","count":1,"source_artifact":{"session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":9}}`)
+	if err != nil {
+		t.Fatalf("parse Designer source-artifact swarm: %v", err)
+	}
+	if designer.Swarm == nil || !equalTaskImageSourceArtifact(designer.Swarm.SourceArtifact, want) {
+		t.Fatalf("Designer source artifact = %#v", designer.Swarm)
+	}
+	request, err := buildTaskSwarmHydrationRequest(designer, designer.Launches)
+	if err != nil || !equalTaskImageSourceArtifact(request.SourceArtifact, want) {
+		t.Fatalf("Designer hydration source artifact = %#v, %v", request.SourceArtifact, err)
+	}
+	prompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Refinement", Theme: "selected design", Role: "Refine the source.", Deliverable: "Derived variant"})
+	if err != nil || !strings.Contains(prompt, `"session_id":"source-session"`) || !strings.Contains(prompt, "exact source artifact reference") {
+		t.Fatalf("Designer source artifact child prompt = %q, %v", prompt, err)
+	}
 	for _, raw := range []string{
 		`{"mode":"swarm","prompt":"x","agent_type":"image","count":1,"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v"}}`,
-		`{"mode":"swarm","prompt":"x","agent_type":"designer","count":1,"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1}}`,
+		`{"mode":"swarm","prompt":"x","agent_type":"coder","count":1,"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1}}`,
 	} {
 		if _, err := parseTaskCallArguments(raw); err == nil {
 			t.Fatalf("invalid source artifact accepted: %s", raw)

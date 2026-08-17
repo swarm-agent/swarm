@@ -364,14 +364,14 @@ func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t 
 	}
 }
 
-func TestManagedImageRemixPlaceholderPreservesExactSourceLineage(t *testing.T) {
+func TestManagedIterationSwarmPlaceholderPreservesExactSourceLineage(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	parent, ok, err := svc.sessions.GetSession(parentSessionID)
 	if err != nil || !ok {
 		t.Fatalf("load parent: ok=%v err=%v", ok, err)
 	}
-	spec := taskLaunchSpec{RequestedSubagentType: "image", OutputMode: taskOutputModeManaged, AssignmentLabel: "Lighting remix", SourceArguments: map[string]any{"swarm_index": 1}, SwarmMode: true}
+	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Selected artifact refinement", SourceArguments: map[string]any{"swarm_index": 1}, SwarmMode: true}
 	collectionID, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-remix", []taskLaunchSpec{spec}, nil)
 	if err != nil {
 		t.Fatalf("allocate remix collection: %v", err)

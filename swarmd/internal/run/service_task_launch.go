@@ -381,7 +381,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
 	}
 	if _, supplied := args["source_artifact"]; supplied && mode != taskModeSwarm {
-		return taskCallArguments{}, errors.New("task source_artifact is supported only for direct image swarms")
+		return taskCallArguments{}, errors.New("task source_artifact is supported only for Designer or direct image Iteration Swarms")
 	}
 
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
@@ -1008,8 +1008,8 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if outputMode != taskOutputModeManaged && animationProfile != nil {
 		return nil, nil, errors.New("task Designer swarm animation_profile requires managed output")
 	}
-	if sourceArtifact != nil && agentType != "image" {
-		return nil, nil, errors.New("task source_artifact is supported only for direct image swarms")
+	if sourceArtifact != nil && agentType != "image" && agentType != "designer" {
+		return nil, nil, errors.New("task source_artifact is supported only for Designer or direct image Iteration Swarms")
 	}
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
