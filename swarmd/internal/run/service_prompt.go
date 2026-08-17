@@ -780,6 +780,15 @@ func attachedVideoReferencesForProvider(references []pebblestore.SessionVideoAtt
 	return strings.Join(lines, "\n")
 }
 
+// AttachedArtifactSelectionsForProvider projects durable V3 selections into the
+// bounded provider-visible reference block shared by both run executors.
+func AttachedArtifactSelectionsForProvider(selections []pebblestore.SessionArtifactSelectionReference) string {
+	if len(selections) == 0 {
+		return ""
+	}
+	return attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": selections})
+}
+
 // attachedArtifactSelectionsForProvider projects only bounded visible labels and
 // opaque references. Managed bytes and storage paths remain behind
 // manage_artifact's authenticated authority.

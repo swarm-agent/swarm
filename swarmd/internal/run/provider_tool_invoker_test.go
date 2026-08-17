@@ -584,7 +584,48 @@ func TestProviderManagedToolCallRejectsMissingPermissionService(t *testing.T) {
 	}
 }
 
-func TestProviderManagedV3BypassPermissionsAllowsControlPlaneTool(t *testing.T) {
+func TestProviderManagedV3AskUserInputBoundaryIgnoresPermissionAllow(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-v3-control-allowed",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		applySessionMutation: providerManagedV3NoopMutation,
+		providerManagedV3:    true,
+		policy: &permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
+			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "ask_user",
+		}}},
+	})
+	if invoker == nil {
+		t.Fatalf("provider tool invoker is nil")
+	}
+
+	args := mustProviderToolInvokerJSON(t, map[string]any{"question": "Continue?", "options": []string{"yes", "no"}})
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, err := invoker.ExecuteTool(ctx, toolInvocation("call-ask", "ask_user", args))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected ask-user to wait for input despite a broad allow rule, got %v", err)
+	}
+	pending, listErr := permissions.ListPending(sessionID, 10)
+	if listErr != nil {
+		t.Fatalf("list pending permissions: %v", listErr)
+	}
+	if len(pending) != 1 || canonicalToolName(pending[0].ToolName) != "ask_user" {
+		t.Fatalf("expected one pending ask-user input request despite a broad allow rule, got %#v", pending)
+	}
+}
+
+func TestProviderManagedV3AskUserInputBoundaryIgnoresPermissionBypass(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
 	defer cleanup()
@@ -608,23 +649,19 @@ func TestProviderManagedV3BypassPermissionsAllowsControlPlaneTool(t *testing.T) 
 	}
 
 	args := mustProviderToolInvokerJSON(t, map[string]any{"question": "Continue?", "options": []string{"yes", "no"}})
-	result, err := invoker.ExecuteTool(context.Background(), toolInvocation("call-ask", "ask_user", args))
-	if err != nil {
-		t.Fatalf("execute v3 provider control tool with bypass: %v", err)
-	}
-	if result.Error != "" {
-		t.Fatalf("result error = %q", result.Error)
-	}
-	if !strings.Contains(result.Output, "approved_no_response") {
-		t.Fatalf("result output missing ask-user bypass response: %s", result.Output)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, err := invoker.ExecuteTool(ctx, toolInvocation("call-ask", "ask_user", args))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected ask-user to wait for input while ordinary permissions are bypassed, got %v", err)
 	}
 
-	pending, err := permissions.ListPending(sessionID, 10)
-	if err != nil {
-		t.Fatalf("list pending permissions: %v", err)
+	pending, listErr := permissions.ListPending(sessionID, 10)
+	if listErr != nil {
+		t.Fatalf("list pending permissions: %v", listErr)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("expected no pending permission records while bypass is enabled, got %#v", pending)
+	if len(pending) != 1 || canonicalToolName(pending[0].ToolName) != "ask_user" {
+		t.Fatalf("expected one pending ask-user input request while bypass is enabled, got %#v", pending)
 	}
 }
 

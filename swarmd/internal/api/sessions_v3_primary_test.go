@@ -4551,6 +4551,24 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ProviderInputProjectsArtifactSelections(t *testing.T) {
+	message := pebblestore.MessageSnapshot{
+		Role:    "user",
+		Content: "Use this one.",
+		ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{
+			SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41,
+			Label: "Iteration 2: Pixel-native lattice", Description: "Reviewed option", Action: "use",
+		}},
+	}
+
+	input := sessionsV3ProviderInput([]pebblestore.MessageSnapshot{message})
+	for _, want := range []string{"Use this one.", "Iteration 2: Pixel-native lattice", "Reviewed option", "session_id=source-session", "collection_id=collection-1", "variant_id=variant-2", "event_seq=41"} {
+		if !sessionsV3ProviderInputContainsContentText(input, want) {
+			t.Fatalf("provider input missing artifact selection %q: %+v", want, input)
+		}
+	}
+}
+
 func TestSessionsV3ProviderInputSuppressesCodexNativeReplayAcrossFreshBoundary(t *testing.T) {
 	message := pebblestore.MessageSnapshot{
 		Role:    "assistant",

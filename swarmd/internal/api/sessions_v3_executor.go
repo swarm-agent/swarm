@@ -4189,7 +4189,8 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 			return nil, errors.New("durable media reference is attached to a non-user message")
 		}
 		content := make([]map[string]any, 0, len(message.Media)+1)
-		if text := strings.TrimSpace(message.Content); text != "" {
+		text := sessionsV3ProviderUserText(message)
+		if text != "" {
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 		}
 		for _, reference := range message.Media {
@@ -4248,6 +4249,9 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 	input := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
 		content := strings.TrimSpace(message.Content)
+		if strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+			content = sessionsV3ProviderUserText(message)
+		}
 		if content == "" {
 			continue
 		}
@@ -4273,6 +4277,17 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 		}
 	}
 	return input
+}
+
+func sessionsV3ProviderUserText(message pebblestore.MessageSnapshot) string {
+	content := strings.TrimSpace(message.Content)
+	if len(message.ArtifactSelections) == 0 {
+		return content
+	}
+	if artifactContext := runruntime.AttachedArtifactSelectionsForProvider(message.ArtifactSelections); artifactContext != "" {
+		content = strings.TrimSpace(content + "\n\n" + artifactContext)
+	}
+	return content
 }
 
 func sessionsV3MessagesForProviderLineage(messages []pebblestore.MessageSnapshot, _ string, _ bool) []pebblestore.MessageSnapshot {
