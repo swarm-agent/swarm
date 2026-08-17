@@ -155,6 +155,16 @@ func TestProjectPlanFinalHandoffArtifactsFiltersAndHidesPaths(t *testing.T) {
 	}
 }
 
+func TestProjectPlanFinalHandoffArtifactsProjectsVideoSource(t *testing.T) {
+	const sourceRef = "videosrc_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	projected := ProjectPlanFinalHandoffArtifacts("plan-1", "cp-1", []pebblestore.SessionPlanArtifactReference{{
+		SourceRef: sourceRef, Label: "Final intro", Role: "deliverable", MediaType: "video/mp4",
+	}})
+	if len(projected) != 1 || projected[0].ID != sourceRef || projected[0].SourceRef != sourceRef || projected[0].Kind != "video" || projected[0].MediaType != "video/mp4" || !projected[0].Previewable {
+		t.Fatalf("video source descriptor = %#v", projected)
+	}
+}
+
 func TestBuildPlanFinalHandoffAllowsLegacyCheckpointWithoutSourceFields(t *testing.T) {
 	projection, err := BuildPlanFinalHandoff(pebblestore.SessionPlanCheckpoint{Report: "legacy report"})
 	if err != nil || projection != nil {

@@ -41,6 +41,9 @@ var planFinalHandoffViewableMediaTypes = map[string]string{
 	"text/markdown":   "markdown",
 	"text/plain":      "text",
 	"application/pdf": "pdf",
+	"video/mp4":       "video",
+	"video/webm":      "video",
+	"video/quicktime": "video",
 }
 
 var planFinalHandoffViewableExtensions = map[string]struct {
@@ -59,6 +62,9 @@ var planFinalHandoffViewableExtensions = map[string]struct {
 	".markdown": {mediaType: "text/markdown", kind: "markdown"},
 	".txt":      {mediaType: "text/plain", kind: "text"},
 	".pdf":      {mediaType: "application/pdf", kind: "pdf"},
+	".mp4":      {mediaType: "video/mp4", kind: "video"},
+	".webm":     {mediaType: "video/webm", kind: "video"},
+	".mov":      {mediaType: "video/quicktime", kind: "video"},
 }
 
 // NormalizePlanCheckpointHandoff validates and normalizes the concise source
@@ -201,6 +207,38 @@ func ProjectPlanFinalHandoffArtifacts(planID, checkpointID string, artifacts []p
 	result := make([]pebblestore.PlanFinalHandoffArtifact, 0, len(artifacts))
 	seen := make(map[string]struct{}, len(artifacts))
 	for _, artifact := range artifacts {
+		if isVideoSourcePlanArtifact(artifact) {
+			if strings.ToLower(strings.TrimSpace(artifact.Role)) != "deliverable" {
+				continue
+			}
+			ref := strings.TrimSpace(artifact.SourceRef)
+			if ref == "" {
+				continue
+			}
+			mediaType := strings.ToLower(strings.TrimSpace(artifact.MediaType))
+			kind, ok := planFinalHandoffViewableMediaTypes[mediaType]
+			if !ok || kind != "video" {
+				continue
+			}
+			id := ref
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			label := strings.TrimSpace(artifact.Label)
+			description := strings.TrimSpace(artifact.Description)
+			if label == "" {
+				label = description
+			}
+			if label == "" {
+				label = "Video"
+			}
+			result = append(result, pebblestore.PlanFinalHandoffArtifact{
+				ID: id, Label: label, Description: description, MediaType: mediaType,
+				Kind: "video", Previewable: true, SourceRef: ref,
+			})
+			continue
+		}
 		if isManagedPlanArtifact(artifact) {
 			role := strings.ToLower(strings.TrimSpace(artifact.Role))
 			if role != "" && role != "deliverable" {

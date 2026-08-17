@@ -84,6 +84,7 @@ type sessionsV3ResolvedArtifact struct {
 
 type sessionsV3ArtifactCatalogItem struct {
 	ArtifactID            string                                         `json:"artifact_id"`
+	SourceRef             string                                         `json:"source_ref,omitempty"`
 	CollectionID          string                                         `json:"collection_id,omitempty"`
 	SessionID             string                                         `json:"session_id"`
 	SessionTitle          string                                         `json:"session_title"`
@@ -288,9 +289,12 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					if updatedAt == 0 {
 						updatedAt = plan.UpdatedAt
 					}
-					_, managedArtifactID := sessionsV3LegacyManagedArtifactIDs(session.ID, plan.ID, checkpoint.ID, descriptor.ID)
-					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+managedArtifactID, sessionsV3ArtifactCatalogItem{
-						ArtifactID: managedArtifactID, SessionID: session.ID, SessionTitle: session.Title,
+					artifactID := descriptor.ID
+					if descriptor.SourceRef == "" {
+						_, artifactID = sessionsV3LegacyManagedArtifactIDs(session.ID, plan.ID, checkpoint.ID, descriptor.ID)
+					}
+					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+artifactID, sessionsV3ArtifactCatalogItem{
+						ArtifactID: artifactID, SourceRef: descriptor.SourceRef, SessionID: session.ID, SessionTitle: session.Title,
 						WorkspacePath: workspacePath, WorkspaceName: workspaceName,
 						PlanID: plan.ID, PlanTitle: planTitle, CheckpointID: checkpoint.ID, CheckpointTitle: checkpoint.Title,
 						Label: descriptor.Label, Description: descriptor.Description, Filename: descriptor.Filename,

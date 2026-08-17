@@ -228,6 +228,7 @@ type SessionPlanArtifactReference struct {
 	CollectionID string `json:"collection_id,omitempty"`
 	VariantID    string `json:"variant_id,omitempty"`
 	EventSeq     uint64 `json:"event_seq,omitempty"`
+	SourceRef    string `json:"source_ref,omitempty"`
 	Label        string `json:"label,omitempty"`
 	Path         string `json:"path,omitempty"`
 	Role         string `json:"role,omitempty"`
@@ -372,6 +373,7 @@ type PlanFinalHandoffArtifact struct {
 	CollectionID string `json:"collection_id,omitempty"`
 	VariantID    string `json:"variant_id,omitempty"`
 	EventSeq     uint64 `json:"event_seq,omitempty"`
+	SourceRef    string `json:"source_ref,omitempty"`
 }
 
 // PlanFinalHandoffDetails keeps the complete terminal evidence available to

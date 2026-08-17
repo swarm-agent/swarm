@@ -313,10 +313,11 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
       const sessionId = stringValue(artifact, 'sessionId', 'session_id')
       const collectionId = stringValue(artifact, 'collectionId', 'collection_id')
       const eventSeq = numberValue(artifact.eventSeq ?? artifact.event_seq)
+      const sourceRef = stringValue(artifact, 'sourceRef', 'source_ref')
       const kind = stringValue(artifact, 'kind')
       const rawCategory = stringValue(artifact, 'category')
       const category: DesktopV3ArtifactCategory = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : (
-        mediaType === 'text/html' || mediaType === 'application/pdf' || mediaType.startsWith('image/') ? 'visual' : 'document'
+        mediaType === 'text/html' || mediaType === 'application/pdf' || mediaType.startsWith('image/') || mediaType.startsWith('video/') || kind === 'video' ? 'visual' : 'document'
       )
       const previewable = typeof artifact.previewable === 'boolean' ? artifact.previewable : true
       return {
@@ -328,6 +329,7 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
         ...(sessionId ? { sessionId } : {}),
         ...(collectionId ? { collectionId } : {}),
         ...(eventSeq > 0 ? { eventSeq } : {}),
+        ...(sourceRef ? { sourceRef } : {}),
         ...(kind ? { kind } : {}),
         category,
         ...(filename ? { filename } : {}),

@@ -719,7 +719,7 @@ func (s *SessionStore) OpenTranscriptionAttachmentSource(accountScopeID, session
 		}
 		return nil, err
 	}
-	for _, workspaceID := range sessionVideoWorkspaceIDs(session) {
+	for _, workspaceID := range SessionVideoWorkspaceIDs(session) {
 		record, found, readErr := s.GetVideoSourceRecord(attachment.AccountScopeID, workspaceID, attachment.SourceRecordRef)
 		if readErr != nil {
 			return nil, readErr

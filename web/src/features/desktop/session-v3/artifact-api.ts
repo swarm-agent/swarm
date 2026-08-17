@@ -95,6 +95,7 @@ export const DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT = 16
 
 export interface DesktopV3ArtifactCatalogEntry {
   artifactId: string
+  sourceRef?: string
   collectionId?: string
   sessionId: string
   sessionTitle: string
@@ -321,6 +322,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   const animationProfile = normalizeDesktopV3ArtifactAnimationProfile(record.animation_profile)
   return {
     artifactId,
+    sourceRef: artifactCatalogString(record.source_ref),
     collectionId: artifactCatalogString(record.collection_id),
     sessionId,
     sessionTitle: artifactCatalogString(record.session_title),
@@ -841,9 +843,15 @@ export async function fetchDesktopV3ArtifactBundle(sessionId: string, artifactId
 }
 
 export async function fetchDesktopV3ArtifactDownload(
-  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'kind' | 'mediaType' | 'sessionId'>,
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'kind' | 'mediaType' | 'sessionId' | 'sourceRef'>,
   signal?: AbortSignal,
 ): Promise<Blob> {
+  if (artifact.sourceRef) {
+    const search = new URLSearchParams({ source_ref: artifact.sourceRef })
+    const response = await apiFetch(`/v3/sessions/${encodeURIComponent(artifact.sessionId)}/video/sources/media?${search.toString()}`, { method: 'GET', signal })
+    if (!response.ok) throw new Error(await readErrorMessage(response))
+    return response.blob()
+  }
   if (desktopV3ArtifactRequiresBundle(artifact)) {
     return fetchDesktopV3ArtifactBundle(artifact.sessionId, artifact.artifactId, signal)
   }

@@ -1563,12 +1563,22 @@ func sessionPlanArtifactToolSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":        map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
-			"role":        map[string]any{"type": "string", "enum": []string{"input", "deliverable"}, "description": "input may be selectively read; deliverable must be included or linked in the user-visible assistant response."},
-			"description": map[string]any{"type": "string"},
-			"media_type":  map[string]any{"type": "string"},
+			"path":          map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
+			"source_ref":    map[string]any{"type": "string", "description": "Exact opaque videosrc_ reference returned by manage_video browse_source for a final video deliverable."},
+			"session_id":    map[string]any{"type": "string"},
+			"collection_id": map[string]any{"type": "string"},
+			"variant_id":    map[string]any{"type": "string"},
+			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
+			"label":         map[string]any{"type": "string"},
+			"role":          map[string]any{"type": "string", "enum": []string{"input", "deliverable"}, "description": "input may be selectively read; deliverable must be included or linked in the user-visible assistant response."},
+			"description":   map[string]any{"type": "string"},
+			"media_type":    map[string]any{"type": "string"},
 		},
-		"required":             []string{"path"},
+		"anyOf": []any{
+			map[string]any{"required": []string{"path"}},
+			map[string]any{"required": []string{"source_ref"}},
+			map[string]any{"required": []string{"session_id", "collection_id", "variant_id", "event_seq"}},
+		},
 		"additionalProperties": false,
 	}
 }

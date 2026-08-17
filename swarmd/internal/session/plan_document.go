@@ -1122,6 +1122,10 @@ func isManagedPlanArtifact(artifact pebblestore.SessionPlanArtifactReference) bo
 	return strings.TrimSpace(artifact.VariantID) != "" || strings.TrimSpace(artifact.CollectionID) != "" || strings.TrimSpace(artifact.SessionID) != "" || artifact.EventSeq != 0
 }
 
+func isVideoSourcePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) bool {
+	return strings.TrimSpace(artifact.SourceRef) != ""
+}
+
 func validateArtifactIDString(label, value string) error {
 	if value == "" {
 		return fmt.Errorf("managed artifact %s id is required", label)
@@ -1145,7 +1149,7 @@ func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArti
 	seen := make(map[string]struct{}, len(artifacts))
 	for i, artifact := range artifacts {
 		if err := validatePlanArtifact(artifact); err != nil {
-			if isManagedPlanArtifact(artifact) {
+			if isManagedPlanArtifact(artifact) || isVideoSourcePlanArtifact(artifact) {
 				return fmt.Errorf("plan document %s[%d] %w", field, i, err)
 			}
 			return fmt.Errorf("plan document %s[%d].path %w", field, i, err)
@@ -1153,6 +1157,8 @@ func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArti
 		var key string
 		if isManagedPlanArtifact(artifact) {
 			key = strings.Join([]string{"managed", strings.TrimSpace(artifact.SessionID), strings.TrimSpace(artifact.CollectionID), strings.TrimSpace(artifact.VariantID)}, "\x00")
+		} else if isVideoSourcePlanArtifact(artifact) {
+			key = strings.Join([]string{"video_source", strings.TrimSpace(artifact.SourceRef)}, "\x00")
 		} else {
 			key = strings.Join([]string{"workspace", strings.TrimSpace(artifact.Path)}, "\x00")
 		}
@@ -1165,6 +1171,35 @@ func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArti
 }
 
 func validatePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) error {
+	if isVideoSourcePlanArtifact(artifact) {
+		if isManagedPlanArtifact(artifact) || strings.TrimSpace(artifact.Path) != "" {
+			return errors.New("video source artifact references must not declare a workspace path or managed artifact identity")
+		}
+		if strings.ToLower(strings.TrimSpace(artifact.Role)) != "deliverable" {
+			return errors.New("video source artifact references must use role deliverable")
+		}
+		ref := strings.TrimSpace(artifact.SourceRef)
+		if len(ref) != len("videosrc_")+64 || !strings.HasPrefix(ref, "videosrc_") {
+			return errors.New("video source artifact source_ref is invalid")
+		}
+		for _, r := range strings.TrimPrefix(ref, "videosrc_") {
+			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+				continue
+			}
+			return errors.New("video source artifact source_ref is invalid")
+		}
+		mediaType := strings.ToLower(strings.TrimSpace(artifact.MediaType))
+		if mediaType == "" || !strings.HasPrefix(mediaType, "video/") {
+			return errors.New("video source artifact media_type must be video/*")
+		}
+		if len(artifact.Label) > 256 || !utf8.ValidString(artifact.Label) {
+			return errors.New("video source artifact label exceeds bounds or is invalid UTF-8")
+		}
+		if len(artifact.Description) > 2048 || !utf8.ValidString(artifact.Description) {
+			return errors.New("video source artifact description exceeds bounds or is invalid UTF-8")
+		}
+		return nil
+	}
 	if isManagedPlanArtifact(artifact) {
 		if strings.TrimSpace(artifact.Path) != "" {
 			return errors.New("managed artifact references must not declare a workspace path")

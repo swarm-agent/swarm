@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -110,6 +111,68 @@ func (s *Server) handleSessionV3VideoProjects(w http.ResponseWriter, r *http.Req
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) handleSessionV3VideoSourceMedia(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	if s.sessions.Store() == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("video source store is not configured"))
+		return
+	}
+	sourceRef := strings.TrimSpace(r.URL.Query().Get("source_ref"))
+	if sourceRef == "" {
+		writeError(w, http.StatusBadRequest, errors.New("source_ref is required"))
+		return
+	}
+	var record pebblestore.VideoSourceRecord
+	for _, workspaceID := range pebblestore.SessionVideoWorkspaceIDs(session) {
+		record, found, err = s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, workspaceID, sourceRef)
+		if err != nil || found {
+			break
+		}
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, errors.New("video source not found in the session workspace scope"))
+		return
+	}
+	file, err := pebblestore.OpenValidatedVideoSource(record)
+	if err != nil {
+		writeError(w, http.StatusNotFound, errors.New("video source is stale or unavailable"))
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	disposition := mime.FormatMediaType("inline", map[string]string{"filename": record.DisplayName})
+	if disposition == "" {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Type", record.MIMEType)
+	w.Header().Set("Content-Disposition", disposition)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.ServeContent(w, r, record.DisplayName, info.ModTime(), file)
 }
 
 func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, subpath string) {

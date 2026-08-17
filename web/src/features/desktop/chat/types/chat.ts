@@ -612,6 +612,7 @@ export interface DesktopPlanFinalHandoffArtifact {
   sessionId?: string;
   collectionId?: string;
   eventSeq?: number;
+  sourceRef?: string;
   kind?: string;
   category?: import('../../session-v3/artifact-api').DesktopV3ArtifactCategory;
   filename?: string;

@@ -3893,7 +3893,8 @@ function DesktopV3StructuredFinalHandoff({
   const hasDetails = Boolean(details.report || details.result);
   const nextSteps = buildDesktopV3FinalHandoffNextSteps(handoff, handoff.artifacts.length === 0);
   const handoffArtifacts = handoff.artifacts.flatMap((artifact): DesktopV3ArtifactGalleryEntry[] => {
-    const isManagedArtifact = Boolean(artifact.sessionId || artifact.collectionId || artifact.eventSeq);
+    const isVideoSource = Boolean(artifact.sourceRef);
+    const isManagedArtifact = !isVideoSource && Boolean(artifact.sessionId || artifact.collectionId || artifact.eventSeq);
     const exactCatalogEntry = artifactCatalog.find((entry) => (
       entry.artifactId === artifact.artifactId
       && (!isManagedArtifact || (
@@ -3906,6 +3907,7 @@ function DesktopV3StructuredFinalHandoff({
     if (isManagedArtifact && (!artifact.sessionId || !artifact.collectionId || !artifact.eventSeq)) return [];
     return [{
       ...artifact,
+      sourceRef: artifact.sourceRef || "",
       sessionId: artifact.sessionId || item.message.session_id,
       collectionId: artifact.collectionId || "",
       eventSeq: artifact.eventSeq || 0,
@@ -3972,10 +3974,13 @@ function DesktopV3StructuredFinalHandoff({
         {handoffArtifacts.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-3" data-final-handoff-artifacts>
             {handoffArtifacts.map((artifact) => {
-              const href = artifactHref?.(artifact);
+              const videoSourceHref = artifact.sourceRef
+                ? `/v3/sessions/${encodeURIComponent(artifact.sessionId)}/video/sources/media?source_ref=${encodeURIComponent(artifact.sourceRef)}`
+                : "";
+              const href = videoSourceHref || artifactHref?.(artifact);
               if (!href) return null;
               const openArtifact = (event: ReactMouseEvent<HTMLAnchorElement>) => {
-                if (!onArtifactNavigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                if (videoSourceHref || !onArtifactNavigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
                 event.preventDefault();
                 onArtifactNavigate(artifact);
               };

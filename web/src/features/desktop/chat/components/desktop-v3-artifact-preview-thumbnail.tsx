@@ -5,6 +5,7 @@ import { desktopV3ArtifactLocalRuntimeAssets } from '../../session-v3/artifact-a
 import {
   buildDesktopV3ArtifactSandboxDocument,
   fetchDesktopV3Artifact,
+  fetchDesktopV3ArtifactDownload,
   fetchDesktopV3ArtifactPreviewToken,
   type DesktopV3ArtifactCatalogEntry,
 } from '../../session-v3/artifact-api'
@@ -100,7 +101,10 @@ export function DesktopV3ArtifactPreviewThumbnail({
     const controller = new AbortController()
     let objectURL = ''
     setLoading(true)
-    void fetchDesktopV3Artifact(artifact.sessionId, artifact.artifactId, controller.signal)
+    const fetchPreview = artifact.sourceRef
+      ? fetchDesktopV3ArtifactDownload(artifact, controller.signal)
+      : fetchDesktopV3Artifact(artifact.sessionId, artifact.artifactId, controller.signal)
+    void fetchPreview
       .then(async (blob) => {
         if (controller.signal.aborted) return
         if (artifact.mediaType === 'text/html') {
@@ -138,7 +142,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
       controller.abort()
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [animationExecutionAllowed, artifact.animationProfile, artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status, previewVisible])
+  }, [animationExecutionAllowed, artifact.animationProfile, artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.sourceRef, artifact.status, previewVisible])
 
   const previewActive = previewVisible && animationExecutionAllowed
   const hasHTMLPreview = previewActive && artifact.mediaType === 'text/html' && Boolean(previewText)

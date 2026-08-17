@@ -332,6 +332,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
 	case "artifacts/preview-access":
 		s.handleSessionV3ArtifactPreviewAccess(w, r, principal, sessionID)
+	case "video/sources/media":
+		s.handleSessionV3VideoSourceMedia(w, r, principal, sessionID)
 	case "video/projects":
 		s.handleSessionV3VideoProjects(w, r, principal, sessionID)
 	default:

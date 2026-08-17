@@ -108,7 +108,7 @@ func (s *SessionStore) ValidateSessionVideoAttachments(accountScopeID string, se
 	if len(references) > SessionVideoAttachmentMaxCount {
 		return nil, fmt.Errorf("message video attachment count exceeds %d", SessionVideoAttachmentMaxCount)
 	}
-	workspaceIDs := sessionVideoWorkspaceIDs(session)
+	workspaceIDs := SessionVideoWorkspaceIDs(session)
 	seen := make(map[string]struct{}, len(references))
 	validated := make([]SessionVideoAttachmentReference, 0, len(references))
 	for index, reference := range references {
@@ -145,7 +145,8 @@ func (s *SessionStore) ValidateSessionVideoAttachments(accountScopeID string, se
 	return validated, nil
 }
 
-func sessionVideoWorkspaceIDs(session SessionSnapshot) []string {
+// SessionVideoWorkspaceIDs returns the bounded workspace identities that may own video references for a session.
+func SessionVideoWorkspaceIDs(session SessionSnapshot) []string {
 	ids := make([]string, 0, 3)
 	seen := make(map[string]struct{}, 3)
 	for _, key := range []string{"swarm_v3_source_workspace_id", "workspace_id"} {
