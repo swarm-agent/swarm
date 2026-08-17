@@ -18,10 +18,11 @@ import (
 const directImageSwarmRouterParallelism = 8
 
 type directImageSwarmHydration struct {
-	Index  int
-	Prompt string
-	Title  string
-	Theme  string
+	Index      int
+	Prompt     string
+	Title      string
+	Theme      string
+	GroupTitle string
 }
 
 func directImageSwarmProgress(phase, currentStage string) (string, string, []string) {
@@ -128,7 +129,7 @@ func (s *Service) hydrateDirectImageSwarm(ctx context.Context, parent pebblestor
 			}
 			emitDirectImageSwarmDelta(emit, step, callID, parsed.Action, parsed.Description, len(parsed.Launches), i+1, "hydrating", "", baseTheme, "router", "Hydrating the overall brief and this image's base theme.", nil)
 			request := taskSwarmHydrationRequest{
-				Prompt: parsed.Prompt, AgentType: "image", SwarmStrategy: parsed.Swarm.Strategy,
+				Description: parsed.Description, Prompt: parsed.Prompt, AgentType: "image", SwarmStrategy: parsed.Swarm.Strategy,
 				OutputContract: parsed.Swarm.OutputContract, OutputMode: taskOutputModeManaged, OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls),
 				Items: []taskSwarmHydrationItem{{Index: 1, Theme: baseTheme, OutputMode: taskOutputModeManaged, WorkerExecution: "direct_image_model_generation"}},
 			}
@@ -144,7 +145,7 @@ func (s *Service) hydrateDirectImageSwarm(ctx context.Context, parent pebblestor
 				return
 			}
 			delta := hydrated.Deltas[0]
-			results[i] = directImageSwarmHydration{Index: i + 1, Prompt: composeDirectImageSwarmPrompt(parsed.Prompt, baseTheme, parsed.Swarm.IterationControls, delta), Title: strings.TrimSpace(delta.Title), Theme: baseTheme}
+			results[i] = directImageSwarmHydration{Index: i + 1, Prompt: composeDirectImageSwarmPrompt(parsed.Prompt, baseTheme, parsed.Swarm.IterationControls, delta), Title: strings.TrimSpace(delta.Title), Theme: baseTheme, GroupTitle: strings.TrimSpace(hydrated.GroupTitle)}
 			if results[i].Theme == "" {
 				results[i].Theme = strings.TrimSpace(delta.Theme)
 			}
@@ -225,6 +226,8 @@ func (s *Service) executeDirectImageSwarm(ctx context.Context, sessionID, sessio
 			specs[i].SourceArguments = map[string]any{}
 		}
 		specs[i].SourceArguments["swarm_theme"] = hydrated[i].Theme
+		specs[i].SourceArguments["swarm_collection_title"] = hydrated[0].GroupTitle
+		specs[i].SourceArguments["swarm_description"] = strings.TrimSpace(parsed.Description)
 	}
 	collectionID, err := s.ensureManagedDesignerArtifactCollection(parent, callID, specs, req.ApplySessionMutation)
 	if err != nil {

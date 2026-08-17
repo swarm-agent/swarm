@@ -42,6 +42,7 @@ type taskSwarmHydrationItem struct {
 }
 
 type taskSwarmHydrationRequest struct {
+	Description         string                                         `json:"description"`
 	Prompt              string                                         `json:"prompt"`
 	AgentType           string                                         `json:"agent_type"`
 	SwarmStrategy       string                                         `json:"swarm_strategy"`
@@ -65,7 +66,8 @@ type taskSwarmHydratedDelta struct {
 }
 
 type taskSwarmHydrationResult struct {
-	Deltas []taskSwarmHydratedDelta `json:"deltas"`
+	GroupTitle string                   `json:"group_title"`
+	Deltas     []taskSwarmHydratedDelta `json:"deltas"`
 }
 
 type configuredTaskSwarmRouter struct {
@@ -106,8 +108,9 @@ func (s *Service) newTaskSwarmRouter(parent pebblestore.SessionSnapshot, princip
 func taskSwarmRouterSystemPrompt(request taskSwarmHydrationRequest) string {
 	var b strings.Builder
 	b.WriteString(`You are Router, the tool-free specialization planner for an Iteration Swarm inside Swarm's existing task tool.
-Return only one JSON object matching this exact response contract: {"deltas":[{"index":1,"title":"short title","theme":"specific theme","role":"specialized responsibility only","constraints":["worker-specific constraint"],"deliverable":"worker-specific output"}]}.
+Return only one JSON object matching this exact response contract: {"group_title":"concise iteration group title","deltas":[{"index":1,"title":"short title","theme":"specific theme","role":"specialized responsibility only","constraints":["worker-specific constraint"],"deliverable":"worker-specific output"}]}.
 Produce exactly one compact delta for every supplied item in ascending index order.
+Name group_title from the supplied description so it identifies the whole iteration group in a narrow sidebar. It must be exactly 3 or 4 words, never a generic label such as "Managed group", and must not end with filler such as "group", "iterations", or "alternatives".
 
 The parent-authored prompt, output contract, output requirements, iteration controls, item themes, group briefs, execution model, and ownership rules are authoritative and read-only. Never add, remove, weaken, contradict, reinterpret, or silently replace any of them. Never invent user-facing content, product features, components, interactions, visual motifs, claims, dependencies, or requirements that the parent did not authorize. Your delta may elaborate execution details only when they are directly supported by the parent brief. When uncertain, preserve the parent detail instead of filling the gap creatively.
 Never repeat, quote, summarize, or rewrite the shared prompt, output contract, output requirements, execution model, or immutable ownership rules in the response because the server composes those authoritative fields after validation.`)
@@ -219,6 +222,18 @@ func normalizeTaskSwarmRouterJSONResponse(raw string) string {
 }
 
 func validateTaskSwarmHydrationResult(result taskSwarmHydrationResult, count int) error {
+	result.GroupTitle = strings.TrimSpace(result.GroupTitle)
+	if wordCount := len(strings.Fields(result.GroupTitle)); wordCount < 3 || wordCount > 4 {
+		return fmt.Errorf("task swarm Router group title must contain 3 or 4 words")
+	}
+	if len([]rune(result.GroupTitle)) > taskSwarmRouterMaxDeltaFieldRunes {
+		return errors.New("task swarm Router group title is oversized")
+	}
+	titleWords := strings.Fields(strings.ToLower(result.GroupTitle))
+	lastWord := strings.Trim(titleWords[len(titleWords)-1], " .,:;!?-_()[]{}")
+	if strings.EqualFold(result.GroupTitle, "Managed group") || lastWord == "group" || lastWord == "iterations" || lastWord == "alternatives" {
+		return errors.New("task swarm Router group title is generic")
+	}
 	if len(result.Deltas) != count {
 		return fmt.Errorf("task swarm Router returned %d deltas, want %d", len(result.Deltas), count)
 	}
@@ -266,7 +281,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 		return taskSwarmHydrationRequest{}, errors.New("task swarm hydration launch wave does not match its requested count")
 	}
 	request := taskSwarmHydrationRequest{
-		Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
+		Description: strings.TrimSpace(parsed.Description), Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
 		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
@@ -516,6 +531,8 @@ func (s *Service) hydrateTaskSwarm(ctx context.Context, parent pebblestore.Sessi
 		}
 		launchSpecs[i].SourceArguments["swarm_theme"] = effectiveTheme
 		launchSpecs[i].SourceArguments["swarm_group"] = strings.TrimSpace(request.Items[i].Group)
+		launchSpecs[i].SourceArguments["swarm_collection_title"] = strings.TrimSpace(result.GroupTitle)
+		launchSpecs[i].SourceArguments["swarm_description"] = strings.TrimSpace(request.Description)
 		emitTaskStreamDelta(parent.ID, emit, step, "task", callID, parsed.Action, parsed.Description, len(launchSpecs), taskLaunchOutcome{
 			LaunchIndex: i + 1, RequestedSubagent: launchSpecs[i].RequestedSubagentType, ResolvedSubagent: launchSpecs[i].RequestedSubagentType,
 			AssignmentLabel: launchSpecs[i].AssignmentLabel, OwnedScope: launchSpecs[i].OwnedScope, StreamKey: launchSpecs[i].StreamKey, SwarmMode: true,

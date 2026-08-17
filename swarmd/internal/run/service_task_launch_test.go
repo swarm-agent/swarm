@@ -242,8 +242,8 @@ func TestParseTaskCallArgumentsDefaultsDesignerToManagedOutput(t *testing.T) {
 
 func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) {
 	parent := pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}
-	first := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Navigation Remix", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact", "program_id": "program-1", "program_job_id": "job-1"}, SwarmMode: true}
-	second := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Layout Remix", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious", "program_id": "program-1", "program_job_id": "job-2"}, SwarmMode: true}
+	first := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Navigation Remix", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions", "program_id": "program-1", "program_job_id": "job-1"}, SwarmMode: true}
+	second := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Layout Remix", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions", "program_id": "program-1", "program_job_id": "job-2"}, SwarmMode: true}
 	left := managedDesignerArtifactContext(parent, "call-1", first, 1)
 	right := managedDesignerArtifactContext(parent, "call-1", second, 2)
 	if left == nil || right == nil {
@@ -317,8 +317,8 @@ func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t 
 		t.Fatalf("load parent: ok=%v err=%v", ok, err)
 	}
 	specs := []taskLaunchSpec{
-		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Compact Navigation", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact"}, SwarmMode: true},
-		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Spacious Navigation", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious"}, SwarmMode: true},
+		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Compact Navigation", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions"}, SwarmMode: true},
+		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Spacious Navigation", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions"}, SwarmMode: true},
 	}
 	collectionID, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-swarm", specs, nil)
 	if err != nil {
@@ -337,7 +337,7 @@ func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t 
 	if err != nil || !ok {
 		t.Fatalf("load projected collection: ok=%v err=%v", ok, err)
 	}
-	if collection.Status != pebblestore.SessionArtifactStatusStaging || collection.VariantCount != len(specs) || collection.StagingCount != len(specs) || collection.ReadyCount != 0 || collection.FailedCount != 0 || collection.Lineage.IterationGroupID == "" {
+	if collection.Name != "Homepage Navigation Studies" || collection.Description != "Create homepage navigation directions · 2 iterations" || collection.Status != pebblestore.SessionArtifactStatusStaging || collection.VariantCount != len(specs) || collection.StagingCount != len(specs) || collection.ReadyCount != 0 || collection.FailedCount != 0 || collection.Lineage.IterationGroupID == "" {
 		t.Fatalf("projected collection = %#v", collection)
 	}
 	variants, err := svc.sessions.ListSessionArtifactVariants(parent.AccountScopeID, parent.ID, collectionID, 10)

@@ -231,11 +231,11 @@ func TestTaskSwarmFocusedIterationPreservesParentControl(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build focused hydration: %v", err)
 	}
-	if request.IterationControls == nil || request.Items[0].Theme != "compact" {
+	if request.Description != "delegated task" || request.IterationControls == nil || request.Items[0].Theme != "compact" {
 		t.Fatalf("focused hydration request = %#v", request)
 	}
 	systemPrompt := taskSwarmRouterSystemPrompt(request)
-	for _, want := range []string{"authoritative and read-only", "Never add, remove, weaken", "never introduce anything named in exclude", "Do not force novelty outside"} {
+	for _, want := range []string{"authoritative and read-only", "Never add, remove, weaken", "never introduce anything named in exclude", "Do not force novelty outside", "supplied description", "exactly 3 or 4 words"} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("focused Router prompt missing %q: %s", want, systemPrompt)
 		}
@@ -362,13 +362,13 @@ func TestValidateTaskSwarmHydrationFailsClosed(t *testing.T) {
 	other := duplicate
 	other.Index = 2
 	other.Title = "Two"
-	if err := validateTaskSwarmHydrationResult(taskSwarmHydrationResult{Deltas: []taskSwarmHydratedDelta{duplicate, other}}, 2); err == nil || !strings.Contains(err.Error(), "duplicates") {
+	if err := validateTaskSwarmHydrationResult(taskSwarmHydrationResult{GroupTitle: "Dashboard Layout Studies", Deltas: []taskSwarmHydratedDelta{duplicate, other}}, 2); err == nil || !strings.Contains(err.Error(), "duplicates") {
 		t.Fatalf("expected duplicate delta failure, got %v", err)
 	}
 }
 
 func TestDecodeTaskSwarmHydrationAcceptsSingleJSONFence(t *testing.T) {
-	valid := `{"deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","constraints":["bounded"],"deliverable":"focused output"}]}`
+	valid := `{"group_title":"Campaign Image Studies","deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","constraints":["bounded"],"deliverable":"focused output"}]}`
 	for _, raw := range []string{
 		valid,
 		"```json\n" + valid + "\n```",
@@ -386,14 +386,16 @@ func TestDecodeTaskSwarmHydrationAcceptsSingleJSONFence(t *testing.T) {
 }
 
 func TestDecodeTaskSwarmHydrationRejectsNonFenceWrappersAndInvalidPayloads(t *testing.T) {
-	valid := `{"deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","constraints":["bounded"],"deliverable":"focused output"}]}`
+	valid := `{"group_title":"Campaign Image Studies","deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","constraints":["bounded"],"deliverable":"focused output"}]}`
 	cases := map[string]string{
 		"leading commentary":  "Here is the result:\n" + valid,
 		"trailing commentary": valid + "\nDone",
 		"fenced commentary":   "```json\n" + valid + "\n```\nDone",
-		"unknown field":       `{"deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","deliverable":"output","extra":true}]}`,
-		"incomplete delta":    `{"deltas":[{"index":1,"title":"","theme":"A","role":"specialist","deliverable":"output"}]}`,
-		"out of order":        `{"deltas":[{"index":2,"title":"One","theme":"A","role":"specialist","deliverable":"output"}]}`,
+		"unknown field":       `{"group_title":"Campaign Image Studies","deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","deliverable":"output","extra":true}]}`,
+		"incomplete delta":    `{"group_title":"Campaign Image Studies","deltas":[{"index":1,"title":"","theme":"A","role":"specialist","deliverable":"output"}]}`,
+		"out of order":        `{"group_title":"Campaign Image Studies","deltas":[{"index":2,"title":"One","theme":"A","role":"specialist","deliverable":"output"}]}`,
+		"missing group title": `{"deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","deliverable":"output"}]}`,
+		"long group title":    `{"group_title":"A Campaign Image Iteration Study","deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","deliverable":"output"}]}`,
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -319,13 +319,22 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 			continue
 		}
 		iterationGroupID = taskManagedArtifactID("iteration-group", parent.ID, taskManagedArtifactRoutingID(taskCallID, programID), 0)
+		collectionTitle := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_collection_title"))
 		group := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_group"))
-		if group != "" {
+		swarmDescription := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_description"))
+		switch {
+		case collectionTitle != "":
+			collectionName = collectionTitle
+		case group != "":
 			collectionName = group + " iterations"
-		} else {
+		default:
 			collectionName = "Managed iteration group"
 		}
-		collectionDescription = fmt.Sprintf("Iteration Swarm group · %d iterations", len(specs))
+		if swarmDescription != "" {
+			collectionDescription = fmt.Sprintf("%s · %d iterations", swarmDescription, len(specs))
+		} else {
+			collectionDescription = fmt.Sprintf("Iteration Swarm group · %d iterations", len(specs))
+		}
 		break
 	}
 	collection := pebblestore.SessionArtifactCollection{
