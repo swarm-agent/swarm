@@ -1365,10 +1365,15 @@ func (r *Runtime) Definitions() []Definition {
 					"program":    taskProgramToolSchema(),
 					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
-					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "idea"}, "description": "Required for mode=swarm. image independently Router-hydrates the parent brief plus each base theme and dispatches directly to the account image model without agent sessions. Idea is tool-free and available only in swarm mode."},
-					"count":               map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
-					"themes":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
-					"groups":              map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
+					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "idea"}, "description": "Required for mode=swarm. image independently Router-hydrates the parent brief plus each base theme and dispatches directly to the account image model without agent sessions. Idea is tool-free and available only in swarm mode."},
+					"count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
+					"themes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
+					"groups":     map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
+					"iteration_controls": map[string]any{"type": "object", "properties": map[string]any{
+						"preserve": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored details every Router and worker must preserve."},
+						"change":   map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}, "description": "The only dimensions the Router may vary during this focused iteration."},
+						"exclude":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored additions or directions every Router and worker must avoid."},
+					}, "required": []string{"change"}, "additionalProperties": false, "description": "Optional parent-controlled focused iteration boundary for Designer and image swarms. Router may elaborate execution detail only inside this boundary and cannot add, remove, weaken, or reinterpret the parent brief."},
 					"output_contract":     map[string]any{"type": "string", "description": "Shared Coder/Designer/image swarm deliverable contract. Omit for Idea swarms."},
 					"output_requirements": artifact.OutputRequirementsToolSchema(),
 					"animation_profile":   artifact.AnimationProfileToolSchema(),
@@ -1384,7 +1389,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"prompt": map[string]any{
 						"type":        "string",
-						"description": "Shared parent task. In regular mode, pair it with explicit launches. In Coder/Designer swarm mode, Router preserves it in every hydrated child prompt. In Idea swarm mode, this exact question is sent unchanged to every one-shot Idea.",
+						"description": "Shared authoritative parent task. In Coder/Designer/image swarm mode, Router may elaborate execution detail but cannot add, remove, weaken, or reinterpret its requirements. In regular mode, pair it with explicit launches. In Idea swarm mode, this exact question is sent unchanged to every one-shot Idea.",
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",

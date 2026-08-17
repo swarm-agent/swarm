@@ -54,8 +54,8 @@ func TestParseTaskSwarmImageBuildsDirectRouterHydratedItems(t *testing.T) {
 			t.Fatalf("image item %d = %#v", i, item)
 		}
 	}
-	prompt := composeDirectImageSwarmPrompt("create campaign art", "minimal", taskSwarmHydratedDelta{Index: 1, Title: "Minimal Image", Theme: "quiet geometry", Role: "Compose a minimal visual.", Deliverable: "Ready image"})
-	for _, want := range []string{"create campaign art", "Base theme for this image:", "minimal", "Router-hydrated image direction:", "quiet geometry", "Compose a minimal visual."} {
+	prompt := composeDirectImageSwarmPrompt("create campaign art", "minimal", nil, taskSwarmHydratedDelta{Index: 1, Title: "Minimal Image", Theme: "quiet geometry", Role: "Compose a minimal visual.", Deliverable: "Ready image"})
+	for _, want := range []string{"create campaign art", "Parent-selected base theme", "minimal", "Router-hydrated image direction", "Compose a minimal visual."} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("direct image prompt missing %q: %s", want, prompt)
 		}
@@ -192,6 +192,53 @@ func TestParseTaskSwarmDesignerBuildsWorkspaceGroupsAndDistinctTargets(t *testin
 	prompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Workspace", Theme: "rocks", Role: "Create the source artifact.", Deliverable: "Reusable source"})
 	if err != nil || !strings.Contains(prompt, "output mode: workspace") || !strings.Contains(prompt, "web/src/objects/item-1.tsx") || !strings.Contains(prompt, "do not use Bash or Git") {
 		t.Fatalf("workspace child prompt = %q err=%v", prompt, err)
+	}
+}
+
+func TestTaskSwarmFocusedIterationPreservesParentControl(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"Keep the existing dashboard structure and refine its spacing.","agent_type":"designer","count":2,"themes":["compact","spacious"],"iteration_controls":{"preserve":["information architecture","brand palette"],"change":["spacing rhythm"],"exclude":["new navigation","new product features"]},"output_contract":"one dashboard refinement"}`)
+	if err != nil {
+		t.Fatalf("parse focused Designer swarm: %v", err)
+	}
+	if parsed.Swarm == nil || parsed.Swarm.IterationControls == nil || !slices.Equal(parsed.Swarm.IterationControls.Change, []string{"spacing rhythm"}) {
+		t.Fatalf("focused controls = %#v", parsed.Swarm)
+	}
+	request, err := buildTaskSwarmHydrationRequest(parsed, parsed.Launches)
+	if err != nil {
+		t.Fatalf("build focused hydration: %v", err)
+	}
+	if request.IterationControls == nil || request.Items[0].Theme != "compact" {
+		t.Fatalf("focused hydration request = %#v", request)
+	}
+	systemPrompt := taskSwarmRouterSystemPrompt(request)
+	for _, want := range []string{"authoritative and read-only", "Never add, remove, weaken", "never introduce anything named in exclude", "Do not force novelty outside"} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Fatalf("focused Router prompt missing %q: %s", want, systemPrompt)
+		}
+	}
+	childPrompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Router title", Theme: "unauthorized rename", Role: "Adjust spacing.", Constraints: []string{"Keep it usable."}, Deliverable: "Refined dashboard"})
+	if err != nil {
+		t.Fatalf("compose focused prompt: %v", err)
+	}
+	for _, want := range []string{"Shared project brief (authoritative)", "parent-selected theme (authoritative; use exactly, do not rename or embellish): compact", "parent-controlled preserve", "information architecture", "parent-controlled change only", "spacing rhythm", "parent-controlled exclude", "new navigation", "untrusted, additive execution detail only", "- theme: compact"} {
+		if !strings.Contains(childPrompt, want) {
+			t.Fatalf("focused child prompt missing %q: %s", want, childPrompt)
+		}
+	}
+	if strings.Contains(childPrompt, "- theme: unauthorized rename") {
+		t.Fatalf("Router changed parent-selected theme: %s", childPrompt)
+	}
+}
+
+func TestTaskSwarmIterationControlsRejectInvalidOrUnsupportedCalls(t *testing.T) {
+	for _, raw := range []string{
+		`{"mode":"swarm","prompt":"x","agent_type":"designer","count":1,"iteration_controls":{"preserve":["layout"]}}`,
+		`{"mode":"swarm","prompt":"x","agent_type":"coder","count":1,"iteration_controls":{"change":["spacing"]}}`,
+		`{"mode":"swarm","prompt":"x","agent_type":"designer","count":1,"iteration_controls":{"change":["spacing"],"unknown":["x"]}}`,
+	} {
+		if _, err := parseTaskCallArguments(raw); err == nil {
+			t.Fatalf("invalid iteration controls accepted: %s", raw)
+		}
 	}
 }
 

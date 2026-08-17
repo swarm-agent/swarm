@@ -67,6 +67,14 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if !reflect.DeepEqual(source["required"], []string{"session_id", "collection_id", "variant_id", "event_seq"}) || sourceProperties["event_seq"] == nil {
 		t.Fatalf("task source_artifact schema = %#v", source)
 	}
+	controls, ok := properties["iteration_controls"].(map[string]any)
+	if !ok || !reflect.DeepEqual(controls["required"], []string{"change"}) || controls["additionalProperties"] != false {
+		t.Fatalf("task iteration_controls schema = %#v", controls)
+	}
+	controlProperties, _ := controls["properties"].(map[string]any)
+	if controlProperties["preserve"] == nil || controlProperties["change"] == nil || controlProperties["exclude"] == nil {
+		t.Fatalf("task iteration_controls fields = %#v", controlProperties)
+	}
 	for _, forbidden := range []string{"target_session_id", "collection_id", "variant_id", "artifact_target"} {
 		if _, exists := properties[forbidden]; exists {
 			t.Fatalf("task schema exposes trusted destination field %q", forbidden)

@@ -105,6 +105,12 @@ type taskSwarmAssemblyPart struct {
 	OwnedScope   []string `json:"owned_scope"`
 }
 
+type taskSwarmIterationControls struct {
+	Preserve []string `json:"preserve,omitempty"`
+	Change   []string `json:"change"`
+	Exclude  []string `json:"exclude,omitempty"`
+}
+
 type taskSwarmSpec struct {
 	Strategy            string
 	AgentType           string
@@ -115,6 +121,7 @@ type taskSwarmSpec struct {
 	OutputMode          string
 	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
 	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
+	IterationControls   *taskSwarmIterationControls
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
 	OwnedScopeTemplate  string
 	AssemblyParts       []taskSwarmAssemblyPart
@@ -141,10 +148,10 @@ type taskLaunchSpec struct {
 }
 
 type taskImageManifestRow struct {
-	Index              int                                             `json:"index"`
-	Theme              string                                          `json:"theme,omitempty"`
-	StreamKey          string                                          `json:"stream_key"`
-	OutputRequirements *pebblestore.SessionArtifactOutputRequirements  `json:"output_requirements,omitempty"`
+	Index              int                                            `json:"index"`
+	Theme              string                                         `json:"theme,omitempty"`
+	StreamKey          string                                         `json:"stream_key"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 }
 
@@ -855,7 +862,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	allowed := map[string]bool{
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
-		"themes": true, "groups": true, "output_contract": true, "output_mode": true, "owned_scope_template": true, "assembly_parts": true,
+		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "owned_scope_template": true, "assembly_parts": true,
 		"integration_contract": true, "output_requirements": true, "animation_profile": true, "launches": true,
 	}
 	for key := range args {
@@ -898,6 +905,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	}
 
 	if strategy == taskSwarmStrategyAssembly {
+		if _, exists := args["iteration_controls"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept iteration_controls")
+		}
 		if _, exists := args["source_artifact"]; exists {
 			return nil, nil, errors.New("task Assembly swarm does not accept source_artifact")
 		}
@@ -922,6 +932,13 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	groups, err := taskSwarmGroups(args, count)
 	if err != nil {
 		return nil, nil, err
+	}
+	iterationControls, err := taskSwarmIterationControlsFromArgs(args)
+	if err != nil {
+		return nil, nil, err
+	}
+	if iterationControls != nil && agentType != "designer" && agentType != "image" {
+		return nil, nil, errors.New("task swarm iteration_controls is supported only for Designer or image")
 	}
 	outputContract := strings.TrimSpace(mapString(args, "output_contract"))
 	if outputContract == "" {
@@ -1005,11 +1022,11 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
-	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "" || outputRequirements != nil || animationProfile != nil) {
+	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || iterationControls != nil || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || ownedScopeTemplate != "" || outputRequirements != nil || animationProfile != nil) {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), OwnedScopeTemplate: ownedScopeTemplate}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), OwnedScopeTemplate: ownedScopeTemplate}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -1035,6 +1052,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		}
 		if animationProfile != nil {
 			sourceArguments["animation_profile"] = cloneTaskAnimationProfile(animationProfile)
+		}
+		if iterationControls != nil {
+			sourceArguments["iteration_controls"] = cloneTaskSwarmIterationControls(iterationControls)
 		}
 		if sourceArtifact != nil {
 			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
@@ -1062,7 +1082,7 @@ func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {
 }
 
 func parseTaskAssemblySwarm(args map[string]any, agentType string, count int) (*taskSwarmSpec, []taskLaunchSpec, error) {
-	for _, key := range []string{"themes", "groups", "output_contract", "output_mode", "owned_scope_template"} {
+	for _, key := range []string{"themes", "groups", "iteration_controls", "output_contract", "output_mode", "owned_scope_template"} {
 		if _, ok := args[key]; ok {
 			return nil, nil, fmt.Errorf("task Assembly swarm does not accept Explore field %q", key)
 		}
@@ -1204,6 +1224,49 @@ func taskStringArray(args map[string]any, key string) ([]string, error) {
 		result = append(result, text)
 	}
 	return result, nil
+}
+
+func taskSwarmIterationControlsFromArgs(args map[string]any) (*taskSwarmIterationControls, error) {
+	value, ok := args["iteration_controls"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	row, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("task swarm iteration_controls must be an object")
+	}
+	for key := range row {
+		if key != "preserve" && key != "change" && key != "exclude" {
+			return nil, fmt.Errorf("task swarm iteration_controls contains unsupported field %q", key)
+		}
+	}
+	preserve, err := taskStringArray(row, "preserve")
+	if err != nil {
+		return nil, err
+	}
+	change, err := taskStringArray(row, "change")
+	if err != nil {
+		return nil, err
+	}
+	exclude, err := taskStringArray(row, "exclude")
+	if err != nil {
+		return nil, err
+	}
+	if len(change) == 0 {
+		return nil, errors.New("task swarm iteration_controls requires at least one parent-controlled change dimension")
+	}
+	return &taskSwarmIterationControls{Preserve: preserve, Change: change, Exclude: exclude}, nil
+}
+
+func cloneTaskSwarmIterationControls(input *taskSwarmIterationControls) *taskSwarmIterationControls {
+	if input == nil {
+		return nil
+	}
+	return &taskSwarmIterationControls{
+		Preserve: append([]string(nil), input.Preserve...),
+		Change:   append([]string(nil), input.Change...),
+		Exclude:  append([]string(nil), input.Exclude...),
+	}
 }
 
 func taskSwarmGroups(args map[string]any, count int) ([]taskSwarmGroup, error) {
