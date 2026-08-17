@@ -4956,11 +4956,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString("- exact animation profile (backend supplied; immutable; worker may not rewrite): ")
 			b.Write(encoded)
 			b.WriteString("\n")
-			b.WriteString("- animation contract: use only pinned local runtimes and never CDN, remote imports, arbitrary packages, or network access; honor all CPU/GPU lifecycle budgets, pause offscreen, stop when hidden, provide a static reduced-motion first frame, and clean up tickers, listeners, workers, textures, and WebGL contexts. Use CSS/WAAPI/SVG for motion_ui, optional Three.js only for spatial_3d, dotLottie/Rive only for imported vector_playback, and MP4 for final_render. Import only assets the user owns or has licensed for the intended commercial use and redistribution; never source marketplace/community assets by default.\n")
-			switch config.AnimationProfile.ProfileID {
-			case "spatial_3d":
-				b.WriteString("- Three.js authoring contract: the pinned Three.js runtime is an ES module supplied through Swarm's trusted import map. Use a nonce-preserved `<script type=\"module\">` and import from the bare specifier `three`; never use a CDN URL or remote import.\n")
-			}
+			writeDesignerAnimationGuidance(&b, config.AnimationProfile.ProfileID)
 		}
 		switch strings.ToLower(strings.TrimSpace(config.OutputMode)) {
 		case taskOutputModeManaged:

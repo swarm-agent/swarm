@@ -265,7 +265,7 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"three", "0.185.1", "no CDN", "pause offscreen", "clean up", `<script type="module">`, "bare specifier `three`"} {
+	for _, expected := range []string{"three", "0.185.1", "no CDN", "pause offscreen", "clean up", "display-refresh playback", "monotonic timestamps", "precompute and cache", "per-frame allocation", "sustained frame time", "Reuse geometries", "instancing", `<script type="module">`, "bare specifier `three`"} {
 		if !strings.Contains(childPrompt, expected) {
 			t.Fatalf("animation child prompt missing %q: %s", expected, childPrompt)
 		}
@@ -301,7 +301,7 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 	}
 	assertSpatial3DProfile(t, context.AnimationProfile)
 	delegated := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "motion", Prompt: "create", RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, AnimationProfile: context.AnimationProfile, ArtifactRunContext: context})
-	for _, expected := range []string{"three", "0.185.1", "animation_profile", "never CDN", "clean up", `<script type="module">`, "bare specifier `three`"} {
+	for _, expected := range []string{"three", "0.185.1", "animation_profile", "no CDN", "clean up", "display-refresh playback", "monotonic timestamps", "precompute and cache", "per-frame allocation", "sustained frame time", "Reuse geometries", "instancing", `<script type="module">`, "bare specifier `three`"} {
 		if !strings.Contains(delegated, expected) {
 			t.Fatalf("delegated animation prompt missing %q: %s", expected, delegated)
 		}
