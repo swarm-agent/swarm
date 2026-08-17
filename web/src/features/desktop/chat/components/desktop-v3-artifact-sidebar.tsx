@@ -79,11 +79,18 @@ function sidebarArtifactPreviewKey(artifact: DesktopV3ArtifactCatalogEntry): str
   return `${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`
 }
 
-function sidebarArtifactNeedsLivePreview(artifact: DesktopV3ArtifactCatalogEntry): boolean {
-  return artifact.mediaType === 'image/svg+xml'
+function sidebarArtifactNeedsExclusiveLivePreview(artifact: DesktopV3ArtifactCatalogEntry): boolean {
+  // Arbitrary HTML remains the risky case: keep only one ungoverned document mounted.
+  // Profiled animation HTML uses the reviewed runtime and resource contract instead.
+  return artifact.mediaType === 'text/html' && !artifact.animationProfile
+}
+
+function sidebarArtifactNeedsMotionPermission(artifact: DesktopV3ArtifactCatalogEntry): boolean {
+  if (artifact.animationProfile?.profileId === 'final_render') return false
+  return Boolean(artifact.animationProfile)
+    || artifact.mediaType === 'image/svg+xml'
     || artifact.mediaType === 'image/gif'
     || artifact.mediaType === 'text/html'
-    || artifact.mediaType === 'application/pdf'
     || artifact.mediaType.startsWith('video/')
     || artifact.kind === 'video'
 }
@@ -92,12 +99,13 @@ function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3Art
   const [previewURL, setPreviewURL] = useState('')
   const [previewHTML, setPreviewHTML] = useState('')
   const [failed, setFailed] = useState(false)
-  const heavyweight = sidebarArtifactNeedsLivePreview(artifact)
+  const exclusive = sidebarArtifactNeedsExclusiveLivePreview(artifact)
   const { previewRef, previewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(
-    !heavyweight || live,
+    !exclusive || live,
   )
-  const finalRender = artifact.animationProfile?.profileId === 'final_render'
-  const previewEnabled = previewVisible && (!heavyweight || (live && (previewMotionAllowed || finalRender)))
+  const previewEnabled = previewVisible
+    && (!exclusive || live)
+    && (!sidebarArtifactNeedsMotionPermission(artifact) || previewMotionAllowed)
 
   useEffect(() => {
     setPreviewURL('')
@@ -143,7 +151,7 @@ function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3Art
   else if (previewEnabled && artifact.mediaType === 'text/html' && previewHTML) thumbnail = <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
   else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
 
-  return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && heavyweight ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
+  return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && exclusive ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
 }
 
 export interface DesktopV3ArtifactSidebarGroup {
@@ -221,7 +229,7 @@ export function DesktopV3ArtifactSidebar({
   const groups = useMemo(() => desktopV3ArtifactSidebarGroups(artifacts), [artifacts])
   const [requestedLivePreviewKey, setRequestedLivePreviewKey] = useState('')
   const selectedLivePreviewKey = useMemo(() => {
-    const selected = artifacts.find((artifact) => artifact.selected && artifact.status === 'ready' && sidebarArtifactNeedsLivePreview(artifact))
+    const selected = artifacts.find((artifact) => artifact.selected && artifact.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(artifact))
     return selected ? sidebarArtifactPreviewKey(selected) : ''
   }, [artifacts])
   const fallbackLivePreviewKey = useMemo(() => {
@@ -229,7 +237,7 @@ export function DesktopV3ArtifactSidebar({
       const representative = group.entries.find((entry) => entry.selected)
         ?? group.entries.find((entry) => entry.status === 'ready')
         ?? group.entries[0]
-      if (representative?.status === 'ready' && sidebarArtifactNeedsLivePreview(representative)) {
+      if (representative?.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(representative)) {
         return sidebarArtifactPreviewKey(representative)
       }
     }
@@ -237,10 +245,10 @@ export function DesktopV3ArtifactSidebar({
   }, [groups])
   const requestedArtifact = artifacts.find((artifact) => sidebarArtifactPreviewKey(artifact) === requestedLivePreviewKey)
   const livePreviewKey = selectedLivePreviewKey
-    || (requestedArtifact?.status === 'ready' && sidebarArtifactNeedsLivePreview(requestedArtifact) ? requestedLivePreviewKey : '')
+    || (requestedArtifact?.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(requestedArtifact) ? requestedLivePreviewKey : '')
     || fallbackLivePreviewKey
   const requestLivePreview = (artifact: DesktopV3ArtifactCatalogEntry) => {
-    if (artifact.status === 'ready' && sidebarArtifactNeedsLivePreview(artifact)) {
+    if (artifact.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(artifact)) {
       setRequestedLivePreviewKey(sidebarArtifactPreviewKey(artifact))
     }
   }
