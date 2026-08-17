@@ -73,6 +73,23 @@ func TestMasterHarnessPromptDefinesDesignerIterationLifecycle(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptSeparatesIterationSwarmFromRegularLaunchFields(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+
+	for _, want := range []string{
+		"complete shared prompt, agent_type, count",
+		"omit launches and all regular-launch-only fields",
+		"top-level concurrency_reason",
+		"Swarm concurrency comes only from count",
+		"These per-launch fields do not apply to mode=swarm",
+		`"mode":"swarm","description":"Create landscape video iterations"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("Iteration Swarm field-boundary guidance missing %q", want)
+		}
+	}
+}
+
 func TestMasterHarnessPromptRequiresBoundedTemporaryAndRecursiveWork(t *testing.T) {
 	prompt := masterHarnessPrompt(t.TempDir())
 

@@ -30,6 +30,11 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 			t.Fatalf("task schema missing swarm-mode field %q", key)
 		}
 	}
+	for _, want := range []string{"omit launches and regular-launch fields such as concurrency_reason", "Omit in mode=swarm", "swarm concurrency is defined by count"} {
+		if !definitionTextContains(taskDefinition, want) {
+			t.Fatalf("task schema missing regular/swarm field boundary %q: %#v", want, taskDefinition)
+		}
+	}
 	for _, key := range []string{"swarm_strategy", "assembly_parts", "integration_contract"} {
 		if _, ok := properties[key]; ok {
 			t.Fatalf("task schema must not advertise disabled Assembly field %q", key)
@@ -82,6 +87,9 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	launches, ok := properties["launches"].(map[string]any)
 	if !ok {
 		t.Fatalf("task launches schema missing: %#v", properties["launches"])
+	}
+	if !containsInAny(launches["description"], "Regular mode only") || !containsInAny(launches["description"], "Omit launches in mode=swarm") {
+		t.Fatalf("task launches schema does not distinguish regular mode from swarm mode: %#v", launches)
 	}
 	items, ok := launches["items"].(map[string]any)
 	if !ok {

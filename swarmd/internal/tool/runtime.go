@@ -1352,7 +1352,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Coder and Designer swarms launch Router-hydrated workers. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder and Designer swarms launch Router-hydrated workers. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1360,7 +1360,7 @@ func (r *Runtime) Definitions() []Definition {
 						"type":        "string",
 						"description": "Optional action. Supported: spawn (default); Task Programs use start or status. Start uses program when supplied, or the canonical task_program on the active approved checkpoint when program is omitted.",
 					},
-					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count."},
+					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count; omit launches and regular-launch fields such as concurrency_reason."},
 					"program_id": map[string]any{"type": "string", "description": "Stable program ID for status. A new start carries a new ID inside program.id; existing IDs cannot be continued."},
 					"program":    taskProgramToolSchema(),
 					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
@@ -1419,12 +1419,12 @@ func (r *Runtime) Definitions() []Definition {
 						"description": "Alias for meta_prompt in the single-launch shorthand.",
 					},
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
-					"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to delegate now."},
+					"concurrency_reason":  map[string]any{"type": "string", "description": "Regular-mode single-launch shorthand only: why this scope is useful and safe to delegate now. Omit in mode=swarm; swarm concurrency is defined by count."},
 					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree."},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants. Designer defaults to managed parent-owned artifact output; workspace mode permits read/search/find/list/write/edit with no Bash or Git and requires distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
+						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants. Designer defaults to managed parent-owned artifact output; workspace mode permits read/search/find/list/write/edit with no Bash or Git and requires distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{

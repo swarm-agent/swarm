@@ -41,6 +41,24 @@ func TestParseTaskSwarmRejectsFinderExplicitLaunchesAndTrustFields(t *testing.T)
 	}
 }
 
+func TestParseTaskSwarmVideoIgnoresRegularConcurrencyReasonHint(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"video alternatives","prompt":"Create reusable landscape video alternatives.","agent_type":"designer","count":2,"concurrency_reason":"Independent video variants","output_contract":"One reusable managed video per worker","output_requirements":{"preset":"landscape_video"},"animation_profile":{"profile":"motion_ui"}}`)
+	if err != nil {
+		t.Fatalf("parse video Iteration Swarm with compatibility hint: %v", err)
+	}
+	if parsed.Swarm == nil || parsed.Swarm.AgentType != "designer" || parsed.Swarm.Count != 2 || len(parsed.Launches) != 2 {
+		t.Fatalf("video Iteration Swarm = %#v", parsed)
+	}
+	if _, exists := parsed.SourceArguments["concurrency_reason"]; exists {
+		t.Fatalf("swarm source arguments preserved regular-only concurrency_reason: %#v", parsed.SourceArguments)
+	}
+	for i, launch := range parsed.Launches {
+		if launch.ConcurrencyReason != "Independent Iteration Swarm alternative" {
+			t.Fatalf("launch %d concurrency reason = %q", i, launch.ConcurrencyReason)
+		}
+	}
+}
+
 func TestParseTaskSwarmImageBuildsDirectRouterHydratedItems(t *testing.T) {
 	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"images","prompt":"create campaign art","agent_type":"image","count":2,"themes":["minimal","maximal"],"output_contract":"one ready image"}`)
 	if err != nil {

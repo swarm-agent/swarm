@@ -863,13 +863,17 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
 		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "owned_scope_template": true, "assembly_parts": true,
-		"integration_contract": true, "output_requirements": true, "animation_profile": true, "launches": true,
+		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "launches": true,
+		// concurrency_reason is a regular-launch field. Accept and discard it here as a
+		// compatibility no-op so one misplaced advisory hint cannot abort a swarm wave.
+		"concurrency_reason": true,
 	}
 	for key := range args {
 		if !allowed[key] {
 			return nil, nil, fmt.Errorf("task swarm mode contains unsupported field %q", key)
 		}
 	}
+	delete(args, "concurrency_reason")
 	if _, ok := args["launches"]; ok {
 		return nil, nil, errors.New("task swarm mode generates its launch wave; launches must be omitted")
 	}
