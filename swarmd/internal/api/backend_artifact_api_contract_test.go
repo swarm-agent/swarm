@@ -122,7 +122,7 @@ func TestBackendWorkspacePlanArtifactIsDirectlyViewableWithoutManagedImport(t *t
 	if readErr != nil || closeErr != nil || string(content) != "workspace handoff" {
 		t.Fatalf("workspace handoff bytes = %q read=%v close=%v", content, readErr, closeErr)
 	}
-	collections, err := sessionSvc.ListSessionArtifactCollections(principal.AccountScopeID, plan.SessionID, "", pebblestore.SessionArtifactMaxCollections)
+	collections, err := sessionSvc.ListAllSessionArtifactCollections(principal.AccountScopeID, plan.SessionID, "")
 	if err != nil || len(collections) != 0 {
 		t.Fatalf("workspace handoff read created managed collections: count=%d err=%v", len(collections), err)
 	}

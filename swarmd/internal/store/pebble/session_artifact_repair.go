@@ -39,10 +39,8 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 	report := SessionArtifactRepairReport{}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	err = s.store.IteratePrefix(SessionArtifactCollectionPrefix(accountScopeID, sessionID), SessionArtifactMaxCollections+1, func(_ string, value []byte) error {
-		if report.CollectionsVisited >= SessionArtifactMaxCollections {
-			return errors.New("session artifact collection limit exceeded")
-		}
+	const iterateAllCollections = int(^uint(0) >> 1)
+	err = s.store.IteratePrefix(SessionArtifactCollectionPrefix(accountScopeID, sessionID), iterateAllCollections, func(_ string, value []byte) error {
 		var collection SessionArtifactCollection
 		if err := json.Unmarshal(value, &collection); err != nil {
 			return fmt.Errorf("decode artifact collection for repair: %w", err)

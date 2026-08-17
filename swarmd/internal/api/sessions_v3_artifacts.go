@@ -179,7 +179,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			collections, err := s.sessions.ListSessionArtifactCollections(session.AccountScopeID, session.ID, "", pebblestore.SessionArtifactMaxCollections)
+			collections, err := s.sessions.ListAllSessionArtifactCollections(session.AccountScopeID, session.ID, "")
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FocusEvent, type MouseEvent } from 'react'
+import { memo, useEffect, useMemo, useState, type FocusEvent, type MouseEvent } from 'react'
 import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
@@ -95,7 +95,54 @@ function sidebarArtifactNeedsMotionPermission(artifact: DesktopV3ArtifactCatalog
     || artifact.kind === 'video'
 }
 
-function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3ArtifactCatalogEntry; live: boolean }) {
+function sidebarArtifactAnimationProfileKey(artifact: DesktopV3ArtifactCatalogEntry): string {
+  const profile = artifact.animationProfile
+  if (!profile) return ''
+  const budgets = profile.budgets
+  return [
+    profile.profileId,
+    profile.registryVersion,
+    profile.runtimeKind,
+    profile.runtimePackage,
+    profile.runtimeVersion,
+    profile.secondaryRuntimePackage,
+    profile.secondaryRuntimeVersion,
+    profile.heavy,
+    profile.importedPlaybackOnly,
+    profile.editableSourceRequired,
+    budgets.maxSimultaneousLivePreviews,
+    budgets.maxWebGLContexts,
+    budgets.maxDevicePixelRatio,
+    budgets.maxCanvasPixels,
+    budgets.maxParticles,
+    budgets.maxDrawCallsPerFrame,
+    budgets.pauseWhenOffscreen,
+    budgets.stopWhenDocumentHidden,
+    budgets.reducedMotionBehavior,
+    budgets.networkAllowed,
+  ].join(':')
+}
+
+function sidebarArtifactThumbnailEqual(
+  previous: Readonly<{ artifact: DesktopV3ArtifactCatalogEntry; live: boolean }>,
+  next: Readonly<{ artifact: DesktopV3ArtifactCatalogEntry; live: boolean }>,
+): boolean {
+  const left = previous.artifact
+  const right = next.artifact
+  return previous.live === next.live
+    && left.sessionId === right.sessionId
+    && left.artifactId === right.artifactId
+    && left.label === right.label
+    && left.mediaType === right.mediaType
+    && left.kind === right.kind
+    && left.status === right.status
+    && left.previewable === right.previewable
+    && left.eventSeq === right.eventSeq
+    && left.updatedAt === right.updatedAt
+    && sidebarArtifactAnimationProfileKey(left) === sidebarArtifactAnimationProfileKey(right)
+}
+
+const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3ArtifactCatalogEntry; live: boolean }) {
   const [previewURL, setPreviewURL] = useState('')
   const [previewHTML, setPreviewHTML] = useState('')
   const [failed, setFailed] = useState(false)
@@ -152,7 +199,7 @@ function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3Art
   else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
 
   return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && exclusive ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
-}
+}, sidebarArtifactThumbnailEqual)
 
 export interface DesktopV3ArtifactSidebarGroup {
   key: string

@@ -14,7 +14,6 @@ import (
 
 const (
 	SessionArtifactVersion                  = 1
-	SessionArtifactMaxCollections           = 64
 	SessionArtifactMaxVariantsPerCollection = 128
 	SessionArtifactMaxList                  = 256
 	SessionArtifactMaxMessageSelections     = 16
@@ -443,7 +442,7 @@ func (s *SessionStore) GetSessionArtifactVariantByID(accountScopeID, sessionID, 
 	if variantID == "" {
 		return SessionArtifactVariant{}, false, nil
 	}
-	collections, err := s.ListSessionArtifactCollections(accountScopeID, sessionID, "", SessionArtifactMaxCollections)
+	collections, err := s.ListAllSessionArtifactCollections(accountScopeID, sessionID, "")
 	if err != nil {
 		return SessionArtifactVariant{}, false, err
 	}
@@ -466,21 +465,38 @@ func (s *SessionStore) GetSessionArtifactVariantByID(accountScopeID, sessionID, 
 
 // ListSessionArtifactCollections returns bounded metadata from one trusted
 // account/session scope. An optional status uses the repaired status index.
+// The request bound is independent from the session's lifetime collection count.
 func (s *SessionStore) ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]SessionArtifactCollection, error) {
+	limit = boundedArtifactListLimit(limit, SessionArtifactMaxList)
+	return s.listSessionArtifactCollections(accountScopeID, sessionID, status, limit)
+}
+
+// ListAllSessionArtifactCollections scans every collection in a session. It is
+// reserved for correctness paths such as repair, catalog projection, and opaque
+// variant resolution that must not silently omit older collections.
+func (s *SessionStore) ListAllSessionArtifactCollections(accountScopeID, sessionID, status string) ([]SessionArtifactCollection, error) {
+	const iterateAll = int(^uint(0) >> 1)
+	return s.listSessionArtifactCollections(accountScopeID, sessionID, status, iterateAll)
+}
+
+func (s *SessionStore) listSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]SessionArtifactCollection, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	sessionID = strings.TrimSpace(sessionID)
 	status = strings.TrimSpace(status)
-	limit = boundedArtifactListLimit(limit, SessionArtifactMaxCollections)
 	prefix := SessionArtifactCollectionPrefix(accountScopeID, sessionID)
 	indexed := false
 	if status != "" {
 		prefix = SessionArtifactCollectionStatusPrefix(accountScopeID, sessionID, status)
 		indexed = true
 	}
-	out := make([]SessionArtifactCollection, 0, limit)
+	capacity := limit
+	if capacity > SessionArtifactMaxList {
+		capacity = SessionArtifactMaxList
+	}
+	out := make([]SessionArtifactCollection, 0, capacity)
 	err := s.store.IteratePrefix(prefix, limit, func(_ string, value []byte) error {
 		var collection SessionArtifactCollection
 		if indexed {
@@ -988,13 +1004,6 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				} else if duplicate {
 					return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q already exists in session", incoming.Variant.ID)
 				}
-			}
-			collections, err := s.ListSessionArtifactCollections(input.AccountScopeID, input.SessionID, "", SessionArtifactMaxCollections+1)
-			if err != nil {
-				return preparedV3ArtifactMutation{}, err
-			}
-			if len(collections) >= SessionArtifactMaxCollections {
-				return preparedV3ArtifactMutation{}, errors.New("session artifact collection limit exceeded")
 			}
 			collection = incoming.Collection
 			collection.Version = SessionArtifactVersion

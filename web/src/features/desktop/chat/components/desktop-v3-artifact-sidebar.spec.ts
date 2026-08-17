@@ -80,6 +80,9 @@ test('sidebar animates every visible governed preview while isolating arbitrary 
   assert.match(source, /formatDesktopV3ArtifactAnimationProfile\(representative\.animationProfile\)/)
   assert.match(source, /<video src=\{previewURL\} autoPlay loop muted playsInline/)
   assert.match(source, /useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>/)
+  assert.match(source, /const DesktopV3ArtifactThumbnail = memo\(/)
+  assert.match(source, /sidebarArtifactThumbnailEqual/)
+  assert.match(source, /sidebarArtifactAnimationProfileKey\(left\) === sidebarArtifactAnimationProfileKey\(right\)/)
 })
 
 test('session artifact sidebar includes native and delegated artifacts only for the active session', () => {

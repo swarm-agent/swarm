@@ -485,7 +485,7 @@ func TestManagedArtifactCatalogKeepsNativeAndWorkspaceHandoffDescriptors(t *test
 	if workspacePreviewRec.Code != http.StatusOK || !strings.Contains(workspacePreviewRec.Body.String(), "unused") {
 		t.Fatalf("workspace handoff preview status=%d body=%s", workspacePreviewRec.Code, workspacePreviewRec.Body.String())
 	}
-	if collections, err := sessionSvc.ListSessionArtifactCollections(principal.AccountScopeID, variant.SessionID, "", pebblestore.SessionArtifactMaxCollections); err != nil || len(collections) != 1 {
+	if collections, err := sessionSvc.ListAllSessionArtifactCollections(principal.AccountScopeID, variant.SessionID, ""); err != nil || len(collections) != 1 {
 		t.Fatalf("workspace handoff read created artifact collections: count=%d err=%v", len(collections), err)
 	}
 	accessBody := bytes.NewBufferString(`{"artifact_id":"` + variant.ID + `"}`)
