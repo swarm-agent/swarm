@@ -709,6 +709,9 @@ export function createDesktopV3RoutedStartOperation(
   if (input.snapshot && input.prompt !== undefined && input.prompt !== input.snapshot.prompt) {
     throw new Error('Routed Desktop start prompt must match the captured composer snapshot')
   }
+  if (input.snapshot && input.modelProfileChoice && JSON.stringify(desktopV3ModelProfileChoiceWire(input.modelProfileChoice)) !== JSON.stringify(input.snapshot.modelProfileChoice ? desktopV3ModelProfileChoiceWire(input.snapshot.modelProfileChoice) : undefined)) {
+    throw new Error('Routed Desktop model profile must match the captured composer snapshot')
+  }
   const snapshot = createDesktopV3RoutedComposerSnapshot(input.snapshot ?? {
     prompt: input.prompt ?? '',
     attachments: input.media,
@@ -717,6 +720,7 @@ export function createDesktopV3RoutedStartOperation(
     selectedSkill: input.selectedSkill,
     worktreePrimed: input.worktreePrimed,
     planModeRequested: input.planModeRequested,
+    modelProfileChoice: input.modelProfileChoice,
   })
   for (const selection of snapshot.artifactSelections) {
     if (!selection.session_id || !selection.collection_id || !selection.variant_id || selection.event_seq <= 0 || !selection.label || (selection.action !== 'select' && selection.action !== 'use')) {
@@ -806,6 +810,8 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   if (JSON.stringify(request.media ?? []) !== JSON.stringify(normalizedRoutedMedia(snapshot.attachments) ?? [])) return false
   if (JSON.stringify(request.video_attachments ?? []) !== JSON.stringify(snapshot.videoAttachments)) return false
   if (JSON.stringify(request.artifact_selections ?? []) !== JSON.stringify(snapshot.artifactSelections)) return false
+  const snapshotModelProfile = snapshot.modelProfileChoice ? desktopV3ModelProfileChoiceWire(snapshot.modelProfileChoice) : undefined
+  if (JSON.stringify(request.model_profile) !== JSON.stringify(snapshotModelProfile)) return false
   return true
 }
 
