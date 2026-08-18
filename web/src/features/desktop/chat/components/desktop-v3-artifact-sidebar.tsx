@@ -85,16 +85,6 @@ function sidebarArtifactNeedsExclusiveLivePreview(artifact: DesktopV3ArtifactCat
   return artifact.mediaType === 'text/html' && !artifact.animationProfile
 }
 
-function sidebarArtifactNeedsMotionPermission(artifact: DesktopV3ArtifactCatalogEntry): boolean {
-  if (artifact.animationProfile?.profileId === 'final_render') return false
-  return Boolean(artifact.animationProfile)
-    || artifact.mediaType === 'image/svg+xml'
-    || artifact.mediaType === 'image/gif'
-    || artifact.mediaType === 'text/html'
-    || artifact.mediaType.startsWith('video/')
-    || artifact.kind === 'video'
-}
-
 function sidebarArtifactAnimationProfileKey(artifact: DesktopV3ArtifactCatalogEntry): string {
   const profile = artifact.animationProfile
   if (!profile) return ''
@@ -147,10 +137,8 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   const [previewHTML, setPreviewHTML] = useState('')
   const [failed, setFailed] = useState(false)
   const exclusive = sidebarArtifactNeedsExclusiveLivePreview(artifact)
-  const { previewRef, previewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(live)
-  const previewEnabled = live
-    && previewVisible
-    && (!sidebarArtifactNeedsMotionPermission(artifact) || previewMotionAllowed)
+  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(live)
+  const previewEnabled = live && previewVisible
 
   useEffect(() => {
     setPreviewURL('')

@@ -780,6 +780,157 @@ func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Re
 	_ = archive.Close()
 }
 
+func (s *Server) handleSessionV3ArtifactCollectionBundle(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, collectionID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	collection, found, err := s.sessions.GetSessionArtifactCollection(principal.AccountScopeID, sessionID, collectionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found || collection.SessionID != sessionID || collection.AccountScopeID != principal.AccountScopeID {
+		writeError(w, http.StatusNotFound, errors.New("artifact collection not found"))
+		return
+	}
+	variants, err := s.sessions.ListSessionArtifactVariants(principal.AccountScopeID, sessionID, collectionID, pebblestore.SessionArtifactMaxVariantsPerCollection)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ready := make([]pebblestore.SessionArtifactVariant, 0, len(variants))
+	for _, variant := range variants {
+		if variant.Status == pebblestore.SessionArtifactStatusReady {
+			ready = append(ready, variant)
+		}
+	}
+	if len(ready) == 0 {
+		writeError(w, http.StatusNotFound, errors.New("artifact collection has no ready variants"))
+		return
+	}
+	if r.Method == http.MethodHead {
+		bundleName := sessionV3ArtifactCollectionBundleFilename(collection.Name, collection.ID)
+		disposition := mime.FormatMediaType("attachment", map[string]string{"filename": bundleName})
+		if disposition == "" {
+			disposition = "attachment"
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", disposition)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		return
+	}
+
+	type collectionBundleFile struct {
+		variant pebblestore.SessionArtifactVariant
+		file    *os.File
+	}
+	files := make([]collectionBundleFile, 0, len(ready))
+	for _, variant := range ready {
+		resolved, ok, resolveErr := s.resolveSessionV3Artifact(r.Context(), principal, sessionID, variant.ID)
+		if resolveErr != nil || !ok {
+			for _, opened := range files {
+				_ = opened.file.Close()
+			}
+			writeError(w, http.StatusNotFound, errors.New("artifact collection bundle is unavailable"))
+			return
+		}
+		file, _, openErr := s.openSessionV3Artifact(r.Context(), session, resolved)
+		if openErr != nil {
+			for _, opened := range files {
+				_ = opened.file.Close()
+			}
+			writeError(w, http.StatusNotFound, errors.New("artifact collection bundle is unavailable"))
+			return
+		}
+		files = append(files, collectionBundleFile{variant: variant, file: file})
+	}
+	defer func() {
+		for _, opened := range files {
+			_ = opened.file.Close()
+		}
+	}()
+
+	bundleName := sessionV3ArtifactCollectionBundleFilename(collection.Name, collection.ID)
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": bundleName})
+	if disposition == "" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", disposition)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	archive := zip.NewWriter(w)
+	usedNames := make(map[string]int, len(files))
+	for index, opened := range files {
+		filename := sessionV3ArtifactCollectionEntryName(opened.variant.Filename, opened.variant.ID, index+1, usedNames)
+		header := &zip.FileHeader{Name: filename, Method: zip.Deflate, Modified: time.Time{}}
+		header.SetMode(0o600)
+		entry, createErr := archive.CreateHeader(header)
+		if createErr == nil {
+			_, createErr = io.Copy(entry, opened.file)
+		}
+		if createErr != nil {
+			_ = archive.Close()
+			return
+		}
+	}
+	_ = archive.Close()
+}
+
+func sessionV3ArtifactCollectionEntryName(filename, variantID string, index int, used map[string]int) string {
+	name := sessionV3ArtifactSafeDownloadName(filename)
+	if name == "" {
+		name = sessionV3ArtifactSafeDownloadName(variantID)
+	}
+	if name == "" {
+		name = fmt.Sprintf("variant-%d", index)
+	}
+	key := strings.ToLower(name)
+	used[key]++
+	if used[key] == 1 {
+		return name
+	}
+	extension := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, extension)
+	return fmt.Sprintf("%s-%d%s", stem, used[key], extension)
+}
+
+func sessionV3ArtifactCollectionBundleFilename(collectionName, collectionID string) string {
+	name := sessionV3ArtifactSafeDownloadName(collectionName)
+	if name == "" {
+		name = sessionV3ArtifactSafeDownloadName(collectionID)
+	}
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	if name == "" {
+		name = "artifact-collection"
+	}
+	return name + ".zip"
+}
+
+func sessionV3ArtifactSafeDownloadName(value string) string {
+	name := filepath.Base(strings.TrimSpace(value))
+	name = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '-'
+	}, name)
+	return strings.Trim(name, ".-")
+}
+
 func sessionV3ArtifactBundleRootName(value string) string {
 	name := strings.TrimSpace(value)
 	name = strings.TrimSuffix(name, filepath.Ext(name))

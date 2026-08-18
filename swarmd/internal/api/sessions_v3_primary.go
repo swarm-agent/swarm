@@ -343,6 +343,16 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		}
 		if strings.HasPrefix(subpath, "artifacts/") {
 			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
+			if collectionPath, hasCollectionBundle := strings.CutPrefix(artifactPath, "collections/"); hasCollectionBundle {
+				collectionID, hasBundle := strings.CutSuffix(collectionPath, "/bundle")
+				collectionID = strings.TrimSpace(collectionID)
+				if !hasBundle || collectionID == "" || strings.Contains(collectionID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("invalid artifact collection path"))
+					return
+				}
+				s.handleSessionV3ArtifactCollectionBundle(w, r, principal, sessionID, collectionID)
+				return
+			}
 			if artifactID, hasSelection := strings.CutSuffix(artifactPath, "/selection"); hasSelection {
 				artifactID = strings.TrimSpace(artifactID)
 				if artifactID == "" || strings.Contains(artifactID, "/") {

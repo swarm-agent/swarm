@@ -522,6 +522,36 @@ func TestManagedArtifactCatalogKeepsNativeAndWorkspaceHandoffDescriptors(t *test
 	}
 }
 
+func TestManagedSessionV3ArtifactCollectionBundleDownloadsAllReadyVariants(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "note.txt", "workspace file")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	for index, filename := range []string{"concept.html", "concept.html"} {
+		_, err := authority.Create(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+			RequestID: fmt.Sprintf("group-download-%d", index), CollectionID: "download-collection", CollectionName: "Managed iteration group", VariantID: fmt.Sprintf("download-variant-%d", index), Filename: filename, MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Previewable: true}, Body: []byte(fmt.Sprintf("variant-%d", index)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-session/artifacts/collections/download-collection/bundle", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("collection bundle status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Content-Type") != "application/zip" || !strings.Contains(rec.Header().Get("Content-Disposition"), "Managed-iteration-group.zip") {
+		t.Fatalf("collection bundle headers = %v", rec.Header())
+	}
+	archive, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.File) != 2 || archive.File[0].Name != "concept.html" || archive.File[1].Name != "concept-2.html" {
+		t.Fatalf("collection bundle entries = %+v", archive.File)
+	}
+}
+
 func TestManagedSessionV3ArtifactPackageEntryPrefersRootIndexAndFallsBackToHTML(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -676,6 +676,13 @@ export function desktopV3ArtifactBundleEndpoint(sessionId: string, artifactId: s
   return `${desktopV3ArtifactEndpoint(sessionId, artifactId)}/bundle`
 }
 
+export function desktopV3ArtifactCollectionBundleEndpoint(sessionId: string, collectionId: string): string {
+  const normalizedSessionId = sessionId.trim()
+  const normalizedCollectionId = collectionId.trim()
+  if (!normalizedSessionId || !normalizedCollectionId) throw new Error('Artifact collection download requires a session and collection ID')
+  return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/collections/${encodeURIComponent(normalizedCollectionId)}/bundle`
+}
+
 export function desktopV3ArtifactRequiresBundle(
   artifact: Pick<DesktopV3ArtifactCatalogEntry, 'kind' | 'mediaType'>,
 ): boolean {
@@ -841,6 +848,15 @@ export async function fetchDesktopV3ArtifactBundle(sessionId: string, artifactId
   if (!response.ok) {
     throw new Error(await readErrorMessage(response))
   }
+  return response.blob()
+}
+
+export async function fetchDesktopV3ArtifactCollectionBundle(sessionId: string, collectionId: string, signal?: AbortSignal): Promise<Blob> {
+  const response = await apiFetch(desktopV3ArtifactCollectionBundleEndpoint(sessionId, collectionId), {
+    method: 'GET',
+    signal,
+  })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
   return response.blob()
 }
 

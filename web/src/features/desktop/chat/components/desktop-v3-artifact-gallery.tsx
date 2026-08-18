@@ -31,6 +31,7 @@ import {
   desktopV3ArtifactRequiresBundle,
   desktopV3ArtifactSelection,
   fetchDesktopV3Artifact,
+  fetchDesktopV3ArtifactCollectionBundle,
   fetchDesktopV3ArtifactDownload,
   fetchDesktopV3ArtifactCatalog,
   fetchDesktopV3ArtifactPreviewToken,
@@ -193,7 +194,7 @@ export function DesktopV3ArtifactGallery({
   const [previewText, setPreviewText] = useState('')
   const [previewError, setPreviewError] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [actionPending, setActionPending] = useState<'add' | 'use' | ''>('')
+  const [actionPending, setActionPending] = useState<'add' | 'use' | 'download-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [query, setQuery] = useState('')
   const [organization, setOrganization] = useState<'collection' | 'workspace'>('collection')
@@ -201,7 +202,7 @@ export function DesktopV3ArtifactGallery({
   const backButtonRef = useRef<HTMLButtonElement>(null)
   const previewSurfaceRef = useRef<HTMLDivElement>(null)
   const open = controlledOpen ?? internalOpen
-  const { previewRef: animationPreviewRef, previewVisible: animationPreviewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility(open)
+  const { previewRef: animationPreviewRef, previewVisible: animationPreviewVisible } = useDesktopV3ArtifactPreviewVisibility(open)
   const [previewFullscreen, setPreviewFullscreen] = useState(false)
   const setOpen = (next: boolean) => {
     if (controlledOpen === undefined) setInternalOpen(next)
@@ -246,11 +247,7 @@ export function DesktopV3ArtifactGallery({
   const selectedIsQueuedForChat = Boolean(selected && chatSelectedIds.includes(artifactSelectionKey(selected)))
   const selectedRequirementLabel = formatDesktopV3ArtifactOutputRequirements(selected?.outputRequirements)
   const selectedAnimationLabel = formatDesktopV3ArtifactAnimationProfile(selected?.animationProfile)
-  const selectedAnimationActive = animationPreviewVisible && (
-    !selected?.animationProfile
-    || selected.animationProfile.profileId === 'final_render'
-    || previewMotionAllowed
-  )
+  const selectedAnimationActive = animationPreviewVisible
   const selectedVideoProfileCompatible = !selected?.animationProfile || selected.animationProfile.profileId === 'final_render'
   const attachableSelectedArtifacts = artifacts.filter((artifact) => chatSelectedIds.includes(artifactSelectionKey(artifact))
     && artifact.status === 'ready'
@@ -432,18 +429,37 @@ export function DesktopV3ArtifactGallery({
     }
   }
 
+  const triggerBlobDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
   const downloadArtifact = async (artifact: DesktopV3ArtifactGalleryEntry) => {
     try {
       setPreviewError('')
-      const blob = await fetchDesktopV3ArtifactDownload(artifact)
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = desktopV3ArtifactDownloadName(artifact)
-      anchor.click()
-      window.setTimeout(() => URL.revokeObjectURL(url), 0)
+      triggerBlobDownload(await fetchDesktopV3ArtifactDownload(artifact), desktopV3ArtifactDownloadName(artifact))
     } catch (error) {
       setPreviewError(error instanceof Error ? error.message : 'Artifact download failed')
+    }
+  }
+
+  const downloadCollection = async (group: ArtifactCollectionGroup) => {
+    const artifact = group.entries.find((entry) => entry.collectionId && entry.status === 'ready')
+    if (!artifact?.collectionId) return
+    try {
+      setActionPending('download-collection')
+      setActionError('')
+      const blob = await fetchDesktopV3ArtifactCollectionBundle(artifact.sessionId, artifact.collectionId)
+      const filename = `${collectionDisplayLabel(group).replace(/[^a-z0-9._-]+/gi, '-').replace(/^[.-]+|[.-]+$/g, '') || 'artifact-collection'}.zip`
+      triggerBlobDownload(blob, filename)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Artifact collection download failed')
+    } finally {
+      setActionPending('')
     }
   }
 
@@ -615,7 +631,10 @@ export function DesktopV3ArtifactGallery({
                         {overviewGroup.entries[0]?.collectionDescription ? <p className="mt-1 text-sm text-[var(--app-text-muted)]">{overviewGroup.entries[0].collectionDescription}</p> : null}
                         <p className="mt-1 text-xs text-[var(--app-text-subtle)]">{overviewGroup.progress.total} variant{overviewGroup.progress.total === 1 ? '' : 's'} · {overviewGroup.progress.ready} ready</p>
                       </div>
-                      {formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements) ? <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">{formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements)}</span> : null}
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                        {formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements) ? <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">{formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements)}</span> : null}
+                        <button type="button" className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" disabled={overviewGroup.progress.ready === 0 || Boolean(actionPending)} onClick={() => void downloadCollection(overviewGroup)} data-artifact-download-collection>{actionPending === 'download-collection' ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}Download all ready ({overviewGroup.progress.ready})</button>
+                      </div>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-label="Collection variants">
                       {overviewGroup.entries.map((artifact, index) => {

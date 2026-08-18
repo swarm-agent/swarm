@@ -126,7 +126,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
   const [interactivePreviewRequested, setInteractivePreviewRequested] = useState(false)
-  const { previewRef, previewVisible: previewInViewport, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility()
+  const { previewRef, previewVisible: previewInViewport } = useDesktopV3ArtifactPreviewVisibility()
   const interactivePreview = Boolean(artifact.animationProfile)
     || artifact.mediaType === 'text/html'
     || artifact.mediaType === 'application/pdf'
@@ -136,9 +136,6 @@ export function DesktopV3ArtifactPreviewThumbnail({
     || artifact.kind === 'video'
   // Rich thumbnails are demand-driven so long transcripts do not run a wall of iframes, GIFs, or videos.
   const previewVisible = previewInViewport && (!interactivePreview || interactivePreviewRequested)
-  const animationExecutionAllowed = !artifact.animationProfile
-    || artifact.animationProfile.profileId === 'final_render'
-    || previewMotionAllowed
   const animationCanvasStyle = artifact.animationProfile
     ? { maxWidth: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels), maxHeight: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels) }
     : undefined
@@ -147,7 +144,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
     setPreviewURL('')
     setPreviewText('')
     setFailed(false)
-    if (!previewVisible || !animationExecutionAllowed || artifact.status !== 'ready' || !artifact.previewable) {
+    if (!previewVisible || artifact.status !== 'ready' || !artifact.previewable) {
       setLoading(false)
       return undefined
     }
@@ -201,9 +198,9 @@ export function DesktopV3ArtifactPreviewThumbnail({
       controller.abort()
       if (objectURL) URL.revokeObjectURL(objectURL)
     }
-  }, [animationExecutionAllowed, artifact.animationProfile, artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.sourceRef, artifact.status, previewVisible])
+  }, [artifact.animationProfile, artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.sourceRef, artifact.status, previewVisible])
 
-  const previewActive = previewVisible && animationExecutionAllowed
+  const previewActive = previewVisible
   const hasHTMLPreview = previewActive && artifact.mediaType === 'text/html' && Boolean(previewText)
   const hasImagePreview = previewActive && artifact.mediaType.startsWith('image/') && Boolean(previewURL)
   const videoProfileCompatible = !artifact.animationProfile || artifact.animationProfile.profileId === 'final_render'
