@@ -51,6 +51,7 @@ type routedSessionStartRequest struct {
 	StagingIDs               []string                                        `json:"staging_ids,omitempty"`
 	VideoAttachments         []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
 	ArtifactSelections       []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	ModelProfile             *sessionsV3ModelProfileChoice                   `json:"model_profile,omitempty"`
 }
 
 type routedSessionStartResult struct {
@@ -492,6 +493,20 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	if planModeRequested {
 		mode = sessionruntime.ModePlan
 	}
+	if req.ModelProfile != nil {
+		selectedProfile, resolveErr := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
+		if resolveErr != nil {
+			writeRoutedSessionError(w, resolveErr)
+			return
+		}
+		if selectedProfile != nil {
+			modelProfile, err = mergeSessionsV3ModelProfileChoice(pebblestore.SessionSnapshot{Mode: mode, ModelProfile: modelProfile}, selectedProfile)
+			if err != nil {
+				writeRoutedSessionError(w, err)
+				return
+			}
+		}
+	}
 	if modelProfile != nil && mode == sessionruntime.ModePlan && modelProfile.Plan == nil {
 		writeRoutedSessionError(w, errors.New("Plan was requested but the account default has Plan disabled"))
 		return
@@ -769,7 +784,8 @@ func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3P
 		Media                                                             []routedSessionMediaRequest
 		VideoAttachments                                                  []pebblestore.SessionVideoAttachmentReference
 		ArtifactSelections                                                []pebblestore.SessionArtifactSelectionReference
-	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections})
+		ModelProfile                                                      *sessionsV3ModelProfileChoice
+	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections, req.ModelProfile})
 	if err != nil {
 		return "", err
 	}

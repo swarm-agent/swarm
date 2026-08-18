@@ -520,6 +520,7 @@ export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAut
   media?: DesktopV3RoutedMediaInput[]
   video_attachments?: DesktopVideoSourceAttachment[]
   artifact_selections?: DesktopV3ArtifactMessageSelection[]
+  model_profile?: ReturnType<typeof desktopV3ModelProfileChoiceWire>
 }
 
 export interface DesktopV3RoutedStartOperation {
@@ -608,6 +609,7 @@ export interface CreateDesktopV3RoutedStartOperationInput {
   selectedSkill?: unknown | null
   worktreePrimed?: boolean
   planModeRequested?: boolean
+  modelProfileChoice?: ModelProfileChoice
   /** Reserved before media staging so uploads and the routed start share one identity. */
   identity?: DesktopV3RoutedOperationIdentity
 }
@@ -741,6 +743,7 @@ export function createDesktopV3RoutedStartOperation(
       metadata: input.metadata ? { ...input.metadata } : undefined,
       managed_worktree_requested: snapshot.worktreePrimed,
       plan_mode_requested: snapshot.planModeRequested,
+      model_profile: input.modelProfileChoice ? desktopV3ModelProfileChoiceWire(input.modelProfileChoice) : undefined,
       media: normalizedRoutedMedia(snapshot.attachments),
       video_attachments: snapshot.videoAttachments.map((attachment) => ({ ...attachment })),
       artifact_selections: snapshot.artifactSelections.map((selection) => ({ ...selection })),

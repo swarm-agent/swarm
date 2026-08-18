@@ -138,6 +138,7 @@ export interface DesktopV3RoutedSessionStartRequest extends DesktopV3RoutedWorks
   staging_ids?: string[]
   video_attachments?: DesktopVideoSourceAttachment[]
   artifact_selections?: DesktopV3ArtifactMessageSelection[]
+  model_profile?: DesktopV3ModelProfileChoiceWire
 }
 
 export interface DesktopV3BackgroundRouterSessionStartRequest extends DesktopV3RoutedWorkspaceAuthorityRequest {
@@ -309,6 +310,7 @@ export async function postDesktopV3RoutedSessionStart(
     ...(input.metadata ? { metadata: input.metadata } : {}),
     managed_worktree_requested: input.managed_worktree_requested,
     plan_mode_requested: input.plan_mode_requested,
+    ...(input.model_profile ? { model_profile: input.model_profile } : {}),
     ...(input.media?.length ? { media: input.media } : {}),
     ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),
     ...(input.video_attachments?.length ? { video_attachments: input.video_attachments.map((attachment) => ({ ...attachment })) } : {}),
