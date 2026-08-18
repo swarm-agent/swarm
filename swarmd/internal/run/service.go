@@ -4140,7 +4140,7 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 	}
 	lines = append(lines,
 		"Conservative no-progress loop check:",
-		"- Treat work as a no-progress loop only when two or more attempts or compaction epochs repeat substantially equivalent operations against the same unchanged blocker, contradiction, or result, without new authoritative evidence, a file/workspace change, a commit, a newly validated result, or a materially distinct recovery path.",
+		"- Treat work as a no-progress loop only when two or more attempts or compaction epochs repeat substantially equivalent operations against the same unchanged blocker, contradiction, or result, without new authoritative evidence, a file or workspace change, a commit, a newly validated result, or a materially distinct recovery path.",
 		"- A bounded retry is productive, not a loop, when it is testing a materially different hypothesis or recovery path, gathering new authoritative evidence, or follows an observable state change. A failed first attempt, uncertainty, or scope growth alone is not a loop.",
 		"- Compare operation arguments and outcomes, prior compact checkpoints, completed work, durable plan/checkpoint state, and the trusted workspace/Git snapshot when supplied. Do not infer repetition merely from similar prose.",
 		"- When the conservative test is met, emit the exact heading `NO-PROGRESS LOOP WARNING (carry forward until resolved):` and record: the repeated operation; attempt/compact evidence; the unchanged blocker or contradiction; work already completed; workspace/Git state when known; the exact external resolution or new evidence needed; and one bounded next action that is not another substantially equivalent retry.",
