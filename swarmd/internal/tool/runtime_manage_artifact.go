@@ -12,8 +12,14 @@ import (
 	"image"
 	_ "image/jpeg"
 	"image/png"
+	"io"
 	"math"
+	"mime"
 	"net/http"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -33,6 +39,10 @@ const (
 	manageArtifactMaxReadBytes      = 256 << 10
 	manageArtifactMaxImageReadBytes = 16 << 20
 	manageArtifactMaxPromptRunes    = 12000
+	manageArtifactMaxBatchItems     = 64
+
+	manageArtifactReadResponseQuotaCode         = "artifact_read_response_too_large"
+	manageArtifactPackageEntryResponseQuotaCode = "artifact_package_entry_response_too_large"
 )
 
 // ArtifactAuthority is the session-owned managed artifact lifecycle boundary.
@@ -43,12 +53,15 @@ type ArtifactAuthority interface {
 	CreatePackage(context.Context, artifact.Principal, artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error)
 	List(artifact.Principal, string, int) ([]pebblestore.SessionArtifactCollection, error)
 	ListVariants(artifact.Principal, string, int) ([]pebblestore.SessionArtifactVariant, error)
+	SearchCatalog(artifact.Principal, pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error)
 	Get(artifact.Principal, string) (pebblestore.SessionArtifactVariant, error)
 	GetReference(artifact.Principal, pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error)
 	Read(context.Context, artifact.Principal, string, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
 	ReadReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, int64) ([]byte, pebblestore.SessionArtifactVariant, error)
 	ReadPackageReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, string, int64) ([]artifact.PackageManifestEntry, []byte, pebblestore.SessionArtifactVariant, error)
 	MaterializeReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, string, string, bool) (artifact.Materialized, error)
+	MaterializeBatchReferences(context.Context, artifact.Principal, []artifact.MaterializeBatchItem, string, string, bool) ([]artifact.Materialized, []pebblestore.SessionArtifactVariant, error)
+	PublishWorkspace(context.Context, artifact.Principal, artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error)
 	Select(artifact.Principal, string, string, string) (pebblestore.SessionArtifactSelectionReference, error)
 	DeleteVariant(artifact.Principal, string, string, string) error
 	DeleteCollection(artifact.Principal, string, string) error
@@ -114,14 +127,25 @@ func manageArtifactDefinition() Definition {
 		"required":             []string{"name", "content"},
 		"additionalProperties": false,
 	}
+	reference := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"session_id":    map[string]any{"type": "string"},
+			"collection_id": map[string]any{"type": "string"},
+			"variant_id":    map[string]any{"type": "string"},
+			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
+		},
+		"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
+		"additionalProperties": false,
+	}
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize an exact reference into the trusted workspace. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, or promote an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. Provider/model identifiers and private storage paths are never accepted or exposed.",
+		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize exact references into the trusted workspace. Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, or promote an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "create", "create_package", "list_presets", "list", "get", "read", "materialize", "promote", "select", "delete"}},
+				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. Use search for cross-session discovery, materialize/materialize_batch for workspace import, and publish_workspace for trusted workspace publication."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
@@ -135,9 +159,11 @@ func manageArtifactDefinition() Definition {
 				"collection_description": map[string]any{"type": "string", "maxLength": 2048},
 				"variant_id":             map[string]any{"type": "string", "description": "Opaque variant reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and event_seq from the same returned reference; otherwise optional on create."},
 				"filename":               map[string]any{"type": "string", "maxLength": 255},
-				"media_type":             map[string]any{"type": "string", "maxLength": 255},
+				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for create"},
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
+				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": reference, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
+				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
 				"presentation":           presentation,
 				"output_requirements":    artifact.OutputRequirementsToolSchema(),
 				"animation_profile":      artifact.AnimationProfileToolSchema(),
@@ -146,11 +172,15 @@ func manageArtifactDefinition() Definition {
 				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
 				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and variant_id from the same returned reference."},
-				"status":                 map[string]any{"type": "string", "description": "Optional list filter: staging|ready|failed|unavailable"},
-				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit},
-				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. Text/package entries are capped at 256 KiB; supported ready images are capped at 16 MiB and returned as base64."},
-				"entry":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Optional normalized slash-delimited regular-file entry for application/zip read; omit to return the bounded package manifest"},
-				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace-relative file or directory destination required for materialize/promote"},
+				"query":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Optional authenticated cross-session metadata search across collection and variant display fields; search results are explicit candidates and ready items carry complete exact references."},
+				"status":                 map[string]any{"type": "string", "description": "Optional list/search filter: staging|ready|failed|unavailable"},
+				"created_after":          map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive variant created_at lower bound in Unix milliseconds for cross-session discovery"},
+				"created_before":         map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive variant created_at upper bound in Unix milliseconds for cross-session discovery"},
+				"cursor":                 map[string]any{"type": "string", "description": "Opaque cross-session discovery continuation cursor. Copy next_cursor from the prior search/list response unchanged; never parse or construct it."},
+				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list/search items for this page; use next_cursor/cursor to continue cross-session discovery."},
+				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read for bounded inspection. Text/package entries are capped at 256 KiB; supported ready images are capped at 16 MiB and returned as base64. A response-quota error does not mean the artifact is unavailable; use materialize for workspace use instead of bulk-reading it."},
+				"entry":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Optional normalized slash-delimited regular-file entry for application/zip read; omit to return the bounded package manifest. Materialize the package for whole-package workspace work."},
+				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace-relative file or directory destination required for materialize/promote and materialize_batch; overwrite defaults to false."},
 				"overwrite":              map[string]any{"type": "boolean", "description": "Explicitly permit bounded replacement of destination files; defaults to false"},
 			},
 			"required":             []string{"action"},
@@ -189,9 +219,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		requestID = managedArtifactRequestID(principal.SessionID, callID, actionName)
 	}
 
-	if actionName != "create" && actionName != "create_package" && actionName != "generate_image" {
+	if actionName != "create" && actionName != "create_package" && actionName != "generate_image" && actionName != "publish_workspace" {
 		if _, supplied := args["output_requirements"]; supplied {
-			return "", errors.New("manage_artifact output_requirements is valid only for generate_image, create, or create_package")
+			return "", errors.New("manage_artifact output_requirements is valid only for generate_image, create, create_package, or publish_workspace")
 		}
 	}
 	if actionName != "create" && actionName != "create_package" {
@@ -275,13 +305,26 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["reviewed_date"] = artifact.OutputRequirementsReviewedDate
 		response["presets"] = presets
 		response["count"] = len(presets)
-	case "list":
+	case "list", "search":
 		limit := clampInt(asInt(args["limit"], manageArtifactDefaultListLimit), 1, manageArtifactMaxListLimit)
 		status := strings.ToLower(strings.TrimSpace(asString(args["status"])))
 		if status != "" && status != pebblestore.SessionArtifactStatusStaging && status != pebblestore.SessionArtifactStatusReady && status != pebblestore.SessionArtifactStatusFailed && status != pebblestore.SessionArtifactStatusUnavailable {
 			return "", errors.New("list status must be staging, ready, failed, or unavailable")
 		}
 		collectionID := strings.TrimSpace(asString(args["collection_id"]))
+		query, mediaType, cursor := strings.TrimSpace(asString(args["query"])), strings.TrimSpace(asString(args["media_type"])), strings.TrimSpace(asString(args["cursor"]))
+		createdAfter, afterSupplied, err := optionalArtifactInt64(args, "created_after")
+		if err != nil {
+			return "", err
+		}
+		createdBefore, beforeSupplied, err := optionalArtifactInt64(args, "created_before")
+		if err != nil {
+			return "", err
+		}
+		catalogRequested := actionName == "search" || query != "" || mediaType != "" || cursor != "" || afterSupplied || beforeSupplied
+		if collectionID != "" && catalogRequested {
+			return "", errors.New("manage_artifact list/search collection_id cannot be combined with cross-session discovery filters or cursor")
+		}
 		if collectionID != "" {
 			variants, err := r.artifactAuthority.ListVariants(principal, collectionID, limit)
 			if err != nil {
@@ -292,6 +335,23 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 				items = append(items, managedArtifactVariant(variant))
 			}
 			response["collection_id"], response["artifacts"], response["count"] = collectionID, items, len(items)
+		} else if catalogRequested {
+			page, err := r.artifactAuthority.SearchCatalog(principal, pebblestore.SessionArtifactCatalogOptions{Query: query, Status: status, MediaType: mediaType, CreatedAfter: createdAfter, CreatedBefore: createdBefore, Limit: limit, Cursor: cursor})
+			if err != nil {
+				return "", err
+			}
+			items := make([]map[string]any, 0, len(page.Items))
+			for _, item := range page.Items {
+				entry := map[string]any{"collection": managedArtifactCollection(item.Collection), "artifact": managedArtifactVariant(item.Variant)}
+				if item.Reference != nil {
+					entry["reference"] = managedArtifactReferenceWithSession(item.Reference.SessionID, item.Reference.CollectionID, item.Reference.VariantID, item.Reference.EventSeq)
+				}
+				items = append(items, entry)
+			}
+			response["artifacts"], response["count"], response["has_more"] = items, len(items), page.HasMore
+			if page.NextCursor != "" {
+				response["next_cursor"] = page.NextCursor
+			}
 		} else {
 			collections, err := r.artifactAuthority.List(principal, status, limit)
 			if err != nil {
@@ -367,6 +427,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			var manifest []artifact.PackageManifestEntry
 			manifest, body, variant, err = r.artifactAuthority.ReadPackageReference(ctx, principal, ref, entryName, int64(maxBytes))
 			if err != nil {
+				if errors.Is(err, artifact.ErrQuotaExceeded) {
+					return "", manageArtifactReadResponseQuotaError(manageArtifactPackageEntryResponseQuotaCode)
+				}
 				return "", err
 			}
 			if len(manifest) > manageArtifactMaxPackageFiles {
@@ -407,6 +470,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			body, variant, err = r.artifactAuthority.Read(ctx, principal, variantID, int64(readLimit))
 		}
 		if err != nil {
+			if errors.Is(err, artifact.ErrQuotaExceeded) {
+				return "", manageArtifactReadResponseQuotaError(manageArtifactReadResponseQuotaCode)
+			}
 			return "", err
 		}
 		response["artifact"] = managedArtifactVariant(variant)
@@ -450,7 +516,55 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		response["reference"] = managedArtifactReferenceWithSession(ref.SessionID, ref.CollectionID, ref.VariantID, ref.EventSeq)
-		response["materialized"] = map[string]any{"destination": materialized.Destination, "package": materialized.Package, "files": materialized.Files, "bytes": materialized.Bytes, "overwrite": asBool(args["overwrite"])}
+		response["materialized"] = managedArtifactMaterialized(materialized, asBool(args["overwrite"]))
+	case "materialize_batch":
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+			return "", errors.New("manage_artifact managed Designer runs cannot materialize into the workspace; batch import requires an explicit parent workspace action")
+		}
+		destination, err := requireArtifactArgument(args, "destination")
+		if err != nil {
+			return "", err
+		}
+		workspaceRoot := strings.TrimSpace(scope.PrimaryPath)
+		if workspaceRoot == "" {
+			return "", errors.New("manage_artifact materialize_batch requires a trusted workspace root")
+		}
+		items, refs, err := parseArtifactBatchReferences(args["references"])
+		if err != nil {
+			return "", err
+		}
+		materialized, variants, err := r.artifactAuthority.MaterializeBatchReferences(ctx, principal, items, workspaceRoot, destination, asBool(args["overwrite"]))
+		if err != nil {
+			return "", err
+		}
+		if len(materialized) != len(refs) || len(variants) != len(refs) {
+			return "", errors.New("manage_artifact materialize_batch authority returned an inconsistent result count")
+		}
+		outputs := make([]map[string]any, 0, len(materialized))
+		var totalFiles int
+		var totalBytes int64
+		for index, item := range materialized {
+			output := managedArtifactMaterialized(item, asBool(args["overwrite"]))
+			output["reference"] = managedArtifactReferenceWithSession(refs[index].SessionID, refs[index].CollectionID, refs[index].VariantID, refs[index].EventSeq)
+			output["media_type"] = variants[index].MediaType
+			output["digest_sha256"] = variants[index].DigestSHA256
+			outputs = append(outputs, output)
+			totalFiles += item.Files
+			totalBytes += item.Bytes
+		}
+		response["destination"], response["items"], response["count"] = filepath.ToSlash(destination), outputs, len(outputs)
+		response["files"], response["bytes"] = totalFiles, totalBytes
+	case "publish_workspace":
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+			return "", errors.New("manage_artifact managed Designer runs cannot publish workspace sources")
+		}
+		variant, sourceInfo, err := r.publishWorkspaceArtifact(ctx, principal, scope, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+		response["published"] = sourceInfo
 	case "select":
 		collectionID, err := requireArtifactArgument(args, "collection_id")
 		if err != nil {
@@ -490,6 +604,327 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func manageArtifactReadResponseQuotaError(code string) error {
+	return fmt.Errorf("manage_artifact read response exceeds the bounded tool quota (code=%s); this does not mean the artifact is unavailable. Use materialize with the complete exact reference for workspace use instead of bulk-reading bytes", code)
+}
+
+func managedArtifactMaterialized(value artifact.Materialized, overwrite bool) map[string]any {
+	return map[string]any{
+		"destination": value.Destination, "package": value.Package, "files": value.Files, "bytes": value.Bytes,
+		"digest_sha256": value.DigestSHA256, "media_type": value.MediaType, "overwrite": overwrite,
+	}
+}
+
+func parseArtifactBatchReferences(raw any) ([]artifact.MaterializeBatchItem, []pebblestore.SessionArtifactSelectionReference, error) {
+	values, ok := raw.([]any)
+	if !ok || len(values) == 0 || len(values) > manageArtifactMaxBatchItems {
+		return nil, nil, fmt.Errorf("manage_artifact materialize_batch references must contain 1 to %d exact ready references", manageArtifactMaxBatchItems)
+	}
+	items := make([]artifact.MaterializeBatchItem, 0, len(values))
+	refs := make([]pebblestore.SessionArtifactSelectionReference, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for index, rawValue := range values {
+		value, ok := rawValue.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("manage_artifact materialize_batch reference %d must be an object", index)
+		}
+		for key := range value {
+			if key != "session_id" && key != "collection_id" && key != "variant_id" && key != "event_seq" {
+				return nil, nil, fmt.Errorf("manage_artifact materialize_batch reference %d contains unsupported field %q", index, key)
+			}
+		}
+		ref, explicit, err := parseArtifactReadReference(value, strings.TrimSpace(asString(value["variant_id"])))
+		if err != nil || !explicit {
+			if err == nil {
+				err = errors.New("exact ready reference is required")
+			}
+			return nil, nil, fmt.Errorf("manage_artifact materialize_batch reference %d: %w", index, err)
+		}
+		identity := strings.Join([]string{ref.SessionID, ref.CollectionID, ref.VariantID, fmt.Sprint(ref.EventSeq)}, "\x00")
+		if _, exists := seen[identity]; exists {
+			return nil, nil, errors.New("manage_artifact materialize_batch contains duplicate exact references")
+		}
+		seen[identity] = struct{}{}
+		items = append(items, artifact.MaterializeBatchItem{Reference: ref})
+		refs = append(refs, ref)
+	}
+	return items, refs, nil
+}
+
+func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifact.Principal, scope WorkspaceScope, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, map[string]any, error) {
+	for key := range args {
+		switch key {
+		case "action", "source", "collection_id", "collection_name", "collection_description", "filename", "media_type", "presentation", "output_requirements", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
+		default:
+			return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("manage_artifact publish_workspace contains unsupported field %q", key)
+		}
+	}
+	workspaceRoot := strings.TrimSpace(scope.PrimaryPath)
+	if workspaceRoot == "" {
+		return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace requires a trusted workspace root")
+	}
+	source, err := requireArtifactArgument(args, "source")
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+	absoluteSource, sourceInfo, packageSource, err := validateWorkspacePublishSource(ctx, workspaceRoot, source)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+
+	collectionID := strings.TrimSpace(asString(args["collection_id"]))
+	generatedCollection := collectionID == ""
+	if generatedCollection {
+		collectionID = managedArtifactOpaqueID("collection", principal.SessionID, callID)
+	}
+	variantID := managedArtifactOpaqueID("variant", principal.SessionID, callID)
+	filename := strings.TrimSpace(asString(args["filename"]))
+	mediaType := canonicalArtifactMediaType(asString(args["media_type"]))
+	if packageSource {
+		if filename == "" {
+			filename = filepath.Base(absoluteSource) + ".zip"
+		}
+		mediaType = "application/zip"
+	} else {
+		if filename == "" {
+			filename = filepath.Base(absoluteSource)
+		}
+		if mediaType == "" {
+			mediaType = canonicalArtifactMediaType(mime.TypeByExtension(filepath.Ext(filename)))
+		}
+		if mediaType == "" {
+			file, openErr := os.Open(absoluteSource)
+			if openErr != nil {
+				return pebblestore.SessionArtifactVariant{}, nil, openErr
+			}
+			buffer := make([]byte, 512)
+			count, readErr := file.Read(buffer)
+			closeErr := file.Close()
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return pebblestore.SessionArtifactVariant{}, nil, readErr
+			}
+			if closeErr != nil {
+				return pebblestore.SessionArtifactVariant{}, nil, closeErr
+			}
+			mediaType = canonicalArtifactMediaType(http.DetectContentType(buffer[:count]))
+		}
+	}
+	presentation, err := parseArtifactPresentation(args["presentation"])
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+	if presentation.Kind == "" {
+		if packageSource {
+			presentation.Kind = "package"
+		} else if strings.HasPrefix(mediaType, "text/") || mediaType == "application/json" || mediaType == "application/xml" {
+			presentation.Kind, presentation.Previewable = "text", true
+		} else if strings.HasPrefix(mediaType, "image/") {
+			presentation.Kind, presentation.Previewable = "image", true
+		} else if strings.HasPrefix(mediaType, "video/") {
+			presentation.Kind, presentation.Previewable = "video", true
+		} else {
+			presentation.Kind = "download"
+		}
+	}
+	var requirements *pebblestore.SessionArtifactOutputRequirements
+	if raw, exists := args["output_requirements"]; exists {
+		requirements, err = artifact.ParseOutputRequirements(raw)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, err
+		}
+	}
+	if err := enforceArtifactPresentationRequirements(&presentation, requirements); err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+	create := artifact.CreateInput{
+		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
+		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements,
+		SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"]),
+	}
+	if generatedCollection && create.CollectionName == "" {
+		create.CollectionName = "Workspace publication"
+	}
+	if !generatedCollection {
+		create.CollectionName, create.CollectionDescription = "", ""
+	}
+	variant, err := r.artifactAuthority.PublishWorkspace(ctx, principal, artifact.CreateFileInput{CreateInput: create, SourcePath: absoluteSource, Package: packageSource})
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+	published := map[string]any{"source": filepath.ToSlash(source), "package": packageSource, "files": sourceInfo.files, "bytes": sourceInfo.bytes, "digest_sha256": variant.DigestSHA256, "media_type": variant.MediaType}
+	return variant, published, nil
+}
+
+type workspacePublishSourceInfo struct {
+	files int
+	bytes int64
+}
+
+func validateWorkspacePublishSource(ctx context.Context, workspaceRoot, source string) (string, workspacePublishSourceInfo, bool, error) {
+	root, _, err := validateWorkspaceRelativeSource(workspaceRoot, source)
+	if err != nil {
+		return "", workspacePublishSourceInfo{}, false, err
+	}
+	absolute := filepath.Join(root, filepath.FromSlash(source))
+	info, err := os.Lstat(absolute)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || (!info.Mode().IsRegular() && !info.IsDir()) {
+		return "", workspacePublishSourceInfo{}, false, errors.New("manage_artifact publish_workspace source must be a regular non-symlink file or directory")
+	}
+	result := workspacePublishSourceInfo{}
+	ignored, err := workspacePathIgnored(ctx, root, absolute)
+	if err != nil {
+		return "", result, false, err
+	}
+	if ignored {
+		return "", result, false, errors.New("manage_artifact publish_workspace rejects ignored private workspace state")
+	}
+	if info.Mode().IsRegular() {
+		result.files, result.bytes = 1, info.Size()
+		return absolute, result, false, nil
+	}
+	err = filepath.WalkDir(absolute, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path == absolute {
+			return nil
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 || (!entry.IsDir() && !entryInfo.Mode().IsRegular()) {
+			return errors.New("manage_artifact publish_workspace package contains a symlink or special file")
+		}
+		ignored, err := workspacePathIgnored(ctx, root, path)
+		if err != nil {
+			return err
+		}
+		if ignored {
+			return errors.New("manage_artifact publish_workspace rejects ignored private workspace state")
+		}
+		if entryInfo.Mode().IsRegular() {
+			result.files++
+			result.bytes += entryInfo.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return "", workspacePublishSourceInfo{}, false, err
+	}
+	if result.files == 0 || result.files > artifact.DefaultMaxPackageFiles || result.bytes > artifact.DefaultMaxPackageBytes {
+		return "", workspacePublishSourceInfo{}, false, artifact.ErrQuotaExceeded
+	}
+	return absolute, result, true, nil
+}
+
+func validateWorkspaceRelativeSource(workspaceRoot, source string) (string, string, error) {
+	workspaceRoot = strings.TrimSpace(workspaceRoot)
+	absoluteRoot, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return "", "", err
+	}
+	absoluteRoot = filepath.Clean(absoluteRoot)
+	rootInfo, err := os.Lstat(absoluteRoot)
+	if err != nil || rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return "", "", errors.New("manage_artifact publish_workspace trusted workspace root is unsafe")
+	}
+	source = strings.TrimSpace(source)
+	if source == "" || filepath.IsAbs(source) || strings.Contains(source, "\\") || filepath.Clean(source) != source || source == "." || source == ".." || strings.HasPrefix(source, ".."+string(filepath.Separator)) {
+		return "", "", errors.New("manage_artifact publish_workspace source must be a canonical workspace-relative path")
+	}
+	current := absoluteRoot
+	parts := strings.Split(filepath.FromSlash(source), string(filepath.Separator))
+	for index, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return "", "", errors.New("manage_artifact publish_workspace source must be a canonical workspace-relative path")
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (index < len(parts)-1 && !info.IsDir()) {
+			return "", "", errors.New("manage_artifact publish_workspace source path contains a symlink or non-directory")
+		}
+	}
+	return absoluteRoot, source, nil
+}
+
+func workspacePathIgnored(ctx context.Context, workspaceRoot, absolutePath string) (bool, error) {
+	relative, err := filepath.Rel(workspaceRoot, absolutePath)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false, errors.New("manage_artifact publish_workspace source escapes its trusted workspace")
+	}
+	relativeSlash := filepath.ToSlash(relative)
+	base := strings.ToLower(filepath.Base(relative))
+	if base == ".env" || strings.HasPrefix(base, ".env.") || base == ".git" || strings.HasPrefix(relativeSlash, ".git/") {
+		return true, nil
+	}
+	if ignoredByRootGitignore(workspaceRoot, relativeSlash) {
+		return true, nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", workspaceRoot, "check-ignore", "--no-index", "--quiet", "--", filepath.ToSlash(relative))
+	err = cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		switch exitErr.ExitCode() {
+		case 1, 128:
+			return false, nil
+		}
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return false, nil
+	}
+	return false, fmt.Errorf("check workspace publication ignore policy: %w", err)
+}
+
+func ignoredByRootGitignore(workspaceRoot, relative string) bool {
+	data, err := os.ReadFile(filepath.Join(workspaceRoot, ".gitignore"))
+	if err != nil || len(data) > 1<<20 {
+		return false
+	}
+	ignored := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		negated := strings.HasPrefix(line, "!")
+		if negated {
+			line = strings.TrimPrefix(line, "!")
+		}
+		line = strings.TrimPrefix(filepath.ToSlash(line), "/")
+		if line == "" {
+			continue
+		}
+		directory := strings.HasSuffix(line, "/")
+		line = strings.TrimSuffix(line, "/")
+		matched, _ := path.Match(line, relative)
+		if !strings.Contains(line, "/") {
+			for _, part := range strings.Split(relative, "/") {
+				if partMatch, _ := path.Match(line, part); partMatch {
+					matched = true
+					break
+				}
+			}
+		}
+		if directory && (relative == line || strings.HasPrefix(relative, line+"/")) {
+			matched = true
+		}
+		if matched {
+			ignored = !negated
+		}
+	}
+	return ignored
 }
 
 func (r *Runtime) managedImageCapabilities(accountScopeID string) (imagegen.ManagedImageCapabilities, error) {
@@ -977,6 +1412,42 @@ func parseArtifactReadReference(args map[string]any, variantID string) (pebblest
 		return pebblestore.SessionArtifactSelectionReference{}, false, errors.New("manage_artifact exact source reference is incomplete; copy session_id, collection_id, variant_id, and event_seq together from the same ready reference")
 	}
 	return pebblestore.SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: collectionID, VariantID: variantID, EventSeq: eventSeq}, true, nil
+}
+
+func optionalArtifactInt64(args map[string]any, key string) (int64, bool, error) {
+	value, supplied := args[key]
+	if !supplied {
+		return 0, false, nil
+	}
+	var parsed int64
+	switch typed := value.(type) {
+	case float64:
+		if typed < 0 || typed > float64(1<<53) || math.Trunc(typed) != typed {
+			return 0, true, fmt.Errorf("manage_artifact %s must be a non-negative integer", key)
+		}
+		parsed = int64(typed)
+	case int:
+		parsed = int64(typed)
+	case int64:
+		parsed = typed
+	case uint64:
+		if typed > math.MaxInt64 {
+			return 0, true, fmt.Errorf("manage_artifact %s is too large", key)
+		}
+		parsed = int64(typed)
+	case json.Number:
+		value, err := typed.Int64()
+		if err != nil {
+			return 0, true, fmt.Errorf("manage_artifact %s must be a non-negative integer", key)
+		}
+		parsed = value
+	default:
+		return 0, true, fmt.Errorf("manage_artifact %s must be a non-negative integer", key)
+	}
+	if parsed < 0 {
+		return 0, true, fmt.Errorf("manage_artifact %s must be a non-negative integer", key)
+	}
+	return parsed, true, nil
 }
 
 func asUint64(value any) uint64 {

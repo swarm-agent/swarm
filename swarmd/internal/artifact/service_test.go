@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -421,6 +422,101 @@ func TestMaterializePackageRejectsSymlinkAndAmbiguousEntries(t *testing.T) {
 	unsafe.Status, unsafe.DigestSHA256, unsafe.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
 	if _, err := service.Materialize(context.Background(), unsafe, workspace, "ambiguous", false); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("ambiguous package error = %v", err)
+	}
+}
+
+func TestMaterializeBatchPublishesTwentySourcesAtomicallyAndReportsDigests(t *testing.T) {
+	service := newTestService(t, Limits{})
+	inputs := make([]BatchMaterializeInput, 0, 20)
+	for index := 0; index < 20; index++ {
+		variant := testVariant(fmt.Sprintf("batch-%02d", index), fmt.Sprintf("file-%02d.txt", index), "text/plain", "text")
+		content := fmt.Sprintf("content-%02d", index)
+		staged, err := service.Stage(context.Background(), variant, strings.NewReader(content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blob, err := service.Finalize(context.Background(), staged, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+		inputs = append(inputs, BatchMaterializeInput{Service: service, Variant: variant})
+	}
+	workspace := t.TempDir()
+	results, err := MaterializeBatch(context.Background(), inputs, workspace, "imports/selected", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 20 {
+		t.Fatalf("batch result count = %d", len(results))
+	}
+	for index, result := range results {
+		if result.DigestSHA256 != inputs[index].Variant.DigestSHA256 || result.MediaType != "text/plain" || result.Files != 1 {
+			t.Fatalf("batch result %d = %#v", index, result)
+		}
+		data, err := os.ReadFile(filepath.Join(workspace, "imports", "selected", fmt.Sprintf("file-%02d.txt", index)))
+		if err != nil || string(data) != fmt.Sprintf("content-%02d", index) {
+			t.Fatalf("batch file %d = %q err=%v", index, data, err)
+		}
+	}
+}
+
+func TestMaterializeBatchPreflightAndStagingFailureLeaveNoFinalDestination(t *testing.T) {
+	service := newTestService(t, Limits{})
+	ready := func(id, filename, content string) pebblestore.SessionArtifactVariant {
+		variant := testVariant(id, filename, "text/plain", "text")
+		staged, err := service.Stage(context.Background(), variant, strings.NewReader(content))
+		if err != nil {
+			t.Fatal(err)
+		}
+		blob, err := service.Finalize(context.Background(), staged, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+		return variant
+	}
+	workspace := t.TempDir()
+	first := ready("batch-first", "same.txt", "first")
+	second := ready("batch-second", "SAME.txt", "second")
+	if _, err := MaterializeBatch(context.Background(), []BatchMaterializeInput{{Service: service, Variant: first}, {Service: service, Variant: second}}, workspace, "imports/preflight", false); err == nil || !strings.Contains(err.Error(), "duplicate or ambiguous") {
+		t.Fatalf("duplicate preflight error = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(workspace, "imports", "preflight")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preflight left final destination: %v", err)
+	}
+	invalid := first
+	invalid.ID = "missing-bytes"
+	if _, err := MaterializeBatch(context.Background(), []BatchMaterializeInput{{Service: service, Variant: first}, {Service: service, Variant: invalid}}, workspace, "imports/stage-failure", false); err == nil || !strings.Contains(err.Error(), "preflight") {
+		t.Fatalf("expected source preflight failure, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(workspace, "imports", "stage-failure")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging failure left final destination: %v", err)
+	}
+}
+
+func TestMaterializeBatchExpandsPackageIntoDerivedSafeSubdirectory(t *testing.T) {
+	service := newTestService(t, Limits{})
+	variant := testVariant("batch-package", "site.zip", "application/zip", "package")
+	staged, err := service.StagePackage(context.Background(), variant, []PackageEntry{{Name: "index.html", Data: []byte("safe")}, {Name: "assets/site.css", Data: []byte("body{}")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	workspace := t.TempDir()
+	results, err := MaterializeBatch(context.Background(), []BatchMaterializeInput{{Service: service, Variant: variant}}, workspace, "imports", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Destination != "imports/site" || !results[0].Package || results[0].Files != 2 {
+		t.Fatalf("package batch result = %#v", results)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspace, "imports", "site", "assets", "site.css")); err != nil || string(data) != "body{}" {
+		t.Fatalf("package batch file = %q err=%v", data, err)
 	}
 }
 

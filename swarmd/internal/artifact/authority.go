@@ -23,6 +23,7 @@ type MetadataStore interface {
 	GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
 	ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]pebblestore.SessionArtifactCollection, error)
 	ListSessionArtifactVariants(accountScopeID, sessionID, collectionID string, limit int) ([]pebblestore.SessionArtifactVariant, error)
+	SearchSessionArtifactCatalog(accountScopeID, userID string, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error)
 	ApplySessionMutation(pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
 }
 
@@ -74,6 +75,13 @@ type CreatePackageInput struct {
 type CreateFileInput struct {
 	CreateInput
 	SourcePath string
+	Package    bool
+}
+
+// MaterializeBatchItem is one exact authenticated ready source. Destination
+// names are derived only from each trusted variant's bounded filename.
+type MaterializeBatchItem struct {
+	Reference pebblestore.SessionArtifactSelectionReference
 }
 
 type Authority struct {
@@ -97,7 +105,31 @@ func (a *Authority) CreatePackage(ctx context.Context, principal Principal, inpu
 }
 
 func (a *Authority) CreateFromFile(ctx context.Context, principal Principal, input CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
+	if input.Package {
+		return a.create(ctx, principal, input.CreateInput, []PackageEntry{}, strings.TrimSpace(input.SourcePath))
+	}
 	return a.create(ctx, principal, input.CreateInput, nil, strings.TrimSpace(input.SourcePath))
+}
+
+// PublishWorkspace creates one new immutable variant from a trusted workspace
+// source. Caller-supplied variant IDs are never accepted on this path.
+func (a *Authority) PublishWorkspace(ctx context.Context, principal Principal, input CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
+	_, principal, err := a.owned(principal)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	input.VariantID = strings.TrimSpace(input.VariantID)
+	if input.VariantID == "" {
+		return pebblestore.SessionArtifactVariant{}, errors.New("workspace publication requires a trusted generated variant id")
+	}
+	if existing, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(input.CollectionID), input.VariantID); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	} else if ok {
+		return pebblestore.SessionArtifactVariant{}, errors.New("workspace publication variant already exists; retry with a new trusted tool call")
+	} else if existing.ID != "" {
+		return pebblestore.SessionArtifactVariant{}, errors.New("workspace publication variant identity is inconsistent")
+	}
+	return a.CreateFromFile(ctx, principal, input)
 }
 
 func (a *Authority) create(ctx context.Context, principal Principal, input CreateInput, packageEntries []PackageEntry, sourcePath string) (pebblestore.SessionArtifactVariant, error) {
@@ -209,11 +241,15 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	// Staging metadata is durable before any byte promotion.
 	var staged Staged
 	if packageEntries != nil {
-		entries := make([]PackageEntry, 0, len(packageEntries))
-		for _, entry := range packageEntries {
-			entries = append(entries, PackageEntry{Name: entry.Name, Data: append([]byte(nil), entry.Data...)})
+		if sourcePath != "" {
+			staged, err = service.ImportPackage(ctx, variant, sourcePath)
+		} else {
+			entries := make([]PackageEntry, 0, len(packageEntries))
+			for _, entry := range packageEntries {
+				entries = append(entries, PackageEntry{Name: entry.Name, Data: append([]byte(nil), entry.Data...)})
+			}
+			staged, err = service.StagePackage(ctx, variant, entries)
 		}
-		staged, err = service.StagePackage(ctx, variant, entries)
 	} else if sourcePath != "" {
 		staged, err = service.ImportFile(ctx, variant, sourcePath)
 	} else {
@@ -271,6 +307,16 @@ func (a *Authority) ListVariants(principal Principal, collectionID string, limit
 		return nil, err
 	}
 	return a.metadata.ListSessionArtifactVariants(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(collectionID), limit)
+}
+
+// SearchCatalog returns a flattened, paginated library across every session
+// owned by the authenticated account and user. Ownership comes exclusively from
+// the trusted principal and durable session records.
+func (a *Authority) SearchCatalog(principal Principal, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
+	if _, _, err := a.owned(principal); err != nil {
+		return pebblestore.SessionArtifactCatalogPage{}, err
+	}
+	return a.metadata.SearchSessionArtifactCatalog(principal.AccountScopeID, principal.UserID, options)
 }
 
 func (a *Authority) Get(principal Principal, variantID string) (pebblestore.SessionArtifactVariant, error) {
@@ -389,6 +435,33 @@ func (a *Authority) MaterializeReference(ctx context.Context, principal Principa
 		return Materialized{}, err
 	}
 	return service.Materialize(ctx, variant, workspaceRoot, destination, overwrite)
+}
+
+// MaterializeBatchReferences authenticates the complete reference set before the
+// filesystem batch preflight and atomic destination-directory publication.
+func (a *Authority) MaterializeBatchReferences(ctx context.Context, principal Principal, items []MaterializeBatchItem, workspaceRoot, destination string, overwrite bool) ([]Materialized, []pebblestore.SessionArtifactVariant, error) {
+	if len(items) == 0 || len(items) > MaxMaterializeBatchItems {
+		return nil, nil, fmt.Errorf("artifact materialization batch must contain 1 to %d items", MaxMaterializeBatchItems)
+	}
+	inputs := make([]BatchMaterializeInput, 0, len(items))
+	variants := make([]pebblestore.SessionArtifactVariant, 0, len(items))
+	for _, item := range items {
+		variant, err := a.GetReference(principal, item.Reference)
+		if err != nil {
+			return nil, nil, err
+		}
+		service, _, err := a.registry.ServiceForOwnedSession(item.Reference.SessionID, principal.AccountScopeID, principal.UserID)
+		if err != nil {
+			return nil, nil, err
+		}
+		inputs = append(inputs, BatchMaterializeInput{Service: service, Variant: variant})
+		variants = append(variants, variant)
+	}
+	materialized, err := MaterializeBatch(ctx, inputs, workspaceRoot, destination, overwrite)
+	if err != nil {
+		return nil, nil, err
+	}
+	return materialized, variants, nil
 }
 
 func (a *Authority) Select(principal Principal, requestID, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {

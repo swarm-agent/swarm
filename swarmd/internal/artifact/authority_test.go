@@ -47,6 +47,9 @@ func (m *authorityMetadata) ListSessionArtifactVariants(_, _, collectionID strin
 	}
 	return []pebblestore.SessionArtifactVariant{m.variant}, nil
 }
+func (m *authorityMetadata) SearchSessionArtifactCatalog(_, _ string, _ pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
+	return pebblestore.SessionArtifactCatalogPage{}, nil
+}
 func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
 	projection := pebblestore.V3ArtifactProjection{Collection: input.Artifact.Collection, Variant: input.Artifact.Variant, Selection: input.Artifact.Selection}
 	switch input.Kind {
@@ -302,6 +305,51 @@ func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 	}
 	if created.Lineage.SourceSessionID != "source-session" || created.Lineage.SourceCollectionID != "source-collection" || created.Lineage.SourceVariantID != "source-variant" || created.Lineage.SourceEventSeq != 41 {
 		t.Fatalf("derived lineage = %+v", created.Lineage)
+	}
+}
+
+func TestAuthorityCreateFromWorkspaceDirectoryCreatesPackageWithSourceLineage(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: "variant-source", CollectionID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 9, MediaType: "text/plain"}
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "index.html"), []byte("<main>revision</main>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "assets", "site.css"), []byte("body{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := authority.CreateFromFile(context.Background(), principal, CreateFileInput{
+		CreateInput: CreateInput{
+			RequestID: "workspace-package", CollectionID: "collection-workspace", CollectionName: "Workspace", VariantID: "variant-workspace",
+			Filename: "workspace.zip", MediaType: "application/zip", Presentation: pebblestore.SessionArtifactPresentation{Kind: "package"},
+			SourceSessionID: "session-1", SourceCollectionID: "collection-source", SourceVariantID: "variant-source", SourceEventSeq: 9,
+		},
+		SourcePath: source,
+		Package:    true,
+	})
+	if err != nil {
+		t.Fatalf("CreateFromFile package: %v", err)
+	}
+	if created.Status != pebblestore.SessionArtifactStatusReady || created.MediaType != "application/zip" || created.Lineage.SourceCollectionID != "collection-source" || created.Lineage.SourceEventSeq != 9 {
+		t.Fatalf("workspace package = %#v", created)
+	}
+}
+
+func TestAuthorityPublishWorkspaceRejectsExistingTrustedVariantID(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-existing", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID}
+	metadata.variant = pebblestore.SessionArtifactVariant{ID: "variant-existing", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Status: pebblestore.SessionArtifactStatusReady}
+	source := filepath.Join(t.TempDir(), "source.txt")
+	if err := os.WriteFile(source, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := authority.PublishWorkspace(context.Background(), principal, CreateFileInput{CreateInput: CreateInput{RequestID: "publish", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "source.txt", MediaType: "text/plain"}, SourcePath: source})
+	if err == nil || !strings.Contains(err.Error(), "variant already exists") {
+		t.Fatalf("existing publication error = %v", err)
 	}
 }
 

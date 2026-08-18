@@ -61,15 +61,22 @@ type fakeArtifactAuthority struct {
 	created         artifact.CreateInput
 	packaged        artifact.CreatePackageInput
 	readBody        []byte
+	readErr         error
+	packageReadErr  error
 	packageManifest []artifact.PackageManifestEntry
 	variant         pebblestore.SessionArtifactVariant
 	reference       pebblestore.SessionArtifactSelectionReference
 	referenceRead   bool
 	deleted         string
 	materializedRef pebblestore.SessionArtifactSelectionReference
+	batchItems      []artifact.MaterializeBatchItem
+	batchVariants   []pebblestore.SessionArtifactVariant
 	workspaceRoot   string
 	destination     string
 	overwrite       bool
+	createdFromFile artifact.CreateFileInput
+	catalogOptions  pebblestore.SessionArtifactCatalogOptions
+	catalogPage     pebblestore.SessionArtifactCatalogPage
 }
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
@@ -90,6 +97,10 @@ func (f *fakeArtifactAuthority) ListVariants(principal artifact.Principal, colle
 	f.principal = principal
 	return []pebblestore.SessionArtifactVariant{{ID: "variant-1", CollectionID: collectionID}}, nil
 }
+func (f *fakeArtifactAuthority) SearchCatalog(principal artifact.Principal, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
+	f.principal, f.catalogOptions = principal, options
+	return f.catalogPage, nil
+}
 func (f *fakeArtifactAuthority) Get(principal artifact.Principal, variantID string) (pebblestore.SessionArtifactVariant, error) {
 	f.principal = principal
 	if f.variant.ID == "" {
@@ -103,19 +114,38 @@ func (f *fakeArtifactAuthority) GetReference(principal artifact.Principal, ref p
 }
 func (f *fakeArtifactAuthority) Read(_ context.Context, principal artifact.Principal, variantID string, _ int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
 	variant, err := f.Get(principal, variantID)
+	if err == nil {
+		err = f.readErr
+	}
 	return append([]byte(nil), f.readBody...), variant, err
 }
 func (f *fakeArtifactAuthority) ReadReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, _ int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.reference, f.referenceRead = principal, ref, true
-	return append([]byte(nil), f.readBody...), f.variant, nil
+	return append([]byte(nil), f.readBody...), f.variant, f.readErr
 }
 func (f *fakeArtifactAuthority) ReadPackageReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, _ string, _ int64) ([]artifact.PackageManifestEntry, []byte, pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.reference, f.referenceRead = principal, ref, true
-	return append([]artifact.PackageManifestEntry(nil), f.packageManifest...), append([]byte(nil), f.readBody...), f.variant, nil
+	return append([]artifact.PackageManifestEntry(nil), f.packageManifest...), append([]byte(nil), f.readBody...), f.variant, f.packageReadErr
 }
 func (f *fakeArtifactAuthority) MaterializeReference(_ context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, workspaceRoot, destination string, overwrite bool) (artifact.Materialized, error) {
 	f.principal, f.materializedRef, f.workspaceRoot, f.destination, f.overwrite = principal, ref, workspaceRoot, destination, overwrite
-	return artifact.Materialized{Destination: destination, Files: 1, Bytes: 7}, nil
+	return artifact.Materialized{Destination: destination, Files: 1, Bytes: 7, DigestSHA256: "digest", MediaType: "text/plain"}, nil
+}
+func (f *fakeArtifactAuthority) MaterializeBatchReferences(_ context.Context, principal artifact.Principal, items []artifact.MaterializeBatchItem, workspaceRoot, destination string, overwrite bool) ([]artifact.Materialized, []pebblestore.SessionArtifactVariant, error) {
+	f.principal, f.batchItems, f.workspaceRoot, f.destination, f.overwrite = principal, append([]artifact.MaterializeBatchItem(nil), items...), workspaceRoot, destination, overwrite
+	materialized := make([]artifact.Materialized, 0, len(items))
+	variants := make([]pebblestore.SessionArtifactVariant, 0, len(items))
+	for index := range items {
+		materialized = append(materialized, artifact.Materialized{Destination: filepath.ToSlash(filepath.Join(destination, "item.txt")), Files: 1, Bytes: 7, DigestSHA256: "digest", MediaType: "text/plain"})
+		variants = append(variants, pebblestore.SessionArtifactVariant{MediaType: "text/plain", DigestSHA256: "digest-" + string(rune('0'+index))})
+	}
+	f.batchVariants = variants
+	return materialized, variants, nil
+}
+func (f *fakeArtifactAuthority) PublishWorkspace(_ context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
+	f.principal, f.createdFromFile = principal, input
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 11, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, DigestSHA256: "published-digest", Size: 7, Presentation: input.Presentation, Lineage: pebblestore.SessionArtifactLineage{SourceSessionID: input.SourceSessionID, SourceCollectionID: input.SourceCollectionID, SourceVariantID: input.SourceVariantID, SourceEventSeq: input.SourceEventSeq}}
+	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) Select(principal artifact.Principal, _, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
 	f.principal = principal
@@ -140,6 +170,34 @@ func artifactToolContext() (context.Context, WorkspaceScope) {
 func testPNGImage() []byte {
 	decoded, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
 	return decoded
+}
+
+func TestManageArtifactListCrossSessionCatalogReturnsExactCandidatesAndPagination(t *testing.T) {
+	authority := &fakeArtifactAuthority{catalogPage: pebblestore.SessionArtifactCatalogPage{
+		Items: []pebblestore.SessionArtifactCatalogItem{
+			{Collection: pebblestore.SessionArtifactCollection{ID: "collection-a", SessionID: "session-a", Name: "Campaign"}, Variant: pebblestore.SessionArtifactVariant{ID: "variant-a", CollectionID: "collection-a", SessionID: "session-a", Status: pebblestore.SessionArtifactStatusReady, Filename: "hero.png", MediaType: "image/png", EventSeq: 7}, Reference: &pebblestore.SessionArtifactSelectionReference{SessionID: "session-a", CollectionID: "collection-a", VariantID: "variant-a", EventSeq: 7}},
+			{Collection: pebblestore.SessionArtifactCollection{ID: "collection-b", SessionID: "session-b", Name: "Campaign"}, Variant: pebblestore.SessionArtifactVariant{ID: "variant-b", CollectionID: "collection-b", SessionID: "session-b", Status: pebblestore.SessionArtifactStatusReady, Filename: "hero.png", MediaType: "image/png", EventSeq: 9}, Reference: &pebblestore.SessionArtifactSelectionReference{SessionID: "session-b", CollectionID: "collection-b", VariantID: "variant-b", EventSeq: 9}},
+		},
+		NextCursor: "opaque-next", HasMore: true,
+	}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.executeManageArtifact(ctx, scope, "catalog-list", map[string]any{"action": "search", "query": "hero", "status": "ready", "media_type": "image/png", "created_after": 10, "created_before": 20, "limit": 2})
+	if err != nil {
+		t.Fatalf("catalog list: %v", err)
+	}
+	if authority.catalogOptions.Query != "hero" || authority.catalogOptions.Status != "ready" || authority.catalogOptions.MediaType != "image/png" || authority.catalogOptions.CreatedAfter != 10 || authority.catalogOptions.CreatedBefore != 20 || authority.catalogOptions.Limit != 2 {
+		t.Fatalf("catalog options = %+v", authority.catalogOptions)
+	}
+	for _, required := range []string{`"session_id":"session-a"`, `"collection_id":"collection-a"`, `"variant_id":"variant-a"`, `"event_seq":7`, `"session_id":"session-b"`, `"next_cursor":"opaque-next"`, `"has_more":true`} {
+		if !strings.Contains(output, required) {
+			t.Fatalf("catalog output lacks %s: %s", required, output)
+		}
+	}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "catalog-conflict", map[string]any{"action": "list", "collection_id": "collection-a", "query": "hero"}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("collection/search ambiguity error = %v", err)
+	}
 }
 
 func TestManageArtifactImageCapabilitiesExposeConfiguredSnapshotOptions(t *testing.T) {
@@ -312,19 +370,83 @@ func TestManageArtifactImageReadRequiresExactReferenceAndReturnsBoundedBase64(t 
 	}
 }
 
+func TestManageArtifactReadQuotaErrorsAreActionableAndDoNotClaimUnavailability(t *testing.T) {
+	ctx, scope := artifactToolContext()
+	ref := map[string]any{"action": "read", "session_id": "session-1", "collection_id": "collection-1", "variant_id": "variant-1", "event_seq": 7}
+
+	for _, test := range []struct {
+		name      string
+		mediaType string
+		entry     string
+		configure func(*fakeArtifactAuthority)
+		code      string
+	}{
+		{name: "text", mediaType: "text/plain", configure: func(authority *fakeArtifactAuthority) { authority.readErr = artifact.ErrQuotaExceeded }, code: manageArtifactReadResponseQuotaCode},
+		{name: "package entry", mediaType: "application/zip", entry: "index.html", configure: func(authority *fakeArtifactAuthority) { authority.packageReadErr = artifact.ErrQuotaExceeded }, code: manageArtifactPackageEntryResponseQuotaCode},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", SessionID: "session-1", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: test.mediaType}}
+			test.configure(authority)
+			runtime := NewRuntime(1)
+			runtime.SetArtifactAuthority(authority)
+			args := make(map[string]any, len(ref)+1)
+			for key, value := range ref {
+				args[key] = value
+			}
+			if test.entry != "" {
+				args["entry"] = test.entry
+			}
+			_, err := runtime.executeManageArtifact(ctx, scope, "quota-"+test.name, args)
+			if err == nil {
+				t.Fatal("expected read response quota error")
+			}
+			message := err.Error()
+			for _, required := range []string{"code=" + test.code, "does not mean the artifact is unavailable", "Use materialize", "complete exact reference"} {
+				if !strings.Contains(message, required) {
+					t.Fatalf("quota error lacks %q: %s", required, message)
+				}
+			}
+		})
+	}
+}
+
 func TestManageArtifactRetrievalContractSurfacesCompleteReadyReference(t *testing.T) {
 	definition := manageArtifactDefinition()
 	for _, requiredInstruction := range []string{
+		"prior-session artifact library without scanning transcripts or storage folders",
+		"next_cursor is an opaque continuation that must be passed back unchanged as cursor",
+		"Never infer a selection when human names are ambiguous",
 		"Collection-list results are not complete ready references",
 		"call list again with collection_id",
 		"obtain variant_id and event_seq",
 		"copy session_id, collection_id, variant_id, and event_seq together",
+		"prefer materialize or atomic materialize_batch over bulk read responses",
+		"manipulate the imported files with normal workspace tools",
+		"use publish_workspace to publish the finished file or package",
+		"copy the original exact reference into source_session_id",
 	} {
 		if !strings.Contains(definition.Description, requiredInstruction) {
 			t.Fatalf("definition does not explain %q: %s", requiredInstruction, definition.Description)
 		}
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
+	for key, required := range map[string][]string{
+		"action":      {"search", "materialize/materialize_batch", "publish_workspace"},
+		"query":       {"cross-session", "complete exact references"},
+		"cursor":      {"next_cursor", "unchanged", "never parse"},
+		"limit":       {"next_cursor/cursor"},
+		"references":  {"exact ready references", "atomically", "preflighted"},
+		"source":      {"workspace-relative", "normal workspace tools"},
+		"max_bytes":   {"response-quota error", "does not mean the artifact is unavailable", "materialize"},
+		"destination": {"materialize_batch", "overwrite defaults to false"},
+	} {
+		description := properties[key].(map[string]any)["description"].(string)
+		for _, fragment := range required {
+			if !strings.Contains(description, fragment) {
+				t.Fatalf("%s description lacks %q: %s", key, fragment, description)
+			}
+		}
+	}
 	for _, key := range []string{"session_id", "collection_id", "variant_id", "event_seq"} {
 		field := properties[key].(map[string]any)
 		description := field["description"].(string)
@@ -680,6 +802,84 @@ func TestManageArtifactMaterializesExactReferenceIntoTrustedWorkspace(t *testing
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(managedCtx, scope, Call{CallID: "call-managed-materialize", Name: "manage_artifact", Arguments: `{"action":"materialize","session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":42,"destination":"selected.txt"}`})
 	if err == nil || !strings.Contains(err.Error(), "managed Designer runs cannot materialize") {
 		t.Fatalf("managed child materialize error = %v", err)
+	}
+}
+
+func TestManageArtifactMaterializeBatchUsesExactReferencesAndReportsDigests(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(scope.PrimaryPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.executeManageArtifact(ctx, scope, "batch", map[string]any{
+		"action": "materialize_batch", "destination": "artifacts/imported",
+		"references": []any{
+			map[string]any{"session_id": "source-a", "collection_id": "collection-a", "variant_id": "variant-a", "event_seq": 7},
+			map[string]any{"session_id": "source-b", "collection_id": "collection-b", "variant_id": "variant-b", "event_seq": 9},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authority.batchItems) != 2 || authority.batchItems[1].Reference.EventSeq != 9 || authority.destination != "artifacts/imported" {
+		t.Fatalf("batch inputs = %#v destination=%q", authority.batchItems, authority.destination)
+	}
+	for _, required := range []string{`"count":2`, `"files":2`, `"bytes":14`, `"digest_sha256":"digest-0"`, `"session_id":"source-a"`, `"event_seq":9`} {
+		if !strings.Contains(output, required) {
+			t.Fatalf("batch output lacks %s: %s", required, output)
+		}
+	}
+	duplicate := map[string]any{"session_id": "same", "collection_id": "same", "variant_id": "same", "event_seq": 1}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "batch-duplicate", map[string]any{"action": "materialize_batch", "destination": "out", "references": []any{duplicate, duplicate}}); err == nil || !strings.Contains(err.Error(), "duplicate exact references") {
+		t.Fatalf("duplicate reference error = %v", err)
+	}
+}
+
+func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLineage(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = t.TempDir()
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, ".gitignore"), []byte("private.env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "revision.txt"), []byte("revised"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.executeManageArtifact(ctx, scope, "publish", map[string]any{
+		"action": "publish_workspace", "source": "revision.txt", "collection_id": "collection-new", "filename": "revision.txt",
+		"source_session_id": "source-session", "source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": 42,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.createdFromFile.SourcePath != filepath.Join(scope.PrimaryPath, "revision.txt") || authority.createdFromFile.Package || authority.createdFromFile.SourceEventSeq != 42 || authority.createdFromFile.CollectionID != "collection-new" {
+		t.Fatalf("workspace publication = %#v", authority.createdFromFile)
+	}
+	if !strings.Contains(output, `"digest_sha256":"published-digest"`) || !strings.Contains(output, `"event_seq":11`) || strings.Contains(output, scope.PrimaryPath) {
+		t.Fatalf("publish output = %s", output)
+	}
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "private.env"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "private", map[string]any{"action": "publish_workspace", "source": "private.env"}); err == nil || !strings.Contains(err.Error(), "ignored private") {
+		t.Fatalf("ignored private source error = %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(scope.PrimaryPath, "link.txt")); err == nil {
+		if _, err := runtime.executeManageArtifact(ctx, scope, "link", map[string]any{"action": "publish_workspace", "source": "link.txt"}); err == nil || !strings.Contains(err.Error(), "non-symlink") {
+			t.Fatalf("symlink source error = %v", err)
+		}
+	}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "traversal", map[string]any{"action": "publish_workspace", "source": "../outside.txt"}); err == nil || !strings.Contains(err.Error(), "canonical workspace-relative") {
+		t.Fatalf("traversal source error = %v", err)
 	}
 }
 

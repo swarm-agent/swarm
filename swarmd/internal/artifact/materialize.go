@@ -22,11 +22,23 @@ var ErrDestinationConflict = errors.New("artifact materialization destination al
 // Materialized describes an explicit copy from managed storage into a trusted
 // workspace root. It deliberately contains no managed backing path.
 type Materialized struct {
-	Destination string
-	Package     bool
-	Files       int
-	Bytes       int64
+	Destination  string
+	Package      bool
+	Files        int
+	Bytes        int64
+	DigestSHA256 string
+	MediaType    string
 }
+
+// BatchMaterializeInput is one authenticated ready source in an atomic
+// destination-directory publication. Source is resolved by Authority and never
+// comes from a model-authored path.
+type BatchMaterializeInput struct {
+	Service *Service
+	Variant pebblestore.SessionArtifactVariant
+}
+
+const MaxMaterializeBatchItems = 64
 
 // Materialize copies one verified ready artifact into an explicitly supplied
 // workspace-relative destination. ZIP packages are safely expanded into a
@@ -54,7 +66,149 @@ func (s *Service) Materialize(ctx context.Context, variant pebblestore.SessionAr
 	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, file, blob.Size, blob.DigestSHA256, s.limits.MaxArtifactBytes, overwrite); err != nil {
 		return Materialized{}, err
 	}
-	return Materialized{Destination: filepath.ToSlash(destination), Files: 1, Bytes: blob.Size}, nil
+	return Materialized{Destination: filepath.ToSlash(destination), Files: 1, Bytes: blob.Size, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil
+}
+
+// MaterializeBatch preflights every source and derived destination, writes all
+// outputs beneath one private sibling staging directory, and publishes that
+// directory with one rename. A failed preflight or staging step leaves no final
+// destination and never reports partial success.
+func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, workspaceRoot, destination string, overwrite bool) ([]Materialized, error) {
+	if len(inputs) == 0 || len(inputs) > MaxMaterializeBatchItems {
+		return nil, fmt.Errorf("artifact materialization batch must contain 1 to %d items", MaxMaterializeBatchItems)
+	}
+	workspaceRoot, destination, err := validateMaterializeDestination(workspaceRoot, destination)
+	if err != nil {
+		return nil, err
+	}
+	parent := filepath.Dir(destination)
+	if parent == "." {
+		parent = ""
+	}
+	if err := ensureWorkspaceDirectory(workspaceRoot, parent, true); err != nil {
+		return nil, err
+	}
+	target := filepath.Join(workspaceRoot, destination)
+	if info, statErr := os.Lstat(target); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, errors.New("artifact materialization batch destination is not a real directory")
+		}
+		if !overwrite {
+			return nil, ErrDestinationConflict
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+
+	type prepared struct {
+		input    BatchMaterializeInput
+		relative string
+	}
+	items := make([]prepared, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		if input.Service == nil {
+			return nil, errors.New("artifact materialization batch source service is not configured")
+		}
+		filename := strings.TrimSpace(input.Variant.Filename)
+		if filename == "" || filename != filepath.Base(filename) || strings.ContainsAny(filename, `/\\`) || len(filename) > 255 {
+			return nil, errors.New("artifact materialization batch source filename is unsafe")
+		}
+		packageItem := input.Variant.MediaType == "application/zip" || input.Variant.Presentation.Kind == "package"
+		relative := filename
+		if packageItem {
+			if input.Variant.MediaType != "application/zip" {
+				return nil, errors.New("artifact materialization batch package has an invalid media type")
+			}
+			relative = strings.TrimSuffix(filename, filepath.Ext(filename))
+			if relative == "" || relative == "." {
+				return nil, errors.New("artifact materialization batch package filename cannot derive a safe directory")
+			}
+		}
+		file, blob, err := input.Service.Open(ctx, input.Variant)
+		if err != nil {
+			return nil, fmt.Errorf("preflight artifact materialization batch source: %w", err)
+		}
+		if packageItem {
+			archive, zipErr := zip.NewReader(file, blob.Size)
+			if zipErr != nil {
+				_ = file.Close()
+				return nil, errors.New("artifact package is not a valid zip archive")
+			}
+			if _, _, zipErr = input.Service.materializePackageEntries(archive.File); zipErr != nil {
+				_ = file.Close()
+				return nil, zipErr
+			}
+		}
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("close preflight artifact materialization batch source: %w", err)
+		}
+		folded := strings.ToLower(relative)
+		if _, exists := seen[folded]; exists {
+			return nil, errors.New("artifact materialization batch contains duplicate or ambiguous destinations")
+		}
+		seen[folded] = struct{}{}
+		items = append(items, prepared{input: input, relative: relative})
+	}
+
+	token, err := randomToken()
+	if err != nil {
+		return nil, err
+	}
+	stagePath := filepath.Join(filepath.Dir(target), ".swarm-artifact-batch-"+token)
+	backupPath := filepath.Join(filepath.Dir(target), ".swarm-artifact-backup-"+token)
+	if err := os.Mkdir(stagePath, 0o755); err != nil {
+		return nil, fmt.Errorf("create artifact batch staging directory: %w", err)
+	}
+	defer func() { _ = removeDirectoryTreeIfPresent(stagePath) }()
+
+	results := make([]Materialized, 0, len(items))
+	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		materialized, err := item.input.Service.Materialize(ctx, item.input.Variant, stagePath, item.relative, false)
+		if err != nil {
+			return nil, fmt.Errorf("stage artifact batch destination %q: %w", item.relative, err)
+		}
+		materialized.Destination = filepath.ToSlash(filepath.Join(destination, item.relative))
+		results = append(results, materialized)
+	}
+	if err := ensureWorkspaceDirectory(workspaceRoot, parent, false); err != nil {
+		return nil, err
+	}
+	if _, statErr := os.Lstat(target); statErr == nil {
+		if !overwrite {
+			return nil, ErrDestinationConflict
+		}
+		if err := os.Rename(target, backupPath); err != nil {
+			return nil, fmt.Errorf("stage existing artifact batch destination: %w", err)
+		}
+		if err := os.Rename(stagePath, target); err != nil {
+			if rollbackErr := os.Rename(backupPath, target); rollbackErr != nil {
+				return nil, fmt.Errorf("publish artifact batch: %v; rollback existing destination: %w", err, rollbackErr)
+			}
+			return nil, fmt.Errorf("publish artifact batch: %w", err)
+		}
+		if err := removeDirectoryTreeIfPresent(backupPath); err != nil {
+			removeErr := removeDirectoryTreeIfPresent(target)
+			rollbackErr := os.Rename(backupPath, target)
+			if removeErr != nil || rollbackErr != nil {
+				return nil, fmt.Errorf("remove replaced artifact batch destination: %v; remove new destination: %v; rollback existing destination: %v", err, removeErr, rollbackErr)
+			}
+			return nil, fmt.Errorf("remove replaced artifact batch destination: %w", err)
+		}
+		return results, nil
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+	if err := os.Rename(stagePath, target); err != nil {
+		if _, statErr := os.Lstat(target); statErr == nil {
+			return nil, ErrDestinationConflict
+		}
+		return nil, fmt.Errorf("publish artifact batch: %w", err)
+	}
+	return results, nil
 }
 
 func validateMaterializeDestination(workspaceRoot, destination string) (string, string, error) {
@@ -145,7 +299,7 @@ func (s *Service) materializePackage(ctx context.Context, source *os.File, blob 
 		if err := s.extractMaterializedPackage(ctx, entries, target); err != nil {
 			return Materialized{}, err
 		}
-		return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total}, nil
+		return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil
 	}
 
 	token, err := randomToken()
@@ -176,7 +330,7 @@ func (s *Service) materializePackage(ctx context.Context, source *os.File, blob 
 	if err := removeDirectoryTree(backupPath); err != nil {
 		return Materialized{}, fmt.Errorf("remove replaced artifact package destination: %w", err)
 	}
-	return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total}, nil
+	return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil
 }
 
 func (s *Service) extractMaterializedPackage(ctx context.Context, entries []*zip.File, root string) error {

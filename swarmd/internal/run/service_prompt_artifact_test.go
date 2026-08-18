@@ -33,6 +33,25 @@ func TestBuildInputProjectsAttachedArtifactSelectionsWithoutBytes(t *testing.T) 
 	}
 }
 
+func TestMasterHarnessPromptGuidesPriorArtifactWorkspaceWorkflow(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"use manage_artifact search with bounded filters instead of scanning transcripts, session folders, or storage paths",
+		"ask the user to disambiguate equally plausible human-named matches",
+		"copy next_cursor back unchanged as cursor",
+		"materialize the selected complete exact reference",
+		"atomic materialize_batch",
+		"normal workspace read/edit/write tools",
+		"publish_workspace",
+		"all four source_* lineage fields",
+		"artifact remains available but is too large for bounded tool output",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing artifact workflow guidance %q", want)
+		}
+	}
+}
+
 func TestAttachedArtifactSelectionsRejectsIncompleteOrUnboundedMetadata(t *testing.T) {
 	if got := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": []any{map[string]any{"session_id": "source-session", "variant_id": "variant-1"}}}); got != "" {
 		t.Fatalf("incomplete selection projected: %q", got)

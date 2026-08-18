@@ -202,6 +202,13 @@ func (s *Service) ListSessionArtifactVariants(accountScopeID, sessionID, collect
 	return s.store.ListSessionArtifactVariants(accountScopeID, sessionID, collectionID, limit)
 }
 
+func (s *Service) SearchSessionArtifactCatalog(accountScopeID, userID string, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SessionArtifactCatalogPage{}, errors.New("session store is not configured")
+	}
+	return s.store.SearchSessionArtifactCatalog(accountScopeID, userID, options)
+}
+
 func (s *Service) ListSessionArtifactVariantsByLineage(accountScopeID, sessionID, dimension, value string, limit int) ([]ArtifactVariant, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")
