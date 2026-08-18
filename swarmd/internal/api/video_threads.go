@@ -13,8 +13,8 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	"swarm/packages/swarmd/internal/videosource"
 	"swarm/packages/swarmd/internal/videoproject"
+	"swarm/packages/swarmd/internal/videosource"
 )
 
 type videoThreadCreateRequest struct {

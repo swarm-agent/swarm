@@ -55,9 +55,9 @@ const (
 	MaxVideoRenderJobsPerProject  = 50
 	MaxRecoverableVideoRenderJobs = 500
 	MaxClipsPerTimeline           = 100
-	MaxCaptionsPerClip           = 50
-	MaxVideoTimelineDurationMs   = 3600000 // 1 hour
-	MaxTextOverlayLength         = 500
+	MaxCaptionsPerClip            = 50
+	MaxVideoTimelineDurationMs    = 3600000 // 1 hour
+	MaxTextOverlayLength          = 500
 )
 
 // VideoTextOverlay models safe, structured caption/title/subtitle overlays.
@@ -150,22 +150,22 @@ type VideoProjectSnapshot struct {
 
 // VideoProjectRevisionSnapshot is an immutable revision of a video project timeline.
 type VideoProjectRevisionSnapshot struct {
-	SchemaVersion    int                  `json:"schema_version"`
-	ID               string               `json:"id"`
-	ProjectID        string               `json:"project_id"`
-	RevisionNumber   int                  `json:"revision_number"`
-	AccountScopeID   string               `json:"account_scope_id"`
-	UserID           string               `json:"user_id,omitempty"`
-	WorkspaceID      string               `json:"workspace_id,omitempty"`
-	SessionID        string               `json:"session_id"`
+	SchemaVersion          int                  `json:"schema_version"`
+	ID                     string               `json:"id"`
+	ProjectID              string               `json:"project_id"`
+	RevisionNumber         int                  `json:"revision_number"`
+	AccountScopeID         string               `json:"account_scope_id"`
+	UserID                 string               `json:"user_id,omitempty"`
+	WorkspaceID            string               `json:"workspace_id,omitempty"`
+	SessionID              string               `json:"session_id"`
 	ParentRevisionID       string               `json:"parent_revision_id,omitempty"`
 	RestoredFromRevisionID string               `json:"restored_from_revision_id,omitempty"`
 	Description            string               `json:"description,omitempty"`
-	ChangeSummary    string               `json:"change_summary,omitempty"`
-	Timeline         VideoProjectTimeline `json:"timeline"`
-	AuthorPrincipal  string               `json:"author_principal,omitempty"`
-	CreatedAt        int64                `json:"created_at"`
-	EventSeq         uint64               `json:"event_seq,omitempty"`
+	ChangeSummary          string               `json:"change_summary,omitempty"`
+	Timeline               VideoProjectTimeline `json:"timeline"`
+	AuthorPrincipal        string               `json:"author_principal,omitempty"`
+	CreatedAt              int64                `json:"created_at"`
+	EventSeq               uint64               `json:"event_seq,omitempty"`
 }
 
 // VideoRenderJobSnapshot tracks the lifecycle and output of a render operation.
@@ -1124,18 +1124,18 @@ func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit
 }
 
 type CreateVideoProjectRevisionInput struct {
-	AccountScopeID  string
-	UserID          string
-	SessionID       string
-	ProjectID       string
-	RevisionID      string
-	Description     string
-	ChangeSummary   string
-	Timeline        VideoProjectTimeline
+	AccountScopeID         string
+	UserID                 string
+	SessionID              string
+	ProjectID              string
+	RevisionID             string
+	Description            string
+	ChangeSummary          string
+	Timeline               VideoProjectTimeline
 	AuthorPrincipal        string
 	RestoredFromRevisionID string
 	ClientRequestID        string
-	NowUnixMs       int64
+	NowUnixMs              int64
 }
 
 func (s *SessionStore) CreateVideoProjectRevision(input CreateVideoProjectRevisionInput) (VideoProjectRevisionSnapshot, VideoProjectSnapshot, error) {
@@ -1154,18 +1154,18 @@ func (s *SessionStore) CreateVideoProjectRevision(input CreateVideoProjectRevisi
 	normalizeVideoTimeline(&input.Timeline)
 
 	rev := VideoProjectRevisionSnapshot{
-		SchemaVersion:   VideoProjectRevisionSchemaVersion,
-		ID:              input.RevisionID,
-		ProjectID:       input.ProjectID,
-		AccountScopeID:  input.AccountScopeID,
-		UserID:          input.UserID,
-		SessionID:       input.SessionID,
-		Description:     input.Description,
-		ChangeSummary:   input.ChangeSummary,
-		Timeline:        input.Timeline,
+		SchemaVersion:          VideoProjectRevisionSchemaVersion,
+		ID:                     input.RevisionID,
+		ProjectID:              input.ProjectID,
+		AccountScopeID:         input.AccountScopeID,
+		UserID:                 input.UserID,
+		SessionID:              input.SessionID,
+		Description:            input.Description,
+		ChangeSummary:          input.ChangeSummary,
+		Timeline:               input.Timeline,
 		AuthorPrincipal:        input.AuthorPrincipal,
 		RestoredFromRevisionID: strings.TrimSpace(input.RestoredFromRevisionID),
-		CreatedAt:       now,
+		CreatedAt:              now,
 	}
 
 	clientReqID := input.ClientRequestID
