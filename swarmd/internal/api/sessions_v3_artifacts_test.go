@@ -195,6 +195,47 @@ func TestSessionV3ArtifactPreviewHTMLPolicySupportsNestedCanvasWithoutPrivileges
 	}
 }
 
+func TestSessionV3ArtifactPreviewRuntimeBootstrapPreservesPinnedProfileAssets(t *testing.T) {
+	spatial := sessionsV3ResolvedArtifact{Managed: &pebblestore.SessionArtifactVariant{AnimationProfile: &pebblestore.SessionArtifactAnimationProfile{ProfileID: "spatial_3d"}}}
+	bootstrap := sessionV3ArtifactPreviewRuntimeBootstrap(spatial)
+	for _, expected := range []string{"__SWARM_ANIMATION_RUNTIME__", `"three":"/swarm-animation-runtime/three.module.js"`, `<script type="importmap">`} {
+		if !strings.Contains(bootstrap, expected) {
+			t.Fatalf("spatial bootstrap is missing %q: %s", expected, bootstrap)
+		}
+	}
+	wrapped := string(injectSessionV3ArtifactPreviewRuntime([]byte(`<!doctype html><html><head><title>Player</title></head><body></body></html>`), bootstrap))
+	if strings.Index(wrapped, "__SWARM_ANIMATION_RUNTIME__") > strings.Index(wrapped, "<title>Player</title>") {
+		t.Fatalf("runtime bootstrap must precede artifact modules: %s", wrapped)
+	}
+	vector := sessionsV3ResolvedArtifact{Managed: &pebblestore.SessionArtifactVariant{AnimationProfile: &pebblestore.SessionArtifactAnimationProfile{ProfileID: "vector_playback"}}}
+	vectorBootstrap := sessionV3ArtifactPreviewRuntimeBootstrap(vector)
+	for _, expected := range []string{"@lottiefiles/dotlottie-web", "@rive-app/canvas", "dotlottie-player.wasm", "rive_fallback.wasm"} {
+		if !strings.Contains(vectorBootstrap, expected) {
+			t.Fatalf("vector bootstrap is missing %q: %s", expected, vectorBootstrap)
+		}
+	}
+	unprofiled := sessionsV3ResolvedArtifact{Managed: &pebblestore.SessionArtifactVariant{}}
+	if sessionV3ArtifactPreviewRuntimeBootstrap(unprofiled) != "" {
+		t.Fatal("unprofiled HTML received a privileged runtime bootstrap")
+	}
+	if csp := sessionV3ArtifactPreviewHTMLCSP(nil, unprofiled); csp != sessionsV3ArtifactPreviewHTMLCSP {
+		t.Fatalf("unprofiled preview CSP changed: %q", csp)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v3/sessions/session/artifacts/artifact/content/access/token/entry.html", nil)
+	request = request.WithContext(context.WithValue(request.Context(), desktopAdmittedOriginKey, desktopAdmission{origin: "http://127.0.0.1"}))
+	spatialCSP := sessionV3ArtifactPreviewHTMLCSP(request, spatial)
+	if !strings.Contains(spatialCSP, "script-src 'self' 'unsafe-inline' blob: http://127.0.0.1/swarm-animation-runtime/") || !strings.Contains(spatialCSP, "connect-src 'none'") {
+		t.Fatalf("spatial preview CSP = %q", spatialCSP)
+	}
+	vectorCSP := sessionV3ArtifactPreviewHTMLCSP(request, vector)
+	if !strings.Contains(vectorCSP, "connect-src http://127.0.0.1/swarm-animation-runtime/") {
+		t.Fatalf("vector preview CSP = %q", vectorCSP)
+	}
+	if got := string(injectSessionV3ArtifactPreviewRuntime([]byte("<main>plain</main>"), "")); got != "<main>plain</main>" {
+		t.Fatalf("empty runtime bootstrap changed HTML: %q", got)
+	}
+}
+
 func TestOpenSessionV3ArtifactPackageFileConfinesContentToHTMLDirectory(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "gallery", "variant-1"), 0o755); err != nil {
@@ -608,8 +649,11 @@ func TestManagedStandaloneHTMLPreviewURLServesNestedSrcdocCanvasPolicyAndCacheId
 	if !strings.Contains(csp, "sandbox allow-scripts") || !strings.Contains(csp, "frame-src 'self' data: blob:") || strings.Contains(csp, "allow-same-origin") {
 		t.Fatalf("direct preview CSP = %q", csp)
 	}
+	if previewRec.Header().Get("Referrer-Policy") != "origin" {
+		t.Fatalf("direct preview referrer policy = %q", previewRec.Header().Get("Referrer-Policy"))
+	}
 	etag := previewRec.Header().Get("ETag")
-	if etag == "" || !strings.Contains(previewRec.Header().Get("Cache-Control"), "private") || !strings.Contains(previewRec.Header().Get("Cache-Control"), "immutable") {
+	if etag == "" || previewRec.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" {
 		t.Fatalf("managed cache headers etag=%q cache=%q", etag, previewRec.Header().Get("Cache-Control"))
 	}
 	revalidateReq := httptest.NewRequest(http.MethodGet, descriptor.PreviewURL, nil)

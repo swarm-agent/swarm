@@ -29,20 +29,21 @@ import (
 )
 
 const (
-	sessionsV3ArtifactMaxBytes            int64 = 32 << 20
-	sessionsV3ArtifactVideoMaxBytes       int64 = 512 << 20
-	sessionsV3ArtifactPreviewTokenTTL           = 5 * time.Minute
-	sessionsV3ArtifactPreviewAccessPath         = "access/"
-	sessionsV3ArtifactPackageEntryPath          = "__swarm_artifact_entry__.html"
-	sessionsV3ArtifactCatalogDefaultLimit       = 500
-	sessionsV3ArtifactCatalogMaxLimit           = 2_000
-	sessionsV3ArtifactCatalogSessionLimit       = 10_000
+	sessionsV3ArtifactMaxBytes              int64 = 32 << 20
+	sessionsV3ArtifactVideoMaxBytes         int64 = 512 << 20
+	sessionsV3ArtifactPreviewTokenTTL             = 5 * time.Minute
+	sessionsV3ArtifactPreviewRuntimeVersion       = "preview-runtime-v2"
+	sessionsV3ArtifactPreviewAccessPath           = "access/"
+	sessionsV3ArtifactPackageEntryPath            = "__swarm_artifact_entry__.html"
+	sessionsV3ArtifactCatalogDefaultLimit         = 500
+	sessionsV3ArtifactCatalogMaxLimit             = 2_000
+	sessionsV3ArtifactCatalogSessionLimit         = 10_000
 	// Preview HTML executes in an opaque origin (sandbox deliberately omits
 	// allow-same-origin). The scoped bearer capability controls framing because
 	// frame-ancestors cannot name an opaque parent. Scripts, Canvas, nested
 	// srcdoc frames, and same-artifact package resources are supported; outbound
 	// connections, forms, objects, and top-level navigation remain unavailable.
-	sessionsV3ArtifactPreviewHTMLCSP = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' data: blob:; connect-src 'none'; worker-src blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
+	sessionsV3ArtifactPreviewHTMLCSP           = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' data: blob:; connect-src 'none'; worker-src blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
 	sessionsV3ArtifactPreviewPermissionsPolicy = "accelerometer=(), ambient-light-sensor=(), autoplay=(self), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"
 )
 
@@ -431,12 +432,12 @@ func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *
 	}
 	previewURL := fmt.Sprintf("/v3/sessions/%s/artifacts/%s/content/access/%s/%s", sessionID, artifactID, token, sessionsV3ArtifactPackageEntryPath)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":           true,
-		"token":        token,
-		"expires_at":   expiresAt.Unix(),
-		"preview_url":  previewURL,
-		"media_type":   "text/html; charset=utf-8",
-		"sandbox":      "allow-scripts",
+		"ok":            true,
+		"token":         token,
+		"expires_at":    expiresAt.Unix(),
+		"preview_url":   previewURL,
+		"media_type":    "text/html; charset=utf-8",
+		"sandbox":       "allow-scripts",
 		"opaque_origin": true,
 	})
 }
@@ -1014,6 +1015,18 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusRequestEntityTooLarge, errors.New("artifact package file exceeds the preview size limit"))
 		return
 	}
+	if strings.HasPrefix(mediaType, "text/html") {
+		if bootstrap := sessionV3ArtifactPreviewRuntimeBootstrap(artifact); bootstrap != "" {
+			data, readErr := io.ReadAll(io.LimitReader(file, sessionsV3ArtifactMaxBytes+1))
+			if readErr != nil || int64(len(data)) > sessionsV3ArtifactMaxBytes {
+				writeError(w, http.StatusInternalServerError, errors.New("artifact preview runtime could not prepare the document"))
+				return
+			}
+			data = injectSessionV3ArtifactPreviewRuntime(data, bootstrap)
+			info = sessionsV3MemoryFileInfo{name: filepath.Base(contentPath), size: int64(len(data)), modTime: info.ModTime()}
+			file = sessionsV3NewMemoryFile(data)
+		}
+	}
 
 	disposition := mime.FormatMediaType("inline", map[string]string{"filename": filepath.Base(contentPath)})
 	if disposition == "" {
@@ -1026,7 +1039,7 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if strings.HasPrefix(mediaType, "text/html") {
-		setSessionV3ArtifactPreviewSecurityHeaders(w)
+		setSessionV3ArtifactPreviewSecurityHeaders(w, r, artifact)
 	}
 	if sessionV3ArtifactNotModified(w, r, artifact, contentPath) {
 		return
@@ -1034,10 +1047,89 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 	http.ServeContent(w, r, filepath.Base(contentPath), info.ModTime(), file)
 }
 
-func setSessionV3ArtifactPreviewSecurityHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", sessionsV3ArtifactPreviewHTMLCSP)
+func setSessionV3ArtifactPreviewSecurityHeaders(w http.ResponseWriter, r *http.Request, artifact sessionsV3ResolvedArtifact) {
+	w.Header().Set("Content-Security-Policy", sessionV3ArtifactPreviewHTMLCSP(r, artifact))
 	w.Header().Set("Permissions-Policy", sessionsV3ArtifactPreviewPermissionsPolicy)
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	// Reviewed runtime modules are fetched from the same install by an opaque
+	// sandbox origin. Send only the origin (never the bearer-capability path) so
+	// the Desktop boundary can admit those exact runtime requests.
+	w.Header().Set("Referrer-Policy", "origin")
+}
+
+func sessionV3ArtifactPreviewHTMLCSP(r *http.Request, artifact sessionsV3ResolvedArtifact) string {
+	profileID := ""
+	if artifact.Managed != nil && artifact.Managed.AnimationProfile != nil {
+		profileID = strings.TrimSpace(artifact.Managed.AnimationProfile.ProfileID)
+	}
+	if profileID != "spatial_3d" && profileID != "vector_playback" {
+		return sessionsV3ArtifactPreviewHTMLCSP
+	}
+	admission, ok := admittedDesktopOrigin(r)
+	if !ok {
+		return sessionsV3ArtifactPreviewHTMLCSP
+	}
+	runtimeSource := strings.TrimRight(admission.origin, "/") + desktopAnimationRuntimePath
+	connectSource := "'none'"
+	if profileID == "vector_playback" {
+		connectSource = runtimeSource
+	}
+	return "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' blob: " + runtimeSource +
+		"; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' data: blob:; connect-src " + connectSource +
+		"; worker-src blob: " + runtimeSource + "; object-src 'none'; base-uri 'self'; form-action 'none'"
+}
+
+func sessionV3ArtifactPreviewRuntimeBootstrap(artifact sessionsV3ResolvedArtifact) string {
+	if artifact.Managed == nil || artifact.Managed.AnimationProfile == nil {
+		return ""
+	}
+	profileID := strings.TrimSpace(artifact.Managed.AnimationProfile.ProfileID)
+	modules := map[string]string{}
+	wasm := map[string]string{}
+	switch profileID {
+	case "spatial_3d":
+		modules["three"] = "/swarm-animation-runtime/three.module.js"
+	case "vector_playback":
+		modules["@lottiefiles/dotlottie-web"] = "/swarm-animation-runtime/dotlottie.js"
+		modules["@rive-app/canvas"] = "/swarm-animation-runtime/rive.js"
+		wasm["dotLottie"] = "/swarm-animation-runtime/dotlottie-player.wasm"
+		wasm["rive"] = "/swarm-animation-runtime/rive.wasm"
+		wasm["riveFallback"] = "/swarm-animation-runtime/rive_fallback.wasm"
+	default:
+		return ""
+	}
+	config, err := json.Marshal(map[string]any{"modules": modules, "wasm": wasm})
+	if err != nil {
+		return ""
+	}
+	imports, err := json.Marshal(map[string]any{"imports": modules})
+	if err != nil {
+		return ""
+	}
+	config = bytes.ReplaceAll(config, []byte("<"), []byte(`\u003c`))
+	imports = bytes.ReplaceAll(imports, []byte("<"), []byte(`\u003c`))
+	return `<script>globalThis.__SWARM_ANIMATION_RUNTIME__=` + string(config) + `;</script>` +
+		`<script type="importmap">` + string(imports) + `</script>`
+}
+
+func injectSessionV3ArtifactPreviewRuntime(source []byte, bootstrap string) []byte {
+	if bootstrap == "" {
+		return source
+	}
+	lower := strings.ToLower(string(source))
+	if head := strings.Index(lower, "<head"); head >= 0 {
+		if end := strings.Index(lower[head:], ">"); end >= 0 {
+			insertAt := head + end + 1
+			return append(append(append([]byte(nil), source[:insertAt]...), bootstrap...), source[insertAt:]...)
+		}
+	}
+	if html := strings.Index(lower, "<html"); html >= 0 {
+		if end := strings.Index(lower[html:], ">"); end >= 0 {
+			insertAt := html + end + 1
+			head := "<head>" + bootstrap + "</head>"
+			return append(append(append([]byte(nil), source[:insertAt]...), head...), source[insertAt:]...)
+		}
+	}
+	return append([]byte("<!doctype html><head>"+bootstrap+"</head>"), source...)
 }
 
 func sessionV3ArtifactETag(artifact sessionsV3ResolvedArtifact, resourcePath string) string {
@@ -1045,6 +1137,9 @@ func sessionV3ArtifactETag(artifact sessionsV3ResolvedArtifact, resourcePath str
 		return ""
 	}
 	identity := artifact.Managed.DigestSHA256
+	if artifact.Managed.AnimationProfile != nil {
+		identity += "-" + sessionsV3ArtifactPreviewRuntimeVersion
+	}
 	if resourcePath != "" {
 		sum := sha256.Sum256([]byte(filepath.ToSlash(resourcePath)))
 		identity += "-" + fmt.Sprintf("%x", sum[:8])
@@ -1059,7 +1154,7 @@ func setSessionV3ArtifactCacheHeaders(w http.ResponseWriter, artifact sessionsV3
 		return
 	}
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "private, max-age=300, immutable")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 }
 
 func sessionV3ArtifactNotModified(w http.ResponseWriter, r *http.Request, artifact sessionsV3ResolvedArtifact, resourcePath string) bool {

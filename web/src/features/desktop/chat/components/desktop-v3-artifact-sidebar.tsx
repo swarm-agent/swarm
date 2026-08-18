@@ -2,11 +2,9 @@ import { memo, useEffect, useMemo, useState, type FocusEvent, type MouseEvent } 
 import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
-import { desktopV3ArtifactLocalRuntimeAssets } from '../../session-v3/artifact-animation-runtime-assets'
 import {
-  buildDesktopV3ArtifactSandboxDocument,
-  fetchDesktopV3Artifact,
-  fetchDesktopV3ArtifactPreviewToken,
+  desktopV3ArtifactDirectContentURL,
+  fetchDesktopV3ArtifactPreviewAccess,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
   type DesktopV3ArtifactCatalogEntry,
@@ -134,7 +132,6 @@ function sidebarArtifactThumbnailEqual(
 
 const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3ArtifactCatalogEntry; live: boolean }) {
   const [previewURL, setPreviewURL] = useState('')
-  const [previewHTML, setPreviewHTML] = useState('')
   const [failed, setFailed] = useState(false)
   const exclusive = sidebarArtifactNeedsExclusiveLivePreview(artifact)
   const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(live)
@@ -142,38 +139,23 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
 
   useEffect(() => {
     setPreviewURL('')
-    setPreviewHTML('')
     setFailed(false)
     if (!previewEnabled || !artifact.previewable || artifact.status !== 'ready') return undefined
 
     const controller = new AbortController()
-    let objectURL = ''
-    void fetchDesktopV3Artifact(artifact.sessionId, artifact.artifactId, controller.signal)
-      .then(async (blob) => {
-        if (controller.signal.aborted) return
-        if (artifact.mediaType === 'text/html') {
-          const [source, previewToken] = await Promise.all([
-            blob.text(),
-            fetchDesktopV3ArtifactPreviewToken(artifact.sessionId, artifact.artifactId, controller.signal),
-          ])
-          if (!controller.signal.aborted) {
-            setPreviewHTML(buildDesktopV3ArtifactSandboxDocument(source, artifact.sessionId, artifact.artifactId, previewToken, desktopV3ArtifactLocalRuntimeAssets(artifact.animationProfile)))
-          }
-          return
-        }
-        if (artifact.mediaType.startsWith('image/') || artifact.mediaType.startsWith('video/') || artifact.kind === 'video' || artifact.mediaType === 'application/pdf') {
-          objectURL = URL.createObjectURL(blob)
-          setPreviewURL(objectURL)
-        }
+    if (artifact.mediaType !== 'text/html') {
+      setPreviewURL(desktopV3ArtifactDirectContentURL(artifact))
+      return () => controller.abort()
+    }
+    void fetchDesktopV3ArtifactPreviewAccess(artifact.sessionId, artifact.artifactId, controller.signal)
+      .then((access) => {
+        if (!controller.signal.aborted) setPreviewURL(access.url)
       })
       .catch(() => {
         if (!controller.signal.aborted) setFailed(true)
       })
 
-    return () => {
-      controller.abort()
-      if (objectURL) URL.revokeObjectURL(objectURL)
-    }
+    return () => controller.abort()
   }, [artifact.animationProfile, artifact.artifactId, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status, previewEnabled])
 
   let thumbnail = <FileText className="size-5 text-[var(--app-text-muted)]" aria-hidden="true" />
@@ -181,7 +163,7 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   else if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) thumbnail = <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
   else if (previewEnabled && artifact.mediaType.startsWith('image/') && previewURL) thumbnail = <img src={previewURL} alt="" className="size-full object-contain" />
   else if (previewEnabled && (!artifact.animationProfile || artifact.animationProfile.profileId === 'final_render') && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" />
-  else if (previewEnabled && artifact.mediaType === 'text/html' && previewHTML) thumbnail = <iframe title={`${artifact.label} thumbnail`} srcDoc={previewHTML} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
+  else if (previewEnabled && artifact.mediaType === 'text/html' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
   else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
 
   return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && exclusive ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
