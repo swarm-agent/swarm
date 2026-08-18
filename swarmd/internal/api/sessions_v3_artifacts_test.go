@@ -171,19 +171,26 @@ func TestSessionV3ArtifactPreviewTokenIsScopedAndExpires(t *testing.T) {
 	}
 }
 
-func TestSessionV3ArtifactPackageHTMLCSPKeepsOpaqueAncestorEmbeddable(t *testing.T) {
-	if strings.Contains(sessionsV3ArtifactPackageHTMLCSP, "frame-ancestors") {
-		t.Fatal("package HTML cannot restrict frame ancestors while nested below an opaque sandboxed srcdoc ancestor")
+func TestSessionV3ArtifactPreviewHTMLPolicySupportsNestedCanvasWithoutPrivileges(t *testing.T) {
+	if strings.Contains(sessionsV3ArtifactPreviewHTMLCSP, "frame-ancestors") || strings.Contains(sessionsV3ArtifactPreviewHTMLCSP, "allow-same-origin") {
+		t.Fatal("preview HTML must remain embeddable beneath an opaque sandbox origin")
 	}
 	for _, directive := range []string{
 		"sandbox allow-scripts",
 		"default-src 'none'",
+		"script-src 'self' 'unsafe-inline' blob:",
+		"frame-src 'self' data: blob:",
 		"connect-src 'none'",
 		"object-src 'none'",
 		"form-action 'none'",
 	} {
-		if !strings.Contains(sessionsV3ArtifactPackageHTMLCSP, directive) {
-			t.Fatalf("package HTML CSP is missing %q", directive)
+		if !strings.Contains(sessionsV3ArtifactPreviewHTMLCSP, directive) {
+			t.Fatalf("preview HTML CSP is missing %q", directive)
+		}
+	}
+	for _, privilege := range []string{"camera=()", "microphone=()", "geolocation=()", "payment=()"} {
+		if !strings.Contains(sessionsV3ArtifactPreviewPermissionsPolicy, privilege) {
+			t.Fatalf("preview permissions policy is missing %q", privilege)
 		}
 	}
 }
@@ -517,7 +524,7 @@ func TestManagedArtifactCatalogKeepsNativeAndWorkspaceHandoffDescriptors(t *test
 	accessReq.Header.Set("Content-Type", "application/json")
 	accessRec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(accessRec, withTestPrincipal(accessReq))
-	if accessRec.Code != http.StatusOK || !strings.Contains(accessRec.Body.String(), `"token"`) {
+	if accessRec.Code != http.StatusOK || !strings.Contains(accessRec.Body.String(), `"token"`) || !strings.Contains(accessRec.Body.String(), `"preview_url"`) || !strings.Contains(accessRec.Body.String(), `"opaque_origin":true`) {
 		t.Fatalf("managed HTML preview access status=%d body=%s", accessRec.Code, accessRec.Body.String())
 	}
 }
@@ -549,6 +556,108 @@ func TestManagedSessionV3ArtifactCollectionBundleDownloadsAllReadyVariants(t *te
 	}
 	if len(archive.File) != 2 || archive.File[0].Name != "concept.html" || archive.File[1].Name != "concept-2.html" {
 		t.Fatalf("collection bundle entries = %+v", archive.File)
+	}
+}
+
+func TestManagedStandaloneHTMLPreviewURLServesNestedSrcdocCanvasPolicyAndCacheIdentity(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "legacy.html", "legacy")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	htmlBody := `<!doctype html><iframe srcdoc="<canvas id='stage'></canvas><script>stage.getContext('2d').fillRect(0,0,1,1)</script>"></iframe>`
+	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+		RequestID: "standalone-html-preview", CollectionID: "standalone-html", CollectionName: "Standalone HTML", VariantID: "standalone-html-variant", Filename: "player.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Previewable: true}, Body: []byte(htmlBody),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+variant.SessionID+"/artifacts/preview-access", bytes.NewBufferString(`{"artifact_id":"`+variant.ID+`"}`))
+	accessReq.Header.Set("Content-Type", "application/json")
+	accessRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(accessRec, withTestPrincipal(accessReq))
+	if accessRec.Code != http.StatusOK {
+		t.Fatalf("preview access status=%d body=%s", accessRec.Code, accessRec.Body.String())
+	}
+	var descriptor struct {
+		PreviewURL   string `json:"preview_url"`
+		Sandbox      string `json:"sandbox"`
+		OpaqueOrigin bool   `json:"opaque_origin"`
+	}
+	if err := json.Unmarshal(accessRec.Body.Bytes(), &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.PreviewURL == "" || descriptor.Sandbox != "allow-scripts" || !descriptor.OpaqueOrigin {
+		t.Fatalf("preview descriptor = %+v", descriptor)
+	}
+	previewReq := httptest.NewRequest(http.MethodGet, descriptor.PreviewURL, nil)
+	previewRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewRec, previewReq)
+	if previewRec.Code != http.StatusOK || previewRec.Body.String() != htmlBody {
+		t.Fatalf("direct preview status=%d body=%s", previewRec.Code, previewRec.Body.String())
+	}
+	csp := previewRec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "sandbox allow-scripts") || !strings.Contains(csp, "frame-src 'self' data: blob:") || strings.Contains(csp, "allow-same-origin") {
+		t.Fatalf("direct preview CSP = %q", csp)
+	}
+	etag := previewRec.Header().Get("ETag")
+	if etag == "" || !strings.Contains(previewRec.Header().Get("Cache-Control"), "private") || !strings.Contains(previewRec.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("managed cache headers etag=%q cache=%q", etag, previewRec.Header().Get("Cache-Control"))
+	}
+	revalidateReq := httptest.NewRequest(http.MethodGet, descriptor.PreviewURL, nil)
+	revalidateReq.Header.Set("If-None-Match", etag)
+	revalidateRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(revalidateRec, revalidateReq)
+	if revalidateRec.Code != http.StatusNotModified {
+		t.Fatalf("managed revalidation status=%d body=%s", revalidateRec.Code, revalidateRec.Body.String())
+	}
+}
+
+func TestWorkspaceArtifactPreviewRemainsMutableNoStore(t *testing.T) {
+	server, sessionSvc, _, plan, checkpoint, _, descriptor := newArtifactSessionFixture(t, "legacy.html", "legacy")
+	doc := &pebblestore.SessionPlanDocument{ID: plan.ID, Checkpoints: []pebblestore.SessionPlanCheckpoint{checkpoint}}
+	if _, _, err := sessionSvc.SavePlanWithMetadata(plan.SessionID, plan.ID, "Legacy", "", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+plan.SessionID+"/artifacts/"+descriptor.ID, nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("ETag") != "" {
+		t.Fatalf("legacy preview status=%d cache=%q etag=%q", rec.Code, rec.Header().Get("Cache-Control"), rec.Header().Get("ETag"))
+	}
+}
+
+func TestManagedHTMLPackagePreviewURLServesEntryAndScopedResources(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "unused.html", "unused")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+	variant, err := authority.CreatePackage(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreatePackageInput{
+		CreateInput: artifact.CreateInput{RequestID: "package-preview", CollectionID: "package-preview", CollectionName: "Package", VariantID: "package-preview-variant", Filename: "site.zip", MediaType: "application/zip", Presentation: pebblestore.SessionArtifactPresentation{Kind: "package"}},
+		Entries:     []artifact.PackageEntry{{Name: "index.html", Data: []byte(`<script src="app.js"></script>`)}, {Name: "app.js", Data: []byte(`document.body.dataset.ready="true"`)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+variant.SessionID+"/artifacts/preview-access", bytes.NewBufferString(`{"artifact_id":"`+variant.ID+`"}`))
+	accessReq.Header.Set("Content-Type", "application/json")
+	accessRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(accessRec, withTestPrincipal(accessReq))
+	var descriptor struct {
+		PreviewURL string `json:"preview_url"`
+	}
+	if accessRec.Code != http.StatusOK || json.Unmarshal(accessRec.Body.Bytes(), &descriptor) != nil {
+		t.Fatalf("package access status=%d body=%s", accessRec.Code, accessRec.Body.String())
+	}
+	entryReq := httptest.NewRequest(http.MethodGet, descriptor.PreviewURL, nil)
+	entryRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(entryRec, entryReq)
+	if entryRec.Code != http.StatusOK || !strings.Contains(entryRec.Body.String(), `app.js`) {
+		t.Fatalf("package entry status=%d body=%s", entryRec.Code, entryRec.Body.String())
+	}
+	resourceURL := strings.TrimSuffix(descriptor.PreviewURL, sessionsV3ArtifactPackageEntryPath) + "app.js"
+	resourceReq := httptest.NewRequest(http.MethodGet, resourceURL, nil)
+	resourceRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(resourceRec, resourceReq)
+	if resourceRec.Code != http.StatusOK || !strings.Contains(resourceRec.Body.String(), "dataset.ready") || resourceRec.Header().Get("ETag") == entryRec.Header().Get("ETag") {
+		t.Fatalf("package resource status=%d etag=%q entry_etag=%q body=%s", resourceRec.Code, resourceRec.Header().Get("ETag"), entryRec.Header().Get("ETag"), resourceRec.Body.String())
 	}
 }
 
@@ -831,6 +940,9 @@ func TestSessionsV3VideoArtifactRangeServingAndVisualCategory(t *testing.T) {
 	}
 	if getRec.Header().Get("Content-Type") != "video/mp4" {
 		t.Fatalf("Content-Type = %q, want video/mp4", getRec.Header().Get("Content-Type"))
+	}
+	if getRec.Header().Get("ETag") == "" || !strings.Contains(getRec.Header().Get("Cache-Control"), "private") {
+		t.Fatalf("managed video cache headers etag=%q cache=%q", getRec.Header().Get("ETag"), getRec.Header().Get("Cache-Control"))
 	}
 	csp := getRec.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "media-src") {

@@ -37,12 +37,13 @@ const (
 	sessionsV3ArtifactCatalogDefaultLimit       = 500
 	sessionsV3ArtifactCatalogMaxLimit           = 2_000
 	sessionsV3ArtifactCatalogSessionLimit       = 10_000
-	// Package HTML is nested beneath a srcdoc iframe sandboxed without
-	// allow-same-origin, so its immediate ancestor has an opaque origin. CSP
-	// cannot express that as a frame-ancestors source. Keep framing controlled
-	// by the scoped bearer capability and inherited sandbox instead; a
-	// restrictive frame-ancestors policy requires a dedicated preview origin.
-	sessionsV3ArtifactPackageHTMLCSP = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self'; connect-src 'none'; worker-src blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
+	// Preview HTML executes in an opaque origin (sandbox deliberately omits
+	// allow-same-origin). The scoped bearer capability controls framing because
+	// frame-ancestors cannot name an opaque parent. Scripts, Canvas, nested
+	// srcdoc frames, and same-artifact package resources are supported; outbound
+	// connections, forms, objects, and top-level navigation remain unavailable.
+	sessionsV3ArtifactPreviewHTMLCSP = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' data: blob:; connect-src 'none'; worker-src blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
+	sessionsV3ArtifactPreviewPermissionsPolicy = "accelerometer=(), ambient-light-sensor=(), autoplay=(self), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"
 )
 
 type sessionsV3ArtifactPreviewTokenClaims struct {
@@ -415,11 +416,11 @@ func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *
 		return
 	}
 	if !found || artifact.Descriptor.Kind != "html" {
-		writeError(w, http.StatusNotFound, errors.New("artifact preview not found"))
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error_code": "artifact_preview_not_found", "error": "artifact preview not found"})
 		return
 	}
 	if artifact.Managed != nil && (artifact.Managed.Status != pebblestore.SessionArtifactStatusReady || (artifact.Managed.MediaType != "application/zip" && artifact.Managed.MediaType != "text/html")) {
-		writeError(w, http.StatusNotFound, errors.New("artifact preview not found"))
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error_code": "artifact_preview_not_ready", "error": "artifact preview is not ready"})
 		return
 	}
 	expiresAt := time.Now().Add(sessionsV3ArtifactPreviewTokenTTL)
@@ -428,10 +429,15 @@ func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	previewURL := fmt.Sprintf("/v3/sessions/%s/artifacts/%s/content/access/%s/%s", sessionID, artifactID, token, sessionsV3ArtifactPackageEntryPath)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"token":      token,
-		"expires_at": expiresAt.Unix(),
+		"ok":           true,
+		"token":        token,
+		"expires_at":   expiresAt.Unix(),
+		"preview_url":  previewURL,
+		"media_type":   "text/html; charset=utf-8",
+		"sandbox":      "allow-scripts",
+		"opaque_origin": true,
 	})
 }
 
@@ -682,10 +688,13 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "no-store")
+	setSessionV3ArtifactCacheHeaders(w, artifact, "")
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src data: blob:; media-src 'self' data: blob:; style-src 'unsafe-inline'; font-src data:; frame-ancestors 'self'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	if sessionV3ArtifactNotModified(w, r, artifact, "") {
+		return
+	}
 	http.ServeContent(w, r, artifact.Descriptor.Filename, info.ModTime(), file)
 }
 
@@ -978,12 +987,24 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !found || artifact.Descriptor.Kind != "html" || (artifact.Managed != nil && (artifact.Managed.Status != pebblestore.SessionArtifactStatusReady || artifact.Managed.MediaType != "application/zip")) {
-		writeError(w, http.StatusNotFound, errors.New("artifact package not found"))
+	if !found || artifact.Descriptor.Kind != "html" || (artifact.Managed != nil && artifact.Managed.Status != pebblestore.SessionArtifactStatusReady) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error_code": "artifact_preview_not_found", "error": "artifact preview not found"})
 		return
 	}
 
-	file, info, mediaType, err := s.openSessionV3ArtifactPackageFile(r.Context(), session, artifact, contentPath)
+	var file sessionsV3ReadSeekCloser
+	var info os.FileInfo
+	var mediaType string
+	if artifact.Managed != nil && artifact.Managed.MediaType == "text/html" {
+		if contentPath != sessionsV3ArtifactPackageEntryPath {
+			writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error_code": "artifact_preview_resource_not_found", "error": "artifact preview resource not found"})
+			return
+		}
+		file, info, err = s.openSessionV3Artifact(r.Context(), session, artifact)
+		mediaType = "text/html; charset=utf-8"
+	} else {
+		file, info, mediaType, err = s.openSessionV3ArtifactPackageFile(r.Context(), session, artifact, contentPath)
+	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, errors.New("artifact package file is unavailable"))
 		return
@@ -1001,12 +1022,53 @@ func (s *Server) handleSessionV3ArtifactContent(w http.ResponseWriter, r *http.R
 	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "no-store")
+	setSessionV3ArtifactCacheHeaders(w, artifact, contentPath)
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if strings.HasPrefix(mediaType, "text/html") {
-		w.Header().Set("Content-Security-Policy", sessionsV3ArtifactPackageHTMLCSP)
+		setSessionV3ArtifactPreviewSecurityHeaders(w)
+	}
+	if sessionV3ArtifactNotModified(w, r, artifact, contentPath) {
+		return
 	}
 	http.ServeContent(w, r, filepath.Base(contentPath), info.ModTime(), file)
+}
+
+func setSessionV3ArtifactPreviewSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", sessionsV3ArtifactPreviewHTMLCSP)
+	w.Header().Set("Permissions-Policy", sessionsV3ArtifactPreviewPermissionsPolicy)
+	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
+func sessionV3ArtifactETag(artifact sessionsV3ResolvedArtifact, resourcePath string) string {
+	if artifact.Managed == nil || len(artifact.Managed.DigestSHA256) != sha256.Size*2 {
+		return ""
+	}
+	identity := artifact.Managed.DigestSHA256
+	if resourcePath != "" {
+		sum := sha256.Sum256([]byte(filepath.ToSlash(resourcePath)))
+		identity += "-" + fmt.Sprintf("%x", sum[:8])
+	}
+	return `"sha256-` + identity + `"`
+}
+
+func setSessionV3ArtifactCacheHeaders(w http.ResponseWriter, artifact sessionsV3ResolvedArtifact, resourcePath string) {
+	etag := sessionV3ArtifactETag(artifact, resourcePath)
+	if etag == "" {
+		w.Header().Set("Cache-Control", "no-store")
+		return
+	}
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, max-age=300, immutable")
+}
+
+func sessionV3ArtifactNotModified(w http.ResponseWriter, r *http.Request, artifact sessionsV3ResolvedArtifact, resourcePath string) bool {
+	etag := sessionV3ArtifactETag(artifact, resourcePath)
+	if etag == "" || strings.TrimSpace(r.Header.Get("If-None-Match")) != etag {
+		return false
+	}
+	w.WriteHeader(http.StatusNotModified)
+	return true
 }
 
 func (s *Server) resolveSessionV3Artifact(ctx context.Context, principal identity.Principal, sessionID, artifactID string) (sessionsV3ResolvedArtifact, bool, error) {
