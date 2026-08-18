@@ -20,9 +20,7 @@ import {
 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
-import { desktopV3ArtifactLocalRuntimeAssets } from '../../session-v3/artifact-animation-runtime-assets'
 import {
-  buildDesktopV3ArtifactSandboxDocument,
   DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
   desktopV3ArtifactCatalogEntryForKey,
   desktopV3ArtifactCatalogEntryKey,
@@ -30,11 +28,12 @@ import {
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactRequiresBundle,
   desktopV3ArtifactSelection,
-  fetchDesktopV3Artifact,
+  desktopV3ArtifactDirectContentURL,
   fetchDesktopV3ArtifactCollectionBundle,
   fetchDesktopV3ArtifactDownload,
   fetchDesktopV3ArtifactCatalog,
-  fetchDesktopV3ArtifactPreviewToken,
+  fetchDesktopV3ArtifactPreviewAccess,
+  fetchDesktopV3ArtifactTextPreview,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
   useDesktopV3Artifact,
@@ -194,6 +193,7 @@ export function DesktopV3ArtifactGallery({
   const [previewText, setPreviewText] = useState('')
   const [previewError, setPreviewError] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewRetry, setPreviewRetry] = useState(0)
   const [actionPending, setActionPending] = useState<'add' | 'use' | 'download-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [query, setQuery] = useState('')
@@ -346,31 +346,22 @@ export function DesktopV3ArtifactGallery({
       return undefined
     }
     const controller = new AbortController()
-    let objectURL = ''
+    const isText = selected.mediaType === 'text/markdown' || selected.mediaType === 'text/plain'
+    const isHTML = selected.mediaType === 'text/html'
+    if (!isText && !isHTML) {
+      setPreviewURL(desktopV3ArtifactDirectContentURL(selected))
+      setPreviewLoading(false)
+      return () => controller.abort()
+    }
     setPreviewLoading(true)
-    const fetchPreview = selected.sourceRef
-      ? fetchDesktopV3ArtifactDownload(selected, controller.signal)
-      : fetchDesktopV3Artifact(selected.sessionId, selected.artifactId, controller.signal)
-    void fetchPreview
-      .then(async (blob) => {
+    const resolvePreview = isHTML
+      ? fetchDesktopV3ArtifactPreviewAccess(selected.sessionId, selected.artifactId, controller.signal).then((access) => access.url)
+      : fetchDesktopV3ArtifactTextPreview(selected, controller.signal)
+    void resolvePreview
+      .then((value) => {
         if (controller.signal.aborted) return
-        if (selected.mediaType === 'text/html') {
-          const [source, previewToken] = await Promise.all([
-            blob.text(),
-            fetchDesktopV3ArtifactPreviewToken(selected.sessionId, selected.artifactId, controller.signal),
-          ])
-          if (!controller.signal.aborted) {
-            setPreviewText(buildDesktopV3ArtifactSandboxDocument(source, selected.sessionId, selected.artifactId, previewToken, desktopV3ArtifactLocalRuntimeAssets(selected.animationProfile)))
-          }
-          return
-        }
-        if (selected.mediaType === 'text/markdown' || selected.mediaType === 'text/plain') {
-          const text = await blob.text()
-          if (!controller.signal.aborted) setPreviewText(text)
-          return
-        }
-        objectURL = URL.createObjectURL(blob)
-        setPreviewURL(objectURL)
+        if (isHTML) setPreviewURL(value)
+        else setPreviewText(value)
       })
       .catch((error) => {
         if (!controller.signal.aborted) setPreviewError(error instanceof Error ? error.message : 'Artifact preview failed')
@@ -378,11 +369,8 @@ export function DesktopV3ArtifactGallery({
       .finally(() => {
         if (!controller.signal.aborted) setPreviewLoading(false)
       })
-    return () => {
-      controller.abort()
-      if (objectURL) URL.revokeObjectURL(objectURL)
-    }
-  }, [open, selectedAnimationActive, selected?.animationProfile, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.sourceRef, selected?.status])
+    return () => controller.abort()
+  }, [open, previewRetry, selectedAnimationActive, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.sourceRef, selected?.status])
 
   const selectArtifact = (artifact: DesktopV3ArtifactGalleryEntry) => {
     setOverviewCollectionKey('')
@@ -684,14 +672,14 @@ export function DesktopV3ArtifactGallery({
                 >
                   {previewFullscreen ? <button type="button" className="absolute right-3 top-3 z-20 grid size-9 place-items-center rounded-full border border-white/20 bg-black/60 text-white shadow-lg hover:bg-black/75" aria-label="Exit fullscreen artifact preview" onClick={() => void togglePreviewFullscreen()}><Minimize2 size={16} /></button> : null}
                   {previewLoading ? <div className="grid h-full min-h-40 place-items-center text-sm text-[var(--app-text-muted)]"><span><Loader2 className="mr-2 inline size-4 animate-spin" />Loading preview…</span></div> : null}
-                  {previewError ? <div className="mx-auto mt-8 max-w-lg rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]">Preview unavailable: {previewError}</div> : null}
+                  {previewError ? <div className="mx-auto mt-8 max-w-lg rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]"><p className="font-semibold">Preview unavailable</p><p className="mt-1">{previewError}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" className="rounded-md border border-current px-2.5 py-1 text-xs font-semibold" onClick={() => setPreviewRetry((value) => value + 1)}>Retry preview</button>{selected.content === undefined ? <button type="button" className="rounded-md border border-current px-2.5 py-1 text-xs font-semibold" onClick={() => void downloadArtifact(selected)}>Download instead</button> : null}</div></div> : null}
                   {!previewLoading && !previewError && selected.status === 'staging' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><Loader2 className="mx-auto mb-3 size-6 animate-spin text-[var(--app-primary)]" /><p>This variant is still generating.</p><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The live review surface will refresh when it is ready.</p></div></div> : null}
                   {!previewLoading && !previewError && (selected.status === 'failed' || selected.status === 'unavailable') ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-danger)]"><div><AlertTriangle className="mx-auto mb-3 size-6" /><p>This variant could not be generated.</p>{selected.failureCode ? <p className="mt-1 font-mono text-xs text-[var(--app-text-muted)]">{selected.failureCode}</p> : null}</div></div> : null}
                   {!previewLoading && !previewError && !selected.previewable && selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
-                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" /></div> : null}
-                  {!previewLoading && !previewError && selectedAnimationActive && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player /></div> : null}
-                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewText ? <iframe title={selected.label} srcDoc={previewText} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
-                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'application/pdf' && previewURL ? <iframe title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" /> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img key={`${previewURL}:${previewRetry}`} src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" onError={() => setPreviewError('The browser could not decode or load this image.')} /></div> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video key={`${previewURL}:${previewRetry}`} src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player onError={() => setPreviewError('The browser could not decode or load this video.')} /></div> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewURL ? <iframe key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onError={() => setPreviewError('The secure animation runtime could not load this artifact. Access may have expired or the artifact may be incompatible with preview policy.')} /> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'application/pdf' && previewURL ? <iframe key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onError={() => setPreviewError('The browser could not load this PDF.')} /> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/markdown' && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/plain' && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}
                 </div>

@@ -10,6 +10,7 @@ import {
   desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactCollectionViewerHref,
   desktopV3ArtifactCollectionViewerSearch,
+  desktopV3ArtifactDirectContentURL,
   desktopV3ArtifactDownloadName,
   desktopV3ArtifactRequiresBundle,
   desktopV3ArtifactViewerHref,
@@ -24,6 +25,7 @@ import {
   removeDesktopV3ArtifactMessageSelection,
   normalizeDesktopV3ArtifactCatalogEntry,
   desktopV3ArtifactSelectionEndpoint,
+  fetchDesktopV3ArtifactPreviewAccess,
   selectDesktopV3Artifact,
   useDesktopV3Artifact,
 } from './artifact-api'
@@ -206,6 +208,33 @@ test('historical artifacts omit requirements and malformed nested requirements f
 
 test('artifact selection actions target the canonical variant selection route', () => {
   assert.equal(desktopV3ArtifactSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/selection')
+})
+
+test('rich artifact previews use direct browser URLs instead of blob hydration', () => {
+  assert.equal(desktopV3ArtifactDirectContentURL({ sessionId: 'session one', artifactId: 'video/1', sourceRef: '' }), '/v3/sessions/session%20one/artifacts/video%2F1')
+  assert.equal(
+    desktopV3ArtifactDirectContentURL({ sessionId: 'session one', artifactId: 'ignored', sourceRef: 'source ref' }),
+    '/v3/sessions/session%20one/video/sources/media?source_ref=source+ref',
+  )
+})
+
+test('HTML preview access accepts only the canonical opaque runtime contract', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    ok: true,
+    preview_url: '/v3/sessions/session-1/artifacts/variant-1/content/access/token/__swarm_artifact_entry__.html',
+    expires_at: 1_900_000_000,
+    media_type: 'text/html; charset=utf-8',
+    sandbox: 'allow-scripts',
+    opaque_origin: true,
+  }), { headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+  try {
+    const access = await fetchDesktopV3ArtifactPreviewAccess('session-1', 'variant-1')
+    assert.equal(access.url, '/v3/sessions/session-1/artifacts/variant-1/content/access/token/__swarm_artifact_entry__.html')
+    assert.equal(access.opaqueOrigin, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('artifact downloads preserve native image and video files and bundle only packages', () => {

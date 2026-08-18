@@ -68,12 +68,12 @@ test('animation previews use immutable local runtimes and keep network access di
     assert.match(thirdPartyNotices, new RegExp(runtime.replaceAll('.', '\\.')))
   }
   assert.match(thirdPartyNotices, /Assets must be\s+created by the user, owned by the user, or supplied under terms/)
-  assert.match(gallery, /desktopV3ArtifactLocalRuntimeAssets\(selected\.animationProfile\)/)
+  assert.match(gallery, /fetchDesktopV3ArtifactPreviewAccess\(selected\.sessionId, selected\.artifactId/)
   assert.match(gallery, /formatDesktopV3ArtifactAnimationProfile\(selected\?\.animationProfile\)/)
   assert.match(gallery, /selected\.animationProfile\.profileId === 'final_render'/)
   assert.match(gallery, /const selectedAnimationActive = animationPreviewVisible/)
   assert.doesNotMatch(gallery, /selectedAnimationActive = animationPreviewVisible &&[\s\S]*previewMotionAllowed/)
-  assert.match(gallery, /selectedAnimationActive && selected\.mediaType === 'text\/html'/)
+  assert.match(gallery, /selectedAnimationActive && selected\.mediaType === 'text\/html' && previewURL/)
   assert.match(gallery, /selectedVideoProfileCompatible = !selected\?\.animationProfile \|\| selected\.animationProfile\.profileId === 'final_render'/)
 })
 
@@ -84,7 +84,7 @@ test('artifact previews fit the available viewport and offer explicit fullscreen
   assert.match(gallery, /selected\.mediaType\.startsWith\('image\/'\).*\? 'overflow-hidden' : 'overflow-auto'/s)
   assert.match(gallery, /className="grid size-full min-h-0 place-items-center"/)
   assert.match(gallery, /className="size-full rounded-lg border.*object-contain shadow-sm"/)
-  assert.match(gallery, /selected\.sourceRef[\s\S]*fetchDesktopV3ArtifactDownload\(selected, controller\.signal\)/)
+  assert.match(gallery, /setPreviewURL\(desktopV3ArtifactDirectContentURL\(selected\)\)/)
   assert.match(gallery, /previewSurface\.requestFullscreen\(\)/)
   assert.match(gallery, /document\.exitFullscreen\(\)/)
   assert.match(gallery, /aria-label="View artifact fullscreen"/)

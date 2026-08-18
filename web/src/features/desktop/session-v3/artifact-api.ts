@@ -729,6 +729,47 @@ export function desktopV3ArtifactPreviewAccessEndpoint(sessionId: string): strin
   return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/preview-access`
 }
 
+export interface DesktopV3ArtifactPreviewAccess {
+  url: string
+  expiresAt: number
+  mediaType: string
+  sandbox: 'allow-scripts'
+  opaqueOrigin: true
+}
+
+export function desktopV3ArtifactDirectContentURL(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'sessionId' | 'sourceRef'>,
+): string {
+  if (artifact.sourceRef?.trim()) {
+    const search = new URLSearchParams({ source_ref: artifact.sourceRef.trim() })
+    return `/v3/sessions/${encodeURIComponent(artifact.sessionId.trim())}/video/sources/media?${search.toString()}`
+  }
+  return desktopV3ArtifactEndpoint(artifact.sessionId, artifact.artifactId)
+}
+
+export async function fetchDesktopV3ArtifactPreviewAccess(
+  sessionId: string,
+  artifactId: string,
+  signal?: AbortSignal,
+): Promise<DesktopV3ArtifactPreviewAccess> {
+  const response = await apiFetch(desktopV3ArtifactPreviewAccessEndpoint(sessionId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artifact_id: artifactId }),
+    signal,
+  })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const payload = await response.json() as Record<string, unknown>
+  const url = typeof payload.preview_url === 'string' ? payload.preview_url.trim() : ''
+  const expiresAt = typeof payload.expires_at === 'number' && Number.isSafeInteger(payload.expires_at) ? payload.expires_at : 0
+  const mediaType = typeof payload.media_type === 'string' ? payload.media_type.trim() : ''
+  if (payload.ok !== true || !url || !url.startsWith('/') || !expiresAt || mediaType !== 'text/html; charset=utf-8'
+    || payload.sandbox !== 'allow-scripts' || payload.opaque_origin !== true) {
+    throw new Error('Artifact preview access returned an invalid runtime contract')
+  }
+  return { url, expiresAt, mediaType, sandbox: 'allow-scripts', opaqueOrigin: true }
+}
+
 const desktopV3ArtifactPackageEntryPath = '__swarm_artifact_entry__.html'
 
 export function desktopV3ArtifactPackageBaseEndpoint(sessionId: string, artifactId: string, previewToken: string): string {
@@ -827,17 +868,46 @@ export function buildDesktopV3ArtifactSandboxDocument(
 }
 
 export async function fetchDesktopV3ArtifactPreviewToken(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<string> {
-  const response = await apiFetch(desktopV3ArtifactPreviewAccessEndpoint(sessionId), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ artifact_id: artifactId }),
-    signal,
-  })
-  if (!response.ok) throw new Error(await readErrorMessage(response))
-  const payload = await response.json() as { token?: unknown }
-  const token = typeof payload.token === 'string' ? payload.token.trim() : ''
+  const access = await fetchDesktopV3ArtifactPreviewAccess(sessionId, artifactId, signal)
+  const marker = '/content/access/'
+  const token = access.url.split(marker, 2)[1]?.split('/', 1)[0]?.trim() ?? ''
   if (!token) throw new Error('Artifact preview access did not return a token')
   return token
+}
+
+const desktopV3ArtifactTextPreviewMaxBytes = 2 << 20
+
+export async function fetchDesktopV3ArtifactTextPreview(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'sessionId' | 'sourceRef'>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await apiFetch(desktopV3ArtifactDirectContentURL(artifact), { method: 'GET', signal })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const declaredLength = Number(response.headers.get('Content-Length') ?? 0)
+  if (Number.isFinite(declaredLength) && declaredLength > desktopV3ArtifactTextPreviewMaxBytes) {
+    throw new Error('Artifact text preview exceeds the 2 MB inline limit')
+  }
+  if (!response.body) {
+    const text = await response.text()
+    if (new TextEncoder().encode(text).byteLength > desktopV3ArtifactTextPreviewMaxBytes) throw new Error('Artifact text preview exceeds the 2 MB inline limit')
+    return text
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let received = 0
+  let text = ''
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      received += value.byteLength
+      if (received > desktopV3ArtifactTextPreviewMaxBytes) throw new Error('Artifact text preview exceeds the 2 MB inline limit')
+      text += decoder.decode(value, { stream: true })
+    }
+    return text + decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 export async function fetchDesktopV3ArtifactBundle(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<Blob> {

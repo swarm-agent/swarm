@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileText, Loader2 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
-import { desktopV3ArtifactLocalRuntimeAssets } from '../../session-v3/artifact-animation-runtime-assets'
 import {
-  buildDesktopV3ArtifactSandboxDocument,
-  fetchDesktopV3Artifact,
-  fetchDesktopV3ArtifactDownload,
-  fetchDesktopV3ArtifactPreviewToken,
+  desktopV3ArtifactDirectContentURL,
+  fetchDesktopV3ArtifactPreviewAccess,
+  fetchDesktopV3ArtifactTextPreview,
   type DesktopV3ArtifactCatalogEntry,
 } from '../../session-v3/artifact-api'
 
@@ -155,37 +153,22 @@ export function DesktopV3ArtifactPreviewThumbnail({
     }
 
     const controller = new AbortController()
-    let objectURL = ''
+    const isText = artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain'
+    const isHTML = artifact.mediaType === 'text/html'
+    if (!isText && !isHTML) {
+      setPreviewURL(desktopV3ArtifactDirectContentURL(artifact))
+      setLoading(false)
+      return () => controller.abort()
+    }
     setLoading(true)
-    const fetchPreview = artifact.sourceRef
-      ? fetchDesktopV3ArtifactDownload(artifact, controller.signal)
-      : fetchDesktopV3Artifact(artifact.sessionId, artifact.artifactId, controller.signal)
-    void fetchPreview
-      .then(async (blob) => {
+    const resolvePreview = isHTML
+      ? fetchDesktopV3ArtifactPreviewAccess(artifact.sessionId, artifact.artifactId, controller.signal).then((access) => access.url)
+      : fetchDesktopV3ArtifactTextPreview(artifact, controller.signal)
+    void resolvePreview
+      .then((value) => {
         if (controller.signal.aborted) return
-        if (artifact.mediaType === 'text/html') {
-          const [source, previewToken] = await Promise.all([
-            blob.text(),
-            fetchDesktopV3ArtifactPreviewToken(artifact.sessionId, artifact.artifactId, controller.signal),
-          ])
-          if (!controller.signal.aborted) {
-            setPreviewText(buildDesktopV3ArtifactSandboxDocument(
-              source,
-              artifact.sessionId,
-              artifact.artifactId,
-              previewToken,
-              desktopV3ArtifactLocalRuntimeAssets(artifact.animationProfile),
-            ))
-          }
-          return
-        }
-        if (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') {
-          const text = await blob.text()
-          if (!controller.signal.aborted) setPreviewText(text)
-          return
-        }
-        objectURL = URL.createObjectURL(blob)
-        if (!controller.signal.aborted) setPreviewURL(objectURL)
+        if (isHTML) setPreviewURL(value)
+        else setPreviewText(value)
       })
       .catch(() => {
         if (!controller.signal.aborted) setFailed(true)
@@ -194,14 +177,11 @@ export function DesktopV3ArtifactPreviewThumbnail({
         if (!controller.signal.aborted) setLoading(false)
       })
 
-    return () => {
-      controller.abort()
-      if (objectURL) URL.revokeObjectURL(objectURL)
-    }
+    return () => controller.abort()
   }, [artifact.animationProfile, artifact.artifactId, artifact.content, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.sourceRef, artifact.status, previewVisible])
 
   const previewActive = previewVisible
-  const hasHTMLPreview = previewActive && artifact.mediaType === 'text/html' && Boolean(previewText)
+  const hasHTMLPreview = previewActive && artifact.mediaType === 'text/html' && Boolean(previewURL)
   const hasImagePreview = previewActive && artifact.mediaType.startsWith('image/') && Boolean(previewURL)
   const videoProfileCompatible = !artifact.animationProfile || artifact.animationProfile.profileId === 'final_render'
   const hasVideoPreview = previewActive && videoProfileCompatible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && Boolean(previewURL)
@@ -245,7 +225,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
       {!loading && hasHTMLPreview ? (
         <iframe
           title={`${artifact.label} preview`}
-          srcDoc={previewText}
+          src={previewURL}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           tabIndex={-1}
