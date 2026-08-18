@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, type FocusEvent, type MouseEvent } from 'react'
+import { memo, useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
@@ -73,16 +73,6 @@ export interface DesktopV3ArtifactSidebarProps {
   onAddToChat?: (artifacts: DesktopV3ArtifactCatalogEntry[]) => void
 }
 
-function sidebarArtifactPreviewKey(artifact: DesktopV3ArtifactCatalogEntry): string {
-  return `${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`
-}
-
-function sidebarArtifactNeedsExclusiveLivePreview(artifact: DesktopV3ArtifactCatalogEntry): boolean {
-  // Arbitrary HTML remains the risky case: keep only one ungoverned document mounted.
-  // Profiled animation HTML uses the reviewed runtime and resource contract instead.
-  return artifact.mediaType === 'text/html' && !artifact.animationProfile
-}
-
 function sidebarArtifactAnimationProfileKey(artifact: DesktopV3ArtifactCatalogEntry): string {
   const profile = artifact.animationProfile
   if (!profile) return ''
@@ -112,13 +102,12 @@ function sidebarArtifactAnimationProfileKey(artifact: DesktopV3ArtifactCatalogEn
 }
 
 function sidebarArtifactThumbnailEqual(
-  previous: Readonly<{ artifact: DesktopV3ArtifactCatalogEntry; live: boolean }>,
-  next: Readonly<{ artifact: DesktopV3ArtifactCatalogEntry; live: boolean }>,
+  previous: Readonly<{ artifact: DesktopV3ArtifactCatalogEntry }>,
+  next: Readonly<{ artifact: DesktopV3ArtifactCatalogEntry }>,
 ): boolean {
   const left = previous.artifact
   const right = next.artifact
-  return previous.live === next.live
-    && left.sessionId === right.sessionId
+  return left.sessionId === right.sessionId
     && left.artifactId === right.artifactId
     && left.label === right.label
     && left.mediaType === right.mediaType
@@ -130,12 +119,11 @@ function sidebarArtifactThumbnailEqual(
     && sidebarArtifactAnimationProfileKey(left) === sidebarArtifactAnimationProfileKey(right)
 }
 
-const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3ArtifactCatalogEntry; live: boolean }) {
+const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactCatalogEntry }) {
   const [previewURL, setPreviewURL] = useState('')
   const [failed, setFailed] = useState(false)
-  const exclusive = sidebarArtifactNeedsExclusiveLivePreview(artifact)
-  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(live)
-  const previewEnabled = live && previewVisible
+  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>()
+  const previewEnabled = previewVisible
 
   useEffect(() => {
     setPreviewURL('')
@@ -166,7 +154,7 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   else if (previewEnabled && artifact.mediaType === 'text/html' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
   else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
 
-  return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && exclusive ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
+  return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && artifact.mediaType === 'text/html' ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
 }, sidebarArtifactThumbnailEqual)
 
 export interface DesktopV3ArtifactSidebarGroup {
@@ -242,36 +230,6 @@ export function DesktopV3ArtifactSidebar({
   const thin = displayMode === 'thin'
   const compact = displayMode === 'compact'
   const groups = useMemo(() => desktopV3ArtifactSidebarGroups(artifacts), [artifacts])
-  const [requestedLivePreviewKey, setRequestedLivePreviewKey] = useState('')
-  const selectedLivePreviewKey = useMemo(() => {
-    const selected = artifacts.find((artifact) => artifact.selected && artifact.status === 'ready' && artifact.previewable)
-    return selected ? sidebarArtifactPreviewKey(selected) : ''
-  }, [artifacts])
-  const fallbackLivePreviewKey = useMemo(() => {
-    for (const group of groups) {
-      const representative = group.entries.find((entry) => entry.selected)
-        ?? group.entries.find((entry) => entry.status === 'ready')
-        ?? group.entries[0]
-      if (representative?.status === 'ready' && representative.previewable) {
-        return sidebarArtifactPreviewKey(representative)
-      }
-    }
-    return ''
-  }, [groups])
-  const requestedArtifact = artifacts.find((artifact) => sidebarArtifactPreviewKey(artifact) === requestedLivePreviewKey)
-  // Keep one authorized preview alive at a time; pointer or focus demand takes precedence over the default.
-  const livePreviewKey = (requestedArtifact?.status === 'ready' && requestedArtifact.previewable ? requestedLivePreviewKey : '')
-    || selectedLivePreviewKey
-    || fallbackLivePreviewKey
-  const requestLivePreview = (artifact: DesktopV3ArtifactCatalogEntry) => {
-    if (artifact.status === 'ready' && artifact.previewable) {
-      setRequestedLivePreviewKey(sidebarArtifactPreviewKey(artifact))
-    }
-  }
-  const releaseLivePreview = (artifact: DesktopV3ArtifactCatalogEntry, event: FocusEvent<HTMLElement> | MouseEvent<HTMLElement>) => {
-    if ('relatedTarget' in event && event.currentTarget.contains(event.relatedTarget as Node | null)) return
-    setRequestedLivePreviewKey((current) => current === sidebarArtifactPreviewKey(artifact) ? '' : current)
-  }
 
   return (
     <aside
@@ -315,7 +273,7 @@ export function DesktopV3ArtifactSidebar({
             const requirementLabel = formatDesktopV3ArtifactOutputRequirements(representative.outputRequirements)
             const animationLabel = formatDesktopV3ArtifactAnimationProfile(representative.animationProfile)
             if (thin) {
-              return <a key={group.key} href={artifactHref(representative)} onMouseEnter={() => requestLivePreview(representative)} onMouseLeave={(event) => releaseLivePreview(representative, event)} onFocus={() => requestLivePreview(representative)} onBlur={(event) => releaseLivePreview(representative, event)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} live={sidebarArtifactPreviewKey(representative) === livePreviewKey} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
+              return <a key={group.key} href={artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
             }
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
@@ -325,9 +283,9 @@ export function DesktopV3ArtifactSidebar({
                 </a>
                 <div className={cn('grid gap-1 p-2', grouped && 'grid-cols-2')} aria-label={grouped ? `${group.label} iterations` : undefined}>
                   {group.entries.map((artifact, index) => (
-                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} onMouseEnter={() => requestLivePreview(artifact)} onMouseLeave={(event) => releaseLivePreview(artifact, event)} onFocus={() => requestLivePreview(artifact)} onBlur={(event) => releaseLivePreview(artifact, event)} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
+                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
                       <a href={artifactHref(artifact)} className="block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} aria-label={`Open ${artifact.label} in full artifact view`}>
-                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} live={sidebarArtifactPreviewKey(artifact) === livePreviewKey} /></span>
+                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} /></span>
                         <span className="block min-w-0 px-2 py-1.5"><span className="block truncate text-[10px] font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : grouped ? `Iteration ${artifact.lineage?.iterationIndex || index + 1}` : artifact.kind || artifact.mediaType}</span></span>
                       </a>
                       {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" aria-label={`Attach ${artifact.label} for chat changes`} title={artifact.mediaType.startsWith('image/') ? 'Attach to chat for remixing' : 'Attach to chat'} onClick={() => onAddToChat([artifact])}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}

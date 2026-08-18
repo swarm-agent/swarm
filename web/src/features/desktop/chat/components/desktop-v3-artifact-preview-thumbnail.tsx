@@ -123,8 +123,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const [previewText, setPreviewText] = useState('')
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [interactivePreviewRequested, setInteractivePreviewRequested] = useState(false)
-  const { previewRef, previewVisible: previewInViewport } = useDesktopV3ArtifactPreviewVisibility()
+  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility()
   const interactivePreview = Boolean(artifact.animationProfile)
     || artifact.mediaType === 'text/html'
     || artifact.mediaType === 'application/pdf'
@@ -132,8 +131,6 @@ export function DesktopV3ArtifactPreviewThumbnail({
     || artifact.mediaType === 'image/svg+xml'
     || artifact.mediaType.startsWith('video/')
     || artifact.kind === 'video'
-  // Rich thumbnails are demand-driven so long transcripts do not run a wall of iframes, GIFs, or videos.
-  const previewVisible = previewInViewport && (!interactivePreview || interactivePreviewRequested)
   const animationCanvasStyle = artifact.animationProfile
     ? { maxWidth: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels), maxHeight: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels) }
     : undefined
@@ -202,10 +199,6 @@ export function DesktopV3ArtifactPreviewThumbnail({
         className,
       )}
       style={{ ...(previewAspectRatio ? { aspectRatio: previewAspectRatio } : {}), ...animationCanvasStyle }}
-      onMouseEnter={() => setInteractivePreviewRequested(true)}
-      onMouseLeave={() => setInteractivePreviewRequested(false)}
-      onFocusCapture={() => setInteractivePreviewRequested(true)}
-      onBlurCapture={() => setInteractivePreviewRequested(false)}
       data-artifact-preview-thumbnail
       data-artifact-preview-interactive={interactivePreview || undefined}
       data-artifact-preview-presentation={isWide ? 'wide' : 'thumbnail'}
