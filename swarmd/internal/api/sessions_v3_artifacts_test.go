@@ -563,7 +563,12 @@ func TestManagedStandaloneHTMLPreviewURLServesNestedSrcdocCanvasPolicyAndCacheId
 	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "legacy.html", "legacy")
 	principal := testPrincipal()
 	authority := artifact.NewAuthority(registry, sessionSvc)
-	htmlBody := `<!doctype html><iframe srcdoc="<canvas id='stage'></canvas><script>stage.getContext('2d').fillRect(0,0,1,1)</script>"></iframe>`
+	// Match the reported standalone review shell: the outer document owns
+	// controls while an inline nested srcdoc runs the Canvas animation and
+	// exchanges state with its parent. This fixture must be served byte-for-byte
+	// through the production capability URL; rewriting it would reproduce the
+	// original viewer failure.
+	htmlBody := `<!doctype html><button id="toggle">Pause</button><iframe id="player" srcdoc="<!doctype html><canvas id='stage' width='32' height='32'></canvas><script>const context=stage.getContext('2d');let running=true;function frame(time){if(running){context.fillStyle='rgb('+Math.floor(time%255)+',0,0)';context.fillRect(0,0,32,32)}requestAnimationFrame(frame)}addEventListener('message',(event)=>{if(event.data&&event.data.type==='swarm-player-toggle'){running=!running;parent.postMessage({type:'swarm-player-state',running},'*')}});requestAnimationFrame(frame);parent.postMessage({type:'swarm-player-ready'},'*')</script>"></iframe><script>toggle.addEventListener('click',()=>player.contentWindow.postMessage({type:'swarm-player-toggle'},'*'));addEventListener('message',(event)=>{if(event.data&&event.data.type==='swarm-player-state')toggle.textContent=event.data.running?'Pause':'Play'})</script>`
 	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "standalone-html-preview", CollectionID: "standalone-html", CollectionName: "Standalone HTML", VariantID: "standalone-html-variant", Filename: "player.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Previewable: true}, Body: []byte(htmlBody),
 	})
@@ -593,6 +598,11 @@ func TestManagedStandaloneHTMLPreviewURLServesNestedSrcdocCanvasPolicyAndCacheId
 	server.Handler().ServeHTTP(previewRec, previewReq)
 	if previewRec.Code != http.StatusOK || previewRec.Body.String() != htmlBody {
 		t.Fatalf("direct preview status=%d body=%s", previewRec.Code, previewRec.Body.String())
+	}
+	for _, runtimeShape := range []string{"srcdoc=", "requestAnimationFrame", "postMessage", "getContext('2d')"} {
+		if !strings.Contains(previewRec.Body.String(), runtimeShape) {
+			t.Fatalf("production preview lost nested player shape %q", runtimeShape)
+		}
 	}
 	csp := previewRec.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "sandbox allow-scripts") || !strings.Contains(csp, "frame-src 'self' data: blob:") || strings.Contains(csp, "allow-same-origin") {
