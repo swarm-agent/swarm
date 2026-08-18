@@ -132,7 +132,8 @@ func (a *App) openModelsModal(providerHint string) {
 	a.home.HideVoiceModal()
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
-	a.home.ShowModelsModal()
+	chatSelection := a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil
+	a.home.ShowModelsModalForChat(chatSelection)
 	a.refreshModelsModalData(providerHint, "Loading model manager...")
 }
 
@@ -144,7 +145,22 @@ func (a *App) currentModelPreferenceState() (string, string, string, string, str
 	serviceTier := strings.TrimSpace(homeServiceTier)
 	contextMode := strings.TrimSpace(homeContextMode)
 	sessionID := ""
-	if a.route == "chat" && a.chat != nil {
+	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil {
+		state := a.v3Chat.Runtime().Store().Snapshot()
+		sessionID = strings.TrimSpace(state.Session.ID)
+		preference := state.Model.Preference
+		if normalized := normalizeModelProviderID(preference.Provider); normalized != "" {
+			providerID = normalized
+		}
+		if trimmed := strings.TrimSpace(preference.Model); trimmed != "" {
+			modelID = trimmed
+		}
+		if normalized := normalizeModelThinkingLevel(preference.Thinking); normalized != "" {
+			thinking = normalized
+		}
+		serviceTier = strings.TrimSpace(preference.ServiceTier)
+		contextMode = strings.TrimSpace(preference.ContextMode)
+	} else if a.route == "chat" && a.chat != nil {
 		sessionID = strings.TrimSpace(a.chat.SessionID())
 		sessionProvider, sessionModel, sessionThinking, sessionServiceTier, sessionContextMode := a.chat.ModelState()
 		if normalized := normalizeModelProviderID(sessionProvider); normalized != "" {
@@ -377,7 +393,7 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 		a.showToast(ui.ToastSuccess, fmt.Sprintf("API key saved for %s", record.Provider))
 		a.refreshModelsModalData(providerID, "")
 		a.queueReload(false)
-	case ui.ModelsModalActionSetActiveModel:
+	case ui.ModelsModalActionSetActiveModel, ui.ModelsModalActionSetChatModel:
 		providerID := normalizeModelProviderID(action.Provider)
 		modelID := strings.TrimSpace(action.Model)
 		if providerID == "" || modelID == "" {
@@ -410,8 +426,36 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 			a.home.SetModelsModalError(err.Error())
 			return
 		}
-		messagePrefix := "active model"
-		if sessionID != "" {
+		chatOnly := action.Kind == ui.ModelsModalActionSetChatModel
+		if chatOnly && (a.route != "v3chat" || a.v3Chat == nil || a.v3Chat.Runtime() == nil || a.v3Chat.Runtime().Store() == nil) {
+			a.home.SetModelsModalLoading(false)
+			a.home.SetModelsModalError("chat-only model selection requires an existing or prepared V3 chat")
+			return
+		}
+		messagePrefix := "default model"
+		if chatOnly && sessionID != "" {
+			messagePrefix = "chat model"
+			resolved, err := a.v3Chat.Runtime().SetModelPreference(ctx, client.ModelPreference{Provider: providerID, Model: modelID, Thinking: thinking, ServiceTier: serviceTier, ContextMode: contextMode})
+			if err != nil {
+				a.home.SetModelsModalLoading(false)
+				a.home.SetModelsModalError(fmt.Sprintf("set chat model failed: %v", err))
+				return
+			}
+			providerID = strings.TrimSpace(resolved.Preference.Provider)
+			modelID = strings.TrimSpace(resolved.Preference.Model)
+			thinking = strings.TrimSpace(resolved.Preference.Thinking)
+			serviceTier = strings.TrimSpace(resolved.Preference.ServiceTier)
+			contextMode = strings.TrimSpace(resolved.Preference.ContextMode)
+		} else if chatOnly {
+			preference := client.ModelPreference{Provider: providerID, Model: modelID, Thinking: thinking, ServiceTier: serviceTier, ContextMode: contextMode}
+			if err := a.v3Chat.Runtime().SetDraftModelPreference(preference, catalog.ContextWindow, catalog.MaxOutputTokens); err != nil {
+				a.home.SetModelsModalLoading(false)
+				a.home.SetModelsModalError(fmt.Sprintf("set prepared chat model failed: %v", err))
+				return
+			}
+			a.home.SetDraftChatPreference(preference)
+			messagePrefix = "prepared chat model"
+		} else if sessionID != "" && a.route != "v3chat" {
 			messagePrefix = "chat model"
 			resolved, err := a.api.SetSessionPreference(ctx, sessionID, map[string]any{
 				"provider":     providerID,
@@ -446,7 +490,9 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 		if action.FastOnly {
 			message += fmt.Sprintf(" fast=%s", map[bool]string{true: "on", false: "off"}[model.CodexFastEnabled(providerID, modelID, serviceTier)])
 		}
-		if sessionID != "" && a.chat != nil && a.chat.RunInProgress() {
+		if chatOnly && sessionID != "" && a.v3Chat != nil {
+			a.showToast(ui.ToastSuccess, message)
+		} else if sessionID != "" && a.chat != nil && a.chat.RunInProgress() {
 			a.showToast(ui.ToastInfo, "Current stream keeps running. Chat model changes apply after this stream finishes.")
 		} else {
 			a.showToast(ui.ToastSuccess, message)
@@ -454,7 +500,9 @@ func (a *App) handleModelsModalAction(action ui.ModelsModalAction) {
 		if action.CloseAfter {
 			a.home.HideModelsModal()
 			a.home.HideCodexUsageModal()
-			if sessionID != "" && a.chat != nil {
+			if chatOnly && a.v3Chat != nil {
+				a.v3Chat.SetStatus(message)
+			} else if sessionID != "" && a.chat != nil {
 				a.chat.SetStatus(message)
 			} else {
 				a.home.SetStatus(message)

@@ -178,6 +178,7 @@ export interface DesktopV3AgenticComposerProps {
   activeModelProfile?: ActiveModelProfileState
   onUseAgentModelDefault?: () => void | Promise<void>
   onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
+  onApplyModelFavoriteChatOnly?: (profile: ModelProfileRecord) => void | Promise<void>
   modelOptions?: ModelOptionRecord[]
   selectedModelKey?: string
   selectedServiceTier?: string
@@ -280,6 +281,7 @@ export function DesktopV3AgenticComposer({
   activeModelProfile,
   onUseAgentModelDefault: _onUseAgentModelDefault,
   onApplyModelFavorite,
+  onApplyModelFavoriteChatOnly,
   modelOptions = [],
   selectedModelKey = '',
   selectedServiceTier = '',
@@ -1563,6 +1565,7 @@ export function DesktopV3AgenticComposer({
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
         onApplyModelFavorite={onApplyModelFavorite}
+        onApplyModelFavoriteChatOnly={onApplyModelFavoriteChatOnly}
         popoverAnchorId={modelFavoritesAnchorId}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}

@@ -485,6 +485,7 @@ export interface DesktopV3RoutedComposerSnapshot {
   selectedSkill: unknown | null
   worktreePrimed: boolean
   planModeRequested: boolean
+  modelProfileChoice?: ModelProfileChoice | null
 }
 
 export interface DesktopV3RoutedDraftState {
@@ -657,6 +658,7 @@ export function createDesktopV3RoutedComposerSnapshot(
       : cloneRoutedComposerSelection(input.selectedSkill),
     worktreePrimed: input.worktreePrimed === true,
     planModeRequested: input.planModeRequested === true,
+    ...(input.modelProfileChoice ? { modelProfileChoice: cloneRoutedComposerSelection(input.modelProfileChoice) as ModelProfileChoice } : {}),
   }
 }
 
@@ -743,7 +745,7 @@ export function createDesktopV3RoutedStartOperation(
       metadata: input.metadata ? { ...input.metadata } : undefined,
       managed_worktree_requested: snapshot.worktreePrimed,
       plan_mode_requested: snapshot.planModeRequested,
-      model_profile: input.modelProfileChoice ? desktopV3ModelProfileChoiceWire(input.modelProfileChoice) : undefined,
+      model_profile: (input.modelProfileChoice ?? snapshot.modelProfileChoice) ? desktopV3ModelProfileChoiceWire((input.modelProfileChoice ?? snapshot.modelProfileChoice)!) : undefined,
       media: normalizedRoutedMedia(snapshot.attachments),
       video_attachments: snapshot.videoAttachments.map((attachment) => ({ ...attachment })),
       artifact_selections: snapshot.artifactSelections.map((selection) => ({ ...selection })),

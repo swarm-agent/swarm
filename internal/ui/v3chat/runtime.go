@@ -507,6 +507,40 @@ func (r *Runtime) SetMode(ctx context.Context, mode string) (client.SessionV3Mod
 	return resolved, nil
 }
 
+func (r *Runtime) SetDraftModelPreference(preference client.ModelPreference, contextWindow, maxOutputTokens int) error {
+	if r == nil || r.store == nil {
+		return errors.New("v3 chat runtime is not configured")
+	}
+	preference = normalizeModelPreference(preference)
+	if preference.Provider == "" || preference.Model == "" {
+		return errors.New("provider and model are required")
+	}
+	state := r.store.Snapshot()
+	if strings.TrimSpace(state.Session.ID) != "" {
+		return errors.New("v3 chat is already connected")
+	}
+	r.mu.Lock()
+	if r.primedCreate == nil {
+		r.mu.Unlock()
+		return errors.New("v3 chat new session draft is not primed")
+	}
+	r.primedCreate.Preference = preference
+	r.primedCreate.ModelProfile = nil
+	for _, mode := range []string{"plan", "auto"} {
+		selection := r.primedModeSelections[mode]
+		selection.Preference = preference
+		selection.ModelProfile = nil
+		selection.ContextWindow = contextWindow
+		selection.MaxOutputTokens = maxOutputTokens
+		selection.AgentModelPolicy = client.SessionV3AgentModelPolicy{Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens, ProfileSource: "temporary"}
+		r.primedModeSelections[mode] = selection
+	}
+	r.mu.Unlock()
+	r.store.Dispatch(DraftModelPreferenceAction{Preference: preference, ContextWindow: contextWindow, MaxOutputTokens: maxOutputTokens})
+	r.signalWake()
+	return nil
+}
+
 func (r *Runtime) SetModelPreference(ctx context.Context, preference client.ModelPreference) (client.ModelResolved, error) {
 	if r == nil || r.transport == nil {
 		return client.ModelResolved{}, errors.New("v3 chat transport is not configured")

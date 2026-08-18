@@ -106,6 +106,7 @@ const (
 	KeybindModelsAddAuth               KeybindID = "models.add_auth"
 	KeybindModelsToggleFavoritesFilter KeybindID = "models.toggle_favorites_filter"
 	KeybindModelsToggleFavorite        KeybindID = "models.toggle_favorite"
+	KeybindModelsUseForChat            KeybindID = "models.use_for_chat"
 	KeybindModelsThinkingOff           KeybindID = "models.thinking.off"
 	KeybindModelsThinkingLow           KeybindID = "models.thinking.low"
 	KeybindModelsThinkingMedium        KeybindID = "models.thinking.medium"
@@ -288,6 +289,7 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindModelsAddAuth, Group: "Models Modal", Action: "Add auth for provider", Default: "n", Editable: true},
 	{ID: KeybindModelsToggleFavoritesFilter, Group: "Models Modal", Action: "Toggle favorites filter", Default: "f", Editable: true},
 	{ID: KeybindModelsToggleFavorite, Group: "Models Modal", Action: "Toggle favorite for model", Default: "a", Editable: true},
+	{ID: KeybindModelsUseForChat, Group: "Models Modal", Action: "Use selected model for this chat only", Default: "c", Editable: true},
 	{ID: KeybindModelsThinkingOff, Group: "Models Modal", Action: "Thinking preset off", Default: "1", Editable: true},
 	{ID: KeybindModelsThinkingLow, Group: "Models Modal", Action: "Thinking preset low", Default: "2", Editable: true},
 	{ID: KeybindModelsThinkingMedium, Group: "Models Modal", Action: "Thinking preset medium", Default: "3", Editable: true},

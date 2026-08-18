@@ -382,6 +382,14 @@ type ModelPreferenceAction struct {
 	Resolved client.ModelResolved
 }
 
+type DraftModelPreferenceAction struct {
+	Preference      client.ModelPreference
+	ContextWindow   int
+	MaxOutputTokens int
+}
+
+func (DraftModelPreferenceAction) isV3ChatAction() {}
+
 func (ModelPreferenceAction) isV3ChatAction() {}
 
 type ModelProfileAction struct {
@@ -492,6 +500,15 @@ func Reduce(current State, action Action) State {
 		next.Model.Preference = normalizeModelPreference(value.Resolved.Preference)
 		next.Model.ContextWindow = value.Resolved.ContextWindow
 		next.Model.MaxOutputTokens = value.Resolved.MaxOutputTokens
+	case DraftModelPreferenceAction:
+		next.Model.Preference = normalizeModelPreference(value.Preference)
+		next.Model.ContextWindow = value.ContextWindow
+		next.Model.MaxOutputTokens = value.MaxOutputTokens
+		next.Model.Locked = false
+		next.Model.LockReason = ""
+		next.Model.ProfileID = ""
+		next.Model.ProfileName = ""
+		next.Model.ProfileSource = "temporary"
 	case ModelProfileAction:
 		applyAgentModelPolicy(&next.Model, value.Policy.Preference, value.Policy.ContextWindow, value.Policy.MaxOutputTokens, value.Policy)
 	case ModeAction:

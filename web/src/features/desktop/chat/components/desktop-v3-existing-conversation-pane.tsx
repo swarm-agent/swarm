@@ -3298,6 +3298,7 @@ export function DesktopV3ExistingConversationPane({
             onOpenAuthSettings={handleOpenAuthSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
             onApplyModelFavorite={handleApplyModelFavorite}
+            onApplyModelFavoriteChatOnly={handleApplyModelFavorite}
             agentModelControlBusy={agentModelSaving}
             thinking={displayedPreference.thinking}
             thinkingTagsEnabled={thinkingTagsEnabled}

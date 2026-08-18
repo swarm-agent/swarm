@@ -10,6 +10,7 @@ import { saveShowTipsSetting } from '../../settings/swarm/mutations/save-show-ti
 import { normalizeShowTipsEnabled } from '../../settings/swarm/types/swarm-settings'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { modelOptionKey } from '../services/model-options'
+import type { ModelProfileRecord } from '../types/chat'
 import {
   DesktopV3RoutedNewSessionController,
   createDesktopV3RoutedComposerSnapshot,
@@ -88,7 +89,11 @@ export function DesktopV3NewSessionPane({
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const modelProfiles = modelProfilesQuery.data?.profiles ?? []
   const actionModel = agentModelSettingsQuery.data?.swarm.action ?? null
-  const activeModelProfile = { source: 'agent-default' as const, profileId: '', name: 'Swarm action model' }
+  const [chatOnlyModelProfile, setChatOnlyModelProfile] = useState<ModelProfileRecord | null>(null)
+  const activeModelProfile = chatOnlyModelProfile
+    ? { source: 'temporary' as const, profileId: '', name: chatOnlyModelProfile.name }
+    : { source: 'agent-default' as const, profileId: '', name: 'Swarm action model' }
+  const selectedActionModel = chatOnlyModelProfile ?? actionModel
   const stagedAttachmentsRef = useRef<DesktopComposerStagedAttachment[]>([])
   const stagedAttachmentHistoryRef = useRef<DesktopComposerStagedAttachment[]>([])
   const removedStagedAttachmentIdsRef = useRef(new Set<string>())
@@ -262,6 +267,17 @@ export function DesktopV3NewSessionPane({
         ...snapshot,
         prompt,
         attachments: snapshot.attachments,
+        modelProfileChoice: chatOnlyModelProfile ? {
+          kind: 'temporary',
+          profile: {
+            name: chatOnlyModelProfile.name,
+            provider: chatOnlyModelProfile.provider,
+            model: chatOnlyModelProfile.model,
+            thinking: chatOnlyModelProfile.thinking,
+            serviceTier: chatOnlyModelProfile.serviceTier,
+            contextMode: chatOnlyModelProfile.contextMode,
+          },
+        } : null,
       })
       if (routedState.phase !== 'failed' && captured.attachments.length !== stagedAttachmentsRef.current.length) {
         throw new Error('Routed composer staged attachment state changed before submit')
@@ -410,14 +426,15 @@ export function DesktopV3NewSessionPane({
           modelProfiles={modelProfiles}
           activeModelProfile={activeModelProfile}
           modelOptions={modelOptionsQuery.data ?? []}
-          selectedModelKey={actionModel ? modelOptionKey(actionModel.provider, actionModel.model, actionModel.contextMode) : ''}
-          selectedServiceTier={actionModel?.serviceTier ?? ''}
-          thinking={actionModel?.thinking ?? ''}
-          modelControlDetail={actionModel ? `${actionModel.provider}/${actionModel.model}` : 'Swarm action model'}
+          selectedModelKey={selectedActionModel ? modelOptionKey(selectedActionModel.provider, selectedActionModel.model, selectedActionModel.contextMode) : ''}
+          selectedServiceTier={selectedActionModel?.serviceTier ?? ''}
+          thinking={selectedActionModel?.thinking ?? ''}
+          modelControlDetail={selectedActionModel ? `${selectedActionModel.provider}/${selectedActionModel.model}` : 'Swarm action model'}
           modelStatusLabel="Ready"
           agentSettingsOpenSignal={agentSettingsOpenSignal}
           agentSettingsInitialAgent={agentSettingsInitialAgent}
           onConfirmAgentSettings={handleConfirmAgentSettings}
+          onApplyModelFavoriteChatOnly={(profile) => setChatOnlyModelProfile(profile)}
           agentModelControlBusy={agentModelSaving}
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}
           routedNewSession

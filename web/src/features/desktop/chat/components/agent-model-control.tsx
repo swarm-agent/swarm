@@ -42,6 +42,7 @@ interface AgentModelControlProps {
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
+  onApplyModelFavoriteChatOnly?: (profile: ModelProfileRecord) => void | Promise<void>
   popoverAnchorId?: string
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
@@ -236,6 +237,7 @@ export function AgentModelControl({
   onOpenAgentSettings,
   onConfirmAgentSettings,
   onApplyModelFavorite,
+  onApplyModelFavoriteChatOnly,
   popoverAnchorId = '',
   modelProfiles = [],
   activeModelProfile,
@@ -324,6 +326,7 @@ export function AgentModelControl({
   const [screen, setScreen] = useState<'favorites' | 'setup'>('favorites')
   const [saving, setSaving] = useState(false)
   const [switchingFavoriteId, setSwitchingFavoriteId] = useState('')
+  const [switchingChatFavoriteId, setSwitchingChatFavoriteId] = useState('')
   const [deletingFavoriteId, setDeletingFavoriteId] = useState('')
   const [deleteCandidateId, setDeleteCandidateId] = useState('')
   const [favoriteName, setFavoriteName] = useState('')
@@ -538,6 +541,22 @@ export function AgentModelControl({
       && profile.contextMode.trim().toLowerCase() === selectedModel.contextMode.trim().toLowerCase()
   }
 
+  async function applyFavoriteToChat(profile: ModelProfileRecord) {
+    if (saving || busy || !onApplyModelFavoriteChatOnly) return
+    setSaving(true)
+    setSwitchingChatFavoriteId(profile.profileId)
+    setError(null)
+    try {
+      await onApplyModelFavoriteChatOnly(profile)
+      setOpen(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+      setSwitchingChatFavoriteId('')
+    }
+  }
+
   async function applyFavorite(profile: ModelProfileRecord) {
     if (saving || busy) return
     const settings = agentModelSettingsQuery.data
@@ -706,7 +725,7 @@ export function AgentModelControl({
               <div className="min-w-0">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Model favorites</div>
                 <div className="mt-1 text-base font-semibold text-[var(--app-text)]">Choose a model</div>
-                <div className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Switch the current chat and the canonical Default Model.</div>
+                <div className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Choose whether to update the default or only this chat.</div>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="shrink-0 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
             </div>
@@ -718,14 +737,21 @@ export function AgentModelControl({
                     const confirmingDelete = deleteCandidateId === profile.profileId
                     return (
                       <div key={profile.profileId} className={`flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
-                        <button type="button" disabled={saving || busy} onClick={() => { void applyFavorite(profile) }} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2 text-left disabled:cursor-default disabled:opacity-70">
+                        <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2">
                           <Star size={17} fill={active ? 'currentColor' : 'none'} className={active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'} />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
                             <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider}/{displayModelName(profile.provider, profile.model, profile.contextMode)}</span>
                             <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.thinking || 'off'} · {serviceTierLabel(profile.provider, profile.model, modelOptions, profile.serviceTier)}</span>
                           </span>
-                          <span className="shrink-0 text-[11px] font-semibold text-[var(--app-text-subtle)]">{switchingFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use'}</span>
+                        </div>
+                        {onApplyModelFavoriteChatOnly ? (
+                          <button type="button" disabled={saving || busy} onClick={() => { void applyFavoriteToChat(profile) }} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">
+                            {switchingChatFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current chat' : 'This chat only'}
+                          </button>
+                        ) : null}
+                        <button type="button" disabled={saving || busy} onClick={() => { void applyFavorite(profile) }} className="shrink-0 rounded-lg border border-[var(--app-primary)] px-2 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">
+                          {switchingFavoriteId === profile.profileId ? 'Switching…' : 'Make default'}
                         </button>
                         <button type="button" disabled={saving || busy} aria-label={`Edit favorite ${profile.name}`} title={`Edit favorite ${profile.name}`} onClick={() => editFavorite(profile)} className="shrink-0 rounded-lg p-2 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">
                           <Pencil size={15} />

@@ -28,6 +28,7 @@ type HomeSessionIntent struct {
 	Agent              string
 	Mode               string
 	Preference         client.ModelPreference
+	PreferenceOverride bool
 	Profile            model.ActiveModelProfile
 	RouteID            string
 	SwarmID            string
@@ -105,6 +106,14 @@ func (p *HomePage) SetSessionIntent(intent HomeSessionIntent) {
 	p.sessionIntent = intent
 }
 
+func (p *HomePage) SetDraftChatPreference(preference client.ModelPreference) {
+	if p == nil {
+		return
+	}
+	p.sessionIntent.Preference = preference
+	p.sessionIntent.PreferenceOverride = strings.TrimSpace(preference.Provider) != "" && strings.TrimSpace(preference.Model) != ""
+}
+
 func (p *HomePage) SessionIntent() HomeSessionIntent {
 	if p == nil {
 		return HomeSessionIntent{}
@@ -127,12 +136,14 @@ func (p *HomePage) SessionIntentForMode(mode string) HomeSessionIntent {
 		intent.Agent = "swarm"
 	}
 	intent.Mode = mode
-	intent.Preference = client.ModelPreference{
-		Provider:    strings.TrimSpace(provider),
-		Model:       strings.TrimSpace(modelName),
-		Thinking:    strings.TrimSpace(thinking),
-		ServiceTier: strings.TrimSpace(serviceTier),
-		ContextMode: strings.TrimSpace(contextMode),
+	if !intent.PreferenceOverride {
+		intent.Preference = client.ModelPreference{
+			Provider:    strings.TrimSpace(provider),
+			Model:       strings.TrimSpace(modelName),
+			Thinking:    strings.TrimSpace(thinking),
+			ServiceTier: strings.TrimSpace(serviceTier),
+			ContextMode: strings.TrimSpace(contextMode),
+		}
 	}
 	intent.Profile = p.model.ActiveModelProfile
 	if workspace, ok := p.activeWorkspace(); ok {
