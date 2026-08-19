@@ -45,6 +45,9 @@ func (p *ChatPage) planExecutionView() (planExecutionView, bool) {
 		v.active = checkpoints[0]
 	}
 	v.status = strings.ReplaceAll(strings.ToLower(firstNonEmptyToolValue(quietPlanStatus(mapStringArg(v.active, "status")), quietPlanStatus(v.status), "active")), " ", "_")
+	if v.active != nil && (mapStringArg(v.active, "attempt_id") != "" || mapStringArg(v.active, "run_id") != "" || mapStringArg(jsonObject(doc, "execution_state"), "active_attempt_id") != "" || mapStringArg(jsonObject(doc, "execution_state"), "current_run_id") != "") && (v.status == "pending" || v.status == "queued" || v.status == "approved") {
+		v.status = "in_progress"
+	}
 	v.critical = v.status == "needs_review" || v.status == "blocked" || v.status == "failed" || v.status == "final_review"
 	policy := firstNonEmptyToolValue(mapStringArg(doc, "continuation_policy"), mapStringArg(doc, "execution_policy"))
 	if policy == "" {
@@ -76,12 +79,17 @@ func (p *ChatPage) drawPlanExecutionSidebar(s tcell.Screen, rect Rect) {
 	DrawOpenBox(s, rect, p.theme.BorderActive)
 	x, y, width := rect.X+1, rect.Y+1, rect.W-2
 	lines := []string{
-		clampEllipsis(firstNonEmptyToolValue(p.planExecutionPlan.Title, "Plan execution"), width),
+		"PLAN STARTED",
+		clampEllipsis(firstNonEmptyToolValue(p.planExecutionPlan.Title, "Plan"), width),
 		fmt.Sprintf("%s  ·  %d/%d complete", strings.ReplaceAll(v.status, "_", " "), v.completed, v.total),
-		"Policy: " + v.policy,
+		fmt.Sprintf("%d %s  ·  %s", v.total, pluralizeLabel(v.total, "checkpoint", "checkpoints"), v.policy),
 	}
-	activeTitle := firstNonEmptyToolValue(mapStringArg(v.active, "title"), mapStringArg(v.active, "id"), "none")
-	lines = append(lines, "", "Active: "+activeTitle)
+	activeTitle := firstNonEmptyToolValue(mapStringArg(v.active, "title"), "Untitled checkpoint")
+	activeNumber := 1
+	if order := mapAnyInt(v.active, "order"); order > 0 {
+		activeNumber = order
+	}
+	lines = append(lines, "", fmt.Sprintf("Checkpoint %d: %s", activeNumber, activeTitle))
 	for _, task := range mapAnyStringSlice(v.active, "tasks") {
 		lines = append(lines, "  • "+task)
 	}
@@ -103,10 +111,10 @@ func (p *ChatPage) drawPlanExecutionSidebar(s tcell.Screen, rect Rect) {
 			break
 		}
 		style := p.theme.Text
-		if i == 0 {
+		if i == 0 || i == 1 {
 			style = p.theme.Secondary.Bold(true)
 		}
-		if i == 1 && v.critical {
+		if i == 2 && v.critical {
 			style = p.theme.Warning
 		}
 		DrawText(s, x, y+i, width, style, clampEllipsis(line, width))

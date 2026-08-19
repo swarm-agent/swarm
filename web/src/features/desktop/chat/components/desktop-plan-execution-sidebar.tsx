@@ -53,14 +53,8 @@ function humanize(value: string): string {
     );
 }
 
-function displayCheckpointId(value: string, fallback: number): string {
-  const trimmed = value.trim();
-  if (!trimmed) return `CP-${fallback + 1}`;
-  const match = trimmed.match(/^cp[-_ ]?(\d+)$/i);
-  if (match) return `CP-${match[1]}`;
-  return trimmed.toUpperCase().startsWith("CP-")
-    ? trimmed.toUpperCase()
-    : trimmed;
+function displayCheckpointId(_value: string, fallback: number): string {
+  return `Checkpoint ${fallback + 1}`;
 }
 
 function displayCurrentCheckpointNumber(value: string, fallback: number): string {
@@ -138,6 +132,8 @@ function statusLabel(
   if (view.paused) return "Paused";
   if (view.blocked) return "Blocked";
   if (view.failed) return "Failed";
+  const checkpointStatus = checkpoint?.status.trim().toLowerCase() ?? "";
+  if (checkpoint && view.freshContext && ["pending", "queued", "approved"].includes(checkpointStatus)) return "In progress";
   return humanize(checkpoint?.status || view.status || "Ready");
 }
 
@@ -430,6 +426,8 @@ function ActiveCheckpointSection({
     view.reviewRequired ? "needs_review" : checkpoint?.status || view.status,
     Boolean(checkpoint),
   );
+  const planTitle = view.plan.title || view.plan.document?.title || "Plan";
+  const policyMode = view.policyMode === "automatic" ? "Automatic" : "Review each checkpoint";
 
   return (
     <section
@@ -442,6 +440,17 @@ function ActiveCheckpointSection({
       data-plan-section="checkpoint"
       data-plan-section-treatment={unified ? "unified-stack" : "inset-card"}
     >
+      <header className="mb-4 border-b border-[var(--app-border)]/60 pb-3" data-plan-started-header>
+        <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-primary)]">
+          Plan started
+        </div>
+        <h2 className="mt-1 line-clamp-2 break-words text-sm font-semibold leading-5 text-[var(--app-text)]" title={planTitle}>
+          {planTitle}
+        </h2>
+        <div className="mt-1 text-[10px] text-[var(--app-text-subtle)]">
+          {totalCount} {totalCount === 1 ? "checkpoint" : "checkpoints"} · {policyMode}
+        </div>
+      </header>
       <CurrentCheckpointRow
         activeTitle={activeTitle}
         checkpointId={checkpointId}

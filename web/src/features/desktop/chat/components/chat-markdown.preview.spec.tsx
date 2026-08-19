@@ -64,12 +64,47 @@ function testPlanManageUsesMinimalTransitionView(): void {
   const markup = renderToolMarkup(message!);
   assert(markup.includes("data-plan-tool-transition"), "expected dedicated plan transition treatment");
   assert(markup.includes("Checkpoint started"), "expected lifecycle action label");
-  assert(markup.includes("cp-2"), "expected checkpoint identity");
+  assert(markup.includes("Checkpoint 2"), "expected friendly checkpoint identity");
+  assert(!markup.includes("cp-2"), "raw checkpoint id must not render");
   assert(markup.includes("in progress"), "expected transition status");
   assert(!markup.includes("action: start checkpoint"), "raw preview rows should not render");
   assert(markup.includes("rounded-xl"), "plan transition should render as a minimal card");
   assert(markup.includes("border border-[var(--app-border)]"), "plan transition card should keep a quiet theme border");
   assert(!markup.includes("border-l-2"), "plan transition should not return to the left-rail treatment");
+}
+
+function testAcceptedPlanShowsStartedPlanMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "plan_manage",
+    callId: "call_plan_manage_accepted",
+    argumentsText: JSON.stringify({ action: "request_new_plan", title: "First Test Plan" }),
+    outputText: JSON.stringify({
+      tool: "plan_manage",
+      action: "request_new_plan",
+      status: "ok",
+      execution_summary: { active_checkpoint_id: "cp-1", next_checkpoint_status: "in_progress" },
+      plan: {
+        id: "plan-1",
+        title: "First Test Plan",
+        document: {
+          title: "First Test Plan",
+          active_checkpoint_id: "cp-1",
+          checkpoints: [{ id: "cp-1", order: 1, title: "Run First Test Checkpoint", status: "pending" }],
+        },
+      },
+    }),
+  });
+  assert(Boolean(message), "expected accepted plan_manage message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Plan started"), "accepted plan should show the started lifecycle");
+  assert(markup.includes("First Test Plan"), "accepted plan should show the plan title");
+  assert(markup.includes("Checkpoint 1"), "accepted plan should show a friendly checkpoint number");
+  assert(markup.includes("Run First Test Checkpoint"), "accepted plan should show checkpoint metadata");
+  assert(markup.includes("1 checkpoint"), "accepted plan should show checkpoint count metadata");
+  assert(markup.includes("in progress"), "started checkpoint should use the execution status instead of stale pending document state");
+  assert(!markup.includes("request new plan") && !markup.includes("request_new_plan"), "accepted plan must not show the request action");
+  assert(!markup.includes("cp-1") && !markup.includes("CP-1"), "accepted plan must not show raw checkpoint ids");
 }
 
 function testPlanManageFollowupUsesCanonicalCheckpointMetadata(): void {
@@ -105,7 +140,8 @@ function testPlanManageFollowupUsesCanonicalCheckpointMetadata(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Checkpoint added"), "expected follow-up transition label");
-  assert(markup.includes("followup-2"), "expected returned follow-up id");
+  assert(markup.includes("Checkpoint 2"), "expected returned checkpoint number");
+  assert(!markup.includes("followup-2"), "raw checkpoint id must not render");
   assert(markup.includes("Fresh follow-up checkpoint"), "expected canonical checkpoint title");
   assert(markup.includes("pending"), "expected canonical pending status");
   assert(!markup.includes("Prior checkpoint") && !markup.includes("Stale plan title"), "stale active checkpoint and plan metadata must not render");
@@ -151,7 +187,8 @@ function testPlanManageSubtaskUsesCanonicalUpdatedMetadata(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Task completed"), "expected subtask lifecycle label");
-  assert(markup.includes("cp-2") && markup.includes("Canonical checkpoint"), "expected affected checkpoint metadata");
+  assert(markup.includes("Checkpoint 2") && markup.includes("Canonical checkpoint"), "expected affected checkpoint metadata");
+  assert(!markup.includes("cp-2"), "raw checkpoint id must not render");
   assert(markup.includes("Canonical updated task") && markup.includes("completed"), "expected canonical updated subtask title and status");
   assert(!markup.includes("Unrelated task") && !markup.includes("Stale active checkpoint"), "unaffected stale metadata must not render");
 }
@@ -886,6 +923,7 @@ function testManageArtifactRendersTypedArtifactCard(): void {
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesMinimalTransitionView();
+  testAcceptedPlanShowsStartedPlanMetadata();
   testPlanManageFollowupUsesCanonicalCheckpointMetadata();
   testPlanManageSubtaskUsesCanonicalUpdatedMetadata();
   testTaskSwarmLayoutProgressivelyCompacts();

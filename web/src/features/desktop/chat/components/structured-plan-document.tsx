@@ -154,7 +154,7 @@ export function structuredPlanReviewProjection(document: StructuredPlanDocument)
     checkpoints: document.checkpoints.map((checkpoint) => ({
       id: checkpoint.id,
       order: checkpoint.order,
-      title: checkpoint.title || checkpoint.objective || checkpoint.id || 'Untitled checkpoint',
+      title: checkpoint.title || checkpoint.objective || `Checkpoint ${checkpoint.order}`,
       objective: checkpoint.objective,
       tasks: checkpoint.tasks,
       acceptanceCriteria: checkpoint.acceptanceCriteria,
@@ -607,7 +607,7 @@ function StatusBadge({ status, active }: { status: string; active: boolean }) {
             : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)]',
       )}
     >
-      {active ? 'active' : status}
+      {active ? 'In progress' : status}
     </span>
   )
 }
@@ -674,14 +674,9 @@ function CheckpointItem({ checkpoint, active }: { checkpoint: StructuredPlanChec
               #{checkpoint.order}
             </span>
             <StatusBadge status={checkpoint.status} active={active} />
-            {checkpoint.id ? (
-              <code className="rounded bg-[var(--app-surface-subtle)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">
-                {checkpoint.id}
-              </code>
-            ) : null}
           </div>
           <h4 className={cn('mt-2 text-base font-semibold leading-snug', active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]')}>
-            {checkpoint.title || checkpoint.id || 'Untitled checkpoint'}
+            {checkpoint.title || `Checkpoint ${checkpoint.order}`}
           </h4>
           {checkpoint.objective ? (
             <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--app-text-muted)]">{checkpoint.objective}</p>
@@ -785,6 +780,8 @@ export function StructuredPlanDocumentView({
   }
 
   const activeID = document.activeCheckpointId.trim()
+  const activeCheckpoint = document.checkpoints.find((checkpoint) => checkpoint.id === activeID)
+  const activeCheckpointNumber = activeCheckpoint ? activeCheckpoint.order : 0
 
   if (review) {
     return <StructuredPlanReviewView document={document} className={className} />
@@ -826,9 +823,9 @@ export function StructuredPlanDocumentView({
                 {document.status}
               </span>
             ) : null}
-            {activeID ? (
+            {activeCheckpointNumber > 0 ? (
               <span className="rounded-full border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2.5 py-1 text-xs font-medium text-[var(--app-primary)]">
-                Active {activeID}
+                Checkpoint {activeCheckpointNumber} active
               </span>
             ) : null}
           </div>

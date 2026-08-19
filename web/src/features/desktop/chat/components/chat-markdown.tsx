@@ -1981,8 +1981,10 @@ function parseToolJSON(value: string): Record<string, unknown> | null {
   }
 }
 
-function planTransitionLabel(action: string): string {
+function planTransitionLabel(action: string, startedPlan = false): string {
   switch (action.trim().toLowerCase().replace(/-/g, "_")) {
+    case "request_new_plan":
+      return startedPlan ? "Plan started" : "Plan requested";
     case "start_session_checkpoint":
     case "start_checkpoint":
       return "Checkpoint started";
@@ -2054,6 +2056,25 @@ function findPlanCheckpoint(document: Record<string, unknown> | null, checkpoint
   return toolJsonRecords(document, "checkpoints").find((checkpoint) => toolJsonString(checkpoint, "id") === checkpointId) ?? null;
 }
 
+function planCheckpointDisplayLabel(
+  document: Record<string, unknown> | null,
+  checkpoint: Record<string, unknown> | null,
+  checkpointId: string,
+): string {
+  const checkpoints = toolJsonRecords(document, "checkpoints");
+  const index = checkpoint
+    ? checkpoints.findIndex((candidate) => candidate === checkpoint || toolJsonString(candidate, "id") === checkpointId)
+    : checkpoints.findIndex((candidate) => toolJsonString(candidate, "id") === checkpointId);
+  const order = checkpoint && typeof checkpoint.order === "number" && Number.isFinite(checkpoint.order)
+    ? Math.max(1, Math.trunc(checkpoint.order))
+    : index >= 0
+      ? index + 1
+      : 0;
+  if (order > 0) return `Checkpoint ${order}`;
+  const match = checkpointId.trim().match(/^cp[-_ ]?(\d+)$/i);
+  return match ? `Checkpoint ${match[1]}` : checkpointId ? "Checkpoint" : "";
+}
+
 function planTransitionSubtasks(
   action: string,
   payload: Record<string, unknown> | null,
@@ -2077,17 +2098,22 @@ function planTransitionSubtasks(
   return ids.size > 0 ? subtasks.filter((subtask) => ids.has(toolJsonString(subtask, "id"))) : [];
 }
 
-function planTransitionStatus(payload: Record<string, unknown> | null, checkpoint: Record<string, unknown> | null): string {
+function planTransitionStatus(
+  payload: Record<string, unknown> | null,
+  checkpoint: Record<string, unknown> | null,
+  preferExecutionStatus = false,
+): string {
   if (!payload) return "";
+  const summary = toolJsonRecord(payload.execution_summary);
+  if (summary?.review_required === true) return "Waiting review";
+  if (summary?.blocked === true) return "Blocked";
+  if (summary?.failed === true) return "Failed";
+  if (summary?.plan_complete === true) return "Complete";
+  const executionStatus = toolJsonString(summary, "next_checkpoint_status") || toolJsonString(summary, "next_action");
+  if (preferExecutionStatus && executionStatus) return executionStatus;
   const checkpointStatus = toolJsonString(checkpoint, "status");
   if (checkpointStatus) return checkpointStatus;
-  const summary = toolJsonRecord(payload.execution_summary);
-  if (!summary) return toolJsonString(payload, "status");
-  if (summary.review_required === true) return "Waiting review";
-  if (summary.blocked === true) return "Blocked";
-  if (summary.failed === true) return "Failed";
-  if (summary.plan_complete === true) return "Complete";
-  return toolJsonString(summary, "next_checkpoint_status") || toolJsonString(summary, "next_action") || toolJsonString(payload, "status");
+  return executionStatus || toolJsonString(payload, "status");
 }
 
 function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
@@ -2099,6 +2125,9 @@ function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMess
     ? payload.execution_summary as Record<string, unknown>
     : null;
   const checkpointId = toolJsonString(summary, "active_checkpoint_id") || toolJsonString(summary, "next_checkpoint_id") || toolJsonString(payload, "checkpoint_id");
+  const document = toolJsonRecord(toolJsonRecord(payload?.plan)?.document) || toolJsonRecord(args?.document);
+  const checkpoint = findPlanCheckpoint(document, checkpointId);
+  const checkpointLabel = planCheckpointDisplayLabel(document, checkpoint, checkpointId);
   const nextStatus = toolJsonString(summary, "next_checkpoint_status").replace(/[-_]+/g, " ");
   const transitioned = payload?.mode_changed === true || toolJsonString(payload, "status").toLowerCase() === "approved";
   const isRunning = toolMessage.state === "running" && !transitioned;
@@ -2124,7 +2153,7 @@ function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMess
         </div>
         {!isRunning && (checkpointId || nextStatus) ? (
           <div className="mt-2 border-t border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] pt-2 text-[10px] text-[var(--app-text-subtle)]">
-            Execution continues{checkpointId ? <> with <span className="font-mono text-[var(--app-text-muted)]">{checkpointId}</span></> : null}{nextStatus ? ` · ${nextStatus}` : ""}
+            Execution continues{checkpointLabel ? <> with <span className="font-medium text-[var(--app-text-muted)]">{checkpointLabel}</span></> : null}{nextStatus ? ` · ${nextStatus}` : ""}
           </div>
         ) : null}
       </div>
@@ -2142,10 +2171,19 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
   const checkpointId = planTransitionCheckpointId(action, payload, args, summary, document);
   const checkpoint = findPlanCheckpoint(document, checkpointId);
   const affectedSubtasks = planTransitionSubtasks(action, payload, args, checkpoint);
-  const title = toolJsonString(checkpoint, "title") || toolJsonString(plan, "title") || toolJsonString(payload, "title");
+  const planTitle = toolJsonString(plan, "title") || toolJsonString(document, "title") || toolJsonString(payload, "title") || toolJsonString(args, "title");
+  const checkpointTitle = toolJsonString(checkpoint, "title");
+  const checkpointLabel = planCheckpointDisplayLabel(document, checkpoint, checkpointId);
+  const checkpointCount = toolJsonRecords(document, "checkpoints").length;
+  const startedPlan = action.trim().toLowerCase().replace(/-/g, "_") === "request_new_plan" && Boolean(
+    toolJsonString(summary, "active_checkpoint_id") ||
+    toolJsonString(document, "active_checkpoint_id") ||
+    plan?.active === true ||
+    ["approved", "in_progress", "running"].includes(toolJsonString(plan, "status").toLowerCase()),
+  );
   const status = affectedSubtasks.length === 1
-    ? toolJsonString(affectedSubtasks[0], "status") || planTransitionStatus(payload, checkpoint)
-    : planTransitionStatus(payload, checkpoint);
+    ? toolJsonString(affectedSubtasks[0], "status") || planTransitionStatus(payload, checkpoint, startedPlan)
+    : planTransitionStatus(payload, checkpoint, startedPlan);
   const normalizedStatus = status.trim().toLowerCase().replace(/[-_]+/g, " ");
   const tone = toolMessage.state === "error" || normalizedStatus === "failed"
     ? "danger"
@@ -2177,12 +2215,15 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
             <CircleDot size={13} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-semibold leading-5 text-[var(--app-text)]">{planTransitionLabel(action)}</div>
-            {(checkpointId || title) ? (
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-                {checkpointId ? <span className="font-mono text-[var(--app-text-muted)]">{checkpointId}</span> : null}
-                {checkpointId && title ? <span className="text-[var(--app-text-subtle)]">·</span> : null}
-                {title ? <span className="min-w-0 truncate">{title}</span> : null}
+            <div className="text-[13px] font-semibold leading-5 text-[var(--app-text)]">{planTransitionLabel(action, startedPlan)}</div>
+            {planTitle ? <div className="truncate text-[11px] font-medium leading-4 text-[var(--app-text-muted)]" title={planTitle}>{planTitle}</div> : null}
+            {(checkpointLabel || checkpointTitle || checkpointCount > 0) ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                {checkpointLabel ? <span className="font-medium">{checkpointLabel}</span> : null}
+                {checkpointLabel && checkpointTitle ? <span>·</span> : null}
+                {checkpointTitle ? <span className="min-w-0 truncate">{checkpointTitle}</span> : null}
+                {(checkpointLabel || checkpointTitle) && checkpointCount > 0 ? <span>·</span> : null}
+                {checkpointCount > 0 ? <span>{checkpointCount} {checkpointCount === 1 ? "checkpoint" : "checkpoints"}</span> : null}
               </div>
             ) : null}
             {affectedSubtasks.map((subtask) => {

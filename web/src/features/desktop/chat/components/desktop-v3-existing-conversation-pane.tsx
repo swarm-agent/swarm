@@ -3665,7 +3665,7 @@ function DesktopV3CheckpointReviewCardView({
         {(card.plan || checkpointId) ? (
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_42%,transparent)] px-4 py-2 text-[10px] text-[var(--app-text-subtle)]">
             {card.plan ? <span className="min-w-0 truncate">Plan: {card.plan}</span> : null}
-            {checkpointId ? <code className="ml-auto shrink-0 font-mono">{checkpointId}</code> : null}
+            {checkpointId ? <span className="ml-auto shrink-0">Checkpoint</span> : null}
           </div>
         ) : null}
       </section>

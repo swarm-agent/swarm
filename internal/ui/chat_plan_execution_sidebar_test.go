@@ -118,7 +118,7 @@ func TestPlanExecutionSidebarRendersCriticalState(t *testing.T) {
 		}
 	}
 	text := b.String()
-	for _, want := range []string{"Launch plan", "needs review", "Build sidebar", "accept"} {
+	for _, want := range []string{"PLAN STARTED", "Launch plan", "needs review", "2 checkpoints", "Checkpoint 1: Build sidebar", "accept"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}

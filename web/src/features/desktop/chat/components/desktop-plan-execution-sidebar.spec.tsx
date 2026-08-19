@@ -290,6 +290,19 @@ test("plan sidebar does not render a Settings Actions shortcut", () => {
   assert.doesNotMatch(thin, /Open Settings → Actions/);
 });
 
+test("started checkpoint overrides stale pending status", () => {
+  const base = view();
+  base.activeCheckpoint = { ...base.activeCheckpoint!, status: "pending" };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} displayMode="full" />,
+  );
+
+  assert.match(markup, />In progress</);
+  assert.doesNotMatch(markup, />Pending</);
+});
+
 test("plan sidebar renders one execution stack followed by a flexing Git card", () => {
   const html = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar
@@ -619,6 +632,11 @@ test("accepted plan sidebar starts with the current checkpoint without an execut
   const currentCheckpointIndex = markup.indexOf("data-plan-current-checkpoint-layout");
   const scrollContentIndex = markup.indexOf("data-plan-top-stack-content");
 
+  assert.match(markup, /data-plan-started-header/);
+  assert.match(markup, /Plan started/);
+  assert.match(markup, />Plan<\/h2>/);
+  assert.match(markup, /1 checkpoint/);
+  assert.match(markup, /Automatic/);
   assert.doesNotMatch(markup, />Execution</);
   assert.doesNotMatch(markup, /title="Plan execution"/);
   assert.ok(currentCheckpointIndex > scrollContentIndex, "expected current checkpoint first in the sidebar stack");
@@ -946,7 +964,7 @@ test("plan modal removes recovery and shows the full active checkpoint under the
   const markup = renderPlanModal({ plan: base, revisions: [planRevision()] });
 
   const titleIndex = markup.indexOf(">Plan</h2>");
-  const activeIndex = markup.indexOf("CP 1 of 1");
+  const activeIndex = markup.indexOf("Checkpoint 1 of 1");
   const activeTitleIndex = markup.indexOf(
     "Build UI with a very long active checkpoint title that should wrap instead of truncating underneath the plan title",
   );
