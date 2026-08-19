@@ -13,6 +13,7 @@ assert.match(routerSource, /path: '\/agents'[\s\S]*component: AgentSetupRedirect
 assert.match(layoutSource, /DesktopV3ExistingConversationPane[\s\S]*agentSettingsOpenSignal=\{agentSettingsOpenSignal\}/, 'existing Desktop conversations must open Agent Setup')
 assert.match(layoutSource, /DesktopV3NewSessionPane[\s\S]*agentSettingsOpenSignal=\{agentSettingsOpenSignal\}/, 'pending Desktop router creators must open Agent Setup')
 assert.match(newSessionSource, /agentSettingsOpenSignal=\{agentSettingsOpenSignal\}[\s\S]*agentSettingsInitialAgent=\{agentSettingsInitialAgent\}/, 'new-session composer must forward Agent Setup route state')
+assert.match(controlSource, /if \(setupOpenSignal > 0\) \{\s*setScreen\('setup'\)\s*setOpen\(true\)/, 'Agent Setup route signals must skip model favorites')
 assert.doesNotMatch(controlSource, /provider \|\| 'Unassigned'/, 'Agent Setup cards must not show provider badges')
 assert.match(controlSource, /agentModelSettingsQuery\.data\?\.swarm\.action[\s\S]*const model = assignment\?\.model\.trim\(\)[\s\S]*model \|\| 'Model not configured'/, 'Agent Setup cards must show canonical model details')
 assert.match(controlSource, /const enabledDetails = \[thinking !== 'off' \? thinking : '', serviceTier\]\.filter\(Boolean\)[\s\S]*enabledDetails\.join\(' · '\)/, 'Agent Setup cards must show enabled thinking and priority values as an unlabeled compact line')

@@ -10,3 +10,7 @@ test('agent setup orders core system agents before separated utilities', () => {
   assert.match(source, /label: 'Core system agents', items: CORE_SYSTEM_AGENT_NAMES\.map\(systemItem\)/)
   assert.match(source, /label: 'Utilities', items: UTILITY_SYSTEM_AGENT_NAMES\.map\(systemItem\)/)
 })
+
+test('agent setup route signal skips model favorites', () => {
+  assert.match(source, /if \(setupOpenSignal > 0\) \{\s*setScreen\('setup'\)\s*setOpen\(true\)/)
+})

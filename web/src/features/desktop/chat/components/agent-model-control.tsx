@@ -38,6 +38,7 @@ interface AgentModelControlProps {
   modelLockNotice?: string
   triggerDetail?: string
   openSignal?: number
+  setupOpenSignal?: number
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
@@ -231,6 +232,7 @@ export function AgentModelControl({
   modelLockNotice = '',
   triggerDetail = '',
   openSignal = 0,
+  setupOpenSignal = 0,
   onOpenAgentSettings,
   onConfirmAgentSettings,
   onApplyModelFavorite,
@@ -383,6 +385,13 @@ export function AgentModelControl({
       setOpen(true)
     }
   }, [createModelProfileSignal, openSignal])
+
+  useEffect(() => {
+    if (setupOpenSignal > 0) {
+      setScreen('setup')
+      setOpen(true)
+    }
+  }, [setupOpenSignal])
 
   const findVisibleFavoritesAnchor = useCallback(() => {
     if (!popoverAnchorId || typeof document === 'undefined') return null

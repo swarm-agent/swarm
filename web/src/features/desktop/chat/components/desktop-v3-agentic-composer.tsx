@@ -340,6 +340,7 @@ export function DesktopV3AgenticComposer({
   const [dismissedComposerError, setDismissedComposerError] = useState<string | null>(null)
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
+  const [modelFavoritesOpenSignal, setModelFavoritesOpenSignal] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
   const modelFavoritesAnchorId = useId()
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
@@ -388,6 +389,9 @@ export function DesktopV3AgenticComposer({
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
   const selectedThinking = thinking.trim() || 'off'
   void _onAgentSelect
+  const openModelFavorites = useCallback(() => {
+    setModelFavoritesOpenSignal((current) => current + 1)
+  }, [])
   const openAgentSetup = useCallback(() => {
     setAgentSetupOpenSignal((current) => current + 1)
   }, [])
@@ -923,12 +927,17 @@ export function DesktopV3AgenticComposer({
       return
     }
     void onSlashCommand?.(command, draft)
+    if (command.action.kind === 'open-settings' && command.action.tab === 'agents') {
+      openAgentSetup()
+      onDraftChange('')
+      return
+    }
     if (command.action.kind === 'toggle-tips') {
       onDraftChange('')
       return
     }
     if (command.action.kind === 'open-model-picker') {
-      if (!routedNewSession) openAgentSetup()
+      if (!routedNewSession) openModelFavorites()
       onDraftChange('')
       return
     }
@@ -938,7 +947,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, handleSubmitClick, handleWorktreeOnCommand, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
+  }, [currentAgent, draft, handleSubmitClick, handleWorktreeOnCommand, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openModelFavorites, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (routedNewSession && event.key === 'Tab' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
@@ -1548,7 +1557,8 @@ export function DesktopV3AgenticComposer({
         modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}
-        openSignal={agentSettingsOpenSignal + agentSetupOpenSignal}
+        openSignal={modelFavoritesOpenSignal}
+        setupOpenSignal={agentSettingsOpenSignal + agentSetupOpenSignal}
         initialAgentName={agentSettingsInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
