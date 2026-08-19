@@ -46,6 +46,28 @@ func TestParseFireworksEventStreamRejectsMissingDone(t *testing.T) {
 	}
 }
 
+func TestParseFireworksEventStreamAllowsHighlyFragmentedResponse(t *testing.T) {
+	const fragments = 16_385
+	var stream strings.Builder
+	for i := 0; i < fragments; i++ {
+		stream.WriteString("data: {}\n\n")
+	}
+	stream.WriteString("data: [DONE]\n\n")
+
+	state := newFireworksStreamState()
+	seen := 0
+	err := parseFireworksEventStream(strings.NewReader(stream.String()), func(string) error {
+		seen++
+		return state.apply(chatCompletionChunk{})
+	})
+	if err != nil {
+		t.Fatalf("parse highly fragmented response: %v", err)
+	}
+	if seen != fragments {
+		t.Fatalf("fragments seen = %d, want %d", seen, fragments)
+	}
+}
+
 func TestFireworksAPIErrorMessageRedactsAndBoundsDetail(t *testing.T) {
 	raw := []byte(`{"error":{"message":"authorization: Bearer secret-token ` + strings.Repeat("x", maxProviderErrorBytes) + `"}}`)
 	got := apiErrorMessage(raw)

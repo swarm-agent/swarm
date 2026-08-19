@@ -30,7 +30,6 @@ const (
 	googleAPIKeyHeader         = "x-goog-api-key"
 	googleSkipSignature        = "skip_thought_signature_validator"
 	maxResponseBytes           = 8 << 20
-	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20
 	maxStreamToolArgumentBytes = 1 << 20
 	maxInlineRequestBytes      = 20 << 20
@@ -1005,7 +1004,6 @@ type googleStreamAccumulator struct {
 	toolState          *googleToolCallConstructionState
 	serviceTier        string
 	finished           bool
-	eventCount         int
 	outputBytes        int
 	toolArgumentBytes  int
 }
@@ -1043,10 +1041,6 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	payload = strings.TrimSpace(payload)
 	if payload == "" {
 		return nil
-	}
-	a.eventCount++
-	if a.eventCount > maxStreamEvents {
-		return errors.New("google stream event limit exceeded")
 	}
 	var decoded googleResponse
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -1204,7 +1198,6 @@ func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) erro
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	dataLines := make([]string, 0, 8)
 	totalBytes := 0
-	eventCount := 0
 	flush := func() error {
 		if len(dataLines) == 0 {
 			return nil
@@ -1213,10 +1206,6 @@ func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) erro
 		dataLines = dataLines[:0]
 		if strings.TrimSpace(payload) == "[DONE]" {
 			return nil
-		}
-		eventCount++
-		if eventCount > maxStreamEvents {
-			return errors.New("google stream event limit exceeded")
 		}
 		return onPayload(payload)
 	}

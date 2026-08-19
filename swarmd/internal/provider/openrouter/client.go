@@ -20,7 +20,6 @@ const (
 	chatURL                    = "https://openrouter.ai/api/v1/chat/completions"
 	keyURL                     = "https://openrouter.ai/api/v1/key"
 	maxResponseBytes           = 8 << 20
-	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20
 	maxStreamToolArgumentBytes = 1 << 20
 	maxProviderErrorBytes      = 4 << 10
@@ -314,7 +313,6 @@ type openRouterStreamState struct {
 	merged            chatCompletionResponse
 	toolCalls         map[openRouterToolCallKey]*chatCompletionToolCall
 	toolCallOrder     []openRouterToolCallKey
-	eventCount        int
 	outputBytes       int
 	toolArgumentBytes int
 }
@@ -326,10 +324,6 @@ func newOpenRouterStreamState() *openRouterStreamState {
 func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 	if s == nil {
 		return errors.New("openrouter stream state is not configured")
-	}
-	s.eventCount++
-	if s.eventCount > maxStreamEvents {
-		return errors.New("openrouter stream event limit exceeded")
 	}
 	for _, choice := range chunk.Choices {
 		if choice.Delta == nil {
@@ -439,7 +433,6 @@ func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) 
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	dataLines := make([]string, 0, 8)
 	totalBytes := 0
-	eventCount := 0
 	done := false
 	flush := func() error {
 		if len(dataLines) == 0 {
@@ -450,10 +443,6 @@ func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) 
 		if strings.TrimSpace(payload) == "[DONE]" {
 			done = true
 			return nil
-		}
-		eventCount++
-		if eventCount > maxStreamEvents {
-			return errors.New("openrouter stream event limit exceeded")
 		}
 		return onPayload(payload)
 	}

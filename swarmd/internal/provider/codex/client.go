@@ -48,7 +48,6 @@ const (
 	clientID                                   = "app_EMoamEEZ73f0CkXaXp7hrann"
 	maxCodexResponseBodyBytes            int64 = 32 << 20
 	maxCodexStreamBytes                        = 8 << 20
-	maxCodexStreamEvents                       = 16_384
 	maxCodexRawEvents                          = 4_096
 	transportRetryAttempts                     = 2
 	transportRetryBaseDelay                    = 300 * time.Millisecond
@@ -2235,7 +2234,6 @@ type streamDecodeState struct {
 	rawEvents                []map[string]any
 	sawPayload               bool
 	streamBytes              int
-	streamEvents             int
 	decodeErr                error
 }
 
@@ -2248,12 +2246,7 @@ func processResponseStreamEvent(eventName string, payload string, state *streamD
 		return
 	}
 	state.sawPayload = true
-	state.streamEvents++
 	state.streamBytes += len(payload)
-	if state.streamEvents > maxCodexStreamEvents {
-		state.decodeErr = errors.New("codex stream event limit exceeded")
-		return
-	}
 	if state.streamBytes > maxCodexStreamBytes {
 		state.decodeErr = errors.New("codex stream byte limit exceeded")
 		return
@@ -3643,7 +3636,6 @@ func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[st
 	dataLines := make([]string, 0, 8)
 
 	totalBytes := 0
-	eventCount := 0
 	flushEvent := func() {
 		if len(dataLines) == 0 {
 			eventName = ""
@@ -3651,12 +3643,6 @@ func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[st
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
-		eventCount++
-		if eventCount > maxCodexStreamEvents {
-			state.decodeErr = errors.New("codex stream event limit exceeded")
-			eventName = ""
-			return
-		}
 		processResponseStreamEvent(eventName, payload, state, onEvent)
 		eventName = ""
 	}

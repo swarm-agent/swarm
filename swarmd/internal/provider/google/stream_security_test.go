@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+func TestParseGoogleEventStreamAllowsHighlyFragmentedResponse(t *testing.T) {
+	const fragments = 16_385
+	var stream strings.Builder
+	for i := 0; i < fragments; i++ {
+		stream.WriteString("data: {}\n\n")
+	}
+
+	accumulator := newGoogleStreamAccumulator("gemini-test")
+	seen := 0
+	err := parseGoogleEventStream(strings.NewReader(stream.String()), func(payload string) error {
+		seen++
+		return accumulator.applyPayload(payload, nil)
+	})
+	if err != nil {
+		t.Fatalf("parse highly fragmented response: %v", err)
+	}
+	if seen != fragments {
+		t.Fatalf("fragments seen = %d, want %d", seen, fragments)
+	}
+}
+
 func TestGoogleStreamAccumulatorRequiresFinishReason(t *testing.T) {
 	accumulator := newGoogleStreamAccumulator("gemini-test")
 	if err := accumulator.applyPayload(`{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`, nil); err != nil {

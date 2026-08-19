@@ -21,7 +21,6 @@ const (
 	modelsURL                  = "https://api.fireworks.ai/inference/v1/models"
 	chatURL                    = "https://api.fireworks.ai/inference/v1/chat/completions"
 	maxResponseBytes           = 8 << 20
-	maxStreamEvents            = 16_384
 	maxStreamOutputBytes       = 4 << 20
 	maxStreamToolArgumentBytes = 1 << 20
 	maxProviderErrorBytes      = 4 << 10
@@ -313,7 +312,6 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 type fireworksStreamState struct {
 	merged            chatCompletionResponse
 	toolCalls         map[int]*chatCompletionToolCall
-	eventCount        int
 	outputBytes       int
 	toolArgumentBytes int
 }
@@ -325,10 +323,6 @@ func newFireworksStreamState() *fireworksStreamState {
 func (s *fireworksStreamState) apply(chunk chatCompletionChunk) error {
 	if s == nil {
 		return errors.New("fireworks stream state is not configured")
-	}
-	s.eventCount++
-	if s.eventCount > maxStreamEvents {
-		return errors.New("fireworks stream event limit exceeded")
 	}
 	for _, choice := range chunk.Choices {
 		if choice.Delta == nil {
@@ -433,7 +427,6 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
 	dataLines := make([]string, 0, 8)
 	totalBytes := 0
-	eventCount := 0
 	done := false
 	flush := func() error {
 		if len(dataLines) == 0 {
@@ -444,10 +437,6 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 		if strings.TrimSpace(payload) == "[DONE]" {
 			done = true
 			return nil
-		}
-		eventCount++
-		if eventCount > maxStreamEvents {
-			return errors.New("fireworks stream event limit exceeded")
 		}
 		return onPayload(payload)
 	}
