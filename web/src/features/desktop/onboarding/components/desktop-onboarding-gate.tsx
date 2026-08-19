@@ -33,7 +33,7 @@ type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-brow
 type OnboardingView = OnboardingStep | 'setup'
 
 const SWARM_MARK_SRC = '/favicon.svg'
-const STEP_TRANSITION_MS = 180
+const STEP_TRANSITION_MS = 220
 const ONBOARDING_READY_HOLD_MS = 1_000
 
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
@@ -482,6 +482,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     clearStepTransition()
     setPanelVisible(false)
     transitionTimerRef.current = window.setTimeout(() => {
+      setWorkspaceExplorerOpen(false)
       setView('setup')
       transitionTimerRef.current = null
       revealTransitionPanel()
@@ -584,7 +585,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
-    setWorkspaceExplorerOpen(false)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
@@ -606,7 +606,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
-    setWorkspaceExplorerOpen(false)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
@@ -1268,7 +1267,15 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       </main>
 
       {workspaceExplorerOpen && view === 'workspace' ? (
-        <div className="fixed inset-0 z-[10000] grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Add workspace from Explorer">
+        <div
+          className={[
+            'fixed inset-0 z-[10000] grid place-items-center p-3 transition-opacity duration-200 ease-out sm:p-6 motion-reduce:transition-none',
+            panelVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
+          ].join(' ')}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Add workspace from Explorer"
+        >
           <button type="button" className="absolute inset-0 bg-[var(--app-backdrop)]" onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
           <div className="relative z-10 flex h-[min(44rem,calc(100dvh-24px))] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
             <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">

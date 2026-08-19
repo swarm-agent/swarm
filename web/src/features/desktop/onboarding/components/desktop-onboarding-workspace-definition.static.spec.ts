@@ -15,6 +15,19 @@ test('onboarding saves, refreshes, selects, finalizes, and navigates without def
   assert.doesNotMatch(source, /waitForWorkspaceDefinition/)
 })
 
+test('explorer workspace additions fade directly into the stable setup view', () => {
+  assert.match(source, /const STEP_TRANSITION_MS = 220/)
+  assert.match(source, /transitionToSetup[\s\S]*?setPanelVisible\(false\)[\s\S]*?setWorkspaceExplorerOpen\(false\)[\s\S]*?setView\('setup'\)/)
+  assert.match(source, /workspaceExplorerOpen && view === 'workspace'[\s\S]*?panelVisible \? 'opacity-100' : 'pointer-events-none opacity-0'/)
+
+  const addFolderHandler = source.slice(
+    source.indexOf('const handleSaveAndOpenFolder'),
+    source.indexOf('const handleUseBrowsedFolder'),
+  )
+  assert.doesNotMatch(addFolderHandler, /setWorkspaceExplorerOpen\(false\)/)
+  assert.match(addFolderHandler, /setPendingAction\('workspace'\)[\s\S]*?transitionToSetup\(\)[\s\S]*?await saveWorkspace/)
+})
+
 test('onboarding does not gate saved workspaces on definition state or show personalization copy', () => {
   assert.match(source, /const resolution = await openWorkspace\(path\)/)
   assert.doesNotMatch(source, /definitionStatus === 'pending'/)
