@@ -245,8 +245,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [panelVisible, setPanelVisible] = useState(true)
+  const [closing, setClosing] = useState(false)
   const transitionTimerRef = useRef<number | null>(null)
   const transitionFrameRef = useRef<number | null>(null)
+  const targetViewRef = useRef<OnboardingView>(view)
 
   const [username, setUsername] = useState(initialStatus.identity.username)
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
@@ -454,11 +456,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const transitionToStep = (nextStep: OnboardingStep) => {
-    clearStepTransition()
-    if (nextStep === step && view === nextStep) {
+    if (targetViewRef.current === nextStep && view === nextStep) {
       setPanelVisible(true)
       return
     }
+    targetViewRef.current = nextStep
+    clearStepTransition()
     setPanelVisible(false)
     transitionTimerRef.current = window.setTimeout(() => {
       setStep(nextStep)
@@ -469,11 +472,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const transitionToSetup = () => {
-    clearStepTransition()
-    if (view === 'setup') {
-      setPanelVisible(true)
+    if (targetViewRef.current === 'setup') {
+      if (view === 'setup') {
+        setPanelVisible(true)
+      }
       return
     }
+    targetViewRef.current = 'setup'
+    clearStepTransition()
     setPanelVisible(false)
     transitionTimerRef.current = window.setTimeout(() => {
       setView('setup')
@@ -531,7 +537,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       patchDesktopOnboarding({ desktopOnboardingComplete: true }).then(() => reloadStatus()),
     ])
     setStatus(next)
-    onComplete(next)
     return next
   }
 
@@ -558,6 +563,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
     }
     await navigateToWorkspace(resolution, fallbackPath)
+    setClosing(true)
+    await new Promise<void>((resolve) => {
+      const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+      setTimeoutFn(resolve, 200)
+    })
+    onComplete(next)
   }
 
   const handleProviderContinue = () => {
@@ -803,14 +814,17 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black px-6 py-8 text-[var(--app-text)]">
+    <div className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black px-6 py-8 text-[var(--app-text)] transition-opacity duration-200 ease-out ${closing ? 'pointer-events-none opacity-0' : 'opacity-100'}`}>
       <main className="relative w-full max-w-5xl overflow-hidden rounded-[2rem] border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_88%,black)] shadow-[0_24px_90px_rgb(0_0_0/0.55)] outline outline-1 outline-offset-2 outline-[color-mix(in_oklab,var(--app-border)_34%,transparent)] transition-[box-shadow,transform] duration-300 ease-out">
-        <div className="grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8">
-          <OnboardingBrandHeader restart={restart} step={step} visible={panelVisible} />
+        <div className={view === 'setup' ? 'grid min-h-[42rem] place-items-center p-8' : 'grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8'}>
+          {view !== 'setup' ? (
+            <>
+              <OnboardingBrandHeader restart={restart} step={step} visible={panelVisible} />
+              <FeedbackSlot error={error} notice={notice} progress={progress} />
+            </>
+          ) : null}
 
-          <FeedbackSlot error={error} notice={view === 'setup' ? null : notice} progress={progress} />
-
-          <div className="relative min-h-[25rem] overflow-hidden">
+          <div className="relative min-h-[25rem] w-full overflow-hidden">
             <div
               key={view}
               className={[
