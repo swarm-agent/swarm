@@ -659,7 +659,7 @@ export function DesktopV3ArtifactGallery({
                 <div
                   ref={(node) => {
                     previewSurfaceRef.current = node
-                    animationPreviewRef.current = node
+                    animationPreviewRef(node)
                   }}
                   className={cn(
                     'relative h-full min-h-0 min-w-0',

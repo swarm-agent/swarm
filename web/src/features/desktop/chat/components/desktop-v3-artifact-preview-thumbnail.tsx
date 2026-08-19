@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { FileText, Loader2 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import {
@@ -86,7 +86,8 @@ function subscribeArtifactPreviewMotion(listener: (reduced: boolean) => void): (
 }
 
 export function useDesktopV3ArtifactPreviewVisibility<T extends HTMLElement = HTMLDivElement>(enabled = true) {
-  const previewRef = useRef<T>(null)
+  const [previewElement, setPreviewElement] = useState<T | null>(null)
+  const previewRef = useCallback((element: T | null) => setPreviewElement(element), [])
   const [intersecting, setIntersecting] = useState(false)
   const [pageVisible, setPageVisible] = useState(() => typeof document === 'undefined' || document.visibilityState === 'visible')
   const [reducedMotion, setReducedMotion] = useState(() => (
@@ -96,13 +97,12 @@ export function useDesktopV3ArtifactPreviewVisibility<T extends HTMLElement = HT
   ))
 
   useEffect(() => {
-    const preview = previewRef.current
-    if (!enabled || !preview) {
+    if (!enabled || !previewElement) {
       setIntersecting(false)
       return undefined
     }
-    return observeArtifactPreview(preview, setIntersecting)
-  }, [enabled])
+    return observeArtifactPreview(previewElement, setIntersecting)
+  }, [enabled, previewElement])
 
   useEffect(() => subscribeArtifactPreviewPageVisibility(setPageVisible), [])
   useEffect(() => subscribeArtifactPreviewMotion(setReducedMotion), [])
