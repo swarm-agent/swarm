@@ -4194,14 +4194,14 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 		}
 		for _, reference := range message.Media {
-			if reference.ContractHash != resolved.MediaContract.Hash || !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
-				return nil, fmt.Errorf("media asset %q is stale or denied by the current run contract", reference.AssetID)
+			if !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
+				return nil, fmt.Errorf("media asset %q is denied by the current run contract", reference.AssetID)
 			}
 			asset, bytes, err := e.server.sessions.ReadSessionMediaAsset(resolved.Session.AccountScopeID, resolved.Session.ID, reference.AssetID)
 			if err != nil {
 				return nil, err
 			}
-			if asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size {
+			if asset.ContractHash != reference.ContractHash || asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType || asset.FileType != reference.FileType {
 				return nil, fmt.Errorf("media asset %q does not match its durable reference", reference.AssetID)
 			}
 			content = append(content, map[string]any{
