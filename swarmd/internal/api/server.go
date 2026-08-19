@@ -1142,7 +1142,22 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, firstRunErr)
 				return
 			} else if firstRun {
-				writeError(w, http.StatusBadRequest, errors.New("first onboarding provider credential must use /v1/onboarding/provider/credential"))
+				status, acceptErr := s.acceptFirstOnboardingProviderCredential(r.Context(), principal, onboardingProviderCredentialRequest{
+					Provider:     provider,
+					Type:         req.Type,
+					Label:        req.Label,
+					Tags:         append([]string(nil), req.Tags...),
+					APIKey:       req.APIKey,
+					AccessToken:  req.AccessToken,
+					RefreshToken: req.RefreshToken,
+					ExpiresAt:    req.ExpiresAt,
+					AccountID:    req.AccountID,
+				})
+				if acceptErr != nil {
+					writeError(w, http.StatusBadRequest, acceptErr)
+					return
+				}
+				writeJSON(w, http.StatusOK, status)
 				return
 			}
 		}
