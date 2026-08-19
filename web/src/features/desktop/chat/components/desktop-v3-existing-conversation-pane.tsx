@@ -2107,6 +2107,7 @@ export function DesktopV3ExistingConversationPane({
   }, [routeWorkspaceSlug]);
   const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
+    dismissedArtifactViewerLocationKeyRef.current = "";
     setArtifactGalleryInitialCollectionId("");
     setArtifactGalleryInitialKey(artifactKey);
     setArtifactGalleryOpen(true);
@@ -3047,7 +3048,7 @@ export function DesktopV3ExistingConversationPane({
                             onPrefillPrompt={prefillSuggestedPrompt}
                             artifactCatalog={sessionArtifacts}
                             artifactHref={artifactViewerHref}
-                            onArtifactNavigate={navigateArtifactViewer}
+                            onArtifactNavigate={openArtifactFullView}
                             onArtifactSelections={queueGalleryArtifactSelections}
                           />
                         </div>

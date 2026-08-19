@@ -570,6 +570,67 @@ func TestManagedArtifactCatalogKeepsNativeAndWorkspaceHandoffDescriptors(t *test
 	}
 }
 
+func TestWorkspaceSessionV3ArtifactCatalogAndPreviewNeedsReviewCheckpoint(t *testing.T) {
+	server, sessionSvc, _, _, _, _, _ := newArtifactSessionFixture(t, "review-video.mp4", "video-content")
+	doc := &pebblestore.SessionPlanDocument{
+		ID:    "plan-review",
+		Title: "Review Plan",
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:          "cp-review",
+			Status:      sessionruntime.PlanCheckpointStatusNeedsReview,
+			RunID:       "run-review",
+			AttemptID:   "attempt-review",
+			CompletedAt: time.Now().UnixMilli(),
+			Artifacts: []pebblestore.SessionPlanArtifactReference{{
+				Path:        "review-video.mp4",
+				Role:        "deliverable",
+				Description: "Final review video",
+				MediaType:   "video/mp4",
+			}},
+			Handoff: &pebblestore.SessionPlanCheckpointHandoff{
+				Title:    "Review handoff",
+				Overview: "Please review the video.",
+			},
+		}},
+	}
+	if _, _, err := sessionSvc.SavePlanWithMetadata("artifact-session", doc.ID, doc.Title, "", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: doc}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v3/artifacts?limit=2000&session_id=artifact-session", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Artifacts []sessionsV3ArtifactCatalogItem `json:"artifacts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	var found *sessionsV3ArtifactCatalogItem
+	for _, item := range payload.Artifacts {
+		if item.Filename == "review-video.mp4" && item.MediaType == "video/mp4" {
+			found = &item
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected review-video.mp4 artifact in catalog, got %+v", payload.Artifacts)
+	}
+	if found.Kind != "video" || !found.Previewable {
+		t.Fatalf("expected kind=video previewable=true, got %+v", found)
+	}
+
+	previewReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-session/artifacts/"+found.ArtifactID, nil)
+	previewRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(previewRec, withTestPrincipal(previewReq))
+	if previewRec.Code != http.StatusOK || !strings.Contains(previewRec.Body.String(), "video-content") {
+		t.Fatalf("video preview status=%d body=%s", previewRec.Code, previewRec.Body.String())
+	}
+}
+
 func TestManagedSessionV3ArtifactCollectionBundleDownloadsAllReadyVariants(t *testing.T) {
 	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "note.txt", "workspace file")
 	principal := testPrincipal()

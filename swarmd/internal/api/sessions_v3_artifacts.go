@@ -272,7 +272,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 				continue
 			}
 			for _, checkpoint := range plan.Document.Checkpoints {
-				if checkpoint.Handoff == nil || strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusCompleted {
+				if checkpoint.Handoff == nil || (strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusCompleted && strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusNeedsReview) {
 					continue
 				}
 				references := append([]pebblestore.SessionPlanArtifactReference(nil), plan.Document.Artifacts...)
@@ -1223,7 +1223,7 @@ func (s *Server) resolveSessionV3Artifact(ctx context.Context, principal identit
 			plan.SessionID = sessionID
 		}
 		for _, checkpoint := range plan.Document.Checkpoints {
-			if checkpoint.Handoff == nil || strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusCompleted {
+			if checkpoint.Handoff == nil || (strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusCompleted && strings.TrimSpace(checkpoint.Status) != sessionruntime.PlanCheckpointStatusNeedsReview) {
 				continue
 			}
 			artifacts := append([]pebblestore.SessionPlanArtifactReference(nil), plan.Document.Artifacts...)
