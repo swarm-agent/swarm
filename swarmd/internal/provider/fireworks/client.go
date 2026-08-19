@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	accountsURL                = "https://api.fireworks.ai/v1/accounts"
+	verifyAPIKeyURL            = "https://api.fireworks.ai/verifyApiKey"
 	modelsURL                  = "https://api.fireworks.ai/inference/v1/models"
 	chatURL                    = "https://api.fireworks.ai/inference/v1/chat/completions"
 	maxResponseBytes           = 8 << 20
@@ -167,21 +167,14 @@ func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string) (string, error
 	if apiKey == "" {
 		return "", errors.New("fireworks api verification requires api_key")
 	}
-	body, status, err := c.do(ctx, http.MethodGet, accountsURL, apiKey, nil)
+	body, status, err := c.do(ctx, http.MethodGet, verifyAPIKeyURL, apiKey, nil)
 	if err != nil {
 		return "", err
 	}
 	if status >= http.StatusBadRequest {
 		return "", fmt.Errorf("fireworks api verification failed status=%d: %s", status, apiErrorMessage(body))
 	}
-	accountName, displayName := parsePrimaryAccount(body)
-	if displayName != "" {
-		return fmt.Sprintf("Fireworks API key verified for %s (%s)", displayName, accountName), nil
-	}
-	if accountName != "" {
-		return fmt.Sprintf("Fireworks API key verified for %s", accountName), nil
-	}
-	return "Fireworks API key verified via /v1/accounts", nil
+	return "Fireworks API key verified via /verifyApiKey", nil
 }
 
 func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payload chatCompletionRequest, options ...requestOptions) (chatCompletionResponse, error) {
@@ -298,8 +291,8 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 	operation := "api"
 	if strings.EqualFold(method, http.MethodPost) && strings.Contains(url, "/chat/completions") {
 		operation = "chat.completions"
-	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/accounts") {
-		operation = "verify.accounts"
+	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/verifyApiKey") {
+		operation = "verify.api_key"
 	}
 	providerdiagnostics.LogRequest("fireworks", operation, req, body)
 	resp, err := client.Do(req)
@@ -517,20 +510,4 @@ func boundedProviderError(value string) string {
 		return value
 	}
 	return value[:maxProviderErrorBytes] + "…"
-}
-
-func parsePrimaryAccount(raw []byte) (string, string) {
-	var payload struct {
-		Accounts []struct {
-			Name        string `json:"name"`
-			DisplayName string `json:"displayName"`
-		} `json:"accounts"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return "", ""
-	}
-	if len(payload.Accounts) == 0 {
-		return "", ""
-	}
-	return strings.TrimSpace(payload.Accounts[0].Name), strings.TrimSpace(payload.Accounts[0].DisplayName)
 }
