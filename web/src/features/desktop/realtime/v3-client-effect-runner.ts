@@ -32,7 +32,8 @@ export interface DesktopV3ClientEffectRunnerDeps {
 
 const MAX_SEEN_DURABLE_EFFECT_EVENTS = 256
 const CLIENT_EFFECT_TYPES = new Set<DesktopV3ClientEffectType>(['refresh_agents', 'refresh_themes', 'refresh_providers'])
-const ARTIFACT_MUTATION_EVENT_TYPES = new Set([
+const ARTIFACT_CATALOG_MUTATION_EVENT_TYPES = new Set([
+  'session.plan.saved',
   'session.artifact.created',
   'session.artifact.updated',
   'session.artifact.finalized',
@@ -61,7 +62,7 @@ export function durableClientEffectsFromRealtimeFrame(frame: RealtimeMessage): D
   const sessionID = stringValue(event.session_id) || stringValue(frame.session_id)
   const eventSeq = numberValue(event.seq)
   const eventIdentity = eventID || (sessionID && eventSeq > 0 ? `${sessionID}:${eventSeq}` : '')
-  if (ARTIFACT_MUTATION_EVENT_TYPES.has(eventType)) {
+  if (ARTIFACT_CATALOG_MUTATION_EVENT_TYPES.has(eventType)) {
     return eventIdentity ? { eventIdentity, effects: [{ type: 'refresh_artifacts' }] } : null
   }
   if (eventType !== 'session.tool.completed') return null

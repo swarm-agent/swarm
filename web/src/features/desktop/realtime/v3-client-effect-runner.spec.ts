@@ -47,13 +47,14 @@ test('durableClientEffectsFromRealtimeFrame parses only typed successful tool co
   assert.equal(durableClientEffectsFromRealtimeFrame(toolCompletedFrame({ effects: [] })), null)
 })
 
-test('artifact mutation realtime events produce only a canonical catalog refresh effect', () => {
-  const frame = toolCompletedFrame({ eventType: 'session.artifact.finalized', effects: undefined })
-  assert.deepEqual(durableClientEffectsFromRealtimeFrame(frame), {
-    eventIdentity: 'event-1',
-    effects: [{ type: 'refresh_artifacts' }],
-  })
-  assert.equal(durableClientEffectsFromRealtimeFrame(toolCompletedFrame({ eventType: 'session.plan.saved' })), null)
+test('artifact catalog mutation realtime events produce only a canonical catalog refresh effect', () => {
+  for (const eventType of ['session.artifact.finalized', 'session.plan.saved']) {
+    const frame = toolCompletedFrame({ eventType, effects: undefined })
+    assert.deepEqual(durableClientEffectsFromRealtimeFrame(frame), {
+      eventIdentity: 'event-1',
+      effects: [{ type: 'refresh_artifacts' }],
+    })
+  }
 })
 
 test('auth realtime frames produce a durable provider refresh effect', () => {
