@@ -43,6 +43,7 @@ interface DesktopInlinePlanReviewCardProps {
     approvedArguments?: Record<string, unknown>,
   ) => Promise<void>;
   onAskForChanges?: () => void;
+  resolutionPending?: boolean;
 }
 
 export function DesktopInlinePlanReviewCard({
@@ -52,6 +53,7 @@ export function DesktopInlinePlanReviewCard({
   pendingCount,
   onResolve,
   onAskForChanges,
+  resolutionPending = false,
 }: DesktopInlinePlanReviewCardProps) {
   const kind = permissionKind(permission);
   const exitPayload =
@@ -64,6 +66,7 @@ export function DesktopInlinePlanReviewCard({
   );
   const [loading, setLoading] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const resolving = loading || resolutionPending;
   const supportsExecutionChoice =
     kind === "exit-plan" ||
     kind === "plan-new-request" ||
@@ -135,7 +138,7 @@ export function DesktopInlinePlanReviewCard({
                 variant="outline"
                 size="sm"
                 className="xl:hidden"
-                disabled={loading}
+                disabled={resolving}
                 onClick={onAskForChanges}
               >
                 <MessageCircle className="size-4" />
@@ -146,7 +149,7 @@ export function DesktopInlinePlanReviewCard({
               type="button"
               variant="outline"
               size="sm"
-              disabled={loading}
+              disabled={resolving}
               onClick={() => void copyPlan()}
             >
               {copyState === "copied" ? (
@@ -186,22 +189,22 @@ export function DesktopInlinePlanReviewCard({
           <Button
             type="button"
             variant="outline"
-            disabled={loading}
+            disabled={resolving}
             onClick={() => void resolve("deny")}
           >
             Reject
           </Button>
           {supportsPersistentAcceptance ? (
-            <Button type="button" variant="outline" disabled={loading} onClick={() => void resolve("approve_always")}>
+            <Button type="button" variant="outline" disabled={resolving} onClick={() => void resolve("approve_always")}>
               Always allow
             </Button>
           ) : null}
           <Button
             type="button"
-            disabled={loading}
+            disabled={resolving}
             onClick={() => void resolve("approve")}
           >
-            Accept once
+            {resolutionPending ? "Starting execution…" : "Accept once"}
           </Button>
         </div>
       </div>

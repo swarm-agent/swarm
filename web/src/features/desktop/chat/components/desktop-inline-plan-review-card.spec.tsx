@@ -119,4 +119,17 @@ assert(mobileMarkup.includes(">Ask Swarm<"), "expected mobile plan chat opener w
 assert(mobileMarkup.includes("xl:hidden"), "expected plan chat opener to stay mobile-only");
 assert(mobileMarkup.indexOf(">Ask Swarm<") < mobileMarkup.indexOf(">Copy<"), "expected plan chat opener to the left of Copy");
 
+const resolvingMarkup = renderToStaticMarkup(
+  <DesktopInlinePlanReviewCard
+    permission={permission("permission", "exit_plan_mode")}
+    parentSessionId="session-1"
+    pendingPosition={1}
+    pendingCount={1}
+    onResolve={async () => undefined}
+    resolutionPending
+  />,
+);
+assert(resolvingMarkup.includes("Starting execution…"), "expected a stable acceptance transition label while the approved plan projection arrives");
+assert(!resolvingMarkup.includes(">Accept once<"), "expected the acceptance action to stay resolved during projection handoff");
+
 console.log("desktop inline plan review card tests passed");

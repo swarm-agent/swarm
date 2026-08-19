@@ -1645,6 +1645,8 @@ export function DesktopV3ExistingConversationPane({
     [pendingPlanPermission],
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
+  const [resolvingPlanPermissionId, setResolvingPlanPermissionId] = useState("");
+  const heldPlanPermissionRef = useRef<DesktopPermissionRecord | null>(null);
   const planSidebarViewport = usePlanSidebarViewport();
   useEffect(() => {
     setPlanAgentMobileOpen(false);
@@ -2055,7 +2057,24 @@ export function DesktopV3ExistingConversationPane({
     !hasMessages &&
     !hasStoredOperation;
   const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
-  const showPlanSidebar = showPlanExecutionSidebar || Boolean(pendingPlanDocument);
+  const heldPlanPermission = resolvingPlanPermissionId
+    ? heldPlanPermissionRef.current
+    : null;
+  const stablePlanPermission = pendingPlanPermission ?? heldPlanPermission;
+  const stablePlanDocument = pendingPlanDocument ?? (heldPlanPermission
+    ? structuredPlanDocumentFromPermission(heldPlanPermission)
+    : null);
+  const visiblePlanPermissions = heldPlanPermission && !pendingPlanPermissions.some(
+    (permission) => permission.id === heldPlanPermission.id,
+  )
+    ? [...pendingPlanPermissions, heldPlanPermission]
+    : pendingPlanPermissions;
+  useEffect(() => {
+    if (!resolvingPlanPermissionId || !showPlanExecutionSidebar) return;
+    heldPlanPermissionRef.current = null;
+    setResolvingPlanPermissionId("");
+  }, [resolvingPlanPermissionId, showPlanExecutionSidebar]);
+  const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument);
   const hasSessionArtifacts = sessionArtifacts.length > 0;
   const hasPendingVisualSwarm = desktopV3HasPendingVisualSwarm(sessionArtifacts);
   const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
@@ -2068,12 +2087,12 @@ export function DesktopV3ExistingConversationPane({
       previousArtifactCount: previousCount,
       artifactCount: sessionArtifacts.length,
       hasPlan: showPlanSidebar,
-      prioritizePlan: Boolean(pendingPlanDocument) || (showPlanSidebar && !previousHasPlan),
+      prioritizePlan: Boolean(stablePlanDocument) || (showPlanSidebar && !previousHasPlan),
       hasPendingVisualSwarm,
     }));
     priorSessionArtifactCountRef.current = sessionArtifacts.length;
     priorSessionHasPlanRef.current = showPlanSidebar;
-  }, [hasPendingVisualSwarm, normalizedSessionId, pendingPlanDocument, sessionArtifacts.length, showPlanSidebar]);
+  }, [hasPendingVisualSwarm, normalizedSessionId, sessionArtifacts.length, showPlanSidebar, stablePlanDocument]);
   const activeSidebarView = desktopV3ActiveSessionSidebarView({
     selected: sidebarView,
     hasPlan: showPlanSidebar,
@@ -2776,20 +2795,33 @@ export function DesktopV3ExistingConversationPane({
     reason: string,
     approvedArguments?: Record<string, unknown>,
   ) {
-    const resolved = await resolveSessionPermission(
-      permission.sessionId,
-      permission.id,
-      action,
-      reason,
-      approvedArguments,
-      { sessionApi: "v3" },
-    );
-    dispatchDesktopV3Cache({
-      type: "permission.resolveResult",
-      sessionId: permission.sessionId,
-      permissionId: permission.id,
-      permission: resolved,
-    });
+    const holdApprovedPlan = action === "approve" && isPlanProposalPermission(permission);
+    if (holdApprovedPlan) {
+      heldPlanPermissionRef.current = permission;
+      setResolvingPlanPermissionId(permission.id);
+    }
+    try {
+      const resolved = await resolveSessionPermission(
+        permission.sessionId,
+        permission.id,
+        action,
+        reason,
+        approvedArguments,
+        { sessionApi: "v3" },
+      );
+      dispatchDesktopV3Cache({
+        type: "permission.resolveResult",
+        sessionId: permission.sessionId,
+        permissionId: permission.id,
+        permission: resolved,
+      });
+    } catch (error) {
+      if (holdApprovedPlan) {
+        heldPlanPermissionRef.current = null;
+        setResolvingPlanPermissionId("");
+      }
+      throw error;
+    }
   }
 
   async function handleResolveBashPermission(
@@ -3066,14 +3098,15 @@ export function DesktopV3ExistingConversationPane({
                     onOpenPermissions={openPermissionsSettings}
                   />
                 ))}
-                {pendingPlanPermissions.map((permission, index) => (
+                {visiblePlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
                     permission={permission}
                     parentSessionId={normalizedSessionId}
                     pendingPosition={index + 1}
-                    pendingCount={pendingPlanPermissions.length}
+                    pendingCount={visiblePlanPermissions.length}
                     onResolve={resolvePermission}
+                    resolutionPending={resolvingPlanPermissionId === permission.id}
                   />
                 ))}
                 <div
@@ -3096,7 +3129,7 @@ export function DesktopV3ExistingConversationPane({
             ) : null}
           </div>
 
-          {pendingPlanDocument && pendingPlanPermission && !planSidebarViewport ? (
+          {stablePlanDocument && stablePlanPermission && !planSidebarViewport ? (
             <div
               className="shrink-0 bg-[var(--app-surface)] min-[1300px]:hidden"
               id="desktop-plan-agent-composer-region"
@@ -3105,8 +3138,8 @@ export function DesktopV3ExistingConversationPane({
               {planAgentMobileOpen ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
-                  permission={pendingPlanPermission}
-                  document={pendingPlanDocument}
+                  permission={stablePlanPermission}
+                  document={stablePlanDocument}
                   embedded
                   mobileInline
                   mobileOpen
@@ -3134,7 +3167,7 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          {!pendingPlanDocument && showPlanExecutionSidebar && planExecutionView ? (
+          {!stablePlanDocument && showPlanExecutionSidebar && planExecutionView ? (
             <div
               className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] min-[1300px]:hidden"
               data-testid="desktop-plan-execution-composer-region"
@@ -3282,7 +3315,7 @@ export function DesktopV3ExistingConversationPane({
 
         {showConversationSidebar ? (
           <div
-            className={pendingPlanDocument
+            className={stablePlanDocument
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
               : "hidden min-h-0 min-w-0 overflow-hidden min-[1300px]:flex min-[1300px]:flex-col"}
             data-session-sidebar-column
@@ -3294,16 +3327,16 @@ export function DesktopV3ExistingConversationPane({
                 <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
-            <div className={pendingPlanDocument
+            <div className={stablePlanDocument
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
               : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
                 <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => desktopV3ArtifactMessageSelection(artifact, "select")))} />
-              ) : pendingPlanDocument && pendingPlanPermission && planSidebarViewport ? (
+              ) : stablePlanDocument && stablePlanPermission && planSidebarViewport ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
-                  permission={pendingPlanPermission}
-                  document={pendingPlanDocument}
+                  permission={stablePlanPermission}
+                  document={stablePlanDocument}
                   embedded
                   modelLabel={displayedPreference.model}
                   displayMode={planSidebarDisplayMode}

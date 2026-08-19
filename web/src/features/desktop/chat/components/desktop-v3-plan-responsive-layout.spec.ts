@@ -24,7 +24,7 @@ test('plan execution adapts its desktop sidebar and shifts above the composer be
   const pendingPlanComposerIndex = paneSource.indexOf('<DesktopV3ExistingConversationComposer', mobilePlanRegionIndex)
   assert.ok(mobilePlanRegionIndex >= 0 && pendingPlanComposerIndex > mobilePlanRegionIndex, 'mobile pending Plan waiting state should render immediately above the main composer')
   assert.match(paneSource.slice(mobilePlanRegionIndex, pendingPlanComposerIndex), /planAgentMobileOpen \? \(/[\s\S]*<DesktopPlanAgentSidecar/)
-  assert.match(paneSource, /pendingPlanDocument && pendingPlanPermission && planSidebarViewport/)
+  assert.match(paneSource, /stablePlanDocument && stablePlanPermission && planSidebarViewport/)
   assert.match(paneSource, /data-testid="desktop-plan-execution-composer-region"/)
   assert.match(paneSource, /min-\[1300px\]:hidden"\s+data-testid="desktop-plan-execution-composer-region"/)
 
