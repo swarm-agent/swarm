@@ -99,6 +99,19 @@ func TestSessionV3ArtifactPresentationInfersReadyPreviewableTypes(t *testing.T) 
 			wantPreviewable: true,
 		},
 		{
+			name: "ready mp4 repairs download presentation",
+			variant: pebblestore.SessionArtifactVariant{
+				Status:    pebblestore.SessionArtifactStatusReady,
+				MediaType: "video/mp4",
+				Presentation: pebblestore.SessionArtifactPresentation{
+					Kind:        "download",
+					Previewable: false,
+				},
+			},
+			wantKind:        "video",
+			wantPreviewable: true,
+		},
+		{
 			name: "staging html preserves declared presentation",
 			variant: pebblestore.SessionArtifactVariant{
 				Status:    pebblestore.SessionArtifactStatusStaging,

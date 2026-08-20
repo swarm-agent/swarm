@@ -350,10 +350,14 @@ func sessionsV3ArtifactPresentation(variant pebblestore.SessionArtifactVariant) 
 	if kind == "package" && mediaType == "application/zip" {
 		return "html", true
 	}
-	if strings.EqualFold(strings.TrimSpace(variant.MediaType), "video/mp4") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(variant.MediaType)), "video/") {
-		if kind == "" || kind == "video" {
-			return "video", true
-		}
+	if mediaType == "video/mp4" {
+		// MP4 bytes are validated as browser-safe before a variant becomes ready.
+		// Repair historical and explicitly download-labelled publications so the
+		// catalog still exposes the existing inline player and thumbnails.
+		return "video", true
+	}
+	if strings.HasPrefix(mediaType, "video/") && (kind == "" || kind == "video") {
+		return "video", true
 	}
 	return kind, previewable
 }
