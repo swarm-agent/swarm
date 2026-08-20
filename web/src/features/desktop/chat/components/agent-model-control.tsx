@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, GitBranch, Lightbulb, Lock, Pencil, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
+import { ChevronDown, GitBranch, Info, Lightbulb, Lock, MoreHorizontal, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { displayAgentName } from '../services/agent-display'
@@ -331,6 +331,7 @@ export function AgentModelControl({
   const [deleteCandidateId, setDeleteCandidateId] = useState('')
   const [favoriteName, setFavoriteName] = useState('')
   const [favoriteEditorOpen, setFavoriteEditorOpen] = useState(false)
+  const [favoritesHelpOpen, setFavoritesHelpOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const favoritesPopoverRef = useRef<HTMLDivElement | null>(null)
   const [favoritesPosition, setFavoritesPosition] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null)
@@ -474,6 +475,7 @@ export function AgentModelControl({
       setFavoritesPosition(null)
       setScreen('favorites')
       setFavoriteEditorOpen(false)
+      setFavoritesHelpOpen(false)
       setFavoriteName('')
       setDeleteCandidateId('')
       return
@@ -724,11 +726,27 @@ export function AgentModelControl({
             <div className="flex min-w-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-4 sm:px-5">
               <div className="min-w-0">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Model favorites</div>
-                <div className="mt-1 text-base font-semibold text-[var(--app-text)]">Choose a model</div>
-                <div className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Choose whether to update the default or only this chat.</div>
+                <div className="mt-1 flex min-w-0 items-center gap-2">
+                  <div className="truncate text-base font-semibold text-[var(--app-text)]">Choose a model</div>
+                  <button
+                    type="button"
+                    aria-label="How model favorite actions work"
+                    aria-expanded={favoritesHelpOpen}
+                    aria-controls="model-favorites-help"
+                    onClick={() => setFavoritesHelpOpen((value) => !value)}
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                  >
+                    <Info size={14} />
+                  </button>
+                </div>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="shrink-0 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
             </div>
+            {favoritesHelpOpen ? (
+              <div id="model-favorites-help" role="region" aria-label="Model favorite action help" className="border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)] sm:px-5">
+                Hover or focus a favorite to reveal chat, default, and delete actions. “Use in chat” changes only this chat; “Default” applies to future chats. Use the external ellipsis button to edit a favorite.
+              </div>
+            ) : null}
             <div className="min-h-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-4 sm:p-5">
               {modelProfiles.length > 0 ? (
                 <div className="grid gap-2" aria-label="Model favorites">
@@ -736,36 +754,54 @@ export function AgentModelControl({
                     const active = favoriteMatchesCurrentChat(profile)
                     const confirmingDelete = deleteCandidateId === profile.profileId
                     return (
-                      <div key={profile.profileId} className={`flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
-                        <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2">
-                          <Star size={17} fill={active ? 'currentColor' : 'none'} className={active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'} />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
-                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider}/{displayModelName(profile.provider, profile.model, profile.contextMode)}</span>
-                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.thinking || 'off'} · {serviceTierLabel(profile.provider, profile.model, modelOptions, profile.serviceTier)}</span>
-                          </span>
-                        </div>
-                        {onApplyModelFavoriteChatOnly ? (
-                          <button type="button" disabled={saving || busy} onClick={() => { void applyFavoriteToChat(profile) }} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">
-                            {switchingChatFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current chat' : 'This chat only'}
-                          </button>
-                        ) : null}
-                        <button type="button" disabled={saving || busy} onClick={() => { void applyFavorite(profile) }} className="shrink-0 rounded-lg border border-[var(--app-primary)] px-2 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60">
-                          {switchingFavoriteId === profile.profileId ? 'Switching…' : 'Make default'}
-                        </button>
-                        <button type="button" disabled={saving || busy} aria-label={`Edit favorite ${profile.name}`} title={`Edit favorite ${profile.name}`} onClick={() => editFavorite(profile)} className="shrink-0 rounded-lg p-2 text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">
-                          <Pencil size={15} />
-                        </button>
-                        {confirmingDelete ? (
-                          <div className="flex shrink-0 items-center gap-1" role="group" aria-label={`Confirm deletion of ${profile.name}`}>
-                            <button type="button" disabled={saving || busy} onClick={() => setDeleteCandidateId('')} className="rounded-lg px-2 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">Keep</button>
-                            <button type="button" disabled={saving || busy} onClick={() => { void deleteFavorite(profile) }} className="rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2 py-2 text-[11px] font-semibold text-[var(--app-danger)] hover:brightness-110 disabled:opacity-60">{deletingFavoriteId === profile.profileId ? 'Deleting…' : 'Delete'}</button>
+                      <div key={profile.profileId} className="flex min-w-0 max-w-full items-center gap-1">
+                        <div className={`group relative flex min-w-0 flex-1 items-center overflow-hidden rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                          <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2">
+                            <Star size={17} fill={active ? 'currentColor' : 'none'} className={`shrink-0 ${active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'}`} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
+                              <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider}/{displayModelName(profile.provider, profile.model, profile.contextMode)}</span>
+                              <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.thinking || 'off'} · {serviceTierLabel(profile.provider, profile.model, modelOptions, profile.serviceTier)}</span>
+                            </span>
                           </div>
-                        ) : (
-                          <button type="button" disabled={saving || busy} aria-label={`Delete favorite ${profile.name}`} title={`Delete favorite ${profile.name}`} onClick={() => { setError(null); setDeleteCandidateId(profile.profileId) }} className="shrink-0 rounded-lg p-2 text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-60">
-                            <Trash2 size={15} />
-                          </button>
-                        )}
+                          <div
+                            className={`absolute inset-y-1 right-1 z-10 flex max-w-[calc(100%-0.5rem)] items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-1 shadow-sm transition-all duration-150 ${confirmingDelete ? 'pointer-events-auto translate-x-0 opacity-100' : 'pointer-events-none translate-x-1 opacity-0 group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-x-0 group-focus-within:opacity-100'}`}
+                            role="group"
+                            aria-label={`Actions for ${profile.name}`}
+                          >
+                            {confirmingDelete ? (
+                              <>
+                                <span className="px-1 text-[11px] font-medium text-[var(--app-text-muted)]">Delete?</span>
+                                <button type="button" disabled={saving || busy} onClick={() => setDeleteCandidateId('')} className="rounded-lg px-2 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">Keep</button>
+                                <button type="button" disabled={saving || busy} onClick={() => { void deleteFavorite(profile) }} className="rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2 py-2 text-[11px] font-semibold text-[var(--app-danger)] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-danger)] disabled:opacity-60">{deletingFavoriteId === profile.profileId ? 'Deleting…' : 'Delete'}</button>
+                              </>
+                            ) : (
+                              <>
+                                {onApplyModelFavoriteChatOnly ? (
+                                  <button type="button" disabled={saving || busy} aria-label={active ? `${profile.name} is in use for this chat` : `Use ${profile.name} in this chat only`} title={active ? 'In use for this chat' : 'Change only this chat to this model'} onClick={() => { void applyFavoriteToChat(profile) }} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">
+                                    {switchingChatFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use in chat'}
+                                  </button>
+                                ) : null}
+                                <button type="button" disabled={saving || busy} aria-label={`Make ${profile.name} the default model for future chats`} title="Use this model for future chats" onClick={() => { void applyFavorite(profile) }} className="shrink-0 rounded-lg border border-[var(--app-primary)] px-2 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">
+                                  {switchingFavoriteId === profile.profileId ? 'Switching…' : 'Default'}
+                                </button>
+                                <button type="button" disabled={saving || busy} aria-label={`Delete favorite ${profile.name}`} title={`Delete favorite ${profile.name}`} onClick={() => { setError(null); setDeleteCandidateId(profile.profileId) }} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-danger)] disabled:opacity-60">
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={saving || busy}
+                          aria-label={`Edit favorite ${profile.name}`}
+                          title={`Edit favorite ${profile.name}`}
+                          onClick={() => editFavorite(profile)}
+                          className="inline-flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-[var(--app-text-subtle)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:border-[var(--app-border)] focus-visible:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60"
+                        >
+                          <MoreHorizontal size={17} />
+                        </button>
                       </div>
                     )
                   })}

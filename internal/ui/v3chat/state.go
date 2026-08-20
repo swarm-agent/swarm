@@ -506,7 +506,6 @@ func Reduce(current State, action Action) State {
 		next.Model.MaxOutputTokens = value.MaxOutputTokens
 		next.Model.Locked = false
 		next.Model.LockReason = ""
-		next.Model.ProfileID = ""
 		next.Model.ProfileName = ""
 		next.Model.ProfileSource = "temporary"
 	case ModelProfileAction:
