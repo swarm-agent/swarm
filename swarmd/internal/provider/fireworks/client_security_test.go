@@ -46,25 +46,51 @@ func TestParseFireworksEventStreamRejectsMissingDone(t *testing.T) {
 	}
 }
 
-func TestParseFireworksEventStreamAllowsHighlyFragmentedResponse(t *testing.T) {
-	const fragments = 16_385
-	var stream strings.Builder
-	for i := 0; i < fragments; i++ {
-		stream.WriteString("data: {}\n\n")
-	}
-	stream.WriteString("data: [DONE]\n\n")
+func TestParseFireworksEventStreamAllowsAggregateResponseBeyondUnaryBodyLimit(t *testing.T) {
+	const event = "data: {\"choices\":[]}\n\n"
+	fragments := maxResponseBytes/len(event) + 1
+	stream := strings.Repeat(event, fragments) + "data: [DONE]\n\n"
 
 	state := newFireworksStreamState()
 	seen := 0
-	err := parseFireworksEventStream(strings.NewReader(stream.String()), func(string) error {
+	err := parseFireworksEventStream(strings.NewReader(stream), func(string) error {
 		seen++
 		return state.apply(chatCompletionChunk{})
 	})
 	if err != nil {
-		t.Fatalf("parse highly fragmented response: %v", err)
+		t.Fatalf("parse response larger than unary body limit: %v", err)
 	}
 	if seen != fragments {
 		t.Fatalf("fragments seen = %d, want %d", seen, fragments)
+	}
+}
+
+func TestParseFireworksEventStreamRejectsOversizedSingleEvent(t *testing.T) {
+	stream := "data: " + strings.Repeat("x", maxStreamEventBytes+1) + "\n\n"
+	err := parseFireworksEventStream(strings.NewReader(stream), func(string) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "event byte limit") {
+		t.Fatalf("error = %v, want single-event byte limit", err)
+	}
+}
+
+func TestFireworksStreamStateAllowsOutputBeyondFormerAggregateLimit(t *testing.T) {
+	state := newFireworksStreamState()
+	chunk := chatCompletionChunk{Choices: []chatCompletionChoice{{Delta: &chatCompletionMessageDelta{
+		Content:          strings.Repeat("x", 4<<20),
+		ReasoningContent: "y",
+	}}}}
+	if err := state.apply(chunk); err != nil {
+		t.Fatalf("apply output beyond former aggregate limit: %v", err)
+	}
+}
+
+func TestFireworksStreamStateAllowsToolArgumentsBeyondFormerAggregateLimit(t *testing.T) {
+	state := newFireworksStreamState()
+	chunk := chatCompletionChunk{Choices: []chatCompletionChoice{{Delta: &chatCompletionMessageDelta{ToolCalls: []chatCompletionToolCallDelta{{
+		Function: &chatCompletionToolFunctionDelta{Arguments: strings.Repeat("x", (1<<20)+1)},
+	}}}}}}
+	if err := state.apply(chunk); err != nil {
+		t.Fatalf("apply tool arguments beyond former aggregate limit: %v", err)
 	}
 }
 

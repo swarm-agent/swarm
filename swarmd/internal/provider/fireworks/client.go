@@ -17,13 +17,12 @@ import (
 )
 
 const (
-	verifyAPIKeyURL            = "https://api.fireworks.ai/verifyApiKey"
-	modelsURL                  = "https://api.fireworks.ai/inference/v1/models"
-	chatURL                    = "https://api.fireworks.ai/inference/v1/chat/completions"
-	maxResponseBytes           = 8 << 20
-	maxStreamOutputBytes       = 4 << 20
-	maxStreamToolArgumentBytes = 1 << 20
-	maxProviderErrorBytes      = 4 << 10
+	verifyAPIKeyURL       = "https://api.fireworks.ai/verifyApiKey"
+	modelsURL             = "https://api.fireworks.ai/inference/v1/models"
+	chatURL               = "https://api.fireworks.ai/inference/v1/chat/completions"
+	maxResponseBytes      = 8 << 20
+	maxStreamEventBytes   = 8 << 20
+	maxProviderErrorBytes = 4 << 10
 )
 
 type Client struct {
@@ -310,10 +309,8 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 }
 
 type fireworksStreamState struct {
-	merged            chatCompletionResponse
-	toolCalls         map[int]*chatCompletionToolCall
-	outputBytes       int
-	toolArgumentBytes int
+	merged    chatCompletionResponse
+	toolCalls map[int]*chatCompletionToolCall
 }
 
 func newFireworksStreamState() *fireworksStreamState {
@@ -323,23 +320,6 @@ func newFireworksStreamState() *fireworksStreamState {
 func (s *fireworksStreamState) apply(chunk chatCompletionChunk) error {
 	if s == nil {
 		return errors.New("fireworks stream state is not configured")
-	}
-	for _, choice := range chunk.Choices {
-		if choice.Delta == nil {
-			continue
-		}
-		s.outputBytes += len(choice.Delta.Content) + len(choice.Delta.ReasoningContent)
-		for _, call := range choice.Delta.ToolCalls {
-			if call.Function != nil {
-				s.toolArgumentBytes += len(call.Function.Arguments)
-			}
-		}
-	}
-	if s.outputBytes > maxStreamOutputBytes {
-		return errors.New("fireworks stream output limit exceeded")
-	}
-	if s.toolArgumentBytes > maxStreamToolArgumentBytes {
-		return errors.New("fireworks stream tool argument limit exceeded")
 	}
 	if strings.TrimSpace(chunk.ID) != "" {
 		s.merged.ID = chunk.ID
@@ -423,10 +403,10 @@ func (s *fireworksStreamState) response() chatCompletionResponse {
 }
 
 func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamEventBytes)
 	dataLines := make([]string, 0, 8)
-	totalBytes := 0
+	dataBytes := 0
 	done := false
 	flush := func() error {
 		if len(dataLines) == 0 {
@@ -434,6 +414,7 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		dataBytes = 0
 		if strings.TrimSpace(payload) == "[DONE]" {
 			done = true
 			return nil
@@ -442,10 +423,6 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
-		totalBytes += len(line) + 1
-		if totalBytes > maxResponseBytes {
-			return errors.New("fireworks stream byte limit exceeded")
-		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err
@@ -456,7 +433,15 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimLeft(line[len("data:"):], " 	"))
+			dataLine := strings.TrimLeft(line[len("data:"):], " 	")
+			dataBytes += len(dataLine)
+			if len(dataLines) > 0 {
+				dataBytes++
+			}
+			if dataBytes > maxStreamEventBytes {
+				return errors.New("fireworks stream event byte limit exceeded")
+			}
+			dataLines = append(dataLines, dataLine)
 		}
 	}
 	if err := scanner.Err(); err != nil {

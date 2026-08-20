@@ -17,12 +17,11 @@ import (
 )
 
 const (
-	chatURL                    = "https://openrouter.ai/api/v1/chat/completions"
-	keyURL                     = "https://openrouter.ai/api/v1/key"
-	maxResponseBytes           = 8 << 20
-	maxStreamOutputBytes       = 4 << 20
-	maxStreamToolArgumentBytes = 1 << 20
-	maxProviderErrorBytes      = 4 << 10
+	chatURL               = "https://openrouter.ai/api/v1/chat/completions"
+	keyURL                = "https://openrouter.ai/api/v1/key"
+	maxResponseBytes      = 8 << 20
+	maxStreamEventBytes   = 8 << 20
+	maxProviderErrorBytes = 4 << 10
 )
 
 type Client struct {
@@ -310,11 +309,9 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 }
 
 type openRouterStreamState struct {
-	merged            chatCompletionResponse
-	toolCalls         map[openRouterToolCallKey]*chatCompletionToolCall
-	toolCallOrder     []openRouterToolCallKey
-	outputBytes       int
-	toolArgumentBytes int
+	merged        chatCompletionResponse
+	toolCalls     map[openRouterToolCallKey]*chatCompletionToolCall
+	toolCallOrder []openRouterToolCallKey
 }
 
 func newOpenRouterStreamState() *openRouterStreamState {
@@ -324,23 +321,6 @@ func newOpenRouterStreamState() *openRouterStreamState {
 func (s *openRouterStreamState) apply(chunk chatCompletionChunk) error {
 	if s == nil {
 		return errors.New("openrouter stream state is not configured")
-	}
-	for _, choice := range chunk.Choices {
-		if choice.Delta == nil {
-			continue
-		}
-		s.outputBytes += len(choice.Delta.Content) + len(choice.Delta.Reasoning)
-		for _, call := range choice.Delta.ToolCalls {
-			if call.Function != nil {
-				s.toolArgumentBytes += len(call.Function.Arguments)
-			}
-		}
-	}
-	if s.outputBytes > maxStreamOutputBytes {
-		return errors.New("openrouter stream output limit exceeded")
-	}
-	if s.toolArgumentBytes > maxStreamToolArgumentBytes {
-		return errors.New("openrouter stream tool argument limit exceeded")
 	}
 	if strings.TrimSpace(chunk.ID) != "" {
 		s.merged.ID = chunk.ID
@@ -429,10 +409,10 @@ func (s *openRouterStreamState) response() chatCompletionResponse {
 }
 
 func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamEventBytes)
 	dataLines := make([]string, 0, 8)
-	totalBytes := 0
+	dataBytes := 0
 	done := false
 	flush := func() error {
 		if len(dataLines) == 0 {
@@ -440,6 +420,7 @@ func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) 
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		dataBytes = 0
 		if strings.TrimSpace(payload) == "[DONE]" {
 			done = true
 			return nil
@@ -448,10 +429,6 @@ func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) 
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
-		totalBytes += len(line) + 1
-		if totalBytes > maxResponseBytes {
-			return errors.New("openrouter stream byte limit exceeded")
-		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err
@@ -462,7 +439,15 @@ func parseOpenRouterEventStream(reader io.Reader, onPayload func(string) error) 
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimLeft(line[len("data:"):], " \t"))
+			dataLine := strings.TrimLeft(line[len("data:"):], " \t")
+			dataBytes += len(dataLine)
+			if len(dataLines) > 0 {
+				dataBytes++
+			}
+			if dataBytes > maxStreamEventBytes {
+				return errors.New("openrouter stream event byte limit exceeded")
+			}
+			dataLines = append(dataLines, dataLine)
 		}
 	}
 	if err := scanner.Err(); err != nil {

@@ -5,24 +5,30 @@ import (
 	"testing"
 )
 
-func TestParseGoogleEventStreamAllowsHighlyFragmentedResponse(t *testing.T) {
-	const fragments = 16_385
-	var stream strings.Builder
-	for i := 0; i < fragments; i++ {
-		stream.WriteString("data: {}\n\n")
-	}
+func TestParseGoogleEventStreamAllowsAggregateResponseBeyondUnaryBodyLimit(t *testing.T) {
+	const event = "data: {}\n\n"
+	fragments := maxResponseBytes/len(event) + 1
+	stream := strings.Repeat(event, fragments)
 
 	accumulator := newGoogleStreamAccumulator("gemini-test")
 	seen := 0
-	err := parseGoogleEventStream(strings.NewReader(stream.String()), func(payload string) error {
+	err := parseGoogleEventStream(strings.NewReader(stream), func(payload string) error {
 		seen++
 		return accumulator.applyPayload(payload, nil)
 	})
 	if err != nil {
-		t.Fatalf("parse highly fragmented response: %v", err)
+		t.Fatalf("parse response larger than unary body limit: %v", err)
 	}
 	if seen != fragments {
 		t.Fatalf("fragments seen = %d, want %d", seen, fragments)
+	}
+}
+
+func TestParseGoogleEventStreamRejectsOversizedSingleEvent(t *testing.T) {
+	stream := "data: " + strings.Repeat("x", maxStreamEventBytes+1) + "\n\n"
+	err := parseGoogleEventStream(strings.NewReader(stream), func(string) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "event byte limit") {
+		t.Fatalf("error = %v, want single-event byte limit", err)
 	}
 }
 
@@ -36,10 +42,18 @@ func TestGoogleStreamAccumulatorRequiresFinishReason(t *testing.T) {
 	}
 }
 
-func TestGoogleStreamAccumulatorRejectsOversizedOutput(t *testing.T) {
+func TestGoogleStreamAccumulatorAllowsOutputBeyondFormerAggregateLimit(t *testing.T) {
 	accumulator := newGoogleStreamAccumulator("gemini-test")
-	payload := `{"candidates":[{"content":{"parts":[{"text":"` + strings.Repeat("x", maxStreamOutputBytes+1) + `"}]}}]}`
-	if err := accumulator.applyPayload(payload, nil); err == nil || !strings.Contains(err.Error(), "output limit") {
-		t.Fatalf("error = %v, want output limit", err)
+	payload := `{"candidates":[{"content":{"parts":[{"text":"` + strings.Repeat("x", (4<<20)+1) + `"}]}}]}`
+	if err := accumulator.applyPayload(payload, nil); err != nil {
+		t.Fatalf("apply output beyond former aggregate limit: %v", err)
+	}
+}
+
+func TestGoogleStreamAccumulatorAllowsToolArgumentsBeyondFormerAggregateLimit(t *testing.T) {
+	accumulator := newGoogleStreamAccumulator("gemini-test")
+	payload := `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"write","args":{"content":"` + strings.Repeat("x", (1<<20)+1) + `"}}}]}}]}`
+	if err := accumulator.applyPayload(payload, nil); err != nil {
+		t.Fatalf("apply tool arguments beyond former aggregate limit: %v", err)
 	}
 }
