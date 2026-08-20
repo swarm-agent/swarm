@@ -43,6 +43,22 @@ type sessionV3RestoreVideoProjectRevisionRequest struct {
 	AuthorPrincipal  string `json:"author_principal"`
 }
 
+type sessionV3CreateVideoEditProposalRequest struct {
+	ProposalID     string                           `json:"proposal_id"`
+	BaseRevisionID string                           `json:"base_revision_id"`
+	Title          string                           `json:"title"`
+	Rationale      string                           `json:"rationale"`
+	Operations     []pebblestore.VideoEditOperation `json:"operations"`
+}
+
+type sessionV3AcceptVideoEditProposalRequest struct {
+	SelectedOperationIDs []string `json:"selected_operation_ids"`
+	RevisionID           string   `json:"revision_id"`
+	Description          string   `json:"description"`
+	ChangeSummary        string   `json:"change_summary"`
+	AuthorPrincipal      string   `json:"author_principal"`
+}
+
 type sessionV3StartVideoRenderRequest struct {
 	RevisionID string `json:"revision_id"`
 	JobID      string `json:"job_id"`
@@ -282,6 +298,15 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 		default:
 			methodNotAllowed(w)
 		}
+	case "edit-proposals":
+		switch r.Method {
+		case http.MethodGet:
+			proposals, err := s.videoProjects.ListEditProposals(principal, sessionID, projectID, 100); if err != nil { writeError(w, http.StatusBadRequest, err); return }; writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposals": proposals, "count": len(proposals)})
+		case http.MethodPost:
+			var req sessionV3CreateVideoEditProposalRequest; if err := decodeJSON(r, &req); err != nil { writeError(w, http.StatusBadRequest, err); return }
+			proposal, err := s.videoProjects.CreateEditProposal(r.Context(), principal, videoproject.CreateEditProposalInput{SessionID: sessionID, ProjectID: projectID, ProposalID: req.ProposalID, BaseRevisionID: req.BaseRevisionID, Title: req.Title, Rationale: req.Rationale, Operations: req.Operations, NowUnixMs: time.Now().UnixMilli()}); if err != nil { writeError(w, http.StatusBadRequest, err); return }; writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "proposal": proposal})
+		default: methodNotAllowed(w)
+		}
 	case "render":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
@@ -349,6 +374,21 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 		}
 		s.handleSessionV3VideoExport(w, r, principal, sessionID, projectID, req)
 	default:
+		if strings.HasPrefix(rest, "edit-proposals/") {
+			path := strings.TrimPrefix(rest, "edit-proposals/"); proposalID, action, hasAction := strings.Cut(path, "/")
+			if proposalID == "" { writeError(w, http.StatusBadRequest, errors.New("proposal id is required")); return }
+			if !hasAction {
+				if r.Method != http.MethodGet { methodNotAllowed(w); return }; proposal, ok, err := s.videoProjects.GetEditProposal(principal, sessionID, projectID, proposalID); if err != nil || !ok { writeError(w, http.StatusNotFound, errors.New("video edit proposal not found")); return }; writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal}); return
+			}
+			if r.Method != http.MethodPost { methodNotAllowed(w); return }
+			switch action {
+			case "accept":
+				var req sessionV3AcceptVideoEditProposalRequest; if err := decodeJSON(r, &req); err != nil { writeError(w, http.StatusBadRequest, err); return }; author := req.AuthorPrincipal; if author == "" { author = principal.UserID }; proposal, revision, project, err := s.videoProjects.AcceptEditProposal(r.Context(), principal, videoproject.AcceptEditProposalInput{SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, RevisionID: req.RevisionID, Description: req.Description, ChangeSummary: req.ChangeSummary, AuthorPrincipal: author, SelectedOperationIDs: req.SelectedOperationIDs, NowUnixMs: time.Now().UnixMilli()}); if err != nil { writeError(w, http.StatusConflict, err); return }; writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "proposal": proposal, "revision": revision, "project": project}); return
+			case "reject":
+				proposal, err := s.videoProjects.RejectEditProposal(r.Context(), principal, sessionID, projectID, proposalID, time.Now().UnixMilli()); if err != nil { writeError(w, http.StatusConflict, err); return }; writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal}); return
+			default: writeError(w, http.StatusNotFound, errors.New("invalid video edit proposal action")); return
+			}
+		}
 		if strings.HasPrefix(rest, "revisions/") && strings.HasSuffix(rest, "/restore") {
 			revID := strings.TrimSuffix(strings.TrimPrefix(rest, "revisions/"), "/restore")
 			if revID == "" {

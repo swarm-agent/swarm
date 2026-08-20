@@ -1200,7 +1200,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		projection := transcription.Projection
 		result.Transcription = &projection
 	}
-	if videoProject.Projection.ProjectID != "" || videoProject.Projection.RenderJobID != "" {
+	if videoProject.Projection.ProjectID != "" || videoProject.Projection.RenderJobID != "" || videoProject.Projection.ProposalID != "" {
 		projection := videoProject.Projection
 		result.VideoProject = &projection
 	}
@@ -3046,6 +3046,12 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.video_project.render_job.created"
 	case V3SessionMutationUpdateVideoRenderJob:
 		return "session.video_project.render_job.updated"
+	case V3SessionMutationCreateVideoEditProposal:
+		return "session.video_project.edit_proposal.created"
+	case V3SessionMutationAcceptVideoEditProposal:
+		return "session.video_project.edit_proposal.accepted"
+	case V3SessionMutationRejectVideoEditProposal:
+		return "session.video_project.edit_proposal.rejected"
 	default:
 		return input.Kind
 	}
@@ -3113,7 +3119,7 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 		projection := transcription
 		payload.Transcription = &projection
 	}
-	if videoProject.ProjectID != "" || videoProject.RenderJobID != "" {
+	if videoProject.ProjectID != "" || videoProject.RenderJobID != "" || videoProject.ProposalID != "" {
 		projection := videoProject
 		payload.VideoProject = &projection
 	}
