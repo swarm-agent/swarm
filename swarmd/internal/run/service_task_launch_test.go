@@ -526,6 +526,40 @@ func TestParseTaskCallArgumentsRequiresDistinctConcreteWorkspaceDesignerScopes(t
 	}
 }
 
+func TestParseTaskCallArgumentsPreservesPerLaunchWorkspaceTargets(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "implement across shared repositories",
+		"launches": []any{
+			map[string]any{"agent": "coder", "role": "implement web", "workspace_path": "/shared/swarm-web", "owned_scope": []any{"."}},
+			map[string]any{"agent": "finder", "role": "inspect api", "workspace_path": "/shared/swarm-api", "owned_scope": []any{"."}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("parse workspace-targeted launches: %v", err)
+	}
+	if parsed.Launches[0].TargetWorkspacePath != "/shared/swarm-web" || parsed.Launches[1].TargetWorkspacePath != "/shared/swarm-api" {
+		t.Fatalf("workspace targets = %#v, %#v", parsed.Launches[0].TargetWorkspacePath, parsed.Launches[1].TargetWorkspacePath)
+	}
+}
+
+func TestResolveTaskTargetWorkspaceAcceptsAuthorizedSharedRoot(t *testing.T) {
+	parentRoot := t.TempDir()
+	sharedRoot := t.TempDir()
+	parent := pebblestore.SessionSnapshot{ID: "parent", UserID: "user", AccountScopeID: "account", WorkspacePath: parentRoot, WorkspaceName: "parent", TemporaryWorkspaceRoots: []string{sharedRoot}}
+	svc := &Service{}
+	target, name, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: sharedRoot})
+	if err != nil {
+		t.Fatalf("resolve authorized shared workspace: %v", err)
+	}
+	if target != sharedRoot || name != filepath.Base(sharedRoot) {
+		t.Fatalf("target = %q/%q, want %q/%q", target, name, sharedRoot, filepath.Base(sharedRoot))
+	}
+	outside := t.TempDir()
+	if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: outside}); err == nil || !strings.Contains(err.Error(), "outside the parent session's authorized shared workspace roots") {
+		t.Fatalf("unauthorized workspace error = %v", err)
+	}
+}
+
 func TestParseTaskCallArgumentsPreservesCoderScopeAndRejectsInvalidScopeShape(t *testing.T) {
 	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "implement backend", "agent": "coder", "role": "implement backend", "owned_scope": []any{"swarmd/internal/run/**"},
@@ -834,6 +868,8 @@ type taskLaunchWorktreeStub struct {
 	taskBase          worktreeruntime.TaskBase
 	config            worktreeruntime.Config
 	requestedBase     string
+	resolvedPaths     []string
+	allocatedPaths    []string
 	requestedBranch   string
 	requestedNameSeed string
 	cleanupCalls      []string
@@ -842,15 +878,17 @@ type taskLaunchWorktreeStub struct {
 
 func (s *taskLaunchWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
 
-func (s *taskLaunchWorktreeStub) ResolveTaskBase(_ string) (worktreeruntime.TaskBase, error) {
+func (s *taskLaunchWorktreeStub) ResolveTaskBase(path string) (worktreeruntime.TaskBase, error) {
+	s.resolvedPaths = append(s.resolvedPaths, strings.TrimSpace(path))
 	if strings.TrimSpace(s.taskBase.BaseCommit) == "" {
 		return worktreeruntime.TaskBase{RepoRoot: "/repo", ParentBranch: "dev", BaseCommit: "base-commit"}, nil
 	}
 	return s.taskBase, nil
 }
 
-func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(_ string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
+func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(path string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
 	s.allocations++
+	s.allocatedPaths = append(s.allocatedPaths, strings.TrimSpace(path))
 	return s.allocation, nil
 }
 
@@ -1237,6 +1275,39 @@ func providerToolNames(definitions []provideriface.ToolDefinition) []string {
 		names = append(names, definition.Name)
 	}
 	return names
+}
+
+func TestApprovedCoderAllocatesFromSelectedSharedWorkspace(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	targetPath := t.TempDir()
+	clonePath := t.TempDir()
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: targetPath, BaseBranch: "dev", BranchName: "agent/shared", WorkspaceID: "shared-workspace"}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "coder")
+	if err != nil || !virtual {
+		t.Fatalf("resolve Coder profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	taskBase, err := stub.ResolveTaskBase(targetPath)
+	if err != nil {
+		t.Fatalf("resolve target task base: %v", err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, TargetWorkspacePath: targetPath, LogicalTaskID: "shared-workspace-task",
+	}, "implement", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare shared-workspace Coder: %v", err)
+	}
+	if len(stub.allocatedPaths) != 1 || stub.allocatedPaths[0] != targetPath {
+		t.Fatalf("allocated paths = %#v, want %q", stub.allocatedPaths, targetPath)
+	}
+	if metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_source_workspace_path") != targetPath || metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_runtime_workspace_path") != clonePath {
+		t.Fatalf("shared workspace metadata = %#v", launch.ChildSession.Metadata)
+	}
 }
 
 func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {

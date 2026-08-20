@@ -1419,11 +1419,12 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason":  map[string]any{"type": "string", "description": "Regular-mode single-launch shorthand only: why this scope is useful and safe to delegate now. Omit in mode=swarm; swarm concurrency is defined by count."},
+					"workspace_path":      map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target. May select an authorized linked/shared workspace root; omitted uses the parent workspace. Coder worktrees are based on the selected target repository HEAD."},
 					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree."},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants. Designer defaults to managed parent-owned artifact output; workspace mode permits read/search/find/list/write/edit with no Bash or Git and requires distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
+						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from each launch's selected authorized workspace HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants. Designer defaults to managed parent-owned artifact output; workspace mode permits read/search/find/list/write/edit with no Bash or Git and requires distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -1438,6 +1439,7 @@ func (r *Runtime) Definitions() []Definition {
 								"output_requirements": artifact.OutputRequirementsToolSchema(),
 								"animation_profile":   artifact.AnimationProfileToolSchema(),
 								"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
+								"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder. Each Coder gets a worktree based on that target repository HEAD; omitted uses the parent workspace."},
 								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree."},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
@@ -6413,9 +6415,10 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		selectedSet[id] = true
 	}
 	type candidate struct {
-		callID string
-		index  int
-		child  worktreeruntime.TaskIntegrationChild
+		callID     string
+		index      int
+		parentPath string
+		child      worktreeruntime.TaskIntegrationChild
 	}
 	candidates := make([]candidate, 0, len(selected))
 	for callID, raw := range launchMap {
@@ -6445,14 +6448,19 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
 			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
 			headCommit := strings.TrimSpace(asString(row["head_commit"]))
-			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(parentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
+			childParentPath := strings.TrimSpace(firstNonEmptyString(asString(row["parent_workspace_path"]), asString(childSession.Metadata["target_workspace_path"]), parentPath))
+			resolvedParentPath, resolveErr := r.manageWorktreeResolveWorkspacePath(scope, childParentPath)
+			if resolveErr != nil {
+				return "", fmt.Errorf("resolve selected child %q parent workspace: %w", id, resolveErr)
+			}
+			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(resolvedParentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
 			if inspectErr != nil {
 				return "", fmt.Errorf("verify selected child %q lineage: %w", id, inspectErr)
 			}
 			if !state.Clean {
 				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
 			}
-			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: resolvedParentPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
 		}
 	}
 	if len(candidates) != len(selectedSet) {
@@ -6464,15 +6472,22 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		return candidates[i].index < candidates[j].index
 	})
+	integrationParentPath := parentPath
+	if len(candidates) > 0 {
+		integrationParentPath = candidates[0].parentPath
+	}
 	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(candidates))
 	for _, item := range candidates {
+		if item.parentPath != integrationParentPath {
+			return "", errors.New("integrate selection spans multiple parent workspaces; integrate each workspace's children in a separate call")
+		}
 		children = append(children, item.child)
 	}
-	parentState, inspectErr := r.worktrees.InspectTaskWorkspace(parentPath)
+	parentState, inspectErr := r.worktrees.InspectTaskWorkspace(integrationParentPath)
 	if inspectErr != nil {
 		return "", fmt.Errorf("inspect current parent before integration: %w", inspectErr)
 	}
-	plan, err := r.worktrees.PrepareTaskIntegration(parentPath, parentState.HeadCommit, children)
+	plan, err := r.worktrees.PrepareTaskIntegration(integrationParentPath, parentState.HeadCommit, children)
 	if err != nil {
 		var conflict *worktreeruntime.TaskIntegrationConflictError
 		if errors.As(err, &conflict) {
@@ -6487,7 +6502,7 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		return "", err
 	}
-	result, err := r.worktrees.ApplyTaskIntegration(parentPath, plan)
+	result, err := r.worktrees.ApplyTaskIntegration(integrationParentPath, plan)
 	if err != nil {
 		return "", err
 	}

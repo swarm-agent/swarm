@@ -38,6 +38,9 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if _, ok := properties["owned_scope_template"]; ok {
 		t.Fatal("task schema must not expose workspace target templates for Iteration Swarms")
 	}
+	if !definitionTextContains(taskDefinition, "authorized linked/shared workspace") || !definitionTextContains(taskDefinition, "selected target repository HEAD") {
+		t.Fatalf("task schema missing cross-workspace Coder target contract: %#v", taskDefinition)
+	}
 	if !definitionTextContains(taskDefinition, "Designer and image Iteration Swarms are always managed") || !definitionTextContains(taskDefinition, "Workspace is available only for regular Designer launches") {
 		t.Fatalf("task schema missing managed-only Designer Iteration Swarm contract: %#v", taskDefinition)
 	}
@@ -80,7 +83,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 			t.Fatalf("task definition missing Designer contract %q: %#v", want, taskDefinition)
 		}
 	}
-	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role"} {
+	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role", "workspace_path"} {
 		property, ok := properties[key]
 		if !ok {
 			t.Fatalf("task single-launch shorthand missing %q", key)
@@ -101,7 +104,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !ok {
 		t.Fatalf("task launches item schema missing: %#v", launches)
 	}
-	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role", "animation_profile"} {
+	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role", "workspace_path", "animation_profile"} {
 		property, ok := itemsProperty(items, key)
 		if !ok {
 			t.Fatalf("task launches item missing property %q", key)

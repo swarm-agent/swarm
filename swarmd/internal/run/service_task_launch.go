@@ -128,6 +128,7 @@ type taskSwarmSpec struct {
 
 type taskLaunchSpec struct {
 	RequestedSubagentType string
+	TargetWorkspacePath   string
 	MetaPrompt            string
 	AssignmentLabel       string
 	Deliverable           string
@@ -407,11 +408,12 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				mapString(raw, "assignment_label"),
 				mapString(raw, "label"),
 			)),
-			Deliverable:        strings.TrimSpace(mapString(raw, "deliverable")),
-			ConcurrencyReason:  strings.TrimSpace(mapString(raw, "concurrency_reason")),
-			OwnedScope:         ownedScope,
-			DependencyEvidence: strings.TrimSpace(mapString(raw, "dependency_evidence")),
-			SourceArguments:    cloneGenericMap(raw),
+			TargetWorkspacePath: strings.TrimSpace(mapString(raw, "workspace_path")),
+			Deliverable:         strings.TrimSpace(mapString(raw, "deliverable")),
+			ConcurrencyReason:   strings.TrimSpace(mapString(raw, "concurrency_reason")),
+			OwnedScope:          ownedScope,
+			DependencyEvidence:  strings.TrimSpace(mapString(raw, "dependency_evidence")),
+			SourceArguments:     cloneGenericMap(raw),
 		}
 		if launch.RequestedSubagentType == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires subagent_type, agent, or purpose", label)
@@ -2759,6 +2761,74 @@ func isPlanSidechatTaskParent(session pebblestore.SessionSnapshot) bool {
 		agentruntime.IsPlanSidechatAgentName(mapString(session.Metadata, "agent_name"))
 }
 
+func taskPathWithinRoot(root, target string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	target = filepath.Clean(strings.TrimSpace(target))
+	if root == "" || target == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
+	requested := strings.TrimSpace(launch.TargetWorkspacePath)
+	if requested == "" {
+		return strings.TrimSpace(parentSession.WorkspacePath), strings.TrimSpace(parentSession.WorkspaceName), nil
+	}
+	if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
+		return "", "", errors.New("task workspace_path is supported only for Coder or Finder launches")
+	}
+	principal, err := principalForRunWorkspaceScope(parentSession, principal)
+	if err != nil {
+		return "", "", err
+	}
+	scope, err := s.resolveRunWorkspaceScope(parentSession, principal)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve parent shared workspace roots: %w", err)
+	}
+	allowedRoots := append([]string(nil), scope.Roots...)
+	if s != nil && s.workspace != nil {
+		sourcePath := strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"), parentSession.WorkspacePath))
+		if saved, savedErr := s.workspace.ScopeForPathForPrincipal(principal, sourcePath); savedErr == nil && saved.Matched {
+			allowedRoots = append(allowedRoots, saved.Directories...)
+		}
+	}
+	if !filepath.IsAbs(requested) {
+		base := strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"), parentSession.WorkspacePath))
+		requested = filepath.Join(base, requested)
+	}
+	target, err := normalizeRunScopePath(requested)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve task workspace_path: %w", err)
+	}
+	authorized := false
+	for _, root := range allowedRoots {
+		canonicalRoot, rootErr := normalizeRunScopePath(root)
+		if rootErr == nil && taskPathWithinRoot(canonicalRoot, target) {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
+		return "", "", fmt.Errorf("task workspace_path %q is outside the parent session's authorized shared workspace roots", requested)
+	}
+	name := filepath.Base(target)
+	if s != nil && s.workspace != nil {
+		resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, target)
+		if scopeErr != nil {
+			return "", "", fmt.Errorf("resolve task workspace identity: %w", scopeErr)
+		}
+		if strings.TrimSpace(resolved.ResolvedPath) != "" {
+			target = strings.TrimSpace(resolved.ResolvedPath)
+		}
+		if strings.TrimSpace(resolved.WorkspaceName) != "" {
+			name = strings.TrimSpace(resolved.WorkspaceName)
+		}
+	}
+	return target, name, nil
+}
+
 func validatePlanSidechatTaskTargets(parentSession pebblestore.SessionSnapshot, launches []taskLaunchSpec) error {
 	if !isPlanSidechatTaskParent(parentSession) {
 		return nil
@@ -2924,6 +2994,9 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if !reflect.DeepEqual(row.OwnedScope, launchSpecs[i].OwnedScope) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
 		}
+		if strings.TrimSpace(row.TargetWorkspacePath) != strings.TrimSpace(launchSpecs[i].TargetWorkspacePath) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d workspace target mismatch", i)
+		}
 		if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
 			if row.ResolvedTools == nil || len(row.ResolvedTools.AllowedTools) != 1 || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
 				return taskLaunchManifest{}, fmt.Errorf("approved managed Image manifest launch %d must allow only manage_artifact", i)
@@ -3043,6 +3116,12 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	resolvedAgentError := ""
 	requestedPrimary := ""
 	for i, launch := range parsed.Launches {
+		targetWorkspacePath, targetWorkspaceName, targetErr := s.resolveTaskTargetWorkspace(parentSession, identity.Principal{}, launch)
+		if targetErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
+		}
+		parsed.Launches[i].TargetWorkspacePath = targetWorkspacePath
+		launch.TargetWorkspacePath = targetWorkspacePath
 		requested := strings.TrimSpace(launch.RequestedSubagentType)
 		if requested == "" {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires subagent_type, agent, or purpose", i)
@@ -3125,6 +3204,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			ChildMode:             childMode,
 			DisabledTools:         launchDisabledTools,
 			ResolvedTools:         resolvedTools,
+			TargetWorkspacePath:   targetWorkspacePath,
+			TargetWorkspaceName:   targetWorkspaceName,
 			Capabilities: map[string]any{
 				"allow_bash":            false,
 				"disabled_tools":        launchDisabledTools,
@@ -3208,10 +3289,6 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		manifest.Parent = parent
 		manifest.TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
 		manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
-		for i := range manifest.Launches {
-			manifest.Launches[i].TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
-			manifest.Launches[i].TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
-		}
 	}
 
 	digest, err := taskLaunchManifestDigest(manifest)

@@ -43,6 +43,7 @@ type taskLaunchPrepared struct {
 	SubagentProfile      pebblestore.AgentProfile
 	ChildSession         pebblestore.SessionSnapshot
 	ChildMode            string
+	TargetWorkspacePath  string
 	ChildWorkspacePath   string
 	ChildWorkspaceName   string
 	ChildWorktreeEnabled bool
@@ -141,6 +142,7 @@ type taskLaunchOutcome struct {
 	ChildSessionID      string
 	ChildRunID          string
 	ChildMode           string
+	TargetWorkspacePath string
 	WorkspacePath       string
 	WorkspaceName       string
 	WorktreeEnabled     bool
@@ -605,6 +607,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		SubagentModel:       strings.TrimSpace(launch.SubagentModel),
 		ChildSessionID:      strings.TrimSpace(launch.ChildSession.ID),
 		ChildMode:           strings.TrimSpace(launch.ChildMode),
+		TargetWorkspacePath: strings.TrimSpace(launch.TargetWorkspacePath),
 		WorkspacePath:       strings.TrimSpace(launch.ChildSession.WorkspacePath),
 		WorkspaceName:       strings.TrimSpace(launch.ChildSession.WorkspaceName),
 		WorktreeEnabled:     launch.ChildSession.WorktreeEnabled,
@@ -1013,8 +1016,12 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
-	childWorkspacePath := strings.TrimSpace(parentSession.WorkspacePath)
-	childWorkspaceName := strings.TrimSpace(parentSession.WorkspaceName)
+	targetWorkspacePath := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, parentSession.WorkspacePath))
+	childWorkspacePath := targetWorkspacePath
+	childWorkspaceName := filepath.Base(targetWorkspacePath)
+	if targetWorkspacePath == strings.TrimSpace(parentSession.WorkspacePath) {
+		childWorkspaceName = strings.TrimSpace(parentSession.WorkspaceName)
+	}
 	childWorktreeEnabled := parentSession.WorktreeEnabled
 	childWorktreeRootPath := strings.TrimSpace(parentSession.WorktreeRootPath)
 	childWorktreeBaseBranch := strings.TrimSpace(parentSession.WorktreeBaseBranch)
@@ -1159,7 +1166,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if launch.TaskBase == nil {
 			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: parent Git state was not resolved")
 		}
-		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(parentSession.WorkspacePath, *launch.TaskBase, childSessionID)
+		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(targetWorkspacePath, *launch.TaskBase, childSessionID)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
 		}
@@ -1185,6 +1192,13 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 	if childWorkspaceID != "" {
 		childMetadata["workspace_id"] = childWorkspaceID
+	}
+	if targetWorkspacePath != "" {
+		childMetadata["swarm_v3_source_workspace_path"] = targetWorkspacePath
+		childMetadata["target_workspace_path"] = targetWorkspacePath
+	}
+	if childWorkspacePath != "" {
+		childMetadata["swarm_v3_runtime_workspace_path"] = childWorkspacePath
 	}
 	if isCoderTarget {
 		childMetadata["worktree_path"] = childWorktreeRootPath
@@ -1252,6 +1266,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	launch.SubagentProfile = subagentProfile
 	launch.ChildSession = childSession
 	launch.ChildMode = childMode
+	launch.TargetWorkspacePath = targetWorkspacePath
 	launch.ChildWorkspacePath = childWorkspacePath
 	launch.ChildWorkspaceName = childWorkspaceName
 	launch.ChildWorktreeEnabled = childWorktreeEnabled
@@ -3936,6 +3951,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if err := validatePlanSidechatTaskTargets(parentSession, launchSpecs); err != nil {
 		return "", err
 	}
+	for i := range launchSpecs {
+		targetPath, _, targetErr := s.resolveTaskTargetWorkspace(parentSession, req.Principal, launchSpecs[i])
+		if targetErr != nil {
+			return "", fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
+		}
+		launchSpecs[i].TargetWorkspacePath = targetPath
+	}
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
@@ -4073,16 +4095,23 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			coderIndexes = append(coderIndexes, i)
 		}
 	}
-	var coderTaskBase *worktreeruntime.TaskBase
+	coderTaskBases := make(map[string]*worktreeruntime.TaskBase, len(coderIndexes))
 	if len(coderIndexes) > 0 {
 		if s.worktrees == nil {
 			return "", errors.New("write-capable Coders require separate worktree isolation")
 		}
-		resolved, resolveErr := s.worktrees.ResolveTaskBase(parentSession.WorkspacePath)
-		if resolveErr != nil {
-			return "", fmt.Errorf("task failed to resolve parent Git state before Coder execution: %w", resolveErr)
+		for _, index := range coderIndexes {
+			targetPath := strings.TrimSpace(firstNonEmptyString(launchSpecs[index].TargetWorkspacePath, parentSession.WorkspacePath))
+			if _, exists := coderTaskBases[targetPath]; exists {
+				continue
+			}
+			resolved, resolveErr := s.worktrees.ResolveTaskBase(targetPath)
+			if resolveErr != nil {
+				return "", fmt.Errorf("task failed to resolve target Git state for %q before Coder execution: %w", targetPath, resolveErr)
+			}
+			base := resolved
+			coderTaskBases[targetPath] = &base
 		}
-		coderTaskBase = &resolved
 	}
 	managedCollectionID, err := s.ensureManagedDesignerArtifactCollection(parentSession, taskCallID, launchSpecs, req.ApplySessionMutation)
 	if err != nil {
@@ -4111,7 +4140,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launchTaskBase := (*worktreeruntime.TaskBase)(nil)
 		if agentruntime.IsCoderAgentName(requestedSubagent) {
-			launchTaskBase = coderTaskBase
+			targetPath := strings.TrimSpace(firstNonEmptyString(spec.TargetWorkspacePath, parentSession.WorkspacePath))
+			launchTaskBase = coderTaskBases[targetPath]
 		}
 		managedArtifactContext := managedDesignerArtifactContext(parentSession, taskCallID, spec, i+1)
 		if (agentruntime.IsDesignerAgentName(requestedSubagent) || agentruntime.IsImageAgentName(requestedSubagent)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
@@ -4123,6 +4153,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			LaunchIndex:          i + 1,
 			VirtualTarget:        trustedVirtualTargets[i],
 			TaskBase:             launchTaskBase,
+			TargetWorkspacePath:  strings.TrimSpace(spec.TargetWorkspacePath),
 			RequestedSubagent:    requestedSubagent,
 			MetaPrompt:           metaPrompt,
 			AssignmentLabel:      spec.AssignmentLabel,
@@ -4239,6 +4270,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"child_session_id":       strings.TrimSpace(launch.ChildSessionID),
 				"child_run_id":           strings.TrimSpace(launch.ChildRunID),
 				"child_mode":             strings.TrimSpace(launch.ChildMode),
+				"parent_workspace_path":  strings.TrimSpace(launch.TargetWorkspacePath),
 				"workspace_path":         strings.TrimSpace(launch.WorkspacePath),
 				"workspace_name":         strings.TrimSpace(launch.WorkspaceName),
 				"worktree_enabled":       launch.WorktreeEnabled,
