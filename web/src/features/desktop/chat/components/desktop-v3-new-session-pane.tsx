@@ -21,6 +21,8 @@ import {
 } from '../../session-v3/new-session-flow'
 import { postDesktopV3RoutedSessionStart } from '../../session-v3/write-api'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
+import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
+import type { DesktopV3RunStatusModel } from './desktop-v3-run-status'
 import { DesktopV3RoutedPendingShell } from './desktop-v3-routed-pending-shell'
 import {
   reconcileDesktopComposerStagedAttachments,
@@ -358,6 +360,20 @@ export function DesktopV3NewSessionPane({
   const pendingState = routedState.phase === 'failed' || routedState.phase === 'worktree-primed'
     ? routedState.phase
     : 'draft'
+  const newChatUsesWorktree = routedState.snapshot.worktreePrimed || worktreeIntent.requested
+  const headerStatus: DesktopV3RunStatusModel | null = activationPending
+    ? {
+        kind: 'starting',
+        label: routedState.phase === 'resolved'
+          ? 'Opening…'
+          : newChatUsesWorktree
+            ? 'Routing…'
+            : 'Starting…',
+        active: false,
+      }
+    : routedState.phase === 'failed'
+      ? { kind: 'failed', label: 'Start failed', active: false }
+      : null
 
   return (
     <div
@@ -366,9 +382,15 @@ export function DesktopV3NewSessionPane({
       data-testid="desktop-v3-new-session-pane"
       data-routed-phase={routedState.phase}
     >
+      <DesktopV3ChatHeader
+        title={newChatUsesWorktree ? 'New worktree chat' : 'New chat'}
+        workspaceName={workspace.workspaceName}
+        runStatus={headerStatus}
+      />
+
       {mobileSessionQuickMenu ? (
         <section
-          className="flex min-h-0 flex-1 flex-col overflow-hidden pt-[var(--app-safe-area-top)] sm:hidden"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden sm:hidden"
           data-testid="mobile-workspace-session-list"
           aria-label="Workspace sessions"
         >

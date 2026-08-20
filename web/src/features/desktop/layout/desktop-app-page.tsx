@@ -40,6 +40,7 @@ import { saveShowTipsSetting } from '../settings/swarm/mutations/save-show-tips-
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
 import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
+import { DesktopV3ChatHeader } from '../chat/components/desktop-v3-chat-header'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
@@ -5368,14 +5369,31 @@ export function DesktopAppPage() {
             onOpenPlan={() => openPlanModalForSession(routeSessionId)}
             planSidebarBelowActions={planSidebarGitPanel}
           />
-        ) : routeWorkspaceSlug && !chatWorkspacePath && !workspacesLoading ? (
-          <div className="flex h-full flex-1 items-center justify-center px-6">
-            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">Workspace not found</div>
-              <p className="mt-2 text-sm text-[var(--app-text-muted)]">
-                We couldn’t resolve that workspace URL.
-              </p>
-            </Card>
+        ) : routeWorkspaceSlug && !chatWorkspacePath && workspacesLoading ? (
+          <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" aria-busy="true" data-testid="desktop-v3-workspace-route-loading">
+            <DesktopV3ChatHeader
+              title="New chat"
+              workspaceName="Loading workspace…"
+              runStatus={{ kind: 'starting', label: 'Loading…', active: false }}
+            />
+            <div className="flex min-h-0 flex-1 items-center justify-center px-6">
+              <div className="flex items-center gap-3 text-sm text-[var(--app-text-muted)]" role="status">
+                <LoaderCircle size={18} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                <span>Preparing this workspace…</span>
+              </div>
+            </div>
+          </div>
+        ) : routeWorkspaceSlug && !chatWorkspacePath ? (
+          <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]">
+            <DesktopV3ChatHeader title="New chat" workspaceName="Workspace unavailable" />
+            <div className="flex h-full flex-1 items-center justify-center px-6">
+              <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
+                <div className="text-lg font-semibold">Workspace not found</div>
+                <p className="mt-2 text-sm text-[var(--app-text-muted)]">
+                  We couldn’t resolve that workspace URL.
+                </p>
+              </Card>
+            </div>
           </div>
         ) : topWorkspace?.path && activeWorkspaceAuthority ? (
           <DesktopV3NewSessionPane

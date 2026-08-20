@@ -49,6 +49,8 @@ test('routed pending and failure stay local and retry the persisted controller i
   const paneSource = await readFile(paneURL, 'utf8')
   const composerSource = await readFile(composerURL, 'utf8')
 
+  assert.match(paneSource, /<DesktopV3ChatHeader[\s\S]*title=\{newChatUsesWorktree \? 'New worktree chat' : 'New chat'\}[\s\S]*workspaceName=\{workspace\.workspaceName\}[\s\S]*runStatus=\{headerStatus\}/)
+  assert.match(paneSource, /const headerStatus:[\s\S]*activationPending[\s\S]*'Opening…'[\s\S]*'Routing…'[\s\S]*'Starting…'[\s\S]*'Start failed'/)
   assert.match(paneSource, /<DesktopV3RoutedPendingShell[\s\S]*state=\{pendingState\}[\s\S]*startPath=\{routedState\.snapshot\.worktreePrimed \? 'router' : 'session'\}[\s\S]*pendingPrompt=\{routedState\.prompt\}/)
   assert.match(paneSource, /routedState\.phase === 'failed'[\s\S]*controller\.retry\(\)/)
   assert.match(paneSource, /const visibleAttachments = restoredAttachments\.filter[\s\S]*visibleAttachments\.length !== current\.snapshot\.attachments\.length[\s\S]*controller\.retry\(\)/)
@@ -71,6 +73,7 @@ test('routed pending and failure stay local and retry the persisted controller i
   assert.match(composerSource, /routedMediaFiles = files\.filter\(\(file\) => !isComposerTextFile\(file\)\)/)
   assert.match(composerSource, /textAttachments\.reduce\([\s\S]*appendComposerTextFile\(nextDraft, attachment\.name, attachment\.fileType, attachment\.content\)/)
   assert.match(paneSource, /<DesktopV3AgenticComposer[\s\S]*disabled=\{activationPending\}[\s\S]*busy=\{activationPending\}/)
+  assert.match(paneSource, /className="flex min-h-0 flex-1 flex-col overflow-hidden sm:hidden"[\s\S]*data-testid="mobile-workspace-session-list"/)
   assert.match(paneSource, /routedNewSession/)
 })
 
