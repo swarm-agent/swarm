@@ -962,6 +962,31 @@ func TestSessionV3ArtifactSelectionActionPersistsThroughMutation(t *testing.T) {
 	}
 }
 
+func TestResolveSessionV3ArtifactFilePathAllowsRealWorkspaceFileOnly(t *testing.T) {
+	root := t.TempDir()
+	artifactPath := filepath.Join(root, "outputs", "result.txt")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveSessionV3ArtifactFilePath(root, "outputs/result.txt")
+	if err != nil || resolved != artifactPath {
+		t.Fatalf("workspace artifact resolve = %q err=%v", resolved, err)
+	}
+	if _, err := resolveSessionV3ArtifactFilePath(root, "../outside.txt"); err == nil {
+		t.Fatal("workspace artifact path escaped its root")
+	}
+	linked := filepath.Join(root, "outputs", "linked.txt")
+	if err := os.Symlink(artifactPath, linked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveSessionV3ArtifactFilePath(root, "outputs/linked.txt"); err == nil {
+		t.Fatal("workspace artifact symlink was accepted")
+	}
+}
+
 func TestSessionV3ArtifactRevealRejectsNonLoopback(t *testing.T) {
 	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "note.txt", "workspace file")
 	principal := testPrincipal()
@@ -977,6 +1002,18 @@ func TestSessionV3ArtifactRevealRejectsNonLoopback(t *testing.T) {
 	server.handleSessionV3ArtifactReveal(rec, req, principal, variant.SessionID, variant.ID)
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "only from this machine") {
 		t.Fatalf("remote reveal status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSessionV3ArtifactRevealTreatsAdmittedTailscaleProxyAsRemote(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v3/artifacts", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	req = req.WithContext(context.WithValue(req.Context(), desktopAdmittedOriginKey, desktopAdmission{
+		origin:         "https://swarm.example.ts.net",
+		tailscaleServe: true,
+	}))
+	if sessionV3ArtifactRevealIsLoopback(req) {
+		t.Fatal("Tailscale-proxied request was treated as local reveal access")
 	}
 }
 

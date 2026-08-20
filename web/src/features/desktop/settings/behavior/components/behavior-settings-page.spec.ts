@@ -23,7 +23,8 @@ test('Behavior owns the artifact library control and saves only on submit', () =
   assert.match(source, /normalizeArtifactLibrarySettings\(settingsQuery\.data\)/)
   assert.match(source, /saveArtifactLibrarySettings/)
   assert.match(artifactLibrarySource, /Show in folder/)
-  assert.match(artifactLibrarySource, /Leave blank to use Swarm’s portable system default/)
+  assert.match(artifactLibrarySource, /\$XDG_CACHE_HOME\/swarm\/artifacts/)
+  assert.match(artifactLibrarySource, /Downloads remain available for remote access/)
   assert.match(artifactLibrarySource, /type="submit"/)
 })
 

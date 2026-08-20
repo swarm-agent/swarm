@@ -7,23 +7,23 @@ import (
 )
 
 func TestResolveLibraryRoot(t *testing.T) {
-	home := t.TempDir()
-	got, err := ResolveLibraryRoot("", home)
+	cacheRoot := t.TempDir()
+	got, err := ResolveLibraryRoot("", cacheRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, "Swarm", "Artifacts"); got != want {
+	if want := filepath.Join(cacheRoot, "swarm", "artifacts"); got != want {
 		t.Fatalf("default library = %q, want %q", got, want)
 	}
-	custom := filepath.Join(home, "Creative Library")
+	custom := filepath.Join(cacheRoot, "Creative Library")
 	if got, err := ResolveLibraryRoot(custom, ""); err != nil || got != custom {
 		t.Fatalf("custom library = %q, err=%v", got, err)
 	}
-	if _, err := ResolveLibraryRoot("relative", home); err == nil {
+	if _, err := ResolveLibraryRoot("relative", cacheRoot); err == nil {
 		t.Fatal("relative custom library was accepted")
 	}
 	if _, err := ResolveLibraryRoot("", ""); err == nil {
-		t.Fatal("missing custom library and home was accepted")
+		t.Fatal("missing custom library and cache root was accepted")
 	}
 }
 

@@ -38,6 +38,10 @@ export interface UIMediaSettingsWire {
   transcription_model?: string
 }
 
+export interface UIArtifactSettingsWire {
+  library_directory?: string
+}
+
 export type DesktopSessionMode = 'auto' | 'plan'
 export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 
@@ -56,7 +60,6 @@ export interface UIChatSettingsWire {
   sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
   tool_stream?: Record<string, unknown>
-  artifact_library_directory?: string
 }
 
 export interface UIThemeSettingsWire {
@@ -74,6 +77,7 @@ export interface UISettingsWire {
   swarm?: UISwarmSettingsWire
   tools?: UIToolSettingsWire
   media?: UIMediaSettingsWire
+  artifacts?: UIArtifactSettingsWire
   updated_at?: number
 }
 
@@ -149,7 +153,7 @@ export function normalizeArtifactLibraryDirectory(value: unknown): string {
 }
 
 export function normalizeArtifactLibrarySettings(payload?: UISettingsWire | null): ArtifactLibrarySettings {
-  return { libraryDirectory: normalizeArtifactLibraryDirectory(payload?.chat?.artifact_library_directory) }
+  return { libraryDirectory: normalizeArtifactLibraryDirectory(payload?.artifacts?.library_directory) }
 }
 
 export function normalizeReviewAutoArchiveMinutes(value: unknown): number {
@@ -294,9 +298,9 @@ export function withTaskContextSettings(current: UISettingsWire, settings: TaskC
 export function withArtifactLibrarySettings(current: UISettingsWire, settings: ArtifactLibrarySettings): UISettingsWire {
   return {
     ...current,
-    chat: {
-      ...(current.chat ?? {}),
-      artifact_library_directory: normalizeArtifactLibraryDirectory(settings.libraryDirectory),
+    artifacts: {
+      ...(current.artifacts ?? {}),
+      library_directory: normalizeArtifactLibraryDirectory(settings.libraryDirectory),
     },
   }
 }

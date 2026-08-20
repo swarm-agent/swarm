@@ -8,8 +8,8 @@ export async function saveArtifactLibrarySettings(
 ): Promise<UISettingsWire> {
   const next = withArtifactLibrarySettings(current, settings)
   return patchUISettings({
-    chat: {
-      artifact_library_directory: next.chat?.artifact_library_directory,
+    artifacts: {
+      library_directory: next.artifacts?.library_directory,
     },
   })
 }

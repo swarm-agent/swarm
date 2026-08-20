@@ -123,12 +123,19 @@ export interface DesktopV3ArtifactCatalogEntry {
   lineage?: DesktopV3ArtifactLineage | null
   outputRequirements?: DesktopV3ArtifactOutputRequirements
   animationProfile?: DesktopV3ArtifactAnimationProfile
+  localRevealAvailable?: boolean
   content?: string
 }
 
 type DesktopV3ArtifactCatalogResponse = {
   ok?: unknown
   artifacts?: unknown
+  local_reveal_available?: unknown
+}
+
+export interface DesktopV3ArtifactCatalogResult {
+  artifacts: DesktopV3ArtifactCatalogEntry[]
+  localRevealAvailable: boolean
 }
 
 function artifactCatalogRecord(value: unknown): Record<string, unknown> | null {
@@ -354,14 +361,25 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   }
 }
 
-export async function fetchDesktopV3ArtifactCatalog(signal?: AbortSignal, sessionId = ''): Promise<DesktopV3ArtifactCatalogEntry[]> {
+export async function fetchDesktopV3ArtifactCatalogResult(signal?: AbortSignal, sessionId = ''): Promise<DesktopV3ArtifactCatalogResult> {
   const search = new URLSearchParams({ limit: '2000' })
   if (sessionId.trim()) search.set('session_id', sessionId.trim())
   const response = await apiFetch(`/v3/artifacts?${search.toString()}`, { method: 'GET', signal })
   if (!response.ok) throw new Error(await readErrorMessage(response))
   const payload = await response.json() as DesktopV3ArtifactCatalogResponse
   if (payload.ok !== true || !Array.isArray(payload.artifacts)) throw new Error('Artifact catalog returned an invalid response')
-  return payload.artifacts.map(normalizeDesktopV3ArtifactCatalogEntry).filter((entry): entry is DesktopV3ArtifactCatalogEntry => entry !== null)
+  const localRevealAvailable = payload.local_reveal_available === true
+  return {
+    artifacts: payload.artifacts
+      .map(normalizeDesktopV3ArtifactCatalogEntry)
+      .filter((entry): entry is DesktopV3ArtifactCatalogEntry => entry !== null)
+      .map((entry) => ({ ...entry, localRevealAvailable })),
+    localRevealAvailable,
+  }
+}
+
+export async function fetchDesktopV3ArtifactCatalog(signal?: AbortSignal, sessionId = ''): Promise<DesktopV3ArtifactCatalogEntry[]> {
+  return (await fetchDesktopV3ArtifactCatalogResult(signal, sessionId)).artifacts
 }
 
 export function desktopV3ArtifactSelection(entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactSelection {
@@ -769,18 +787,28 @@ export function desktopV3ArtifactCollectionRevealEndpoint(sessionId: string, col
   return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/collections/${encodeURIComponent(normalizedCollectionId)}/reveal`
 }
 
-async function postDesktopV3ArtifactReveal(endpoint: string, signal?: AbortSignal): Promise<void> {
+export interface DesktopV3ArtifactRevealResult {
+  method: string
+  displayLocation: string
+}
+
+async function postDesktopV3ArtifactReveal(endpoint: string, signal?: AbortSignal): Promise<DesktopV3ArtifactRevealResult> {
   const response = await apiFetch(endpoint, { method: 'POST', signal })
   if (!response.ok) throw new Error(await readErrorMessage(response))
   const payload = await response.json() as Record<string, unknown>
-  if (payload.ok !== true) throw new Error('Artifact reveal returned an invalid response')
+  const method = artifactCatalogString(payload.method)
+  const displayLocation = artifactCatalogString(payload.display_location)
+  if (payload.ok !== true || !method || !displayLocation) {
+    throw new Error('Artifact reveal did not confirm that the native file manager opened')
+  }
+  return { method, displayLocation }
 }
 
-export function revealDesktopV3Artifact(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<void> {
+export function revealDesktopV3Artifact(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<DesktopV3ArtifactRevealResult> {
   return postDesktopV3ArtifactReveal(desktopV3ArtifactRevealEndpoint(sessionId, artifactId), signal)
 }
 
-export function revealDesktopV3ArtifactCollection(sessionId: string, collectionId: string, signal?: AbortSignal): Promise<void> {
+export function revealDesktopV3ArtifactCollection(sessionId: string, collectionId: string, signal?: AbortSignal): Promise<DesktopV3ArtifactRevealResult> {
   return postDesktopV3ArtifactReveal(desktopV3ArtifactCollectionRevealEndpoint(sessionId, collectionId), signal)
 }
 

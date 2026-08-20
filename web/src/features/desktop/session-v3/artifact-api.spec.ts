@@ -26,6 +26,7 @@ import {
   normalizeDesktopV3ArtifactCatalogEntry,
   desktopV3ArtifactSelectionEndpoint,
   fetchDesktopV3ArtifactPreviewAccess,
+  fetchDesktopV3ArtifactCatalogResult,
   preflightDesktopV3ArtifactDirectContent,
   revealDesktopV3Artifact,
   revealDesktopV3ArtifactCollection,
@@ -237,16 +238,34 @@ test('protected direct previews preflight with HEAD before browser assignment', 
   }
 })
 
+test('artifact catalog carries server-authoritative local reveal availability', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    ok: true,
+    artifacts: [managedCatalogWire],
+    local_reveal_available: false,
+  }), { headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+  try {
+    const result = await fetchDesktopV3ArtifactCatalogResult()
+    assert.equal(result.localRevealAvailable, false)
+    assert.equal(result.artifacts[0]?.localRevealAvailable, false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('artifact reveal actions use authenticated variant and collection routes', async () => {
   const originalFetch = globalThis.fetch
   const requests: Array<{ url: string; method: string }> = []
   globalThis.fetch = (async (input, init) => {
     requests.push({ url: String(input), method: init?.method ?? '' })
-    return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } })
+    return new Response(JSON.stringify({ ok: true, method: 'freedesktop-file-manager-show-folders', display_location: '/home/user/.cache/swarm/artifacts/output' }), { headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
   try {
-    await revealDesktopV3Artifact('session-1', 'variant-1')
-    await revealDesktopV3ArtifactCollection('session-1', 'collection-1')
+    const artifactResult = await revealDesktopV3Artifact('session-1', 'variant-1')
+    const collectionResult = await revealDesktopV3ArtifactCollection('session-1', 'collection-1')
+    assert.equal(artifactResult.method, 'freedesktop-file-manager-show-folders')
+    assert.equal(collectionResult.displayLocation, '/home/user/.cache/swarm/artifacts/output')
     assert.deepEqual(requests, [
       { url: '/v3/sessions/session-1/artifacts/variant-1/reveal', method: 'POST' },
       { url: '/v3/sessions/session-1/artifacts/collections/collection-1/reveal', method: 'POST' },

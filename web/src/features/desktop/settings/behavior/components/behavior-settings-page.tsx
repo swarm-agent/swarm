@@ -54,7 +54,7 @@ export function BehaviorSettingsPage() {
           <ArtifactLibrarySettingsSection
             value={normalizeArtifactLibrarySettings(settingsQuery.data)}
             saving={artifactLibraryMutation.isPending}
-            error={artifactLibraryMutation.error ? errorMessage(artifactLibraryMutation.error, 'The artifact library request failed.') : null}
+            error={artifactLibraryMutation.error ? errorMessage(artifactLibraryMutation.error, 'The artifact working-copy request failed.') : null}
             onSave={(value) => artifactLibraryMutation.mutate(value)}
           />
         ) : error ? (

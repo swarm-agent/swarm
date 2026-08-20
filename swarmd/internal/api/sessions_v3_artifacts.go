@@ -315,7 +315,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 	if len(artifacts) > limit {
 		artifacts = artifacts[:limit]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artifacts": artifacts})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artifacts": artifacts, "local_reveal_available": sessionV3ArtifactRevealIsLoopback(r)})
 }
 
 func sessionsV3ArtifactCatalogIncludesSession(session pebblestore.SessionSnapshot, requestedSessionID string) bool {
@@ -813,7 +813,25 @@ func (s *Server) handleSessionV3ArtifactReveal(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if !found || resolved.Managed == nil || resolved.Managed.Status != pebblestore.SessionArtifactStatusReady {
+	if !found {
+		writeError(w, http.StatusNotFound, errors.New("artifact not found"))
+		return
+	}
+	if resolved.Managed == nil {
+		artifactPath, err := resolveSessionV3ArtifactFilePath(sessionV3ArtifactWorkspaceRoot(session), resolved.Reference.Path)
+		if err != nil {
+			writeError(w, http.StatusNotFound, errors.New("artifact file is unavailable"))
+			return
+		}
+		method, err := revealLocalPath(artifactPath)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("artifact file manager could not open it: %w", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "method": method, "display_location": artifactPath})
+		return
+	}
+	if resolved.Managed.Status != pebblestore.SessionArtifactStatusReady {
 		writeError(w, http.StatusNotFound, errors.New("ready managed artifact not found"))
 		return
 	}
@@ -869,7 +887,7 @@ func (s *Server) handleSessionV3ArtifactCollectionReveal(w http.ResponseWriter, 
 
 func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r *http.Request, principal identity.Principal, session pebblestore.SessionSnapshot, destination string, variants []pebblestore.SessionArtifactVariant) {
 	if s == nil || s.artifacts == nil || s.uiSettings == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("artifact library is not configured"))
+		writeError(w, http.StatusInternalServerError, errors.New("artifact working-copy storage is not configured"))
 		return
 	}
 	settings, err := s.uiSettings.GetForAccount(principal.AccountScopeID)
@@ -877,11 +895,11 @@ func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r 
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	home, homeErr := os.UserHomeDir()
-	if homeErr != nil {
-		home = ""
+	cacheRoot, cacheErr := os.UserCacheDir()
+	if cacheErr != nil {
+		cacheRoot = ""
 	}
-	libraryRoot, err := artifact.ResolveLibraryRoot(settings.Artifacts.LibraryDirectory, home)
+	libraryRoot, err := artifact.ResolveLibraryRoot(settings.Artifacts.LibraryDirectory, cacheRoot)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -919,7 +937,14 @@ func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r 
 }
 
 func sessionV3ArtifactRevealIsLoopback(r *http.Request) bool {
-	return r != nil && remoteRequestIP(r) != nil && remoteRequestIP(r).IsLoopback()
+	if r == nil {
+		return false
+	}
+	if admission, ok := admittedDesktopOrigin(r); ok && admission.tailscaleServe {
+		return false
+	}
+	ip := remoteRequestIP(r)
+	return ip != nil && ip.IsLoopback()
 }
 
 func sessionV3ArtifactLibraryName(label, stableID string) string {
@@ -1571,35 +1596,62 @@ func openWorkspaceSessionV3ArtifactPackageFile(workspaceRoot, artifactPath, cont
 	return file, info, mediaType, nil
 }
 
-func openSessionV3ArtifactFile(workspaceRoot, artifactPath string) (*os.File, os.FileInfo, error) {
+func resolveSessionV3ArtifactFilePath(workspaceRoot, artifactPath string) (string, error) {
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
 	artifactPath = strings.TrimSpace(artifactPath)
 	if workspaceRoot == "" || artifactPath == "" || filepath.IsAbs(artifactPath) || strings.Contains(artifactPath, "\\") {
-		return nil, nil, errors.New("invalid artifact path")
+		return "", errors.New("invalid artifact path")
 	}
 	cleanRelative := filepath.Clean(filepath.FromSlash(artifactPath))
 	if cleanRelative == "." || cleanRelative == ".." || strings.HasPrefix(cleanRelative, ".."+string(filepath.Separator)) {
-		return nil, nil, errors.New("artifact path escapes workspace")
+		return "", errors.New("artifact path escapes workspace")
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	resolvedRoot, err = filepath.Abs(resolvedRoot)
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(resolvedRoot, cleanRelative)
+	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", err
+	}
+	resolvedCandidate, err = filepath.Abs(resolvedCandidate)
+	if err != nil {
+		return "", err
+	}
+	if filepath.Clean(candidate) != filepath.Clean(resolvedCandidate) {
+		return "", errors.New("artifact path contains a symlink")
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolvedCandidate)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("artifact path escapes workspace")
+	}
+	info, err := os.Stat(resolvedCandidate)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("artifact is not a regular file")
+	}
+	return resolvedCandidate, nil
+}
+
+func openSessionV3ArtifactFile(workspaceRoot, artifactPath string) (*os.File, os.FileInfo, error) {
+	resolvedCandidate, err := resolveSessionV3ArtifactFilePath(workspaceRoot, artifactPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(strings.TrimSpace(workspaceRoot))
 	if err != nil {
 		return nil, nil, err
 	}
 	resolvedRoot, err = filepath.Abs(resolvedRoot)
 	if err != nil {
 		return nil, nil, err
-	}
-	candidate := filepath.Join(resolvedRoot, cleanRelative)
-	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return nil, nil, err
-	}
-	resolvedCandidate, err = filepath.Abs(resolvedCandidate)
-	if err != nil {
-		return nil, nil, err
-	}
-	if filepath.Clean(candidate) != filepath.Clean(resolvedCandidate) {
-		return nil, nil, errors.New("artifact path contains a symlink")
 	}
 	relative, err := filepath.Rel(resolvedRoot, resolvedCandidate)
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
