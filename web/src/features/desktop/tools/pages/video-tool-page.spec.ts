@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { VIDEO_TRANSITION_KINDS, transitionLabel } from '../video-studio/video-studio-surface'
+
 import {
   projectTimelineToTimelineSegments,
   serializeVideoClipForRequest,
@@ -175,6 +177,11 @@ test('projectTimelineToTimelineSegments resolves durable source refs back to Vid
   assert.equal(segment.id, 'segment-intro')
   assert.equal(segment.clipId, 'clip-local-id')
   assert.equal(segment.src, '/v1/workspace/video/threads/session-1/clips/media?clip_id=clip-local-id')
+})
+
+test('Video Studio exposes the complete launch transition vocabulary', () => {
+  assert.deepEqual(VIDEO_TRANSITION_KINDS, ['cut', 'fade_through_black', 'crossfade', 'fade_to_black', 'fade_from_black'])
+  assert.equal(transitionLabel('fade_through_black'), 'Fade through black')
 })
 
 test('videoChildSessionMetadata carries canonical project and revision identity', () => {

@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
+import { ArrowLeft, Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -13,8 +13,10 @@ import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-s
 import { browseWorkspacePath } from '../../../workspaces/launcher/queries/browse-workspace-path'
 import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/workspace-route'
 import { applyWorkspaceTheme, createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
+import { createDesktopV3ExistingMessageOperation, continueDesktopV3Conversation } from '../../session-v3/existing-session-flow'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
+import { VIDEO_TRANSITION_KINDS, VideoProposalReview, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 
 export type VideoClip = {
   id: string
@@ -51,6 +53,7 @@ export type VideoProjectTimelineWire = {
   fps?: number
   total_duration_ms?: number
   clips: VideoTimelineClipWire[]
+  transitions?: VideoTransitionWire[]
   metadata?: Record<string, unknown>
 }
 
@@ -168,7 +171,7 @@ type VideoThreadWire = {
   updated_at?: number
 }
 
-type TimelineSegment = {
+export type TimelineSegment = {
   id: string
   type: 'video'
   clipId: string
@@ -741,12 +744,15 @@ export function VideoToolPage() {
   const [projectRevisions, setProjectRevisions] = useState<VideoProjectRevisionSnapshotWire[]>([])
   const [projectLoading, setProjectLoading] = useState(false)
   const [restoringRevisionId, setRestoringRevisionId] = useState<string | null>(null)
-  const [startingChat, setStartingChat] = useState(false)
+  const [transitionKind, setTransitionKind] = useState<VideoTransitionKind>('cut')
+  const [aiRefreshKey, setAIRefreshKey] = useState(0)
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [rendering, setRendering] = useState(false)
   const [renderJob, setRenderJob] = useState<VideoRenderJobSnapshotWire | null>(null)
   const [renderProgress, setRenderProgress] = useState(0)
   const [renderError, setRenderError] = useState<string | null>(null)
+  const [exportPath, setExportPath] = useState('')
+  const [exporting, setExporting] = useState(false)
   const [blackModeEnabled, setBlackModeEnabled] = useState(() => {
     if (typeof window === 'undefined') {
       return false
@@ -1086,6 +1092,32 @@ export function VideoToolPage() {
     }
   }, [selectedThread])
 
+  const handleCancelRender = useCallback(async () => {
+    if (!selectedThread || !renderJob) return
+    setRenderError(null)
+    try {
+      await requestVideoRenderCancellation(selectedThread.id, renderJob.id)
+      const cancelled = await getVideoRenderJob(selectedThread.id, renderJob.id)
+      setRenderJob(cancelled)
+      setRendering(false)
+    } catch (error) {
+      setRenderError(error instanceof Error ? error.message : String(error))
+    }
+  }, [renderJob, selectedThread])
+
+  const handleExportRender = useCallback(async () => {
+    if (!selectedThread || !videoProject || !renderJob || renderJob.status !== 'ready' || !exportPath.trim()) return
+    setExporting(true)
+    setRenderError(null)
+    try {
+      await exportRenderedVideo(selectedThread.id, videoProject.id, exportPath.trim(), renderJob.id)
+    } catch (error) {
+      setRenderError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setExporting(false)
+    }
+  }, [exportPath, renderJob, selectedThread, videoProject])
+
   const handleStartRender = useCallback(async () => {
     if (!selectedThread) return
     setRendering(true)
@@ -1216,13 +1248,23 @@ export function VideoToolPage() {
     }
   }, [queryClient, selectedThread, selectedWorkspaceName, selectedWorkspacePath])
 
-  const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { migration?: boolean }) => {
+  const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { migration?: boolean; transitionKind?: VideoTransitionKind }) => {
     if (!selectedThread) return
     setReordering(true)
     try {
       let project = videoProject
       let revision = currentRevision
       const timeline = timelineSegmentsToProjectTimeline(segments, selectedClips, project?.output_preset)
+      if (options?.transitionKind) {
+        const visible = segments.filter((segment) => segment.visible)
+        timeline.transitions = visible.slice(0, -1).map((segment, index) => ({
+          id: `transition-${segment.id}-${visible[index + 1].id}`,
+          kind: options.transitionKind as VideoTransitionKind,
+          from_clip_id: segment.id,
+          to_clip_id: visible[index + 1].id,
+          duration_ms: options.transitionKind === 'cut' ? 0 : 300,
+        }))
+      }
       if (!project) {
         const created = await ensurePrimaryVideoProject(selectedThread.id, selectedThread.title || 'Video Tool project', timeline)
         project = created.project
@@ -1273,6 +1315,15 @@ export function VideoToolPage() {
 
   const handleToggleSegment = useCallback(async (clipId: string) => {
     const next = timelineSegments.map((segment) => segment.clipId === clipId ? { ...segment, visible: !segment.visible } : segment)
+    await persistTimelineSegments(next)
+  }, [persistTimelineSegments, timelineSegments])
+
+  const handleTrimSegment = useCallback(async (clipId: string, edge: 'in' | 'out', amount: number) => {
+    const next = timelineSegments.map((segment) => {
+      if (segment.clipId !== clipId) return segment
+      if (edge === 'in') return { ...segment, sourceStart: Math.max(0, segment.sourceStart + amount), duration: Math.max(0.1, segment.duration - amount) }
+      return { ...segment, duration: Math.max(0.1, segment.duration + amount) }
+    })
     await persistTimelineSegments(next)
   }, [persistTimelineSegments, timelineSegments])
 
@@ -1343,38 +1394,6 @@ export function VideoToolPage() {
     }
   }, [movieDuration, playheadX])
 
-  const handleStartChat = useCallback(async () => {
-    if (!selectedThread || !routeWorkspaceSlug) {
-      return
-    }
-    setStartingChat(true)
-    setCreateError(null)
-    try {
-      const preference = await fetchDraftModelPreference()
-      const childSession = await createSession({
-        title: `${selectedThread.title || 'Video'} chat`,
-        workspacePath: selectedThread.workspacePath,
-        workspaceName: selectedThread.workspaceName || selectedWorkspaceName,
-        mode: 'auto',
-        preference: preference.preference,
-        metadata: videoChildSessionMetadata({
-          thread: selectedThread,
-          projectId: videoProject?.id ?? '',
-          revisionId: currentRevision?.id ?? '',
-          folderPath: selectedFolderPath,
-          clips: selectedClips,
-        }),
-      })
-      void navigate({
-        to: '/$workspaceSlug/$sessionId',
-        params: { workspaceSlug: routeWorkspaceSlug, sessionId: childSession.id },
-      })
-    } catch (error) {
-      setCreateError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setStartingChat(false)
-    }
-  }, [currentRevision?.id, navigate, routeWorkspaceSlug, selectedClips, selectedFolderPath, selectedThread, selectedWorkspaceName, videoProject?.id])
   return (
     <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
       <div className="flex min-h-dvh flex-col px-5 pt-[calc(var(--app-safe-area-top)+24px)] pb-[calc(var(--app-safe-area-bottom)+24px)] lg:hidden">
@@ -1432,7 +1451,7 @@ export function VideoToolPage() {
               actions={[
                 { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread },
                 { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage },
-                { id: 'start-chat', label: 'Start chat', icon: <Sparkles size={14} />, suffix: 'child', onClick: () => void handleStartChat(), disabled: !selectedThread || startingChat || !routeWorkspaceSlug },
+                { id: 'session-ai', label: 'Session AI', icon: <Sparkles size={14} />, suffix: 'same session', onClick: () => setAIRefreshKey((value) => value + 1), disabled: !selectedThread },
               ]}
             >
               {selectedThread ? (
@@ -1493,7 +1512,7 @@ export function VideoToolPage() {
                 <div className="flex items-center gap-2">
                   <Button variant="outline" style={darkOverrideButtonStyle} className={`h-8 w-8 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
                   <Button variant="ghost" className="h-8 rounded-xl px-2 text-xs text-[var(--app-text-muted)]" onClick={handleOpenPicker} disabled={!selectedThread}><FolderOpen size={14} />Add folder</Button>
-                  <Button className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartChat()} disabled={!selectedThread || startingChat || !routeWorkspaceSlug}><Sparkles size={14} />{startingChat ? 'Starting…' : 'Start chat'}</Button>
+                  <span className="text-xs text-[var(--app-text-subtle)]">Video Studio</span>
                 </div>
               </div>
 
@@ -1528,13 +1547,11 @@ export function VideoToolPage() {
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-[var(--app-text-muted)]">{visibleTimelineLayout.length} included · {hiddenTimelineLayout.length} hidden</span>
                     {rendering ? (
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" disabled>
-                        <Loader2 size={13} className="animate-spin" /> Rendering {Math.round(renderProgress * 100)}%
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCancelRender()}>
+                        <Loader2 size={13} className="animate-spin" /> Rendering {Math.round(renderProgress * 100)}% · Cancel
                       </Button>
                     ) : renderJob?.status === 'ready' ? (
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs text-green-500 hover:text-green-400" onClick={() => void handleStartChat()}>
-                        <Film size={13} /> Render Ready · Chat
-                      </Button>
+                      <span className="text-xs text-green-500"><Film size={13} className="inline" /> Render ready for playback and export</span>
                     ) : (
                       <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering || projectLoading || !currentRevision}>
                         <Sparkles size={13} /> Render Video
@@ -1542,12 +1559,25 @@ export function VideoToolPage() {
                     )}
                   </div>
                 </div>
+                {renderJob?.status === 'ready' ? (
+                  <div className="mb-3 grid gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
+                    {renderedVideoArtifactUrl(selectedThread.id, renderJob) ? <video controls className="max-h-72 w-full bg-black" src={renderedVideoArtifactUrl(selectedThread.id, renderJob)} /> : <p className="text-xs text-[var(--app-text-muted)]">Rendered artifact is ready; use Export MP4 to copy it to a workspace path.</p>
+                    <div className="flex gap-2"><input className="h-8 min-w-0 flex-1 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={exportPath} onChange={(event) => setExportPath(event.target.value)} placeholder="Absolute destination path for MP4" /><Button variant="outline" className="h-8 px-3 text-xs" disabled={exporting || !exportPath.trim()} onClick={() => void handleExportRender()}>{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}Export MP4</Button></div>
+                  </div>
+                ) : null}
                 {renderError ? (
                   <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
                     Render error: {renderError}
                   </div>
                 ) : null}
 
+                <div className="mb-3 flex items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+                  <span className="text-xs text-[var(--app-text-muted)]">Transition between clips</span>
+                  <select className="h-8 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={transitionKind} onChange={(event) => setTransitionKind(event.target.value as VideoTransitionKind)}>
+                    {VIDEO_TRANSITION_KINDS.map((kind) => <option key={kind} value={kind}>{transitionLabel(kind)}</option>)}
+                  </select>
+                  <Button variant="outline" className="h-8 px-3 text-xs" disabled={timelineSegments.length < 2 || reordering} onClick={() => void persistTimelineSegments(timelineSegments.map((segment) => ({ ...segment })), { transitionKind })}>Apply separately</Button>
+                </div>
                 <div className="border-y border-[var(--app-border)] py-4">
                   <div className="mb-3 flex justify-between text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]"><span>00:00</span><span>{formatTimelineTime(movieDuration)}</span></div>
                   <div ref={timelineScrollRef} className="overflow-x-auto pb-2">
@@ -1572,6 +1602,8 @@ export function VideoToolPage() {
                             <div key={`${segment.id}-controls`} className={`flex min-w-[190px] max-w-[280px] items-center gap-2 border px-2 py-2 text-xs ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
                               <button type="button" onClick={() => { setSelectedClipId(segment.clipId); if (segment.visible) handleSeek(segment.timelineStart) }} className="min-w-0 flex-1 text-left"><span className="block truncate font-medium text-[var(--app-text)]">{clip?.name ?? segment.clipId}</span><span className="block text-[10px] text-[var(--app-text-muted)]">{segment.visible ? 'Included' : 'Hidden'} · {formatTimelineTime(segment.duration)}</span></button>
                               <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering}>{segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleTrimSegment(segment.clipId, 'in', 0.5)} disabled={reordering || segment.duration <= 0.6}>Trim in</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleTrimSegment(segment.clipId, 'out', -0.5)} disabled={reordering || segment.duration <= 0.6}>Trim out</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleMoveClip(-1, segment.clipId)} disabled={reordering || index === 0}>←</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleMoveClip(1, segment.clipId)} disabled={reordering || index === timelineSegments.length - 1}>→</Button>
                             </div>
@@ -1582,6 +1614,8 @@ export function VideoToolPage() {
                   </div>
                 </div>
               </section>
+
+              {videoProject && currentRevision ? <VideoProposalReview key={`${currentRevision.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} onAccepted={async () => { const detail = await fetchPrimaryVideoProject(selectedThread.id); setVideoProject(detail.project); setCurrentRevision(detail.current_revision ?? null); setProjectRevisions(await listVideoProjectRevisions(selectedThread.id, detail.project.id)) }} onFeedback={async (message) => { await continueDesktopV3Conversation(createDesktopV3ExistingMessageOperation({ sessionId: selectedThread.id, prompt: message, metadata: { creative_mode: 'video', video_revision_id: currentRevision.id } })) }} /> : null}
 
               <section className="mt-6">
                 <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><ListVideo size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Playlist sources</h2></div>{reordering ? <span className="text-xs text-[var(--app-text-subtle)]">Saving…</span> : null}</div>
@@ -1602,6 +1636,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
+            {selectedThread && currentRevision ? <VideoSessionAISidecar key={`${selectedThread.id}:${aiRefreshKey}`} sessionId={selectedThread.id} revisionId={currentRevision.id} onSent={() => setAIRefreshKey((value) => value + 1)} /> : null}
           </main>
       </div>
 

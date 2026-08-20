@@ -211,9 +211,27 @@ func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if strings.HasPrefix(subpath, "render-jobs/") {
-		jobID := strings.TrimPrefix(subpath, "render-jobs/")
+		jobPath := strings.TrimPrefix(subpath, "render-jobs/")
+		jobID, action, hasAction := strings.Cut(jobPath, "/")
 		if jobID == "" {
 			writeError(w, http.StatusBadRequest, errors.New("job id is required"))
+			return
+		}
+		if hasAction {
+			if action != "cancel" || r.Method != http.MethodPost {
+				methodNotAllowed(w)
+				return
+			}
+			if s.videoRender == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("video render service is not configured"))
+				return
+			}
+			job, err := s.videoRender.CancelRenderJob(r.Context(), principal, sessionID, jobID)
+			if err != nil {
+				writeError(w, http.StatusConflict, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "render_job": job})
 			return
 		}
 		if r.Method != http.MethodGet {
