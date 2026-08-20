@@ -5100,6 +5100,21 @@ export function DesktopAppPage() {
                     </Link>
                     <button
                       type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        if (!topWorkspaceSlug) return
+                        setMobileSidebarOpen(false)
+                        void navigate({ to: '/$workspaceSlug/studio', params: { workspaceSlug: topWorkspaceSlug } })
+                      }}
+                      disabled={!topWorkspaceSlug}
+                      aria-label="Open Studio"
+                      title="Studio"
+                    >
+                      <Film size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Studio</span>
+                    </button>
+                    <button
+                      type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                       onClick={handleOpenQuickActions}
                       aria-label="Open Desktop quick actions"

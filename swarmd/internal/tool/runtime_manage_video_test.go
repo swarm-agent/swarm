@@ -505,21 +505,52 @@ func TestManageVideoChildSessionUsesParentVideoProject(t *testing.T) {
 }
 
 func TestManageVideoStudioCreatesProposalWithoutAdvancingRevision(t *testing.T) {
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-proposal.pebble")); if err != nil { t.Fatal(err) }; defer store.Close()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-proposal.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
 	sessionStore := pebblestore.NewSessionStore(store)
-	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil { t.Fatal(err) }
-	events, err := pebblestore.NewEventLog(store); if err != nil { t.Fatal(err) }
-	runtime := NewRuntime(1); runtime.sessions = sessionruntime.NewService(sessionStore, events); runtime.videoProjects = videoproject.NewService(sessionStore)
-	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-1"}); scope := WorkspaceScope{SessionID: "studio", Principal: principal}
-	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create", Name: "manage_video", Arguments: `{"action":"create_project","title":"Studio","initial_timeline":{"output_preset":"landscape_1080p","total_duration_ms":1000,"clips":[{"id":"clip_a","track":0,"sequence":0,"source_kind":"color","duration_ms":1000,"timeline_start_ms":0,"timeline_end_ms":1000,"visible":true}]}}`}); if err != nil { t.Fatal(err) }
-	var create struct { ProjectID string `json:"project_id"`; RevisionID string `json:"revision_id"` }; if err := json.Unmarshal([]byte(created), &create); err != nil { t.Fatal(err) }
-	args, _ := json.Marshal(map[string]any{"action":"create_edit_proposal", "project_id":create.ProjectID, "base_revision_id":create.RevisionID, "title":"Trim opening", "rationale":"Start faster", "affected_ranges":[]map[string]any{{"start_ms":0,"end_ms":500}}, "operations":[]map[string]any{{"id":"trim", "type":pebblestore.VideoEditOperationUpdateClip, "clip":map[string]any{"id":"clip_a","track":0,"sequence":0,"source_kind":"color","duration_ms":500,"timeline_start_ms":0,"timeline_end_ms":500,"visible":true}}}})
-	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "proposal", Name: "manage_video", Arguments: string(args)}); if err != nil { t.Fatal(err) }
-	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"affected_ranges":[{"start_ms":0,"end_ms":500}]`) { t.Fatalf("proposal payload=%s", payload) }
-	project, ok, err := runtime.videoProjects.GetProject(principal, "studio", create.ProjectID); if err != nil || !ok || project.CurrentRevisionID != create.RevisionID || project.RevisionCount != 1 { t.Fatalf("proposal advanced project: %+v ok=%v err=%v", project, ok, err) }
-	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "render", Name: "manage_video", Arguments: `{"action":"start_render","project_id":"`+create.ProjectID+`"}`})
-	if err == nil || !strings.Contains(err.Error(), "cannot start final render") { t.Fatalf("start render error=%v", err) }
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-1"})
+	scope := WorkspaceScope{SessionID: "studio", Principal: principal}
+	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create", Name: "manage_video", Arguments: `{"action":"create_project","title":"Studio","initial_timeline":{"output_preset":"landscape_1080p","total_duration_ms":1000,"clips":[{"id":"clip_a","track":0,"sequence":0,"source_kind":"color","duration_ms":1000,"timeline_start_ms":0,"timeline_end_ms":1000,"visible":true}]}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var create struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(created), &create); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{"action": "create_edit_proposal", "project_id": create.ProjectID, "base_revision_id": create.RevisionID, "title": "Trim opening", "rationale": "Start faster", "affected_ranges": []map[string]any{{"start_ms": 0, "end_ms": 500}}, "operations": []map[string]any{{"id": "trim", "type": pebblestore.VideoEditOperationUpdateClip, "clip": map[string]any{"id": "clip_a", "track": 0, "sequence": 0, "source_kind": "color", "duration_ms": 500, "timeline_start_ms": 0, "timeline_end_ms": 500, "visible": true}}}})
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "proposal", Name: "manage_video", Arguments: string(args)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"affected_ranges":[{"start_ms":0,"end_ms":500}]`) {
+		t.Fatalf("proposal payload=%s", payload)
+	}
+	project, ok, err := runtime.videoProjects.GetProject(principal, "studio", create.ProjectID)
+	if err != nil || !ok || project.CurrentRevisionID != create.RevisionID || project.RevisionCount != 1 {
+		t.Fatalf("proposal advanced project: %+v ok=%v err=%v", project, ok, err)
+	}
+	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "render", Name: "manage_video", Arguments: `{"action":"start_render","project_id":"` + create.ProjectID + `"}`})
+	if err == nil || !strings.Contains(err.Error(), "cannot start final render") {
+		t.Fatalf("start render error=%v", err)
+	}
 }
 
 func TestManageVideoProjectAuthAndSessionOwnership(t *testing.T) {

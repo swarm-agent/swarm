@@ -71,14 +71,14 @@ const (
 	V3SessionMutationAcceptVideoEditProposal    = "video.edit_proposal.accept"
 	V3SessionMutationRejectVideoEditProposal    = "video.edit_proposal.reject"
 
-	MaxVideoProjectsPerSession    = 32
-	MaxVideoProjectRevisions      = 100
-	MaxVideoRenderJobsPerProject  = 50
-	MaxRecoverableVideoRenderJobs = 500
-	MaxClipsPerTimeline           = 100
-	MaxCaptionsPerClip            = 50
-	MaxVideoTimelineDurationMs    = 3600000 // 1 hour
-	MaxTextOverlayLength          = 500
+	MaxVideoProjectsPerSession     = 32
+	MaxVideoProjectRevisions       = 100
+	MaxVideoRenderJobsPerProject   = 50
+	MaxRecoverableVideoRenderJobs  = 500
+	MaxClipsPerTimeline            = 100
+	MaxCaptionsPerClip             = 50
+	MaxVideoTimelineDurationMs     = 3600000 // 1 hour
+	MaxTextOverlayLength           = 500
 	MaxTransitionsPerTimeline      = 100
 	MaxVideoEditProposalOperations = 200
 )
@@ -147,16 +147,16 @@ type VideoTimelineTransition struct {
 
 // VideoProjectTimeline defines the structured, versioned timeline contract.
 type VideoProjectTimeline struct {
-	SchemaVersion   int                 `json:"schema_version"`
-	OutputPreset    string              `json:"output_preset"`
-	Width           int                 `json:"width"`
-	Height          int                 `json:"height"`
-	FPS             float64             `json:"fps"`
-	TotalDurationMs int64               `json:"total_duration_ms"`
-	Clips           []VideoTimelineClip `json:"clips"`
+	SchemaVersion   int                       `json:"schema_version"`
+	OutputPreset    string                    `json:"output_preset"`
+	Width           int                       `json:"width"`
+	Height          int                       `json:"height"`
+	FPS             float64                   `json:"fps"`
+	TotalDurationMs int64                     `json:"total_duration_ms"`
+	Clips           []VideoTimelineClip       `json:"clips"`
 	Transitions     []VideoTimelineTransition `json:"transitions,omitempty"`
-	AudioPolicy     *VideoAudioPolicy   `json:"audio_policy,omitempty"`
-	Metadata        map[string]any      `json:"metadata,omitempty"`
+	AudioPolicy     *VideoAudioPolicy         `json:"audio_policy,omitempty"`
+	Metadata        map[string]any            `json:"metadata,omitempty"`
 }
 
 // VideoProjectSnapshot represents a durable session-owned video project.
@@ -220,24 +220,24 @@ type VideoTimelineRange struct {
 
 // VideoEditProposalSnapshot is durable review state bound to one exact immutable base revision.
 type VideoEditProposalSnapshot struct {
-	SchemaVersion       int                  `json:"schema_version"`
-	ID                  string               `json:"id"`
-	ProjectID           string               `json:"project_id"`
-	BaseRevisionID      string               `json:"base_revision_id"`
-	BaseRevisionNumber  int                  `json:"base_revision_number"`
-	AccountScopeID      string               `json:"account_scope_id"`
-	UserID              string               `json:"user_id,omitempty"`
-	SessionID           string               `json:"session_id"`
-	Status              string               `json:"status"`
-	Title               string               `json:"title,omitempty"`
-	Rationale           string               `json:"rationale,omitempty"`
-	Operations          []VideoEditOperation `json:"operations"`
-	AffectedRanges      []VideoTimelineRange `json:"affected_ranges,omitempty"`
+	SchemaVersion        int                  `json:"schema_version"`
+	ID                   string               `json:"id"`
+	ProjectID            string               `json:"project_id"`
+	BaseRevisionID       string               `json:"base_revision_id"`
+	BaseRevisionNumber   int                  `json:"base_revision_number"`
+	AccountScopeID       string               `json:"account_scope_id"`
+	UserID               string               `json:"user_id,omitempty"`
+	SessionID            string               `json:"session_id"`
+	Status               string               `json:"status"`
+	Title                string               `json:"title,omitempty"`
+	Rationale            string               `json:"rationale,omitempty"`
+	Operations           []VideoEditOperation `json:"operations"`
+	AffectedRanges       []VideoTimelineRange `json:"affected_ranges,omitempty"`
 	AcceptedOperationIDs []string             `json:"accepted_operation_ids,omitempty"`
-	AcceptedRevisionID  string               `json:"accepted_revision_id,omitempty"`
-	CreatedAt           int64                `json:"created_at"`
-	UpdatedAt           int64                `json:"updated_at"`
-	EventSeq            uint64               `json:"event_seq,omitempty"`
+	AcceptedRevisionID   string               `json:"accepted_revision_id,omitempty"`
+	CreatedAt            int64                `json:"created_at"`
+	UpdatedAt            int64                `json:"updated_at"`
+	EventSeq             uint64               `json:"event_seq,omitempty"`
 }
 
 // VideoRenderJobSnapshot tracks the lifecycle and output of a render operation.
@@ -272,12 +272,12 @@ type VideoRenderJobSnapshot struct {
 
 // V3VideoProjectMutation wraps payloads for video project mutations.
 type V3VideoProjectMutation struct {
-	Project        *VideoProjectSnapshot         `json:"project,omitempty"`
-	Revision       *VideoProjectRevisionSnapshot `json:"revision,omitempty"`
-	RenderJob      *VideoRenderJobSnapshot       `json:"render_job,omitempty"`
-	EditProposal   *VideoEditProposalSnapshot    `json:"edit_proposal,omitempty"`
-	SelectedOperationIDs []string                `json:"selected_operation_ids,omitempty"`
-	ExpectedStatus string                        `json:"expected_status,omitempty"`
+	Project              *VideoProjectSnapshot         `json:"project,omitempty"`
+	Revision             *VideoProjectRevisionSnapshot `json:"revision,omitempty"`
+	RenderJob            *VideoRenderJobSnapshot       `json:"render_job,omitempty"`
+	EditProposal         *VideoEditProposalSnapshot    `json:"edit_proposal,omitempty"`
+	SelectedOperationIDs []string                      `json:"selected_operation_ids,omitempty"`
+	ExpectedStatus       string                        `json:"expected_status,omitempty"`
 }
 
 // V3VideoProjectProjection summarizes the projection update resulting from a mutation.
@@ -292,11 +292,11 @@ type V3VideoProjectProjection struct {
 }
 
 type preparedV3VideoProjectMutation struct {
-	Project    *VideoProjectSnapshot
-	Revision   *VideoProjectRevisionSnapshot
-	RenderJob  *VideoRenderJobSnapshot
+	Project      *VideoProjectSnapshot
+	Revision     *VideoProjectRevisionSnapshot
+	RenderJob    *VideoRenderJobSnapshot
 	EditProposal *VideoEditProposalSnapshot
-	Projection V3VideoProjectProjection
+	Projection   V3VideoProjectProjection
 }
 
 // Key functions for pebble storage
@@ -422,7 +422,9 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 				op.Clip.SourceKind = strings.ToLower(strings.TrimSpace(op.Clip.SourceKind))
 				op.Clip.SourceRef = strings.TrimSpace(op.Clip.SourceRef)
 			}
-			if op.Transition != nil { normalizeVideoTransition(op.Transition) }
+			if op.Transition != nil {
+				normalizeVideoTransition(op.Transition)
+			}
 		}
 	}
 	if input.VideoProject.RenderJob != nil {
@@ -506,7 +508,9 @@ func normalizeVideoTimeline(timeline *VideoProjectTimeline) {
 		timeline.SchemaVersion = VideoTimelineSchemaVersion
 	}
 	var totalDuration int64
-	for i := range timeline.Transitions { normalizeVideoTransition(&timeline.Transitions[i]) }
+	for i := range timeline.Transitions {
+		normalizeVideoTransition(&timeline.Transitions[i])
+	}
 	for i := range timeline.Clips {
 		clip := &timeline.Clips[i]
 		clip.ID = strings.TrimSpace(clip.ID)
@@ -550,7 +554,9 @@ func normalizeVideoTimeline(timeline *VideoProjectTimeline) {
 }
 
 func normalizeVideoTransition(transition *VideoTimelineTransition) {
-	if transition == nil { return }
+	if transition == nil {
+		return
+	}
 	transition.ID = strings.TrimSpace(transition.ID)
 	transition.Kind = strings.ToLower(strings.TrimSpace(transition.Kind))
 	transition.FromClipID = strings.TrimSpace(transition.FromClipID)
@@ -627,16 +633,32 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 		}
 	case V3SessionMutationCreateVideoEditProposal, V3SessionMutationAcceptVideoEditProposal, V3SessionMutationRejectVideoEditProposal:
 		proposal := input.VideoProject.EditProposal
-		if proposal == nil { return errors.New("video edit proposal snapshot is required") }
-		if proposal.ID == "" || proposal.ProjectID == "" || proposal.BaseRevisionID == "" { return errors.New("proposal id, project id, and base revision id are required") }
-		if err := validateV3MutationEmbeddedOwnership(input, "video edit proposal", proposal.SessionID, proposal.UserID, proposal.AccountScopeID); err != nil { return err }
+		if proposal == nil {
+			return errors.New("video edit proposal snapshot is required")
+		}
+		if proposal.ID == "" || proposal.ProjectID == "" || proposal.BaseRevisionID == "" {
+			return errors.New("proposal id, project id, and base revision id are required")
+		}
+		if err := validateV3MutationEmbeddedOwnership(input, "video edit proposal", proposal.SessionID, proposal.UserID, proposal.AccountScopeID); err != nil {
+			return err
+		}
 		if input.Kind == V3SessionMutationCreateVideoEditProposal {
-			if proposal.Status != VideoEditProposalStatusPending { return errors.New("new video edit proposal must be pending") }
-			if err := validateVideoEditOperations(proposal.Operations); err != nil { return err }
+			if proposal.Status != VideoEditProposalStatusPending {
+				return errors.New("new video edit proposal must be pending")
+			}
+			if err := validateVideoEditOperations(proposal.Operations); err != nil {
+				return err
+			}
 		} else if input.Kind == V3SessionMutationAcceptVideoEditProposal {
-			if input.VideoProject.Revision == nil { return errors.New("accept video edit proposal requires revision snapshot") }
-			if err := validateV3MutationEmbeddedOwnership(input, "accepted video project revision", input.VideoProject.Revision.SessionID, input.VideoProject.Revision.UserID, input.VideoProject.Revision.AccountScopeID); err != nil { return err }
-		} else if proposal.Status != VideoEditProposalStatusRejected { return errors.New("rejected video edit proposal must have rejected status") }
+			if input.VideoProject.Revision == nil {
+				return errors.New("accept video edit proposal requires revision snapshot")
+			}
+			if err := validateV3MutationEmbeddedOwnership(input, "accepted video project revision", input.VideoProject.Revision.SessionID, input.VideoProject.Revision.UserID, input.VideoProject.Revision.AccountScopeID); err != nil {
+				return err
+			}
+		} else if proposal.Status != VideoEditProposalStatusRejected {
+			return errors.New("rejected video edit proposal must have rejected status")
+		}
 	case V3SessionMutationCreateVideoRenderJob:
 		if input.VideoProject.RenderJob == nil {
 			return errors.New("create video render job requires render job snapshot")
@@ -692,7 +714,9 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 	if timeline.Width <= 0 || timeline.Height <= 0 {
 		return errors.New("timeline dimensions must be positive")
 	}
-	if len(timeline.Transitions) > MaxTransitionsPerTimeline { return fmt.Errorf("timeline transition count %d exceeds maximum %d", len(timeline.Transitions), MaxTransitionsPerTimeline) }
+	if len(timeline.Transitions) > MaxTransitionsPerTimeline {
+		return fmt.Errorf("timeline transition count %d exceeds maximum %d", len(timeline.Transitions), MaxTransitionsPerTimeline)
+	}
 	seenClipIDs := make(map[string]struct{}, len(timeline.Clips))
 	for i, clip := range timeline.Clips {
 		if clip.ID == "" {
@@ -743,17 +767,31 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 	}
 	seenTransitionIDs := make(map[string]struct{}, len(timeline.Transitions))
 	for i, transition := range timeline.Transitions {
-		if transition.ID == "" { return fmt.Errorf("transition at index %d has empty id", i) }
-		if _, exists := seenTransitionIDs[transition.ID]; exists { return fmt.Errorf("duplicate transition id %q in timeline", transition.ID) }
+		if transition.ID == "" {
+			return fmt.Errorf("transition at index %d has empty id", i)
+		}
+		if _, exists := seenTransitionIDs[transition.ID]; exists {
+			return fmt.Errorf("duplicate transition id %q in timeline", transition.ID)
+		}
 		seenTransitionIDs[transition.ID] = struct{}{}
-		if _, ok := seenClipIDs[transition.FromClipID]; !ok { return fmt.Errorf("transition %q references missing from clip %q", transition.ID, transition.FromClipID) }
-		if _, ok := seenClipIDs[transition.ToClipID]; !ok { return fmt.Errorf("transition %q references missing to clip %q", transition.ID, transition.ToClipID) }
-		if transition.FromClipID == transition.ToClipID { return fmt.Errorf("transition %q must connect distinct clips", transition.ID) }
+		if _, ok := seenClipIDs[transition.FromClipID]; !ok {
+			return fmt.Errorf("transition %q references missing from clip %q", transition.ID, transition.FromClipID)
+		}
+		if _, ok := seenClipIDs[transition.ToClipID]; !ok {
+			return fmt.Errorf("transition %q references missing to clip %q", transition.ID, transition.ToClipID)
+		}
+		if transition.FromClipID == transition.ToClipID {
+			return fmt.Errorf("transition %q must connect distinct clips", transition.ID)
+		}
 		switch transition.Kind {
 		case VideoTransitionKindCut:
-			if transition.DurationMs != 0 { return fmt.Errorf("cut transition %q must have zero duration", transition.ID) }
+			if transition.DurationMs != 0 {
+				return fmt.Errorf("cut transition %q must have zero duration", transition.ID)
+			}
 		case VideoTransitionKindFadeThroughBlack, VideoTransitionKindCrossfade, VideoTransitionKindFadeToBlack, VideoTransitionKindFadeFromBlack:
-			if transition.DurationMs <= 0 { return fmt.Errorf("transition %q duration must be positive", transition.ID) }
+			if transition.DurationMs <= 0 {
+				return fmt.Errorf("transition %q duration must be positive", transition.ID)
+			}
 		default:
 			return fmt.Errorf("transition %q has unsupported kind %q", transition.ID, transition.Kind)
 		}
@@ -777,21 +815,35 @@ func validateVideoTimelineRanges(ranges []VideoTimelineRange, durationMs int64) 
 }
 
 func validateVideoEditOperations(operations []VideoEditOperation) error {
-	if len(operations) == 0 || len(operations) > MaxVideoEditProposalOperations { return errors.New("video edit proposal operations must be non-empty and bounded") }
+	if len(operations) == 0 || len(operations) > MaxVideoEditProposalOperations {
+		return errors.New("video edit proposal operations must be non-empty and bounded")
+	}
 	seen := make(map[string]struct{}, len(operations))
 	for i, op := range operations {
-		if op.ID == "" { return fmt.Errorf("video edit operation at index %d has empty id", i) }
-		if _, exists := seen[op.ID]; exists { return fmt.Errorf("duplicate video edit operation id %q", op.ID) }
+		if op.ID == "" {
+			return fmt.Errorf("video edit operation at index %d has empty id", i)
+		}
+		if _, exists := seen[op.ID]; exists {
+			return fmt.Errorf("duplicate video edit operation id %q", op.ID)
+		}
 		seen[op.ID] = struct{}{}
 		switch op.Type {
 		case VideoEditOperationAddClip, VideoEditOperationUpdateClip:
-			if op.Clip == nil || op.Clip.ID == "" { return fmt.Errorf("operation %q requires clip payload with id", op.ID) }
+			if op.Clip == nil || op.Clip.ID == "" {
+				return fmt.Errorf("operation %q requires clip payload with id", op.ID)
+			}
 		case VideoEditOperationRemoveClip:
-			if op.ClipID == "" { return fmt.Errorf("operation %q requires clip_id", op.ID) }
+			if op.ClipID == "" {
+				return fmt.Errorf("operation %q requires clip_id", op.ID)
+			}
 		case VideoEditOperationAddTransition, VideoEditOperationUpdateTransition:
-			if op.Transition == nil || op.Transition.ID == "" { return fmt.Errorf("operation %q requires transition payload with id", op.ID) }
+			if op.Transition == nil || op.Transition.ID == "" {
+				return fmt.Errorf("operation %q requires transition payload with id", op.ID)
+			}
 		case VideoEditOperationRemoveTransition:
-			if op.TransitionID == "" { return fmt.Errorf("operation %q requires transition_id", op.ID) }
+			if op.TransitionID == "" {
+				return fmt.Errorf("operation %q requires transition_id", op.ID)
+			}
 		default:
 			return fmt.Errorf("operation %q has unsupported type %q", op.ID, op.Type)
 		}
@@ -801,30 +853,91 @@ func validateVideoEditOperations(operations []VideoEditOperation) error {
 
 func applyVideoEditOperations(base VideoProjectTimeline, operations []VideoEditOperation, selected []string) (VideoProjectTimeline, error) {
 	wanted := make(map[string]struct{}, len(selected))
-	for _, id := range selected { wanted[strings.TrimSpace(id)] = struct{}{} }
-	if len(wanted) == 0 { return VideoProjectTimeline{}, errors.New("at least one operation must be selected") }
+	for _, id := range selected {
+		wanted[strings.TrimSpace(id)] = struct{}{}
+	}
+	if len(wanted) == 0 {
+		return VideoProjectTimeline{}, errors.New("at least one operation must be selected")
+	}
 	for _, op := range operations {
-		if _, ok := wanted[op.ID]; !ok { continue }
+		if _, ok := wanted[op.ID]; !ok {
+			continue
+		}
 		delete(wanted, op.ID)
 		switch op.Type {
 		case VideoEditOperationAddClip:
 			base.Clips = append(base.Clips, *op.Clip)
 		case VideoEditOperationUpdateClip:
-			found := false; for i := range base.Clips { if base.Clips[i].ID == op.Clip.ID { base.Clips[i] = *op.Clip; found = true; break } }; if !found { return VideoProjectTimeline{}, fmt.Errorf("clip %q not found", op.Clip.ID) }
+			found := false
+			for i := range base.Clips {
+				if base.Clips[i].ID == op.Clip.ID {
+					base.Clips[i] = *op.Clip
+					found = true
+					break
+				}
+			}
+			if !found {
+				return VideoProjectTimeline{}, fmt.Errorf("clip %q not found", op.Clip.ID)
+			}
 		case VideoEditOperationRemoveClip:
-			found := false; clips := base.Clips[:0]; for _, clip := range base.Clips { if clip.ID == op.ClipID { found = true; continue }; clips = append(clips, clip) }; if !found { return VideoProjectTimeline{}, fmt.Errorf("clip %q not found", op.ClipID) }; base.Clips = clips
-			transitions := base.Transitions[:0]; for _, transition := range base.Transitions { if transition.FromClipID == op.ClipID || transition.ToClipID == op.ClipID { continue }; transitions = append(transitions, transition) }; base.Transitions = transitions
+			found := false
+			clips := base.Clips[:0]
+			for _, clip := range base.Clips {
+				if clip.ID == op.ClipID {
+					found = true
+					continue
+				}
+				clips = append(clips, clip)
+			}
+			if !found {
+				return VideoProjectTimeline{}, fmt.Errorf("clip %q not found", op.ClipID)
+			}
+			base.Clips = clips
+			transitions := base.Transitions[:0]
+			for _, transition := range base.Transitions {
+				if transition.FromClipID == op.ClipID || transition.ToClipID == op.ClipID {
+					continue
+				}
+				transitions = append(transitions, transition)
+			}
+			base.Transitions = transitions
 		case VideoEditOperationAddTransition:
 			base.Transitions = append(base.Transitions, *op.Transition)
 		case VideoEditOperationUpdateTransition:
-			found := false; for i := range base.Transitions { if base.Transitions[i].ID == op.Transition.ID { base.Transitions[i] = *op.Transition; found = true; break } }; if !found { return VideoProjectTimeline{}, fmt.Errorf("transition %q not found", op.Transition.ID) }
+			found := false
+			for i := range base.Transitions {
+				if base.Transitions[i].ID == op.Transition.ID {
+					base.Transitions[i] = *op.Transition
+					found = true
+					break
+				}
+			}
+			if !found {
+				return VideoProjectTimeline{}, fmt.Errorf("transition %q not found", op.Transition.ID)
+			}
 		case VideoEditOperationRemoveTransition:
-			found := false; transitions := base.Transitions[:0]; for _, transition := range base.Transitions { if transition.ID == op.TransitionID { found = true; continue }; transitions = append(transitions, transition) }; if !found { return VideoProjectTimeline{}, fmt.Errorf("transition %q not found", op.TransitionID) }; base.Transitions = transitions
+			found := false
+			transitions := base.Transitions[:0]
+			for _, transition := range base.Transitions {
+				if transition.ID == op.TransitionID {
+					found = true
+					continue
+				}
+				transitions = append(transitions, transition)
+			}
+			if !found {
+				return VideoProjectTimeline{}, fmt.Errorf("transition %q not found", op.TransitionID)
+			}
+			base.Transitions = transitions
 		}
 	}
-	if len(wanted) != 0 { return VideoProjectTimeline{}, errors.New("selected operation id does not belong to proposal") }
+	if len(wanted) != 0 {
+		return VideoProjectTimeline{}, errors.New("selected operation id does not belong to proposal")
+	}
 	normalizeVideoTimeline(&base)
-	if err := validateVideoTimeline(base); err != nil { return VideoProjectTimeline{}, err }
+	if err := validateVideoTimeline(base); err != nil {
+		return VideoProjectTimeline{}, err
+	}
 	return base, nil
 }
 
@@ -989,37 +1102,118 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 
 	case V3SessionMutationCreateVideoEditProposal:
 		proposal := *input.VideoProject.EditProposal
-		project, ok, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, proposal.ProjectID); if err != nil || !ok { if err == nil { err = fmt.Errorf("video project %q not found", proposal.ProjectID) }; return preparedV3VideoProjectMutation{}, err }
-		if project.UserID != "" && project.UserID != input.UserID { return preparedV3VideoProjectMutation{}, errors.New("video project ownership does not match authenticated principal") }
+		project, ok, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, proposal.ProjectID)
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("video project %q not found", proposal.ProjectID)
+			}
+			return preparedV3VideoProjectMutation{}, err
+		}
+		if project.UserID != "" && project.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video project ownership does not match authenticated principal")
+		}
 		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID)
-		if err != nil || !ok { if err == nil { err = fmt.Errorf("base revision %q not found", proposal.BaseRevisionID) }; return preparedV3VideoProjectMutation{}, err }
-		if _, exists, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.ID); err != nil { return preparedV3VideoProjectMutation{}, err } else if exists { return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal %q already exists", proposal.ID) }
-		if project.CurrentRevisionID != proposal.BaseRevisionID { return preparedV3VideoProjectMutation{}, errors.New("video edit proposal base revision must be the current project revision") }
-		if err := validateVideoTimelineRanges(proposal.AffectedRanges, base.Timeline.TotalDurationMs); err != nil { return preparedV3VideoProjectMutation{}, err }
-		proposal.SchemaVersion = VideoEditProposalSchemaVersion; proposal.AccountScopeID = input.AccountScopeID; proposal.UserID = input.UserID; proposal.SessionID = input.SessionID; proposal.BaseRevisionNumber = base.RevisionNumber; proposal.Status = VideoEditProposalStatusPending; proposal.CreatedAt = now; proposal.UpdatedAt = now
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("base revision %q not found", proposal.BaseRevisionID)
+			}
+			return preparedV3VideoProjectMutation{}, err
+		}
+		if _, exists, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.ID); err != nil {
+			return preparedV3VideoProjectMutation{}, err
+		} else if exists {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal %q already exists", proposal.ID)
+		}
+		if project.CurrentRevisionID != proposal.BaseRevisionID {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal base revision must be the current project revision")
+		}
+		if err := validateVideoTimelineRanges(proposal.AffectedRanges, base.Timeline.TotalDurationMs); err != nil {
+			return preparedV3VideoProjectMutation{}, err
+		}
+		proposal.SchemaVersion = VideoEditProposalSchemaVersion
+		proposal.AccountScopeID = input.AccountScopeID
+		proposal.UserID = input.UserID
+		proposal.SessionID = input.SessionID
+		proposal.BaseRevisionNumber = base.RevisionNumber
+		proposal.Status = VideoEditProposalStatusPending
+		proposal.CreatedAt = now
+		proposal.UpdatedAt = now
 		return preparedV3VideoProjectMutation{EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: proposal.BaseRevisionID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
 
 	case V3SessionMutationAcceptVideoEditProposal:
 		incoming := input.VideoProject.EditProposal
 		proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, incoming.ProjectID, incoming.ID)
-		if err != nil || !ok { if err == nil { err = fmt.Errorf("video edit proposal %q not found", incoming.ID) }; return preparedV3VideoProjectMutation{}, err }
-		if proposal.UserID != "" && proposal.UserID != input.UserID { return preparedV3VideoProjectMutation{}, errors.New("video edit proposal ownership does not match authenticated principal") }
-		if proposal.Status != VideoEditProposalStatusPending { return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal is %s", proposal.Status) }
-		project, ok, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, proposal.ProjectID); if err != nil || !ok { return preparedV3VideoProjectMutation{}, errors.New("video project not found") }; if project.UserID != "" && project.UserID != input.UserID { return preparedV3VideoProjectMutation{}, errors.New("video project ownership does not match authenticated principal") }
-		if project.CurrentRevisionID != proposal.BaseRevisionID || project.CurrentRevisionNumber != proposal.BaseRevisionNumber { return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: base revision %s is not current revision %s", proposal.BaseRevisionID, project.CurrentRevisionID) }
-		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID); if err != nil || !ok { return preparedV3VideoProjectMutation{}, errors.New("proposal base revision not found") }
-		timeline, err := applyVideoEditOperations(base.Timeline, proposal.Operations, input.VideoProject.SelectedOperationIDs); if err != nil { return preparedV3VideoProjectMutation{}, err }
-		revision := *input.VideoProject.Revision; revision.AccountScopeID = input.AccountScopeID; revision.UserID = input.UserID; revision.SessionID = input.SessionID; revision.ProjectID = proposal.ProjectID; revision.ParentRevisionID = proposal.BaseRevisionID; revision.AcceptedProposalID = proposal.ID; revision.Timeline = timeline; revision.RevisionNumber = project.RevisionCount + 1; revision.SchemaVersion = VideoProjectRevisionSchemaVersion; if revision.ID == "" { revision.ID = generateDeterministicOrRandomID("vrev") }; revision.CreatedAt = now
-		project.CurrentRevisionID = revision.ID; project.CurrentRevisionNumber = revision.RevisionNumber; project.RevisionCount = revision.RevisionNumber; project.UpdatedAt = now
-		proposal.Status = VideoEditProposalStatusAccepted; proposal.AcceptedOperationIDs = append([]string(nil), input.VideoProject.SelectedOperationIDs...); proposal.AcceptedRevisionID = revision.ID; proposal.UpdatedAt = now
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("video edit proposal %q not found", incoming.ID)
+			}
+			return preparedV3VideoProjectMutation{}, err
+		}
+		if proposal.UserID != "" && proposal.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal ownership does not match authenticated principal")
+		}
+		if proposal.Status != VideoEditProposalStatusPending {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal is %s", proposal.Status)
+		}
+		project, ok, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, proposal.ProjectID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video project not found")
+		}
+		if project.UserID != "" && project.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video project ownership does not match authenticated principal")
+		}
+		if project.CurrentRevisionID != proposal.BaseRevisionID || project.CurrentRevisionNumber != proposal.BaseRevisionNumber {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: base revision %s is not current revision %s", proposal.BaseRevisionID, project.CurrentRevisionID)
+		}
+		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("proposal base revision not found")
+		}
+		timeline, err := applyVideoEditOperations(base.Timeline, proposal.Operations, input.VideoProject.SelectedOperationIDs)
+		if err != nil {
+			return preparedV3VideoProjectMutation{}, err
+		}
+		revision := *input.VideoProject.Revision
+		revision.AccountScopeID = input.AccountScopeID
+		revision.UserID = input.UserID
+		revision.SessionID = input.SessionID
+		revision.ProjectID = proposal.ProjectID
+		revision.ParentRevisionID = proposal.BaseRevisionID
+		revision.AcceptedProposalID = proposal.ID
+		revision.Timeline = timeline
+		revision.RevisionNumber = project.RevisionCount + 1
+		revision.SchemaVersion = VideoProjectRevisionSchemaVersion
+		if revision.ID == "" {
+			revision.ID = generateDeterministicOrRandomID("vrev")
+		}
+		revision.CreatedAt = now
+		project.CurrentRevisionID = revision.ID
+		project.CurrentRevisionNumber = revision.RevisionNumber
+		project.RevisionCount = revision.RevisionNumber
+		project.UpdatedAt = now
+		proposal.Status = VideoEditProposalStatusAccepted
+		proposal.AcceptedOperationIDs = append([]string(nil), input.VideoProject.SelectedOperationIDs...)
+		proposal.AcceptedRevisionID = revision.ID
+		proposal.UpdatedAt = now
 		return preparedV3VideoProjectMutation{Project: &project, Revision: &revision, EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: project.ID, RevisionID: revision.ID, RevisionNumber: revision.RevisionNumber, CurrentRevisionID: revision.ID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
 
 	case V3SessionMutationRejectVideoEditProposal:
 		incoming := input.VideoProject.EditProposal
-		proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, incoming.ProjectID, incoming.ID); if err != nil || !ok { if err == nil { err = fmt.Errorf("video edit proposal %q not found", incoming.ID) }; return preparedV3VideoProjectMutation{}, err }
-		if proposal.UserID != "" && proposal.UserID != input.UserID { return preparedV3VideoProjectMutation{}, errors.New("video edit proposal ownership does not match authenticated principal") }
-		if proposal.Status != VideoEditProposalStatusPending { return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal is %s", proposal.Status) }
-		proposal.Status = VideoEditProposalStatusRejected; proposal.UpdatedAt = now
+		proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, incoming.ProjectID, incoming.ID)
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("video edit proposal %q not found", incoming.ID)
+			}
+			return preparedV3VideoProjectMutation{}, err
+		}
+		if proposal.UserID != "" && proposal.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal ownership does not match authenticated principal")
+		}
+		if proposal.Status != VideoEditProposalStatusPending {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal is %s", proposal.Status)
+		}
+		proposal.Status = VideoEditProposalStatusRejected
+		proposal.UpdatedAt = now
 		return preparedV3VideoProjectMutation{EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: proposal.BaseRevisionID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
 
 	case V3SessionMutationCreateVideoRenderJob:
@@ -1182,8 +1376,12 @@ func setV3VideoProjectMutationInBatch(batch *pebble.Batch, prepared preparedV3Vi
 	if prepared.EditProposal != nil {
 		p := prepared.EditProposal
 		payload, err := json.Marshal(p)
-		if err != nil { return fmt.Errorf("marshal video edit proposal snapshot: %w", err) }
-		if err := batch.Set([]byte(KeyVideoEditProposal(p.AccountScopeID, p.SessionID, p.ProjectID, p.ID)), payload, nil); err != nil { return err }
+		if err != nil {
+			return fmt.Errorf("marshal video edit proposal snapshot: %w", err)
+		}
+		if err := batch.Set([]byte(KeyVideoEditProposal(p.AccountScopeID, p.SessionID, p.ProjectID, p.ID)), payload, nil); err != nil {
+			return err
+		}
 	}
 	if prepared.RenderJob != nil {
 		j := prepared.RenderJob
@@ -1387,52 +1585,132 @@ func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit
 
 type CreateVideoEditProposalInput struct {
 	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale, ClientRequestID string
-	Operations []VideoEditOperation
-	AffectedRanges []VideoTimelineRange
-	NowUnixMs int64
+	Operations                                                                                                  []VideoEditOperation
+	AffectedRanges                                                                                              []VideoTimelineRange
+	NowUnixMs                                                                                                   int64
 }
 
 func (s *SessionStore) CreateVideoEditProposal(input CreateVideoEditProposalInput) (VideoEditProposalSnapshot, error) {
-	if strings.TrimSpace(input.ProposalID) == "" { input.ProposalID = generateDeterministicOrRandomID("vprop") }
-	now := input.NowUnixMs; if now == 0 { now = time.Now().UnixMilli() }
+	if strings.TrimSpace(input.ProposalID) == "" {
+		input.ProposalID = generateDeterministicOrRandomID("vprop")
+	}
+	now := input.NowUnixMs
+	if now == 0 {
+		now = time.Now().UnixMilli()
+	}
 	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
-	clientID := input.ClientRequestID; if clientID == "" { clientID = "create_video_edit_proposal:" + proposal.ID }
-	payload, _ := json.Marshal(proposal); sum := sha256.Sum256(payload)
+	clientID := input.ClientRequestID
+	if clientID == "" {
+		clientID = "create_video_edit_proposal:" + proposal.ID
+	}
+	payload, _ := json.Marshal(proposal)
+	sum := sha256.Sum256(payload)
 	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, ClientRequestID: clientID, IdempotencyKey: clientID, PayloadHash: hex.EncodeToString(sum[:]), Kind: V3SessionMutationCreateVideoEditProposal, VideoProject: &V3VideoProjectMutation{EditProposal: &proposal}, NowUnixMs: now})
-	if err != nil { return VideoEditProposalSnapshot{}, err }
-	stored, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, input.ProjectID, proposal.ID); if err != nil || !ok { if err == nil { err = errors.New("created video edit proposal could not be read") }; return VideoEditProposalSnapshot{}, err }; return stored, nil
+	if err != nil {
+		return VideoEditProposalSnapshot{}, err
+	}
+	stored, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, input.ProjectID, proposal.ID)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("created video edit proposal could not be read")
+		}
+		return VideoEditProposalSnapshot{}, err
+	}
+	return stored, nil
 }
 
 func (s *SessionStore) GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (VideoEditProposalSnapshot, bool, error) {
-	if strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(projectID) == "" || strings.TrimSpace(proposalID) == "" { return VideoEditProposalSnapshot{}, false, errors.New("account scope, session id, project id, and proposal id are required") }
+	if strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(projectID) == "" || strings.TrimSpace(proposalID) == "" {
+		return VideoEditProposalSnapshot{}, false, errors.New("account scope, session id, project id, and proposal id are required")
+	}
 	var proposal VideoEditProposalSnapshot
 	ok, err := s.store.GetJSON(KeyVideoEditProposal(accountScopeID, sessionID, projectID, proposalID), &proposal)
 	return proposal, ok, err
 }
 
 func (s *SessionStore) ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]VideoEditProposalSnapshot, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID); sessionID = strings.TrimSpace(sessionID); projectID = strings.TrimSpace(projectID)
-	if accountScopeID == "" || sessionID == "" || projectID == "" { return nil, errors.New("account scope, session id, and project id are required") }
-	if limit <= 0 || limit > 100 { limit = 100 }
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	sessionID = strings.TrimSpace(sessionID)
+	projectID = strings.TrimSpace(projectID)
+	if accountScopeID == "" || sessionID == "" || projectID == "" {
+		return nil, errors.New("account scope, session id, and project id are required")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
 	var proposals []VideoEditProposalSnapshot
-	err := s.store.IteratePrefix(VideoEditProposalPrefix(accountScopeID, sessionID, projectID), limit+1, func(_ string, value []byte) error { var proposal VideoEditProposalSnapshot; if err := json.Unmarshal(value, &proposal); err != nil { return err }; proposals = append(proposals, proposal); return nil })
-	if err != nil { return nil, err }; sort.Slice(proposals, func(i, j int) bool { return proposals[i].CreatedAt < proposals[j].CreatedAt }); if len(proposals) > limit { proposals = proposals[:limit] }; return proposals, nil
+	err := s.store.IteratePrefix(VideoEditProposalPrefix(accountScopeID, sessionID, projectID), limit+1, func(_ string, value []byte) error {
+		var proposal VideoEditProposalSnapshot
+		if err := json.Unmarshal(value, &proposal); err != nil {
+			return err
+		}
+		proposals = append(proposals, proposal)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(proposals, func(i, j int) bool { return proposals[i].CreatedAt < proposals[j].CreatedAt })
+	if len(proposals) > limit {
+		proposals = proposals[:limit]
+	}
+	return proposals, nil
 }
 
-type ResolveVideoEditProposalInput struct { AccountScopeID, UserID, SessionID, ProjectID, ProposalID, RevisionID, Description, ChangeSummary, AuthorPrincipal, ClientRequestID string; SelectedOperationIDs []string; Reject bool; NowUnixMs int64 }
+type ResolveVideoEditProposalInput struct {
+	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, RevisionID, Description, ChangeSummary, AuthorPrincipal, ClientRequestID string
+	SelectedOperationIDs                                                                                                               []string
+	Reject                                                                                                                             bool
+	NowUnixMs                                                                                                                          int64
+}
+
 func (s *SessionStore) ResolveVideoEditProposal(input ResolveVideoEditProposalInput) (VideoEditProposalSnapshot, *VideoProjectRevisionSnapshot, *VideoProjectSnapshot, error) {
-	now := input.NowUnixMs; if now == 0 { now = time.Now().UnixMilli() }
-	proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, input.ProjectID, input.ProposalID); if err != nil || !ok { if err == nil { err = errors.New("video edit proposal not found") }; return VideoEditProposalSnapshot{}, nil, nil, err }
-	kind := V3SessionMutationAcceptVideoEditProposal; proposal.Status = VideoEditProposalStatusAccepted
+	now := input.NowUnixMs
+	if now == 0 {
+		now = time.Now().UnixMilli()
+	}
+	proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, input.ProjectID, input.ProposalID)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("video edit proposal not found")
+		}
+		return VideoEditProposalSnapshot{}, nil, nil, err
+	}
+	kind := V3SessionMutationAcceptVideoEditProposal
+	proposal.Status = VideoEditProposalStatusAccepted
 	var revision *VideoProjectRevisionSnapshot
-	if input.Reject { kind = V3SessionMutationRejectVideoEditProposal; proposal.Status = VideoEditProposalStatusRejected } else { revision = &VideoProjectRevisionSnapshot{ID: input.RevisionID, ProjectID: input.ProjectID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Description: input.Description, ChangeSummary: input.ChangeSummary, AuthorPrincipal: input.AuthorPrincipal} }
-	clientID := input.ClientRequestID; if clientID == "" { clientID = fmt.Sprintf("resolve_video_edit_proposal:%s:%s", proposal.ID, kind) }
-	payload, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "kind": kind, "selected": input.SelectedOperationIDs}); sum := sha256.Sum256(payload)
+	if input.Reject {
+		kind = V3SessionMutationRejectVideoEditProposal
+		proposal.Status = VideoEditProposalStatusRejected
+	} else {
+		revision = &VideoProjectRevisionSnapshot{ID: input.RevisionID, ProjectID: input.ProjectID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Description: input.Description, ChangeSummary: input.ChangeSummary, AuthorPrincipal: input.AuthorPrincipal}
+	}
+	clientID := input.ClientRequestID
+	if clientID == "" {
+		clientID = fmt.Sprintf("resolve_video_edit_proposal:%s:%s", proposal.ID, kind)
+	}
+	payload, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "kind": kind, "selected": input.SelectedOperationIDs})
+	sum := sha256.Sum256(payload)
 	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, ClientRequestID: clientID, IdempotencyKey: clientID, PayloadHash: hex.EncodeToString(sum[:]), Kind: kind, VideoProject: &V3VideoProjectMutation{EditProposal: &proposal, Revision: revision, SelectedOperationIDs: input.SelectedOperationIDs}, NowUnixMs: now})
-	if err != nil { return VideoEditProposalSnapshot{}, nil, nil, err }
-	stored, _, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, input.ProjectID, input.ProposalID); if err != nil { return VideoEditProposalSnapshot{}, nil, nil, err }
-	if input.Reject { return stored, nil, nil, nil }
-	storedRevision, _, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, input.ProjectID, stored.AcceptedRevisionID); if err != nil { return VideoEditProposalSnapshot{}, nil, nil, err }; project, _, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, input.ProjectID); if err != nil { return VideoEditProposalSnapshot{}, nil, nil, err }; return stored, &storedRevision, &project, nil
+	if err != nil {
+		return VideoEditProposalSnapshot{}, nil, nil, err
+	}
+	stored, _, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, input.ProjectID, input.ProposalID)
+	if err != nil {
+		return VideoEditProposalSnapshot{}, nil, nil, err
+	}
+	if input.Reject {
+		return stored, nil, nil, nil
+	}
+	storedRevision, _, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, input.ProjectID, stored.AcceptedRevisionID)
+	if err != nil {
+		return VideoEditProposalSnapshot{}, nil, nil, err
+	}
+	project, _, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, input.ProjectID)
+	if err != nil {
+		return VideoEditProposalSnapshot{}, nil, nil, err
+	}
+	return stored, &storedRevision, &project, nil
 }
 
 type CreateVideoProjectRevisionInput struct {

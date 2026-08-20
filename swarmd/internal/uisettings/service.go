@@ -179,11 +179,11 @@ func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UIS
 		return UISettings{}, fmt.Errorf("artifact library directory must be absolute")
 	}
 	record, err := s.store.UpdateForAccount(strings.TrimSpace(accountScopeID), pebblestore.UISettingsPatch{
-		Theme:    themeRecordFromSettings(settings.Theme),
-		Input:    inputRecordFromSettings(settings.Input),
-		Chat:     chatRecordFromSettings(settings.Chat),
-		Swarming: swarmingRecordFromSettings(settings.Swarming),
-		Swarm:    swarmRecordFromSettings(settings.Swarm),
+		Theme:     themeRecordFromSettings(settings.Theme),
+		Input:     inputRecordFromSettings(settings.Input),
+		Chat:      chatRecordFromSettings(settings.Chat),
+		Swarming:  swarmingRecordFromSettings(settings.Swarming),
+		Swarm:     swarmRecordFromSettings(settings.Swarm),
 		Tools:     toolRecordFromSettings(settings.Tools),
 		Media:     mediaRecordFromSettings(settings.Media),
 		Artifacts: artifactRecordFromSettings(settings.Artifacts),

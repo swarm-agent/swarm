@@ -450,74 +450,145 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", errors.New("manage_video project service is not configured")
 		}
 		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		projectID := strings.TrimSpace(asString(args["project_id"]))
-		if projectID == "" { return "", errors.New("inspect_accepted_cut requires project_id") }
+		if projectID == "" {
+			return "", errors.New("inspect_accepted_cut requires project_id")
+		}
 		project, ok, err := r.videoProjects.GetProject(scope.Principal, projectSessionID, projectID)
-		if err != nil || !ok { if err == nil { err = fmt.Errorf("video project %q not found", projectID) }; return "", err }
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("video project %q not found", projectID)
+			}
+			return "", err
+		}
 		revisionID := strings.TrimSpace(asString(args["revision_id"]))
-		if revisionID == "" { revisionID = project.CurrentRevisionID }
+		if revisionID == "" {
+			revisionID = project.CurrentRevisionID
+		}
 		revision, ok, err := r.videoProjects.GetRevision(scope.Principal, projectSessionID, projectID, revisionID)
-		if err != nil || !ok { if err == nil { err = fmt.Errorf("video revision %q not found", revisionID) }; return "", err }
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("video revision %q not found", revisionID)
+			}
+			return "", err
+		}
 		maxClips := asInt(args["max_clips"], pebblestore.MaxClipsPerTimeline)
-		if maxClips <= 0 || maxClips > pebblestore.MaxClipsPerTimeline { maxClips = pebblestore.MaxClipsPerTimeline }
+		if maxClips <= 0 || maxClips > pebblestore.MaxClipsPerTimeline {
+			maxClips = pebblestore.MaxClipsPerTimeline
+		}
 		timeline := revision.Timeline
 		clipsTruncated := len(timeline.Clips) > maxClips
-		if clipsTruncated { timeline.Clips = timeline.Clips[:maxClips] }
+		if clipsTruncated {
+			timeline.Clips = timeline.Clips[:maxClips]
+		}
 		response["project_id"], response["revision_id"], response["revision_number"] = project.ID, revision.ID, revision.RevisionNumber
 		response["accepted_cut"] = map[string]any{"timeline": timeline, "clip_count": len(revision.Timeline.Clips), "transition_count": len(revision.Timeline.Transitions), "clips_truncated": clipsTruncated}
 		response["details_truncated"] = clipsTruncated
 
 	case "create_edit_proposal":
-		if r.videoProjects == nil { return "", errors.New("manage_video project service is not configured") }
+		if r.videoProjects == nil {
+			return "", errors.New("manage_video project service is not configured")
+		}
 		projectSessionID, studio, err := r.manageVideoProjectSession(scope.Principal, session)
-		if err != nil { return "", err }
-		if !studio { return "", errors.New("create_edit_proposal requires a Video Studio session") }
+		if err != nil {
+			return "", err
+		}
+		if !studio {
+			return "", errors.New("create_edit_proposal requires a Video Studio session")
+		}
 		projectID, baseRevisionID := strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["base_revision_id"]))
-		if projectID == "" || baseRevisionID == "" { return "", errors.New("create_edit_proposal requires project_id and exact base_revision_id") }
+		if projectID == "" || baseRevisionID == "" {
+			return "", errors.New("create_edit_proposal requires project_id and exact base_revision_id")
+		}
 		operations, err := parseVideoEditOperations(args["operations"])
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		affectedRanges, err := parseVideoTimelineRanges(args["affected_ranges"])
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		proposal, err := r.videoProjects.CreateEditProposal(ctx, scope.Principal, videoproject.CreateEditProposalInput{SessionID: projectSessionID, ProjectID: projectID, ProposalID: strings.TrimSpace(asString(args["proposal_id"])), BaseRevisionID: baseRevisionID, Title: strings.TrimSpace(asString(args["title"])), Rationale: strings.TrimSpace(asString(args["rationale"])), Operations: operations, AffectedRanges: affectedRanges})
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		response["proposal"] = safeVideoEditProposal(proposal)
 		response["proposal_id"], response["project_id"], response["revision_id"] = proposal.ID, proposal.ProjectID, proposal.BaseRevisionID
 		response["proposal_status"], response["stale_base"] = proposal.Status, false
 
 	case "proposal_status":
-		if r.videoProjects == nil { return "", errors.New("manage_video project service is not configured") }
+		if r.videoProjects == nil {
+			return "", errors.New("manage_video project service is not configured")
+		}
 		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		projectID, proposalID := strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["proposal_id"]))
-		if projectID == "" { return "", errors.New("proposal_status requires project_id") }
+		if projectID == "" {
+			return "", errors.New("proposal_status requires project_id")
+		}
 		project, ok, err := r.videoProjects.GetProject(scope.Principal, projectSessionID, projectID)
-		if err != nil || !ok { if err == nil { err = fmt.Errorf("video project %q not found", projectID) }; return "", err }
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("video project %q not found", projectID)
+			}
+			return "", err
+		}
 		if proposalID != "" {
 			proposal, ok, err := r.videoProjects.GetEditProposal(scope.Principal, projectSessionID, projectID, proposalID)
-			if err != nil || !ok { if err == nil { err = fmt.Errorf("video edit proposal %q not found", proposalID) }; return "", err }
+			if err != nil || !ok {
+				if err == nil {
+					err = fmt.Errorf("video edit proposal %q not found", proposalID)
+				}
+				return "", err
+			}
 			response["proposal"] = safeVideoEditProposal(proposal)
 			response["proposal_id"], response["proposal_status"] = proposal.ID, proposal.Status
 			response["stale_base"] = proposal.Status == pebblestore.VideoEditProposalStatusPending && proposal.BaseRevisionID != project.CurrentRevisionID
 		} else {
 			proposals, err := r.videoProjects.ListEditProposals(scope.Principal, projectSessionID, projectID, 50)
-			if err != nil { return "", err }
-			items := make([]map[string]any, 0, len(proposals)); for _, proposal := range proposals { item := safeVideoEditProposal(proposal); item["stale_base"] = proposal.Status == pebblestore.VideoEditProposalStatusPending && proposal.BaseRevisionID != project.CurrentRevisionID; items = append(items, item) }
+			if err != nil {
+				return "", err
+			}
+			items := make([]map[string]any, 0, len(proposals))
+			for _, proposal := range proposals {
+				item := safeVideoEditProposal(proposal)
+				item["stale_base"] = proposal.Status == pebblestore.VideoEditProposalStatusPending && proposal.BaseRevisionID != project.CurrentRevisionID
+				items = append(items, item)
+			}
 			response["proposals"], response["count"] = items, len(items)
 		}
 		response["project_id"], response["revision_id"] = project.ID, project.CurrentRevisionID
 
 	case "recommend_render_settings":
 		projectSessionID, _, err := r.manageVideoProjectSession(scope.Principal, session)
-		if err != nil { return "", err }
-		projectID := strings.TrimSpace(asString(args["project_id"])); if projectID == "" { return "", errors.New("recommend_render_settings requires project_id") }
+		if err != nil {
+			return "", err
+		}
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			return "", errors.New("recommend_render_settings requires project_id")
+		}
 		project, ok, err := r.videoProjects.GetProject(scope.Principal, projectSessionID, projectID)
-		if err != nil || !ok { if err == nil { err = fmt.Errorf("video project %q not found", projectID) }; return "", err }
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("video project %q not found", projectID)
+			}
+			return "", err
+		}
 		response["project_id"], response["revision_id"] = project.ID, project.CurrentRevisionID
 		response["recommended_settings"] = map[string]any{"output_preset": project.OutputPreset, "revision_id": project.CurrentRevisionID, "requires_explicit_user_start": true}
 
 	case "restore_revision":
-		if _, studio, studioErr := r.manageVideoProjectSession(scope.Principal, session); studioErr != nil { return "", studioErr } else if studio { return "", errors.New("Video Studio AI cannot restore revisions; revision changes require explicit user acceptance") }
+		if _, studio, studioErr := r.manageVideoProjectSession(scope.Principal, session); studioErr != nil {
+			return "", studioErr
+		} else if studio {
+			return "", errors.New("Video Studio AI cannot restore revisions; revision changes require explicit user acceptance")
+		}
 		if r.videoProjects == nil {
 			return "", errors.New("manage_video project service is not configured")
 		}
@@ -545,7 +616,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		response["restored_from_revision_id"] = revision.RestoredFromRevisionID
 
 	case "create_revision":
-		if _, studio, studioErr := r.manageVideoProjectSession(scope.Principal, session); studioErr != nil { return "", studioErr } else if studio { return "", errors.New("Video Studio AI cannot create revisions; create an edit proposal for explicit user acceptance") }
+		if _, studio, studioErr := r.manageVideoProjectSession(scope.Principal, session); studioErr != nil {
+			return "", studioErr
+		} else if studio {
+			return "", errors.New("Video Studio AI cannot create revisions; create an edit proposal for explicit user acceptance")
+		}
 		if r.videoProjects == nil {
 			return "", errors.New("manage_video project service is not configured")
 		}
@@ -590,7 +665,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		response["revision_number"] = revision.RevisionNumber
 
 	case "start_render":
-		if _, studio, studioErr := r.manageVideoProjectSession(scope.Principal, session); studioErr != nil { return "", studioErr } else if studio { return "", errors.New("Video Studio AI cannot start final render; recommend settings and wait for explicit user start") }
+		if _, studio, studioErr := r.manageVideoProjectSession(scope.Principal, session); studioErr != nil {
+			return "", studioErr
+		} else if studio {
+			return "", errors.New("Video Studio AI cannot start final render; recommend settings and wait for explicit user start")
+		}
 		if r.videoProjects == nil {
 			return "", errors.New("manage_video project service is not configured")
 		}
@@ -698,26 +777,26 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 
 func manageVideoPresentation(action string, args, response map[string]any) map[string]any {
 	copyByAction := map[string][2]string{
-		"list_source_roots":   {"Video sources ready", "Finding video sources"},
-		"browse_source":       {"Video source opened", "Browsing video sources"},
-		"inspect_attachments": {"Video attachments checked", "Checking video attachments"},
-		"start_transcription": {"Transcription started", "Starting video transcription"},
-		"status":              {"Transcription status checked", "Checking transcription progress"},
-		"cancel":              {"Transcription cancelled", "Cancelling video transcription"},
-		"read_transcript":     {"Transcript ready", "Reading video transcript"},
-		"create_project":      {"Video project ready", "Setting up video project"},
-		"read_project":        {"Video project loaded", "Loading video project"},
-		"get_project":         {"Video project loaded", "Loading video project"},
-		"list_projects":       {"Video projects loaded", "Loading video projects"},
-		"inspect_accepted_cut": {"Accepted cut loaded", "Inspecting accepted cut"},
-		"create_edit_proposal": {"Edit proposal ready", "Preparing video edit proposal"},
-		"proposal_status":      {"Proposal status updated", "Checking edit proposal"},
+		"list_source_roots":         {"Video sources ready", "Finding video sources"},
+		"browse_source":             {"Video source opened", "Browsing video sources"},
+		"inspect_attachments":       {"Video attachments checked", "Checking video attachments"},
+		"start_transcription":       {"Transcription started", "Starting video transcription"},
+		"status":                    {"Transcription status checked", "Checking transcription progress"},
+		"cancel":                    {"Transcription cancelled", "Cancelling video transcription"},
+		"read_transcript":           {"Transcript ready", "Reading video transcript"},
+		"create_project":            {"Video project ready", "Setting up video project"},
+		"read_project":              {"Video project loaded", "Loading video project"},
+		"get_project":               {"Video project loaded", "Loading video project"},
+		"list_projects":             {"Video projects loaded", "Loading video projects"},
+		"inspect_accepted_cut":      {"Accepted cut loaded", "Inspecting accepted cut"},
+		"create_edit_proposal":      {"Edit proposal ready", "Preparing video edit proposal"},
+		"proposal_status":           {"Proposal status updated", "Checking edit proposal"},
 		"recommend_render_settings": {"Render settings recommended", "Reviewing render settings"},
-		"create_revision":     {"Video edit saved", "Saving video edit"},
-		"restore_revision":    {"Video version restored", "Restoring video version"},
-		"start_render":        {"Video render started", "Starting video render"},
-		"render_status":       {"Render status updated", "Checking render progress"},
-		"cancel_render":       {"Video render cancelled", "Cancelling video render"},
+		"create_revision":           {"Video edit saved", "Saving video edit"},
+		"restore_revision":          {"Video version restored", "Restoring video version"},
+		"start_render":              {"Video render started", "Starting video render"},
+		"render_status":             {"Render status updated", "Checking render progress"},
+		"cancel_render":             {"Video render cancelled", "Cancelling video render"},
 	}
 	copy := copyByAction[action]
 	if copy[0] == "" {
@@ -816,22 +895,44 @@ func singleManageVideoSourceName(names []string) string {
 }
 
 func parseVideoEditOperations(raw any) ([]pebblestore.VideoEditOperation, error) {
-	if raw == nil { return nil, errors.New("create_edit_proposal requires operations") }
-	encoded, err := json.Marshal(raw); if err != nil { return nil, fmt.Errorf("marshal operations: %w", err) }
+	if raw == nil {
+		return nil, errors.New("create_edit_proposal requires operations")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal operations: %w", err)
+	}
 	var operations []pebblestore.VideoEditOperation
-	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
-	if err := json.Unmarshal(encoded, &operations); err != nil { return nil, fmt.Errorf("invalid operations payload: %w", err) }
-	if len(operations) == 0 || len(operations) > pebblestore.MaxVideoEditProposalOperations { return nil, errors.New("operations must be non-empty and bounded") }
+	if text, ok := raw.(string); ok {
+		encoded = []byte(strings.TrimSpace(text))
+	}
+	if err := json.Unmarshal(encoded, &operations); err != nil {
+		return nil, fmt.Errorf("invalid operations payload: %w", err)
+	}
+	if len(operations) == 0 || len(operations) > pebblestore.MaxVideoEditProposalOperations {
+		return nil, errors.New("operations must be non-empty and bounded")
+	}
 	return operations, nil
 }
 
 func parseVideoTimelineRanges(raw any) ([]pebblestore.VideoTimelineRange, error) {
-	if raw == nil { return nil, nil }
-	encoded, err := json.Marshal(raw); if err != nil { return nil, fmt.Errorf("marshal affected_ranges: %w", err) }
+	if raw == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal affected_ranges: %w", err)
+	}
 	var ranges []pebblestore.VideoTimelineRange
-	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
-	if err := json.Unmarshal(encoded, &ranges); err != nil { return nil, fmt.Errorf("invalid affected_ranges payload: %w", err) }
-	if len(ranges) > pebblestore.MaxVideoEditProposalOperations { return nil, errors.New("affected_ranges must be bounded") }
+	if text, ok := raw.(string); ok {
+		encoded = []byte(strings.TrimSpace(text))
+	}
+	if err := json.Unmarshal(encoded, &ranges); err != nil {
+		return nil, fmt.Errorf("invalid affected_ranges payload: %w", err)
+	}
+	if len(ranges) > pebblestore.MaxVideoEditProposalOperations {
+		return nil, errors.New("affected_ranges must be bounded")
+	}
 	return ranges, nil
 }
 

@@ -5,12 +5,88 @@ import { VIDEO_TRANSITION_KINDS, transitionLabel } from '../video-studio/video-s
 
 import {
   projectTimelineToTimelineSegments,
+  resolveVideoStudioSessionRoute,
   serializeVideoClipForRequest,
   timelineSegmentsToProjectTimeline,
   videoChildSessionMetadata,
+  videoStudioSessionMetadata,
   type VideoClip,
   type VideoProjectTimelineWire,
 } from './video-tool-page'
+import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
+import type { WorkspaceOverviewSwarmTarget, WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
+
+function videoStudioWorkspace(route: WorkspaceOverviewTopologyRoute): WorkspaceEntry {
+  return {
+    path: '/workspace/video',
+    workspaceId: 'workspace-1',
+    localWorkspaceBindingId: route.workspaceBindingId,
+    workspaceName: 'video',
+    themeId: '',
+    directories: ['/workspace/video'],
+    isGitRepo: true,
+    sortIndex: 0,
+    addedAt: 1,
+    updatedAt: 1,
+    lastSelectedAt: 1,
+    active: true,
+    worktreeEnabled: false,
+    topologyRoutes: [route],
+  }
+}
+
+const videoStudioSwarmTarget: WorkspaceOverviewSwarmTarget = {
+  swarmId: 'host-swarm',
+  name: 'Local',
+  role: 'host',
+  relationship: 'self',
+  kind: 'host',
+  current: true,
+}
+
+const videoStudioSelfRoute: WorkspaceOverviewTopologyRoute = {
+  routeId: 'swarm:host-swarm:binding:binding-video',
+  routeSource: 'topology/workspace_binding',
+  workspaceBindingId: 'binding-video',
+  runtimeSwarmId: 'host-swarm',
+  runtimeSwarmName: 'Local',
+  runtimeKind: 'host',
+  runtimeRelationship: 'self',
+  authorityHostSwarmId: 'host-swarm',
+  hostSwarmId: 'host-swarm',
+  hostSwarmName: 'Local',
+  hostWorkspacePath: '/workspace/video',
+  hostWorkspaceName: 'video',
+  runtimeWorkspacePath: '/workspace/video',
+  writable: true,
+  createdAt: 1,
+  updatedAt: 1,
+}
+
+test('Video Studio resolves V3 create authority from workspace overview', () => {
+  const route = resolveVideoStudioSessionRoute(videoStudioWorkspace(videoStudioSelfRoute), videoStudioSwarmTarget)
+
+  assert.ok(route)
+  assert.equal(route.swarmId, 'host-swarm')
+  assert.equal(route.workspaceBindingId, 'binding-video')
+  assert.equal(route.hostWorkspacePath, '/workspace/video')
+  assert.deepEqual(videoStudioSessionMetadata(), {
+    experience: 'video_studio',
+    launch_source: 'video_tool',
+    lineage_kind: 'video_project',
+  })
+})
+
+test('Video Studio reports route unavailable only without a primary self V3 authority', () => {
+  assert.equal(resolveVideoStudioSessionRoute(videoStudioWorkspace(videoStudioSelfRoute), null), null)
+  assert.equal(resolveVideoStudioSessionRoute(videoStudioWorkspace({
+    ...videoStudioSelfRoute,
+    routeId: 'swarm:managed-swarm:binding:binding-managed',
+    workspaceBindingId: 'binding-managed',
+    runtimeSwarmId: 'managed-swarm',
+    runtimeRelationship: 'managed',
+  }), videoStudioSwarmTarget), null)
+})
 
 test('serializeVideoClipForRequest sends Go API wire fields for clip metadata', () => {
   const clip: VideoClip = {

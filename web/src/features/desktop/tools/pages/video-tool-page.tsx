@@ -7,14 +7,15 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/d
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { requestJson } from '../../../../app/api'
 import { createSession, fetchDraftModelPreference } from '../../chat/queries/chat-queries'
-import { listWorkspaces } from '../../../workspaces/launcher/queries/list-workspaces'
-import { uiSettingsQueryOptions } from '../../../queries/query-options'
+import { uiSettingsQueryOptions, workspaceOverviewQueryOptions } from '../../../queries/query-options'
 import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-settings'
 import { browseWorkspacePath } from '../../../workspaces/launcher/queries/browse-workspace-path'
-import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/workspace-route'
+import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { applyWorkspaceTheme, createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
 import { createDesktopV3ExistingMessageOperation, continueDesktopV3Conversation } from '../../session-v3/existing-session-flow'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../../chat/services/chat-routing'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
+import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
 import { VIDEO_TRANSITION_KINDS, VideoProposalReview, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 
@@ -480,10 +481,48 @@ async function fetchVideoThreads(workspacePath: string): Promise<VideoThreadReco
     .filter((thread): thread is VideoThreadRecord => Boolean(thread))
 }
 
+export function videoStudioSessionMetadata(): Record<string, unknown> {
+  return {
+    experience: 'video_studio',
+    launch_source: 'video_tool',
+    lineage_kind: 'video_project',
+  }
+}
+
+export function resolveVideoStudioSessionRoute(
+  workspace: WorkspaceEntry | null,
+  swarmTarget: WorkspaceOverviewSwarmTarget | null,
+): DesktopChatRoute | null {
+  const swarmId = swarmTarget?.swarmId.trim() ?? ''
+  const workspaceBindingId = workspace?.localWorkspaceBindingId.trim() ?? ''
+  if (!workspace || !swarmId || !workspaceBindingId) return null
+  const selfTopologyRoute = workspace.topologyRoutes.find((route) => (
+    route.workspaceBindingId === workspaceBindingId
+    && route.runtimeSwarmId === swarmId
+    && route.runtimeRelationship.trim().toLowerCase() === 'self'
+    && ['host', 'self'].includes(route.runtimeKind.trim().toLowerCase())
+  ))
+  if (!selfTopologyRoute) return null
+  return buildDesktopChatRouteOptions({
+    hostSwarmName: swarmTarget?.name || 'host',
+    workspacePath: workspace.path,
+    workspaceName: workspace.workspaceName,
+    topologyRoutes: workspace.topologyRoutes,
+    localWorkspaceBindingId: workspaceBindingId,
+    hostSwarmId: swarmId,
+  }).find((route) => {
+    const target = getDesktopSessionCreateTarget(route)
+    return target.endpoint === '/v3/sessions'
+      && target.swarmId === swarmId
+      && target.workspaceBindingId === workspaceBindingId
+  }) ?? null
+}
+
 async function createVideoThread(input: {
   title: string
   workspacePath: string
   workspaceName: string
+  route: DesktopChatRoute
   folderPath?: string
   clips: VideoClip[]
 }): Promise<VideoThreadRecord> {
@@ -494,7 +533,8 @@ async function createVideoThread(input: {
     workspaceName: input.workspaceName,
     mode: 'auto',
     preference: preference.preference,
-    metadata: { launch_source: 'video_tool', lineage_kind: 'video_project' },
+    route: input.route,
+    metadata: videoStudioSessionMetadata(),
   })
   const response = await requestJson<{ thread?: VideoThreadWire }>('/v1/workspace/video/threads', {
     method: 'POST',
@@ -755,8 +795,9 @@ export function VideoToolPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const matchRoute = useMatchRoute()
+  const workspaceStudioMatch = matchRoute({ to: '/$workspaceSlug/studio', fuzzy: false })
   const workspaceVideoToolMatch = matchRoute({ to: '/$workspaceSlug/tools/video', fuzzy: false })
-  const routeWorkspaceSlug = workspaceVideoToolMatch ? workspaceVideoToolMatch.workspaceSlug.trim() : ''
+  const routeWorkspaceSlug = (workspaceStudioMatch ? workspaceStudioMatch.workspaceSlug : workspaceVideoToolMatch ? workspaceVideoToolMatch.workspaceSlug : '').trim()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [browser, setBrowser] = useState<WorkspaceBrowseResult | null>(null)
   const [browserLoading, setBrowserLoading] = useState(false)
@@ -801,13 +842,12 @@ export function VideoToolPage() {
   const playbackStartRef = useRef(0)
   const playbackStartPlayheadRef = useRef(0)
 
-  const workspacesQuery = useQuery({
-    queryKey: ['video-tool-workspaces'],
-    queryFn: () => listWorkspaces(200),
-    staleTime: 30_000,
-  })
+  const workspaceOverviewQuery = useQuery(workspaceOverviewQueryOptions([], 25))
   const uiSettingsQuery = useQuery(uiSettingsQueryOptions())
-  const workspaces = workspacesQuery.data ?? []
+  const workspaces = workspaceOverviewQuery.data?.workspaces ?? []
+  const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
+    workspaces.map((workspace) => ({ path: workspace.path, workspaceName: workspace.workspaceName })),
+  ), [workspaces])
 
   const selectedWorkspace = useMemo<WorkspaceEntry | null>(() => {
     if (routeWorkspaceSlug) {
@@ -818,6 +858,10 @@ export function VideoToolPage() {
 
   const selectedWorkspacePath = selectedWorkspace?.path ?? ''
   const selectedWorkspaceName = selectedWorkspace?.workspaceName ?? ''
+  const selectedSessionRoute = useMemo(
+    () => resolveVideoStudioSessionRoute(selectedWorkspace, workspaceOverviewQuery.data?.swarmTarget ?? null),
+    [selectedWorkspace, workspaceOverviewQuery.data?.swarmTarget],
+  )
   const userThemeId = selectedWorkspace?.themeId?.trim() || normalizeGlobalThemeSettings(uiSettingsQuery.data).activeId
   const darkOverrideButtonStyle = useMemo(() => createWorkspaceThemeStyle(userThemeId, '--video-tool-user-theme') as CSSProperties, [userThemeId])
 
@@ -865,11 +909,11 @@ export function VideoToolPage() {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(VIDEO_TOOL_BLACK_MODE_STORAGE_KEY, blackModeEnabled ? 'true' : 'false')
     }
-    if (routeWorkspaceSlug && workspacesQuery.isLoading && !selectedWorkspace) {
+    if (routeWorkspaceSlug && workspaceOverviewQuery.isPending && !selectedWorkspace) {
       return
     }
     applyWorkspaceTheme(blackModeEnabled ? 'black' : userThemeId)
-  }, [blackModeEnabled, routeWorkspaceSlug, selectedWorkspace, userThemeId, workspacesQuery.isLoading])
+  }, [blackModeEnabled, routeWorkspaceSlug, selectedWorkspace, userThemeId, workspaceOverviewQuery.isPending])
 
   useEffect(() => {
     let cancelled = false
@@ -1073,6 +1117,16 @@ export function VideoToolPage() {
     void navigate({ to: '/tools' })
   }, [navigate, routeWorkspaceSlug])
 
+  const handleSelectWorkspace = useCallback((workspacePath: string) => {
+    const workspace = workspaces.find((candidate) => candidate.path === workspacePath)
+    if (!workspace) return
+    const workspaceSlug = workspaceSlugByPath.get(workspace.path)
+      ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
+    setSelectedThreadId(null)
+    setSelectedClipId(null)
+    void navigate({ to: '/$workspaceSlug/studio', params: { workspaceSlug } })
+  }, [navigate, workspaceSlugByPath, workspaces])
+
   const loadBrowser = useCallback(async (path: string) => {
     setBrowserLoading(true)
     setBrowserError(null)
@@ -1195,6 +1249,18 @@ export function VideoToolPage() {
       setCreateError('Select a workspace before starting a video session.')
       return
     }
+    if (workspaceOverviewQuery.isPending) {
+      setCreateError('The selected workspace session route is still loading.')
+      return
+    }
+    if (workspaceOverviewQuery.isError) {
+      setCreateError(workspaceOverviewQuery.error instanceof Error ? workspaceOverviewQuery.error.message : 'Could not load the selected workspace session route.')
+      return
+    }
+    if (!selectedSessionRoute) {
+      setCreateError('The selected workspace has no available V3 Swarm session route.')
+      return
+    }
     const title = newSessionTitle.trim() || DEFAULT_VIDEO_SESSION_TITLE
     setCreatingBlankSession(true)
     setCreateError(null)
@@ -1203,6 +1269,7 @@ export function VideoToolPage() {
         title,
         workspacePath: selectedWorkspacePath,
         workspaceName: selectedWorkspaceName,
+        route: selectedSessionRoute,
         clips: [],
       })
       queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => {
@@ -1218,11 +1285,23 @@ export function VideoToolPage() {
     } finally {
       setCreatingBlankSession(false)
     }
-  }, [newSessionTitle, queryClient, selectedWorkspaceName, selectedWorkspacePath])
+  }, [newSessionTitle, queryClient, selectedSessionRoute, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending])
 
   const handleAddFolder = useCallback(async (folderPath: string) => {
     if (!selectedWorkspacePath || !selectedWorkspaceName) {
       setCreateError('Select a workspace before starting a video session.')
+      return
+    }
+    if (workspaceOverviewQuery.isPending) {
+      setCreateError('The selected workspace session route is still loading.')
+      return
+    }
+    if (workspaceOverviewQuery.isError) {
+      setCreateError(workspaceOverviewQuery.error instanceof Error ? workspaceOverviewQuery.error.message : 'Could not load the selected workspace session route.')
+      return
+    }
+    if (!selectedSessionRoute) {
+      setCreateError('The selected workspace has no available V3 Swarm session route.')
       return
     }
     setAddingFolderPath(folderPath)
@@ -1262,6 +1341,7 @@ export function VideoToolPage() {
         title: videoSessionTitle(scanned.folderPath),
         workspacePath: selectedWorkspacePath,
         workspaceName: selectedWorkspaceName,
+        route: selectedSessionRoute,
         folderPath: scanned.folderPath,
         clips: scanned.clips,
       })
@@ -1278,7 +1358,7 @@ export function VideoToolPage() {
     } finally {
       setAddingFolderPath(null)
     }
-  }, [queryClient, selectedThread, selectedWorkspaceName, selectedWorkspacePath])
+  }, [queryClient, selectedSessionRoute, selectedThread, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending])
 
   const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { migration?: boolean; transitionKind?: VideoTransitionKind }) => {
     if (!selectedThread) return
@@ -1472,11 +1552,27 @@ export function VideoToolPage() {
               toolDescription="Video sessions are DB-backed movie threads. Originals stay untouched; generated tool files use Swarm’s private app-managed workspace bucket."
               createLabel="Start new video session"
               createTitle={newSessionTitle}
+              createPrefix={(
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Workspace</span>
+                  <select
+                    value={selectedWorkspacePath}
+                    onChange={(event) => handleSelectWorkspace(event.currentTarget.value)}
+                    disabled={workspaceOverviewQuery.isPending || workspaces.length === 0}
+                    className="mt-2 h-9 w-full border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-[12px] text-[var(--app-text)] outline-none focus:border-[var(--app-primary)] disabled:opacity-50"
+                    aria-label="Video Studio workspace"
+                  >
+                    {workspaces.map((workspace) => (
+                      <option key={workspace.path} value={workspace.path}>{workspace.workspaceName}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               onCreateTitleChange={setNewSessionTitle}
               createPlaceholder={DEFAULT_VIDEO_SESSION_TITLE}
               onCreate={() => void handleCreateBlankSession()}
               creating={creatingBlankSession}
-              createDisabled={!selectedWorkspacePath}
+              createDisabled={!selectedWorkspacePath || workspaceOverviewQuery.isPending || !selectedSessionRoute}
               sessionsLabel="Video sessions"
               sessionsLoading={videoThreadsQuery.isLoading}
               sessions={videoThreads.map((thread) => ({

@@ -87,7 +87,7 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
 		AccessMode:                      pebblestore.TopologyWorkspaceBindingAccessModeReadWrite,
 		MaterializationKind:             pebblestore.TopologyWorkspaceBindingMaterializationSource,
-		AttestedByHostSwarmID:           "host-swarm-id",
+		AttestedByHostSwarmID:           "managed-swarm-1",
 		ReplicationMode:                 "continuous",
 		Writable:                        true,
 		Sync:                            pebblestore.WorkspaceReplicationSync{Enabled: true, Mode: "bidirectional"},
@@ -127,7 +127,7 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 	if route.RouteID != "swarm:managed-swarm-1:binding:binding-1" {
 		t.Fatalf("route id=%q", route.RouteID)
 	}
-	if route.HostSwarmName != "host-swarm" {
+	if route.HostSwarmName != "managed-host" {
 		t.Fatalf("host swarm name=%q route=%+v", route.HostSwarmName, route)
 	}
 }
@@ -259,6 +259,23 @@ func TestWorkspaceOverviewTopologyRouteIDRequiresBindingID(t *testing.T) {
 	}
 	if got := workspaceOverviewTopologyRouteID("managed-swarm-1", ""); got != "" {
 		t.Fatalf("name/path fallback route id=%q, want empty", got)
+	}
+}
+
+func TestLocalWorkspaceBindingIDsByWorkspaceIDSelectsSelfAuthority(t *testing.T) {
+	workspacePath := "/workspace/one"
+	bindings := localWorkspaceBindingIDsByWorkspaceID(
+		[]workspaceruntime.Entry{{Path: workspacePath, WorkspaceID: "workspace-1"}},
+		map[string][]workspaceOverviewTopologyRoute{
+			workspacePath: {
+				{WorkspaceBindingID: "managed-binding", RuntimeSwarmID: "managed-swarm", AuthorityHostSwarmID: "managed-swarm"},
+				{WorkspaceBindingID: "self-binding", RuntimeSwarmID: "host-swarm", AuthorityHostSwarmID: "host-swarm"},
+			},
+		},
+		"host-swarm",
+	)
+	if bindings["workspace-1"] != "self-binding" {
+		t.Fatalf("local binding=%q, want self-binding", bindings["workspace-1"])
 	}
 }
 

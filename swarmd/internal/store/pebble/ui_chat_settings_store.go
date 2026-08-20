@@ -123,11 +123,11 @@ type UISettingsRecord struct {
 }
 
 type UISettingsPatch struct {
-	Theme    *UIThemeSettingsRecord
-	Input    *UIInputSettingsRecord
-	Chat     *UIChatSettingsRecord
-	Swarming *UISwarmingSettingsRecord
-	Swarm    *UISwarmSettingsRecord
+	Theme     *UIThemeSettingsRecord
+	Input     *UIInputSettingsRecord
+	Chat      *UIChatSettingsRecord
+	Swarming  *UISwarmingSettingsRecord
+	Swarm     *UISwarmSettingsRecord
 	Tools     *UIToolSettingsRecord
 	Media     *UIMediaSettingsRecord
 	Artifacts *UIArtifactSettingsRecord

@@ -93,7 +93,7 @@ export async function requestVideoRenderCancellation(sessionId: string, jobId: s
 
 function operationLabel(operation: VideoEditOperationWire): string {
   const subject = operation.clip?.name || operation.clip_id || operation.transition?.kind || operation.transition_id || 'timeline'
-  return `${operation.type.replaceAll('_', ' ')} · ${String(subject)}`
+  return `${operation.type.replace(/_/g, ' ')} · ${String(subject)}`
 }
 
 export function VideoProposalReview(props: {

@@ -171,10 +171,18 @@ func (f *fakeSessionStore) ListVideoProjectRevisions(accountScopeID, sessionID, 
 	return list, nil
 }
 
-func (f *fakeSessionStore) CreateVideoEditProposal(input pebblestore.CreateVideoEditProposalInput) (pebblestore.VideoEditProposalSnapshot, error) { return pebblestore.VideoEditProposalSnapshot{}, nil }
-func (f *fakeSessionStore) GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) { return pebblestore.VideoEditProposalSnapshot{}, false, nil }
-func (f *fakeSessionStore) ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoEditProposalSnapshot, error) { return nil, nil }
-func (f *fakeSessionStore) ResolveVideoEditProposal(input pebblestore.ResolveVideoEditProposalInput) (pebblestore.VideoEditProposalSnapshot, *pebblestore.VideoProjectRevisionSnapshot, *pebblestore.VideoProjectSnapshot, error) { return pebblestore.VideoEditProposalSnapshot{}, nil, nil, nil }
+func (f *fakeSessionStore) CreateVideoEditProposal(input pebblestore.CreateVideoEditProposalInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	return pebblestore.VideoEditProposalSnapshot{}, nil
+}
+func (f *fakeSessionStore) GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
+	return pebblestore.VideoEditProposalSnapshot{}, false, nil
+}
+func (f *fakeSessionStore) ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoEditProposalSnapshot, error) {
+	return nil, nil
+}
+func (f *fakeSessionStore) ResolveVideoEditProposal(input pebblestore.ResolveVideoEditProposalInput) (pebblestore.VideoEditProposalSnapshot, *pebblestore.VideoProjectRevisionSnapshot, *pebblestore.VideoProjectSnapshot, error) {
+	return pebblestore.VideoEditProposalSnapshot{}, nil, nil, nil
+}
 
 func (f *fakeSessionStore) CreateVideoRenderJob(input pebblestore.CreateVideoRenderJobInput) (pebblestore.VideoRenderJobSnapshot, error) {
 	j := pebblestore.VideoRenderJobSnapshot{

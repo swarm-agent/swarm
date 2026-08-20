@@ -13,8 +13,8 @@ const IntegrationsPage = lazyRouteComponent(() => import('../features/desktop/in
 const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio'])
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
@@ -183,6 +183,12 @@ const toolsRoute = createRoute({
   component: SwarmToolsPage,
 })
 
+const studioRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/studio',
+  component: VideoToolPage,
+})
+
 const videoToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tools/video',
@@ -262,6 +268,13 @@ const workspaceToolsRoute = createRoute({
   component: SwarmToolsPage,
 })
 
+const workspaceStudioRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/studio',
+  parseParams: validateWorkspaceParams,
+  component: VideoToolPage,
+})
+
 const workspaceVideoToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/tools/video',
@@ -290,6 +303,7 @@ const routeTree = rootRoute.addChildren([
   integrationsRoute,
   integrationSessionRoute,
   toolsRoute,
+  studioRoute,
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
@@ -300,6 +314,7 @@ const routeTree = rootRoute.addChildren([
   workspaceWorktreeRoute,
   workspaceSettingsRoute,
   workspaceToolsRoute,
+  workspaceStudioRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
   workspaceImageToolSessionRoute,

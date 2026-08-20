@@ -259,13 +259,13 @@ test('artifact reveal actions use authenticated variant and collection routes', 
   const requests: Array<{ url: string; method: string }> = []
   globalThis.fetch = (async (input, init) => {
     requests.push({ url: String(input), method: init?.method ?? '' })
-    return new Response(JSON.stringify({ ok: true, method: 'freedesktop-file-manager-show-folders', display_location: '/home/user/.cache/swarm/artifacts/output' }), { headers: { 'Content-Type': 'application/json' } })
+    return new Response(JSON.stringify({ ok: true, method: 'freedesktop-file-manager-show-folders', display_location: 'artifact-output-location' }), { headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
   try {
     const artifactResult = await revealDesktopV3Artifact('session-1', 'variant-1')
     const collectionResult = await revealDesktopV3ArtifactCollection('session-1', 'collection-1')
     assert.equal(artifactResult.method, 'freedesktop-file-manager-show-folders')
-    assert.equal(collectionResult.displayLocation, '/home/user/.cache/swarm/artifacts/output')
+    assert.equal(collectionResult.displayLocation, 'artifact-output-location')
     assert.deepEqual(requests, [
       { url: '/v3/sessions/session-1/artifacts/variant-1/reveal', method: 'POST' },
       { url: '/v3/sessions/session-1/artifacts/collections/collection-1/reveal', method: 'POST' },
