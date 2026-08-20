@@ -283,7 +283,7 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 	}
 
 	project, ok, err := s.sessions.GetVideoProject(principal.AccountScopeID, input.SessionID, input.ProjectID)
-	if err != nil || !ok {
+	if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) {
 		if err == nil {
 			err = fmt.Errorf("video project %q not found", input.ProjectID)
 		}
@@ -313,6 +313,7 @@ func (s *Service) UpdateRenderProgress(ctx context.Context, principal identity.P
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videoproject service is not configured")
 	}
+	if !principal.Valid() { return pebblestore.VideoRenderJobSnapshot{}, errors.New("authenticated principal is required") }
 	if progress < 0 {
 		progress = 0
 	} else if progress > 1.0 {
@@ -333,6 +334,7 @@ func (s *Service) FailRenderJob(ctx context.Context, principal identity.Principa
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videoproject service is not configured")
 	}
+	if !principal.Valid() { return pebblestore.VideoRenderJobSnapshot{}, errors.New("authenticated principal is required") }
 	return s.sessions.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
@@ -349,6 +351,7 @@ func (s *Service) CompleteRenderJob(ctx context.Context, principal identity.Prin
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videoproject service is not configured")
 	}
+	if !principal.Valid() { return pebblestore.VideoRenderJobSnapshot{}, errors.New("authenticated principal is required") }
 	return s.sessions.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
 		AccountScopeID:     principal.AccountScopeID,
 		UserID:             principal.UserID,
@@ -372,14 +375,20 @@ func (s *Service) GetProject(principal identity.Principal, sessionID, projectID 
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoProjectSnapshot{}, false, errors.New("videoproject service is not configured")
 	}
-	return s.sessions.GetVideoProject(principal.AccountScopeID, sessionID, projectID)
+	if !principal.Valid() { return pebblestore.VideoProjectSnapshot{}, false, errors.New("authenticated principal is required") }
+	project, ok, err := s.sessions.GetVideoProject(principal.AccountScopeID, sessionID, projectID)
+	if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) { return pebblestore.VideoProjectSnapshot{}, false, err }
+	return project, true, nil
 }
 
 func (s *Service) GetRevision(principal identity.Principal, sessionID, projectID, revisionID string) (pebblestore.VideoProjectRevisionSnapshot, bool, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoProjectRevisionSnapshot{}, false, errors.New("videoproject service is not configured")
 	}
-	return s.sessions.GetVideoProjectRevision(principal.AccountScopeID, sessionID, projectID, revisionID)
+	if _, ok, err := s.GetProject(principal, sessionID, projectID); err != nil || !ok { return pebblestore.VideoProjectRevisionSnapshot{}, false, err }
+	revision, ok, err := s.sessions.GetVideoProjectRevision(principal.AccountScopeID, sessionID, projectID, revisionID)
+	if err != nil || !ok || (revision.UserID != "" && revision.UserID != principal.UserID) { return pebblestore.VideoProjectRevisionSnapshot{}, false, err }
+	return revision, true, nil
 }
 
 func (s *Service) ListProjects(principal identity.Principal, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {
@@ -410,6 +419,7 @@ func (s *Service) ListRevisions(principal identity.Principal, sessionID, project
 	if s == nil || s.sessions == nil {
 		return nil, errors.New("videoproject service is not configured")
 	}
+	if _, ok, err := s.GetProject(principal, sessionID, projectID); err != nil || !ok { if err != nil { return nil, err }; return nil, errors.New("video project not found") }
 	return s.sessions.ListVideoProjectRevisions(principal.AccountScopeID, sessionID, projectID, limit)
 }
 
@@ -417,7 +427,10 @@ func (s *Service) GetRenderJob(principal identity.Principal, sessionID, jobID st
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, false, errors.New("videoproject service is not configured")
 	}
-	return s.sessions.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+	if !principal.Valid() { return pebblestore.VideoRenderJobSnapshot{}, false, errors.New("authenticated principal is required") }
+	job, ok, err := s.sessions.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+	if err != nil || !ok || (job.UserID != "" && job.UserID != principal.UserID) { return pebblestore.VideoRenderJobSnapshot{}, false, err }
+	return job, true, nil
 }
 
 func (s *Service) ListRecoverableRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
@@ -446,6 +459,7 @@ func (s *Service) ListRenderJobs(principal identity.Principal, sessionID, projec
 	if s == nil || s.sessions == nil {
 		return nil, errors.New("videoproject service is not configured")
 	}
+	if _, ok, err := s.GetProject(principal, sessionID, projectID); err != nil || !ok { if err != nil { return nil, err }; return nil, errors.New("video project not found") }
 	return s.sessions.ListVideoRenderJobs(principal.AccountScopeID, sessionID, projectID, limit)
 }
 

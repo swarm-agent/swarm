@@ -227,7 +227,7 @@ func TestBuildFFmpegCommandLineTransitions(t *testing.T) {
 	}
 	timeline := pebblestore.VideoProjectTimeline{Transitions: []pebblestore.VideoTimelineTransition{
 		{ID: "dissolve", Kind: pebblestore.VideoTransitionKindCrossfade, FromClipID: "one", ToClipID: "two", DurationMs: 500},
-		{ID: "black", Kind: pebblestore.VideoTransitionKindFadeThroughBlack, FromClipID: "two", ToClipID: "three", DurationMs: 250},
+		{ID: "black", Kind: pebblestore.VideoTransitionKindFadeToBlack, FromClipID: "two", ToClipID: "three", DurationMs: 250},
 	}}
 	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
 	if err != nil {

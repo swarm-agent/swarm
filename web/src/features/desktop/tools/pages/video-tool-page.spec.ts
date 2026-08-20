@@ -152,6 +152,25 @@ test('projectTimelineToTimelineSegments reconstructs timeline segments from V3 p
   assert.equal(segments[0].visible, true)
 })
 
+test('project timeline transitions round-trip and normalize preview duration to render overlap', () => {
+  const timeline: VideoProjectTimelineWire = {
+    schema_version: 1,
+    clips: [
+      { id: 'clip-a', source_kind: 'source_video', source_ref: 'source-a', duration_ms: 4000, visible: true },
+      { id: 'clip-b', source_kind: 'source_video', source_ref: 'source-b', duration_ms: 6000, visible: true },
+    ],
+    transitions: [{ id: 'fade-a-b', kind: 'crossfade', from_clip_id: 'clip-a', to_clip_id: 'clip-b', duration_ms: 500 }],
+  }
+
+  const segments = projectTimelineToTimelineSegments(timeline, {})
+  assert.equal(segments[1].transitionIn?.id, 'fade-a-b')
+  assert.equal(segments[1].start, 3.5)
+
+  const roundTripped = timelineSegmentsToProjectTimeline(segments, [])
+  assert.equal(roundTripped.total_duration_ms, 9500)
+  assert.deepEqual(roundTripped.transitions, timeline.transitions)
+})
+
 test('projectTimelineToTimelineSegments resolves durable source refs back to VideoThread clip media', () => {
   const timeline: VideoProjectTimelineWire = {
     schema_version: 1,

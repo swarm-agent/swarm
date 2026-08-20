@@ -180,6 +180,7 @@ export type TimelineSegment = {
   sourceStart: number
   duration: number
   visible: boolean
+  transitionIn?: VideoTransitionWire
 }
 
 type TimelineLayoutSegment = TimelineSegment & {
@@ -414,14 +415,23 @@ function buildTimelineSegments(thread: VideoThreadRecord | null, clips: VideoCli
   })
 }
 
+function transitionOverlapSeconds(transition: VideoTransitionWire | undefined, previousSegmentId: string): number {
+  if (!transition || transition.kind === 'cut' || transition.from_clip_id !== previousSegmentId) return 0
+  return Math.max(0, finiteNonNegative(transition.duration_ms, 0) / 1000)
+}
+
 function layoutTimelineSegments(segments: TimelineSegment[]): TimelineLayoutSegment[] {
-  let timelineStart = 0
+  let timelineEnd = 0
+  let previousVisible: TimelineSegment | null = null
   return segments.map((segment) => {
     if (!segment.visible || segment.duration <= 0) {
-      return { ...segment, start: timelineStart, timelineStart, timelineEnd: timelineStart }
+      return { ...segment, start: timelineEnd, timelineStart: timelineEnd, timelineEnd }
     }
+    const overlap = previousVisible ? Math.min(transitionOverlapSeconds(segment.transitionIn, previousVisible.id), previousVisible.duration, segment.duration) : 0
+    const timelineStart = Math.max(0, timelineEnd - overlap)
     const laidOut = { ...segment, start: timelineStart, timelineStart, timelineEnd: timelineStart + segment.duration }
-    timelineStart = laidOut.timelineEnd
+    timelineEnd = laidOut.timelineEnd
+    previousVisible = segment
     return laidOut
   })
 }
@@ -553,6 +563,15 @@ export function timelineSegmentsToProjectTimeline(
     }
   })
   const [width, height] = outputPreset.startsWith('portrait') ? [1080, 1920] : outputPreset.startsWith('square') ? [1080, 1080] : [1920, 1080]
+  let previousVisible: TimelineSegment | null = null
+  const transitions = segments.flatMap((segment) => {
+    if (!segment.visible) return []
+    const transition = previousVisible && segment.transitionIn?.from_clip_id === previousVisible.id && segment.transitionIn.to_clip_id === segment.id
+      ? [segment.transitionIn]
+      : []
+    previousVisible = segment
+    return transition
+  })
   return {
     schema_version: 1,
     output_preset: outputPreset,
@@ -561,6 +580,7 @@ export function timelineSegmentsToProjectTimeline(
     fps: 30,
     total_duration_ms: Math.round(timelineDuration(layout) * 1000),
     clips: timelineClips,
+    transitions,
   }
 }
 
@@ -575,6 +595,10 @@ export function projectTimelineToTimelineSegments(
   }
   const clipsBySourceRef = new Map(clips.map((clip) => [clip.sourceRef, clip]))
   const clipsById = new Map(clips.map((clip) => [clip.id, clip]))
+  const transitionsByDestination = new Map<string, VideoTransitionWire>()
+  for (const transition of timeline.transitions ?? []) {
+    if (!transitionsByDestination.has(transition.to_clip_id)) transitionsByDestination.set(transition.to_clip_id, transition)
+  }
   return timeline.clips.map((clipWire) => {
     const sourceClip = clipsBySourceRef.get(String(clipWire.source_ref ?? '')) ?? clipsById.get(clipWire.id)
     const clipId = sourceClip?.id ?? clipWire.id
@@ -589,6 +613,7 @@ export function projectTimelineToTimelineSegments(
       sourceStart: sourceStartSec,
       duration: durationSec,
       visible: clipWire.visible !== false,
+      transitionIn: transitionsByDestination.get(clipWire.id),
     }
   })
 }
@@ -1254,17 +1279,25 @@ export function VideoToolPage() {
     try {
       let project = videoProject
       let revision = currentRevision
-      const timeline = timelineSegmentsToProjectTimeline(segments, selectedClips, project?.output_preset)
-      if (options?.transitionKind) {
-        const visible = segments.filter((segment) => segment.visible)
-        timeline.transitions = visible.slice(0, -1).map((segment, index) => ({
-          id: `transition-${segment.id}-${visible[index + 1].id}`,
-          kind: options.transitionKind as VideoTransitionKind,
-          from_clip_id: segment.id,
-          to_clip_id: visible[index + 1].id,
-          duration_ms: options.transitionKind === 'cut' ? 0 : 300,
-        }))
-      }
+      const nextSegments = options?.transitionKind ? (() => {
+        let previousVisible: TimelineSegment | null = null
+        return segments.map((segment) => {
+          if (!segment.visible) return { ...segment, transitionIn: undefined }
+          const next = previousVisible ? {
+            ...segment,
+            transitionIn: {
+              id: `transition-${previousVisible.id}-${segment.id}`,
+              kind: options.transitionKind as VideoTransitionKind,
+              from_clip_id: previousVisible.id,
+              to_clip_id: segment.id,
+              duration_ms: options.transitionKind === 'cut' ? 0 : 300,
+            },
+          } : { ...segment, transitionIn: undefined }
+          previousVisible = segment
+          return next
+        })
+      })() : segments
+      const timeline = timelineSegmentsToProjectTimeline(nextSegments, selectedClips, project?.output_preset)
       if (!project) {
         const created = await ensurePrimaryVideoProject(selectedThread.id, selectedThread.title || 'Video Tool project', timeline)
         project = created.project

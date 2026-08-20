@@ -111,7 +111,31 @@ func TestVideoprojectSecurityRejections(t *testing.T) {
 		t.Fatalf("expected error referencing nonexistent artifact, got: %v", err)
 	}
 
-	// 4. Invalid principal rejected
+	// 4. Same-account cross-user reads and render starts remain fail-closed.
+	store.projects["foreign_project"] = pebblestore.VideoProjectSnapshot{
+		ID: "foreign_project", AccountScopeID: principalA.AccountScopeID, UserID: "usr_other", SessionID: sessionA,
+		CurrentRevisionID: "foreign_revision", CurrentRevisionNumber: 1, RevisionCount: 1,
+	}
+	store.revisions["foreign_project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{
+		"foreign_revision": {ID: "foreign_revision", ProjectID: "foreign_project", AccountScopeID: principalA.AccountScopeID, UserID: "usr_other", SessionID: sessionA},
+	}
+	store.jobs["foreign_job"] = pebblestore.VideoRenderJobSnapshot{
+		ID: "foreign_job", ProjectID: "foreign_project", AccountScopeID: principalA.AccountScopeID, UserID: "usr_other", SessionID: sessionA,
+	}
+	if _, ok, err := svc.GetProject(principalA, sessionA, "foreign_project"); err != nil || ok {
+		t.Fatalf("expected same-account cross-user project read rejection: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := svc.GetRevision(principalA, sessionA, "foreign_project", "foreign_revision"); err != nil || ok {
+		t.Fatalf("expected same-account cross-user revision read rejection: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := svc.GetRenderJob(principalA, sessionA, "foreign_job"); err != nil || ok {
+		t.Fatalf("expected same-account cross-user render read rejection: ok=%v err=%v", ok, err)
+	}
+	if _, err := svc.StartRenderJob(ctx, principalA, StartRenderJobInput{SessionID: sessionA, ProjectID: "foreign_project"}); err == nil {
+		t.Fatal("expected same-account cross-user render start rejection")
+	}
+
+	// 5. Invalid principal rejected
 	_, _, err = svc.CreateProject(ctx, identity.Principal{}, CreateProjectInput{
 		SessionID: sessionA,
 		ProjectID: "vproj_invalid_principal",

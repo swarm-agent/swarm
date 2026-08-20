@@ -235,11 +235,12 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 				fmt.Sprintf("%s%sconcat=n=2:v=1:a=0%s", plan.VideoMap, videoStreams[i], videoOut),
 				fmt.Sprintf("%s%sconcat=n=2:v=0:a=1%s", plan.AudioMap, audioStreams[i], audioOut),
 			)
-		case pebblestore.VideoTransitionKindCrossfade, pebblestore.VideoTransitionKindFadeThroughBlack:
+		case pebblestore.VideoTransitionKindCrossfade, pebblestore.VideoTransitionKindFadeThroughBlack,
+			pebblestore.VideoTransitionKindFadeToBlack, pebblestore.VideoTransitionKindFadeFromBlack:
 			durationSec := float64(transition.DurationMs) / 1000
 			offsetSec := float64(accumulatedMs-transition.DurationMs) / 1000
 			xfadeKind := "fade"
-			if transition.Kind == pebblestore.VideoTransitionKindFadeThroughBlack {
+			if transition.Kind != pebblestore.VideoTransitionKindCrossfade {
 				xfadeKind = "fadeblack"
 			}
 			filterParts = append(filterParts,
@@ -317,7 +318,8 @@ func resolveRenderTransitions(timeline pebblestore.VideoProjectTimeline, inputs 
 			if transition.DurationMs != 0 {
 				return nil, 0, fmt.Errorf("cut transition %q must have zero duration", transition.ID)
 			}
-		case pebblestore.VideoTransitionKindCrossfade, pebblestore.VideoTransitionKindFadeThroughBlack:
+		case pebblestore.VideoTransitionKindCrossfade, pebblestore.VideoTransitionKindFadeThroughBlack,
+			pebblestore.VideoTransitionKindFadeToBlack, pebblestore.VideoTransitionKindFadeFromBlack:
 			if transition.DurationMs <= 0 {
 				return nil, 0, fmt.Errorf("transition %q duration must be positive", transition.ID)
 			}
