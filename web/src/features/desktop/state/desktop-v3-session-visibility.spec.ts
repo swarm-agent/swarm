@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createEmptyDesktopV3CacheState, applyHydrateSnapshot, applyReconnectSnapshot, applySnapshot, applyWorksetSessionDiscovered, applyWorksetSessionUpdated } from './desktop-v3-cache-reducer'
-import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
+import { selectDesktopSidebarRows, selectDesktopVideoStudioRows } from './desktop-v3-cache-selectors'
 import { hydrateSnapshotFixture, reconnectFixture, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
-import { isDesktopV3NavigationHiddenSession } from './desktop-v3-session-visibility'
+import { isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
 const hiddenSession = {
   ...sessionA,
@@ -19,6 +19,30 @@ test('navigation-hidden predicate recognizes every supported backend marker', ()
   assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, lineage_kind: 'system_sidechat' }), true)
   assert.equal(isDesktopV3NavigationHiddenSession(hiddenSession), true)
   assert.equal(isDesktopV3NavigationHiddenSession(sessionA), false)
+})
+
+test('Video Studio classification requires the stable creative-mode metadata pair', () => {
+  const videoSession = { ...sessionA, metadata: { experience: ' VIDEO_STUDIO ', launch_source: 'VIDEO_TOOL' } }
+  assert.equal(isDesktopV3VideoStudioSession(videoSession), true)
+  assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { experience: 'video_studio' } }), false)
+  assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { launch_source: 'video_tool' } }), false)
+})
+
+test('ordinary and Video selectors partition canonical V3 sessions without dropping hydration authority', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const videoSession = {
+    ...sessionB,
+    id: 'video-studio-session',
+    metadata: { experience: 'video_studio', launch_source: 'video_tool' },
+  }
+  applySnapshot(state, snapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA, [videoSession.id]: videoSession },
+    session_order: [videoSession.id, sessionA.id],
+  }))
+
+  assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionA.id])
+  assert.deepEqual(selectDesktopVideoStudioRows(state).map((row) => row.sessionId), [videoSession.id])
+  assert.equal(state.sessionsById[videoSession.id]?.kind, 'full')
 })
 
 test('bootstrap excludes hidden sidechats while ordinary and non-system child sessions remain visible', () => {

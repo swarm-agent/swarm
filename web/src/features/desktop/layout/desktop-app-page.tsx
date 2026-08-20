@@ -3,7 +3,7 @@ import type { CSSProperties, JSX, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -63,7 +63,7 @@ import {
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { commitDesktopV3CacheSnapshot, dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { messageMutationResponseToAction, selectSession, sessionCreateResponseToAction } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
@@ -76,7 +76,7 @@ import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart, type DesktopV3RoutedSessionStartResponse } from '../session-v3/write-api'
-import { isDesktopV3NavigationHiddenRecord } from '../state/desktop-v3-session-visibility'
+import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
@@ -2621,19 +2621,25 @@ export function DesktopAppPage() {
   const matchRoute = useMatchRoute()
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceWorktreeMatch = matchRoute({ to: '/$workspaceSlug/worktree', fuzzy: false })
+  const workspaceVideoSessionMatch = matchRoute({ to: '/$workspaceSlug/video/$videoSessionId', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
   const routeWorkspaceSlug = (workspaceTaskMatch
     ? workspaceTaskMatch.workspaceSlug
     : workspaceWorktreeMatch
       ? workspaceWorktreeMatch.workspaceSlug
-      : workspaceSessionMatch
-        ? workspaceSessionMatch.workspaceSlug
-        : workspaceMatch
+      : workspaceVideoSessionMatch
+        ? workspaceVideoSessionMatch.workspaceSlug
+        : workspaceSessionMatch
+          ? workspaceSessionMatch.workspaceSlug
+          : workspaceMatch
           ? workspaceMatch.workspaceSlug
           : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
-  const routeSessionId = mobileCreationPage ? '' : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const videoStudioRoute = Boolean(workspaceVideoSessionMatch)
+  const routeSessionId = mobileCreationPage
+    ? ''
+    : (workspaceVideoSessionMatch ? workspaceVideoSessionMatch.videoSessionId : workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, loading: launcherWorkspacesLoading, setWorkspaceIcon } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
@@ -3087,6 +3093,9 @@ export function DesktopAppPage() {
   const routeSessionNavigationHidden = useDesktopV3CacheSelector((state) => (
     routeSessionId ? isDesktopV3NavigationHiddenRecord(state.sessionsById[routeSessionId]) : false
   ))
+  const routeSessionIsVideoStudio = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? isDesktopV3VideoStudioRecord(state.sessionsById[routeSessionId]) : false
+  ))
   const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
     routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : EMPTY_DESKTOP_V3_RENDERED_MESSAGES
   ), desktopV3RenderedMessagesEqual)
@@ -3097,9 +3106,14 @@ export function DesktopAppPage() {
     routeSessionId ? (state.messagesBySession[routeSessionId]?.items.length ?? 0) : 0
   ))
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows, desktopV3SidebarRowsEqual)
+  const desktopVideoStudioRows = useDesktopV3CacheSelector(selectDesktopVideoStudioRows, desktopV3SidebarRowsEqual)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
-    () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
-    [desktopSidebarRows],
+    () => [...desktopSidebarRows, ...desktopVideoStudioRows].map(desktopSessionRecordFromV3SidebarRow),
+    [desktopSidebarRows, desktopVideoStudioRows],
+  )
+  const videoStudioSessions = useMemo<DesktopSessionRecord[]>(
+    () => desktopVideoStudioRows.map(desktopSessionRecordFromV3SidebarRow),
+    [desktopVideoStudioRows],
   )
   useEffect(() => {
     const sessionId = routeSessionId.trim()
@@ -3114,15 +3128,28 @@ export function DesktopAppPage() {
   }, [navigate, routeSessionNavigationHidden, routeWorkspaceSlug])
 
   useEffect(() => {
+    if (!routeSessionId || !routeWorkspaceSlug || !routeSessionIsVideoStudio || videoStudioRoute) return
+    void navigate({
+      to: '/$workspaceSlug/video/$videoSessionId',
+      params: { workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId },
+      replace: true,
+    })
+  }, [navigate, routeSessionId, routeSessionIsVideoStudio, routeWorkspaceSlug, videoStudioRoute])
+
+  useEffect(() => {
     if (routeSessionId.trim()) return
     if (!routeWorkspace?.path) return
 
     dispatchDesktopV3Cache(selectSession(undefined))
   }, [routeSessionId, routeWorkspace?.path])
 
+  const ordinaryDesktopStateSessions = useMemo(
+    () => desktopSidebarRows.map(desktopSessionRecordFromV3SidebarRow),
+    [desktopSidebarRows],
+  )
   const globalSidebarSessionNodes = useMemo(
-    () => buildSidebarSessionTree(desktopStateSessions, sidebarNow),
-    [desktopStateSessions, sidebarNow],
+    () => buildSidebarSessionTree(ordinaryDesktopStateSessions, sidebarNow),
+    [ordinaryDesktopStateSessions, sidebarNow],
   )
   const sidebarHideInactiveHours = normalizeSidebarHideInactiveHours(uiSettings?.chat?.sidebar_hide_inactive_hours)
   const filteredSidebarTrees = useMemo(
@@ -5194,6 +5221,39 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
+                  {videoStudioSessions.length > 0 ? (
+                    <section className="grid content-start gap-1.5" aria-labelledby="desktop-video-sessions-heading">
+                      <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+                        <Film size={11} aria-hidden="true" />
+                        <span id="desktop-video-sessions-heading">Video</span>
+                      </div>
+                      <div className="grid gap-1">
+                        {videoStudioSessions.map((session) => {
+                          const workspaceSlug = globalSessionWorkspaceSlug(session)
+                          return (
+                            <Link
+                              key={session.id}
+                              to="/$workspaceSlug/video/$videoSessionId"
+                              params={{ workspaceSlug, videoSessionId: session.id }}
+                              onClick={() => {
+                                setMobileSidebarOpen(false)
+                                void selectAndHydrateDesktopV3Session(session.id)
+                              }}
+                              className={cn(
+                                'flex min-h-8 items-center gap-2 rounded-md border px-2.5 py-1.5 text-[12px] text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
+                                videoStudioRoute && routeSessionId === session.id
+                                  ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)] text-[var(--app-text)]'
+                                  : 'border-transparent bg-[var(--app-surface)]/45',
+                              )}
+                            >
+                              <Film size={12} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                              <span className="min-w-0 flex-1 truncate">{session.title || 'Untitled video'}</span>
+                            </Link>
+                          )
+                        })}
+                      </div>
+                    </section>
+                  ) : null}
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
@@ -5321,6 +5381,22 @@ export function DesktopAppPage() {
             </Card>
           </div>
         ) : routeSessionId ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            {videoStudioRoute ? (
+              <div className="flex min-h-10 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-xs">
+                <span className="inline-flex min-w-0 items-center gap-2 font-semibold text-[var(--app-text)]">
+                  <Film size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="truncate">Video Studio</span>
+                </span>
+                <Link
+                  to="/$workspaceSlug"
+                  params={{ workspaceSlug: routeWorkspaceSlug }}
+                  className="shrink-0 rounded-md px-2 py-1 font-medium text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]"
+                >
+                  Back to Workspace
+                </Link>
+              </div>
+            ) : null}
           <DesktopV3ExistingConversationPane
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
@@ -5349,7 +5425,12 @@ export function DesktopAppPage() {
                 : routeWorkspaceSlug
               if (!workspaceSlug) return
               void selectAndHydrateDesktopV3Session(sessionId)
-              void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+              const childSession = sessionById.get(sessionId)
+              if (childSession?.metadata?.experience === 'video_studio' && childSession.metadata.launch_source === 'video_tool') {
+                void navigate({ to: '/$workspaceSlug/video/$videoSessionId', params: { workspaceSlug, videoSessionId: sessionId } })
+              } else {
+                void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+              }
             }}
             sessionActions={activeRouteSessionActions}
             onCompactingChange={handleCompactingSessionChange}
@@ -5369,6 +5450,7 @@ export function DesktopAppPage() {
             onOpenPlan={() => openPlanModalForSession(routeSessionId)}
             planSidebarBelowActions={planSidebarGitPanel}
           />
+          </div>
         ) : routeWorkspaceSlug && !chatWorkspacePath && workspacesLoading ? (
           <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" aria-busy="true" data-testid="desktop-v3-workspace-route-loading">
             <DesktopV3ChatHeader

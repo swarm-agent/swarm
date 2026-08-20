@@ -14,10 +14,13 @@ const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tool
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video'])
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
+  if (parts.length === 3 && parts[1] === 'video' && parts[2]) {
+    return { sessionId: parts[2] }
+  }
   if (parts.length !== 1 && parts.length !== 2) {
     return null
   }
@@ -62,6 +65,12 @@ function validateWorkspaceImageToolParams(params: Record<string, unknown>): { wo
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
   const imageSessionId = typeof params.imageSessionId === 'string' ? params.imageSessionId.trim() : ''
   return { workspaceSlug, imageSessionId }
+}
+
+function validateWorkspaceVideoSessionParams(params: Record<string, unknown>): { workspaceSlug: string; videoSessionId: string } {
+  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
+  const videoSessionId = typeof params.videoSessionId === 'string' ? params.videoSessionId.trim() : ''
+  return { workspaceSlug, videoSessionId }
 }
 
 function validateWorkspaceSessionParams(params: Record<string, unknown>): { workspaceSlug: string; sessionId: string } {
@@ -216,6 +225,14 @@ const workspaceSessionRoute = createRoute({
   component: DesktopAppPage,
 })
 
+const workspaceVideoSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/video/$videoSessionId',
+  parseParams: validateWorkspaceVideoSessionParams,
+  loader: ({ params }) => ({ sessionId: params.videoSessionId.trim() }),
+  component: DesktopAppPage,
+})
+
 const workspaceTaskRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/task',
@@ -278,6 +295,7 @@ const routeTree = rootRoute.addChildren([
   imageToolSessionRoute,
   workspaceRoute,
   workspaceSessionRoute,
+  workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,
   workspaceSettingsRoute,

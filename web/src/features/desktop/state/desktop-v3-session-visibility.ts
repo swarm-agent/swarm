@@ -14,6 +14,25 @@ function metadataString(metadata: Record<string, unknown> | undefined, key: stri
  * Desktop chat navigation. The session may still be retained and addressed by
  * ID for an owning embedded surface such as the Plan sidecar.
  */
+export const DESKTOP_V3_VIDEO_STUDIO_EXPERIENCE = 'video_studio'
+export const DESKTOP_V3_VIDEO_STUDIO_LAUNCH_SOURCE = 'video_tool'
+
+/**
+ * Creative-mode videos remain ordinary durable V3 sessions, but their stable
+ * creation metadata routes them to the dedicated Video surface instead of the
+ * ordinary chat list. Requiring both markers avoids reclassifying older or
+ * unrelated sessions that happen to use one generic metadata value.
+ */
+export function isDesktopV3VideoStudioSession(session: SessionSnapshot | undefined): boolean {
+  if (!session) return false
+  return metadataString(session.metadata, 'experience') === DESKTOP_V3_VIDEO_STUDIO_EXPERIENCE
+    && metadataString(session.metadata, 'launch_source') === DESKTOP_V3_VIDEO_STUDIO_LAUNCH_SOURCE
+}
+
+export function isDesktopV3VideoStudioRecord(record: SessionCacheRecord | undefined): boolean {
+  return record?.kind === 'full' && isDesktopV3VideoStudioSession(record.session)
+}
+
 export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | undefined): boolean {
   if (!session) return false
   const metadata = session.metadata

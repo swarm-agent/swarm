@@ -1,9 +1,9 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
-import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
+import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
-import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession } from './desktop-v3-session-visibility'
+import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioRecord, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
 export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'QUEUED'
@@ -277,14 +277,19 @@ export function selectDesktopSidebarScopeId(state: DesktopV3CacheState): string 
   return state.desktopSidebarBootstrap.scopeId
 }
 
-export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): DesktopV3SidebarRow[] {
+function buildDesktopV3SidebarRows(
+  state: DesktopV3CacheState,
+  scopeId: string | undefined,
+  includeRecord: (record: SessionCacheRecord) => boolean,
+  includeArchivedSession: (session: SessionSnapshot) => boolean,
+): DesktopV3SidebarRow[] {
   const resolvedScopeId = scopeId ?? Object.keys(state.sessionOrderByScope)[0]
   if (!resolvedScopeId) return []
   const rows: DesktopV3SidebarRow[] = []
   for (const sessionId of selectSessionOrder(state, resolvedScopeId)) {
     if (state.tombstonesBySession[sessionId]) continue
     const record = state.sessionsById[sessionId]
-    if (!record || isDesktopV3NavigationHiddenRecord(record)) continue
+    if (!record || isDesktopV3NavigationHiddenRecord(record) || !includeRecord(record)) continue
     const planState = buildDesktopSidebarPlanState(state, sessionId)
     rows.push({
       sessionId,
@@ -307,8 +312,18 @@ export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = s
       branchLabel: desktopSidebarBranchLabel(record),
     })
   }
-  rows.push(...selectArchivedDesktopSidebarRows(state))
+  rows.push(...selectArchivedDesktopSidebarRows(state, includeArchivedSession))
   return rows
+}
+
+/** Ordinary chat navigation excludes creative-mode Video Studio sessions. */
+export function selectDesktopSidebarRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): DesktopV3SidebarRow[] {
+  return buildDesktopV3SidebarRows(state, scopeId, (record) => !isDesktopV3VideoStudioRecord(record), (session) => !isDesktopV3VideoStudioSession(session))
+}
+
+/** Dedicated Video navigation uses the same canonical V3 cache and scope order. */
+export function selectDesktopVideoStudioRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): DesktopV3SidebarRow[] {
+  return buildDesktopV3SidebarRows(state, scopeId, isDesktopV3VideoStudioRecord, isDesktopV3VideoStudioSession)
 }
 
 export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> {
@@ -324,10 +339,10 @@ export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scop
   return grouped
 }
 
-function selectArchivedDesktopSidebarRows(state: DesktopV3CacheState): DesktopV3SidebarRow[] {
+function selectArchivedDesktopSidebarRows(state: DesktopV3CacheState, includeSession: (session: SessionSnapshot) => boolean): DesktopV3SidebarRow[] {
   const rows: DesktopV3SidebarRow[] = []
   for (const tombstone of Object.values(state.tombstonesBySession)) {
-    if (!isArchivedTombstone(tombstone) || !tombstone.session || isDesktopV3NavigationHiddenSession(tombstone.session)) continue
+    if (!isArchivedTombstone(tombstone) || !tombstone.session || isDesktopV3NavigationHiddenSession(tombstone.session) || !includeSession(tombstone.session)) continue
     const sessionId = tombstone.session_id || tombstone.session.id
     if (!sessionId) continue
     const record: SessionCacheRecord = { kind: 'full', session: tombstone.session, needsHydrate: false }
