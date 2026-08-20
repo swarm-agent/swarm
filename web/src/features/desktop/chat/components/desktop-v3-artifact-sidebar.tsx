@@ -3,8 +3,8 @@ import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, Tri
 
 import { cn } from '../../../../lib/cn'
 import {
-  desktopV3ArtifactDirectContentURL,
   fetchDesktopV3ArtifactPreviewAccess,
+  preflightDesktopV3ArtifactDirectContent,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
   type DesktopV3ArtifactCatalogEntry,
@@ -131,13 +131,12 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
     if (!previewEnabled || !artifact.previewable || artifact.status !== 'ready') return undefined
 
     const controller = new AbortController()
-    if (artifact.mediaType !== 'text/html') {
-      setPreviewURL(desktopV3ArtifactDirectContentURL(artifact))
-      return () => controller.abort()
-    }
-    void fetchDesktopV3ArtifactPreviewAccess(artifact.sessionId, artifact.artifactId, controller.signal)
-      .then((access) => {
-        if (!controller.signal.aborted) setPreviewURL(access.url)
+    const resolveURL = artifact.mediaType === 'text/html'
+      ? fetchDesktopV3ArtifactPreviewAccess(artifact.sessionId, artifact.artifactId, controller.signal).then((access) => access.url)
+      : preflightDesktopV3ArtifactDirectContent(artifact, controller.signal)
+    void resolveURL
+      .then((url) => {
+        if (!controller.signal.aborted) setPreviewURL(url)
       })
       .catch(() => {
         if (!controller.signal.aborted) setFailed(true)
@@ -149,10 +148,10 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   let thumbnail = <FileText className="size-5 text-[var(--app-text-muted)]" aria-hidden="true" />
   if (artifact.status === 'staging') thumbnail = <Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Generating artifact" />
   else if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) thumbnail = <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
-  else if (previewEnabled && artifact.mediaType.startsWith('image/') && previewURL) thumbnail = <img src={previewURL} alt="" className="size-full object-contain" />
-  else if (previewEnabled && (!artifact.animationProfile || artifact.animationProfile.profileId === 'final_render') && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" />
-  else if (previewEnabled && artifact.mediaType === 'text/html' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" />
-  else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" />
+  else if (previewEnabled && artifact.mediaType.startsWith('image/') && previewURL) thumbnail = <img src={previewURL} alt="" className="size-full object-contain" onError={() => { setFailed(true); setPreviewURL('') }} />
+  else if (previewEnabled && (!artifact.animationProfile || artifact.animationProfile.profileId === 'final_render') && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" onError={() => { setFailed(true); setPreviewURL('') }} />
+  else if (previewEnabled && artifact.mediaType === 'text/html' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" onError={() => { setFailed(true); setPreviewURL('') }} />
+  else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" onError={() => { setFailed(true); setPreviewURL('') }} />
 
   return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && artifact.mediaType === 'text/html' ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
 }, sidebarArtifactThumbnailEqual)

@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 const source = readFileSync(new URL('./behavior-settings-page.tsx', import.meta.url), 'utf8')
 const guardSource = readFileSync(new URL('./plan-context-guard-settings.tsx', import.meta.url), 'utf8')
 const taskSource = readFileSync(new URL('./task-context-settings.tsx', import.meta.url), 'utf8')
+const artifactLibrarySource = readFileSync(new URL('./artifact-library-settings.tsx', import.meta.url), 'utf8')
 const settingsPageSource = readFileSync(new URL('../../components/desktop-settings-page.tsx', import.meta.url), 'utf8')
 
 test('Behavior follows Actions in the visible settings hierarchy', () => {
@@ -15,6 +16,15 @@ test('Behavior follows Actions in the visible settings hierarchy', () => {
   assert.ok(actionsIndex > accountIndex)
   assert.ok(behaviorIndex > actionsIndex)
   assert.match(settingsPageSource, /activeTab === 'behavior' \? <BehaviorSettingsPage \/>/)
+})
+
+test('Behavior owns the artifact library control and saves only on submit', () => {
+  assert.match(source, /ArtifactLibrarySettingsSection/)
+  assert.match(source, /normalizeArtifactLibrarySettings\(settingsQuery\.data\)/)
+  assert.match(source, /saveArtifactLibrarySettings/)
+  assert.match(artifactLibrarySource, /Show in folder/)
+  assert.match(artifactLibrarySource, /Leave blank to use Swarm’s portable system default/)
+  assert.match(artifactLibrarySource, /type="submit"/)
 })
 
 test('Behavior owns the Task context compaction controls and canonical save path', () => {

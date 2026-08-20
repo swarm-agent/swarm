@@ -26,6 +26,9 @@ import {
   normalizeDesktopV3ArtifactCatalogEntry,
   desktopV3ArtifactSelectionEndpoint,
   fetchDesktopV3ArtifactPreviewAccess,
+  preflightDesktopV3ArtifactDirectContent,
+  revealDesktopV3Artifact,
+  revealDesktopV3ArtifactCollection,
   selectDesktopV3Artifact,
   useDesktopV3Artifact,
 } from './artifact-api'
@@ -216,6 +219,41 @@ test('rich artifact previews use direct browser URLs instead of blob hydration',
     desktopV3ArtifactDirectContentURL({ sessionId: 'session one', artifactId: 'ignored', sourceRef: 'source ref' }),
     '/v3/sessions/session%20one/video/sources/media?source_ref=source+ref',
   )
+})
+
+test('protected direct previews preflight with HEAD before browser assignment', async () => {
+  const originalFetch = globalThis.fetch
+  let method = ''
+  globalThis.fetch = (async (_input, init) => {
+    method = init?.method ?? ''
+    return new Response(null, { status: 200 })
+  }) as typeof fetch
+  try {
+    const url = await preflightDesktopV3ArtifactDirectContent({ sessionId: 'session-1', artifactId: 'variant-1', sourceRef: '' })
+    assert.equal(method, 'HEAD')
+    assert.equal(url, '/v3/sessions/session-1/artifacts/variant-1')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('artifact reveal actions use authenticated variant and collection routes', async () => {
+  const originalFetch = globalThis.fetch
+  const requests: Array<{ url: string; method: string }> = []
+  globalThis.fetch = (async (input, init) => {
+    requests.push({ url: String(input), method: init?.method ?? '' })
+    return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    await revealDesktopV3Artifact('session-1', 'variant-1')
+    await revealDesktopV3ArtifactCollection('session-1', 'collection-1')
+    assert.deepEqual(requests, [
+      { url: '/v3/sessions/session-1/artifacts/variant-1/reveal', method: 'POST' },
+      { url: '/v3/sessions/session-1/artifacts/collections/collection-1/reveal', method: 'POST' },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('HTML preview access accepts only the canonical opaque runtime contract', async () => {

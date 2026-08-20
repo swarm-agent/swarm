@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { FileText, Loader2 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import {
-  desktopV3ArtifactDirectContentURL,
   fetchDesktopV3ArtifactPreviewAccess,
+  preflightDesktopV3ArtifactDirectContent,
   fetchDesktopV3ArtifactTextPreview,
   type DesktopV3ArtifactCatalogEntry,
 } from '../../session-v3/artifact-api'
@@ -152,19 +152,16 @@ export function DesktopV3ArtifactPreviewThumbnail({
     const controller = new AbortController()
     const isText = artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain'
     const isHTML = artifact.mediaType === 'text/html'
-    if (!isText && !isHTML) {
-      setPreviewURL(desktopV3ArtifactDirectContentURL(artifact))
-      setLoading(false)
-      return () => controller.abort()
-    }
     setLoading(true)
     const resolvePreview = isHTML
       ? fetchDesktopV3ArtifactPreviewAccess(artifact.sessionId, artifact.artifactId, controller.signal).then((access) => access.url)
-      : fetchDesktopV3ArtifactTextPreview(artifact, controller.signal)
+      : isText
+        ? fetchDesktopV3ArtifactTextPreview(artifact, controller.signal)
+        : preflightDesktopV3ArtifactDirectContent(artifact, controller.signal)
     void resolvePreview
       .then((value) => {
         if (controller.signal.aborted) return
-        if (isHTML) setPreviewURL(value)
+        if (isHTML || !isText) setPreviewURL(value)
         else setPreviewText(value)
       })
       .catch(() => {
@@ -224,10 +221,11 @@ export function DesktopV3ArtifactPreviewThumbnail({
           tabIndex={-1}
           className="pointer-events-none h-[200%] w-[200%] origin-top-left scale-50 border-0 bg-white"
           data-artifact-html-preview
+          onError={() => { setFailed(true); setPreviewURL('') }}
         />
       ) : null}
       {!loading && hasImagePreview ? (
-        <img src={previewURL} alt="" className="size-full object-contain" data-artifact-image-preview />
+        <img src={previewURL} alt="" className="size-full object-contain" data-artifact-image-preview onError={() => { setFailed(true); setPreviewURL('') }} />
       ) : null}
       {!loading && hasVideoPreview ? (
         <video
@@ -237,6 +235,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
           preload="metadata"
           className="size-full object-contain bg-black"
           data-artifact-video-preview
+          onError={() => { setFailed(true); setPreviewURL('') }}
         />
       ) : null}
       {!loading && hasPDFPreview ? (
@@ -248,6 +247,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
           tabIndex={-1}
           className="pointer-events-none size-full border-0 bg-white"
           data-artifact-pdf-preview
+          onError={() => { setFailed(true); setPreviewURL('') }}
         />
       ) : null}
       {!loading && hasTextPreview ? (

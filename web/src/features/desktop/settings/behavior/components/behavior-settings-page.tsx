@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { SlidersHorizontal } from 'lucide-react'
 import { Card } from '../../../../../components/ui/card'
+import { ArtifactLibrarySettingsSection } from './artifact-library-settings'
 import { PlanContextGuardSettingsSection } from './plan-context-guard-settings'
 import { TaskContextSettingsSection } from './task-context-settings'
+import { saveArtifactLibrarySettings } from '../../swarm/mutations/save-artifact-library-settings'
 import { savePlanContextGuardSettings } from '../../swarm/mutations/save-plan-context-guard-settings'
 import { saveTaskContextSettings } from '../../swarm/mutations/save-task-context-settings'
 import { getUISettings } from '../../swarm/queries/get-ui-settings'
-import { normalizePlanContextGuardSettings, normalizeTaskContextSettings, type UISettingsWire } from '../../swarm/types/swarm-settings'
+import { normalizeArtifactLibrarySettings, normalizePlanContextGuardSettings, normalizeTaskContextSettings, type UISettingsWire } from '../../swarm/types/swarm-settings'
 
 const uiSettingsQueryKey = ['ui-settings'] as const
 
@@ -17,6 +19,10 @@ function errorMessage(error: unknown, fallback: string): string {
 export function BehaviorSettingsPage() {
   const queryClient = useQueryClient()
   const settingsQuery = useQuery({ queryKey: uiSettingsQueryKey, queryFn: getUISettings, staleTime: 30_000 })
+  const artifactLibraryMutation = useMutation({
+    mutationFn: (value: Parameters<typeof saveArtifactLibrarySettings>[1]) => saveArtifactLibrarySettings(settingsQuery.data ?? {}, value),
+    onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
+  })
   const guardMutation = useMutation({
     mutationFn: (value: Parameters<typeof savePlanContextGuardSettings>[1]) => savePlanContextGuardSettings(settingsQuery.data ?? {}, value),
     onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
@@ -42,6 +48,21 @@ export function BehaviorSettingsPage() {
           <p className="text-sm text-[var(--app-text-muted)]">Control how Swarm behaves while working.</p>
         </div>
       </header>
+
+      <Card className="p-5">
+        {settingsQuery.data ? (
+          <ArtifactLibrarySettingsSection
+            value={normalizeArtifactLibrarySettings(settingsQuery.data)}
+            saving={artifactLibraryMutation.isPending}
+            error={artifactLibraryMutation.error ? errorMessage(artifactLibraryMutation.error, 'The artifact library request failed.') : null}
+            onSave={(value) => artifactLibraryMutation.mutate(value)}
+          />
+        ) : error ? (
+          <div role="alert" className="text-sm text-[var(--app-danger)]">{error}</div>
+        ) : (
+          <p className="text-sm text-[var(--app-text-muted)]">Loading behavior settings…</p>
+        )}
+      </Card>
 
       <Card className="p-5">
         {settingsQuery.data ? (

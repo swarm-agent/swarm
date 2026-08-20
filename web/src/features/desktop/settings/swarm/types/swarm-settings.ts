@@ -56,6 +56,7 @@ export interface UIChatSettingsWire {
   sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
   tool_stream?: Record<string, unknown>
+  artifact_library_directory?: string
 }
 
 export interface UIThemeSettingsWire {
@@ -84,6 +85,10 @@ export interface PlanContextGuardSettings {
 
 export interface TaskContextSettings {
   maxCompactions: number
+}
+
+export interface ArtifactLibrarySettings {
+  libraryDirectory: string
 }
 
 export interface GlobalThemeSettings {
@@ -137,6 +142,14 @@ export function normalizeTaskContextMaxCompactions(value: unknown): number {
 
 export function normalizeTaskContextSettings(payload?: UISettingsWire | null): TaskContextSettings {
   return { maxCompactions: normalizeTaskContextMaxCompactions(payload?.chat?.task_context_max_compactions) }
+}
+
+export function normalizeArtifactLibraryDirectory(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function normalizeArtifactLibrarySettings(payload?: UISettingsWire | null): ArtifactLibrarySettings {
+  return { libraryDirectory: normalizeArtifactLibraryDirectory(payload?.chat?.artifact_library_directory) }
 }
 
 export function normalizeReviewAutoArchiveMinutes(value: unknown): number {
@@ -274,6 +287,16 @@ export function withTaskContextSettings(current: UISettingsWire, settings: TaskC
     chat: {
       ...(current.chat ?? {}),
       task_context_max_compactions: normalizeTaskContextMaxCompactions(settings.maxCompactions),
+    },
+  }
+}
+
+export function withArtifactLibrarySettings(current: UISettingsWire, settings: ArtifactLibrarySettings): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      artifact_library_directory: normalizeArtifactLibraryDirectory(settings.libraryDirectory),
     },
   }
 }

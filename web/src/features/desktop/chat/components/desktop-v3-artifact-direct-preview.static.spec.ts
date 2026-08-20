@@ -6,20 +6,23 @@ const galleryURL = new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url)
 const thumbnailURL = new URL('./desktop-v3-artifact-preview-thumbnail.tsx', import.meta.url)
 const sidebarURL = new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url)
 
-test('rich previews navigate directly while bounded text remains fetched', async () => {
+test('rich previews preflight protected URLs while bounded text remains fetched', async () => {
   const [gallery, thumbnail, sidebar] = await Promise.all([
     readFile(galleryURL, 'utf8'),
     readFile(thumbnailURL, 'utf8'),
     readFile(sidebarURL, 'utf8'),
   ])
   for (const source of [gallery, thumbnail, sidebar]) {
-    assert.match(source, /desktopV3ArtifactDirectContentURL/)
+    assert.match(source, /preflightDesktopV3ArtifactDirectContent/)
     assert.match(source, /fetchDesktopV3ArtifactPreviewAccess/)
     assert.doesNotMatch(source, /fetchDesktopV3Artifact\(/)
     assert.doesNotMatch(source, /srcDoc=/)
   }
   for (const source of [thumbnail, sidebar]) assert.doesNotMatch(source, /URL\.createObjectURL\(/)
   assert.match(gallery, /triggerBlobDownload/)
+  assert.match(gallery, /document\.body\.appendChild\(anchor\)/)
+  assert.match(gallery, /URL\.revokeObjectURL\(url\), 60_000/)
+  assert.match(gallery, /Show in folder/)
   for (const source of [gallery, thumbnail]) assert.match(source, /fetchDesktopV3ArtifactTextPreview/)
   assert.match(gallery, /Retry preview/)
   assert.match(gallery, /Download instead/)

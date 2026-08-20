@@ -9,6 +9,7 @@ import {
   Clock3,
   Download,
   FileText,
+  FolderOpen,
   GalleryHorizontal,
   Loader2,
   Maximize2,
@@ -28,12 +29,14 @@ import {
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactRequiresBundle,
   desktopV3ArtifactSelection,
-  desktopV3ArtifactDirectContentURL,
   fetchDesktopV3ArtifactCollectionBundle,
   fetchDesktopV3ArtifactDownload,
   fetchDesktopV3ArtifactCatalog,
   fetchDesktopV3ArtifactPreviewAccess,
   fetchDesktopV3ArtifactTextPreview,
+  preflightDesktopV3ArtifactDirectContent,
+  revealDesktopV3Artifact,
+  revealDesktopV3ArtifactCollection,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
   useDesktopV3Artifact,
@@ -194,7 +197,7 @@ export function DesktopV3ArtifactGallery({
   const [previewError, setPreviewError] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewRetry, setPreviewRetry] = useState(0)
-  const [actionPending, setActionPending] = useState<'add' | 'use' | 'download-collection' | ''>('')
+  const [actionPending, setActionPending] = useState<'add' | 'use' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [query, setQuery] = useState('')
   const [organization, setOrganization] = useState<'collection' | 'workspace'>('collection')
@@ -348,19 +351,16 @@ export function DesktopV3ArtifactGallery({
     const controller = new AbortController()
     const isText = selected.mediaType === 'text/markdown' || selected.mediaType === 'text/plain'
     const isHTML = selected.mediaType === 'text/html'
-    if (!isText && !isHTML) {
-      setPreviewURL(desktopV3ArtifactDirectContentURL(selected))
-      setPreviewLoading(false)
-      return () => controller.abort()
-    }
     setPreviewLoading(true)
     const resolvePreview = isHTML
       ? fetchDesktopV3ArtifactPreviewAccess(selected.sessionId, selected.artifactId, controller.signal).then((access) => access.url)
-      : fetchDesktopV3ArtifactTextPreview(selected, controller.signal)
+      : isText
+        ? fetchDesktopV3ArtifactTextPreview(selected, controller.signal)
+        : preflightDesktopV3ArtifactDirectContent(selected, controller.signal)
     void resolvePreview
       .then((value) => {
         if (controller.signal.aborted) return
-        if (isHTML) setPreviewURL(value)
+        if (isHTML || !isText) setPreviewURL(value)
         else setPreviewText(value)
       })
       .catch((error) => {
@@ -422,8 +422,11 @@ export function DesktopV3ArtifactGallery({
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = filename
+    anchor.style.display = 'none'
+    document.body.appendChild(anchor)
     anchor.click()
-    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
   }
 
   const downloadArtifact = async (artifact: DesktopV3ArtifactGalleryEntry) => {
@@ -446,6 +449,32 @@ export function DesktopV3ArtifactGallery({
       triggerBlobDownload(blob, filename)
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Artifact collection download failed')
+    } finally {
+      setActionPending('')
+    }
+  }
+
+  const revealArtifact = async (artifact: DesktopV3ArtifactGalleryEntry) => {
+    try {
+      setActionPending('reveal-artifact')
+      setActionError('')
+      await revealDesktopV3Artifact(artifact.sessionId, artifact.artifactId)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not publish this artifact to the library')
+    } finally {
+      setActionPending('')
+    }
+  }
+
+  const revealCollection = async (group: ArtifactCollectionGroup) => {
+    const artifact = group.entries.find((entry) => entry.collectionId && entry.status === 'ready')
+    if (!artifact?.collectionId) return
+    try {
+      setActionPending('reveal-collection')
+      setActionError('')
+      await revealDesktopV3ArtifactCollection(artifact.sessionId, artifact.collectionId)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not publish this collection to the library')
     } finally {
       setActionPending('')
     }
@@ -621,6 +650,7 @@ export function DesktopV3ArtifactGallery({
                       </div>
                       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                         {formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements) ? <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1 text-xs text-[var(--app-text-muted)]">{formatDesktopV3ArtifactOutputRequirements(overviewGroup.entries[0]?.outputRequirements)}</span> : null}
+                        <button type="button" className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" disabled={overviewGroup.progress.ready === 0 || Boolean(actionPending)} title="Publish verified working copies to your configured artifact library and open the folder" onClick={() => void revealCollection(overviewGroup)} data-artifact-reveal-collection>{actionPending === 'reveal-collection' ? <Loader2 className="size-4 animate-spin" /> : <FolderOpen className="size-4" />}Show in folder</button>
                         <button type="button" className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-xs font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50" disabled={overviewGroup.progress.ready === 0 || Boolean(actionPending)} onClick={() => void downloadCollection(overviewGroup)} data-artifact-download-collection>{actionPending === 'download-collection' ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}Download all ready ({overviewGroup.progress.ready})</button>
                       </div>
                     </div>
@@ -654,7 +684,7 @@ export function DesktopV3ArtifactGallery({
                 </div>
                 <div className="hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4 md:flex">
                   <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{variantDisplayLabel(selected, Math.max(selectedVariantIndex, 0))}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label && selected.description !== selected.collectionDescription ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
-                  <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
+                  <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{selected.status === 'ready' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={Boolean(actionPending)} title="Publish a verified working copy to your configured artifact library and open its folder" onClick={() => void revealArtifact(selected)}>{actionPending === 'reveal-artifact' ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} <span className="hidden sm:inline">Show in folder</span></button> : null}{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
                 </div>
                 <div
                   ref={(node) => {

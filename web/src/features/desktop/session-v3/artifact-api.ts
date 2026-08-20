@@ -747,6 +747,43 @@ export function desktopV3ArtifactDirectContentURL(
   return desktopV3ArtifactEndpoint(artifact.sessionId, artifact.artifactId)
 }
 
+/** Refreshes Desktop auth before a browser-owned media element receives a protected URL. */
+export async function preflightDesktopV3ArtifactDirectContent(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'artifactId' | 'sessionId' | 'sourceRef'>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const url = desktopV3ArtifactDirectContentURL(artifact)
+  const response = await apiFetch(url, { method: 'HEAD', signal })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  return url
+}
+
+export function desktopV3ArtifactRevealEndpoint(sessionId: string, artifactId: string): string {
+  return `${desktopV3ArtifactEndpoint(sessionId, artifactId)}/reveal`
+}
+
+export function desktopV3ArtifactCollectionRevealEndpoint(sessionId: string, collectionId: string): string {
+  const normalizedSessionId = sessionId.trim()
+  const normalizedCollectionId = collectionId.trim()
+  if (!normalizedSessionId || !normalizedCollectionId) throw new Error('Artifact collection reveal requires a session and collection ID')
+  return `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/artifacts/collections/${encodeURIComponent(normalizedCollectionId)}/reveal`
+}
+
+async function postDesktopV3ArtifactReveal(endpoint: string, signal?: AbortSignal): Promise<void> {
+  const response = await apiFetch(endpoint, { method: 'POST', signal })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const payload = await response.json() as Record<string, unknown>
+  if (payload.ok !== true) throw new Error('Artifact reveal returned an invalid response')
+}
+
+export function revealDesktopV3Artifact(sessionId: string, artifactId: string, signal?: AbortSignal): Promise<void> {
+  return postDesktopV3ArtifactReveal(desktopV3ArtifactRevealEndpoint(sessionId, artifactId), signal)
+}
+
+export function revealDesktopV3ArtifactCollection(sessionId: string, collectionId: string, signal?: AbortSignal): Promise<void> {
+  return postDesktopV3ArtifactReveal(desktopV3ArtifactCollectionRevealEndpoint(sessionId, collectionId), signal)
+}
+
 export async function fetchDesktopV3ArtifactPreviewAccess(
   sessionId: string,
   artifactId: string,
