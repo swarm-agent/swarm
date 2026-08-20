@@ -202,10 +202,10 @@ func TestBuildFFmpegCommandLineMultipleInputsAndCaptions(t *testing.T) {
 	}
 
 	joined := strings.Join(plan.FFmpegArgs, " ")
-	if !strings.Contains(joined, "concat=n=2:v=1:a=0[v_concat]") {
+	if !strings.Contains(joined, "concat=n=2:v=1:a=0[v_join_1]") {
 		t.Errorf("expected video concat in filter complex: %s", joined)
 	}
-	if !strings.Contains(joined, "concat=n=2:v=0:a=1[a_concat]") {
+	if !strings.Contains(joined, "concat=n=2:v=0:a=1[a_join_1]") {
 		t.Errorf("expected audio concat in filter complex: %s", joined)
 	}
 	if !strings.Contains(joined, "drawtext=") {
@@ -216,6 +216,66 @@ func TestBuildFFmpegCommandLineMultipleInputsAndCaptions(t *testing.T) {
 	}
 	if !strings.Contains(joined, "aevalsrc=0") {
 		t.Errorf("expected silence audio generator for image clip: %s", joined)
+	}
+}
+
+func TestBuildFFmpegCommandLineTransitions(t *testing.T) {
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 3000, HasAudio: true},
+		{Index: 1, ClipID: "two", FilePath: "two.mp4", DurationMs: 2000, HasAudio: true},
+		{Index: 2, ClipID: "three", FilePath: "three.mp4", DurationMs: 4000, HasAudio: true},
+	}
+	timeline := pebblestore.VideoProjectTimeline{Transitions: []pebblestore.VideoTimelineTransition{
+		{ID: "dissolve", Kind: pebblestore.VideoTransitionKindCrossfade, FromClipID: "one", ToClipID: "two", DurationMs: 500},
+		{ID: "black", Kind: pebblestore.VideoTransitionKindFadeThroughBlack, FromClipID: "two", ToClipID: "three", DurationMs: 250},
+	}}
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	for _, want := range []string{
+		"xfade=transition=fade:duration=0.500:offset=2.500",
+		"acrossfade=d=0.500:c1=tri:c2=tri",
+		"xfade=transition=fadeblack:duration=0.250:offset=4.250",
+		"acrossfade=d=0.250:c1=tri:c2=tri",
+	} {
+		if !strings.Contains(plan.FilterComplex, want) {
+			t.Errorf("filter complex missing %q: %s", want, plan.FilterComplex)
+		}
+	}
+	if plan.TotalDurationMs != 8250 {
+		t.Fatalf("TotalDurationMs = %d, want 8250", plan.TotalDurationMs)
+	}
+}
+
+func TestBuildFFmpegCommandLineRejectsInvalidTransitionOverlap(t *testing.T) {
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1000, HasAudio: true},
+		{Index: 1, ClipID: "two", FilePath: "two.mp4", DurationMs: 500, HasAudio: true},
+	}
+	timeline := pebblestore.VideoProjectTimeline{Transitions: []pebblestore.VideoTimelineTransition{{
+		ID: "too_long", Kind: pebblestore.VideoTransitionKindCrossfade,
+		FromClipID: "one", ToClipID: "two", DurationMs: 500,
+	}}}
+	_, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err == nil || !strings.Contains(err.Error(), "shorter than both adjacent clips") {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v, want invalid overlap rejection", err)
+	}
+}
+
+func TestBuildFFmpegCommandLineRejectsNonAdjacentTransition(t *testing.T) {
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1000},
+		{Index: 1, ClipID: "two", FilePath: "two.mp4", DurationMs: 1000},
+		{Index: 2, ClipID: "three", FilePath: "three.mp4", DurationMs: 1000},
+	}
+	timeline := pebblestore.VideoProjectTimeline{Transitions: []pebblestore.VideoTimelineTransition{{
+		ID: "skip", Kind: pebblestore.VideoTransitionKindCrossfade,
+		FromClipID: "one", ToClipID: "three", DurationMs: 250,
+	}}}
+	_, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err == nil || !strings.Contains(err.Error(), "adjacent visible clips") {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v, want adjacency rejection", err)
 	}
 }
 

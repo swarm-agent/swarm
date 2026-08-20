@@ -427,6 +427,25 @@ func TestRenderJobSecurityAndRejections(t *testing.T) {
 	}
 }
 
+func TestRenderJobRejectsRevisionDifferentFromPinnedJob(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
+	store := newFakeSessionStore()
+	store.sessions["sess_1"] = pebblestore.SessionSnapshot{ID: "sess_1", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	store.projects["proj_1"] = pebblestore.VideoProjectSnapshot{ID: "proj_1", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "sess_1", CurrentRevisionID: "rev_new"}
+	store.jobs["job_1"] = pebblestore.VideoRenderJobSnapshot{ID: "job_1", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "sess_1", ProjectID: "proj_1", RevisionID: "rev_pinned", Status: pebblestore.VideoRenderJobStatusQueued}
+
+	svc := NewService(Config{}, store, &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
+	_, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{
+		SessionID: "sess_1", ProjectID: "proj_1", RevisionID: "rev_new", JobID: "job_1",
+	})
+	if err == nil || !strings.Contains(err.Error(), `pinned to revision "rev_pinned"`) {
+		t.Fatalf("RenderJob() error = %v, want pinned revision rejection", err)
+	}
+	if got := store.jobs["job_1"].Status; got != pebblestore.VideoRenderJobStatusQueued {
+		t.Fatalf("job status = %s, want queued after rejected revision override", got)
+	}
+}
+
 func TestRenderJobFailureHandling(t *testing.T) {
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
 	sessionID := "sess_fail"

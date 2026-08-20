@@ -1,6 +1,7 @@
 package videorender
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -106,8 +107,9 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		return nil, fmt.Errorf("no inputs provided for video render")
 	}
 
+	clipDurations := make([]int64, len(inputs))
 	var totalDurationMs int64
-	for _, in := range inputs {
+	for i, in := range inputs {
 		dur := in.EndMs - in.StartMs
 		if dur <= 0 {
 			dur = in.DurationMs
@@ -115,8 +117,14 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		if dur <= 0 {
 			dur = 1000
 		}
+		clipDurations[i] = dur
 		totalDurationMs += dur
 	}
+	transitions, overlapMs, err := resolveRenderTransitions(timeline, inputs, clipDurations)
+	if err != nil {
+		return nil, err
+	}
+	totalDurationMs -= overlapMs
 	if timeline.TotalDurationMs > 0 && timeline.TotalDurationMs < totalDurationMs {
 		totalDurationMs = timeline.TotalDurationMs
 	}
@@ -212,21 +220,37 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 	}
 
-	// Concat video and audio
-	if len(videoStreams) == 1 {
-		plan.VideoMap = videoStreams[0]
-	} else {
-		concatVideo := fmt.Sprintf("%sconcat=n=%d:v=1:a=0[v_concat]", strings.Join(videoStreams, ""), len(videoStreams))
-		filterParts = append(filterParts, concatVideo)
-		plan.VideoMap = "[v_concat]"
-	}
-
-	if len(audioStreams) == 1 {
-		plan.AudioMap = audioStreams[0]
-	} else {
-		concatAudio := fmt.Sprintf("%sconcat=n=%d:v=0:a=1[a_concat]", strings.Join(audioStreams, ""), len(audioStreams))
-		filterParts = append(filterParts, concatAudio)
-		plan.AudioMap = "[a_concat]"
+	// Fold clips in timeline order. Cuts concatenate streams, while the two
+	// launch dissolve modes use server-selected xfade/acrossfade filters only.
+	plan.VideoMap = videoStreams[0]
+	plan.AudioMap = audioStreams[0]
+	accumulatedMs := clipDurations[0]
+	for i := 1; i < len(videoStreams); i++ {
+		transition := transitions[i-1]
+		videoOut := fmt.Sprintf("[v_join_%d]", i)
+		audioOut := fmt.Sprintf("[a_join_%d]", i)
+		switch transition.Kind {
+		case pebblestore.VideoTransitionKindCut:
+			filterParts = append(filterParts,
+				fmt.Sprintf("%s%sconcat=n=2:v=1:a=0%s", plan.VideoMap, videoStreams[i], videoOut),
+				fmt.Sprintf("%s%sconcat=n=2:v=0:a=1%s", plan.AudioMap, audioStreams[i], audioOut),
+			)
+		case pebblestore.VideoTransitionKindCrossfade, pebblestore.VideoTransitionKindFadeThroughBlack:
+			durationSec := float64(transition.DurationMs) / 1000
+			offsetSec := float64(accumulatedMs-transition.DurationMs) / 1000
+			xfadeKind := "fade"
+			if transition.Kind == pebblestore.VideoTransitionKindFadeThroughBlack {
+				xfadeKind = "fadeblack"
+			}
+			filterParts = append(filterParts,
+				fmt.Sprintf("%s%sxfade=transition=%s:duration=%.3f:offset=%.3f%s", plan.VideoMap, videoStreams[i], xfadeKind, durationSec, offsetSec, videoOut),
+				fmt.Sprintf("%s%sacrossfade=d=%.3f:c1=tri:c2=tri%s", plan.AudioMap, audioStreams[i], durationSec, audioOut),
+			)
+			accumulatedMs -= transition.DurationMs
+		}
+		accumulatedMs += clipDurations[i]
+		plan.VideoMap = videoOut
+		plan.AudioMap = audioOut
 	}
 
 	plan.FilterComplex = strings.Join(filterParts, ";")
@@ -251,6 +275,62 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 
 	plan.FFmpegArgs = args
 	return plan, nil
+}
+
+func resolveRenderTransitions(timeline pebblestore.VideoProjectTimeline, inputs []MaterializedInput, durations []int64) ([]pebblestore.VideoTimelineTransition, int64, error) {
+	if len(inputs) != len(durations) {
+		return nil, 0, errors.New("render transition inputs and durations do not match")
+	}
+	if len(inputs) < 2 {
+		if len(timeline.Transitions) != 0 {
+			return nil, 0, errors.New("timeline transitions require at least two visible clips")
+		}
+		return nil, 0, nil
+	}
+
+	boundaries := make(map[string]int, len(inputs)-1)
+	for i := 0; i < len(inputs)-1; i++ {
+		boundaries[inputs[i].ClipID+"\x00"+inputs[i+1].ClipID] = i
+	}
+	resolved := make([]pebblestore.VideoTimelineTransition, len(inputs)-1)
+	for i := range resolved {
+		resolved[i] = pebblestore.VideoTimelineTransition{
+			Kind:       pebblestore.VideoTransitionKindCut,
+			FromClipID: inputs[i].ClipID,
+			ToClipID:   inputs[i+1].ClipID,
+		}
+	}
+
+	var overlapMs int64
+	seen := make(map[int]struct{}, len(timeline.Transitions))
+	for _, transition := range timeline.Transitions {
+		boundary, ok := boundaries[transition.FromClipID+"\x00"+transition.ToClipID]
+		if !ok {
+			return nil, 0, fmt.Errorf("transition %q must connect adjacent visible clips in timeline order", transition.ID)
+		}
+		if _, duplicate := seen[boundary]; duplicate {
+			return nil, 0, fmt.Errorf("multiple transitions target clip boundary %q to %q", transition.FromClipID, transition.ToClipID)
+		}
+		seen[boundary] = struct{}{}
+		switch transition.Kind {
+		case pebblestore.VideoTransitionKindCut:
+			if transition.DurationMs != 0 {
+				return nil, 0, fmt.Errorf("cut transition %q must have zero duration", transition.ID)
+			}
+		case pebblestore.VideoTransitionKindCrossfade, pebblestore.VideoTransitionKindFadeThroughBlack:
+			if transition.DurationMs <= 0 {
+				return nil, 0, fmt.Errorf("transition %q duration must be positive", transition.ID)
+			}
+			if transition.DurationMs >= durations[boundary] || transition.DurationMs >= durations[boundary+1] {
+				return nil, 0, fmt.Errorf("transition %q duration %dms must be shorter than both adjacent clips (%dms and %dms)", transition.ID, transition.DurationMs, durations[boundary], durations[boundary+1])
+			}
+			overlapMs += transition.DurationMs
+		default:
+			return nil, 0, fmt.Errorf("transition %q has unsupported render kind %q", transition.ID, transition.Kind)
+		}
+		resolved[boundary] = transition
+	}
+	return resolved, overlapMs, nil
 }
 
 func formatCaptionFilter(caption pebblestore.VideoTextOverlay, dims RenderDimensions) string {
