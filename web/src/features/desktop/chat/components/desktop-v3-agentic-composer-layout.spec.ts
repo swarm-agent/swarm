@@ -109,6 +109,8 @@ test('Desktop V3 /agents dispatch skips model favorites and opens Agent Setup di
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /command\.action\.kind === 'open-settings' && command\.action\.tab === 'agents'[\s\S]*openAgentSetup\(\)/)
+  assert.match(source, /renderComposerControl\(openModelFavorites, false\)/)
+  assert.doesNotMatch(source, /renderComposerControl\(openAgentSetup, false\)/)
   assert.match(source, /openSignal=\{modelFavoritesOpenSignal\}/)
   assert.match(source, /setupOpenSignal=\{agentSettingsOpenSignal \+ agentSetupOpenSignal\}/)
 })

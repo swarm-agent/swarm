@@ -895,7 +895,7 @@ func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r 
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	cacheRoot, cacheErr := os.UserCacheDir()
+	cacheRoot, cacheErr := sessionV3ArtifactWorkingCopyCacheRoot()
 	if cacheErr != nil {
 		cacheRoot = ""
 	}
@@ -934,6 +934,18 @@ func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "method": method, "display_location": published})
+}
+
+func sessionV3ArtifactWorkingCopyCacheRoot() (string, error) {
+	for _, environmentVariable := range []string{"CACHE_DIRECTORY", "SWARMD_CACHE_DIR"} {
+		if configured := strings.TrimSpace(os.Getenv(environmentVariable)); configured != "" {
+			if !filepath.IsAbs(configured) {
+				return "", fmt.Errorf("%s must be an absolute path", environmentVariable)
+			}
+			return filepath.Clean(configured), nil
+		}
+	}
+	return os.UserCacheDir()
 }
 
 func sessionV3ArtifactRevealIsLoopback(r *http.Request) bool {

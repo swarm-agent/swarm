@@ -911,6 +911,7 @@ function testManageArtifactRendersTypedArtifactCard(): void {
     }),
   });
   assert(Boolean(message), "expected manage_artifact message");
+  message!.artifactData!.artifact!.localRevealAvailable = true;
   const markup = renderToolMarkup(message!);
   assert(markup.includes('data-testid="desktop-artifact-tool-card"'), "expected artifact tool card testid");
   assert(markup.includes("Landing Page Mockup"), "expected artifact label in markup");
@@ -918,6 +919,8 @@ function testManageArtifactRendersTypedArtifactCard(): void {
   assert(markup.includes("text/html"), "expected media type badge");
   assert(markup.includes("Ready"), "expected Ready status badge");
   assert(markup.includes("Open in viewer"), "expected Open in viewer button or link");
+  assert(markup.includes("Show in folder"), "local artifact card should expose the recovery working-copy action");
+  assert(markup.includes("Download"), "artifact card should retain the remote recovery download action");
 }
 
 function main(): void {

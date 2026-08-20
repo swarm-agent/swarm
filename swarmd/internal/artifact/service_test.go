@@ -359,6 +359,28 @@ func TestMaterializeReadyFileUsesWorkspaceRelativeDestinationAndExplicitOverwrit
 	}
 }
 
+func TestMaterializeReadyVideoUsesVideoArtifactLimit(t *testing.T) {
+	service := newTestService(t, Limits{MaxArtifactBytes: 4, MaxVideoArtifactBytes: 32, MaxSessionBytes: 64})
+	variant := testVariant("materialize-video", "clip.mp4", "video/mp4", "video")
+	body := []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+	staged, err := service.Stage(context.Background(), variant, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	workspace := t.TempDir()
+	if _, err := service.Materialize(context.Background(), variant, workspace, "renders/clip.mp4", false); err != nil {
+		t.Fatalf("materialize video above document limit: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspace, "renders", "clip.mp4")); err != nil || !bytes.Equal(data, body) {
+		t.Fatalf("materialized video bytes = %q err=%v", data, err)
+	}
+}
+
 func TestMaterializePackageRejectsSymlinkAndAmbiguousEntries(t *testing.T) {
 	service := newTestService(t, Limits{})
 	variant := testVariant("materialize-package", "bundle.zip", "application/zip", "package")

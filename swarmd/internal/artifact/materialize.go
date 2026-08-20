@@ -63,7 +63,7 @@ func (s *Service) Materialize(ctx context.Context, variant pebblestore.SessionAr
 		}
 		return s.materializePackage(ctx, file, blob, workspaceRoot, destination, overwrite)
 	}
-	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, file, blob.Size, blob.DigestSHA256, s.limits.MaxArtifactBytes, overwrite); err != nil {
+	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, file, blob.Size, blob.DigestSHA256, s.maxArtifactLimit(blob.MediaType, blob.Presentation.Kind), overwrite); err != nil {
 		return Materialized{}, err
 	}
 	return Materialized{Destination: filepath.ToSlash(destination), Files: 1, Bytes: blob.Size, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil

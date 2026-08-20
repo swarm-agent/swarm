@@ -1005,6 +1005,20 @@ func TestSessionV3ArtifactRevealRejectsNonLoopback(t *testing.T) {
 	}
 }
 
+func TestSessionV3ArtifactWorkingCopyCacheRootUsesSystemdCacheDirectory(t *testing.T) {
+	cacheRoot := filepath.Join(t.TempDir(), "swarmd-cache")
+	t.Setenv("CACHE_DIRECTORY", cacheRoot)
+	t.Setenv("SWARMD_CACHE_DIR", filepath.Join(t.TempDir(), "fallback-cache"))
+	resolved, err := sessionV3ArtifactWorkingCopyCacheRoot()
+	if err != nil || resolved != cacheRoot {
+		t.Fatalf("working-copy cache root = %q err=%v", resolved, err)
+	}
+	t.Setenv("CACHE_DIRECTORY", "relative-cache")
+	if _, err := sessionV3ArtifactWorkingCopyCacheRoot(); err == nil {
+		t.Fatal("relative systemd cache directory was accepted")
+	}
+}
+
 func TestSessionV3ArtifactRevealTreatsAdmittedTailscaleProxyAsRemote(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v3/artifacts", nil)
 	req.RemoteAddr = "127.0.0.1:43210"

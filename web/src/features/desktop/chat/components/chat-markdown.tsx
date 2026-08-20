@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -25,7 +25,7 @@ import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
 import { ToolActivityShell } from "./tool-activity-shell";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
-import { desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, revealDesktopV3Artifact, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 
 interface ChatMarkdownProps {
   content: string;
@@ -1514,6 +1514,8 @@ export function ManageArtifactCard({
     : null;
   const artifact = matchedCatalogEntry ?? rawArtifact;
   const [artifactActionError, setArtifactActionError] = useState("");
+  const [artifactActionConfirmation, setArtifactActionConfirmation] = useState("");
+  const [artifactRevealPending, setArtifactRevealPending] = useState(false);
 
   const isRunning = toolMessage.state === "running";
   const isError = toolMessage.state === "error" || Boolean(toolMessage.error);
@@ -1573,6 +1575,7 @@ export function ManageArtifactCard({
     if (!artifact) return;
     try {
       setArtifactActionError("");
+      setArtifactActionConfirmation("");
       const blob = await fetchDesktopV3ArtifactDownload(artifact);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -1582,6 +1585,21 @@ export function ManageArtifactCard({
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) {
       setArtifactActionError(error instanceof Error ? error.message : "Artifact download failed");
+    }
+  };
+
+  const handleReveal = async () => {
+    if (!artifact || artifact.localRevealAvailable !== true) return;
+    try {
+      setArtifactRevealPending(true);
+      setArtifactActionError("");
+      setArtifactActionConfirmation("");
+      const result = await revealDesktopV3Artifact(artifact.sessionId, artifact.artifactId);
+      setArtifactActionConfirmation(`Opened ${result.displayLocation}`);
+    } catch (error) {
+      setArtifactActionError(error instanceof Error ? error.message : "Could not open this artifact in the native file manager");
+    } finally {
+      setArtifactRevealPending(false);
     }
   };
 
@@ -1681,6 +1699,10 @@ export function ManageArtifactCard({
           <div className="mt-2.5 rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">
             {artifactActionError}
           </div>
+        ) : artifactActionConfirmation ? (
+          <div className="mt-2.5 rounded-lg border border-[var(--app-success)] bg-[var(--app-success-bg)] px-3 py-2 text-xs text-[var(--app-success)]">
+            {artifactActionConfirmation}
+          </div>
         ) : null}
 
         {artifact ? (
@@ -1702,6 +1724,18 @@ export function ManageArtifactCard({
                 data-testid="open-artifact-viewer-button"
               >
                 Open in viewer <ExternalLink size={12} />
+              </button>
+            ) : null}
+
+            {status === "ready" && artifact.localRevealAvailable === true ? (
+              <button
+                type="button"
+                onClick={() => void handleReveal()}
+                className={artifactActionClassName}
+                disabled={artifactRevealPending}
+                data-testid="show-artifact-in-folder-button"
+              >
+                {artifactRevealPending ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <FolderOpen size={12} aria-hidden="true" />} Show in folder
               </button>
             ) : null}
 
