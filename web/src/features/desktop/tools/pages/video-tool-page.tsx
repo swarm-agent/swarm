@@ -599,21 +599,28 @@ export function projectTimelineToTimelineSegments(
   for (const transition of timeline.transitions ?? []) {
     if (!transitionsByDestination.has(transition.to_clip_id)) transitionsByDestination.set(transition.to_clip_id, transition)
   }
+  let previewStartSec = 0
   return timeline.clips.map((clipWire) => {
     const sourceClip = clipsBySourceRef.get(String(clipWire.source_ref ?? '')) ?? clipsById.get(clipWire.id)
     const clipId = sourceClip?.id ?? clipWire.id
     const sourceStartSec = (clipWire.source_start_ms ?? 0) / 1000
     const durationSec = (clipWire.duration_ms ?? 0) / 1000 || clipDuration(clipDurations, clipId)
+    const transitionIn = transitionsByDestination.get(clipWire.id)
+    const explicitStartMs = clipWire.timeline_start_ms
+    const start = typeof explicitStartMs === 'number' && explicitStartMs > 0
+      ? explicitStartMs / 1000
+      : Math.max(0, previewStartSec - ((transitionIn?.duration_ms ?? 0) / 1000))
+    if (clipWire.visible !== false) previewStartSec = start + durationSec
     return {
       id: clipWire.id,
       type: 'video',
       clipId,
       src: threadId ? clipMediaUrl(threadId, clipId) : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`,
-      start: (clipWire.timeline_start_ms ?? 0) / 1000,
+      start,
       sourceStart: sourceStartSec,
       duration: durationSec,
       visible: clipWire.visible !== false,
-      transitionIn: transitionsByDestination.get(clipWire.id),
+      transitionIn,
     }
   })
 }
@@ -1594,7 +1601,7 @@ export function VideoToolPage() {
                 </div>
                 {renderJob?.status === 'ready' ? (
                   <div className="mb-3 grid gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    {renderedVideoArtifactUrl(selectedThread.id, renderJob) ? <video controls className="max-h-72 w-full bg-black" src={renderedVideoArtifactUrl(selectedThread.id, renderJob)} /> : <p className="text-xs text-[var(--app-text-muted)]">Rendered artifact is ready; use Export MP4 to copy it to a workspace path.</p>
+                    {renderedVideoArtifactUrl(selectedThread.id, renderJob) ? <video controls className="max-h-72 w-full bg-black" src={renderedVideoArtifactUrl(selectedThread.id, renderJob)} /> : <p className="text-xs text-[var(--app-text-muted)]">Rendered artifact is ready; use Export MP4 to copy it to a workspace path.</p>}
                     <div className="flex gap-2"><input className="h-8 min-w-0 flex-1 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={exportPath} onChange={(event) => setExportPath(event.target.value)} placeholder="Absolute destination path for MP4" /><Button variant="outline" className="h-8 px-3 text-xs" disabled={exporting || !exportPath.trim()} onClick={() => void handleExportRender()}>{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}Export MP4</Button></div>
                   </div>
                 ) : null}

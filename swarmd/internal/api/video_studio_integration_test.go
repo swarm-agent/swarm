@@ -144,7 +144,7 @@ func TestVideoStudioDeterministicIntegrationProof(t *testing.T) {
 	proposal, err := projects.CreateEditProposal(ctx, principal, videoproject.CreateEditProposalInput{
 		SessionID: session.ID, ProjectID: project.ID, ProposalID: "video-proof-proposal", BaseRevisionID: base.ID,
 		Title: "Preview crossfade", Rationale: "Browser-previewable typed transition",
-		Operations: []pebblestore.VideoEditOperation{{ID: "add-transition", Type: pebblestore.VideoEditOperationAddTransition, Transition: &transition}},
+		Operations:     []pebblestore.VideoEditOperation{{ID: "add-transition", Type: pebblestore.VideoEditOperationAddTransition, Transition: &transition}},
 		AffectedRanges: []pebblestore.VideoTimelineRange{{StartMs: 9_500, EndMs: 10_500}}, NowUnixMs: 600,
 	})
 	if err != nil {
@@ -162,11 +162,12 @@ func TestVideoStudioDeterministicIntegrationProof(t *testing.T) {
 	if err != nil || acceptedProposal.AcceptedRevisionID != acceptedRevision.ID || acceptedProject.RevisionCount != 2 || len(acceptedRevision.Timeline.Transitions) != 1 {
 		t.Fatalf("accept exactly one revision: proposal=%+v revision=%+v project=%+v err=%v", acceptedProposal, acceptedRevision, acceptedProject, err)
 	}
-	if _, _, _, err := projects.AcceptEditProposal(ctx, principal, videoproject.AcceptEditProposalInput{
+	replayedProposal, replayedRevision, replayedProject, err := projects.AcceptEditProposal(ctx, principal, videoproject.AcceptEditProposalInput{
 		SessionID: session.ID, ProjectID: project.ID, ProposalID: proposal.ID, RevisionID: "video-proof-duplicate",
 		SelectedOperationIDs: []string{"add-transition"}, AuthorPrincipal: principal.UserID, NowUnixMs: 701,
-	}); err == nil {
-		t.Fatal("accepted proposal created more than one revision")
+	})
+	if err != nil || replayedProposal.AcceptedRevisionID != acceptedRevision.ID || replayedRevision.ID != acceptedRevision.ID || replayedProject.RevisionCount != 2 {
+		t.Fatalf("accepted proposal was not idempotent: proposal=%+v revision=%+v project=%+v err=%v", replayedProposal, replayedRevision, replayedProject, err)
 	}
 
 	renderJob, err := projects.StartRenderJob(ctx, principal, videoproject.StartRenderJobInput{
@@ -176,9 +177,10 @@ func TestVideoStudioDeterministicIntegrationProof(t *testing.T) {
 		t.Fatalf("render is not pinned to accepted revision: job=%+v err=%v", renderJob, err)
 	}
 	authority := artifact.NewAuthority(registry, sessionSvc)
+	renderedVideo := append([]byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42"), []byte("synthetic-rendered-video")...)
 	variant, err := authority.Create(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "video-proof-artifact", CollectionID: "video-proof-renders", CollectionName: "Final renders",
-		VariantID: "video-proof-mp4", Filename: "video-proof.mp4", MediaType: "video/mp4", Body: []byte("synthetic-rendered-video"),
+		VariantID: "video-proof-mp4", Filename: "video-proof.mp4", MediaType: "video/mp4", Body: renderedVideo,
 	})
 	if err != nil {
 		t.Fatalf("create ready render artifact: %v", err)
@@ -187,7 +189,7 @@ func TestVideoStudioDeterministicIntegrationProof(t *testing.T) {
 	readyRender, err := projects.CompleteRenderJob(ctx, principal, videoproject.CompleteRenderJobInput{
 		SessionID: session.ID, JobID: renderJob.ID, OutputPreset: pebblestore.VideoPresetLandscape1080p,
 		OutputWidth: 1920, OutputHeight: 1080, OutputFPS: 30, OutputDurationMs: 20_000,
-		OutputSizeBytes: int64(len("synthetic-rendered-video")), OutputDigestSHA256: variant.DigestSHA256,
+		OutputSizeBytes: int64(len(renderedVideo)), OutputDigestSHA256: variant.DigestSHA256,
 		OutputArtifact: artifactRef, NowUnixMs: 900,
 	})
 	if err != nil || readyRender.Status != pebblestore.VideoRenderJobStatusReady || readyRender.OutputArtifact == nil {
@@ -203,7 +205,7 @@ func TestVideoStudioDeterministicIntegrationProof(t *testing.T) {
 		t.Fatalf("export ready artifact status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	exported, err := os.ReadFile(exportPath)
-	if err != nil || string(exported) != "synthetic-rendered-video" {
+	if err != nil || string(exported) != string(renderedVideo) {
 		t.Fatalf("exported artifact mismatch: bytes=%q err=%v", exported, err)
 	}
 }
