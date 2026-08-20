@@ -341,6 +341,12 @@ func sessionsV3ArtifactPresentation(variant pebblestore.SessionArtifactVariant) 
 	if mediaType == "text/html" && (kind == "" || kind == "html") {
 		return "html", true
 	}
+	if mediaType == "text/markdown" && (kind == "" || kind == "markdown" || kind == "text") {
+		return "markdown", true
+	}
+	if mediaType == "text/plain" && (kind == "" || kind == "text") {
+		return "text", true
+	}
 	if kind == "package" && mediaType == "application/zip" {
 		return "html", true
 	}

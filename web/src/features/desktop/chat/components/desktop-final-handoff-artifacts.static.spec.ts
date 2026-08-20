@@ -49,6 +49,8 @@ test('final handoff gallery uses authenticated opaque artifact routes and an iso
   assert.doesNotMatch(thumbnail, /object-cover/)
   assert.match(gallery, /fetchDesktopV3ArtifactPreviewAccess\(selected\.sessionId, selected\.artifactId/)
   assert.match(gallery, /selected\.mediaType === 'text\/html'/)
+  assert.match(gallery, /selected\.mediaType === 'text\/markdown' \|\| selected\.mediaType === 'text\/plain'/)
+  assert.match(gallery, /selected\.mediaType === 'text\/markdown'.*?<ChatMarkdown content=\{previewText\}/)
   assert.match(gallery, /src=\{previewURL\}/)
   assert.match(gallery, /sandbox="allow-scripts"/)
   assert.doesNotMatch(gallery, /sandbox="allow-same-origin allow-scripts"/)

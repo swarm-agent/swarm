@@ -61,7 +61,7 @@ func TestSessionsV3ArtifactCatalogItemPreservesAnimationProfile(t *testing.T) {
 	}
 }
 
-func TestSessionV3ArtifactPresentationInfersReadyHTMLPreview(t *testing.T) {
+func TestSessionV3ArtifactPresentationInfersReadyPreviewableTypes(t *testing.T) {
 	tests := []struct {
 		name            string
 		variant         pebblestore.SessionArtifactVariant
@@ -78,6 +78,24 @@ func TestSessionV3ArtifactPresentationInfersReadyHTMLPreview(t *testing.T) {
 				},
 			},
 			wantKind:        "html",
+			wantPreviewable: true,
+		},
+		{
+			name: "ready markdown repairs omitted presentation",
+			variant: pebblestore.SessionArtifactVariant{
+				Status:    pebblestore.SessionArtifactStatusReady,
+				MediaType: "text/markdown",
+			},
+			wantKind:        "markdown",
+			wantPreviewable: true,
+		},
+		{
+			name: "ready plain text repairs omitted presentation",
+			variant: pebblestore.SessionArtifactVariant{
+				Status:    pebblestore.SessionArtifactStatusReady,
+				MediaType: "text/plain",
+			},
+			wantKind:        "text",
 			wantPreviewable: true,
 		},
 		{
