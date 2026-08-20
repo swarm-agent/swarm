@@ -75,14 +75,14 @@ type RestoreRevisionInput struct {
 	NowUnixMs        int64
 }
 
-type CreateEditProposalInput struct { SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale string; Operations []pebblestore.VideoEditOperation; NowUnixMs int64 }
+type CreateEditProposalInput struct { SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale string; Operations []pebblestore.VideoEditOperation; AffectedRanges []pebblestore.VideoTimelineRange; NowUnixMs int64 }
 type AcceptEditProposalInput struct { SessionID, ProjectID, ProposalID, RevisionID, Description, ChangeSummary, AuthorPrincipal string; SelectedOperationIDs []string; NowUnixMs int64 }
 
 func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Principal, input CreateEditProposalInput) (pebblestore.VideoEditProposalSnapshot, error) {
 	if s == nil || s.sessions == nil { return pebblestore.VideoEditProposalSnapshot{}, errors.New("videoproject service is not configured") }
 	if !principal.Valid() { return pebblestore.VideoEditProposalSnapshot{}, errors.New("authenticated principal is required") }
 	project, ok, err := s.sessions.GetVideoProject(principal.AccountScopeID, input.SessionID, input.ProjectID); if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) { return pebblestore.VideoEditProposalSnapshot{}, errors.New("video project not found") }
-	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Operations: input.Operations, NowUnixMs: input.NowUnixMs})
+	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
 }
 func (s *Service) GetEditProposal(principal identity.Principal, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
 	if !principal.Valid() { return pebblestore.VideoEditProposalSnapshot{}, false, errors.New("authenticated principal is required") }

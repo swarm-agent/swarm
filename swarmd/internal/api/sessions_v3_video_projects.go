@@ -49,6 +49,7 @@ type sessionV3CreateVideoEditProposalRequest struct {
 	Title          string                           `json:"title"`
 	Rationale      string                           `json:"rationale"`
 	Operations     []pebblestore.VideoEditOperation `json:"operations"`
+	AffectedRanges []pebblestore.VideoTimelineRange `json:"affected_ranges"`
 }
 
 type sessionV3AcceptVideoEditProposalRequest struct {
@@ -304,7 +305,7 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 			proposals, err := s.videoProjects.ListEditProposals(principal, sessionID, projectID, 100); if err != nil { writeError(w, http.StatusBadRequest, err); return }; writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposals": proposals, "count": len(proposals)})
 		case http.MethodPost:
 			var req sessionV3CreateVideoEditProposalRequest; if err := decodeJSON(r, &req); err != nil { writeError(w, http.StatusBadRequest, err); return }
-			proposal, err := s.videoProjects.CreateEditProposal(r.Context(), principal, videoproject.CreateEditProposalInput{SessionID: sessionID, ProjectID: projectID, ProposalID: req.ProposalID, BaseRevisionID: req.BaseRevisionID, Title: req.Title, Rationale: req.Rationale, Operations: req.Operations, NowUnixMs: time.Now().UnixMilli()}); if err != nil { writeError(w, http.StatusBadRequest, err); return }; writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "proposal": proposal})
+			proposal, err := s.videoProjects.CreateEditProposal(r.Context(), principal, videoproject.CreateEditProposalInput{SessionID: sessionID, ProjectID: projectID, ProposalID: req.ProposalID, BaseRevisionID: req.BaseRevisionID, Title: req.Title, Rationale: req.Rationale, Operations: req.Operations, AffectedRanges: req.AffectedRanges, NowUnixMs: time.Now().UnixMilli()}); if err != nil { writeError(w, http.StatusBadRequest, err); return }; writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "proposal": proposal})
 		default: methodNotAllowed(w)
 		}
 	case "render":
