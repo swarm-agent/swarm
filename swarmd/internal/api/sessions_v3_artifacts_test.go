@@ -962,6 +962,31 @@ func TestSessionV3ArtifactSelectionActionPersistsThroughMutation(t *testing.T) {
 	}
 }
 
+func TestSessionV3ArtifactRevealRejectsNonLoopback(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "note.txt", "workspace file")
+	principal := testPrincipal()
+	variant, err := artifact.NewAuthority(registry, sessionSvc).Create(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
+		RequestID: "reveal-create", CollectionID: "reveal-collection", CollectionName: "Reveal", VariantID: "reveal-variant", Filename: "result.txt", MediaType: "text/plain", Body: []byte("ready"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/reveal", nil)
+	req.RemoteAddr = "192.0.2.10:43210"
+	rec := httptest.NewRecorder()
+	server.handleSessionV3ArtifactReveal(rec, req, principal, variant.SessionID, variant.ID)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "only from this machine") {
+		t.Fatalf("remote reveal status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSessionV3ArtifactLibraryNameIsSafeAndStable(t *testing.T) {
+	name := sessionV3ArtifactLibraryName(" ../Creative / Output ", "variant-123456789012345")
+	if strings.ContainsAny(name, `/\\`) || name == "" || !strings.Contains(name, "variant-1234") {
+		t.Fatalf("unsafe or unstable library name %q", name)
+	}
+}
+
 func TestSessionsV3ArtifactOutputRequirementsProjectionClonesSnapshot(t *testing.T) {
 	requirements := &pebblestore.SessionArtifactOutputRequirements{PresetID: "x_header", Width: 1500, Height: 500, AspectRatio: "3:1", Orientation: "landscape", ResolutionSource: "preset", RegistryVersion: "2026-08-14.v1"}
 	projected := cloneSessionsV3ArtifactOutputRequirements(requirements)

@@ -343,14 +343,21 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		}
 		if strings.HasPrefix(subpath, "artifacts/") {
 			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
-			if collectionPath, hasCollectionBundle := strings.CutPrefix(artifactPath, "collections/"); hasCollectionBundle {
-				collectionID, hasBundle := strings.CutSuffix(collectionPath, "/bundle")
+			if collectionPath, hasCollection := strings.CutPrefix(artifactPath, "collections/"); hasCollection {
+				collectionID, action, ok := strings.Cut(collectionPath, "/")
 				collectionID = strings.TrimSpace(collectionID)
-				if !hasBundle || collectionID == "" || strings.Contains(collectionID, "/") {
+				if !ok || collectionID == "" || strings.Contains(collectionID, "/") {
 					writeError(w, http.StatusBadRequest, errors.New("invalid artifact collection path"))
 					return
 				}
-				s.handleSessionV3ArtifactCollectionBundle(w, r, principal, sessionID, collectionID)
+				switch action {
+				case "bundle":
+					s.handleSessionV3ArtifactCollectionBundle(w, r, principal, sessionID, collectionID)
+				case "reveal":
+					s.handleSessionV3ArtifactCollectionReveal(w, r, principal, sessionID, collectionID)
+				default:
+					writeError(w, http.StatusBadRequest, errors.New("invalid artifact collection path"))
+				}
 				return
 			}
 			if artifactID, hasSelection := strings.CutSuffix(artifactPath, "/selection"); hasSelection {
@@ -360,6 +367,15 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 					return
 				}
 				s.handleSessionV3ArtifactSelection(w, r, principal, sessionID, artifactID)
+				return
+			}
+			if artifactID, hasReveal := strings.CutSuffix(artifactPath, "/reveal"); hasReveal {
+				artifactID = strings.TrimSpace(artifactID)
+				if artifactID == "" || strings.Contains(artifactID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+					return
+				}
+				s.handleSessionV3ArtifactReveal(w, r, principal, sessionID, artifactID)
 				return
 			}
 			if artifactID, hasBundle := strings.CutSuffix(artifactPath, "/bundle"); hasBundle {

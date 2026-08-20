@@ -3,6 +3,7 @@ package uisettings
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	sharedtheme "swarm-refactor/swarmtui/theme"
@@ -114,6 +115,10 @@ type MediaSettings struct {
 	TranscriptionModel string `json:"transcription_model,omitempty"`
 }
 
+type ArtifactSettings struct {
+	LibraryDirectory string `json:"library_directory,omitempty"`
+}
+
 type UISettings struct {
 	Theme     ThemeSettings    `json:"theme,omitempty"`
 	Input     InputSettings    `json:"input,omitempty"`
@@ -122,6 +127,7 @@ type UISettings struct {
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
 	Tools     ToolSettings     `json:"tools,omitempty"`
 	Media     MediaSettings    `json:"media,omitempty"`
+	Artifacts ArtifactSettings `json:"artifacts,omitempty"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
@@ -169,14 +175,18 @@ func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UIS
 	if s == nil || s.store == nil {
 		return UISettings{}, fmt.Errorf("ui settings service not configured")
 	}
+	if directory := strings.TrimSpace(settings.Artifacts.LibraryDirectory); directory != "" && !filepath.IsAbs(directory) {
+		return UISettings{}, fmt.Errorf("artifact library directory must be absolute")
+	}
 	record, err := s.store.UpdateForAccount(strings.TrimSpace(accountScopeID), pebblestore.UISettingsPatch{
 		Theme:    themeRecordFromSettings(settings.Theme),
 		Input:    inputRecordFromSettings(settings.Input),
 		Chat:     chatRecordFromSettings(settings.Chat),
 		Swarming: swarmingRecordFromSettings(settings.Swarming),
 		Swarm:    swarmRecordFromSettings(settings.Swarm),
-		Tools:    toolRecordFromSettings(settings.Tools),
-		Media:    mediaRecordFromSettings(settings.Media),
+		Tools:     toolRecordFromSettings(settings.Tools),
+		Media:     mediaRecordFromSettings(settings.Media),
+		Artifacts: artifactRecordFromSettings(settings.Artifacts),
 	})
 	if err != nil {
 		return UISettings{}, fmt.Errorf("persist ui settings: %w", err)
@@ -257,6 +267,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			},
 		},
 		Media:     MediaSettings{TranscriptionModel: strings.TrimSpace(record.Media.TranscriptionModel)},
+		Artifacts: ArtifactSettings{LibraryDirectory: strings.TrimSpace(record.Artifacts.LibraryDirectory)},
 		UpdatedAt: record.UpdatedAt,
 	}
 	for _, item := range record.Theme.CustomThemes {
@@ -375,6 +386,10 @@ func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRe
 
 func mediaRecordFromSettings(settings MediaSettings) *pebblestore.UIMediaSettingsRecord {
 	return &pebblestore.UIMediaSettingsRecord{TranscriptionModel: strings.TrimSpace(settings.TranscriptionModel)}
+}
+
+func artifactRecordFromSettings(settings ArtifactSettings) *pebblestore.UIArtifactSettingsRecord {
+	return &pebblestore.UIArtifactSettingsRecord{LibraryDirectory: strings.TrimSpace(settings.LibraryDirectory)}
 }
 
 func paletteFromRecord(record pebblestore.UIThemePaletteRecord) ThemePalette {

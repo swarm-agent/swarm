@@ -790,6 +790,164 @@ func (s *Server) handleSessionV3ArtifactBundle(w http.ResponseWriter, r *http.Re
 	_ = archive.Close()
 }
 
+func (s *Server) handleSessionV3ArtifactReveal(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, artifactID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !sessionV3ArtifactRevealIsLoopback(r) {
+		writeError(w, http.StatusForbidden, errors.New("artifact reveal is available only from this machine"))
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	resolved, found, err := s.resolveSessionV3Artifact(r.Context(), principal, sessionID, artifactID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found || resolved.Managed == nil || resolved.Managed.Status != pebblestore.SessionArtifactStatusReady {
+		writeError(w, http.StatusNotFound, errors.New("ready managed artifact not found"))
+		return
+	}
+	destination := sessionV3ArtifactLibraryName(firstNonEmpty(resolved.Managed.Presentation.Label, resolved.Managed.Filename), resolved.Managed.ID)
+	s.handleSessionV3ArtifactLibraryPublish(w, r, principal, session, destination, []pebblestore.SessionArtifactVariant{*resolved.Managed})
+}
+
+func (s *Server) handleSessionV3ArtifactCollectionReveal(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, collectionID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !sessionV3ArtifactRevealIsLoopback(r) {
+		writeError(w, http.StatusForbidden, errors.New("artifact reveal is available only from this machine"))
+		return
+	}
+	session, found, err := s.requireSessionV3Access(principal, sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
+		return
+	}
+	collection, found, err := s.sessions.GetSessionArtifactCollection(principal.AccountScopeID, sessionID, collectionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found || collection.SessionID != sessionID || collection.AccountScopeID != principal.AccountScopeID {
+		writeError(w, http.StatusNotFound, errors.New("artifact collection not found"))
+		return
+	}
+	variants, err := s.sessions.ListSessionArtifactVariants(principal.AccountScopeID, sessionID, collectionID, pebblestore.SessionArtifactMaxVariantsPerCollection)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ready := make([]pebblestore.SessionArtifactVariant, 0, len(variants))
+	for _, variant := range variants {
+		if variant.Status == pebblestore.SessionArtifactStatusReady {
+			ready = append(ready, variant)
+		}
+	}
+	if len(ready) == 0 {
+		writeError(w, http.StatusNotFound, errors.New("artifact collection has no ready variants"))
+		return
+	}
+	destination := sessionV3ArtifactLibraryName(firstNonEmpty(collection.Name, "Artifact collection"), collection.ID)
+	s.handleSessionV3ArtifactLibraryPublish(w, r, principal, session, destination, ready)
+}
+
+func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r *http.Request, principal identity.Principal, session pebblestore.SessionSnapshot, destination string, variants []pebblestore.SessionArtifactVariant) {
+	if s == nil || s.artifacts == nil || s.uiSettings == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("artifact library is not configured"))
+		return
+	}
+	settings, err := s.uiSettings.GetForAccount(principal.AccountScopeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil {
+		home = ""
+	}
+	libraryRoot, err := artifact.ResolveLibraryRoot(settings.Artifacts.LibraryDirectory, home)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := artifact.EnsureLibraryRoot(libraryRoot); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	service, err := s.artifacts.ServiceForSession(session.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	inputs := make([]artifact.BatchMaterializeInput, 0, len(variants))
+	for _, variant := range variants {
+		if variant.SessionID != session.ID || variant.AccountScopeID != principal.AccountScopeID {
+			writeError(w, http.StatusNotFound, errors.New("artifact ownership does not match session"))
+			return
+		}
+		inputs = append(inputs, artifact.BatchMaterializeInput{Service: service, Variant: variant})
+	}
+	sessionDirectory := sessionV3ArtifactLibraryName(firstNonEmpty(session.Title, "Session"), session.ID)
+	relative := filepath.Join(sessionDirectory, destination)
+	if _, err := artifact.MaterializeBatch(r.Context(), inputs, libraryRoot, relative, true); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	published := filepath.Join(libraryRoot, relative)
+	method, err := revealLocalPath(published)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("artifact published but file manager could not open it: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "method": method, "display_location": published})
+}
+
+func sessionV3ArtifactRevealIsLoopback(r *http.Request) bool {
+	return r != nil && remoteRequestIP(r) != nil && remoteRequestIP(r).IsLoopback()
+}
+
+func sessionV3ArtifactLibraryName(label, stableID string) string {
+	name := strings.TrimSpace(label)
+	name = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == ' ' || r == '.' {
+			return r
+		}
+		return '-'
+	}, name)
+	name = strings.Trim(name, " .-")
+	name = strings.Join(strings.Fields(name), " ")
+	if len(name) > 80 {
+		name = strings.TrimSpace(name[:80])
+	}
+	id := sessionV3ArtifactSafeDownloadName(stableID)
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	if name == "" {
+		name = "Artifact"
+	}
+	if id != "" {
+		name += " - " + id
+	}
+	return name
+}
+
 func (s *Server) handleSessionV3ArtifactCollectionBundle(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, collectionID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w)

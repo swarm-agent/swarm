@@ -102,6 +102,10 @@ type UIMediaSettingsRecord struct {
 	TranscriptionModel string `json:"transcription_model,omitempty"`
 }
 
+type UIArtifactSettingsRecord struct {
+	LibraryDirectory string `json:"library_directory,omitempty"`
+}
+
 type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
 }
@@ -114,6 +118,7 @@ type UISettingsRecord struct {
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
 	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
 	Media     UIMediaSettingsRecord    `json:"media,omitempty"`
+	Artifacts UIArtifactSettingsRecord `json:"artifacts,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
@@ -123,8 +128,9 @@ type UISettingsPatch struct {
 	Chat     *UIChatSettingsRecord
 	Swarming *UISwarmingSettingsRecord
 	Swarm    *UISwarmSettingsRecord
-	Tools    *UIToolSettingsRecord
-	Media    *UIMediaSettingsRecord
+	Tools     *UIToolSettingsRecord
+	Media     *UIMediaSettingsRecord
+	Artifacts *UIArtifactSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -190,6 +196,9 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 	}
 	if patch.Media != nil {
 		record.Media = *patch.Media
+	}
+	if patch.Artifacts != nil {
+		record.Artifacts = *patch.Artifacts
 	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt
@@ -288,6 +297,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		record.Chat.SidebarHideInactiveHours = intPointer(12)
 	}
 	record.Chat.DefaultWorkspaceRoutes = normalizeDefaultWorkspaceRoutes(record.Chat.DefaultWorkspaceRoutes)
+	record.Artifacts.LibraryDirectory = strings.TrimSpace(record.Artifacts.LibraryDirectory)
 	if len(record.Chat.ToolStream.PulseFrames) == 0 {
 		record.Chat.ToolStream.PulseFrames = []string{"·", "•", "◦", "•"}
 	}

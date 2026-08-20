@@ -143,11 +143,17 @@ func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, works
 		if err := file.Close(); err != nil {
 			return nil, fmt.Errorf("close preflight artifact materialization batch source: %w", err)
 		}
-		folded := strings.ToLower(relative)
-		if _, exists := seen[folded]; exists {
-			return nil, errors.New("artifact materialization batch contains duplicate or ambiguous destinations")
+		baseRelative := relative
+		for suffix := 2; ; suffix++ {
+			folded := strings.ToLower(relative)
+			if _, exists := seen[folded]; !exists {
+				seen[folded] = struct{}{}
+				break
+			}
+			extension := filepath.Ext(baseRelative)
+			stem := strings.TrimSuffix(baseRelative, extension)
+			relative = fmt.Sprintf("%s-%d%s", stem, suffix, extension)
 		}
-		seen[folded] = struct{}{}
 		items = append(items, prepared{input: input, relative: relative})
 	}
 
