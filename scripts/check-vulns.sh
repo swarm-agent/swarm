@@ -45,20 +45,31 @@ installed_go_module_version() {
     | awk -v module="${module}" '$1 == "mod" && $2 == module { print $3; exit }'
 }
 
+binary_go_version() {
+  local binary="$1"
+  run_go version -m "${binary}" \
+    | awk 'NR == 1 { print $2; exit }'
+}
+
 ensure_govulncheck() {
   local govuln_bin="${SECURITY_BIN_DIR}/govulncheck"
-  local installed_version=""
+  local expected_go_version installed_go_version installed_version
+  expected_go_version="$(run_go env GOVERSION)"
+  installed_go_version=""
+  installed_version=""
   if [[ -x "${govuln_bin}" ]]; then
     installed_version="$(installed_go_module_version "${govuln_bin}" "golang.org/x/vuln")"
+    installed_go_version="$(binary_go_version "${govuln_bin}")"
   fi
-  if [[ "${installed_version}" != "${GOVULNCHECK_VERSION}" ]]; then
-    echo "[vuln-check] installing govulncheck@${GOVULNCHECK_VERSION}" >&2
+  if [[ "${installed_version}" != "${GOVULNCHECK_VERSION}" || "${installed_go_version}" != "${expected_go_version}" ]]; then
+    echo "[vuln-check] installing govulncheck@${GOVULNCHECK_VERSION} with ${expected_go_version}" >&2
     rm -f "${govuln_bin}"
     run_go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
     installed_version="$(installed_go_module_version "${govuln_bin}" "golang.org/x/vuln")"
+    installed_go_version="$(binary_go_version "${govuln_bin}")"
   fi
-  if [[ ! -x "${govuln_bin}" || "${installed_version}" != "${GOVULNCHECK_VERSION}" ]]; then
-    echo "[vuln-check] FAIL: expected govulncheck ${GOVULNCHECK_VERSION}, got ${installed_version:-missing}" >&2
+  if [[ ! -x "${govuln_bin}" || "${installed_version}" != "${GOVULNCHECK_VERSION}" || "${installed_go_version}" != "${expected_go_version}" ]]; then
+    echo "[vuln-check] FAIL: expected govulncheck ${GOVULNCHECK_VERSION} built with ${expected_go_version}, got ${installed_version:-missing} built with ${installed_go_version:-missing}" >&2
     return 1
   fi
   printf '%s\n' "${govuln_bin}"
