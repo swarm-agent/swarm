@@ -186,6 +186,10 @@ func TestVideoProjectCreationAndRevisions(t *testing.T) {
 	if revList[0].RevisionNumber != 1 || revList[1].RevisionNumber != 2 {
 		t.Fatalf("list revisions sorting unexpected: %+v", revList)
 	}
+	limited, err := store.ListVideoProjectRevisions(account, sessionID, project.ID, 1)
+	if err != nil || len(limited) != 1 || limited[0].RevisionNumber != 1 {
+		t.Fatalf("limited revision history must follow revision-number order: %+v err=%v", limited, err)
+	}
 }
 
 func TestPrimaryVideoToolProjectAndExactRestore(t *testing.T) {

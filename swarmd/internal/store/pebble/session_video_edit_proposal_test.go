@@ -28,9 +28,13 @@ func TestVideoEditProposalAcceptsSelectedOperationsWithoutRendering(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, _, _ := store.GetVideoProject("acc", "sess", project.ID)
-	if unchanged.CurrentRevisionID != base.ID || unchanged.RevisionCount != 1 || unchanged.ActiveRenderJobID != "" {
-		t.Fatalf("proposal advanced project or rendered: %+v", unchanged)
+	working, _, _ := store.GetVideoProject("acc", "sess", project.ID)
+	if working.CurrentRevisionID != proposal.WorkingRevisionID || working.CurrentRevisionNumber != proposal.WorkingRevisionNumber || working.ConfirmedRevisionID != base.ID || working.RevisionCount != 2 || working.ActiveRenderJobID != "" {
+		t.Fatalf("proposal did not create the expected visible working revision: %+v", working)
+	}
+	workingRevision, ok, err := store.GetVideoProjectRevision("acc", "sess", project.ID, proposal.WorkingRevisionID)
+	if err != nil || !ok || workingRevision.Timeline.Clips[0].Volume != .5 || len(workingRevision.Timeline.Transitions) != 1 {
+		t.Fatalf("working revision did not apply every proposed change: revision=%+v ok=%v err=%v", workingRevision, ok, err)
 	}
 
 	accepted, revision, updated, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: proposal.ID, SelectedOperationIDs: []string{"transition"}, RevisionID: "accepted_revision", AuthorPrincipal: "swarm", NowUnixMs: 300})
@@ -40,7 +44,7 @@ func TestVideoEditProposalAcceptsSelectedOperationsWithoutRendering(t *testing.T
 	if accepted.Status != VideoEditProposalStatusAccepted || accepted.AcceptedRevisionID != revision.ID || revision.AcceptedProposalID != proposal.ID {
 		t.Fatalf("proposal lineage missing: proposal=%+v revision=%+v", accepted, revision)
 	}
-	if updated.RevisionCount != 2 || updated.CurrentRevisionID != revision.ID || updated.ActiveRenderJobID != "" {
+	if updated.RevisionCount != 3 || updated.CurrentRevisionID != revision.ID || updated.ConfirmedRevisionID != revision.ID || updated.ActiveRenderJobID != "" {
 		t.Fatalf("accept state unexpected: %+v", updated)
 	}
 	if len(revision.Timeline.Transitions) != 1 || revision.Timeline.Clips[0].Volume == .5 {
@@ -131,9 +135,9 @@ func TestVideoPlanProposalIsAtomicUntimedContextAndRejectionKeepsFeedback(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, _, _ := store.GetVideoProject("acc", "sess", project.ID)
-	if unchanged.CurrentRevisionID != base.ID || unchanged.RevisionCount != 1 {
-		t.Fatalf("pending plan changed accepted state: %+v", unchanged)
+	working, _, _ := store.GetVideoProject("acc", "sess", project.ID)
+	if working.CurrentRevisionID != proposal.WorkingRevisionID || working.ConfirmedRevisionID != base.ID || working.RevisionCount != 2 {
+		t.Fatalf("pending plan did not preserve the confirmed checkpoint while exposing its working revision: %+v", working)
 	}
 	accepted, revision, updated, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: proposal.ID, RevisionID: "accepted-plan", NowUnixMs: 300})
 	if err != nil {
@@ -157,6 +161,39 @@ func TestVideoPlanProposalIsAtomicUntimedContextAndRejectionKeepsFeedback(t *tes
 	}
 	if rejected.Status != VideoEditProposalStatusRejected || rejected.RejectionFeedback != "Make part two more visual" {
 		t.Fatalf("rejection feedback missing: %+v", rejected)
+	}
+}
+
+func TestVideoEditProposalsChainFromUnconfirmedWorkingRevision(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "acc", "usr", "sess")
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "project", Title: "Video", InitialTimeline: proposalTestTimeline(), NowUnixMs: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: "first", BaseRevisionID: base.ID, Operations: []VideoEditOperation{{ID: "volume", Type: VideoEditOperationUpdateClip, Clip: &VideoTimelineClip{ID: "clip_a", Track: 0, Sequence: 0, SourceKind: VideoClipSourceKindColor, TimelineStartMs: 0, TimelineEndMs: 1000, DurationMs: 1000, Visible: true, Volume: .5}}}, NowUnixMs: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: "second", BaseRevisionID: first.WorkingRevisionID, Operations: []VideoEditOperation{{ID: "remove", Type: VideoEditOperationRemoveClip, ClipID: "clip_b"}}, NowUnixMs: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, _, _ := store.GetVideoProject("acc", "sess", project.ID)
+	if latest.CurrentRevisionID != second.WorkingRevisionID || latest.ConfirmedRevisionID != base.ID || latest.RevisionCount != 3 {
+		t.Fatalf("second proposal did not build on the unconfirmed working revision: %+v", latest)
+	}
+	latestRevision, ok, err := store.GetVideoProjectRevision("acc", "sess", project.ID, second.WorkingRevisionID)
+	if err != nil || !ok || len(latestRevision.Timeline.Clips) != 1 || latestRevision.Timeline.Clips[0].Volume != .5 {
+		t.Fatalf("chained working revision lost earlier unconfirmed work: revision=%+v ok=%v err=%v", latestRevision, ok, err)
+	}
+	if _, _, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: second.ID, Reject: true, RejectionFeedback: "restore this section", NowUnixMs: 400}); err != nil {
+		t.Fatal(err)
+	}
+	restored, _, _ := store.GetVideoProject("acc", "sess", project.ID)
+	if restored.CurrentRevisionID != first.WorkingRevisionID || restored.ConfirmedRevisionID != base.ID {
+		t.Fatalf("reject did not restore the prior working revision: %+v", restored)
 	}
 }
 

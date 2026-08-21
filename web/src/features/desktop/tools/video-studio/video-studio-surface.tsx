@@ -63,6 +63,8 @@ export type VideoEditProposalWire = {
   project_id: string
   base_revision_id: string
   base_revision_number: number
+  working_revision_id?: string
+  working_revision_number?: number
   status: 'pending' | 'accepted' | 'rejected'
   title?: string
   rationale?: string
@@ -169,13 +171,14 @@ export async function acceptVideoEditProposal(input: {
   projectId: string
   proposalId: string
   selectedOperationIds: string[]
+  changeSummary?: string
 }): Promise<{ proposal: VideoEditProposalWire; revision: unknown; project: unknown }> {
   return requestJson<{ proposal: VideoEditProposalWire; revision: unknown; project: unknown }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals/${encodeURIComponent(input.proposalId)}/accept`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       selected_operation_ids: input.selectedOperationIds,
-      change_summary: `Accepted ${input.selectedOperationIds.length} proposed video edit${input.selectedOperationIds.length === 1 ? '' : 's'}`,
+      change_summary: input.changeSummary?.trim() || `Kept ${input.selectedOperationIds.length || 1} proposed video change${input.selectedOperationIds.length === 1 ? '' : 's'}`,
     }),
   })
 }
@@ -260,6 +263,16 @@ function operationLabel(operation: VideoEditOperationWire): string {
   return `${operation.type.replace(/_/g, ' ')} · ${subject}${range}`
 }
 
+export function selectedVideoProposalChangeIDs(proposal: VideoEditProposalWire, selected: Record<string, boolean>): string[] {
+  if (proposal.plan?.kind === 'initial') return []
+  if (proposal.plan) return proposal.plan.parts
+    .filter((part) => selected[`${proposal.id}:part:${part.id}`] !== false)
+    .map((part) => part.id)
+  return proposal.operations
+    .filter((operation) => selected[`${proposal.id}:${operation.id}`] !== false)
+    .map((operation) => operation.id)
+}
+
 export function VideoProposalReview(props: {
   sessionId: string
   projectId: string
@@ -268,7 +281,7 @@ export function VideoProposalReview(props: {
   acceptedClips?: Array<Record<string, unknown>>
   onAccepted: () => Promise<void> | void
   onFeedback: (message: string) => Promise<void> | void
-  onPendingChange?: (proposal: VideoEditProposalWire | null) => void
+  onPendingChange?: (proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => void
   onFocusStep?: (clipId: string, playheadMs: number) => void
 }) {
   const [proposals, setProposals] = useState<VideoEditProposalWire[]>([])
@@ -291,41 +304,55 @@ export function VideoProposalReview(props: {
   }, [props.projectId, props.sessionId])
 
   useEffect(() => { void load() }, [load, projectionSequence])
-  const pending = useMemo(() => proposals.filter((proposal) => proposal.status === 'pending').sort((left, right) => right.updated_at - left.updated_at), [proposals])
-  const latestPending = pending[0] ?? null
-  useEffect(() => { props.onPendingChange?.(latestPending) }, [latestPending, props.onPendingChange])
+  const pending = useMemo(() => proposals
+    .filter((proposal) => proposal.status === 'pending')
+    .sort((left, right) => left.created_at - right.created_at || left.id.localeCompare(right.id)), [proposals])
+  const [previewProposalId, setPreviewProposalId] = useState<string | null>(null)
+  const previewProposal = useMemo(() => pending.find((proposal) => proposal.id === previewProposalId) ?? null, [pending, previewProposalId])
+  useEffect(() => {
+    if (pending.length === 0) {
+      if (previewProposalId) setPreviewProposalId(null)
+      return
+    }
+    if (!previewProposalId || !pending.some((proposal) => proposal.id === previewProposalId)) {
+      setPreviewProposalId(pending[pending.length - 1].id)
+    }
+  }, [pending, previewProposalId])
+  const previewSelectedChangeIds = useMemo(() => previewProposal ? selectedVideoProposalChangeIDs(previewProposal, selected) : [], [previewProposal, selected])
+  useEffect(() => { props.onPendingChange?.(previewProposal, previewSelectedChangeIds) }, [previewProposal, previewSelectedChangeIds, props.onPendingChange])
 
   if (pending.length === 0 && !error) return null
   return (
     <section className="mt-5 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="AI edit proposals">
       <div className="flex items-center justify-between gap-3">
-        <div><p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Review before applying</p><h2 className="mt-1 text-sm font-semibold">AI edit proposals</h2></div>
+        <div><p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-primary)]">New change added</p><h2 className="mt-1 text-sm font-semibold">Working changes</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">The newest change is already visible. Keep everything, or restore only the sections you do not want.</p></div>
         <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => void load()} disabled={busy}>Refresh</Button>
       </div>
       {error ? <p className="mt-3 text-xs text-red-400">{error}</p> : null}
       <div className="mt-3 grid gap-3">
         {pending.map((proposal) => {
-          const stale = proposal.base_revision_id !== props.currentRevisionId
+          const stale = Boolean(proposal.working_revision_id) && proposal.working_revision_id !== props.currentRevisionId
           const isPlan = Boolean(proposal.plan)
           const isPlanRevision = proposal.plan?.kind === 'revision'
-          const selectedPlanPartIds = (proposal.plan?.parts ?? []).filter((part) => selected[`${proposal.id}:part:${part.id}`] !== false).map((part) => part.id)
-          const selectedIds = proposal.operations.filter((operation) => selected[`${proposal.id}:${operation.id}`] !== false).map((operation) => operation.id)
+          const selectedPlanPartIds = proposal.plan ? selectedVideoProposalChangeIDs(proposal, selected) : []
+          const selectedIds = proposal.plan ? [] : selectedVideoProposalChangeIDs(proposal, selected)
           const planOperations = proposal.operations.filter((operation) => (operation.type === 'add_clip' || operation.type === 'update_clip') && operation.clip?.source_kind === 'text')
           const supportingOperations = proposal.operations.filter((operation) => !planOperations.includes(operation))
           const changedClipOperations = proposal.operations.filter((operation) => (operation.type === 'add_clip' || operation.type === 'update_clip') && operation.clip)
           const acceptedById = new Map((props.acceptedClips ?? []).map((clip) => [String(clip.id ?? ''), clip]))
           const rejectionDraft = `I rejected “${proposal.title || (isPlan ? 'the video plan' : 'the edit proposal')}”. Preserve the stable part IDs and current accepted visuals. Create new ready replacement visuals only for the parts I name, then return one plan.kind=revision proposal. Requested changes: `
-          return <article key={proposal.id} className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-            <div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-400">Proposed · not accepted</p><h3 className="mt-1 text-sm font-medium">{proposal.title || (isPlan ? 'Proposed video plan' : planOperations.length > 0 ? 'Proposed script + still plan' : 'Suggested timeline edits')}</h3><p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{proposal.rationale || 'Review each typed operation before it becomes a revision.'}</p></div><span className={`shrink-0 text-[10px] ${stale ? 'text-amber-400' : 'text-[var(--app-primary)]'}`}>{stale ? 'stale base' : `based on accepted r${proposal.base_revision_number}`}</span></div>
+          const previewing = proposal.id === previewProposalId
+          return <article key={proposal.id} className={`border bg-[var(--app-bg)] p-3 ${previewing ? 'border-amber-300 ring-1 ring-amber-300/40' : 'border-[var(--app-border)]'}`}>
+            <div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-400">Working · visible now</p><h3 className="mt-1 text-sm font-medium">{proposal.title || (isPlan ? 'Video plan change' : planOperations.length > 0 ? 'Script + still change' : 'Timeline changes')}</h3><p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{proposal.rationale || 'This change is already in the working player. Confirmation makes your selected sections the kept checkpoint.'}</p></div><span className={`shrink-0 text-[10px] ${stale ? 'text-amber-400' : 'text-[var(--app-primary)]'}`}>{stale ? 'older working change' : `working r${proposal.working_revision_number ?? proposal.base_revision_number} · kept from r${proposal.base_revision_number}`}</span></div>
             {proposal.plan ? (
               <div className="mt-4" aria-label="Atomic video plan proposal">
-                <div className="mb-3 flex items-center justify-between gap-3"><div><p className="text-xs font-semibold text-[var(--app-text)]">{isPlanRevision ? 'Visual revision' : 'One visual plan'} · {proposal.plan.parts.length} parts</p><p className="mt-1 text-[11px] text-[var(--app-text-muted)]">{isPlanRevision ? 'Select the replacement slides to accept. Unselected accepted slides remain unchanged.' : 'Review every actual slide, then accept the complete initial plan.'}</p></div><span className="text-[10px] uppercase tracking-[0.12em] text-amber-400">Actual visuals attached</span></div>
+                <div className="mb-3 flex items-center justify-between gap-3"><div><p className="text-xs font-semibold text-[var(--app-text)]">{isPlanRevision ? 'Changed sections' : 'Working visual plan'} · {proposal.plan.parts.length} parts</p><p className="mt-1 text-[11px] text-[var(--app-text-muted)]">{isPlanRevision ? 'All replacements are kept by default. Uncheck any section to restore its prior version when you confirm.' : 'The complete plan is already visible. Confirm it to establish the first kept checkpoint.'}</p></div><span className="text-[10px] uppercase tracking-[0.12em] text-amber-400">Visible in player</span></div>
                 {proposal.plan.summary ? <p className="mb-3 border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs leading-5 text-[var(--app-text-muted)]">{proposal.plan.summary}</p> : null}
                 <ol className="grid max-h-[34rem] gap-3 overflow-y-auto pr-1 xl:grid-cols-2">
                   {proposal.plan.parts.map((part, index) => <li key={part.id} className="border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
                     <div className="flex items-center justify-between gap-3"><span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-primary)]">Part {index + 1}</span><span className="font-mono text-[10px] text-[var(--app-text-subtle)]">{part.id}</span></div>
-                    {isPlanRevision ? <label className="mt-2 flex items-center gap-2 text-[11px] text-[var(--app-text-muted)]"><input type="checkbox" checked={selected[`${proposal.id}:part:${part.id}`] !== false} onChange={(event) => setSelected((current) => ({ ...current, [`${proposal.id}:part:${part.id}`]: event.target.checked }))} />Accept this replacement</label> : null}
-                    {isPlanRevision && props.acceptedPlan?.parts.some((acceptedPart) => acceptedPart.id === part.id) ? <div className="mt-3 grid gap-3 md:grid-cols-2"><div><p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Accepted</p>{videoPlanPartArtifact(props.acceptedPlan.parts.find((acceptedPart) => acceptedPart.id === part.id)!) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(props.acceptedPlan.parts.find((acceptedPart) => acceptedPart.id === part.id)!)!} presentation="wide" /> : null}</div><div><p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-amber-300">Proposed replacement</p>{videoPlanPartArtifact(part) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(part)!} presentation="wide" /> : null}</div></div> : <div className="mt-3">{videoPlanPartArtifact(part) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(part)!} presentation="wide" /> : <div className="grid aspect-video place-items-center border border-red-400/40 bg-red-950/20 px-4 text-center text-xs text-red-300">This legacy proposal has no attached visual and cannot satisfy the visual-plan contract.</div>}</div>}
+                    {isPlanRevision ? <label className="mt-2 flex items-center gap-2 text-[11px] text-[var(--app-text-muted)]"><input type="checkbox" checked={selected[`${proposal.id}:part:${part.id}`] !== false} onChange={(event) => setSelected((current) => ({ ...current, [`${proposal.id}:part:${part.id}`]: event.target.checked }))} />{selected[`${proposal.id}:part:${part.id}`] !== false ? 'Keep changed section' : 'Restore prior section'}</label> : null}
+                    {isPlanRevision && props.acceptedPlan?.parts.some((acceptedPart) => acceptedPart.id === part.id) ? <div className="mt-3 grid gap-3 md:grid-cols-2"><div><p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Prior kept section</p>{videoPlanPartArtifact(props.acceptedPlan.parts.find((acceptedPart) => acceptedPart.id === part.id)!) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(props.acceptedPlan.parts.find((acceptedPart) => acceptedPart.id === part.id)!)!} presentation="wide" /> : null}</div><div><p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-amber-300">Working replacement</p>{videoPlanPartArtifact(part) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(part)!} presentation="wide" /> : null}</div></div> : <div className="mt-3">{videoPlanPartArtifact(part) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(part)!} presentation="wide" /> : <div className="grid aspect-video place-items-center border border-red-400/40 bg-red-950/20 px-4 text-center text-xs text-red-300">This legacy proposal has no attached visual and cannot satisfy the visual-plan contract.</div>}</div>}
                     <h4 className="mt-3 text-sm font-semibold text-[var(--app-text)]">{part.title}</h4>
                     <p className="mt-1 text-[10px] tabular-nums text-[var(--app-primary)]">{Math.round(part.duration_ms / 100) / 10}s</p>
                     <dl className="mt-3 grid gap-2 text-xs leading-5">
@@ -395,9 +422,10 @@ export function VideoProposalReview(props: {
               </details>
             ) : null}
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button className="h-8 px-3 text-xs" disabled={busy || stale || (isPlanRevision ? selectedPlanPartIds.length === 0 : !isPlan && selectedIds.length === 0)} onClick={() => void (async () => { setBusy(true); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: isPlanRevision ? selectedPlanPartIds : isPlan ? [] : selectedIds }); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) } })()}><Check size={13} />{isPlanRevision ? 'Accept selected slides' : isPlan ? 'Accept visual plan' : 'Accept selected'}</Button>
+              <Button variant={previewing ? 'outline' : 'ghost'} className="h-8 px-3 text-xs" disabled={busy || stale} aria-pressed={previewing} onClick={() => setPreviewProposalId(proposal.id)}>{previewing ? 'Showing working change' : 'Show this change'}</Button>
+              <Button className="h-8 px-3 text-xs" disabled={busy || stale || (isPlanRevision ? selectedPlanPartIds.length === 0 : !isPlan && selectedIds.length === 0)} onClick={() => void (async () => { setBusy(true); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: isPlanRevision ? selectedPlanPartIds : isPlan ? [] : selectedIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewProposalId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) } })()}><Check size={13} />{isPlanRevision ? 'Confirm selected sections' : isPlan ? 'Confirm working plan' : 'Confirm selected changes'}</Button>
               {!isPlan ? <Button variant="outline" className="h-8 px-3 text-xs" disabled={busy || stale} onClick={() => { for (const operation of proposal.operations) setSelected((current) => ({ ...current, [`${proposal.id}:${operation.id}`]: true })) }}>Select all</Button> : null}
-              <Button variant="ghost" className="h-8 px-3 text-xs" disabled={busy} onClick={() => void (async () => { setBusy(true); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, rejectionDraft); await props.onFeedback(rejectionDraft); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) } })()}><X size={13} />Reject and revise</Button>
+              <Button variant="ghost" className="h-8 px-3 text-xs" disabled={busy} onClick={() => void (async () => { setBusy(true); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, rejectionDraft); if (previewProposalId === proposal.id) setPreviewProposalId(null); await props.onFeedback(rejectionDraft); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) } })()}><X size={13} />Restore prior version and ask again</Button>
             </div>
           </article>
         })}

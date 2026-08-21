@@ -549,7 +549,7 @@ func TestManageVideoStudioCreatesAdditionalProjectWithExplicitID(t *testing.T) {
 	}
 }
 
-func TestManageVideoStudioCreatesProposalWithoutAdvancingRevision(t *testing.T) {
+func TestManageVideoStudioCreatesVisibleWorkingRevision(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-proposal.pebble"))
 	if err != nil {
 		t.Fatal(err)
@@ -585,12 +585,12 @@ func TestManageVideoStudioCreatesProposalWithoutAdvancingRevision(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"affected_ranges":[{"start_ms":0,"end_ms":500}]`) {
+	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"working_revision_id":"vrev_`) || !strings.Contains(payload, `"change_notice":"A new change was added`) || !strings.Contains(payload, `"affected_ranges":[{"start_ms":0,"end_ms":500}]`) {
 		t.Fatalf("proposal payload=%s", payload)
 	}
 	project, ok, err := runtime.videoProjects.GetProject(principal, "studio", create.ProjectID)
-	if err != nil || !ok || project.CurrentRevisionID != create.RevisionID || project.RevisionCount != 1 {
-		t.Fatalf("proposal advanced project: %+v ok=%v err=%v", project, ok, err)
+	if err != nil || !ok || project.CurrentRevisionID == create.RevisionID || project.ConfirmedRevisionID != create.RevisionID || project.RevisionCount != 2 {
+		t.Fatalf("proposal did not preserve the confirmed cut while advancing the visible working revision: %+v ok=%v err=%v", project, ok, err)
 	}
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "render", Name: "manage_video", Arguments: `{"action":"start_render","project_id":"` + create.ProjectID + `"}`})
 	if err == nil || !strings.Contains(err.Error(), "cannot start final render") {
@@ -704,8 +704,8 @@ func TestManageVideoStudioCreatesThreePartInitialPlanWithoutInitialTimeline(t *t
 		t.Fatalf("atomic plan payload=%s", payload)
 	}
 	project, ok, err := runtime.videoProjects.GetProject(principal, "studio", create.ProjectID)
-	if err != nil || !ok || project.CurrentRevisionID != create.RevisionID || project.RevisionCount != 1 {
-		t.Fatalf("pending plan advanced project: %+v ok=%v err=%v", project, ok, err)
+	if err != nil || !ok || project.CurrentRevisionID == create.RevisionID || project.ConfirmedRevisionID != create.RevisionID || project.RevisionCount != 2 {
+		t.Fatalf("pending plan did not expose a working revision while preserving its confirmed checkpoint: %+v ok=%v err=%v", project, ok, err)
 	}
 	if project.Title != "How to make dubstep music" {
 		t.Fatalf("unexpected project title: %+v", project)

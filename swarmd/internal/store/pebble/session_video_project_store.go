@@ -162,24 +162,26 @@ type VideoProjectTimeline struct {
 
 // VideoProjectSnapshot represents a durable session-owned video project.
 type VideoProjectSnapshot struct {
-	SchemaVersion         int            `json:"schema_version"`
-	ID                    string         `json:"id"`
-	AccountScopeID        string         `json:"account_scope_id"`
-	UserID                string         `json:"user_id,omitempty"`
-	WorkspaceID           string         `json:"workspace_id,omitempty"`
-	SessionID             string         `json:"session_id"`
-	Title                 string         `json:"title"`
-	Description           string         `json:"description,omitempty"`
-	OutputPreset          string         `json:"output_preset"`
-	CurrentRevisionID     string         `json:"current_revision_id,omitempty"`
-	CurrentRevisionNumber int            `json:"current_revision_number,omitempty"`
-	RevisionCount         int            `json:"revision_count"`
-	ActiveRenderJobID     string         `json:"active_render_job_id,omitempty"`
-	Metadata              map[string]any `json:"metadata,omitempty"`
-	ProjectKind           string         `json:"project_kind,omitempty"`
-	CreatedAt             int64          `json:"created_at"`
-	UpdatedAt             int64          `json:"updated_at"`
-	EventSeq              uint64         `json:"event_seq,omitempty"`
+	SchemaVersion           int            `json:"schema_version"`
+	ID                      string         `json:"id"`
+	AccountScopeID          string         `json:"account_scope_id"`
+	UserID                  string         `json:"user_id,omitempty"`
+	WorkspaceID             string         `json:"workspace_id,omitempty"`
+	SessionID               string         `json:"session_id"`
+	Title                   string         `json:"title"`
+	Description             string         `json:"description,omitempty"`
+	OutputPreset            string         `json:"output_preset"`
+	CurrentRevisionID       string         `json:"current_revision_id,omitempty"`
+	CurrentRevisionNumber   int            `json:"current_revision_number,omitempty"`
+	ConfirmedRevisionID     string         `json:"confirmed_revision_id,omitempty"`
+	ConfirmedRevisionNumber int            `json:"confirmed_revision_number,omitempty"`
+	RevisionCount           int            `json:"revision_count"`
+	ActiveRenderJobID       string         `json:"active_render_job_id,omitempty"`
+	Metadata                map[string]any `json:"metadata,omitempty"`
+	ProjectKind             string         `json:"project_kind,omitempty"`
+	CreatedAt               int64          `json:"created_at"`
+	UpdatedAt               int64          `json:"updated_at"`
+	EventSeq                uint64         `json:"event_seq,omitempty"`
 }
 
 // VideoProjectRevisionSnapshot is an immutable revision of a video project timeline.
@@ -195,6 +197,7 @@ type VideoProjectRevisionSnapshot struct {
 	ParentRevisionID       string               `json:"parent_revision_id,omitempty"`
 	RestoredFromRevisionID string               `json:"restored_from_revision_id,omitempty"`
 	AcceptedProposalID     string               `json:"accepted_proposal_id,omitempty"`
+	OriginProposalID       string               `json:"origin_proposal_id,omitempty"`
 	Description            string               `json:"description,omitempty"`
 	ChangeSummary          string               `json:"change_summary,omitempty"`
 	Timeline               VideoProjectTimeline `json:"timeline"`
@@ -248,26 +251,28 @@ type VideoTimelineRange struct {
 
 // VideoEditProposalSnapshot is durable review state bound to one exact immutable base revision.
 type VideoEditProposalSnapshot struct {
-	SchemaVersion        int                  `json:"schema_version"`
-	ID                   string               `json:"id"`
-	ProjectID            string               `json:"project_id"`
-	BaseRevisionID       string               `json:"base_revision_id"`
-	BaseRevisionNumber   int                  `json:"base_revision_number"`
-	AccountScopeID       string               `json:"account_scope_id"`
-	UserID               string               `json:"user_id,omitempty"`
-	SessionID            string               `json:"session_id"`
-	Status               string               `json:"status"`
-	Title                string               `json:"title,omitempty"`
-	Rationale            string               `json:"rationale,omitempty"`
-	Plan                 *VideoPlanProposal   `json:"plan,omitempty"`
-	Operations           []VideoEditOperation `json:"operations,omitempty"`
-	AffectedRanges       []VideoTimelineRange `json:"affected_ranges,omitempty"`
-	RejectionFeedback    string               `json:"rejection_feedback,omitempty"`
-	AcceptedOperationIDs []string             `json:"accepted_operation_ids,omitempty"`
-	AcceptedRevisionID   string               `json:"accepted_revision_id,omitempty"`
-	CreatedAt            int64                `json:"created_at"`
-	UpdatedAt            int64                `json:"updated_at"`
-	EventSeq             uint64               `json:"event_seq,omitempty"`
+	SchemaVersion         int                  `json:"schema_version"`
+	ID                    string               `json:"id"`
+	ProjectID             string               `json:"project_id"`
+	BaseRevisionID        string               `json:"base_revision_id"`
+	BaseRevisionNumber    int                  `json:"base_revision_number"`
+	AccountScopeID        string               `json:"account_scope_id"`
+	UserID                string               `json:"user_id,omitempty"`
+	SessionID             string               `json:"session_id"`
+	Status                string               `json:"status"`
+	Title                 string               `json:"title,omitempty"`
+	Rationale             string               `json:"rationale,omitempty"`
+	Plan                  *VideoPlanProposal   `json:"plan,omitempty"`
+	Operations            []VideoEditOperation `json:"operations,omitempty"`
+	AffectedRanges        []VideoTimelineRange `json:"affected_ranges,omitempty"`
+	RejectionFeedback     string               `json:"rejection_feedback,omitempty"`
+	AcceptedOperationIDs  []string             `json:"accepted_operation_ids,omitempty"`
+	AcceptedRevisionID    string               `json:"accepted_revision_id,omitempty"`
+	WorkingRevisionID     string               `json:"working_revision_id,omitempty"`
+	WorkingRevisionNumber int                  `json:"working_revision_number,omitempty"`
+	CreatedAt             int64                `json:"created_at"`
+	UpdatedAt             int64                `json:"updated_at"`
+	EventSeq              uint64               `json:"event_seq,omitempty"`
 }
 
 // VideoRenderJobSnapshot tracks the lifecycle and output of a render operation.
@@ -354,6 +359,10 @@ func VideoProjectRevisionPrefix(accountScopeID, sessionID, projectID string) str
 	return fmt.Sprintf("v3/video_project/revision/%s/%s/%s/", keyPart(accountScopeID), keyPart(sessionID), keyPart(projectID))
 }
 
+func VideoProjectRevisionByNumberPrefix(accountScopeID, sessionID, projectID string) string {
+	return fmt.Sprintf("v3/video_project/revision_by_num/%s/%s/%s/", keyPart(accountScopeID), keyPart(sessionID), keyPart(projectID))
+}
+
 func KeyVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) string {
 	return fmt.Sprintf("v3/video_project/edit_proposal/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(sessionID), keyPart(projectID), keyPart(proposalID))
 }
@@ -410,6 +419,7 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 		p.OutputPreset = normalizeVideoPreset(p.OutputPreset)
 		p.ProjectKind = strings.ToLower(strings.TrimSpace(p.ProjectKind))
 		p.CurrentRevisionID = strings.TrimSpace(p.CurrentRevisionID)
+		p.ConfirmedRevisionID = strings.TrimSpace(p.ConfirmedRevisionID)
 		p.ActiveRenderJobID = strings.TrimSpace(p.ActiveRenderJobID)
 	}
 	if input.VideoProject.Revision != nil {
@@ -423,6 +433,7 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 		r.ParentRevisionID = strings.TrimSpace(r.ParentRevisionID)
 		r.RestoredFromRevisionID = strings.TrimSpace(r.RestoredFromRevisionID)
 		r.AcceptedProposalID = strings.TrimSpace(r.AcceptedProposalID)
+		r.OriginProposalID = strings.TrimSpace(r.OriginProposalID)
 		r.Description = strings.TrimSpace(r.Description)
 		r.ChangeSummary = strings.TrimSpace(r.ChangeSummary)
 		r.AuthorPrincipal = strings.TrimSpace(r.AuthorPrincipal)
@@ -441,6 +452,7 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 		p.Rationale = strings.TrimSpace(p.Rationale)
 		p.RejectionFeedback = strings.TrimSpace(p.RejectionFeedback)
 		p.AcceptedRevisionID = strings.TrimSpace(p.AcceptedRevisionID)
+		p.WorkingRevisionID = strings.TrimSpace(p.WorkingRevisionID)
 		if p.Plan != nil {
 			p.Plan.Kind = strings.ToLower(strings.TrimSpace(p.Plan.Kind))
 			p.Plan.Summary = strings.TrimSpace(p.Plan.Summary)
@@ -1038,6 +1050,47 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 	return timeline
 }
 
+func videoProposalSelection(proposal VideoEditProposalSnapshot) []string {
+	if proposal.Plan != nil {
+		if proposal.Plan.Kind == VideoPlanKindInitial {
+			return nil
+		}
+		selected := make([]string, 0, len(proposal.Plan.Parts))
+		for _, part := range proposal.Plan.Parts {
+			selected = append(selected, part.ID)
+		}
+		return selected
+	}
+	selected := make([]string, 0, len(proposal.Operations))
+	for _, operation := range proposal.Operations {
+		selected = append(selected, operation.ID)
+	}
+	return selected
+}
+
+func applyVideoProposal(base VideoProjectTimeline, proposal VideoEditProposalSnapshot, selected []string) (VideoProjectTimeline, error) {
+	if proposal.Plan == nil {
+		return applyVideoEditOperations(base, proposal.Operations, selected)
+	}
+	acceptedPlan, err := acceptedVideoPlanFromTimeline(base)
+	if err != nil {
+		return VideoProjectTimeline{}, err
+	}
+	mergedPlan, err := mergeAcceptedVideoPlan(acceptedPlan, *proposal.Plan, selected)
+	if err != nil {
+		return VideoProjectTimeline{}, err
+	}
+	timeline := visualVideoPlanTimeline(base, mergedPlan)
+	metadata := make(map[string]any, len(timeline.Metadata)+2)
+	for key, value := range timeline.Metadata {
+		metadata[key] = value
+	}
+	metadata["accepted_video_plan"] = mergedPlan
+	metadata["accepted_video_plan_proposal_id"] = proposal.ID
+	timeline.Metadata = metadata
+	return timeline, nil
+}
+
 func validateVideoEditOperations(operations []VideoEditOperation) error {
 	if len(operations) == 0 || len(operations) > MaxVideoEditProposalOperations {
 		return errors.New("video edit proposal operations must be non-empty and bounded")
@@ -1235,6 +1288,8 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			}
 			p.CurrentRevisionID = r.ID
 			p.CurrentRevisionNumber = 1
+			p.ConfirmedRevisionID = r.ID
+			p.ConfirmedRevisionNumber = 1
 			p.RevisionCount = 1
 			rev = &r
 		}
@@ -1310,6 +1365,8 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 
 		project.CurrentRevisionID = incomingRev.ID
 		project.CurrentRevisionNumber = nextRevNumber
+		project.ConfirmedRevisionID = incomingRev.ID
+		project.ConfirmedRevisionNumber = nextRevNumber
 		project.RevisionCount = nextRevNumber
 		project.UpdatedAt = now
 
@@ -1385,7 +1442,38 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		proposal.Status = VideoEditProposalStatusPending
 		proposal.CreatedAt = now
 		proposal.UpdatedAt = now
-		return preparedV3VideoProjectMutation{EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: proposal.BaseRevisionID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
+
+		workingTimeline, err := applyVideoProposal(base.Timeline, proposal, videoProposalSelection(proposal))
+		if err != nil {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("build video working revision: %w", err)
+		}
+		if err := validateVideoTimeline(workingTimeline); err != nil {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video working revision validation failed: %w", err)
+		}
+		if project.RevisionCount >= MaxVideoProjectRevisions {
+			return preparedV3VideoProjectMutation{}, errors.New("maximum revisions per video project reached")
+		}
+		if project.ConfirmedRevisionID == "" {
+			project.ConfirmedRevisionID = project.CurrentRevisionID
+			project.ConfirmedRevisionNumber = project.CurrentRevisionNumber
+		}
+		workingRevision := VideoProjectRevisionSnapshot{
+			SchemaVersion: VideoProjectRevisionSchemaVersion, ID: generateDeterministicOrRandomID("vrev"), ProjectID: project.ID,
+			RevisionNumber: project.RevisionCount + 1, AccountScopeID: input.AccountScopeID, UserID: input.UserID,
+			WorkspaceID: project.WorkspaceID, SessionID: input.SessionID, ParentRevisionID: project.CurrentRevisionID,
+			OriginProposalID: proposal.ID, Description: proposal.Rationale, ChangeSummary: proposal.Title,
+			Timeline: workingTimeline, AuthorPrincipal: "swarm", CreatedAt: now,
+		}
+		proposal.WorkingRevisionID = workingRevision.ID
+		proposal.WorkingRevisionNumber = workingRevision.RevisionNumber
+		project.CurrentRevisionID = workingRevision.ID
+		project.CurrentRevisionNumber = workingRevision.RevisionNumber
+		project.RevisionCount = workingRevision.RevisionNumber
+		project.UpdatedAt = now
+		return preparedV3VideoProjectMutation{
+			Project: &project, Revision: &workingRevision, EditProposal: &proposal,
+			Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: workingRevision.ID, RevisionNumber: workingRevision.RevisionNumber, CurrentRevisionID: workingRevision.ID, ProposalID: proposal.ID, Status: proposal.Status},
+		}, nil
 
 	case V3SessionMutationAcceptVideoEditProposal:
 		incoming := input.VideoProject.EditProposal
@@ -1409,36 +1497,16 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if project.UserID != "" && project.UserID != input.UserID {
 			return preparedV3VideoProjectMutation{}, errors.New("video project ownership does not match authenticated principal")
 		}
-		if project.CurrentRevisionID != proposal.BaseRevisionID || project.CurrentRevisionNumber != proposal.BaseRevisionNumber {
-			return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: base revision %s is not current revision %s", proposal.BaseRevisionID, project.CurrentRevisionID)
+		if project.CurrentRevisionID != proposal.WorkingRevisionID || project.CurrentRevisionNumber != proposal.WorkingRevisionNumber {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: working revision %s is not current revision %s", proposal.WorkingRevisionID, project.CurrentRevisionID)
 		}
 		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID)
 		if err != nil || !ok {
 			return preparedV3VideoProjectMutation{}, errors.New("proposal base revision not found")
 		}
-		timeline := base.Timeline
-		if proposal.Plan != nil {
-			acceptedPlan, planErr := acceptedVideoPlanFromTimeline(base.Timeline)
-			if planErr != nil {
-				return preparedV3VideoProjectMutation{}, planErr
-			}
-			mergedPlan, mergeErr := mergeAcceptedVideoPlan(acceptedPlan, *proposal.Plan, input.VideoProject.SelectedOperationIDs)
-			if mergeErr != nil {
-				return preparedV3VideoProjectMutation{}, mergeErr
-			}
-			timeline = visualVideoPlanTimeline(base.Timeline, mergedPlan)
-			metadata := make(map[string]any, len(timeline.Metadata)+2)
-			for key, value := range timeline.Metadata {
-				metadata[key] = value
-			}
-			metadata["accepted_video_plan"] = mergedPlan
-			metadata["accepted_video_plan_proposal_id"] = proposal.ID
-			timeline.Metadata = metadata
-		} else {
-			timeline, err = applyVideoEditOperations(base.Timeline, proposal.Operations, input.VideoProject.SelectedOperationIDs)
-			if err != nil {
-				return preparedV3VideoProjectMutation{}, err
-			}
+		timeline, err := applyVideoProposal(base.Timeline, proposal, input.VideoProject.SelectedOperationIDs)
+		if err != nil {
+			return preparedV3VideoProjectMutation{}, err
 		}
 		if err := validateVideoTimeline(timeline); err != nil {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("accepted video timeline validation failed: %w", err)
@@ -1448,7 +1516,7 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		revision.UserID = input.UserID
 		revision.SessionID = input.SessionID
 		revision.ProjectID = proposal.ProjectID
-		revision.ParentRevisionID = proposal.BaseRevisionID
+		revision.ParentRevisionID = project.CurrentRevisionID
 		revision.AcceptedProposalID = proposal.ID
 		revision.Timeline = timeline
 		revision.RevisionNumber = project.RevisionCount + 1
@@ -1459,6 +1527,8 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		revision.CreatedAt = now
 		project.CurrentRevisionID = revision.ID
 		project.CurrentRevisionNumber = revision.RevisionNumber
+		project.ConfirmedRevisionID = revision.ID
+		project.ConfirmedRevisionNumber = revision.RevisionNumber
 		project.RevisionCount = revision.RevisionNumber
 		project.UpdatedAt = now
 		proposal.Status = VideoEditProposalStatusAccepted
@@ -1482,10 +1552,20 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if proposal.Status != VideoEditProposalStatusPending {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal is %s", proposal.Status)
 		}
+		project, ok, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, proposal.ProjectID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video project not found")
+		}
+		if project.CurrentRevisionID != proposal.WorkingRevisionID {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: working revision %s is not current revision %s", proposal.WorkingRevisionID, project.CurrentRevisionID)
+		}
 		proposal.Status = VideoEditProposalStatusRejected
 		proposal.RejectionFeedback = incoming.RejectionFeedback
 		proposal.UpdatedAt = now
-		return preparedV3VideoProjectMutation{EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: proposal.BaseRevisionID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
+		project.CurrentRevisionID = proposal.BaseRevisionID
+		project.CurrentRevisionNumber = proposal.BaseRevisionNumber
+		project.UpdatedAt = now
+		return preparedV3VideoProjectMutation{Project: &project, EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: proposal.BaseRevisionID, RevisionNumber: proposal.BaseRevisionNumber, CurrentRevisionID: proposal.BaseRevisionID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
 
 	case V3SessionMutationCreateVideoRenderJob:
 		incomingJob := *input.VideoProject.RenderJob
@@ -2121,9 +2201,9 @@ func (s *SessionStore) ListVideoProjectRevisions(accountScopeID, sessionID, proj
 	if limit <= 0 || limit > MaxVideoProjectRevisions {
 		limit = MaxVideoProjectRevisions
 	}
-	prefix := VideoProjectRevisionPrefix(accountScopeID, sessionID, projectID)
-	revisions := make([]VideoProjectRevisionSnapshot, 0)
-	err := s.store.IteratePrefix(prefix, limit+1, func(_ string, value []byte) error {
+	prefix := VideoProjectRevisionByNumberPrefix(accountScopeID, sessionID, projectID)
+	revisions := make([]VideoProjectRevisionSnapshot, 0, limit)
+	err := s.store.IteratePrefix(prefix, limit, func(_ string, value []byte) error {
 		var r VideoProjectRevisionSnapshot
 		if err := json.Unmarshal(value, &r); err != nil {
 			return err
@@ -2137,9 +2217,6 @@ func (s *SessionStore) ListVideoProjectRevisions(accountScopeID, sessionID, proj
 	sort.Slice(revisions, func(i, j int) bool {
 		return revisions[i].RevisionNumber < revisions[j].RevisionNumber
 	})
-	if len(revisions) > limit {
-		revisions = revisions[:limit]
-	}
 	return revisions, nil
 }
 

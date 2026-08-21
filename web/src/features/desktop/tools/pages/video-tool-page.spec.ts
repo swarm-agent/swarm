@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, transitionLabel, videoProposalFocusClipId, videoProposalProjectionSequence, videoStepEditRequest, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, selectedVideoProposalChangeIDs, transitionLabel, videoProposalFocusClipId, videoProposalProjectionSequence, videoStepEditRequest, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
@@ -13,6 +13,8 @@ import {
   listVideoProjects,
   layoutTimelineSegments,
   projectTimelineToTimelineSegments,
+  replaceCachedImageMedia,
+  replaceCachedVideoMedia,
   resolveVideoStudioSessionRoute,
   serializeVideoClipForRequest,
   timelineSegmentsToProjectTimeline,
@@ -72,6 +74,29 @@ const videoStudioSelfRoute: WorkspaceOverviewTopologyRoute = {
   createdAt: 1,
   updatedAt: 1,
 }
+
+test('Video Studio replaces cached image media when a stable clip source changes', () => {
+  const first = { src: '', decoding: 'auto' } as unknown as HTMLImageElement
+  const second = { src: '', decoding: 'auto' } as unknown as HTMLImageElement
+  const cache = new Map()
+  assert.equal(replaceCachedImageMedia(cache, 'part-2', '/old.png', () => first).replaced, false)
+  const replacement = replaceCachedImageMedia(cache, 'part-2', '/new.png', () => second)
+  assert.equal(replacement.replaced, true)
+  assert.equal(replacement.entry.element, second)
+  assert.equal(replacement.entry.src, '/new.png')
+})
+
+test('Video Studio disposes cached video media when a stable clip source changes', () => {
+  const calls: string[] = []
+  const first = { pause: () => calls.push('pause'), removeAttribute: (name: string) => calls.push(`remove:${name}`), load: () => calls.push('load') } as unknown as HTMLVideoElement
+  const second = {} as HTMLVideoElement
+  const cache = new Map()
+  replaceCachedVideoMedia(cache, 'part-2', '/old.mp4', () => first)
+  const replacement = replaceCachedVideoMedia(cache, 'part-2', '/new.mp4', () => second)
+  assert.equal(replacement.replaced, true)
+  assert.equal(replacement.entry.element, second)
+  assert.deepEqual(calls, ['pause', 'remove:src', 'load'])
+})
 
 test('Video Studio reads an accepted visual plan from canonical revision metadata', () => {
   const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
@@ -700,6 +725,17 @@ test('projectTimelineToTimelineSegments resolves durable source refs back to Vid
   assert.equal(segment.id, 'segment-intro')
   assert.equal(segment.clipId, 'clip-local-id')
   assert.equal(segment.src, '/v1/workspace/video/threads/session-1/clips/media?clip_id=clip-local-id')
+})
+
+test('Video Studio keeps all changed sections by default and restores unchecked sections', () => {
+  const proposal = {
+    id: 'change-1', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [{ id: 'hook', title: 'Hook', duration_ms: 1000 }, { id: 'close', title: 'Close', duration_ms: 1000 }] },
+  } satisfies VideoEditProposalWire
+
+  assert.deepEqual(selectedVideoProposalChangeIDs(proposal, {}), ['hook', 'close'])
+  assert.deepEqual(selectedVideoProposalChangeIDs(proposal, { 'change-1:part:close': false }), ['hook'])
 })
 
 test('Video Studio exposes the complete launch transition vocabulary', () => {

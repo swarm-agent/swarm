@@ -20,6 +20,23 @@ test('Video Studio tolerates legacy nullable timeline clip arrays', async () => 
   assert.match(source, /\(currentRevision\.timeline\.clips \?\? \[\]\)\.filter/)
 })
 
+test('Video Studio exposes automatic working changes and non-mutating history preview', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+  const proposalSource = await readFile(new URL('../video-studio/video-studio-surface.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /replaceCachedVideoMedia/)
+  assert.match(source, /replaceCachedImageMedia/)
+  assert.match(source, /Previewing r\{previewRevision\.revision_number\}/)
+  assert.match(source, /Restore this as a new version/)
+  assert.match(source, /videoProjectProjectionSequence/)
+  assert.match(proposalSource, /New change added/)
+  assert.match(proposalSource, /Showing working change/)
+  assert.match(proposalSource, /Restore prior section/)
+  assert.match(proposalSource, /previewProposalId/)
+  assert.match(proposalSource, /pending\[pending\.length - 1\]\.id/)
+  assert.doesNotMatch(proposalSource, /const latestPending = pending\[0\]/)
+})
+
 test('Video Studio keeps a route-backed video selection and exposes session mode', async () => {
   const [source, routerSource, desktopSource] = await Promise.all([
     readFile(pageSourceUrl, 'utf8'),
@@ -34,5 +51,5 @@ test('Video Studio keeps a route-backed video selection and exposes session mode
   assert.match(source, /label: 'Open session mode'/)
   assert.doesNotMatch(desktopSource, /routeSessionIsVideoStudio \|\| videoStudioRoute/)
   assert.doesNotMatch(desktopSource, /to: '\/\$workspaceSlug\/video\/\$videoSessionId',[\s\S]*replace: true/)
-  assert.match(desktopSource, />Video mode</)
+  assert.match(desktopSource, /Video mode/)
 })

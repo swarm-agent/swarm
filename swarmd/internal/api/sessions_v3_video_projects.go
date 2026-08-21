@@ -283,6 +283,15 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				res["current_revision"] = rev
 			}
 		}
+		confirmedRevisionID := project.ConfirmedRevisionID
+		if confirmedRevisionID == "" {
+			confirmedRevisionID = project.CurrentRevisionID
+		}
+		if confirmedRevisionID != "" {
+			if rev, revOK, revErr := s.videoProjects.GetRevision(principal, sessionID, projectID, confirmedRevisionID); revErr == nil && revOK {
+				res["confirmed_revision"] = rev
+			}
+		}
 		writeJSON(w, http.StatusOK, res)
 		return
 	}
@@ -564,6 +573,15 @@ func (s *Server) handleSessionV3PrimaryVideoProject(w http.ResponseWriter, r *ht
 			if project.CurrentRevisionID != "" {
 				if rev, found, getErr := s.videoProjects.GetRevision(principal, sessionID, project.ID, project.CurrentRevisionID); getErr == nil && found {
 					res["current_revision"] = rev
+				}
+			}
+			confirmedRevisionID := project.ConfirmedRevisionID
+			if confirmedRevisionID == "" {
+				confirmedRevisionID = project.CurrentRevisionID
+			}
+			if confirmedRevisionID != "" {
+				if rev, found, getErr := s.videoProjects.GetRevision(principal, sessionID, project.ID, confirmedRevisionID); getErr == nil && found {
+					res["confirmed_revision"] = rev
 				}
 			}
 			writeJSON(w, http.StatusOK, res)

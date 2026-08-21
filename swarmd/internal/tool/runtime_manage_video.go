@@ -427,6 +427,15 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 					response["current_revision"] = safeVideoProjectRevision(&rev)
 				}
 			}
+			confirmedRevisionID := project.ConfirmedRevisionID
+			if confirmedRevisionID == "" {
+				confirmedRevisionID = project.CurrentRevisionID
+			}
+			if confirmedRevisionID != "" {
+				if rev, revOK, revErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, projectID, confirmedRevisionID); revErr == nil && revOK {
+					response["confirmed_revision"] = safeVideoProjectRevision(&rev)
+				}
+			}
 			if project.ActiveRenderJobID != "" {
 				if job, jobOK, jobErr := r.videoProjects.GetRenderJob(scope.Principal, projectSessionID, project.ActiveRenderJobID); jobErr == nil && jobOK {
 					response["active_render_job"] = safeVideoRenderJob(job)
@@ -540,6 +549,8 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			response["action"] = requestedAction
 		}
 		response["proposal_status"], response["stale_base"] = proposal.Status, false
+		response["working_revision_id"], response["working_revision_number"] = proposal.WorkingRevisionID, proposal.WorkingRevisionNumber
+		response["change_notice"] = "A new change was added to the working cut. Review it in the player, restore any sections you do not want, then confirm when ready."
 
 	case "proposal_status":
 		if r.videoProjects == nil {
@@ -570,7 +581,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			}
 			response["proposal"] = safeVideoEditProposal(proposal)
 			response["proposal_id"], response["proposal_status"] = proposal.ID, proposal.Status
-			response["stale_base"] = proposal.Status == pebblestore.VideoEditProposalStatusPending && proposal.BaseRevisionID != project.CurrentRevisionID
+			response["stale_base"] = proposal.Status == pebblestore.VideoEditProposalStatusPending && proposal.WorkingRevisionID != project.CurrentRevisionID
 		} else {
 			proposals, err := r.videoProjects.ListEditProposals(scope.Principal, projectSessionID, projectID, 50)
 			if err != nil {
@@ -579,7 +590,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			items := make([]map[string]any, 0, len(proposals))
 			for _, proposal := range proposals {
 				item := safeVideoEditProposal(proposal)
-				item["stale_base"] = proposal.Status == pebblestore.VideoEditProposalStatusPending && proposal.BaseRevisionID != project.CurrentRevisionID
+				item["stale_base"] = proposal.Status == pebblestore.VideoEditProposalStatusPending && proposal.WorkingRevisionID != project.CurrentRevisionID
 				items = append(items, item)
 			}
 			response["proposals"], response["count"] = items, len(items)
@@ -815,8 +826,8 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 		"get_project":               {"Video project loaded", "Loading video project"},
 		"list_projects":             {"Video projects loaded", "Loading video projects"},
 		"inspect_accepted_cut":      {"Accepted cut loaded", "Inspecting accepted cut"},
-		"create_edit_proposal":      {"Edit proposal ready", "Preparing video edit proposal"},
-		"propose_plan":              {"Video plan ready for review", "Preparing visual video plan"},
+		"create_edit_proposal":      {"New change added", "Preparing video working change"},
+		"propose_plan":              {"New video change added", "Preparing visual video change"},
 		"proposal_status":           {"Proposal status updated", "Checking edit proposal"},
 		"recommend_render_settings": {"Render settings recommended", "Reviewing render settings"},
 		"create_revision":           {"Video edit saved", "Saving video edit"},
@@ -845,7 +856,7 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 	if len(sourceNames) > 0 {
 		presentation["source_names"] = sourceNames
 	}
-	for _, key := range []string{"project_id", "revision_id", "proposal_id", "proposal_status", "stale_base", "job_id", "progress", "count"} {
+	for _, key := range []string{"project_id", "revision_id", "proposal_id", "proposal_status", "working_revision_id", "working_revision_number", "change_notice", "stale_base", "job_id", "progress", "count"} {
 		if value, ok := response[key]; ok {
 			presentation[key] = value
 		}
@@ -985,7 +996,7 @@ func parseVideoTimelineRanges(raw any) ([]pebblestore.VideoTimelineRange, error)
 }
 
 func safeVideoEditProposal(proposal pebblestore.VideoEditProposalSnapshot) map[string]any {
-	return map[string]any{"id": proposal.ID, "project_id": proposal.ProjectID, "base_revision_id": proposal.BaseRevisionID, "base_revision_number": proposal.BaseRevisionNumber, "status": proposal.Status, "title": proposal.Title, "rationale": proposal.Rationale, "plan": proposal.Plan, "operations": proposal.Operations, "affected_ranges": proposal.AffectedRanges, "accepted_operation_ids": proposal.AcceptedOperationIDs, "accepted_revision_id": proposal.AcceptedRevisionID, "rejection_feedback": proposal.RejectionFeedback, "created_at": proposal.CreatedAt, "updated_at": proposal.UpdatedAt}
+	return map[string]any{"id": proposal.ID, "project_id": proposal.ProjectID, "base_revision_id": proposal.BaseRevisionID, "base_revision_number": proposal.BaseRevisionNumber, "working_revision_id": proposal.WorkingRevisionID, "working_revision_number": proposal.WorkingRevisionNumber, "status": proposal.Status, "title": proposal.Title, "rationale": proposal.Rationale, "plan": proposal.Plan, "operations": proposal.Operations, "affected_ranges": proposal.AffectedRanges, "accepted_operation_ids": proposal.AcceptedOperationIDs, "accepted_revision_id": proposal.AcceptedRevisionID, "rejection_feedback": proposal.RejectionFeedback, "created_at": proposal.CreatedAt, "updated_at": proposal.UpdatedAt}
 }
 
 func parseTimeline(raw any) (*pebblestore.VideoProjectTimeline, error) {
@@ -1055,17 +1066,19 @@ func safeVideoProjects(projects []pebblestore.VideoProjectSnapshot) []map[string
 
 func safeVideoProject(project pebblestore.VideoProjectSnapshot) map[string]any {
 	res := map[string]any{
-		"id":                      project.ID,
-		"session_id":              project.SessionID,
-		"title":                   project.Title,
-		"description":             project.Description,
-		"output_preset":           project.OutputPreset,
-		"current_revision_id":     project.CurrentRevisionID,
-		"current_revision_number": project.CurrentRevisionNumber,
-		"revision_count":          project.RevisionCount,
-		"active_render_job_id":    project.ActiveRenderJobID,
-		"created_at":              project.CreatedAt,
-		"updated_at":              project.UpdatedAt,
+		"id":                        project.ID,
+		"session_id":                project.SessionID,
+		"title":                     project.Title,
+		"description":               project.Description,
+		"output_preset":             project.OutputPreset,
+		"current_revision_id":       project.CurrentRevisionID,
+		"current_revision_number":   project.CurrentRevisionNumber,
+		"confirmed_revision_id":     project.ConfirmedRevisionID,
+		"confirmed_revision_number": project.ConfirmedRevisionNumber,
+		"revision_count":            project.RevisionCount,
+		"active_render_job_id":      project.ActiveRenderJobID,
+		"created_at":                project.CreatedAt,
+		"updated_at":                project.UpdatedAt,
 	}
 	if len(project.Metadata) > 0 {
 		res["metadata"] = project.Metadata
@@ -1092,6 +1105,7 @@ func safeVideoProjectRevision(rev *pebblestore.VideoProjectRevisionSnapshot) map
 		"session_id":                rev.SessionID,
 		"parent_revision_id":        rev.ParentRevisionID,
 		"restored_from_revision_id": rev.RestoredFromRevisionID,
+		"origin_proposal_id":        rev.OriginProposalID,
 		"description":               rev.Description,
 		"change_summary":            rev.ChangeSummary,
 		"timeline":                  rev.Timeline,
