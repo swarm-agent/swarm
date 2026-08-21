@@ -996,6 +996,12 @@ func parseTimeline(raw any) (*pebblestore.VideoProjectTimeline, error) {
 	if timeline.SchemaVersion == 0 {
 		timeline.SchemaVersion = pebblestore.VideoTimelineSchemaVersion
 	}
+	if timeline.Clips == nil {
+		timeline.Clips = []pebblestore.VideoTimelineClip{}
+	}
+	if timeline.Transitions == nil {
+		timeline.Transitions = []pebblestore.VideoTimelineTransition{}
+	}
 	return &timeline, nil
 }
 

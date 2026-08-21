@@ -14,6 +14,12 @@ test('Video Studio fills the app surface without an inset page wrapper', async (
   assert.doesNotMatch(source, /mx-auto hidden h-full w-full max-w-none flex-col px-4 py-4/)
 })
 
+test('Video Studio tolerates legacy nullable timeline clip arrays', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+  assert.match(source, /currentRevision\?\.timeline\.clips\?\.some/)
+  assert.match(source, /\(currentRevision\.timeline\.clips \?\? \[\]\)\.filter/)
+})
+
 test('Video Studio keeps a route-backed video selection and exposes session mode', async () => {
   const [source, routerSource, desktopSource] = await Promise.all([
     readFile(pageSourceUrl, 'utf8'),

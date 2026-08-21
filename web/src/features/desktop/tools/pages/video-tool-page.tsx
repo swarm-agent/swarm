@@ -2191,7 +2191,7 @@ export function VideoToolPage() {
                 </section>
               ) : null}
 
-              {currentRevision?.timeline.clips.some((clip) => clip.source_kind === 'text') ? (
+              {currentRevision?.timeline.clips?.some((clip) => clip.source_kind === 'text') ? (
                 <section className="mt-6 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Still production plan">
                   <div className="mb-4 flex items-start justify-between gap-4">
                     <div>
@@ -2201,7 +2201,7 @@ export function VideoToolPage() {
                     <span className="shrink-0 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Pre-production</span>
                   </div>
                   <div className="grid gap-3 xl:grid-cols-2">
-                    {currentRevision.timeline.clips.filter((clip) => clip.source_kind === 'text').map((clip) => {
+                    {(currentRevision.timeline.clips ?? []).filter((clip) => clip.source_kind === 'text').map((clip) => {
                       const details = videoPlanClipDetails(clip)
                       return (
                         <article key={`${clip.id}-plan`} className="border border-[var(--app-border)] bg-[var(--app-bg)] p-4">

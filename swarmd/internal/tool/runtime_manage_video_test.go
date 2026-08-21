@@ -238,6 +238,9 @@ func TestManageVideoJSONEncodedObjectParsing(t *testing.T) {
 	if timeline.OutputPreset != pebblestore.VideoPresetLandscape720p || timeline.TotalDurationMs != 1000 {
 		t.Fatalf("unexpected timeline: %#v", timeline)
 	}
+	if timeline.Clips == nil || timeline.Transitions == nil {
+		t.Fatalf("timeline arrays must be non-nil for clients: %#v", timeline)
+	}
 	if _, err := parseTimeline(map[string]any{"output_preset": pebblestore.VideoPresetLandscape1080p}); err != nil {
 		t.Fatalf("parse native object timeline: %v", err)
 	}
