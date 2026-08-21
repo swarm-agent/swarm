@@ -59,7 +59,7 @@ type manageVideoRenderService interface {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect trusted video sources, browse registered source-video folders, inspect triggering-message attachments, transcribe selected opaque video references, inspect transcripts and the accepted immutable cut, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. One-shot initial-plan workflow: call create_project without initial_timeline, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. In Video Studio sessions AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect trusted video sources, browse registered source-video folders, inspect triggering-message attachments, transcribe selected opaque video references, inspect transcripts and the accepted immutable cut, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. One-shot initial-plan workflow: call create_project without initial_timeline, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. An owned chat session with an attached video project is durably upgraded to Video Studio when it first proposes an edit, regardless of whether it was entered from Chat or Studio. AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -508,14 +508,18 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if r.videoProjects == nil {
 			return "", errors.New("manage_video project service is not configured")
 		}
+		projectID, baseRevisionID := strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["base_revision_id"]))
 		projectSessionID, studio, err := r.manageVideoProjectSession(scope.Principal, session)
 		if err != nil {
 			return "", err
 		}
 		if !studio {
-			return "", errors.New("create_edit_proposal requires a Video Studio session")
+			projectSessionID, session, err = r.upgradeManageVideoStudioSession(scope.Principal, session, projectID, baseRevisionID, run)
+			if err != nil {
+				return "", err
+			}
+			response["session_upgraded_to_video_studio"] = true
 		}
-		projectID, baseRevisionID := strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["base_revision_id"]))
 		if projectID == "" || baseRevisionID == "" {
 			return "", errors.New("create_edit_proposal requires project_id and exact base_revision_id")
 		}
@@ -1181,6 +1185,60 @@ func actionRequiresVideoTriggeringMessage(action string, args map[string]any) bo
 	}
 	videoRefs, err := parseExactStringSlice(args["video_refs"], "video_refs")
 	return err == nil && len(videoRefs) == 0
+}
+
+func (r *Runtime) upgradeManageVideoStudioSession(principal identity.Principal, session pebblestore.SessionSnapshot, projectID, revisionID string, run VideoRunContext) (string, pebblestore.SessionSnapshot, error) {
+	projectID, revisionID = strings.TrimSpace(projectID), strings.TrimSpace(revisionID)
+	if projectID == "" || revisionID == "" {
+		return "", session, errors.New("create_edit_proposal requires project_id and exact base_revision_id")
+	}
+	if strings.TrimSpace(run.RunID) == "" {
+		return "", session, errors.New("manage_video chat-to-Studio upgrade requires trusted active run authority")
+	}
+	project, ok, err := r.videoProjects.GetProject(principal, session.ID, projectID)
+	if err != nil {
+		return "", session, err
+	}
+	if !ok {
+		return "", session, fmt.Errorf("video project %q not found", projectID)
+	}
+	if _, ok, err := r.videoProjects.GetRevision(principal, session.ID, projectID, revisionID); err != nil {
+		return "", session, err
+	} else if !ok {
+		return "", session, fmt.Errorf("video revision %q not found", revisionID)
+	}
+
+	metadata := make(map[string]any, len(session.Metadata)+5)
+	for key, value := range session.Metadata {
+		metadata[key] = value
+	}
+	metadata["experience"] = "video_studio"
+	metadata["launch_source"] = "chat_upgrade"
+	metadata["lineage_kind"] = "video_project"
+	metadata["creative_mode"] = "video"
+	metadata["video_project_id"] = project.ID
+	metadata["video_revision_id"] = revisionID
+	session.Metadata = metadata
+
+	requestID := "manage-video-upgrade:" + session.ID + ":" + project.ID
+	result, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		SessionID: session.ID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		ClientRequestID: requestID, IdempotencyKey: requestID, PayloadHash: requestID, RequestHash: requestID,
+		Kind: pebblestore.V3SessionMutationUpdateMetadata, Session: &session,
+		CausationID: strings.TrimSpace(run.RunID), CorrelationID: strings.TrimSpace(run.RunID),
+	})
+	if err != nil {
+		return "", session, fmt.Errorf("upgrade chat session to Video Studio: %w", err)
+	}
+	if result.Session != nil {
+		session = *result.Session
+	}
+	if result.RealtimeOutbox != nil && r.publishSessionOutbox != nil {
+		if err := r.publishSessionOutbox(*result.RealtimeOutbox); err != nil {
+			return "", session, fmt.Errorf("publish Video Studio session upgrade: %w", err)
+		}
+	}
+	return session.ID, session, nil
 }
 
 func (r *Runtime) manageVideoProjectSession(principal identity.Principal, session pebblestore.SessionSnapshot) (string, bool, error) {

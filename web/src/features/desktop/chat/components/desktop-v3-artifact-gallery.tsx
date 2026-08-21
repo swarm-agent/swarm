@@ -74,6 +74,9 @@ export interface DesktopV3ArtifactGalleryProps {
   onArtifactNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
   onCollectionNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
   onTriggerOpen?: (artifact: DesktopV3ArtifactGalleryEntry) => void
+  presentation?: 'fullscreen' | 'embedded'
+  embeddedPortalTarget?: HTMLElement | null
+  backLabel?: string
 }
 
 type ArtifactCollectionGroup = {
@@ -195,6 +198,9 @@ export function DesktopV3ArtifactGallery({
   onArtifactNavigate,
   onCollectionNavigate,
   onTriggerOpen,
+  presentation = 'fullscreen',
+  embeddedPortalTarget: providedEmbeddedPortalTarget = null,
+  backLabel = 'Back to conversation',
 }: DesktopV3ArtifactGalleryProps) {
   const [internalOpen, setInternalOpen] = useState(false)
   const [selectedId, setSelectedId] = useState(artifacts[0] ? artifactSelectionKey(artifacts[0]) : '')
@@ -306,7 +312,7 @@ export function DesktopV3ArtifactGallery({
   useEffect(() => {
     if (!open) return undefined
     const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    if (presentation === 'fullscreen') document.body.style.overflow = 'hidden'
     backButtonRef.current?.focus()
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -328,10 +334,10 @@ export function DesktopV3ArtifactGallery({
     window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
-      document.body.style.overflow = previousOverflow
+      if (presentation === 'fullscreen') document.body.style.overflow = previousOverflow
       galleryButtonRef.current?.focus()
     }
-  }, [onArtifactNavigate, open, selectedVariantIndex, selectedVariants])
+  }, [onArtifactNavigate, open, presentation, selectedVariantIndex, selectedVariants])
 
   useEffect(() => {
     const syncFullscreenState = () => setPreviewFullscreen(document.fullscreenElement === previewSurfaceRef.current)
@@ -628,13 +634,20 @@ export function DesktopV3ArtifactGallery({
   if (!showTrigger && !open) return null
   if (showTrigger && artifacts.length === 0) return null
 
+  const portalTarget = presentation === 'embedded'
+    ? providedEmbeddedPortalTarget
+    : typeof document !== 'undefined' ? document.body : null
+
   return (
-    <div className={showTrigger ? 'mt-3' : undefined} data-final-handoff-artifacts={showTrigger ? true : undefined}>
+    <div
+      className={showTrigger ? 'mt-3' : undefined}
+      data-final-handoff-artifacts={showTrigger ? true : undefined}
+    >
       {showTrigger ? <button ref={galleryButtonRef} type="button" className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => { if (onTriggerOpen && triggerArtifact) onTriggerOpen(triggerArtifact); else setOpen(true) }}><GalleryHorizontal size={14} aria-hidden="true" />Open gallery ({artifacts.length})</button> : null}
-      {open ? createPortal(
-        <section aria-label="Artifact collection review" className="fixed inset-0 z-[85] flex h-[100dvh] w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--app-bg)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] text-[var(--app-text)]" data-artifact-gallery-page data-artifact-review-surface>
+      {open && portalTarget ? createPortal(
+        <section aria-label="Artifact collection review" className={cn('flex w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]', presentation === 'embedded' ? 'absolute inset-0 h-full' : 'fixed inset-0 z-[85] h-[100dvh] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]')} data-artifact-gallery-page data-artifact-review-surface data-artifact-studio-review={presentation === 'embedded' || undefined}>
           <header className="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 sm:min-h-14 sm:px-5 sm:py-2">
-            <button ref={backButtonRef} type="button" className="inline-flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => setOpen(false)}><ArrowLeft size={16} aria-hidden="true" /><span className="hidden sm:inline">Back to conversation</span><span className="sm:hidden">Back</span></button>
+            <button ref={backButtonRef} type="button" className="inline-flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => setOpen(false)}><ArrowLeft size={16} aria-hidden="true" />{presentation === 'embedded' ? <span>{backLabel}</span> : <><span className="hidden sm:inline">{backLabel}</span><span className="sm:hidden">Back</span></>}</button>
             <div className="min-w-0 text-center"><div className="flex items-center justify-center gap-2 text-sm font-semibold"><GalleryHorizontal size={16} aria-hidden="true" /> {title}</div><div className="text-[10px] text-[var(--app-text-subtle)]">Live collections · {groups.length}</div></div>
             <button type="button" className="grid size-9 shrink-0 place-items-center rounded-lg text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" aria-label="Exit artifact gallery" onClick={() => setOpen(false)}><X size={17} /></button>
           </header>
@@ -642,8 +655,8 @@ export function DesktopV3ArtifactGallery({
             <label className="relative min-w-[14rem] flex-1"><span className="sr-only">Search artifact collections</span><Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-[var(--app-text-subtle)]" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search collections, variants, sessions, or types" className="h-9 w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] pl-8 pr-3 text-xs outline-none focus:border-[var(--app-border-active)]" /></label>
             <div className="inline-flex h-9 rounded-lg border border-[var(--app-border)] p-0.5" aria-label="Collection grouping"><button type="button" className={cn('rounded-md px-2.5 text-xs', organization === 'collection' && 'bg-[var(--app-surface-active)] font-semibold')} aria-pressed={organization === 'collection'} onClick={() => setOrganization('collection')}>Collections</button><button type="button" className={cn('rounded-md px-2.5 text-xs', organization === 'workspace' && 'bg-[var(--app-surface-active)] font-semibold')} aria-pressed={organization === 'workspace'} onClick={() => setOrganization('workspace')}>By workspace</button></div>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[310px_minmax(0,1fr)] md:grid-rows-1">
-            <aside className="hidden min-w-0 bg-[var(--app-surface)] md:block md:min-h-0 md:overflow-y-auto md:border-r md:border-[var(--app-border)] md:p-3" aria-label="Artifact collections" data-artifact-collection-sidebar>
+          <div className={cn('grid min-h-0 flex-1 grid-cols-1', presentation !== 'embedded' && 'md:grid-cols-[310px_minmax(0,1fr)] md:grid-rows-1')}>
+            <aside className={cn('hidden min-w-0 bg-[var(--app-surface)]', presentation !== 'embedded' && 'md:block md:min-h-0 md:overflow-y-auto md:border-r md:border-[var(--app-border)] md:p-3')} aria-label="Artifact collections" data-artifact-collection-sidebar>
               {catalogLoading ? <div className="flex items-center gap-2 p-3 text-xs text-[var(--app-text-muted)]"><Loader2 className="size-4 animate-spin" />Loading live collections…</div> : null}
               {catalogError ? <div className="m-2 rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-3 text-xs text-[var(--app-danger)]">{catalogError}</div> : null}
               {!catalogLoading && !catalogError && groups.length === 0 ? <div className="p-4 text-center text-xs text-[var(--app-text-muted)]">No collections match this search.</div> : null}
@@ -683,7 +696,7 @@ export function DesktopV3ArtifactGallery({
                   </div>
                 </div>
               ) : selected ? <>
-                <div className="min-w-0 shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] md:hidden" data-mobile-generation-selector>
+                <div className={cn('min-w-0 shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)]', presentation !== 'embedded' && 'md:hidden')} data-mobile-generation-selector>
                   {groups.length > 1 ? <div className="flex h-9 min-w-0 items-center gap-1 overflow-x-auto border-b border-[var(--app-border)] px-2" aria-label="Select artifact collection">
                     {groups.map((group) => {
                       const active = group.key === selectedGroupKey
@@ -697,7 +710,7 @@ export function DesktopV3ArtifactGallery({
                     })}
                   </div>
                 </div>
-                <div className="hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4 md:flex">
+                <div className={cn('hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4', presentation !== 'embedded' && 'md:flex')}>
                   <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{variantDisplayLabel(selected, Math.max(selectedVariantIndex, 0))}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label && selected.description !== selected.collectionDescription ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
                   <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{artifactCanReveal(selected) ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={Boolean(actionPending)} title="Open this artifact in the native file manager" onClick={() => void revealArtifact(selected)}>{actionPending === 'reveal-artifact' ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} <span className="hidden sm:inline">Show in folder</span></button> : null}{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
                 </div>
@@ -735,7 +748,7 @@ export function DesktopV3ArtifactGallery({
               </> : null}
             </main>
           </div>
-        </section>, document.body) : null}
+        </section>, portalTarget) : null}
     </div>
   )
 }

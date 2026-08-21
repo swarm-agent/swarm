@@ -283,6 +283,19 @@ func TestProviderManagedV3ToolCallBypassesPermissionRequests(t *testing.T) {
 	}
 }
 
+func TestProviderManagedChatUpgradedVideoStudioImageGeneration(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestServiceWithMetadata(t, workspace, map[string]any{
+		"experience":    "video_studio",
+		"launch_source": "chat_upgrade",
+		"lineage_kind":  "video_project",
+	})
+	defer cleanup()
+	if !svc.providerManagedVideoStudioImageGeneration(providerToolInvokerConfig{sessionID: sessionID, providerManagedV3: true}) {
+		t.Fatal("expected chat-upgraded Video Studio session to authorize still generation")
+	}
+}
+
 func TestProviderManagedVideoStudioImageGenerationSkipsDuplicatePermissionPrompt(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestServiceWithMetadata(t, workspace, map[string]any{

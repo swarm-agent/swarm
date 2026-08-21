@@ -455,6 +455,7 @@ export function VideoSessionAISidecar(props: {
   contextChip?: { id: string; label: string; kind: string; description?: string } | null
   onContextChipRemove?: () => void
   onArtifactSelectionRequestHandled?: () => void
+  artifactReviewPortalTarget?: HTMLElement | null
   onActivity?: () => void
 }) {
   const [hydrateError, setHydrateError] = useState(false)
@@ -510,6 +511,8 @@ export function VideoSessionAISidecar(props: {
           ...(typeof props.transition?.duration_ms === 'number' ? { video_transition_duration_ms: Math.max(0, Math.round(props.transition.duration_ms)) } : {}),
         }}
         presentation="sidebar"
+        artifactReviewPresentation="embedded"
+        artifactReviewPortalTarget={props.artifactReviewPortalTarget}
         composerDraftRequest={props.draftRequest}
         artifactSelectionRequest={props.artifactSelectionRequest}
         contextChip={props.contextChip}

@@ -549,6 +549,57 @@ func TestManageVideoStudioCreatesAdditionalProjectWithExplicitID(t *testing.T) {
 	}
 }
 
+func TestManageVideoChatSessionUpgradesWhenCreatingProposal(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-chat-upgrade.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "chat", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "chat", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"entry_mode": "chat"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "chat", RunID: "run-chat-upgrade"})
+	scope := WorkspaceScope{SessionID: "chat", Principal: principal}
+	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create", Name: "manage_video", Arguments: `{"action":"create_project","title":"Chat video","initial_timeline":{"output_preset":"landscape_1080p","total_duration_ms":1000,"clips":[{"id":"clip_a","track":0,"sequence":0,"source_kind":"color","duration_ms":1000,"timeline_start_ms":0,"timeline_end_ms":1000,"visible":true}]}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var create struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(created), &create); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{"action": "create_edit_proposal", "project_id": create.ProjectID, "base_revision_id": create.RevisionID, "title": "Shorter opening", "operations": []map[string]any{{"id": "trim", "type": pebblestore.VideoEditOperationUpdateClip, "clip": map[string]any{"id": "clip_a", "track": 0, "sequence": 0, "source_kind": "color", "duration_ms": 500, "timeline_start_ms": 0, "timeline_end_ms": 500, "visible": true}}}})
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "proposal", Name: "manage_video", Arguments: string(args)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"session_upgraded_to_video_studio":true`) || !strings.Contains(payload, `"proposal_status":"pending"`) {
+		t.Fatalf("proposal payload=%s", payload)
+	}
+	upgraded, ok, err := runtime.sessions.GetSession("chat")
+	if err != nil || !ok {
+		t.Fatalf("upgraded session missing: ok=%v err=%v", ok, err)
+	}
+	if upgraded.Metadata["entry_mode"] != "chat" || upgraded.Metadata["experience"] != "video_studio" || upgraded.Metadata["launch_source"] != "chat_upgrade" || upgraded.Metadata["lineage_kind"] != "video_project" || upgraded.Metadata["creative_mode"] != "video" || upgraded.Metadata["video_project_id"] != create.ProjectID {
+		t.Fatalf("chat session was not durably upgraded without losing metadata: %+v", upgraded.Metadata)
+	}
+	if projectSessionID, studio, err := runtime.manageVideoProjectSession(principal, upgraded); err != nil || !studio || projectSessionID != "chat" {
+		t.Fatalf("upgraded session is not Studio-capable: projectSessionID=%q studio=%v err=%v", projectSessionID, studio, err)
+	}
+}
+
 func TestManageVideoStudioCreatesVisibleWorkingRevision(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-proposal.pebble"))
 	if err != nil {

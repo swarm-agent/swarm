@@ -1542,6 +1542,9 @@ export interface DesktopV3ExistingConversationPaneProps {
   contextChip?: { id: string; label: string; kind: string; description?: string } | null;
   onContextChipRemove?: () => void;
   onArtifactSelectionRequestHandled?: () => void;
+  /** Keep artifact review inside an embedded Studio-owned surface. */
+  artifactReviewPresentation?: "fullscreen" | "embedded";
+  artifactReviewPortalTarget?: HTMLElement | null;
   /** Reuse the canonical conversation as a constrained embedded surface. */
   presentation?: "page" | "sidebar";
   onMessageSent?: () => void;
@@ -1649,6 +1652,8 @@ export function DesktopV3ExistingConversationPane({
   contextChip = null,
   onContextChipRemove,
   onArtifactSelectionRequestHandled,
+  artifactReviewPresentation = "fullscreen",
+  artifactReviewPortalTarget = null,
   presentation = "page",
   onMessageSent,
 }: DesktopV3ExistingConversationPaneProps) {
@@ -2223,30 +2228,31 @@ export function DesktopV3ExistingConversationPane({
     setArtifactGalleryInitialCollectionId("");
     setArtifactGalleryInitialKey(artifactKey);
     setArtifactGalleryOpen(true);
-    if (!routeWorkspaceSlug) return;
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },
       search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
     });
-  }, [navigate, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
-    if (!routeWorkspaceSlug) return;
     setArtifactGalleryInitialCollectionId("");
     setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifact));
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },
       search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
       replace: true,
     });
-  }, [navigate, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
   const navigateArtifactCollectionViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     const collectionId = artifact.collectionId?.trim() ?? "";
     const sessionId = artifact.lineage?.parentSessionId || artifact.sessionId;
-    if (!routeWorkspaceSlug || !collectionId || !sessionId) return;
+    if (!collectionId || !sessionId) return;
     setArtifactGalleryInitialKey("");
     setArtifactGalleryInitialCollectionId(collectionId);
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId },
@@ -2258,7 +2264,7 @@ export function DesktopV3ExistingConversationPane({
       }),
       replace: true,
     });
-  }, [navigate, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
   const setArtifactGalleryOpenFromViewer = useCallback((nextOpen: boolean) => {
     setArtifactGalleryOpen(nextOpen);
     if (nextOpen) {
@@ -2266,7 +2272,7 @@ export function DesktopV3ExistingConversationPane({
       return;
     }
     dismissedArtifactViewerLocationKeyRef.current = artifactViewerLocationKey;
-    if (!routeWorkspaceSlug) return;
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
@@ -2278,7 +2284,7 @@ export function DesktopV3ExistingConversationPane({
       }),
       replace: true,
     });
-  }, [artifactViewerLocationKey, navigate, normalizedSessionId, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, artifactViewerLocationKey, navigate, normalizedSessionId, routeWorkspaceSlug]);
   useEffect(() => {
     if (!artifactViewerLocation) {
       dismissedArtifactViewerLocationKeyRef.current = "";
@@ -3118,6 +3124,37 @@ export function DesktopV3ExistingConversationPane({
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+            {artifactReviewPresentation === "embedded" ? (
+              <DesktopV3ArtifactGallery
+                artifacts={sessionArtifacts}
+                open={artifactGalleryOpen}
+                onOpenChange={setArtifactGalleryOpenFromViewer}
+                showTrigger={false}
+                loading={sessionArtifactsLoading}
+                error={sessionArtifactsError}
+                title="Studio iterations"
+                initialArtifactKey={artifactGalleryInitialKey}
+                initialCollectionId={artifactGalleryInitialCollectionId}
+                artifactHref={artifactViewerHref}
+                collectionHref={artifactCollectionViewerHref}
+                onArtifactNavigate={navigateArtifactViewer}
+                onCollectionNavigate={navigateArtifactCollectionViewer}
+                presentation="embedded"
+                embeddedPortalTarget={artifactReviewPortalTarget}
+                backLabel="Back to Studio"
+                onAddToChat={(artifacts) => {
+                  queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: "select" })));
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
+                onUseThisDesign={({ label, description, selection }) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
+                onSelectionPersisted={refreshSessionArtifacts}
+              />
+            ) : null}
             <div
               ref={scrollContainerRef}
               className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]"
@@ -3446,7 +3483,7 @@ export function DesktopV3ExistingConversationPane({
         ) : null}
       </div>
 
-      <DesktopV3ArtifactGallery
+      {artifactReviewPresentation !== "embedded" ? <DesktopV3ArtifactGallery
         artifacts={sessionArtifacts}
         open={artifactGalleryOpen}
         onOpenChange={setArtifactGalleryOpenFromViewer}
@@ -3471,7 +3508,7 @@ export function DesktopV3ExistingConversationPane({
           setArtifactComposerFocusSignal((current) => current + 1);
         }}
         onSelectionPersisted={refreshSessionArtifacts}
-      />
+      /> : null}
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}
